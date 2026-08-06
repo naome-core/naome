@@ -132,6 +132,58 @@ impl Formula {
     pub fn is_closed(&self) -> bool {
         self.free_variables().is_empty()
     }
+
+    #[cfg(test)]
+    pub(crate) fn primitive_structure(&self) -> String {
+        let mut output = String::new();
+        render_node(&self.0, &mut output);
+        output
+    }
+}
+
+#[cfg(test)]
+fn render_node(node: &Node, output: &mut String) {
+    match node {
+        Node::Equal(left, right) => render_binary("eq", *left, *right, output),
+        Node::Member(element, set) => render_binary("mem", *element, *set, output),
+        Node::Not(formula) => {
+            output.push_str("not(");
+            render_node(formula, output);
+            output.push(')');
+        }
+        Node::Implies(antecedent, consequent) => {
+            output.push_str("imp(");
+            render_node(antecedent, output);
+            output.push(',');
+            render_node(consequent, output);
+            output.push(')');
+        }
+        Node::ForAll(body) => {
+            output.push_str("all(");
+            render_node(body, output);
+            output.push(')');
+        }
+    }
+}
+
+#[cfg(test)]
+fn render_binary(name: &str, left: Variable, right: Variable, output: &mut String) {
+    output.push_str(name);
+    output.push('(');
+    render_variable(left, output);
+    output.push(',');
+    render_variable(right, output);
+    output.push(')');
+}
+
+#[cfg(test)]
+fn render_variable(variable: Variable, output: &mut String) {
+    let (prefix, identifier) = match variable {
+        Variable::Bound(index) => ('b', index),
+        Variable::Free(variable) => ('f', variable.identifier()),
+    };
+    output.push(prefix);
+    output.push_str(&identifier.to_string());
 }
 
 fn bind_free(node: Node, variable: FreeVariable, depth: u32) -> Node {

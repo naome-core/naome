@@ -427,28 +427,54 @@ mod tests {
     use super::{Replacement, SchemaError, Separation, ZfcAxiom};
     use crate::{Formula, FreeVariable};
 
-    const FIXED_AXIOMS: [ZfcAxiom; 7] = [
-        ZfcAxiom::Extensionality,
-        ZfcAxiom::Pairing,
-        ZfcAxiom::Union,
-        ZfcAxiom::PowerSet,
-        ZfcAxiom::Infinity,
-        ZfcAxiom::Foundation,
-        ZfcAxiom::Choice,
+    const FIXED_AXIOM_GOLDENS: [(ZfcAxiom, &str); 7] = [
+        (
+            ZfcAxiom::Extensionality,
+            "all(all(imp(all(not(imp(imp(mem(b0,b2),mem(b0,b1)),not(imp(mem(b0,b1),mem(b0,b2)))))),eq(b1,b0))))",
+        ),
+        (
+            ZfcAxiom::Pairing,
+            "all(all(not(all(not(all(not(imp(imp(mem(b0,b1),imp(not(eq(b0,b3)),eq(b0,b2))),not(imp(imp(not(eq(b0,b3)),eq(b0,b2)),mem(b0,b1)))))))))))",
+        ),
+        (
+            ZfcAxiom::Union,
+            "all(not(all(not(all(not(imp(imp(mem(b0,b1),not(all(not(not(imp(mem(b1,b0),not(mem(b0,b3)))))))),not(imp(not(all(not(not(imp(mem(b1,b0),not(mem(b0,b3))))))),mem(b0,b1))))))))))",
+        ),
+        (
+            ZfcAxiom::PowerSet,
+            "all(not(all(not(all(not(imp(imp(mem(b0,b1),all(imp(mem(b0,b1),mem(b0,b3)))),not(imp(all(imp(mem(b0,b1),mem(b0,b3))),mem(b0,b1))))))))))",
+        ),
+        (
+            ZfcAxiom::Infinity,
+            "not(all(not(not(imp(not(all(not(not(imp(all(not(mem(b0,b1))),not(mem(b0,b1))))))),not(all(imp(mem(b0,b1),not(all(not(not(imp(all(not(imp(imp(mem(b0,b1),imp(not(mem(b0,b2)),eq(b0,b2))),not(imp(imp(not(mem(b0,b2)),eq(b0,b2)),mem(b0,b1)))))),not(mem(b0,b2)))))))))))))))",
+        ),
+        (
+            ZfcAxiom::Foundation,
+            "all(imp(not(all(not(mem(b0,b1)))),not(all(not(not(imp(mem(b0,b1),not(all(imp(mem(b0,b1),not(mem(b0,b2))))))))))))",
+        ),
+        (
+            ZfcAxiom::Choice,
+            "all(imp(not(imp(all(imp(mem(b0,b1),not(all(not(mem(b0,b1)))))),not(all(all(imp(not(imp(not(imp(mem(b1,b2),not(mem(b0,b2)))),not(not(eq(b1,b0))))),not(not(all(not(not(imp(mem(b0,b2),not(mem(b0,b1)))))))))))))),not(all(not(all(imp(mem(b0,b2),not(all(not(not(imp(not(imp(mem(b0,b1),not(mem(b0,b2)))),not(all(imp(not(imp(mem(b0,b2),not(mem(b0,b3)))),eq(b0,b1))))))))))))))))",
+        ),
     ];
 
+    const SEPARATION_GOLDEN: &str = "all(all(not(all(not(all(not(imp(imp(mem(b0,b1),not(imp(mem(b0,b2),not(mem(b0,b3))))),not(imp(not(imp(mem(b0,b2),not(mem(b0,b3)))),mem(b0,b1)))))))))))";
+
+    const REPLACEMENT_GOLDEN: &str = "all(all(imp(all(imp(mem(b0,b1),not(all(not(not(imp(not(imp(eq(b1,b0),not(mem(b1,b3)))),not(all(imp(not(imp(eq(b2,b0),not(mem(b2,b4)))),eq(b0,b1))))))))))),not(all(not(all(not(imp(imp(mem(b0,b1),not(all(not(not(imp(mem(b0,b3),not(not(imp(eq(b0,b1),not(mem(b0,b4))))))))))),not(imp(not(all(not(not(imp(mem(b0,b3),not(not(imp(eq(b0,b1),not(mem(b0,b4)))))))))),mem(b0,b1))))))))))))";
+
     #[test]
-    fn every_fixed_axiom_is_closed() {
-        for axiom in FIXED_AXIOMS {
+    fn fixed_axioms_match_primitive_golden_structures() {
+        for (axiom, expected) in FIXED_AXIOM_GOLDENS {
             let formula = axiom.formula();
+            assert_eq!(formula.primitive_structure(), expected, "{axiom:?}");
             assert!(formula.is_closed(), "{axiom:?}");
         }
     }
 
     #[test]
     fn fixed_axioms_have_distinct_formulas() {
-        for (index, axiom) in FIXED_AXIOMS.iter().enumerate() {
-            for other in &FIXED_AXIOMS[index + 1..] {
+        for (index, (axiom, _)) in FIXED_AXIOM_GOLDENS.iter().enumerate() {
+            for (other, _) in &FIXED_AXIOM_GOLDENS[index + 1..] {
                 assert_ne!(axiom.formula(), other.formula());
             }
         }
@@ -470,6 +496,7 @@ mod tests {
 
         let formula = instance.formula().expect("schema instance is valid");
 
+        assert_eq!(formula.primitive_structure(), SEPARATION_GOLDEN);
         assert!(formula.is_closed());
     }
 
@@ -592,6 +619,7 @@ mod tests {
 
         let formula = instance.formula().expect("schema instance is valid");
 
+        assert_eq!(formula.primitive_structure(), REPLACEMENT_GOLDEN);
         assert!(formula.is_closed());
     }
 

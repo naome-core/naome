@@ -142,7 +142,7 @@ mod tests {
     use crate::{Formula, FreeVariable};
 
     #[test]
-    fn every_logical_axiom_constructor_produces_a_closable_formula() {
+    fn logical_axiom_constructors_match_primitive_golden_structures() {
         let x = FreeVariable::new(1);
         let y = FreeVariable::new(2);
         let unused = FreeVariable::new(3);
@@ -151,20 +151,47 @@ mod tests {
         let third = Formula::equal(y, y);
 
         let instances = [
-            LogicV0::simplification(first.clone(), second.clone()),
-            LogicV0::frege(first.clone(), second.clone(), third),
-            LogicV0::classical_contraposition(first.clone(), second.clone()),
-            LogicV0::universal_distribution(x, first.clone(), second.clone()),
-            LogicV0::vacuous_universal(unused, first.clone())
-                .expect("the side condition is satisfied"),
-            LogicV0::universal_instantiation(x, y, second),
-            LogicV0::equality_reflexivity(x),
-            LogicV0::equality_substitution(x, y, first),
+            (
+                "L1",
+                LogicV0::simplification(first.clone(), second.clone()),
+                "imp(eq(f1,f1),imp(mem(f1,f2),eq(f1,f1)))",
+            ),
+            (
+                "L2",
+                LogicV0::frege(first.clone(), second.clone(), third),
+                "imp(imp(eq(f1,f1),imp(mem(f1,f2),eq(f2,f2))),imp(imp(eq(f1,f1),mem(f1,f2)),imp(eq(f1,f1),eq(f2,f2))))",
+            ),
+            (
+                "L3",
+                LogicV0::classical_contraposition(first.clone(), second.clone()),
+                "imp(imp(not(mem(f1,f2)),not(eq(f1,f1))),imp(eq(f1,f1),mem(f1,f2)))",
+            ),
+            (
+                "Q1",
+                LogicV0::universal_distribution(x, first.clone(), second.clone()),
+                "imp(all(imp(eq(b0,b0),mem(b0,f2))),imp(all(eq(b0,b0)),all(mem(b0,f2))))",
+            ),
+            (
+                "Q2",
+                LogicV0::vacuous_universal(unused, first.clone())
+                    .expect("the side condition is satisfied"),
+                "imp(eq(f1,f1),all(eq(f1,f1)))",
+            ),
+            (
+                "Q3",
+                LogicV0::universal_instantiation(x, y, second),
+                "imp(all(mem(b0,f2)),mem(f2,f2))",
+            ),
+            ("E1", LogicV0::equality_reflexivity(x), "eq(f1,f1)"),
+            (
+                "E2",
+                LogicV0::equality_substitution(x, y, first),
+                "imp(eq(f1,f2),imp(eq(f1,f1),eq(f2,f2)))",
+            ),
         ];
 
-        for instance in instances {
-            let closed = Formula::for_all(x, Formula::for_all(y, instance));
-            assert!(closed.is_closed());
+        for (label, instance, expected) in instances {
+            assert_eq!(instance.primitive_structure(), expected, "{label}");
         }
     }
 

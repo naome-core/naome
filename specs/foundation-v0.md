@@ -43,9 +43,36 @@ x ≠ y  := ¬(x = y)
 
 Human-readable binder names are presentation data and do not participate in structural formula identity.
 
+## Semantics
+
+A structure for the object language consists of a non-empty domain `D` and a binary relation `∈ᴹ ⊆ D × D`. The primitive equality symbol `=` is interpreted as identity on `D`, and the primitive membership symbol `∈` is interpreted as `∈ᴹ`.
+
+A free-variable assignment `ρ` maps every free variable to an element of `D`. A De Bruijn environment `η` is a sequence of elements of `D` whose index zero denotes the innermost enclosing binder. Term interpretation is:
+
+```text
+⟦free-variable x⟧ρ,η = ρ(x)
+⟦bound-variable-index i⟧ρ,η = η[i]
+```
+
+For a well-formed formula, satisfaction is defined recursively:
+
+```text
+M,ρ,η ⊨ s = t   iff ⟦s⟧ρ,η = ⟦t⟧ρ,η
+M,ρ,η ⊨ s ∈ t   iff (⟦s⟧ρ,η, ⟦t⟧ρ,η) ∈ ∈ᴹ
+M,ρ,η ⊨ ¬A      iff M,ρ,η ⊭ A
+M,ρ,η ⊨ A → B   iff M,ρ,η ⊭ A or M,ρ,η ⊨ B
+M,ρ,η ⊨ ∀A      iff for every d ∈ D, M,ρ,(d :: η) ⊨ A
+```
+
+Here `M = (D, ∈ᴹ)` and `d :: η` prepends `d` to the De Bruijn environment. Well-formedness guarantees that every bound-variable lookup is defined. A closed formula is true in `M` exactly when it is satisfied with the empty De Bruijn environment; its truth is independent of `ρ`.
+
+A formula is logically valid when every structure satisfies it under every free-variable assignment. A structure is a model of Foundation V0 when it satisfies every fixed ZFC axiom and every admissible instance of the Separation and Replacement schemas. A closed formula is a semantic consequence of Foundation V0 when it is true in every such model.
+
 ## Substitution and binding
 
-Binding a free variable replaces each of its free occurrences with the De Bruijn index of the new binder at that occurrence. Existing bound references retain their binder. Substitution of one free variable for another never modifies bound references.
+Binding a free variable replaces each of its free occurrences with the De Bruijn index of the new binder at that occurrence. Existing bound references retain their binder.
+
+`A[x := y]` is the simultaneous replacement, throughout `A`, of every free occurrence of `x` with the free variable `y`. Occurrences of every other free variable and all bound-variable references remain unchanged. This is one structural substitution, not a sequence of replacements.
 
 Foundation implementations must reject dangling bound indices before admitting a formula. Public formula construction must preserve well-formedness, and formula and schema construction must not capture a formerly free variable.
 
@@ -134,11 +161,11 @@ NonEmptyFamily(f) :=
   ∀a(a ∈ f → ∃x(x ∈ a))
 
 PairwiseDisjoint(f) :=
-  ∀a∀b((a ∈ f ∧ b ∈ f ∧ a ≠ b)
+  ∀a∀b(((a ∈ f ∧ b ∈ f) ∧ a ≠ b)
       → ¬∃x(x ∈ a ∧ x ∈ b))
 
 ExistsExactlyOneIn(c,a) :=
-  ∃x(x ∈ a ∧ x ∈ c
+  ∃x((x ∈ a ∧ x ∈ c)
       ∧ ∀y((y ∈ a ∧ y ∈ c) → y = x))
 
 ∀f(
