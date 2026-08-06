@@ -4,9 +4,9 @@ NAOME is a decentralized protocol for formally verified mathematical knowledge. 
 
 ## Workspace
 
-- `naome-foundation` defines the immutable syntax, logical calculus, and ZFC axiom boundary for Foundation V0.
+- `naome-foundation` is the executable Rust reference implementation of Foundation V0.
 
-The normative Foundation V0 contract lives in [`specs/foundation-v0.md`](specs/foundation-v0.md).
+The sole normative Foundation V0 contract lives in [`specs/foundation-v0.md`](specs/foundation-v0.md).
 
 ## Development
 

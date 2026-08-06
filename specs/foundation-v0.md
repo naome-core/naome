@@ -31,6 +31,10 @@ Term    := free-variable
 
 The quantifier binds De Bruijn index zero in its body. Entering another quantifier increases the index needed to refer to an outer binder. A formula is well formed exactly when every bound-variable index is smaller than the number of enclosing quantifiers.
 
+Free-variable identifiers and De Bruijn indices range over the natural numbers, including zero. The abstract language therefore has a countably infinite variable supply. Every individual formula is a finite tree and contains only finitely many identifiers and indices.
+
+An implementation may impose finite representation and resource limits. If an identifier, index, binder depth, or formula size cannot be represented or processed, it must fail without admitting a formula. It must not truncate, wrap, saturate, alias, or otherwise map the input to a different abstract formula. Such a failure does not make the abstract formula invalid. Deterministic limits for encoded proof blocks belong to the later protocol layer and do not change Foundation V0 derivability.
+
 The following are eliminable abbreviations, not primitive nodes:
 
 ```text
@@ -219,6 +223,6 @@ Until that contract exists, no definition block is valid under Foundation V0.
 
 ## Verification boundary
 
-This specification and the `naome-foundation` crate define the data and axiom boundary. They do not verify complete proofs. A later proof-block format may choose encoding and line-reference details, but it must preserve an empty local-hypothesis context, only the primitive rules declared here, and an explicitly closed final theorem. A later checker must return deterministic results.
+This specification is the sole normative definition of the abstract Foundation V0 data and axiom boundary. The `naome-foundation` crate is its executable Rust reference implementation and must conform to it. Neither verifies complete proofs. A later proof-block format may choose encoding and line-reference details, but it must preserve an empty local-hypothesis context, only the primitive rules declared here, and an explicitly closed final theorem. A later checker must return deterministic results.
 
 Canonical serialization, content hashing, proof blocks, definitions, parsers, theorem libraries, storage, networking, and economic consensus are outside Foundation V0.

@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 /// Identifies a free object-language variable.
 ///
 /// Names are presentation data. The numeric identifier is the stable identity
-/// used while constructing formulas and schema instances.
+/// used while constructing formulas and schema instances. Its `u32` width is
+/// a resource limit of this Rust implementation, not of the abstract language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FreeVariable(u32);
 
@@ -201,11 +202,13 @@ fn bind_free(node: Node, variable: FreeVariable, depth: u32) -> Node {
             Box::new(bind_free(*antecedent, variable, depth)),
             Box::new(bind_free(*consequent, variable, depth)),
         ),
-        Node::ForAll(body) => Node::ForAll(Box::new(bind_free(
-            *body,
-            variable,
-            depth.saturating_add(1),
-        ))),
+        Node::ForAll(body) => {
+            let nested_depth = depth
+                .checked_add(1)
+                .expect("formula nesting exceeds the representable De Bruijn index");
+
+            Node::ForAll(Box::new(bind_free(*body, variable, nested_depth)))
+        }
     }
 }
 
@@ -266,7 +269,16 @@ fn collect_free_variable(value: Variable, variables: &mut BTreeSet<FreeVariable>
 
 #[cfg(test)]
 mod tests {
-    use super::{Formula, FreeVariable, Node, Variable};
+    use super::{Formula, FreeVariable, Node, Variable, bind_free};
+
+    #[test]
+    #[should_panic(expected = "formula nesting exceeds the representable De Bruijn index")]
+    fn binding_fails_closed_when_de_bruijn_depth_overflows() {
+        let x = FreeVariable::new(1);
+        let body = Node::ForAll(Box::new(Node::Equal(Variable::Free(x), Variable::Free(x))));
+
+        let _ = bind_free(body, x, u32::MAX);
+    }
 
     #[test]
     fn alpha_renamed_binders_have_the_same_representation() {

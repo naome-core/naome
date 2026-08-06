@@ -1,4 +1,4 @@
-//! NAOME's immutable first-order logic and ZFC foundation contract.
+//! Rust reference implementation of NAOME's immutable Foundation V0 contract.
 //!
 //! Foundation V0 defines a valid-by-construction formula language, executable
 //! logical axiom constructors, primitive inference-rule identifiers, seven
