@@ -47,7 +47,7 @@ Human-readable binder names are presentation data and do not participate in stru
 
 Binding a free variable replaces each of its free occurrences with the De Bruijn index of the new binder at that occurrence. Existing bound references retain their binder. Substitution of one free variable for another never modifies bound references.
 
-Foundation implementations must reject dangling bound indices. Formula and schema construction must not capture a formerly free variable.
+Foundation implementations must reject dangling bound indices before admitting a formula. Public formula construction must preserve well-formedness, and formula and schema construction must not capture a formerly free variable.
 
 ## Classical first-order logic with equality
 
@@ -66,20 +66,22 @@ E1  x = x
 E2  x = y → (A → A[x := y])
 ```
 
-`Q3` and `E2` use capture-free substitution. The locally nameless representation makes bound and free variables disjoint, but implementations must still validate the supplied formulas.
+`Q3` and `E2` use capture-free substitution. The locally nameless representation makes bound and free variables disjoint. Values admitted as formulas are well formed by construction.
 
-The primitive inference rules are:
+The primitive inference rules operate only on earlier lines of the same assumption-free derivation:
 
 ```text
-Modus ponens:    A, A → B  ⊢  B
-Generalization:  A         ⊢  ∀x A
+Modus ponens:    from A and A → B, derive B
+Generalization:  from A, derive ∀x A
 ```
 
-The future proof-block contract must define assumptions and theorem closure explicitly. Foundation V0 does not permit an implementation to add hidden logical rules.
+Generalization binds the selected free variable `x` in `A`. It has no side condition because Foundation V0 has no local assumptions, hypothesis contexts, or assumption-discharge rule.
+
+A theorem conclusion must be well formed and closed. Intermediate formulas may contain free variables. Closure must be explicit in the derivation; implementations must not implicitly universally close a conclusion. Foundation V0 does not permit an implementation to add hidden logical rules.
 
 ## Fixed ZFC axioms
 
-The formulas below use the eliminable abbreviations above for readability. The Rust representation expands them into primitive nodes.
+The formulas below use the eliminable abbreviations above for readability. Every display abbreviation in this document is recursively expanded according to its definition here. That primitive expansion is normative; an implementation, including the Rust crate, must produce the same structure.
 
 ### Extensionality
 
@@ -146,7 +148,7 @@ ExistsExactlyOneIn(c,a) :=
 )
 ```
 
-The three named predicates above are local display abbreviations, not Foundation symbols. Their expansion is the primitive formula returned by `ZfcAxiom::Choice::formula`.
+The three named predicates above are local display abbreviations, not Foundation symbols. Their recursive expansion according to the definitions above is the normative primitive Choice formula.
 
 ## ZFC axiom schemas
 
@@ -188,6 +190,6 @@ Until that contract exists, no definition block is valid under Foundation V0.
 
 ## Verification boundary
 
-This specification and the `naome-foundation` crate define the data and axiom boundary. They do not verify complete proofs. A later checker must consume only these declared axioms and inference rules and must return deterministic results.
+This specification and the `naome-foundation` crate define the data and axiom boundary. They do not verify complete proofs. A later proof-block format may choose encoding and line-reference details, but it must preserve an empty local-hypothesis context, only the primitive rules declared here, and an explicitly closed final theorem. A later checker must return deterministic results.
 
 Canonical serialization, content hashing, proof blocks, definitions, parsers, theorem libraries, storage, networking, and economic consensus are outside Foundation V0.

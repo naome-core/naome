@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
-use crate::{Formula, FormulaError, FreeVariable};
+use crate::{Formula, FreeVariable};
 
 /// Identifies one of the seven fixed ZFC axioms in Foundation V0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -24,30 +24,6 @@ pub enum ZfcAxiom {
     /// Every pairwise-disjoint family of non-empty sets has a choice set.
     Choice,
 }
-
-/// The complete ordered set of fixed Foundation V0 ZFC axioms.
-pub const ZFC_AXIOMS: [ZfcAxiom; 7] = [
-    ZfcAxiom::Extensionality,
-    ZfcAxiom::Pairing,
-    ZfcAxiom::Union,
-    ZfcAxiom::PowerSet,
-    ZfcAxiom::Infinity,
-    ZfcAxiom::Foundation,
-    ZfcAxiom::Choice,
-];
-
-/// Identifies one of the two Foundation V0 ZFC axiom schemas.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ZfcAxiomSchema {
-    /// Restricted set comprehension.
-    Separation,
-    /// Images of sets under definable functional relations are sets.
-    Replacement,
-}
-
-/// The complete ordered set of Foundation V0 ZFC axiom schemas.
-pub const ZFC_AXIOM_SCHEMAS: [ZfcAxiomSchema; 2] =
-    [ZfcAxiomSchema::Separation, ZfcAxiomSchema::Replacement];
 
 impl ZfcAxiom {
     /// Expands this axiom into the primitive Foundation V0 formula language.
@@ -145,7 +121,7 @@ impl Replacement {
             self.uniqueness_witness,
             Formula::implies(
                 alternate_predicate,
-                Formula::equal(self.uniqueness_witness.into(), self.output.into()),
+                Formula::equal(self.uniqueness_witness, self.output),
             ),
         );
         let unique_output = Formula::exists(
@@ -342,10 +318,6 @@ fn validate_schema(
     forbidden_roles: &[FreeVariable],
     parameters: &[FreeVariable],
 ) -> Result<(), SchemaError> {
-    predicate
-        .validate()
-        .map_err(SchemaError::InvalidPredicate)?;
-
     let mut distinct_roles = BTreeSet::new();
     for variable in role_variables {
         if !distinct_roles.insert(*variable) {
@@ -382,11 +354,11 @@ fn variable(identifier: u32) -> FreeVariable {
 }
 
 fn equal(left: FreeVariable, right: FreeVariable) -> Formula {
-    Formula::equal(left.into(), right.into())
+    Formula::equal(left, right)
 }
 
 fn member(element: FreeVariable, set: FreeVariable) -> Formula {
-    Formula::member(element.into(), set.into())
+    Formula::member(element, set)
 }
 
 fn close_for_all(variables: &[FreeVariable], mut body: Formula) -> Formula {
@@ -403,8 +375,6 @@ fn close_parameters(parameters: &[FreeVariable], body: Formula) -> Formula {
 /// An invalid ZFC axiom-schema instantiation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SchemaError {
-    /// The predicate contains a dangling bound-variable reference.
-    InvalidPredicate(FormulaError),
     /// Two required schema roles use the same variable.
     RoleVariableCollision(FreeVariable),
     /// A parameter uses a variable reserved for a schema role.
@@ -421,7 +391,6 @@ impl fmt::Display for SchemaError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let variable = |variable: &FreeVariable| variable.identifier();
         match self {
-            Self::InvalidPredicate(error) => write!(formatter, "invalid predicate: {error}"),
             Self::RoleVariableCollision(value) => write!(
                 formatter,
                 "variable {} is assigned to more than one schema role",
@@ -451,33 +420,35 @@ impl fmt::Display for SchemaError {
     }
 }
 
-impl Error for SchemaError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::InvalidPredicate(error) => Some(error),
-            _ => None,
-        }
-    }
-}
+impl Error for SchemaError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Replacement, SchemaError, Separation, ZFC_AXIOMS, ZfcAxiom};
-    use crate::{Formula, FreeVariable, Term};
+    use super::{Replacement, SchemaError, Separation, ZfcAxiom};
+    use crate::{Formula, FreeVariable};
+
+    const FIXED_AXIOMS: [ZfcAxiom; 7] = [
+        ZfcAxiom::Extensionality,
+        ZfcAxiom::Pairing,
+        ZfcAxiom::Union,
+        ZfcAxiom::PowerSet,
+        ZfcAxiom::Infinity,
+        ZfcAxiom::Foundation,
+        ZfcAxiom::Choice,
+    ];
 
     #[test]
-    fn every_fixed_axiom_is_closed_and_well_formed() {
-        for axiom in ZFC_AXIOMS {
+    fn every_fixed_axiom_is_closed() {
+        for axiom in FIXED_AXIOMS {
             let formula = axiom.formula();
-            assert_eq!(formula.validate(), Ok(()), "{axiom:?}");
             assert!(formula.is_closed(), "{axiom:?}");
         }
     }
 
     #[test]
     fn fixed_axioms_have_distinct_formulas() {
-        for (index, axiom) in ZFC_AXIOMS.iter().enumerate() {
-            for other in &ZFC_AXIOMS[index + 1..] {
+        for (index, axiom) in FIXED_AXIOMS.iter().enumerate() {
+            for other in &FIXED_AXIOMS[index + 1..] {
                 assert_ne!(axiom.formula(), other.formula());
             }
         }
@@ -490,7 +461,7 @@ mod tests {
         let result = FreeVariable::new(3);
         let parameter = FreeVariable::new(4);
         let instance = Separation {
-            predicate: Formula::member(element.into(), parameter.into()),
+            predicate: Formula::member(element, parameter),
             element,
             source,
             result,
@@ -499,7 +470,6 @@ mod tests {
 
         let formula = instance.formula().expect("schema instance is valid");
 
-        assert_eq!(formula.validate(), Ok(()));
         assert!(formula.is_closed());
     }
 
@@ -510,7 +480,7 @@ mod tests {
         let result = FreeVariable::new(3);
         let undeclared = FreeVariable::new(4);
         let instance = Separation {
-            predicate: Formula::member(element.into(), undeclared.into()),
+            predicate: Formula::member(element, undeclared),
             element,
             source,
             result,
@@ -529,7 +499,7 @@ mod tests {
         let source = FreeVariable::new(2);
         let result = FreeVariable::new(3);
         let instance = Separation {
-            predicate: Formula::member(element.into(), result.into()),
+            predicate: Formula::member(element, result),
             element,
             source,
             result,
@@ -547,7 +517,7 @@ mod tests {
         let element = FreeVariable::new(1);
         let source_and_result = FreeVariable::new(2);
         let instance = Separation {
-            predicate: Formula::member(element.into(), source_and_result.into()),
+            predicate: Formula::member(element, source_and_result),
             element,
             source: source_and_result,
             result: source_and_result,
@@ -567,7 +537,7 @@ mod tests {
         let result = FreeVariable::new(3);
         let parameter = FreeVariable::new(4);
         let instance = Separation {
-            predicate: Formula::member(element.into(), parameter.into()),
+            predicate: Formula::member(element, parameter),
             element,
             source,
             result,
@@ -586,7 +556,7 @@ mod tests {
         let source = FreeVariable::new(2);
         let result = FreeVariable::new(3);
         let instance = Separation {
-            predicate: Formula::member(element.into(), source.into()),
+            predicate: Formula::member(element, source),
             element,
             source,
             result,
@@ -609,8 +579,8 @@ mod tests {
         let parameter = FreeVariable::new(6);
         let instance = Replacement {
             predicate: Formula::conjunction(
-                Formula::equal(input.into(), output.into()),
-                Formula::member(input.into(), parameter.into()),
+                Formula::equal(input, output),
+                Formula::member(input, parameter),
             ),
             input,
             output,
@@ -622,7 +592,6 @@ mod tests {
 
         let formula = instance.formula().expect("schema instance is valid");
 
-        assert_eq!(formula.validate(), Ok(()));
         assert!(formula.is_closed());
     }
 
@@ -634,7 +603,7 @@ mod tests {
         let source = FreeVariable::new(4);
         let result = FreeVariable::new(5);
         let instance = Replacement {
-            predicate: Formula::member(input.into(), uniqueness_witness.into()),
+            predicate: Formula::member(input, uniqueness_witness),
             input,
             output,
             uniqueness_witness,
@@ -647,29 +616,5 @@ mod tests {
             instance.formula(),
             Err(SchemaError::ForbiddenPredicateVariable(uniqueness_witness))
         );
-    }
-
-    #[test]
-    fn schema_rejects_dangling_bound_variables() {
-        let element = FreeVariable::new(1);
-        let source = FreeVariable::new(2);
-        let result = FreeVariable::new(3);
-        let instance = Separation {
-            predicate: Formula::equal(Term::Bound(0), element.into()),
-            element,
-            source,
-            result,
-            parameters: vec![],
-        };
-
-        assert!(matches!(
-            instance.formula(),
-            Err(SchemaError::InvalidPredicate(_))
-        ));
-    }
-
-    #[test]
-    fn choice_is_part_of_the_fixed_axiom_set() {
-        assert!(ZFC_AXIOMS.contains(&ZfcAxiom::Choice));
     }
 }
