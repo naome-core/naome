@@ -1,0 +1,11 @@
+[package]
+name = "naome-foundation"
+version = "0.1.0"
+edition = "2024"
+description = "The formal logic and ZFC foundation contract for NAOME."
+license = "MIT"
+repository = "https://github.com/naome-core/naome"
+publish = false
+
+[lints]
+workspace = true
