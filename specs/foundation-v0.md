@@ -146,6 +146,8 @@ Successor(x,s) := ∀z(z ∈ s ↔ (z ∈ x ∨ z = x))
    ∧ ∀x(x ∈ i → ∃s(Successor(x,s) ∧ s ∈ i)))
 ```
 
+The common ten-principle presentation of ZFC lists the Empty Set Axiom separately. Foundation V0 does not include it as a primitive axiom because the formula above directly entails `∃e Empty(e)`; the Empty Set Axiom is therefore a theorem of Foundation V0.
+
 ### Foundation
 
 ```text
