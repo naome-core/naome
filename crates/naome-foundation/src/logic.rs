@@ -5,16 +5,7 @@ use std::fmt;
 
 use crate::{Formula, FreeVariable};
 
-/// Identifies a primitive rule for assumption-free Foundation V0 derivations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum InferenceRule {
-    /// Derive `B` from earlier derived formulas `A` and `A → B`.
-    ModusPonens,
-    /// From an earlier derived `A`, bind `x` and derive `∀x A`.
-    Generalization,
-}
-
-/// Constructors for instances of the Foundation V0 logical axiom schemas.
+/// Constructs logical axiom instances and applies primitive inference rules.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LogicV0;
 
@@ -76,13 +67,13 @@ impl LogicV0 {
         variable: FreeVariable,
         formula: Formula,
     ) -> Result<Formula, LogicError> {
-        if formula.free_variables().contains(&variable) {
+        if formula.contains_free_variable(variable) {
             return Err(LogicError::VariableMustNotBeFree(variable));
         }
 
         Ok(Formula::implies(
             formula.clone(),
-            Formula::for_all(variable, formula),
+            Formula::vacuous_for_all(formula),
         ))
     }
 
@@ -113,13 +104,28 @@ impl LogicV0 {
             Formula::implies(body.clone(), body.substitute_free(from, to)),
         )
     }
+
+    /// Derives `B` from `A` and `A → B`.
+    pub fn modus_ponens(premise: &Formula, implication: &Formula) -> Result<Formula, LogicError> {
+        implication
+            .implication_consequent_for(premise)
+            .ok_or(LogicError::ModusPonensMismatch)
+    }
+
+    /// Universally quantifies a selected free variable in an earlier formula.
+    #[must_use]
+    pub fn generalization(variable: FreeVariable, premise: Formula) -> Formula {
+        Formula::for_all(variable, premise)
+    }
 }
 
-/// An invalid logical axiom-schema instantiation.
+/// An invalid logical axiom-schema instantiation or inference-rule application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogicError {
     /// A variable required to be absent occurs free in the formula.
     VariableMustNotBeFree(FreeVariable),
+    /// Modus ponens did not receive matching `A` and `A → B` formulas.
+    ModusPonensMismatch,
 }
 
 impl fmt::Display for LogicError {
@@ -129,6 +135,9 @@ impl fmt::Display for LogicError {
                 formatter,
                 "variable {} must not occur free in this axiom instance",
                 variable.identifier()
+            ),
+            Self::ModusPonensMismatch => formatter.write_str(
+                "modus ponens requires an implication whose antecedent equals the premise",
             ),
         }
     }
@@ -207,6 +216,19 @@ mod tests {
     }
 
     #[test]
+    fn vacuous_universal_allows_only_bound_occurrences_of_the_variable() {
+        let x = FreeVariable::new(1);
+        let body = Formula::for_all(x, Formula::equal(x, x));
+
+        let instance = LogicV0::vacuous_universal(x, body).expect("the variable is not free");
+
+        assert_eq!(
+            instance.primitive_structure(),
+            "imp(all(eq(b0,b0)),all(all(eq(b0,b0))))"
+        );
+    }
+
+    #[test]
     fn universal_instantiation_is_capture_free() {
         let x = FreeVariable::new(1);
         let y = FreeVariable::new(2);
@@ -214,8 +236,72 @@ mod tests {
         let body = Formula::for_all(z, Formula::member(x, z));
 
         let instance = LogicV0::universal_instantiation(x, y, body);
+        let free_variables = instance.free_variables();
 
-        assert!(instance.free_variables().contains(&y));
-        assert!(!instance.free_variables().contains(&x));
+        assert!(free_variables.contains(&y));
+        assert!(!free_variables.contains(&x));
+    }
+
+    #[test]
+    fn modus_ponens_accepts_alpha_equivalent_antecedents() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let premise = Formula::for_all(x, Formula::equal(x, x));
+        let equal_but_separate_premise = Formula::for_all(y, Formula::equal(y, y));
+        let consequent = Formula::member(x, y);
+        let implication = Formula::implies(equal_but_separate_premise, consequent.clone());
+
+        assert_eq!(
+            LogicV0::modus_ponens(&premise, &implication),
+            Ok(consequent)
+        );
+    }
+
+    #[test]
+    fn modus_ponens_rejects_invalid_inputs() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let premise = Formula::equal(x, x);
+        let non_implication = Formula::member(x, y);
+        let mismatched_implication = Formula::implies(Formula::equal(y, y), Formula::member(x, y));
+
+        for invalid in [&non_implication, &mismatched_implication] {
+            assert_eq!(
+                LogicV0::modus_ponens(&premise, invalid),
+                Err(LogicError::ModusPonensMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn generalization_binds_without_capturing_an_existing_binder() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let z = FreeVariable::new(3);
+        let premise = Formula::for_all(
+            z,
+            Formula::implies(Formula::member(x, z), Formula::equal(y, z)),
+        );
+
+        let generalized = LogicV0::generalization(x, premise);
+
+        assert_eq!(
+            generalized.primitive_structure(),
+            "all(all(imp(mem(b1,b0),eq(f2,b0))))"
+        );
+        let free_variables = generalized.free_variables();
+        assert_eq!(free_variables.len(), 1);
+        assert!(free_variables.contains(&y));
+    }
+
+    #[test]
+    fn generalization_allows_a_vacuous_shadowed_variable() {
+        let x = FreeVariable::new(1);
+        let premise = Formula::for_all(x, Formula::equal(x, x));
+
+        let generalized = LogicV0::generalization(x, premise);
+
+        assert_eq!(generalized.primitive_structure(), "all(all(eq(b0,b0)))");
+        assert!(generalized.is_closed());
     }
 }

@@ -107,8 +107,9 @@ impl Formula {
     /// Occurrences of `variable` become De Bruijn references to the newly
     /// introduced binder. Existing bound references retain their binders.
     #[must_use]
-    pub fn for_all(variable: FreeVariable, body: Self) -> Self {
-        Self(Node::ForAll(Box::new(bind_free(body.0, variable, 0))))
+    pub fn for_all(variable: FreeVariable, mut body: Self) -> Self {
+        bind_free(&mut body.0, variable, 0);
+        Self(Node::ForAll(Box::new(body.0)))
     }
 
     /// Existentially quantifies a free variable using `¬∀x¬A`.
@@ -122,8 +123,13 @@ impl Formula {
     /// Free and bound variables have separate representations, so this
     /// operation cannot capture the replacement variable.
     #[must_use]
-    pub fn substitute_free(self, from: FreeVariable, to: FreeVariable) -> Self {
-        Self(substitute_free(self.0, from, to))
+    pub fn substitute_free(mut self, from: FreeVariable, to: FreeVariable) -> Self {
+        if from == to {
+            return self;
+        }
+
+        substitute_free(&mut self.0, from, to);
+        self
     }
 
     /// Returns the free variables occurring in this formula.
@@ -137,7 +143,24 @@ impl Formula {
     /// Returns `true` when the formula contains no free variables.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.free_variables().is_empty()
+        !has_matching_free_variable(&self.0, &|_| true)
+    }
+
+    pub(crate) fn contains_free_variable(&self, variable: FreeVariable) -> bool {
+        has_matching_free_variable(&self.0, &|candidate| candidate == variable)
+    }
+
+    pub(crate) fn vacuous_for_all(body: Self) -> Self {
+        Self(Node::ForAll(Box::new(body.0)))
+    }
+
+    pub(crate) fn implication_consequent_for(&self, premise: &Self) -> Option<Self> {
+        match &self.0 {
+            Node::Implies(antecedent, consequent) if antecedent.as_ref() == &premise.0 => {
+                Some(Self(consequent.as_ref().clone()))
+            }
+            _ => None,
+        }
     }
 
     #[cfg(test)]
@@ -193,47 +216,38 @@ fn render_variable(variable: Variable, output: &mut String) {
     output.push_str(&identifier.to_string());
 }
 
-fn bind_free(node: Node, variable: FreeVariable, depth: u32) -> Node {
+fn bind_free(node: &mut Node, variable: FreeVariable, depth: u32) {
     match node {
-        Node::Equal(left, right) => Node::Equal(
-            bind_variable(left, variable, depth),
-            bind_variable(right, variable, depth),
-        ),
-        Node::Member(element, set) => Node::Member(
-            bind_variable(element, variable, depth),
-            bind_variable(set, variable, depth),
-        ),
-        Node::Not(formula) => Node::Not(Box::new(bind_free(*formula, variable, depth))),
-        Node::Implies(antecedent, consequent) => Node::Implies(
-            Box::new(bind_free(*antecedent, variable, depth)),
-            Box::new(bind_free(*consequent, variable, depth)),
-        ),
+        Node::Equal(left, right) | Node::Member(left, right) => {
+            *left = bind_variable(*left, variable, depth);
+            *right = bind_variable(*right, variable, depth);
+        }
+        Node::Not(formula) => bind_free(formula, variable, depth),
+        Node::Implies(antecedent, consequent) => {
+            bind_free(antecedent, variable, depth);
+            bind_free(consequent, variable, depth);
+        }
         Node::ForAll(body) => {
             let nested_depth = depth
                 .checked_add(1)
                 .expect("formula nesting exceeds the representable De Bruijn index");
 
-            Node::ForAll(Box::new(bind_free(*body, variable, nested_depth)))
+            bind_free(body, variable, nested_depth);
         }
     }
 }
 
-fn substitute_free(node: Node, from: FreeVariable, to: FreeVariable) -> Node {
+fn substitute_free(node: &mut Node, from: FreeVariable, to: FreeVariable) {
     match node {
-        Node::Equal(left, right) => Node::Equal(
-            substitute_variable(left, from, to),
-            substitute_variable(right, from, to),
-        ),
-        Node::Member(element, set) => Node::Member(
-            substitute_variable(element, from, to),
-            substitute_variable(set, from, to),
-        ),
-        Node::Not(formula) => Node::Not(Box::new(substitute_free(*formula, from, to))),
-        Node::Implies(antecedent, consequent) => Node::Implies(
-            Box::new(substitute_free(*antecedent, from, to)),
-            Box::new(substitute_free(*consequent, from, to)),
-        ),
-        Node::ForAll(body) => Node::ForAll(Box::new(substitute_free(*body, from, to))),
+        Node::Equal(left, right) | Node::Member(left, right) => {
+            *left = substitute_variable(*left, from, to);
+            *right = substitute_variable(*right, from, to);
+        }
+        Node::Not(formula) | Node::ForAll(formula) => substitute_free(formula, from, to),
+        Node::Implies(antecedent, consequent) => {
+            substitute_free(antecedent, from, to);
+            substitute_free(consequent, from, to);
+        }
     }
 }
 
@@ -249,6 +263,24 @@ fn collect_free_variables(node: &Node, variables: &mut BTreeSet<FreeVariable>) {
         Node::Implies(antecedent, consequent) => {
             collect_free_variables(antecedent, variables);
             collect_free_variables(consequent, variables);
+        }
+    }
+}
+
+fn has_matching_free_variable(node: &Node, matches: &impl Fn(FreeVariable) -> bool) -> bool {
+    match node {
+        Node::Equal(left, right) | Node::Member(left, right) => {
+            let matches_free = |variable| match variable {
+                Variable::Free(variable) => matches(variable),
+                Variable::Bound(_) => false,
+            };
+
+            matches_free(*left) || matches_free(*right)
+        }
+        Node::Not(formula) | Node::ForAll(formula) => has_matching_free_variable(formula, matches),
+        Node::Implies(antecedent, consequent) => {
+            has_matching_free_variable(antecedent, matches)
+                || has_matching_free_variable(consequent, matches)
         }
     }
 }
@@ -281,9 +313,9 @@ mod tests {
     #[should_panic(expected = "formula nesting exceeds the representable De Bruijn index")]
     fn binding_fails_closed_when_de_bruijn_depth_overflows() {
         let x = FreeVariable::new(1);
-        let body = Node::ForAll(Box::new(Node::Equal(Variable::Free(x), Variable::Free(x))));
+        let mut body = Node::ForAll(Box::new(Node::Equal(Variable::Free(x), Variable::Free(x))));
 
-        let _ = bind_free(body, x, u32::MAX);
+        bind_free(&mut body, x, u32::MAX);
     }
 
     #[test]
@@ -313,16 +345,52 @@ mod tests {
     }
 
     #[test]
-    fn free_substitution_does_not_modify_bound_variables() {
+    fn closure_check_finds_a_free_variable_under_a_binder() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let formula = Formula::for_all(
+            x,
+            Formula::implies(Formula::equal(x, x), Formula::member(y, x)),
+        );
+
+        assert!(!formula.is_closed());
+    }
+
+    #[test]
+    fn free_substitution_changes_only_matching_free_variables_across_the_tree() {
         let bound = FreeVariable::new(1);
         let from = FreeVariable::new(2);
         let to = FreeVariable::new(3);
-        let formula = Formula::for_all(bound, Formula::member(bound, from));
+        let untouched = FreeVariable::new(4);
+        let formula = Formula::for_all(
+            bound,
+            Formula::implies(
+                Formula::negate(Formula::member(bound, from)),
+                Formula::implies(Formula::equal(from, untouched), Formula::member(to, from)),
+            ),
+        );
 
         let substituted = formula.substitute_free(from, to);
-        let expected = Formula::for_all(bound, Formula::member(bound, to));
+        let expected = Formula::for_all(
+            bound,
+            Formula::implies(
+                Formula::negate(Formula::member(bound, to)),
+                Formula::implies(Formula::equal(to, untouched), Formula::member(to, to)),
+            ),
+        );
 
         assert_eq!(substituted, expected);
+    }
+
+    #[test]
+    fn free_substitution_is_a_no_op_for_absent_or_identical_variables() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let absent = FreeVariable::new(3);
+        let formula = Formula::member(x, y);
+
+        assert_eq!(formula.clone().substitute_free(absent, x), formula);
+        assert_eq!(formula.clone().substitute_free(x, x), formula);
     }
 
     #[test]
