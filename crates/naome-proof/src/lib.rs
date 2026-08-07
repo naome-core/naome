@@ -1,8 +1,8 @@
 //! Canonical, assumption-free proof programs for NAOME Foundation V0.
 //!
 //! A certificate records only primitive axiom witnesses and inference inputs.
-//! It does not duplicate the formula derived by each step: the future checker
-//! will reconstruct those formulas deterministically. Decoding establishes
+//! It does not duplicate the formula derived by each step: the checker
+//! reconstructs those formulas deterministically. Decoding establishes
 //! canonical structure and acyclic local references, not mathematical validity.
 
 mod codec;
@@ -22,8 +22,8 @@ pub const CERTIFICATE_V0_MAX_STEPS: usize = 65_536;
 
 /// A canonical, assumption-free Foundation V0 proof program.
 ///
-/// The final step is the claimed conclusion. A future checker must reconstruct
-/// every step and verify the final formula is closed before admitting a proof.
+/// The final step is the claimed conclusion. The checker reconstructs every
+/// step and verifies the final formula is closed before admitting a proof.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct ProofCertificateV0 {
