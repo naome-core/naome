@@ -73,7 +73,7 @@ impl LogicV0 {
 
         Ok(Formula::implies(
             formula.clone(),
-            Formula::for_all(variable, formula),
+            Formula::vacuous_for_all(formula),
         ))
     }
 
@@ -220,7 +220,12 @@ mod tests {
         let x = FreeVariable::new(1);
         let body = Formula::for_all(x, Formula::equal(x, x));
 
-        assert!(LogicV0::vacuous_universal(x, body).is_ok());
+        let instance = LogicV0::vacuous_universal(x, body).expect("the variable is not free");
+
+        assert_eq!(
+            instance.primitive_structure(),
+            "imp(all(eq(b0,b0)),all(all(eq(b0,b0))))"
+        );
     }
 
     #[test]
@@ -231,9 +236,10 @@ mod tests {
         let body = Formula::for_all(z, Formula::member(x, z));
 
         let instance = LogicV0::universal_instantiation(x, y, body);
+        let free_variables = instance.free_variables();
 
-        assert!(instance.free_variables().contains(&y));
-        assert!(!instance.free_variables().contains(&x));
+        assert!(free_variables.contains(&y));
+        assert!(!free_variables.contains(&x));
     }
 
     #[test]
@@ -283,8 +289,9 @@ mod tests {
             generalized.primitive_structure(),
             "all(all(imp(mem(b1,b0),eq(f2,b0))))"
         );
-        assert_eq!(generalized.free_variables().len(), 1);
-        assert!(generalized.free_variables().contains(&y));
+        let free_variables = generalized.free_variables();
+        assert_eq!(free_variables.len(), 1);
+        assert!(free_variables.contains(&y));
     }
 
     #[test]

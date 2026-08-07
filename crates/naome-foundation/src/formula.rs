@@ -124,6 +124,10 @@ impl Formula {
     /// operation cannot capture the replacement variable.
     #[must_use]
     pub fn substitute_free(mut self, from: FreeVariable, to: FreeVariable) -> Self {
+        if from == to {
+            return self;
+        }
+
         substitute_free(&mut self.0, from, to);
         self
     }
@@ -144,6 +148,10 @@ impl Formula {
 
     pub(crate) fn contains_free_variable(&self, variable: FreeVariable) -> bool {
         has_matching_free_variable(&self.0, &|candidate| candidate == variable)
+    }
+
+    pub(crate) fn vacuous_for_all(body: Self) -> Self {
+        Self(Node::ForAll(Box::new(body.0)))
     }
 
     pub(crate) fn implication_consequent_for(&self, premise: &Self) -> Option<Self> {
