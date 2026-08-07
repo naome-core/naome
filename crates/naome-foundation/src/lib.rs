@@ -20,6 +20,3 @@ pub use zfc::{Replacement, SchemaError, Separation, ZfcAxiom};
 
 /// The immutable protocol identifier for Foundation V0.
 pub const FOUNDATION_ID: &str = "naome:zfc:v0";
-
-/// The human-readable name of the logical calculus selected by Foundation V0.
-pub const LOGIC_NAME: &str = "classical-first-order-logic-with-equality";
