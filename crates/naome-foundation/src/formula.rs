@@ -123,8 +123,9 @@ impl Formula {
     /// Free and bound variables have separate representations, so this
     /// operation cannot capture the replacement variable.
     #[must_use]
-    pub fn substitute_free(self, from: FreeVariable, to: FreeVariable) -> Self {
-        Self(substitute_free(self.0, from, to))
+    pub fn substitute_free(mut self, from: FreeVariable, to: FreeVariable) -> Self {
+        substitute_free(&mut self.0, from, to);
+        self
     }
 
     /// Returns the free variables occurring in this formula.
@@ -224,22 +225,17 @@ fn bind_free(node: &mut Node, variable: FreeVariable, depth: u32) {
     }
 }
 
-fn substitute_free(node: Node, from: FreeVariable, to: FreeVariable) -> Node {
+fn substitute_free(node: &mut Node, from: FreeVariable, to: FreeVariable) {
     match node {
-        Node::Equal(left, right) => Node::Equal(
-            substitute_variable(left, from, to),
-            substitute_variable(right, from, to),
-        ),
-        Node::Member(element, set) => Node::Member(
-            substitute_variable(element, from, to),
-            substitute_variable(set, from, to),
-        ),
-        Node::Not(formula) => Node::Not(Box::new(substitute_free(*formula, from, to))),
-        Node::Implies(antecedent, consequent) => Node::Implies(
-            Box::new(substitute_free(*antecedent, from, to)),
-            Box::new(substitute_free(*consequent, from, to)),
-        ),
-        Node::ForAll(body) => Node::ForAll(Box::new(substitute_free(*body, from, to))),
+        Node::Equal(left, right) | Node::Member(left, right) => {
+            *left = substitute_variable(*left, from, to);
+            *right = substitute_variable(*right, from, to);
+        }
+        Node::Not(formula) | Node::ForAll(formula) => substitute_free(formula, from, to),
+        Node::Implies(antecedent, consequent) => {
+            substitute_free(antecedent, from, to);
+            substitute_free(consequent, from, to);
+        }
     }
 }
 
@@ -319,16 +315,40 @@ mod tests {
     }
 
     #[test]
-    fn free_substitution_does_not_modify_bound_variables() {
+    fn free_substitution_changes_only_matching_free_variables_across_the_tree() {
         let bound = FreeVariable::new(1);
         let from = FreeVariable::new(2);
         let to = FreeVariable::new(3);
-        let formula = Formula::for_all(bound, Formula::member(bound, from));
+        let untouched = FreeVariable::new(4);
+        let formula = Formula::for_all(
+            bound,
+            Formula::implies(
+                Formula::negate(Formula::member(bound, from)),
+                Formula::implies(Formula::equal(from, untouched), Formula::member(to, from)),
+            ),
+        );
 
         let substituted = formula.substitute_free(from, to);
-        let expected = Formula::for_all(bound, Formula::member(bound, to));
+        let expected = Formula::for_all(
+            bound,
+            Formula::implies(
+                Formula::negate(Formula::member(bound, to)),
+                Formula::implies(Formula::equal(to, untouched), Formula::member(to, to)),
+            ),
+        );
 
         assert_eq!(substituted, expected);
+    }
+
+    #[test]
+    fn free_substitution_is_a_no_op_for_absent_or_identical_variables() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let absent = FreeVariable::new(3);
+        let formula = Formula::member(x, y);
+
+        assert_eq!(formula.clone().substitute_free(absent, x), formula);
+        assert_eq!(formula.clone().substitute_free(x, x), formula);
     }
 
     #[test]
