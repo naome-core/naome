@@ -361,11 +361,8 @@ fn member(element: FreeVariable, set: FreeVariable) -> Formula {
     Formula::member(element, set)
 }
 
-fn close_for_all(variables: &[FreeVariable], mut body: Formula) -> Formula {
-    for variable in variables.iter().rev() {
-        body = Formula::for_all(*variable, body);
-    }
-    body
+fn close_for_all(variables: &[FreeVariable], body: Formula) -> Formula {
+    Formula::for_all_many(variables, body)
 }
 
 fn close_parameters(parameters: &[FreeVariable], body: Formula) -> Formula {

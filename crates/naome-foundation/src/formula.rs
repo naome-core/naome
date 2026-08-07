@@ -6,7 +6,7 @@ pub use canonical_v0::{
     FORMULA_V0_MAX_BYTES, FORMULA_V0_MAX_DEPTH, FORMULA_V0_MAX_NODES, FormulaCodecError,
 };
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Identifies a free object-language variable.
 ///
@@ -110,6 +110,26 @@ impl Formula {
     pub fn for_all(variable: FreeVariable, mut body: Self) -> Self {
         bind_free(&mut body.0, variable, 0);
         Self(Node::ForAll(Box::new(body.0)))
+    }
+
+    pub(crate) fn for_all_many(variables: &[FreeVariable], mut body: Self) -> Self {
+        if variables.is_empty() {
+            return body;
+        }
+
+        let binder_count = u32::try_from(variables.len())
+            .expect("the number of binders must fit a De Bruijn index");
+        let mut binders = BTreeMap::new();
+        for (position, variable) in variables.iter().enumerate() {
+            let position = u32::try_from(position).expect("the binder count was checked above");
+            binders.insert(*variable, binder_count - position - 1);
+        }
+
+        bind_free_many(&mut body.0, &binders, 0);
+        for _ in variables {
+            body = Self(Node::ForAll(Box::new(body.0)));
+        }
+        body
     }
 
     /// Existentially quantifies a free variable using `¬∀x¬A`.
@@ -237,6 +257,26 @@ fn bind_free(node: &mut Node, variable: FreeVariable, depth: u32) {
     }
 }
 
+fn bind_free_many(node: &mut Node, binders: &BTreeMap<FreeVariable, u32>, depth: u32) {
+    match node {
+        Node::Equal(left, right) | Node::Member(left, right) => {
+            *left = bind_variable_many(*left, binders, depth);
+            *right = bind_variable_many(*right, binders, depth);
+        }
+        Node::Not(formula) => bind_free_many(formula, binders, depth),
+        Node::Implies(antecedent, consequent) => {
+            bind_free_many(antecedent, binders, depth);
+            bind_free_many(consequent, binders, depth);
+        }
+        Node::ForAll(body) => {
+            let nested_depth = depth
+                .checked_add(1)
+                .expect("formula nesting exceeds the representable De Bruijn index");
+            bind_free_many(body, binders, nested_depth);
+        }
+    }
+}
+
 fn substitute_free(node: &mut Node, from: FreeVariable, to: FreeVariable) {
     match node {
         Node::Equal(left, right) | Node::Member(left, right) => {
@@ -292,6 +332,21 @@ fn bind_variable(value: Variable, variable: FreeVariable, depth: u32) -> Variabl
     }
 }
 
+fn bind_variable_many(
+    value: Variable,
+    binders: &BTreeMap<FreeVariable, u32>,
+    depth: u32,
+) -> Variable {
+    match value {
+        Variable::Free(variable) if let Some(index) = binders.get(&variable) => Variable::Bound(
+            index
+                .checked_add(depth)
+                .expect("formula nesting exceeds the representable De Bruijn index"),
+        ),
+        _ => value,
+    }
+}
+
 fn substitute_variable(value: Variable, from: FreeVariable, to: FreeVariable) -> Variable {
     match value {
         Variable::Free(candidate) if candidate == from => Variable::Free(to),
@@ -342,6 +397,26 @@ mod tests {
             )))))
         );
         assert!(formula.is_closed());
+    }
+
+    #[test]
+    fn multiple_binders_match_repeated_binding_with_nesting_and_duplicates() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let z = FreeVariable::new(3);
+        let variables = [x, y, x];
+        let body = Formula::for_all(
+            z,
+            Formula::implies(Formula::member(x, z), Formula::equal(y, x)),
+        );
+        let expected = variables
+            .iter()
+            .rev()
+            .fold(body.clone(), |formula, variable| {
+                Formula::for_all(*variable, formula)
+            });
+
+        assert_eq!(Formula::for_all_many(&variables, body), expected);
     }
 
     #[test]
