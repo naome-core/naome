@@ -1,5 +1,11 @@
 //! Primitive first-order formulas for set theory.
 
+mod canonical_v0;
+
+pub use canonical_v0::{
+    FORMULA_V0_MAX_BYTES, FORMULA_V0_MAX_DEPTH, FORMULA_V0_MAX_NODES, FormulaCodecError,
+};
+
 use std::collections::BTreeSet;
 
 /// Identifies a free object-language variable.

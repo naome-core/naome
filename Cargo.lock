@@ -11,5 +11,8 @@ name = "naome-foundation"
 version = "0.1.0"
 
 [[package]]
-name = "naome-validation"
+name = "naome-proof"
 version = "0.1.0"
+dependencies = [
+ "naome-foundation",
+]

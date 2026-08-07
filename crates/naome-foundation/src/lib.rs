@@ -3,14 +3,18 @@
 //! Foundation V0 defines a valid-by-construction formula language, executable
 //! logical axiom constructors, primitive inference-rule identifiers, seven
 //! fixed ZFC axioms, and the Separation and Replacement schemas. It
-//! intentionally does not parse source text, verify complete proofs, admit
-//! definitions, or define canonical bytes.
+//! intentionally does not parse source text, verify complete proofs, or admit
+//! definitions. Its versioned formula codec supports the separate proof
+//! protocol and does not change the abstract Foundation V0 identity.
 
 mod formula;
 mod logic;
 mod zfc;
 
-pub use formula::{Formula, FreeVariable};
+pub use formula::{
+    FORMULA_V0_MAX_BYTES, FORMULA_V0_MAX_DEPTH, FORMULA_V0_MAX_NODES, Formula, FormulaCodecError,
+    FreeVariable,
+};
 pub use logic::{InferenceRule, LogicError, LogicV0};
 pub use zfc::{Replacement, SchemaError, Separation, ZfcAxiom};
 
