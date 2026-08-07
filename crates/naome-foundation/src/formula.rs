@@ -139,7 +139,11 @@ impl Formula {
     /// Returns `true` when the formula contains no free variables.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.free_variables().is_empty()
+        !has_matching_free_variable(&self.0, &|_| true)
+    }
+
+    pub(crate) fn contains_free_variable(&self, variable: FreeVariable) -> bool {
+        has_matching_free_variable(&self.0, &|candidate| candidate == variable)
     }
 
     pub(crate) fn implication_consequent_for(&self, premise: &Self) -> Option<Self> {
@@ -255,6 +259,24 @@ fn collect_free_variables(node: &Node, variables: &mut BTreeSet<FreeVariable>) {
     }
 }
 
+fn has_matching_free_variable(node: &Node, matches: &impl Fn(FreeVariable) -> bool) -> bool {
+    match node {
+        Node::Equal(left, right) | Node::Member(left, right) => {
+            let matches_free = |variable| match variable {
+                Variable::Free(variable) => matches(variable),
+                Variable::Bound(_) => false,
+            };
+
+            matches_free(*left) || matches_free(*right)
+        }
+        Node::Not(formula) | Node::ForAll(formula) => has_matching_free_variable(formula, matches),
+        Node::Implies(antecedent, consequent) => {
+            has_matching_free_variable(antecedent, matches)
+                || has_matching_free_variable(consequent, matches)
+        }
+    }
+}
+
 fn bind_variable(value: Variable, variable: FreeVariable, depth: u32) -> Variable {
     match value {
         Variable::Free(candidate) if candidate == variable => Variable::Bound(depth),
@@ -312,6 +334,18 @@ mod tests {
             )))))
         );
         assert!(formula.is_closed());
+    }
+
+    #[test]
+    fn closure_check_finds_a_free_variable_under_a_binder() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let formula = Formula::for_all(
+            x,
+            Formula::implies(Formula::equal(x, x), Formula::member(y, x)),
+        );
+
+        assert!(!formula.is_closed());
     }
 
     #[test]

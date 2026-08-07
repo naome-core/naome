@@ -76,7 +76,7 @@ impl LogicV0 {
         variable: FreeVariable,
         formula: Formula,
     ) -> Result<Formula, LogicError> {
-        if formula.free_variables().contains(&variable) {
+        if formula.contains_free_variable(variable) {
             return Err(LogicError::VariableMustNotBeFree(variable));
         }
 
@@ -222,6 +222,14 @@ mod tests {
             LogicV0::vacuous_universal(x, body),
             Err(LogicError::VariableMustNotBeFree(x))
         );
+    }
+
+    #[test]
+    fn vacuous_universal_allows_only_bound_occurrences_of_the_variable() {
+        let x = FreeVariable::new(1);
+        let body = Formula::for_all(x, Formula::equal(x, x));
+
+        assert!(LogicV0::vacuous_universal(x, body).is_ok());
     }
 
     #[test]
