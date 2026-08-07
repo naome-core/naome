@@ -6,3 +6,13 @@ description = "A decentralized protocol for formally verified mathematical knowl
 license = "MIT"
 repository = "https://github.com/naome-core/naome"
 publish = false
+
+[workspace]
+members = ["crates/naome-foundation"]
+resolver = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[lints]
+workspace = true
