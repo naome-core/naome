@@ -9,3 +9,7 @@ version = "0.1.0"
 [[package]]
 name = "naome-foundation"
 version = "0.1.0"
+
+[[package]]
+name = "naome-validation"
+version = "0.1.0"

@@ -1,0 +1,11 @@
+[package]
+name = "naome-validation"
+version = "0.1.0"
+edition = "2024"
+description = "Deterministic block-validation orchestration for the NAOME protocol."
+license = "MIT"
+repository = "https://github.com/naome-core/naome"
+publish = false
+
+[lints]
+workspace = true
