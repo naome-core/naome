@@ -107,8 +107,9 @@ impl Formula {
     /// Occurrences of `variable` become De Bruijn references to the newly
     /// introduced binder. Existing bound references retain their binders.
     #[must_use]
-    pub fn for_all(variable: FreeVariable, body: Self) -> Self {
-        Self(Node::ForAll(Box::new(bind_free(body.0, variable, 0))))
+    pub fn for_all(variable: FreeVariable, mut body: Self) -> Self {
+        bind_free(&mut body.0, variable, 0);
+        Self(Node::ForAll(Box::new(body.0)))
     }
 
     /// Existentially quantifies a free variable using `¬∀x¬A`.
@@ -138,6 +139,15 @@ impl Formula {
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.free_variables().is_empty()
+    }
+
+    pub(crate) fn implication_consequent_for(&self, premise: &Self) -> Option<Self> {
+        match &self.0 {
+            Node::Implies(antecedent, consequent) if antecedent.as_ref() == &premise.0 => {
+                Some(Self(consequent.as_ref().clone()))
+            }
+            _ => None,
+        }
     }
 
     #[cfg(test)]
@@ -193,27 +203,23 @@ fn render_variable(variable: Variable, output: &mut String) {
     output.push_str(&identifier.to_string());
 }
 
-fn bind_free(node: Node, variable: FreeVariable, depth: u32) -> Node {
+fn bind_free(node: &mut Node, variable: FreeVariable, depth: u32) {
     match node {
-        Node::Equal(left, right) => Node::Equal(
-            bind_variable(left, variable, depth),
-            bind_variable(right, variable, depth),
-        ),
-        Node::Member(element, set) => Node::Member(
-            bind_variable(element, variable, depth),
-            bind_variable(set, variable, depth),
-        ),
-        Node::Not(formula) => Node::Not(Box::new(bind_free(*formula, variable, depth))),
-        Node::Implies(antecedent, consequent) => Node::Implies(
-            Box::new(bind_free(*antecedent, variable, depth)),
-            Box::new(bind_free(*consequent, variable, depth)),
-        ),
+        Node::Equal(left, right) | Node::Member(left, right) => {
+            *left = bind_variable(*left, variable, depth);
+            *right = bind_variable(*right, variable, depth);
+        }
+        Node::Not(formula) => bind_free(formula, variable, depth),
+        Node::Implies(antecedent, consequent) => {
+            bind_free(antecedent, variable, depth);
+            bind_free(consequent, variable, depth);
+        }
         Node::ForAll(body) => {
             let nested_depth = depth
                 .checked_add(1)
                 .expect("formula nesting exceeds the representable De Bruijn index");
 
-            Node::ForAll(Box::new(bind_free(*body, variable, nested_depth)))
+            bind_free(body, variable, nested_depth);
         }
     }
 }
@@ -281,9 +287,9 @@ mod tests {
     #[should_panic(expected = "formula nesting exceeds the representable De Bruijn index")]
     fn binding_fails_closed_when_de_bruijn_depth_overflows() {
         let x = FreeVariable::new(1);
-        let body = Node::ForAll(Box::new(Node::Equal(Variable::Free(x), Variable::Free(x))));
+        let mut body = Node::ForAll(Box::new(Node::Equal(Variable::Free(x), Variable::Free(x))));
 
-        let _ = bind_free(body, x, u32::MAX);
+        bind_free(&mut body, x, u32::MAX);
     }
 
     #[test]

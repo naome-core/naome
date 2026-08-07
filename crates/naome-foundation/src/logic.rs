@@ -14,7 +14,7 @@ pub enum InferenceRule {
     Generalization,
 }
 
-/// Constructors for instances of the Foundation V0 logical axiom schemas.
+/// Constructs logical axiom instances and applies primitive inference rules.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LogicV0;
 
@@ -113,13 +113,28 @@ impl LogicV0 {
             Formula::implies(body.clone(), body.substitute_free(from, to)),
         )
     }
+
+    /// Derives `B` from `A` and `A → B`.
+    pub fn modus_ponens(premise: &Formula, implication: &Formula) -> Result<Formula, LogicError> {
+        implication
+            .implication_consequent_for(premise)
+            .ok_or(LogicError::ModusPonensMismatch)
+    }
+
+    /// Universally quantifies a selected free variable in an earlier formula.
+    #[must_use]
+    pub fn generalization(variable: FreeVariable, premise: Formula) -> Formula {
+        Formula::for_all(variable, premise)
+    }
 }
 
-/// An invalid logical axiom-schema instantiation.
+/// An invalid logical axiom-schema instantiation or inference-rule application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogicError {
     /// A variable required to be absent occurs free in the formula.
     VariableMustNotBeFree(FreeVariable),
+    /// Modus ponens did not receive matching `A` and `A → B` formulas.
+    ModusPonensMismatch,
 }
 
 impl fmt::Display for LogicError {
@@ -129,6 +144,9 @@ impl fmt::Display for LogicError {
                 formatter,
                 "variable {} must not occur free in this axiom instance",
                 variable.identifier()
+            ),
+            Self::ModusPonensMismatch => formatter.write_str(
+                "modus ponens requires an implication whose antecedent equals the premise",
             ),
         }
     }
@@ -217,5 +235,67 @@ mod tests {
 
         assert!(instance.free_variables().contains(&y));
         assert!(!instance.free_variables().contains(&x));
+    }
+
+    #[test]
+    fn modus_ponens_accepts_alpha_equivalent_antecedents() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let premise = Formula::for_all(x, Formula::equal(x, x));
+        let equal_but_separate_premise = Formula::for_all(y, Formula::equal(y, y));
+        let consequent = Formula::member(x, y);
+        let implication = Formula::implies(equal_but_separate_premise, consequent.clone());
+
+        assert_eq!(
+            LogicV0::modus_ponens(&premise, &implication),
+            Ok(consequent)
+        );
+    }
+
+    #[test]
+    fn modus_ponens_rejects_invalid_inputs() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let premise = Formula::equal(x, x);
+        let non_implication = Formula::member(x, y);
+        let mismatched_implication = Formula::implies(Formula::equal(y, y), Formula::member(x, y));
+
+        for invalid in [&non_implication, &mismatched_implication] {
+            assert_eq!(
+                LogicV0::modus_ponens(&premise, invalid),
+                Err(LogicError::ModusPonensMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn generalization_binds_without_capturing_an_existing_binder() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let z = FreeVariable::new(3);
+        let premise = Formula::for_all(
+            z,
+            Formula::implies(Formula::member(x, z), Formula::equal(y, z)),
+        );
+
+        let generalized = LogicV0::generalization(x, premise);
+
+        assert_eq!(
+            generalized.primitive_structure(),
+            "all(all(imp(mem(b1,b0),eq(f2,b0))))"
+        );
+        assert_eq!(generalized.free_variables().len(), 1);
+        assert!(generalized.free_variables().contains(&y));
+    }
+
+    #[test]
+    fn generalization_allows_a_vacuous_shadowed_variable() {
+        let x = FreeVariable::new(1);
+        let premise = Formula::for_all(x, Formula::equal(x, x));
+
+        let generalized = LogicV0::generalization(x, premise);
+
+        assert_eq!(generalized.primitive_structure(), "all(all(eq(b0,b0)))");
+        assert!(generalized.is_closed());
     }
 }

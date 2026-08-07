@@ -1,7 +1,7 @@
 //! Rust reference implementation of NAOME's immutable Foundation V0 contract.
 //!
 //! Foundation V0 defines a valid-by-construction formula language, executable
-//! logical axiom constructors, primitive inference-rule identifiers, seven
+//! logical axiom constructors and primitive inference rules, seven
 //! fixed ZFC axioms, and the Separation and Replacement schemas. It
 //! intentionally does not parse source text, verify complete proofs, or admit
 //! definitions. Its versioned formula codec supports the separate proof
