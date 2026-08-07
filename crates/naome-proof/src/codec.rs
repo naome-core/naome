@@ -411,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn every_step_variant_has_a_stable_tag_and_round_trips_canonically() {
+    fn every_step_variant_round_trips_canonically() {
         let x = FreeVariable::new(1);
         let y = FreeVariable::new(2);
         let z = FreeVariable::new(3);
@@ -480,16 +480,6 @@ mod tests {
                 variable: x,
             },
         ];
-        let expected_tags = [
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x10, 0x11, 0x12, 0x20, 0x21,
-        ];
-
-        for (step, expected_tag) in steps.iter().zip(expected_tags) {
-            let mut encoded_step = Vec::new();
-            encode_step(step, &mut encoded_step).unwrap();
-            assert_eq!(encoded_step[0], expected_tag);
-        }
-
         let certificate = ProofCertificateV0::new(steps).unwrap();
 
         let encoded = certificate.to_canonical_bytes();
@@ -546,6 +536,12 @@ mod tests {
                 consequent: second.clone(),
             },
             concatenate(&[&[0x03, 0x01, 0x02, 0x03, 0x04], &first_field, &second_field]),
+        );
+        assert_step_bytes(
+            &ProofStepV0::VacuousUniversal {
+                formula: first.clone(),
+            },
+            concatenate(&[&[0x04], &first_field]),
         );
         assert_step_bytes(
             &ProofStepV0::UniversalInstantiation {
