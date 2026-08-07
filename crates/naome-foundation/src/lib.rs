@@ -15,7 +15,7 @@ pub use formula::{
     FORMULA_V0_MAX_BYTES, FORMULA_V0_MAX_DEPTH, FORMULA_V0_MAX_NODES, Formula, FormulaCodecError,
     FreeVariable,
 };
-pub use logic::{InferenceRule, LogicError, LogicV0};
+pub use logic::{LogicError, LogicV0};
 pub use zfc::{Replacement, SchemaError, Separation, ZfcAxiom};
 
 /// The immutable protocol identifier for Foundation V0.

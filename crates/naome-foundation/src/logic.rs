@@ -5,15 +5,6 @@ use std::fmt;
 
 use crate::{Formula, FreeVariable};
 
-/// Identifies a primitive rule for assumption-free Foundation V0 derivations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum InferenceRule {
-    /// Derive `B` from earlier derived formulas `A` and `A → B`.
-    ModusPonens,
-    /// From an earlier derived `A`, bind `x` and derive `∀x A`.
-    Generalization,
-}
-
 /// Constructs logical axiom instances and applies primitive inference rules.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LogicV0;
