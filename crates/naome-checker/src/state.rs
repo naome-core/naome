@@ -53,15 +53,24 @@ impl ProofStateV0 {
                 .derivations
                 .get(existing_derivation_id)
                 .expect("every registered proof has a registered derivation");
-            return if *existing_derivation_id == proof.derivation_id
-                && *existing_statement_id == proof.statement_id
+            if *existing_derivation_id != proof.derivation_id
+                || *existing_statement_id != proof.statement_id
             {
+                return Err(ProofStateError::ProofIdentityCollision {
+                    proof_id: proof.proof_id,
+                });
+            }
+            let existing_statement = self
+                .statements
+                .get(existing_statement_id)
+                .expect("every registered proof has a stored statement");
+            return if existing_statement.conclusion == proof.conclusion {
                 Err(ProofStateError::DuplicateProof {
                     proof_id: proof.proof_id,
                 })
             } else {
-                Err(ProofStateError::ProofIdentityCollision {
-                    proof_id: proof.proof_id,
+                Err(ProofStateError::StatementIdentityCollision {
+                    statement_id: proof.statement_id,
                 })
             };
         }
@@ -77,13 +86,22 @@ impl ProofStateV0 {
         }
 
         if let Some(existing_statement_id) = self.derivations.get(&proof.derivation_id) {
-            return if *existing_statement_id == proof.statement_id {
+            if *existing_statement_id != proof.statement_id {
+                return Err(ProofStateError::DerivationIdentityCollision {
+                    derivation_id: proof.derivation_id,
+                });
+            }
+            let existing_statement = self
+                .statements
+                .get(existing_statement_id)
+                .expect("every registered derivation has a stored statement");
+            return if existing_statement.conclusion == proof.conclusion {
                 Err(ProofStateError::DuplicateDerivation {
                     derivation_id: proof.derivation_id,
                 })
             } else {
-                Err(ProofStateError::DerivationIdentityCollision {
-                    derivation_id: proof.derivation_id,
+                Err(ProofStateError::StatementIdentityCollision {
+                    statement_id: proof.statement_id,
                 })
             };
         }
@@ -152,7 +170,7 @@ pub enum ProofStateError {
     DuplicateProof { proof_id: ProofId },
     /// The selected inference DAG is already registered under another proof.
     DuplicateDerivation { derivation_id: DerivationId },
-    /// One proof digest would identify checked records for different statements.
+    /// One proof digest would identify conflicting checked derivations or statements.
     ProofIdentityCollision { proof_id: ProofId },
     /// One derivation digest would identify checked records for different statements.
     DerivationIdentityCollision { derivation_id: DerivationId },
@@ -263,6 +281,12 @@ mod tests {
         let original_derivation_id = original.derivation_id;
         let mut state = ProofStateV0::new();
         state.register(original).unwrap();
+        let different_conclusion = || {
+            normalize_and_check(certificate(vec![ProofStepV0::ZfcAxiom(
+                naome_foundation::ZfcAxiom::Pairing,
+            )]))
+            .unwrap()
+        };
 
         let mut conflicting_proof = normalize_and_check(certificate(vec![
             ProofStepV0::EqualityReflexivity { variable: x },
@@ -281,6 +305,17 @@ mod tests {
             state.register(conflicting_proof),
             Err(ProofStateError::ProofIdentityCollision {
                 proof_id: original_proof_id,
+            })
+        );
+
+        let mut forged_duplicate = different_conclusion();
+        forged_duplicate.proof_id = original_proof_id;
+        forged_duplicate.derivation_id = original_derivation_id;
+        forged_duplicate.statement_id = original_statement_id;
+        assert_eq!(
+            state.register(forged_duplicate),
+            Err(ProofStateError::StatementIdentityCollision {
+                statement_id: original_statement_id,
             })
         );
 
@@ -313,11 +348,18 @@ mod tests {
             })
         );
 
-        let mut conflicting_derivation =
-            normalize_and_check(certificate(vec![ProofStepV0::ZfcAxiom(
-                naome_foundation::ZfcAxiom::Pairing,
-            )]))
-            .unwrap();
+        let mut forged_derivation = different_conclusion();
+        let forged_derivation_proof_id = forged_derivation.proof_id;
+        forged_derivation.derivation_id = original_derivation_id;
+        forged_derivation.statement_id = original_statement_id;
+        assert_eq!(
+            state.register(forged_derivation),
+            Err(ProofStateError::StatementIdentityCollision {
+                statement_id: original_statement_id,
+            })
+        );
+
+        let mut conflicting_derivation = different_conclusion();
         let conflicting_derivation_proof_id = conflicting_derivation.proof_id;
         conflicting_derivation.derivation_id = original_derivation_id;
         assert_eq!(
@@ -346,6 +388,7 @@ mod tests {
         assert_eq!(state.statements.len(), 1);
         assert!(!state.contains_proof(conflicting_proof_id));
         assert!(!state.contains_proof(duplicate_derivation_proof_id));
+        assert!(!state.contains_proof(forged_derivation_proof_id));
         assert!(!state.contains_proof(conflicting_derivation_proof_id));
     }
 }

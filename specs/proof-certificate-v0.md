@@ -374,8 +374,8 @@ Successful proof admission produces three distinct 32-byte content identities:
 - `ProofId` identifies the concrete checked proof normal form, including its
   chosen citation boundaries and cited `ProofId` values.
 
-Both identities use SHA-256 as specified by FIPS 180-4. They are bound to the
-exact UTF-8 bytes of the immutable Foundation V0 identifier
+All three identities use SHA-256 as specified by FIPS 180-4. They are bound to
+the exact UTF-8 bytes of the immutable Foundation V0 identifier
 `naome:zfc:v0`. This is a protocol-namespace binding, not a hash of Foundation
 source or documentation; Foundation V0 has no canonical content serialization.
 
@@ -465,7 +465,7 @@ derivation artifacts.
 
 An identity is an address, not proof that its content exists or is valid.
 Admission must still perform normalization and mathematical checking before it
-registers either value.
+registers these identities.
 
 ### Content-identity golden vector
 

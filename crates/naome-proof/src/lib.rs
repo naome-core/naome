@@ -25,6 +25,21 @@ pub const CERTIFICATE_V0_MAX_BYTES: usize = 4_194_304;
 /// Maximum number of steps admitted in one V0 proof certificate.
 pub const CERTIFICATE_V0_MAX_STEPS: usize = 65_536;
 
+const SIMPLIFICATION: u8 = 0x00;
+const FREGE: u8 = 0x01;
+const CLASSICAL_CONTRAPOSITION: u8 = 0x02;
+const UNIVERSAL_DISTRIBUTION: u8 = 0x03;
+const VACUOUS_UNIVERSAL: u8 = 0x04;
+const UNIVERSAL_INSTANTIATION: u8 = 0x05;
+const EQUALITY_REFLEXIVITY: u8 = 0x06;
+const EQUALITY_SUBSTITUTION: u8 = 0x07;
+const ZFC_AXIOM: u8 = 0x10;
+const SEPARATION: u8 = 0x11;
+const REPLACEMENT: u8 = 0x12;
+const MODUS_PONENS: u8 = 0x20;
+const GENERALIZATION: u8 = 0x21;
+const PROOF_REFERENCE: u8 = 0x30;
+
 /// A canonically encoded, assumption-free Foundation V0 proof program.
 ///
 /// The final step is the root and claimed conclusion. A certificate may carry
@@ -162,6 +177,27 @@ pub enum ProofStepV0 {
 }
 
 impl ProofStepV0 {
+    /// Returns this step's one-byte canonical V0 wire tag.
+    #[must_use]
+    pub const fn canonical_tag_v0(&self) -> u8 {
+        match self {
+            Self::Simplification { .. } => SIMPLIFICATION,
+            Self::Frege { .. } => FREGE,
+            Self::ClassicalContraposition { .. } => CLASSICAL_CONTRAPOSITION,
+            Self::UniversalDistribution { .. } => UNIVERSAL_DISTRIBUTION,
+            Self::VacuousUniversal { .. } => VACUOUS_UNIVERSAL,
+            Self::UniversalInstantiation { .. } => UNIVERSAL_INSTANTIATION,
+            Self::EqualityReflexivity { .. } => EQUALITY_REFLEXIVITY,
+            Self::EqualitySubstitution { .. } => EQUALITY_SUBSTITUTION,
+            Self::ZfcAxiom(_) => ZFC_AXIOM,
+            Self::Separation(_) => SEPARATION,
+            Self::Replacement(_) => REPLACEMENT,
+            Self::ModusPonens { .. } => MODUS_PONENS,
+            Self::Generalization { .. } => GENERALIZATION,
+            Self::ProofReference { .. } => PROOF_REFERENCE,
+        }
+    }
+
     /// Returns local step references in their rule-role order.
     ///
     /// Modus ponens returns premise then implication. Generalization returns

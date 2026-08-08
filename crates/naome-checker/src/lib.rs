@@ -91,19 +91,26 @@ impl CheckedProofV0 {
 /// checked state. On success, the returned formula is the certificate's closed
 /// conclusion.
 pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
-    check_with_canonical_conclusion(certificate, &ProofStateV0::new())
-        .map(|(conclusion, _, _)| conclusion)
+    check_with_canonical_conclusion(
+        certificate,
+        &ProofStateV0::new(),
+        IdentityMode::OmitDerivation,
+    )
+    .map(|(conclusion, _, _)| conclusion)
 }
 
 fn check_with_canonical_conclusion(
     certificate: &ProofCertificateV0,
     proof_state: &ProofStateV0,
-) -> Result<(Formula, Vec<u8>, DerivationId), CheckError> {
+    identity_mode: IdentityMode,
+) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
     let steps = certificate.steps();
     let final_step = u32::try_from(steps.len() - 1)
         .expect("ProofCertificateV0 is non-empty and has a bounded step count");
     let last_uses = last_uses(steps);
     let mut results: Vec<Option<CheckedStep>> = Vec::with_capacity(steps.len());
+    let mut derivation_ids =
+        matches!(identity_mode, IdentityMode::Derive).then(|| Vec::with_capacity(steps.len()));
     let mut remaining_work = CHECKER_V0_MAX_FORMULA_WORK_BYTES;
     let mut canonical_conclusion = None;
 
@@ -111,12 +118,14 @@ fn check_with_canonical_conclusion(
         let position = u32::try_from(position)
             .expect("ProofCertificateV0 limits make every step index representable");
 
-        let derivation_inputs = derivation_inputs(step, &results);
         let DerivedStep {
             formula,
             precharged_length,
             referenced_derivation_id,
         } = derive_step(position, step, &results, proof_state, &mut remaining_work)?;
+        let derivation_inputs = derivation_ids
+            .as_deref()
+            .map(|derivation_ids| derivation_inputs(step, derivation_ids));
         for reference in step.local_references().into_iter().flatten() {
             let reference = reference as usize;
             if last_uses[reference] == Some(position) {
@@ -126,12 +135,14 @@ fn check_with_canonical_conclusion(
 
         let canonical = (precharged_length.is_none() || position == final_step)
             .then(|| {
-                formula
-                    .encode_free_variable_normalized_v0()
-                    .map_err(|source| CheckError::DerivedFormula {
-                        step: position,
-                        source,
-                    })
+                let canonical = match identity_mode {
+                    IdentityMode::OmitDerivation => formula.encode_canonical_v0(),
+                    IdentityMode::Derive => formula.encode_free_variable_normalized_v0(),
+                };
+                canonical.map_err(|source| CheckError::DerivedFormula {
+                    step: position,
+                    source,
+                })
             })
             .transpose()?;
         let canonical_length = match precharged_length {
@@ -145,15 +156,18 @@ fn check_with_canonical_conclusion(
                 length
             }
         };
-        let derivation_id = referenced_derivation_id.unwrap_or_else(|| {
-            derivation_id(
-                step,
-                canonical
-                    .as_deref()
-                    .expect("every local derivation node has canonical result bytes"),
-                derivation_inputs,
-            )
-        });
+        if let Some(derivation_ids) = &mut derivation_ids {
+            let derivation_id = referenced_derivation_id.unwrap_or_else(|| {
+                derivation_id(
+                    step,
+                    canonical
+                        .as_deref()
+                        .expect("every local derivation node has canonical result bytes"),
+                    derivation_inputs.expect("derivation mode collects parent identities"),
+                )
+            });
+            derivation_ids.push(derivation_id);
+        }
         if position == final_step {
             canonical_conclusion = canonical;
         }
@@ -161,14 +175,12 @@ fn check_with_canonical_conclusion(
         results.push(retain.then_some(CheckedStep {
             formula,
             canonical_length,
-            derivation_id,
         }));
     }
 
     let CheckedStep {
         formula: conclusion,
         canonical_length,
-        derivation_id,
     } = results
         .pop()
         .flatten()
@@ -182,8 +194,14 @@ fn check_with_canonical_conclusion(
     Ok((
         conclusion,
         canonical_conclusion.expect("the final step always has a canonical encoding"),
-        derivation_id,
+        derivation_ids.and_then(|derivation_ids| derivation_ids.last().copied()),
     ))
+}
+
+#[derive(Clone, Copy)]
+enum IdentityMode {
+    OmitDerivation,
+    Derive,
 }
 
 /// Normalizes one certificate and checks its canonical proof exactly once.
@@ -208,8 +226,13 @@ pub fn normalize_and_check_with_state(
     proof_state: &ProofStateV0,
 ) -> Result<CheckedProofV0, CheckError> {
     let normal_form = certificate.into_unchecked_normal_form();
-    let (conclusion, canonical_conclusion, derivation_id) =
-        check_with_canonical_conclusion(normal_form.certificate(), proof_state)?;
+    let (conclusion, canonical_conclusion, derivation_id) = check_with_canonical_conclusion(
+        normal_form.certificate(),
+        proof_state,
+        IdentityMode::Derive,
+    )?;
+    let derivation_id =
+        derivation_id.expect("derivation mode computes the final derivation identity");
     let canonical_conclusion_length = canonical_conclusion.len();
     let statement_id = statement_id(&canonical_conclusion);
     drop(canonical_conclusion);
@@ -232,33 +255,12 @@ fn derivation_id(
     let mut hasher = Sha256::new();
     hasher.update(DERIVATION_NODE_ID_V0_DOMAIN);
     update_framed(&mut hasher, FOUNDATION_ID.as_bytes());
-    hasher.update([derivation_rule_tag(step)]);
+    hasher.update([step.canonical_tag_v0()]);
     update_framed(&mut hasher, canonical_result);
     for input in inputs.into_iter().flatten() {
         hasher.update(input.as_bytes());
     }
     DerivationId::from_bytes(hasher.finalize().into())
-}
-
-fn derivation_rule_tag(step: &ProofStepV0) -> u8 {
-    match step {
-        ProofStepV0::Simplification { .. } => 0x00,
-        ProofStepV0::Frege { .. } => 0x01,
-        ProofStepV0::ClassicalContraposition { .. } => 0x02,
-        ProofStepV0::UniversalDistribution { .. } => 0x03,
-        ProofStepV0::VacuousUniversal { .. } => 0x04,
-        ProofStepV0::UniversalInstantiation { .. } => 0x05,
-        ProofStepV0::EqualityReflexivity { .. } => 0x06,
-        ProofStepV0::EqualitySubstitution { .. } => 0x07,
-        ProofStepV0::ZfcAxiom(_) => 0x10,
-        ProofStepV0::Separation(_) => 0x11,
-        ProofStepV0::Replacement(_) => 0x12,
-        ProofStepV0::ModusPonens { .. } => 0x20,
-        ProofStepV0::Generalization { .. } => 0x21,
-        ProofStepV0::ProofReference { .. } => {
-            unreachable!("proof references reuse the referenced derivation root")
-        }
-    }
 }
 
 fn statement_id(canonical_conclusion: &[u8]) -> StatementId {
@@ -422,15 +424,14 @@ struct DerivedStep {
 struct CheckedStep {
     formula: Formula,
     canonical_length: usize,
-    derivation_id: DerivationId,
 }
 
 fn derivation_inputs(
     step: &ProofStepV0,
-    results: &[Option<CheckedStep>],
+    derivation_ids: &[DerivationId],
 ) -> [Option<DerivationId>; 2] {
     step.local_references()
-        .map(|reference| reference.map(|reference| result(results, reference).derivation_id))
+        .map(|reference| reference.map(|reference| derivation_ids[reference as usize]))
 }
 
 fn result(results: &[Option<CheckedStep>], reference: u32) -> &CheckedStep {
@@ -543,7 +544,7 @@ mod tests {
     use naome_proof::{CERTIFICATE_V0_MAX_STEPS, ProofCertificateV0, ProofId, ProofStepV0};
 
     use super::{
-        CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, ProofStateError, ProofStateV0,
+        CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, IdentityMode, ProofStateError, ProofStateV0,
         charge_formula_work, check, check_with_canonical_conclusion, last_uses,
         normalize_and_check, normalize_and_check_with_state,
     };
@@ -1863,7 +1864,11 @@ mod tests {
         assert!(used + referenced_length > CHECKER_V0_MAX_FORMULA_WORK_BYTES);
         assert!(steps.len() < CERTIFICATE_V0_MAX_STEPS);
         assert_eq!(
-            check_with_canonical_conclusion(&certificate(steps), &state),
+            check_with_canonical_conclusion(
+                &certificate(steps),
+                &state,
+                IdentityMode::OmitDerivation,
+            ),
             Err(CheckError::FormulaWorkLimitExceeded {
                 step: expected_step,
                 actual: used + referenced_length,
