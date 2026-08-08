@@ -14,7 +14,9 @@ use naome_checker::{
     CheckError, ProofStateError, ProofStateV0, check_normal_form_with_state,
     normalize_and_check_with_state,
 };
-use naome_proof::{DerivationId, ProofCertificateError, ProofCertificateV0, ProofId, StatementId};
+use naome_proof::{
+    DerivationId, ProofCertificateError, ProofCertificateV0, ProofId, ProofStepV0, StatementId,
+};
 
 /// The novelty of an accepted proof's closed statement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,17 +27,33 @@ pub enum StatementNoveltyV0 {
     Existing,
 }
 
-/// The content identities and statement novelty produced by one state update.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The immutable proof payload and metadata produced by one accepted transition.
+///
+/// The canonical bytes and identities describe the accepted proof itself.
+/// Statement novelty is contextual receipt metadata relative to the selected
+/// pre-transition state; it is not part of any content identity.
+#[derive(PartialEq, Eq)]
 #[must_use]
-pub struct AppliedProofV0 {
+pub struct AcceptedProofRecordV0 {
+    canonical_proof_bytes: Box<[u8]>,
+    direct_dependencies: Box<[ProofId]>,
     proof_id: ProofId,
     derivation_id: DerivationId,
     statement_id: StatementId,
     statement_novelty: StatementNoveltyV0,
 }
 
-impl AppliedProofV0 {
+impl AcceptedProofRecordV0 {
+    /// Returns the exact canonical proof-certificate payload that was accepted.
+    pub const fn canonical_proof_bytes(&self) -> &[u8] {
+        &self.canonical_proof_bytes
+    }
+
+    /// Returns the directly cited proof identities in canonical step order.
+    pub const fn direct_dependencies(&self) -> &[ProofId] {
+        &self.direct_dependencies
+    }
+
     /// Returns the concrete checked proof identity.
     pub const fn proof_id(&self) -> ProofId {
         self.proof_id
@@ -54,6 +72,23 @@ impl AppliedProofV0 {
     /// Returns whether this transition introduced the statement.
     pub const fn statement_novelty(&self) -> StatementNoveltyV0 {
         self.statement_novelty
+    }
+}
+
+impl fmt::Debug for AcceptedProofRecordV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AcceptedProofRecordV0")
+            .field(
+                "canonical_proof_bytes_len",
+                &self.canonical_proof_bytes.len(),
+            )
+            .field("direct_dependencies_len", &self.direct_dependencies.len())
+            .field("proof_id", &self.proof_id)
+            .field("derivation_id", &self.derivation_id)
+            .field("statement_id", &self.statement_id)
+            .field("statement_novelty", &self.statement_novelty)
+            .finish()
     }
 }
 
@@ -103,7 +138,7 @@ impl LedgerStateV0 {
     pub fn apply(
         &mut self,
         certificate: ProofCertificateV0,
-    ) -> Result<AppliedProofV0, LedgerError> {
+    ) -> Result<AcceptedProofRecordV0, LedgerError> {
         let checked = normalize_and_check_with_state(certificate, &self.proof_state)
             .map_err(|source| LedgerError::Check { source })?;
         self.register_checked(checked)
@@ -113,18 +148,19 @@ impl LedgerStateV0 {
     ///
     /// The complete input must already equal its canonical root-proof normal
     /// form. A structurally valid but non-canonical submission is rejected
-    /// rather than silently rewritten. External references resolve only from
-    /// the state that existed before this call.
+    /// rather than silently rewritten. Once exact equality is established, the
+    /// submitted bytes become the accepted record payload. External references
+    /// resolve only from the state that existed before this call.
     pub fn apply_canonical_proof_bytes(
         &mut self,
-        bytes: &[u8],
-    ) -> Result<AppliedProofV0, LedgerError> {
-        let certificate = ProofCertificateV0::from_canonical_bytes(bytes)
+        bytes: Vec<u8>,
+    ) -> Result<AcceptedProofRecordV0, LedgerError> {
+        let certificate = ProofCertificateV0::from_canonical_bytes(&bytes)
             .map_err(|source| LedgerError::Decode { source })?;
-        let normal_form = certificate.into_unchecked_normal_form();
-        if normal_form.certificate().to_canonical_bytes() != bytes {
-            return Err(LedgerError::NonCanonicalProof);
-        }
+        let normal_form = certificate
+            .into_unchecked_normal_form()
+            .with_matching_canonical_bytes(bytes.into_boxed_slice())
+            .ok_or(LedgerError::NonCanonicalProof)?;
         let checked = check_normal_form_with_state(normal_form, &self.proof_state)
             .map_err(|source| LedgerError::Check { source })?;
         self.register_checked(checked)
@@ -133,23 +169,39 @@ impl LedgerStateV0 {
     fn register_checked(
         &mut self,
         checked: naome_checker::CheckedProofV0,
-    ) -> Result<AppliedProofV0, LedgerError> {
+    ) -> Result<AcceptedProofRecordV0, LedgerError> {
         let statement_novelty = if self.proof_state.contains_statement(checked.statement_id()) {
             StatementNoveltyV0::Existing
         } else {
             StatementNoveltyV0::New
         };
-        let applied = AppliedProofV0 {
-            proof_id: checked.proof_id(),
-            derivation_id: checked.derivation_id(),
-            statement_id: checked.statement_id(),
-            statement_novelty,
-        };
-        self.proof_state
+        let proof_id = checked.proof_id();
+        let derivation_id = checked.derivation_id();
+        let statement_id = checked.statement_id();
+        let steps = checked.normal_form().certificate().steps();
+        let dependency_count = steps
+            .iter()
+            .filter(|step| matches!(step, ProofStepV0::ProofReference { .. }))
+            .count();
+        let mut direct_dependencies = Vec::with_capacity(dependency_count);
+        for step in steps {
+            if let ProofStepV0::ProofReference { proof_id } = step {
+                direct_dependencies.push(*proof_id);
+            }
+        }
+        let canonical_proof_bytes = self
+            .proof_state
             .register(checked)
             .map_err(|source| LedgerError::State { source })?;
 
-        Ok(applied)
+        Ok(AcceptedProofRecordV0 {
+            canonical_proof_bytes,
+            direct_dependencies: direct_dependencies.into_boxed_slice(),
+            proof_id,
+            derivation_id,
+            statement_id,
+            statement_novelty,
+        })
     }
 }
 
@@ -293,8 +345,8 @@ mod tests {
     fn canonical_bytes(certificate: ProofCertificateV0) -> Vec<u8> {
         certificate
             .into_unchecked_normal_form()
-            .certificate()
-            .to_canonical_bytes()
+            .into_canonical_bytes()
+            .into_vec()
     }
 
     fn reordered_identity_detour(variable: FreeVariable) -> ProofCertificateV0 {
@@ -362,14 +414,16 @@ mod tests {
         let variable = FreeVariable::new(42);
         let bytes = canonical_bytes(identity(variable));
         let mut strict = LedgerStateV0::new();
-        let strict_applied = strict.apply_canonical_proof_bytes(&bytes).unwrap();
+        let strict_applied = strict.apply_canonical_proof_bytes(bytes.clone()).unwrap();
 
         let mut authoring = LedgerStateV0::new();
         let authoring_applied = authoring.apply(identity(variable)).unwrap();
         assert_eq!(strict_applied, authoring_applied);
+        assert_eq!(strict_applied.canonical_proof_bytes(), bytes);
+        assert!(strict_applied.direct_dependencies().is_empty());
         assert_eq!(strict_applied.statement_novelty(), StatementNoveltyV0::New);
         assert_eq!(
-            strict.apply_canonical_proof_bytes(&bytes),
+            strict.apply_canonical_proof_bytes(bytes),
             Err(LedgerError::State {
                 source: ProofStateError::DuplicateProof {
                     proof_id: strict_applied.proof_id(),
@@ -426,12 +480,12 @@ mod tests {
 
             let mut ledger = LedgerStateV0::new();
             assert_eq!(
-                ledger.apply_canonical_proof_bytes(&submitted),
+                ledger.apply_canonical_proof_bytes(submitted),
                 Err(LedgerError::NonCanonicalProof),
                 "{name}"
             );
             let applied = ledger
-                .apply_canonical_proof_bytes(&canonical)
+                .apply_canonical_proof_bytes(canonical)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(applied.statement_novelty(), StatementNoveltyV0::New);
         }
@@ -460,13 +514,15 @@ mod tests {
 
         let mut ledger = LedgerStateV0::new();
         for (bytes, source) in cases {
-            let error = ledger.apply_canonical_proof_bytes(bytes).unwrap_err();
+            let error = ledger
+                .apply_canonical_proof_bytes(bytes.to_vec())
+                .unwrap_err();
             assert_eq!(error, LedgerError::Decode { source });
             assert!(error.source().is_some());
         }
         assert_eq!(
             ledger
-                .apply_canonical_proof_bytes(&valid)
+                .apply_canonical_proof_bytes(valid)
                 .unwrap()
                 .statement_novelty(),
             StatementNoveltyV0::New
@@ -492,11 +548,11 @@ mod tests {
         let mut ledger = LedgerStateV0::new();
 
         assert_eq!(
-            ledger.apply_canonical_proof_bytes(&submitted.to_canonical_bytes()),
+            ledger.apply_canonical_proof_bytes(submitted.to_canonical_bytes()),
             Err(LedgerError::NonCanonicalProof)
         );
         assert_eq!(
-            ledger.apply_canonical_proof_bytes(&canonical),
+            ledger.apply_canonical_proof_bytes(canonical),
             Err(LedgerError::Check {
                 source: CheckError::UnknownProofReference {
                     step: 0,
@@ -505,7 +561,7 @@ mod tests {
             })
         );
         assert_eq!(
-            ledger.apply_canonical_proof_bytes(&invalid_inference),
+            ledger.apply_canonical_proof_bytes(invalid_inference),
             Err(LedgerError::Check {
                 source: CheckError::Logic {
                     step: 2,
@@ -542,10 +598,10 @@ mod tests {
         let mut ledger = LedgerStateV0::new();
 
         for (bytes, _, _) in &parents[..parents.len() - 1] {
-            let _ = ledger.apply_canonical_proof_bytes(bytes).unwrap();
+            let _ = ledger.apply_canonical_proof_bytes(bytes.clone()).unwrap();
         }
         assert_eq!(
-            ledger.apply_canonical_proof_bytes(&target_bytes),
+            ledger.apply_canonical_proof_bytes(target_bytes.clone()),
             Err(LedgerError::Check {
                 source: CheckError::UnknownProofReference {
                     step: 4,
@@ -554,10 +610,93 @@ mod tests {
             })
         );
 
-        let _ = ledger.apply_canonical_proof_bytes(&parents[4].0).unwrap();
-        let applied = ledger.apply_canonical_proof_bytes(&target_bytes).unwrap();
+        let _ = ledger
+            .apply_canonical_proof_bytes(parents[4].0.clone())
+            .unwrap();
+        let applied = ledger
+            .apply_canonical_proof_bytes(target_bytes.clone())
+            .unwrap();
         assert_eq!(applied.statement_novelty(), StatementNoveltyV0::New);
+        assert_eq!(applied.canonical_proof_bytes(), target_bytes);
+        assert_eq!(
+            applied.direct_dependencies(),
+            parents
+                .iter()
+                .map(|(_, proof_id, _)| *proof_id)
+                .collect::<Vec<_>>()
+        );
         assert!(ledger.contains_proof(applied.proof_id()));
+    }
+
+    #[test]
+    fn records_keep_only_unique_direct_dependencies_and_replay_in_dependency_order() {
+        let source_proof = certificate(vec![ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing)]);
+        let source_bytes = canonical_bytes(source_proof);
+        let mut original = LedgerStateV0::new();
+        let source = original.apply_canonical_proof_bytes(source_bytes).unwrap();
+        let repeated = vec![
+            (source.proof_id(), ZfcAxiom::Pairing.formula()),
+            (source.proof_id(), ZfcAxiom::Pairing.formula()),
+        ];
+        let child_bytes = canonical_bytes(proof_using_every_reference(&repeated, ZfcAxiom::Choice));
+        let child = original.apply_canonical_proof_bytes(child_bytes).unwrap();
+        assert_eq!(child.direct_dependencies(), [source.proof_id()]);
+
+        let grandchild_bytes = canonical_bytes(proof_using_every_reference(
+            &[(child.proof_id(), ZfcAxiom::Choice.formula())],
+            ZfcAxiom::Infinity,
+        ));
+        let grandchild = original
+            .apply_canonical_proof_bytes(grandchild_bytes)
+            .unwrap();
+        assert_eq!(grandchild.direct_dependencies(), [child.proof_id()]);
+        assert!(
+            !grandchild
+                .direct_dependencies()
+                .contains(&source.proof_id())
+        );
+
+        let mut replay = LedgerStateV0::new();
+        assert_eq!(
+            replay.apply_canonical_proof_bytes(child.canonical_proof_bytes().to_vec()),
+            Err(LedgerError::Check {
+                source: CheckError::UnknownProofReference {
+                    step: 0,
+                    proof_id: source.proof_id(),
+                },
+            })
+        );
+        let replayed_source = replay
+            .apply_canonical_proof_bytes(source.canonical_proof_bytes().to_vec())
+            .unwrap();
+        let replayed_child = replay
+            .apply_canonical_proof_bytes(child.canonical_proof_bytes().to_vec())
+            .unwrap();
+        let replayed_grandchild = replay
+            .apply_canonical_proof_bytes(grandchild.canonical_proof_bytes().to_vec())
+            .unwrap();
+        assert_eq!(replayed_source, source);
+        assert_eq!(replayed_child, child);
+        assert_eq!(replayed_grandchild, grandchild);
+    }
+
+    #[test]
+    fn authoring_record_excludes_unreachable_unknown_dependencies() {
+        let missing = ProofId::from_bytes([0x77; 32]);
+        let expected_bytes =
+            canonical_bytes(certificate(vec![ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing)]));
+        let candidate = certificate(vec![
+            ProofStepV0::ProofReference { proof_id: missing },
+            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
+        ]);
+        let mut ledger = LedgerStateV0::new();
+
+        let record = ledger.apply(candidate).unwrap();
+
+        assert_eq!(record.canonical_proof_bytes(), expected_bytes);
+        assert!(record.direct_dependencies().is_empty());
+        assert!(!ledger.contains_proof(missing));
+        assert!(ledger.contains_proof(record.proof_id()));
     }
 
     #[test]
@@ -578,6 +717,33 @@ mod tests {
         assert_eq!(detour.statement_novelty(), StatementNoveltyV0::Existing);
         assert!(ledger.contains_proof(detour.proof_id()));
         assert!(ledger.contains_derivation(detour.derivation_id()));
+    }
+
+    #[test]
+    fn statement_novelty_is_recomputed_from_each_selected_state() {
+        let variable = FreeVariable::new(7);
+        let direct_bytes = canonical_bytes(identity(variable));
+
+        let mut absent = LedgerStateV0::new();
+        let new = absent
+            .apply_canonical_proof_bytes(direct_bytes.clone())
+            .unwrap();
+
+        let mut present = LedgerStateV0::new();
+        let detour = present.apply(identity_detour(variable)).unwrap();
+        let existing = present.apply_canonical_proof_bytes(direct_bytes).unwrap();
+
+        assert_eq!(new.statement_novelty(), StatementNoveltyV0::New);
+        assert_eq!(existing.statement_novelty(), StatementNoveltyV0::Existing);
+        assert_eq!(existing.statement_id(), detour.statement_id());
+        assert_eq!(
+            new.canonical_proof_bytes(),
+            existing.canonical_proof_bytes()
+        );
+        assert_eq!(new.direct_dependencies(), existing.direct_dependencies());
+        assert_eq!(new.proof_id(), existing.proof_id());
+        assert_eq!(new.derivation_id(), existing.derivation_id());
+        assert_eq!(new.statement_id(), existing.statement_id());
     }
 
     #[test]

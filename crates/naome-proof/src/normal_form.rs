@@ -381,16 +381,19 @@ mod tests {
         let normal = certificate.into_unchecked_normal_form();
 
         assert_eq!(normal.certificate().steps().len(), 2);
-        assert!(normal.certificate().to_canonical_bytes().len() < original_bytes);
+        assert!(normal.canonical_bytes().len() < original_bytes);
+        assert_eq!(
+            normal.canonical_bytes(),
+            normal.certificate().to_canonical_bytes()
+        );
 
-        let first_bytes = normal.certificate().to_canonical_bytes();
+        let first_bytes = normal.canonical_bytes().to_vec();
         let second_bytes = normal
             .certificate()
             .clone()
             .into_unchecked_normal_form()
-            .certificate()
-            .to_canonical_bytes();
-        assert_eq!(second_bytes, first_bytes);
+            .into_canonical_bytes();
+        assert_eq!(second_bytes.as_ref(), first_bytes);
     }
 
     #[test]

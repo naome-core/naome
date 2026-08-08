@@ -39,7 +39,9 @@ pre-transition state, Ledger V0 applies this order:
 4. classify the statement as `New` when its `StatementId` is absent from the
    pre-transition state, otherwise as `Existing`;
 5. register the checked proof without replacing any existing state; and
-6. return the three identities and the statement classification.
+6. return an immutable accepted-proof record containing the canonical proof
+   payload, its direct proof dependencies, the three identities, and the
+   statement classification.
 
 The candidate proof is not visible during step 2. A reference succeeds if and
 only if its exact `ProofId` is present in the unchanged pre-transition state.
@@ -56,9 +58,11 @@ order:
    wire encoding;
 2. derive its canonical root-proof normal form;
 3. require the submitted bytes to equal the encoded normal form exactly;
-4. mathematically check that normal form exactly once against the unchanged
+4. retain the submitted bytes as the normal-form payload only after that
+   exact equality has been established;
+5. mathematically check that normal form exactly once against the unchanged
    pre-transition state; and
-5. classify and atomically register the checked proof through the same state
+6. classify and atomically register the checked proof through the same state
    transition described above.
 
 Structural decoding errors precede canonicality, checking, and registration
@@ -69,6 +73,41 @@ precede state-registration errors. Every failure leaves the state unchanged.
 The owned-certificate authoring path continues to normalize its input before
 checking. It must not be used as a substitute for the strict external-byte
 boundary.
+
+## Accepted proof record
+
+Every successful transition returns one `AcceptedProofRecordV0`. Its intrinsic
+proof content consists of:
+
+- the exact canonical root-proof-normal-form certificate bytes;
+- the checked `ProofId`, `DerivationId`, and `StatementId`; and
+- every directly cited `ProofId`, exactly once, in canonical normal-form step
+  order.
+
+Direct dependencies are derived only from root-reachable `ProofReference`
+leaves in the checked normal form. They do not include local inference-step
+indices or transitive dependencies. Exact duplicate reference leaves have
+already been interned by normalization. The dependency order is deterministic
+but has no additional priority or execution meaning.
+
+Because every direct dependency must already belong to the unchanged
+pre-transition state, records accepted through any valid transition sequence
+form an acyclic proof-dependency graph. This graph describes mathematical
+proof reuse only. It does not define consensus order, fork choice, snapshot
+selection, or the topology of a future block protocol.
+
+The record has no public constructor, and neither its bytes nor dependencies
+are mutable. It is a transition result and proof-payload record, not a block
+envelope, proof-state snapshot, persistence format, or evidence of consensus
+inclusion. Replaying or importing its bytes must execute strict canonical byte
+admission again; the redundant identities and dependency index must be derived
+again rather than trusted.
+
+`StatementNoveltyV0` is contextual receipt metadata, not intrinsic content. It
+is relative to the selected pre-transition state, is not committed by any of
+the three identities, and must be recomputed on replay. The same canonical
+proof payload can therefore produce `New` in one valid state and `Existing` in
+another.
 
 ## Statement novelty
 
@@ -108,9 +147,10 @@ against an immutable accepted proof-state snapshot selected by the future
 consensus protocol. A proof merely received from the network, or otherwise
 absent from that selected state, is unavailable to resolve a reference.
 
-The block topology and the rule that selects or combines accepted proof-state
-snapshots remain outside this V0 contract. This includes whether proof blocks
-form a linear history or a DAG.
+The consensus topology and the rule that selects or combines accepted
+proof-state snapshots remain outside this V0 contract. This includes whether
+proof blocks form a linear history or a DAG; either choice remains separate
+from the already-defined acyclic proof-dependency graph.
 
 The future block validation transition must pass its single submitted proof
 payload through the strict canonical byte admission defined above. Ledger V0

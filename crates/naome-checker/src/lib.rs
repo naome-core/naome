@@ -285,11 +285,10 @@ fn statement_id(canonical_conclusion: &[u8]) -> StatementId {
 }
 
 fn proof_id(statement_id: StatementId, normal_form: &ProofNormalFormV0) -> ProofId {
-    let canonical = normal_form.certificate().to_canonical_bytes();
     ProofId::from_bytes(foundation_scoped_hash(
         PROOF_ID_V0_DOMAIN,
         statement_id.as_bytes(),
-        &canonical,
+        normal_form.canonical_bytes(),
     ))
 }
 
