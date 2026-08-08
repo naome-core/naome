@@ -7,8 +7,8 @@ assumption-free derivations relative to NAOME Foundation V0. It is a prerelease
 protocol contract and may change before the first stable protocol release.
 
 A structurally valid certificate is not necessarily a mathematically valid
-proof. The later checker must reconstruct every step, enforce all axiom-schema
-side conditions and inference rules, and require a closed final formula.
+proof. The checker reconstructs every step, enforces all axiom-schema
+side conditions and inference rules, and requires a closed final formula.
 
 External proof references, definitions, hashes, statement identity, blocks,
 chain state, rewards, and human-readable `.nao` syntax are outside V0.
@@ -112,10 +112,10 @@ No result formula is stored beside a step. The checker reconstructs it from the
 step tag, its payload, and earlier results. This prevents a certificate from
 carrying separate claimed and derived versions of the same line.
 
-Q2 does not encode the quantified variable. Every finite formula leaves a free
-variable identifier available that does not occur in it, and every such choice
-produces the same nameless vacuous binder. The checker therefore reconstructs
-one canonical formula without admitting redundant certificate bytes.
+Q2 does not encode a quantified-variable identifier. In the locally nameless
+Formula V0 representation, the checker constructs the nameless vacuous binder
+directly. This satisfies the abstract fresh-variable side condition without
+admitting redundant certificate bytes.
 
 ## Structural decoding
 
@@ -138,6 +138,48 @@ steps remain permitted because they do not make an encoding ambiguous.
 The decoder does not check logical-axiom side conditions, ZFC schema side
 conditions, modus ponens, generalization, or closure of the conclusion. Those
 are mathematical-checker responsibilities.
+
+## Mathematical checking
+
+Checker V0 accepts a structurally valid certificate exactly when deterministic
+execution of every step succeeds and the final result is closed. It processes
+all steps in encoded order, including duplicate or unused steps. The first
+failure in that order rejects the certificate and identifies the zero-based
+step index.
+
+Each step is reconstructed only through the corresponding Foundation V0
+operation:
+
+- L1 through L3, Q1, Q3, E1, and E2 instantiate their logical axioms;
+- Q2 constructs nameless vacuous universal quantification directly; no variable
+  identifier is selected or encoded;
+- fixed ZFC steps expand their selected axiom;
+- Separation and Replacement validate their schema side conditions before
+  expansion;
+- modus ponens consumes its referenced premise and implication; and
+- generalization universally quantifies its referenced premise.
+
+Every reconstructed result must satisfy the Formula V0 depth, node, and byte
+limits before it can be referenced. A Separation or Replacement step with at
+least 256 declared parameters is rejected with the Formula V0 depth-limit error
+before schema expansion because those parameter binders alone cannot fit the
+formula depth limit.
+
+Checker V0 admits at most 4,194,304 bytes of cumulative canonical formula work.
+The checker charges:
+
+- the canonical lengths of both referenced operands before modus ponens;
+- the canonical length of the referenced premise before generalization;
+- the canonical length of every reconstructed result; and
+- the conclusion length once more before checking closure.
+
+An operation is rejected before execution when its operand charge would exceed
+the remaining budget. Derived-formula codec errors take precedence over the
+result charge. The final closure traversal is budgeted before the conclusion is
+classified as open or closed.
+
+The last reconstructed formula is returned only when it contains no free
+variables. Checker V0 never inserts implicit universal quantifiers.
 
 ## Golden certificate
 

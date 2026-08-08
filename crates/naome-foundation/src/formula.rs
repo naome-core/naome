@@ -6,7 +6,7 @@ pub use canonical_v0::{
     FORMULA_V0_MAX_BYTES, FORMULA_V0_MAX_DEPTH, FORMULA_V0_MAX_NODES, FormulaCodecError,
 };
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Identifies a free object-language variable.
 ///
@@ -108,8 +108,30 @@ impl Formula {
     /// introduced binder. Existing bound references retain their binders.
     #[must_use]
     pub fn for_all(variable: FreeVariable, mut body: Self) -> Self {
-        bind_free(&mut body.0, variable, 0);
+        bind_free(&mut body.0, 0, &|candidate| {
+            (candidate == variable).then_some(0)
+        });
         Self(Node::ForAll(Box::new(body.0)))
+    }
+
+    pub(crate) fn for_all_many(variables: &[FreeVariable], mut body: Self) -> Self {
+        if variables.is_empty() {
+            return body;
+        }
+
+        let binder_count = u32::try_from(variables.len())
+            .expect("the number of binders must fit a De Bruijn index");
+        let mut binders = BTreeMap::new();
+        for (position, variable) in variables.iter().enumerate() {
+            let position = u32::try_from(position).expect("the binder count was checked above");
+            binders.insert(*variable, binder_count - position - 1);
+        }
+
+        bind_free(&mut body.0, 0, &|variable| binders.get(&variable).copied());
+        for _ in variables {
+            body = Self(Node::ForAll(Box::new(body.0)));
+        }
+        body
     }
 
     /// Existentially quantifies a free variable using `¬∀x¬A`.
@@ -144,10 +166,6 @@ impl Formula {
     #[must_use]
     pub fn is_closed(&self) -> bool {
         !has_matching_free_variable(&self.0, &|_| true)
-    }
-
-    pub(crate) fn contains_free_variable(&self, variable: FreeVariable) -> bool {
-        has_matching_free_variable(&self.0, &|candidate| candidate == variable)
     }
 
     pub(crate) fn vacuous_for_all(body: Self) -> Self {
@@ -216,23 +234,23 @@ fn render_variable(variable: Variable, output: &mut String) {
     output.push_str(&identifier.to_string());
 }
 
-fn bind_free(node: &mut Node, variable: FreeVariable, depth: u32) {
+fn bind_free(node: &mut Node, depth: u32, binding_index: &impl Fn(FreeVariable) -> Option<u32>) {
     match node {
         Node::Equal(left, right) | Node::Member(left, right) => {
-            *left = bind_variable(*left, variable, depth);
-            *right = bind_variable(*right, variable, depth);
+            *left = bind_variable(*left, depth, binding_index);
+            *right = bind_variable(*right, depth, binding_index);
         }
-        Node::Not(formula) => bind_free(formula, variable, depth),
+        Node::Not(formula) => bind_free(formula, depth, binding_index),
         Node::Implies(antecedent, consequent) => {
-            bind_free(antecedent, variable, depth);
-            bind_free(consequent, variable, depth);
+            bind_free(antecedent, depth, binding_index);
+            bind_free(consequent, depth, binding_index);
         }
         Node::ForAll(body) => {
             let nested_depth = depth
                 .checked_add(1)
                 .expect("formula nesting exceeds the representable De Bruijn index");
 
-            bind_free(body, variable, nested_depth);
+            bind_free(body, nested_depth, binding_index);
         }
     }
 }
@@ -285,9 +303,17 @@ fn has_matching_free_variable(node: &Node, matches: &impl Fn(FreeVariable) -> bo
     }
 }
 
-fn bind_variable(value: Variable, variable: FreeVariable, depth: u32) -> Variable {
+fn bind_variable(
+    value: Variable,
+    depth: u32,
+    binding_index: &impl Fn(FreeVariable) -> Option<u32>,
+) -> Variable {
     match value {
-        Variable::Free(candidate) if candidate == variable => Variable::Bound(depth),
+        Variable::Free(variable) if let Some(index) = binding_index(variable) => Variable::Bound(
+            index
+                .checked_add(depth)
+                .expect("formula nesting exceeds the representable De Bruijn index"),
+        ),
         _ => value,
     }
 }
@@ -315,7 +341,9 @@ mod tests {
         let x = FreeVariable::new(1);
         let mut body = Node::ForAll(Box::new(Node::Equal(Variable::Free(x), Variable::Free(x))));
 
-        bind_free(&mut body, x, u32::MAX);
+        bind_free(&mut body, u32::MAX, &|candidate| {
+            (candidate == x).then_some(0)
+        });
     }
 
     #[test]
@@ -342,6 +370,26 @@ mod tests {
             )))))
         );
         assert!(formula.is_closed());
+    }
+
+    #[test]
+    fn multiple_binders_match_repeated_binding_with_nesting_and_duplicates() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let z = FreeVariable::new(3);
+        let variables = [x, y, x];
+        let body = Formula::for_all(
+            z,
+            Formula::implies(Formula::member(x, z), Formula::equal(y, x)),
+        );
+        let expected = variables
+            .iter()
+            .rev()
+            .fold(body.clone(), |formula, variable| {
+                Formula::for_all(*variable, formula)
+            });
+
+        assert_eq!(Formula::for_all_many(&variables, body), expected);
     }
 
     #[test]

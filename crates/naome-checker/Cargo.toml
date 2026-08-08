@@ -1,0 +1,15 @@
+[package]
+name = "naome-checker"
+version = "0.1.0"
+edition = "2024"
+description = "Deterministic mathematical checking for NAOME proof certificates."
+license = "MIT"
+repository = "https://github.com/naome-core/naome"
+publish = false
+
+[dependencies]
+naome-foundation = { path = "../naome-foundation" }
+naome-proof = { path = "../naome-proof" }
+
+[lints]
+workspace = true

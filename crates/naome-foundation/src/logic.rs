@@ -62,19 +62,10 @@ impl LogicV0 {
         )
     }
 
-    /// Instantiates `A → ∀x A` when `x` is not free in `A`.
-    pub fn vacuous_universal(
-        variable: FreeVariable,
-        formula: Formula,
-    ) -> Result<Formula, LogicError> {
-        if formula.contains_free_variable(variable) {
-            return Err(LogicError::VariableMustNotBeFree(variable));
-        }
-
-        Ok(Formula::implies(
-            formula.clone(),
-            Formula::vacuous_for_all(formula),
-        ))
+    /// Instantiates `A → ∀x A` with a fresh nameless binder.
+    #[must_use]
+    pub fn vacuous_universal(formula: Formula) -> Formula {
+        Formula::implies(formula.clone(), Formula::vacuous_for_all(formula))
     }
 
     /// Instantiates `∀x A → A[x := y]`.
@@ -119,11 +110,9 @@ impl LogicV0 {
     }
 }
 
-/// An invalid logical axiom-schema instantiation or inference-rule application.
+/// An invalid primitive inference-rule application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogicError {
-    /// A variable required to be absent occurs free in the formula.
-    VariableMustNotBeFree(FreeVariable),
     /// Modus ponens did not receive matching `A` and `A → B` formulas.
     ModusPonensMismatch,
 }
@@ -131,11 +120,6 @@ pub enum LogicError {
 impl fmt::Display for LogicError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::VariableMustNotBeFree(variable) => write!(
-                formatter,
-                "variable {} must not occur free in this axiom instance",
-                variable.identifier()
-            ),
             Self::ModusPonensMismatch => formatter.write_str(
                 "modus ponens requires an implication whose antecedent equals the premise",
             ),
@@ -154,7 +138,6 @@ mod tests {
     fn logical_axiom_constructors_match_primitive_golden_structures() {
         let x = FreeVariable::new(1);
         let y = FreeVariable::new(2);
-        let unused = FreeVariable::new(3);
         let first = Formula::equal(x, x);
         let second = Formula::member(x, y);
         let third = Formula::equal(y, y);
@@ -182,8 +165,7 @@ mod tests {
             ),
             (
                 "Q2",
-                LogicV0::vacuous_universal(unused, first.clone())
-                    .expect("the side condition is satisfied"),
+                LogicV0::vacuous_universal(first.clone()),
                 "imp(eq(f1,f1),all(eq(f1,f1)))",
             ),
             (
@@ -205,22 +187,11 @@ mod tests {
     }
 
     #[test]
-    fn vacuous_universal_rejects_a_free_quantified_variable() {
-        let x = FreeVariable::new(1);
-        let body = Formula::equal(x, x);
-
-        assert_eq!(
-            LogicV0::vacuous_universal(x, body),
-            Err(LogicError::VariableMustNotBeFree(x))
-        );
-    }
-
-    #[test]
-    fn vacuous_universal_allows_only_bound_occurrences_of_the_variable() {
+    fn vacuous_universal_preserves_existing_binders() {
         let x = FreeVariable::new(1);
         let body = Formula::for_all(x, Formula::equal(x, x));
 
-        let instance = LogicV0::vacuous_universal(x, body).expect("the variable is not free");
+        let instance = LogicV0::vacuous_universal(body);
 
         assert_eq!(
             instance.primitive_structure(),

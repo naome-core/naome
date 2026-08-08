@@ -7,6 +7,14 @@ name = "naome"
 version = "0.1.0"
 
 [[package]]
+name = "naome-checker"
+version = "0.1.0"
+dependencies = [
+ "naome-foundation",
+ "naome-proof",
+]
+
+[[package]]
 name = "naome-foundation"
 version = "0.1.0"
 

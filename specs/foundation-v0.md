@@ -223,6 +223,6 @@ Until that contract exists, no definition block is valid under Foundation V0.
 
 ## Verification boundary
 
-This specification is the sole normative definition of the abstract Foundation V0 data and axiom boundary. The `naome-foundation` crate is its executable Rust reference implementation and must conform to it. Neither verifies complete proofs. A later proof-block format may choose encoding and line-reference details, but it must preserve an empty local-hypothesis context, only the primitive rules declared here, and an explicitly closed final theorem. A later checker must return deterministic results.
+This specification is the sole normative definition of the abstract Foundation V0 data and axiom boundary. The `naome-foundation` crate is its executable Rust reference implementation and must conform to it. Neither verifies complete proofs. A proof-block format may choose encoding and line-reference details, but it must preserve an empty local-hypothesis context, only the primitive rules declared here, and an explicitly closed final theorem. The separate checker must return deterministic results.
 
 Canonical serialization, content hashing, proof blocks, definitions, parsers, theorem libraries, storage, networking, and economic consensus are outside Foundation V0.
