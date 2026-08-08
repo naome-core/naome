@@ -29,7 +29,10 @@ pub const CHECKER_V0_MAX_FORMULA_WORK_BYTES: usize = CERTIFICATE_V0_MAX_BYTES;
 /// On success, the returned formula is the certificate's closed conclusion.
 pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
     let steps = certificate.steps();
-    let mut results: Vec<(Formula, usize)> = Vec::with_capacity(steps.len());
+    let final_step = u32::try_from(steps.len() - 1)
+        .expect("ProofCertificateV0 is non-empty and has a bounded step count");
+    let last_uses = last_uses(steps);
+    let mut results: Vec<Option<(Formula, usize)>> = Vec::with_capacity(steps.len());
     let mut remaining_work = CHECKER_V0_MAX_FORMULA_WORK_BYTES;
 
     for (position, step) in steps.iter().enumerate() {
@@ -37,6 +40,13 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
             .expect("ProofCertificateV0 limits make every step index representable");
 
         let formula = derive_step(position, step, &results, &mut remaining_work)?;
+        for reference in references(step).into_iter().flatten() {
+            let reference = reference as usize;
+            if last_uses[reference] == Some(position) {
+                results[reference] = None;
+            }
+        }
+
         let canonical_length = formula
             .encode_canonical_v0()
             .map_err(|source| CheckError::DerivedFormula {
@@ -45,13 +55,13 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
             })?
             .len();
         charge_formula_work(position, canonical_length, &mut remaining_work)?;
-        results.push((formula, canonical_length));
+        let retain = position == final_step || last_uses[position as usize].is_some();
+        results.push(retain.then_some((formula, canonical_length)));
     }
 
-    let final_step = u32::try_from(steps.len() - 1)
-        .expect("ProofCertificateV0 is non-empty and has a bounded step count");
     let (conclusion, canonical_length) = results
         .pop()
+        .flatten()
         .expect("every ProofCertificateV0 has at least one reconstructed step");
     charge_formula_work(final_step, canonical_length, &mut remaining_work)?;
 
@@ -60,6 +70,31 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
     }
 
     Ok(conclusion)
+}
+
+fn last_uses(steps: &[ProofStepV0]) -> Vec<Option<u32>> {
+    let mut last_uses = vec![None; steps.len()];
+
+    for (position, step) in steps.iter().enumerate() {
+        let position = u32::try_from(position)
+            .expect("ProofCertificateV0 limits make every step index representable");
+        for reference in references(step).into_iter().flatten() {
+            last_uses[reference as usize] = Some(position);
+        }
+    }
+
+    last_uses
+}
+
+fn references(step: &ProofStepV0) -> [Option<u32>; 2] {
+    match step {
+        ProofStepV0::ModusPonens {
+            premise,
+            implication,
+        } => [Some(*premise), Some(*implication)],
+        ProofStepV0::Generalization { premise, .. } => [Some(*premise), None],
+        _ => [None, None],
+    }
 }
 
 fn preflight_schema_depth(step: u32, parameter_count: usize) -> Result<(), CheckError> {
@@ -78,7 +113,7 @@ fn preflight_schema_depth(step: u32, parameter_count: usize) -> Result<(), Check
 fn derive_step(
     step: u32,
     proof_step: &ProofStepV0,
-    results: &[(Formula, usize)],
+    results: &[Option<(Formula, usize)>],
     remaining_work: &mut usize,
 ) -> Result<Formula, CheckError> {
     match proof_step {
@@ -164,9 +199,10 @@ fn derive_step(
     }
 }
 
-fn result(results: &[(Formula, usize)], reference: u32) -> &(Formula, usize) {
+fn result(results: &[Option<(Formula, usize)>], reference: u32) -> &(Formula, usize) {
     results
         .get(reference as usize)
+        .and_then(Option::as_ref)
         .expect("ProofCertificateV0 guarantees references to earlier steps")
 }
 
@@ -281,7 +317,7 @@ mod tests {
     };
     use naome_proof::{ProofCertificateV0, ProofStepV0};
 
-    use super::{CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, check};
+    use super::{CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, check, last_uses, references};
 
     fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
         ProofCertificateV0::new(steps).expect("the test certificate is structurally valid")
@@ -531,6 +567,40 @@ mod tests {
 
         assert_eq!(
             check(&proof),
+            Ok(Formula::implies(nested_antecedent, premise))
+        );
+    }
+
+    #[test]
+    fn results_remain_live_through_their_last_consumer() {
+        let premise = ZfcAxiom::Extensionality.formula();
+        let nested_antecedent = ZfcAxiom::Choice.formula();
+        let steps = vec![
+            ProofStepV0::ZfcAxiom(ZfcAxiom::Extensionality),
+            ProofStepV0::Simplification {
+                antecedent: premise.clone(),
+                consequent: nested_antecedent.clone(),
+            },
+            ProofStepV0::ModusPonens {
+                premise: 0,
+                implication: 1,
+            },
+            ProofStepV0::ModusPonens {
+                premise: 0,
+                implication: 1,
+            },
+        ];
+
+        assert_eq!(last_uses(&steps), [Some(3), Some(3), None, None]);
+        assert_eq!(
+            references(&ProofStepV0::ModusPonens {
+                premise: 7,
+                implication: 7,
+            }),
+            [Some(7), Some(7)]
+        );
+        assert_eq!(
+            check(&certificate(steps)),
             Ok(Formula::implies(nested_antecedent, premise))
         );
     }
