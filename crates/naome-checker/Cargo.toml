@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 naome-foundation = { path = "../naome-foundation" }
 naome-proof = { path = "../naome-proof" }
+sha2 = { version = "0.11.0", default-features = false }
 
 [lints]
 workspace = true

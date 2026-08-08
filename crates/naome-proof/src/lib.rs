@@ -6,6 +6,7 @@
 //! canonical structure and acyclic local references, not mathematical validity.
 
 mod codec;
+mod identity;
 mod normal_form;
 
 use std::error::Error;
@@ -14,6 +15,8 @@ use std::fmt;
 use naome_foundation::{
     Formula, FormulaCodecError, FreeVariable, Replacement, Separation, ZfcAxiom,
 };
+
+pub use identity::{ProofId, StatementId};
 
 /// Maximum encoded length admitted for one V0 proof certificate.
 pub const CERTIFICATE_V0_MAX_BYTES: usize = 4_194_304;
