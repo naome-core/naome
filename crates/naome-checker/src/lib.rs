@@ -9,8 +9,7 @@ use std::error::Error;
 use std::fmt;
 
 use naome_foundation::{
-    FORMULA_V0_MAX_DEPTH, Formula, FormulaCodecError, FreeVariable, LogicError, LogicV0,
-    SchemaError,
+    FORMULA_V0_MAX_DEPTH, Formula, FormulaCodecError, LogicError, LogicV0, SchemaError,
 };
 use naome_proof::{CERTIFICATE_V0_MAX_BYTES, ProofCertificateV0, ProofStepV0};
 
@@ -146,8 +145,7 @@ fn derive_step(
             consequent.clone(),
         )),
         ProofStepV0::VacuousUniversal { formula } => {
-            LogicV0::vacuous_universal(least_unused_variable(formula), formula.clone())
-                .map_err(|source| CheckError::Logic { step, source })
+            Ok(LogicV0::vacuous_universal(formula.clone()))
         }
         ProofStepV0::UniversalInstantiation {
             variable,
@@ -204,23 +202,6 @@ fn result(results: &[Option<(Formula, usize)>], reference: u32) -> &(Formula, us
         .get(reference as usize)
         .and_then(Option::as_ref)
         .expect("ProofCertificateV0 guarantees references to earlier steps")
-}
-
-fn least_unused_variable(formula: &Formula) -> FreeVariable {
-    let mut candidate = 0;
-
-    for variable in formula.free_variables() {
-        if variable.identifier() > candidate {
-            break;
-        }
-        if variable.identifier() == candidate {
-            candidate = candidate
-                .checked_add(1)
-                .expect("a bounded V0 formula cannot contain every u32 identifier");
-        }
-    }
-
-    FreeVariable::new(candidate)
 }
 
 fn charge_formula_work(step: u32, amount: usize, remaining: &mut usize) -> Result<(), CheckError> {
@@ -384,12 +365,10 @@ mod tests {
     }
 
     #[test]
-    fn vacuous_universal_chooses_a_variable_absent_from_the_body() {
+    fn vacuous_universal_reconstructs_the_nameless_binder() {
         let zero = FreeVariable::new(0);
-        let absent = FreeVariable::new(1);
         let body = Formula::equal(zero, zero);
-        let vacuous =
-            LogicV0::vacuous_universal(absent, body.clone()).expect("one is absent from the body");
+        let vacuous = LogicV0::vacuous_universal(body.clone());
         let expected = LogicV0::generalization(zero, vacuous);
         let proof = certificate(vec![
             ProofStepV0::VacuousUniversal { formula: body },

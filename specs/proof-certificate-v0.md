@@ -112,10 +112,10 @@ No result formula is stored beside a step. The checker reconstructs it from the
 step tag, its payload, and earlier results. This prevents a certificate from
 carrying separate claimed and derived versions of the same line.
 
-Q2 does not encode the quantified variable. Every finite formula leaves a free
-variable identifier available that does not occur in it, and every such choice
-produces the same nameless vacuous binder. The checker therefore reconstructs
-one canonical formula without admitting redundant certificate bytes.
+Q2 does not encode a quantified-variable identifier. In the locally nameless
+Formula V0 representation, the checker constructs the nameless vacuous binder
+directly. This satisfies the abstract fresh-variable side condition without
+admitting redundant certificate bytes.
 
 ## Structural decoding
 
@@ -151,9 +151,8 @@ Each step is reconstructed only through the corresponding Foundation V0
 operation:
 
 - L1 through L3, Q1, Q3, E1, and E2 instantiate their logical axioms;
-- Q2 chooses a free-variable identifier absent from its formula and instantiates
-  vacuous universal quantification. Every absent choice produces the same
-  nameless De Bruijn formula;
+- Q2 constructs nameless vacuous universal quantification directly; no variable
+  identifier is selected or encoded;
 - fixed ZFC steps expand their selected axiom;
 - Separation and Replacement validate their schema side conditions before
   expansion;
