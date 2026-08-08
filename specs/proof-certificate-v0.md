@@ -358,10 +358,11 @@ The derivation identity equals that of the cited proof, so registering this
 alias after the cited proof fails as a duplicate derivation.
 
 This in-memory state is the resolver contract, not a persistent blockchain
-database. A later block layer can hold an immutable parent-state borrow while
-checking a whole block and register new checked proofs only after the block is
-accepted. Block storage, atomic apply/undo, reorgs, pruning, and network
-synchronization remain outside this V0 contract.
+database. Ledger State V0 checks exactly one proof against the unchanged
+accepted parent state and registers that proof only after checking succeeds.
+A future block contains exactly one such proof. Block encoding, storage,
+apply/undo persistence, reorgs, pruning, and network synchronization remain
+outside this V0 contract.
 
 ## Content identity
 
