@@ -12,8 +12,9 @@ axiom-schema side conditions and inference rules, and requires a closed final
 formula. Proof admission first derives the root-proof normal form and checks
 that normal form exactly once.
 
-External proof references, definitions, blocks, chain state, rewards, and
-human-readable `.nao` syntax are outside V0.
+Definitions, blocks, persistent chain state, rewards, networking, and
+human-readable `.nao` syntax are outside V0. Proof references resolve only
+through the checked in-memory state defined below.
 
 ## Integer encoding
 
@@ -97,6 +98,7 @@ Each step starts with one explicit tag:
 | `12` | Replacement | predicate formula, input, output, uniqueness witness, source, result, parameters |
 | `20` | modus ponens | premise step index, implication step index |
 | `21` | generalization | premise step index, variable |
+| `30` | proof reference | one 32-byte `ProofId` |
 
 Fixed ZFC axiom tags are:
 
@@ -137,9 +139,9 @@ The decoder accepts bytes exactly when:
 These conditions make local references finite and acyclic. Duplicate or unused
 steps remain permitted because they do not make an encoding ambiguous.
 
-The decoder does not check logical-axiom side conditions, ZFC schema side
-conditions, modus ponens, generalization, or closure of the conclusion. Those
-are mathematical-checker responsibilities.
+The decoder does not check proof-reference existence, logical-axiom side
+conditions, ZFC schema side conditions, modus ponens, generalization, or
+closure of the conclusion. Those are mathematical-checker responsibilities.
 
 ## Direct mathematical checking
 
@@ -151,6 +153,11 @@ certificate and identifies the zero-based step index. Proof admission applies
 this operation to a normal-form certificate, not to presentation-only input
 steps that normalization removes.
 
+The dependency-free `check` entry point supplies an empty proof state and
+therefore rejects every `ProofReference` as unknown. Reference-aware proof
+admission executes the same checker operation with an explicit immutable
+`ProofStateV0`.
+
 Each step is reconstructed only through the corresponding Foundation V0
 operation:
 
@@ -160,6 +167,8 @@ operation:
 - fixed ZFC steps expand their selected axiom;
 - Separation and Replacement validate their schema side conditions before
   expansion;
+- proof references reuse the closed conclusion registered for the exact
+  selected `ProofId`;
 - modus ponens consumes its referenced premise and implication; and
 - generalization universally quantifies its referenced premise.
 
@@ -174,7 +183,8 @@ The checker charges:
 
 - the canonical lengths of both referenced operands before modus ponens;
 - the canonical length of the referenced premise before generalization;
-- the canonical length of every reconstructed result; and
+- the canonical length of every reconstructed result, with a resolved
+  proof-reference result charged before it is cloned; and
 - the conclusion length once more before checking closure.
 
 An operation is rejected before execution when its operand charge would exceed
@@ -218,12 +228,18 @@ roles remain distinct. It performs no theorem rewriting, commutative or
 associative sorting, proof minimization, or other mathematical-equivalence
 search.
 
+A proof reference is a leaf in this graph. Its `ProofId` introduces neither a
+local step dependency nor a free-variable identifier. Exact duplicate
+reference leaves merge through the same byte-exact interning rule as other
+steps. Different `ProofId` values never merge, even when they resolve to the
+same statement.
+
 Proof admission uses this order:
 
 ```text
 structurally decode the complete input certificate
 derive its proof normal form
-mathematically check every normal-form step exactly once
+mathematically check every normal-form step exactly once, resolving each ProofId at its step
 require a closed conclusion
 ```
 
@@ -283,6 +299,64 @@ free variable `7` or `42` becomes `0`, and both modus-ponens references become
 `1`. The final modus-ponens step is intentionally not mathematically valid;
 this vector isolates the structural normal form and must not be admitted as a
 checked proof.
+
+## External proof references
+
+A `ProofReference` contains exactly the raw 32 bytes of one concrete
+`ProofId`. It does not repeat the referenced `StatementId`, conclusion, proof
+bytes, or Foundation identifier. Structural decoding accepts any 32-byte value
+and does not claim that the selected proof exists.
+
+Mathematical checking resolves each reachable reference from an immutable
+`ProofStateV0`. That state can only be populated from `CheckedProofV0` values,
+so callers cannot attach an arbitrary formula to an identity. The state maps
+each `ProofId` to its `StatementId` and stores the closed canonical conclusion
+only once per `StatementId`. Alternative proofs of one statement therefore
+remain separately citable without duplicating their conclusion in memory.
+
+Resolution is local and deterministic:
+
+- the exact `ProofId` must already exist in the supplied state;
+- an absent reference rejects the normalized step before any inference that
+  consumes it;
+- the referenced conclusion is charged against Checker V0's formula-work
+  budget before it is cloned;
+- the previously checked proof certificate is not executed again; and
+- unreachable references disappear during normalization and are not resolved
+  during proof admission.
+
+A reference may itself be the checked root: this is valid proof by citation.
+Registration is stricter than mathematical checking. `ProofStateV0` rejects an
+already registered `ProofId` or a missing cited dependency. Detectable identity
+conflicts fail closed rather than replacing existing state. Transitive
+derivation novelty and reward eligibility require complete dependency ancestry
+and remain future block-admission policy; this in-memory resolver does not
+claim to enforce them.
+
+The chosen citation remains part of the referencing proof's canonical bytes.
+Two proofs that derive the same conclusion through different concrete cited
+`ProofId` values therefore share a `StatementId` but have different `ProofId`
+values themselves.
+
+For the checked proof in the content-identity golden vector below, the exact
+reference-only certificate is:
+
+```text
+00 00000001
+30 5a90444e9a1f0e0138eb5bbca12d322ff705e55d155a9273474714dc698ae1bf
+```
+
+Its conclusion retains the golden `StatementId`, while the citation proof has:
+
+```text
+ProofId = c1d38d88a33f3015d797eccf9f391540ffdedafeedcc553e07ed328b5a88fa71
+```
+
+This in-memory state is the resolver contract, not a persistent blockchain
+database. A later block layer can hold an immutable parent-state borrow while
+checking a whole block and register new checked proofs only after the block is
+accepted. Block storage, atomic apply/undo, reorgs, pruning, and network
+synchronization remain outside this V0 contract.
 
 ## Content identity
 

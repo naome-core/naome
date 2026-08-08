@@ -1,9 +1,10 @@
 //! Canonically encoded, assumption-free proof programs for NAOME Foundation V0.
 //!
-//! A certificate records only primitive axiom witnesses and inference inputs.
-//! It does not duplicate the formula derived by each step: the checker
-//! reconstructs those formulas deterministically. Decoding establishes
-//! canonical structure and acyclic local references, not mathematical validity.
+//! A certificate records primitive axiom witnesses, inference inputs, and
+//! concrete external proof identities. It does not duplicate the formula
+//! derived by each step: the checker reconstructs those formulas
+//! deterministically. Decoding establishes canonical structure and acyclic
+//! local references, not mathematical validity or external-proof existence.
 
 mod codec;
 mod identity;
@@ -96,7 +97,7 @@ impl ProofNormalFormV0 {
     }
 }
 
-/// One Foundation V0 axiom witness or primitive inference step.
+/// One Foundation V0 axiom witness, primitive inference, or proof-reference step.
 ///
 /// Local step indices are zero-based. [`ProofCertificateV0`] admits an
 /// inference step only when every referenced index is smaller than its own.
@@ -149,6 +150,8 @@ pub enum ProofStepV0 {
     Separation(Separation),
     /// Claim an instance of the Replacement schema.
     Replacement(Replacement),
+    /// Reuse the checked conclusion of one concrete registered proof.
+    ProofReference { proof_id: ProofId },
     /// Derive a consequent from earlier `A` and `A → B` steps.
     ModusPonens { premise: u32, implication: u32 },
     /// Universally quantify a selected free variable in an earlier step.
@@ -181,7 +184,8 @@ impl ProofStepV0 {
             | Self::EqualitySubstitution { .. }
             | Self::ZfcAxiom(_)
             | Self::Separation(_)
-            | Self::Replacement(_) => [None, None],
+            | Self::Replacement(_)
+            | Self::ProofReference { .. } => [None, None],
         }
     }
 }

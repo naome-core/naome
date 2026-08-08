@@ -2,7 +2,7 @@ use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom}
 
 use crate::{
     CERTIFICATE_V0_MAX_BYTES, CERTIFICATE_V0_MAX_STEPS, ProofCertificateError, ProofCertificateV0,
-    ProofStepV0, validate_step_references,
+    ProofId, ProofStepV0, validate_step_references,
 };
 
 const VERSION: u8 = 0x00;
@@ -20,6 +20,7 @@ const SEPARATION: u8 = 0x11;
 const REPLACEMENT: u8 = 0x12;
 const MODUS_PONENS: u8 = 0x20;
 const GENERALIZATION: u8 = 0x21;
+const PROOF_REFERENCE: u8 = 0x30;
 
 pub(super) fn encode_steps(steps: &[ProofStepV0]) -> Result<Vec<u8>, ProofCertificateError> {
     let step_count =
@@ -160,6 +161,10 @@ pub(super) fn encode_step(
             write_variable(instance.result, output);
             write_variables(&instance.parameters, output)?;
         }
+        ProofStepV0::ProofReference { proof_id } => {
+            output.push(PROOF_REFERENCE);
+            output.extend_from_slice(proof_id.as_bytes());
+        }
         ProofStepV0::ModusPonens {
             premise,
             implication,
@@ -231,6 +236,14 @@ fn decode_step(cursor: &mut Cursor<'_>) -> Result<ProofStepV0, ProofCertificateE
             result: read_variable(cursor)?,
             parameters: read_variables(cursor)?,
         })),
+        PROOF_REFERENCE => Ok(ProofStepV0::ProofReference {
+            proof_id: ProofId::from_bytes(
+                cursor
+                    .take(32)?
+                    .try_into()
+                    .expect("the checked slice has exactly 32 bytes"),
+            ),
+        }),
         MODUS_PONENS => Ok(ProofStepV0::ModusPonens {
             premise: cursor.read_u32()?,
             implication: cursor.read_u32()?,
@@ -393,10 +406,12 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EQUALITY_REFLEXIVITY, MODUS_PONENS, VERSION, ZFC_AXIOM, encode_step};
+    use super::{
+        EQUALITY_REFLEXIVITY, MODUS_PONENS, PROOF_REFERENCE, VERSION, ZFC_AXIOM, encode_step,
+    };
     use crate::{
         CERTIFICATE_V0_MAX_BYTES, CERTIFICATE_V0_MAX_STEPS, ProofCertificateError,
-        ProofCertificateV0, ProofStepV0,
+        ProofCertificateV0, ProofId, ProofStepV0,
     };
     use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
 
@@ -481,6 +496,9 @@ mod tests {
             ProofStepV0::Generalization {
                 premise: 11,
                 variable: x,
+            },
+            ProofStepV0::ProofReference {
+                proof_id: ProofId::from_bytes([0x5a; 32]),
             },
         ];
         let certificate = ProofCertificateV0::new(steps).unwrap();
@@ -672,6 +690,66 @@ mod tests {
             encoded,
             [0x20, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
         );
+    }
+
+    #[test]
+    fn proof_reference_has_one_fixed_width_canonical_representation() {
+        let proof_id = ProofId::from_bytes([
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
+        ]);
+        let certificate =
+            ProofCertificateV0::new(vec![ProofStepV0::ProofReference { proof_id }]).unwrap();
+        let expected = [
+            VERSION,
+            0,
+            0,
+            0,
+            1,
+            PROOF_REFERENCE,
+            0x00,
+            0x01,
+            0x02,
+            0x03,
+            0x04,
+            0x05,
+            0x06,
+            0x07,
+            0x08,
+            0x09,
+            0x0a,
+            0x0b,
+            0x0c,
+            0x0d,
+            0x0e,
+            0x0f,
+            0x10,
+            0x11,
+            0x12,
+            0x13,
+            0x14,
+            0x15,
+            0x16,
+            0x17,
+            0x18,
+            0x19,
+            0x1a,
+            0x1b,
+            0x1c,
+            0x1d,
+            0x1e,
+            0x1f,
+        ];
+
+        assert_eq!(certificate.to_canonical_bytes(), expected);
+        assert_eq!(
+            ProofCertificateV0::from_canonical_bytes(&expected).unwrap(),
+            certificate
+        );
+        for end in 0..expected.len() {
+            assert!(ProofCertificateV0::from_canonical_bytes(&expected[..end]).is_err());
+        }
     }
 
     #[test]

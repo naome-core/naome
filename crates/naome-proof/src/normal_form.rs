@@ -166,6 +166,7 @@ fn normalize_step(
                 parameters: variables.variables(parameters),
             })
         }
+        ProofStepV0::ProofReference { proof_id } => ProofStepV0::ProofReference { proof_id },
         ProofStepV0::ModusPonens {
             premise,
             implication,
@@ -223,7 +224,7 @@ impl VariableNormalizer {
 mod tests {
     use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
 
-    use crate::{CERTIFICATE_V0_MAX_STEPS, ProofCertificateV0, ProofStepV0};
+    use crate::{CERTIFICATE_V0_MAX_STEPS, ProofCertificateV0, ProofId, ProofStepV0};
 
     #[test]
     fn topological_order_and_free_variable_names_do_not_change_the_normal_form() {
@@ -322,6 +323,46 @@ mod tests {
         assert_ne!(
             correct.certificate().to_canonical_bytes(),
             swapped.certificate().to_canonical_bytes()
+        );
+    }
+
+    #[test]
+    fn proof_reference_leaves_deduplicate_only_by_exact_proof_id() {
+        let first_id = ProofId::from_bytes([0x11; 32]);
+        let second_id = ProofId::from_bytes([0x22; 32]);
+        let duplicate = certificate(vec![
+            ProofStepV0::ProofReference { proof_id: first_id },
+            ProofStepV0::ProofReference { proof_id: first_id },
+            ProofStepV0::ModusPonens {
+                premise: 0,
+                implication: 1,
+            },
+        ])
+        .into_unchecked_normal_form();
+        let distinct = certificate(vec![
+            ProofStepV0::ProofReference { proof_id: first_id },
+            ProofStepV0::ProofReference {
+                proof_id: second_id,
+            },
+            ProofStepV0::ModusPonens {
+                premise: 0,
+                implication: 1,
+            },
+        ])
+        .into_unchecked_normal_form();
+
+        assert_eq!(duplicate.certificate().steps().len(), 2);
+        assert!(matches!(
+            duplicate.certificate().steps()[1],
+            ProofStepV0::ModusPonens {
+                premise: 0,
+                implication: 0,
+            }
+        ));
+        assert_eq!(distinct.certificate().steps().len(), 3);
+        assert_ne!(
+            duplicate.certificate().to_canonical_bytes(),
+            distinct.certificate().to_canonical_bytes()
         );
     }
 
