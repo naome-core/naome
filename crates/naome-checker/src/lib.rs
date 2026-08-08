@@ -226,6 +226,19 @@ pub fn normalize_and_check_with_state(
     proof_state: &ProofStateV0,
 ) -> Result<CheckedProofV0, CheckError> {
     let normal_form = certificate.into_unchecked_normal_form();
+    check_normal_form_with_state(normal_form, proof_state)
+}
+
+/// Checks one canonical proof normal form against an immutable checked-proof state.
+///
+/// Unlike [`normalize_and_check_with_state`], this entry point performs no
+/// normalization. The [`ProofNormalFormV0`] type guarantees the structural
+/// root-proof projection; this function establishes its mathematical validity
+/// and content identities exactly once.
+pub fn check_normal_form_with_state(
+    normal_form: ProofNormalFormV0,
+    proof_state: &ProofStateV0,
+) -> Result<CheckedProofV0, CheckError> {
     let (conclusion, canonical_conclusion, derivation_id) = check_with_canonical_conclusion(
         normal_form.certificate(),
         proof_state,
