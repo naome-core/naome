@@ -3,17 +3,26 @@
 //! The checker reconstructs every certificate step through the executable
 //! Foundation V0 rules, enforces deterministic formula-processing limits, and
 //! accepts only a closed final formula. It is deliberately in-memory and has
-//! no chain state, external proof dependencies, hashing, or source parsing.
+//! no chain state, external proof dependencies, or source parsing.
 //! Successful proof admission returns a [`CheckedProofV0`] that keeps the
-//! accepted normal form coupled to its reconstructed conclusion.
+//! accepted normal form, reconstructed conclusion, and content identities
+//! coupled together.
 
 use std::error::Error;
 use std::fmt;
 
 use naome_foundation::{
-    FORMULA_V0_MAX_DEPTH, Formula, FormulaCodecError, LogicError, LogicV0, SchemaError,
+    FORMULA_V0_MAX_DEPTH, FOUNDATION_ID, Formula, FormulaCodecError, LogicError, LogicV0,
+    SchemaError,
 };
-use naome_proof::{CERTIFICATE_V0_MAX_BYTES, ProofCertificateV0, ProofNormalFormV0, ProofStepV0};
+use naome_proof::{
+    CERTIFICATE_V0_MAX_BYTES, ProofCertificateV0, ProofId, ProofNormalFormV0, ProofStepV0,
+    StatementId,
+};
+use sha2::{Digest, Sha256};
+
+const STATEMENT_ID_V0_DOMAIN: &[u8] = b"naome:statement:v0\0";
+const PROOF_ID_V0_DOMAIN: &[u8] = b"naome:proof:v0\0";
 
 /// Maximum cumulative canonical formula work admitted by Checker V0.
 ///
@@ -27,13 +36,16 @@ pub const CHECKER_V0_MAX_FORMULA_WORK_BYTES: usize = CERTIFICATE_V0_MAX_BYTES;
 /// A normalized Foundation V0 proof accepted by Checker V0.
 ///
 /// The private fields keep the accepted normal form coupled to the exact
-/// closed conclusion reconstructed from it. This type does not establish
-/// block admission, chain inclusion, or cryptographic identity.
+/// closed conclusion and content identities reconstructed from it. Those
+/// identities are content addresses; this type does not establish block
+/// admission or chain inclusion.
 #[derive(Debug, PartialEq, Eq)]
 #[must_use]
 pub struct CheckedProofV0 {
     normal_form: ProofNormalFormV0,
     conclusion: Formula,
+    statement_id: StatementId,
+    proof_id: ProofId,
 }
 
 impl CheckedProofV0 {
@@ -46,6 +58,16 @@ impl CheckedProofV0 {
     pub const fn conclusion(&self) -> &Formula {
         &self.conclusion
     }
+
+    /// Returns the identity of the checked proof's closed conclusion.
+    pub const fn statement_id(&self) -> StatementId {
+        self.statement_id
+    }
+
+    /// Returns the identity of the checked proof's canonical normal form.
+    pub const fn proof_id(&self) -> ProofId {
+        self.proof_id
+    }
 }
 
 /// Checks one structurally valid Foundation V0 proof certificate.
@@ -53,12 +75,19 @@ impl CheckedProofV0 {
 /// Every step is reconstructed in order, including unused or duplicate steps.
 /// On success, the returned formula is the certificate's closed conclusion.
 pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
+    check_with_canonical_conclusion(certificate).map(|(conclusion, _)| conclusion)
+}
+
+fn check_with_canonical_conclusion(
+    certificate: &ProofCertificateV0,
+) -> Result<(Formula, Vec<u8>), CheckError> {
     let steps = certificate.steps();
     let final_step = u32::try_from(steps.len() - 1)
         .expect("ProofCertificateV0 is non-empty and has a bounded step count");
     let last_uses = last_uses(steps);
     let mut results: Vec<Option<(Formula, usize)>> = Vec::with_capacity(steps.len());
     let mut remaining_work = CHECKER_V0_MAX_FORMULA_WORK_BYTES;
+    let mut canonical_conclusion = None;
 
     for (position, step) in steps.iter().enumerate() {
         let position = u32::try_from(position)
@@ -72,14 +101,18 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
             }
         }
 
-        let canonical_length = formula
-            .encode_canonical_v0()
-            .map_err(|source| CheckError::DerivedFormula {
-                step: position,
-                source,
-            })?
-            .len();
+        let canonical =
+            formula
+                .encode_canonical_v0()
+                .map_err(|source| CheckError::DerivedFormula {
+                    step: position,
+                    source,
+                })?;
+        let canonical_length = canonical.len();
         charge_formula_work(position, canonical_length, &mut remaining_work)?;
+        if position == final_step {
+            canonical_conclusion = Some(canonical);
+        }
         let retain = position == final_step || last_uses[position as usize].is_some();
         results.push(retain.then_some((formula, canonical_length)));
     }
@@ -94,7 +127,10 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
         return Err(CheckError::OpenConclusion { step: final_step });
     }
 
-    Ok(conclusion)
+    Ok((
+        conclusion,
+        canonical_conclusion.expect("the final step always has a canonical encoding"),
+    ))
 }
 
 /// Normalizes one certificate and checks its canonical proof exactly once.
@@ -102,14 +138,54 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
 /// Unreachable input steps are not part of the root proof and are removed
 /// before mathematical checking. Reachable steps are checked in their
 /// deterministic normal-form order. On success, the returned value keeps that
-/// exact normal form coupled to the closed conclusion reconstructed from it.
+/// exact normal form coupled to the closed conclusion and content identities
+/// reconstructed from it.
 pub fn normalize_and_check(certificate: ProofCertificateV0) -> Result<CheckedProofV0, CheckError> {
     let normal_form = certificate.into_unchecked_normal_form();
-    let conclusion = check(normal_form.certificate())?;
+    let (conclusion, canonical_conclusion) =
+        check_with_canonical_conclusion(normal_form.certificate())?;
+    let statement_id = statement_id(&canonical_conclusion);
+    drop(canonical_conclusion);
+    let proof_id = proof_id(statement_id, &normal_form);
     Ok(CheckedProofV0 {
         normal_form,
         conclusion,
+        statement_id,
+        proof_id,
     })
+}
+
+fn statement_id(canonical_conclusion: &[u8]) -> StatementId {
+    StatementId::from_bytes(foundation_scoped_hash(
+        STATEMENT_ID_V0_DOMAIN,
+        &[],
+        canonical_conclusion,
+    ))
+}
+
+fn proof_id(statement_id: StatementId, normal_form: &ProofNormalFormV0) -> ProofId {
+    let canonical = normal_form.certificate().to_canonical_bytes();
+    ProofId::from_bytes(foundation_scoped_hash(
+        PROOF_ID_V0_DOMAIN,
+        statement_id.as_bytes(),
+        &canonical,
+    ))
+}
+
+fn foundation_scoped_hash(domain: &[u8], binding: &[u8], payload: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    update_framed(&mut hasher, FOUNDATION_ID.as_bytes());
+    hasher.update(binding);
+    update_framed(&mut hasher, payload);
+    hasher.finalize().into()
+}
+
+fn update_framed(hasher: &mut Sha256, bytes: &[u8]) {
+    let length = u32::try_from(bytes.len())
+        .expect("Foundation V0 identifiers and canonical payloads fit u32");
+    hasher.update(length.to_be_bytes());
+    hasher.update(bytes);
 }
 
 fn last_uses(steps: &[ProofStepV0]) -> Vec<Option<u32>> {
@@ -465,6 +541,8 @@ mod tests {
             first.normal_form().certificate().to_canonical_bytes(),
             reordered.normal_form().certificate().to_canonical_bytes()
         );
+        assert_eq!(first.statement_id(), reordered.statement_id());
+        assert_eq!(first.proof_id(), reordered.proof_id());
     }
 
     #[test]
@@ -483,10 +561,84 @@ mod tests {
         let detour = normalize_and_check(detour).unwrap();
 
         assert_eq!(direct.conclusion(), detour.conclusion());
+        assert_eq!(direct.statement_id(), detour.statement_id());
+        assert_ne!(direct.proof_id(), detour.proof_id());
         assert_ne!(
             direct.normal_form().certificate().to_canonical_bytes(),
             detour.normal_form().certificate().to_canonical_bytes()
         );
+    }
+
+    #[test]
+    fn content_identity_golden_binds_the_closed_statement_and_normal_proof() {
+        let x = FreeVariable::new(42);
+        let checked = normalize_and_check(certificate(vec![
+            ProofStepV0::EqualityReflexivity { variable: x },
+            ProofStepV0::Generalization {
+                premise: 0,
+                variable: x,
+            },
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            checked.conclusion().encode_canonical_v0().unwrap(),
+            [
+                0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            ]
+        );
+        assert_eq!(
+            checked.normal_form().certificate().to_canonical_bytes(),
+            [
+                0x00, 0x00, 0x00, 0x00, 0x02, 0x06, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00,
+            ]
+        );
+        assert_eq!(
+            checked.statement_id().as_bytes(),
+            &[
+                0x51, 0x7c, 0xdd, 0xb1, 0x56, 0x20, 0x88, 0x52, 0xaf, 0x84, 0x8f, 0xd6, 0xb2, 0x04,
+                0xb1, 0xdc, 0xa9, 0x72, 0x8f, 0x6e, 0x52, 0xfd, 0x6e, 0xc9, 0x94, 0x0e, 0xf1, 0x43,
+                0x7b, 0x8a, 0xf1, 0x5a,
+            ]
+        );
+        assert_eq!(
+            checked.proof_id().as_bytes(),
+            &[
+                0x5a, 0x90, 0x44, 0x4e, 0x9a, 0x1f, 0x0e, 0x01, 0x38, 0xeb, 0x5b, 0xbc, 0xa1, 0x2d,
+                0x32, 0x2f, 0xf7, 0x05, 0xe5, 0x5d, 0x15, 0x5a, 0x92, 0x73, 0x47, 0x47, 0x14, 0xdc,
+                0x69, 0x8a, 0xe1, 0xbf,
+            ]
+        );
+    }
+
+    #[test]
+    fn statement_identity_is_structural_not_logical_equivalence() {
+        let x = FreeVariable::new(3);
+        let y = FreeVariable::new(4);
+        let once = normalize_and_check(certificate(vec![
+            ProofStepV0::EqualityReflexivity { variable: x },
+            ProofStepV0::Generalization {
+                premise: 0,
+                variable: x,
+            },
+        ]))
+        .unwrap();
+        let twice = normalize_and_check(certificate(vec![
+            ProofStepV0::EqualityReflexivity { variable: x },
+            ProofStepV0::Generalization {
+                premise: 0,
+                variable: x,
+            },
+            ProofStepV0::Generalization {
+                premise: 1,
+                variable: y,
+            },
+        ]))
+        .unwrap();
+
+        assert_ne!(once.conclusion(), twice.conclusion());
+        assert_ne!(once.statement_id(), twice.statement_id());
     }
 
     #[test]

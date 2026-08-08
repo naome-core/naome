@@ -12,8 +12,8 @@ axiom-schema side conditions and inference rules, and requires a closed final
 formula. Proof admission first derives the root-proof normal form and checks
 that normal form exactly once.
 
-External proof references, definitions, hashes, statement identity, blocks,
-chain state, rewards, and human-readable `.nao` syntax are outside V0.
+External proof references, definitions, blocks, chain state, rewards, and
+human-readable `.nao` syntax are outside V0.
 
 ## Integer encoding
 
@@ -283,6 +283,81 @@ free variable `7` or `42` becomes `0`, and both modus-ponens references become
 `1`. The final modus-ponens step is intentionally not mathematically valid;
 this vector isolates the structural normal form and must not be admitted as a
 checked proof.
+
+## Content identity
+
+Successful proof admission produces two distinct 32-byte content identities:
+
+- `StatementId` identifies the checked closed conclusion independently of its
+  derivation; and
+- `ProofId` identifies that statement together with its checked proof normal
+  form.
+
+Both identities use SHA-256 as specified by FIPS 180-4. They are bound to the
+exact UTF-8 bytes of the immutable Foundation V0 identifier
+`naome:zfc:v0`. This is a protocol-namespace binding, not a hash of Foundation
+source or documentation; Foundation V0 has no canonical content serialization.
+
+The exact domain byte strings include their final `00` byte:
+
+```text
+statement_domain = 6e616f6d653a73746174656d656e743a763000
+proof_domain     = 6e616f6d653a70726f6f663a763000
+foundation       = 6e616f6d653a7a66633a7630
+```
+
+Variable fields are framed by their four-byte big-endian length. The raw
+32-byte `StatementId` has a fixed width and therefore no length prefix:
+
+```text
+StatementId = SHA256(
+    statement_domain
+    || u32be(length(foundation))
+    || foundation
+    || u32be(length(statement_bytes))
+    || statement_bytes
+)
+
+ProofId = SHA256(
+    proof_domain
+    || u32be(length(foundation))
+    || foundation
+    || StatementId
+    || u32be(length(normal_proof_bytes))
+    || normal_proof_bytes
+)
+```
+
+`statement_bytes` are the canonical Formula V0 bytes of the checked closed
+conclusion. `normal_proof_bytes` are the canonical certificate bytes carried
+by the checked `ProofNormalFormV0`, never the unnormalized submitted bytes.
+Consequently, presentation-only step order, systematic free-variable renaming,
+unreachable steps, and exact duplicate nodes do not change either identity.
+Different valid derivations of one conclusion share a `StatementId` but have
+different `ProofId` values. No logical-equivalence search is performed, so
+structurally different closed formulas retain different statement identities.
+
+An identity is an address, not proof that its content exists or is valid.
+Admission must still perform normalization and mathematical checking before it
+registers either value.
+
+### Content-identity golden vector
+
+For the checked two-step proof `E1(x); Generalization(0,x)`, normalization maps
+`x` to free-variable identifier `0`. Its closed conclusion and normal proof
+bytes are:
+
+```text
+statement_bytes   = 040001000000000100000000
+normal_proof_bytes = 00000000020600000000210000000000000000
+```
+
+The resulting identities are:
+
+```text
+StatementId = 517cddb156208852af848fd6b204b1dca9728f6e52fd6ec9940ef1437b8af15a
+ProofId     = 5a90444e9a1f0e0138eb5bbca12d322ff705e55d155a9273474714dc698ae1bf
+```
 
 ## Golden certificate
 
