@@ -6,9 +6,11 @@ This document defines the deterministic in-memory transition from one accepted
 NAOME proof state to the next. It is a prerelease protocol contract and may
 change before the first stable protocol release.
 
-One transition processes exactly one Foundation V0 proof certificate. It does
-not define block bytes, a block identifier, persistence, undo, reorganization,
-pruning, rewards, fees, networking, or human-readable source syntax.
+One transition processes exactly one Foundation V0 proof certificate. Ledger
+V0 provides both an owned-certificate authoring path and a strict canonical
+proof-byte admission path. It does not define a block envelope, block
+identifier, persistence, undo, reorganization, pruning, rewards, fees,
+networking, or human-readable source syntax.
 
 ## State
 
@@ -45,6 +47,29 @@ only if its exact `ProofId` is present in the unchanged pre-transition state.
 The existing Proof Certificate V0 limits bound the only proof processed by a
 transition. Ledger V0 adds no batch or caller-configurable resource limit.
 
+## Strict canonical byte admission
+
+The strict byte entry point processes external proof-certificate bytes in this
+order:
+
+1. structurally decode exactly one complete V0 certificate from its canonical
+   wire encoding;
+2. derive its canonical root-proof normal form;
+3. require the submitted bytes to equal the encoded normal form exactly;
+4. mathematically check that normal form exactly once against the unchanged
+   pre-transition state; and
+5. classify and atomically register the checked proof through the same state
+   transition described above.
+
+Structural decoding errors precede canonicality, checking, and registration
+errors. A structurally valid mismatch returns `NonCanonicalProof` before any
+mathematical step or external proof reference is evaluated. Checker errors then
+precede state-registration errors. Every failure leaves the state unchanged.
+
+The owned-certificate authoring path continues to normalize its input before
+checking. It must not be used as a substitute for the strict external-byte
+boundary.
+
 ## Statement novelty
 
 `New` and `Existing` describe only whether the exact closed `StatementId` was
@@ -70,10 +95,11 @@ identity condition before inserting anything. Consequently, every error leaves
 the state exactly unchanged and a successful call inserts exactly one checked
 proof.
 
-Checker errors precede registration errors. Within checking and registration,
-the deterministic error order defined by Proof Certificate V0 remains
-unchanged. Ledger errors retain the complete underlying `CheckError` or
-`ProofStateError` as their source.
+The strict byte path follows the decode, canonicality, checking, and
+registration order specified above. The authoring path follows normalization,
+checking, and registration. Within checking and registration, the deterministic
+error order defined by Proof Certificate V0 remains unchanged. Ledger errors
+retain the complete underlying source error when one exists.
 
 ## Future block boundary
 
@@ -86,7 +112,7 @@ The block topology and the rule that selects or combines accepted proof-state
 snapshots remain outside this V0 contract. This includes whether proof blocks
 form a linear history or a DAG.
 
-The future block decoder must additionally require that submitted proof bytes
-already equal their canonical root-proof normal form. Ledger V0 accepts the
-owned certificate model and performs normalization; it does not define or
-silently repair block bytes.
+The future block validation transition must pass its single submitted proof
+payload through the strict canonical byte admission defined above. Ledger V0
+still does not define the surrounding block bytes, and the strict path never
+silently repairs the submitted proof payload.

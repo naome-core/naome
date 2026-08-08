@@ -234,7 +234,8 @@ reference leaves merge through the same byte-exact interning rule as other
 steps. Different `ProofId` values never merge, even when they resolve to the
 same statement.
 
-Proof admission uses this order:
+When input begins as encoded bytes, structural decoding precedes the
+normalizing certificate flow:
 
 ```text
 structurally decode the complete input certificate
@@ -250,10 +251,11 @@ an unreachable invalid schema or inference step has no effect on admission,
 while every reachable invalid step remains and is rejected. Mathematical
 errors identify normal-form step indices and normalized free-variable IDs.
 
-A later admission layer can require canonical submissions by comparing the
-submitted bytes with the derived normal-form bytes before checking that normal
-form once. That admission policy is outside this V0 certificate contract;
-canonical equality never replaces mathematical checking.
+A strict ledger admission layer requires canonical submissions by comparing
+the submitted bytes with the derived normal-form bytes before checking that
+normal form once. A mismatch is rejected rather than repaired. That admission
+policy is outside this V0 certificate contract. Canonical equality never
+replaces mathematical checking.
 
 ### Normal-form golden vector
 
