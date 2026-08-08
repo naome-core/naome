@@ -224,7 +224,7 @@ fn charge_formula_work(step: u32, amount: usize, remaining: &mut usize) -> Resul
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CheckError {
-    /// A logical axiom side condition or primitive inference rule failed.
+    /// A primitive logical inference rule failed.
     Logic { step: u32, source: LogicError },
     /// A ZFC axiom-schema side condition failed.
     Schema { step: u32, source: SchemaError },
