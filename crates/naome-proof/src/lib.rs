@@ -23,8 +23,9 @@ pub const CERTIFICATE_V0_MAX_STEPS: usize = 65_536;
 
 /// A canonically encoded, assumption-free Foundation V0 proof program.
 ///
-/// The final step is the claimed conclusion. The checker reconstructs every
-/// step and verifies the final formula is closed before admitting a proof.
+/// The final step is the root and claimed conclusion. A certificate may carry
+/// structurally valid duplicate or unreachable presentation steps; proof
+/// admission operates on its [`ProofNormalFormV0`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct ProofCertificateV0 {
@@ -66,9 +67,8 @@ impl ProofCertificateV0 {
     /// The normal form removes unreachable steps, merges exact proof nodes,
     /// renumbers free variables by canonical first occurrence, and emits one
     /// deterministic dependency-first order. This transformation does not
-    /// establish mathematical validity. Callers accepting arbitrary
-    /// certificates should use the checker's safe check-and-normalize entry
-    /// point rather than discarding the input first.
+    /// establish mathematical validity; the checker must validate the
+    /// resulting normal-form certificate.
     pub fn into_unchecked_normal_form(self) -> ProofNormalFormV0 {
         ProofNormalFormV0 {
             certificate: normal_form::normalize(self),

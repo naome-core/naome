@@ -71,31 +71,17 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
     Ok(conclusion)
 }
 
-/// Checks a complete input certificate and its canonical proof normal form.
+/// Normalizes one certificate and checks its canonical proof exactly once.
 ///
-/// The input is checked before normalization so an invalid or over-budget
-/// unreachable step cannot be hidden by pruning. The normal form is then
-/// checked independently and must produce the same closed conclusion.
-pub fn check_and_normalize(
+/// Unreachable input steps are not part of the root proof and are removed
+/// before mathematical checking. Reachable steps are checked in their
+/// deterministic normal-form order.
+pub fn normalize_and_check(
     certificate: ProofCertificateV0,
 ) -> Result<(ProofNormalFormV0, Formula), CheckError> {
-    let original_conclusion = check(&certificate)?;
     let normal_form = certificate.into_unchecked_normal_form();
-    let normalized_conclusion = check_normal_form(&normal_form)?;
-    ensure_same_conclusion(&original_conclusion, &normalized_conclusion)?;
-    Ok((normal_form, normalized_conclusion))
-}
-
-fn check_normal_form(normal_form: &ProofNormalFormV0) -> Result<Formula, CheckError> {
-    check(normal_form.certificate()).map_err(|_| CheckError::NormalizationInvariantViolation)
-}
-
-fn ensure_same_conclusion(original: &Formula, normalized: &Formula) -> Result<(), CheckError> {
-    if original != normalized {
-        return Err(CheckError::NormalizationInvariantViolation);
-    }
-
-    Ok(())
+    let conclusion = check(normal_form.certificate())?;
+    Ok((normal_form, conclusion))
 }
 
 fn last_uses(steps: &[ProofStepV0]) -> Vec<Option<u32>> {
@@ -257,8 +243,6 @@ pub enum CheckError {
     },
     /// The final reconstructed formula still contains a free variable.
     OpenConclusion { step: u32 },
-    /// Proof normalization violated validity or conclusion preservation.
-    NormalizationInvariantViolation,
 }
 
 impl fmt::Display for CheckError {
@@ -291,9 +275,6 @@ impl fmt::Display for CheckError {
             Self::OpenConclusion { step } => {
                 write!(formatter, "proof conclusion at step {step} is not closed")
             }
-            Self::NormalizationInvariantViolation => {
-                formatter.write_str("proof normalization violated the checked proof invariant")
-            }
         }
     }
 }
@@ -304,9 +285,7 @@ impl Error for CheckError {
             Self::Logic { source, .. } => Some(source),
             Self::Schema { source, .. } => Some(source),
             Self::DerivedFormula { source, .. } => Some(source),
-            Self::FormulaWorkLimitExceeded { .. }
-            | Self::OpenConclusion { .. }
-            | Self::NormalizationInvariantViolation => None,
+            Self::FormulaWorkLimitExceeded { .. } | Self::OpenConclusion { .. } => None,
         }
     }
 }
@@ -322,8 +301,8 @@ mod tests {
     use naome_proof::{CERTIFICATE_V0_MAX_STEPS, ProofCertificateV0, ProofStepV0};
 
     use super::{
-        CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, charge_formula_work, check,
-        check_and_normalize, check_normal_form, ensure_same_conclusion, last_uses,
+        CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, charge_formula_work, check, last_uses,
+        normalize_and_check,
     };
 
     fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
@@ -450,8 +429,8 @@ mod tests {
     fn reordered_and_renamed_proofs_share_one_checked_normal_form() {
         let first = identity_proof(FreeVariable::new(7), false);
         let reordered = identity_proof(FreeVariable::new(42), true);
-        let (first, expected) = check_and_normalize(first).unwrap();
-        let (reordered, reordered_conclusion) = check_and_normalize(reordered).unwrap();
+        let (first, expected) = normalize_and_check(first).unwrap();
+        let (reordered, reordered_conclusion) = normalize_and_check(reordered).unwrap();
 
         assert_eq!(reordered_conclusion, expected);
         assert_eq!(
@@ -472,8 +451,8 @@ mod tests {
         ]);
         let detour = identity_proof(x, false);
 
-        let (direct, direct_conclusion) = check_and_normalize(direct).unwrap();
-        let (detour, detour_conclusion) = check_and_normalize(detour).unwrap();
+        let (direct, direct_conclusion) = normalize_and_check(direct).unwrap();
+        let (detour, detour_conclusion) = normalize_and_check(detour).unwrap();
 
         assert_eq!(direct_conclusion, detour_conclusion);
         assert_ne!(
@@ -648,11 +627,11 @@ mod tests {
     }
 
     #[test]
-    fn checker_rejects_invalid_unused_steps_before_normalization_can_remove_them() {
+    fn normalization_discards_invalid_unreachable_steps_before_checking() {
         let element = FreeVariable::new(1);
         let source = FreeVariable::new(2);
         let result = FreeVariable::new(3);
-        let open_root = FreeVariable::new(4);
+        let root = FreeVariable::new(4);
         let invalid = Separation {
             predicate: Formula::equal(result, result),
             element,
@@ -662,8 +641,10 @@ mod tests {
         };
         let proof = certificate(vec![
             ProofStepV0::Separation(invalid),
-            ProofStepV0::EqualityReflexivity {
-                variable: open_root,
+            ProofStepV0::EqualityReflexivity { variable: root },
+            ProofStepV0::Generalization {
+                premise: 1,
+                variable: root,
             },
         ]);
 
@@ -674,19 +655,53 @@ mod tests {
                 source: SchemaError::ForbiddenPredicateVariable(result),
             })
         );
+        let (normal, conclusion) = normalize_and_check(proof).unwrap();
+        assert_eq!(normal.certificate().steps().len(), 2);
+        assert_eq!(conclusion, closed_equality(root));
+    }
+
+    #[test]
+    fn normalization_reports_reachable_errors_in_normalized_coordinates() {
+        let x = FreeVariable::new(10);
+        let y = FreeVariable::new(11);
+        let proof = certificate(vec![
+            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStepV0::EqualityReflexivity { variable: x },
+            ProofStepV0::Simplification {
+                antecedent: Formula::equal(y, y),
+                consequent: closed_equality(x),
+            },
+            ProofStepV0::ModusPonens {
+                premise: 1,
+                implication: 2,
+            },
+        ]);
+
         assert_eq!(
-            check_and_normalize(proof.clone()),
-            Err(CheckError::Schema {
-                step: 0,
-                source: SchemaError::ForbiddenPredicateVariable(result),
+            normalize_and_check(proof),
+            Err(CheckError::Logic {
+                step: 2,
+                source: LogicError::ModusPonensMismatch,
             })
         );
 
-        let normal = proof.into_unchecked_normal_form();
-        assert_eq!(normal.certificate().steps().len(), 1);
+        let element = FreeVariable::new(40);
+        let source = FreeVariable::new(50);
+        let result = FreeVariable::new(60);
+        let proof = certificate(vec![ProofStepV0::Separation(Separation {
+            predicate: Formula::equal(result, result),
+            element,
+            source,
+            result,
+            parameters: Vec::new(),
+        })]);
+
         assert_eq!(
-            check(normal.certificate()),
-            Err(CheckError::OpenConclusion { step: 0 })
+            normalize_and_check(proof),
+            Err(CheckError::Schema {
+                step: 0,
+                source: SchemaError::ForbiddenPredicateVariable(FreeVariable::new(0)),
+            })
         );
     }
 
@@ -763,7 +778,6 @@ mod tests {
             maximum: 4,
         };
         let open = CheckError::OpenConclusion { step: 5 };
-        let normalization = CheckError::NormalizationInvariantViolation;
 
         assert!(
             logic
@@ -788,7 +802,6 @@ mod tests {
         );
         assert!(work.source().is_none());
         assert!(open.source().is_none());
-        assert!(normalization.source().is_none());
 
         for (error, fragments) in [
             (&logic, &["step 1", "modus ponens"][..]),
@@ -796,7 +809,6 @@ mod tests {
             (&derived, &["step 3", "limit of 256"][..]),
             (&work, &["step 4", "5 bytes", "limit is 4"][..]),
             (&open, &["step 5", "not closed"][..]),
-            (&normalization, &["normalization", "invariant"][..]),
         ] {
             let rendered = error.to_string();
             for fragment in fragments {
@@ -809,32 +821,14 @@ mod tests {
     }
 
     #[test]
-    fn normalization_must_preserve_the_checked_conclusion() {
+    fn normalization_preserves_a_valid_proof_conclusion() {
         let x = FreeVariable::new(1);
-        let first = closed_equality(x);
-        let different = Formula::for_all(x, Formula::member(x, x));
+        let proof = identity_proof(x, false);
+        let expected = check(&proof).unwrap();
+        let (normal, conclusion) = normalize_and_check(proof).unwrap();
 
-        assert_eq!(ensure_same_conclusion(&first, &first), Ok(()));
-        assert_eq!(
-            ensure_same_conclusion(&first, &different),
-            Err(CheckError::NormalizationInvariantViolation)
-        );
-
-        let invalid = certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::EqualityReflexivity {
-                variable: FreeVariable::new(2),
-            },
-            ProofStepV0::ModusPonens {
-                premise: 0,
-                implication: 1,
-            },
-        ])
-        .into_unchecked_normal_form();
-        assert_eq!(
-            check_normal_form(&invalid),
-            Err(CheckError::NormalizationInvariantViolation)
-        );
+        assert_eq!(conclusion, expected);
+        assert_eq!(check(normal.certificate()), Ok(expected));
     }
 
     #[test]
