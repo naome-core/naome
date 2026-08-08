@@ -78,6 +78,15 @@ name = "naome-foundation"
 version = "0.1.0"
 
 [[package]]
+name = "naome-ledger"
+version = "0.1.0"
+dependencies = [
+ "naome-checker",
+ "naome-foundation",
+ "naome-proof",
+]
+
+[[package]]
 name = "naome-proof"
 version = "0.1.0"
 dependencies = [

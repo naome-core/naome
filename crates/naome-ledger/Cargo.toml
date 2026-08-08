@@ -1,0 +1,18 @@
+[package]
+name = "naome-ledger"
+version = "0.1.0"
+edition = "2024"
+description = "Deterministic single-proof ledger state transitions for NAOME."
+license = "MIT"
+repository = "https://github.com/naome-core/naome"
+publish = false
+
+[dependencies]
+naome-checker = { path = "../naome-checker" }
+naome-proof = { path = "../naome-proof" }
+
+[dev-dependencies]
+naome-foundation = { path = "../naome-foundation" }
+
+[lints]
+workspace = true

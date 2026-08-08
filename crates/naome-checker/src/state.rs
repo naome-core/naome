@@ -42,6 +42,11 @@ impl ProofStateV0 {
         self.derivations.contains_key(&derivation_id)
     }
 
+    /// Returns whether the state already contains the selected statement.
+    pub fn contains_statement(&self, statement_id: StatementId) -> bool {
+        self.statements.contains_key(&statement_id)
+    }
+
     /// Registers one checked proof without replacing existing state.
     ///
     /// Every external proof cited by the checked normal form must already be

@@ -11,6 +11,7 @@ publish = false
 members = [
     "crates/naome-checker",
     "crates/naome-foundation",
+    "crates/naome-ledger",
     "crates/naome-proof",
 ]
 resolver = "3"
