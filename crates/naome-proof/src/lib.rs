@@ -1,4 +1,4 @@
-//! Canonical, assumption-free proof programs for NAOME Foundation V0.
+//! Canonically encoded, assumption-free proof programs for NAOME Foundation V0.
 //!
 //! A certificate records only primitive axiom witnesses and inference inputs.
 //! It does not duplicate the formula derived by each step: the checker
@@ -6,6 +6,7 @@
 //! canonical structure and acyclic local references, not mathematical validity.
 
 mod codec;
+mod normal_form;
 
 use std::error::Error;
 use std::fmt;
@@ -20,10 +21,11 @@ pub const CERTIFICATE_V0_MAX_BYTES: usize = 4_194_304;
 /// Maximum number of steps admitted in one V0 proof certificate.
 pub const CERTIFICATE_V0_MAX_STEPS: usize = 65_536;
 
-/// A canonical, assumption-free Foundation V0 proof program.
+/// A canonically encoded, assumption-free Foundation V0 proof program.
 ///
-/// The final step is the claimed conclusion. The checker reconstructs every
-/// step and verifies the final formula is closed before admitting a proof.
+/// The final step is the root and claimed conclusion. A certificate may carry
+/// structurally valid duplicate or unreachable presentation steps; proof
+/// admission operates on its [`ProofNormalFormV0`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct ProofCertificateV0 {
@@ -42,7 +44,7 @@ impl ProofCertificateV0 {
         Ok(Self { steps })
     }
 
-    /// Returns the proof steps in their canonical execution order.
+    /// Returns the proof steps in their encoded execution order.
     #[must_use]
     pub fn steps(&self) -> &[ProofStepV0] {
         &self.steps
@@ -58,6 +60,36 @@ impl ProofCertificateV0 {
     /// Decodes one complete canonical V0 certificate.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ProofCertificateError> {
         codec::decode(bytes)
+    }
+
+    /// Consumes this certificate and derives its unchecked root-proof normal form.
+    ///
+    /// The normal form removes unreachable steps, merges exact proof nodes,
+    /// renumbers free variables by canonical first occurrence, and emits one
+    /// deterministic dependency-first order. This transformation does not
+    /// establish mathematical validity; the checker must validate the
+    /// resulting normal-form certificate.
+    pub fn into_unchecked_normal_form(self) -> ProofNormalFormV0 {
+        ProofNormalFormV0 {
+            certificate: normal_form::normalize(self),
+        }
+    }
+}
+
+/// A deterministic, root-reachable projection of one proof certificate.
+///
+/// This type establishes structural identity only. The mathematical checker
+/// must still validate the contained certificate.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub struct ProofNormalFormV0 {
+    certificate: ProofCertificateV0,
+}
+
+impl ProofNormalFormV0 {
+    /// Returns the canonical certificate carried by this normal form.
+    pub const fn certificate(&self) -> &ProofCertificateV0 {
+        &self.certificate
     }
 }
 
@@ -123,6 +155,34 @@ pub enum ProofStepV0 {
     },
 }
 
+impl ProofStepV0 {
+    /// Returns local step references in their rule-role order.
+    ///
+    /// Modus ponens returns premise then implication. Generalization returns
+    /// only its premise. All other V0 steps carry no local references.
+    #[must_use]
+    pub const fn local_references(&self) -> [Option<u32>; 2] {
+        match self {
+            Self::ModusPonens {
+                premise,
+                implication,
+            } => [Some(*premise), Some(*implication)],
+            Self::Generalization { premise, .. } => [Some(*premise), None],
+            Self::Simplification { .. }
+            | Self::Frege { .. }
+            | Self::ClassicalContraposition { .. }
+            | Self::UniversalDistribution { .. }
+            | Self::VacuousUniversal { .. }
+            | Self::UniversalInstantiation { .. }
+            | Self::EqualityReflexivity { .. }
+            | Self::EqualitySubstitution { .. }
+            | Self::ZfcAxiom(_)
+            | Self::Separation(_)
+            | Self::Replacement(_) => [None, None],
+        }
+    }
+}
+
 fn validate_steps(steps: &[ProofStepV0]) -> Result<(), ProofCertificateError> {
     if steps.is_empty() {
         return Err(ProofCertificateError::EmptyCertificate);
@@ -147,17 +207,11 @@ fn validate_step_references(
     position: u32,
     step: &ProofStepV0,
 ) -> Result<(), ProofCertificateError> {
-    match step {
-        ProofStepV0::ModusPonens {
-            premise,
-            implication,
-        } => {
-            validate_reference(position, *premise)?;
-            validate_reference(position, *implication)
-        }
-        ProofStepV0::Generalization { premise, .. } => validate_reference(position, *premise),
-        _ => Ok(()),
+    for reference in step.local_references().into_iter().flatten() {
+        validate_reference(position, reference)?;
     }
+
+    Ok(())
 }
 
 fn validate_reference(step: u32, reference: u32) -> Result<(), ProofCertificateError> {

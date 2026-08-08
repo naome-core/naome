@@ -7,8 +7,10 @@ assumption-free derivations relative to NAOME Foundation V0. It is a prerelease
 protocol contract and may change before the first stable protocol release.
 
 A structurally valid certificate is not necessarily a mathematically valid
-proof. The checker reconstructs every step, enforces all axiom-schema
-side conditions and inference rules, and requires a closed final formula.
+proof. The direct checker reconstructs every supplied step, enforces all
+axiom-schema side conditions and inference rules, and requires a closed final
+formula. Proof admission first derives the root-proof normal form and checks
+that normal form exactly once.
 
 External proof references, definitions, hashes, statement identity, blocks,
 chain state, rewards, and human-readable `.nao` syntax are outside V0.
@@ -139,13 +141,15 @@ The decoder does not check logical-axiom side conditions, ZFC schema side
 conditions, modus ponens, generalization, or closure of the conclusion. Those
 are mathematical-checker responsibilities.
 
-## Mathematical checking
+## Direct mathematical checking
 
-Checker V0 accepts a structurally valid certificate exactly when deterministic
-execution of every step succeeds and the final result is closed. It processes
-all steps in encoded order, including duplicate or unused steps. The first
-failure in that order rejects the certificate and identifies the zero-based
-step index.
+The direct Checker V0 operation accepts a structurally valid certificate
+exactly when deterministic execution of every supplied step succeeds and the
+final result is closed. It processes steps in encoded order, including
+duplicate or unused steps. The first failure in that order rejects the
+certificate and identifies the zero-based step index. Proof admission applies
+this operation to a normal-form certificate, not to presentation-only input
+steps that normalization removes.
 
 Each step is reconstructed only through the corresponding Foundation V0
 operation:
@@ -180,6 +184,105 @@ classified as open or closed.
 
 The last reconstructed formula is returned only when it contains no free
 variables. Checker V0 never inserts implicit universal quantifiers.
+
+## Canonical proof normal form
+
+One structurally valid certificate has exactly one V0 proof normal form. The
+normal form is a deterministic projection for future content identity; it is
+not an additional proof rule and does not establish mathematical validity.
+
+Normalization proceeds from the certificate's final step as the root:
+
+1. Traverse only root-reachable steps with an explicit stack. Modus-ponens
+   dependencies are visited as premise then implication; generalization visits
+   its premise. No dependency role is sorted.
+2. Emit each step after its dependencies. This dependency-first postorder makes
+   every remapped local reference point to an earlier output step.
+3. During emission, map each previously unseen free-variable identifier to the
+   smallest unused `u32`, starting at zero. Step fields use their wire order and
+   formulas use canonical prefix order. Bound variables remain De Bruijn
+   indices and are not mapped.
+4. Replace local references with their emitted output indices.
+5. Merge a step only when its normalized step tag, complete payload, and
+   ordered local references have exactly the same canonical bytes as an
+   already-emitted step.
+
+The resulting steps use the existing Certificate V0 envelope and step codec.
+Normalization is idempotent and cannot increase the encoded step count or byte
+length. It is invariant under the original topological order, systematic free
+variable renaming, unreachable steps, and exact duplicate proof nodes.
+
+The normal form does not merge steps merely because the checker derives equal
+formulas from them. Alternative rules, dependency structures, or ordered rule
+roles remain distinct. It performs no theorem rewriting, commutative or
+associative sorting, proof minimization, or other mathematical-equivalence
+search.
+
+Proof admission uses this order:
+
+```text
+structurally decode the complete input certificate
+derive its proof normal form
+mathematically check every normal-form step exactly once
+require a closed conclusion
+```
+
+Structural decoding still validates the complete input framing, size limits,
+formula encoding, and backward-reference discipline before anything can be
+pruned. Mathematical validity belongs only to the root-reachable normal form:
+an unreachable invalid schema or inference step has no effect on admission,
+while every reachable invalid step remains and is rejected. Mathematical
+errors identify normal-form step indices and normalized free-variable IDs.
+
+A later admission layer can require canonical submissions by comparing the
+submitted bytes with the derived normal-form bytes before checking that normal
+form once. That admission policy is outside this V0 certificate contract;
+canonical equality never replaces mathematical checking.
+
+### Normal-form golden vector
+
+The following two structurally valid certificates differ in encoded order,
+free-variable identifiers, and their unused fixed-ZFC step. Each also contains
+duplicate equality-reflexivity and generalization nodes.
+
+Input A:
+
+```text
+00 00000006
+10 01
+06 00000007
+06 00000007
+21 00000001 00000007
+21 00000002 00000007
+20 00000003 00000004
+```
+
+Input B:
+
+```text
+00 00000006
+06 0000002a
+10 06
+21 00000000 0000002a
+06 0000002a
+21 00000003 0000002a
+20 00000002 00000004
+```
+
+Both normalize to these exact bytes:
+
+```text
+00 00000003
+06 00000000
+21 00000000 00000000
+20 00000001 00000001
+```
+
+The unused ZFC step is removed, the duplicate nodes share one output index,
+free variable `7` or `42` becomes `0`, and both modus-ponens references become
+`1`. The final modus-ponens step is intentionally not mathematically valid;
+this vector isolates the structural normal form and must not be admitted as a
+checked proof.
 
 ## Golden certificate
 

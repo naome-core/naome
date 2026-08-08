@@ -11,7 +11,7 @@ use std::fmt;
 use naome_foundation::{
     FORMULA_V0_MAX_DEPTH, Formula, FormulaCodecError, LogicError, LogicV0, SchemaError,
 };
-use naome_proof::{CERTIFICATE_V0_MAX_BYTES, ProofCertificateV0, ProofStepV0};
+use naome_proof::{CERTIFICATE_V0_MAX_BYTES, ProofCertificateV0, ProofNormalFormV0, ProofStepV0};
 
 /// Maximum cumulative canonical formula work admitted by Checker V0.
 ///
@@ -39,7 +39,7 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
             .expect("ProofCertificateV0 limits make every step index representable");
 
         let formula = derive_step(position, step, &results, &mut remaining_work)?;
-        for reference in references(step).into_iter().flatten() {
+        for reference in step.local_references().into_iter().flatten() {
             let reference = reference as usize;
             if last_uses[reference] == Some(position) {
                 results[reference] = None;
@@ -71,29 +71,31 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
     Ok(conclusion)
 }
 
+/// Normalizes one certificate and checks its canonical proof exactly once.
+///
+/// Unreachable input steps are not part of the root proof and are removed
+/// before mathematical checking. Reachable steps are checked in their
+/// deterministic normal-form order.
+pub fn normalize_and_check(
+    certificate: ProofCertificateV0,
+) -> Result<(ProofNormalFormV0, Formula), CheckError> {
+    let normal_form = certificate.into_unchecked_normal_form();
+    let conclusion = check(normal_form.certificate())?;
+    Ok((normal_form, conclusion))
+}
+
 fn last_uses(steps: &[ProofStepV0]) -> Vec<Option<u32>> {
     let mut last_uses = vec![None; steps.len()];
 
     for (position, step) in steps.iter().enumerate() {
         let position = u32::try_from(position)
             .expect("ProofCertificateV0 limits make every step index representable");
-        for reference in references(step).into_iter().flatten() {
+        for reference in step.local_references().into_iter().flatten() {
             last_uses[reference as usize] = Some(position);
         }
     }
 
     last_uses
-}
-
-fn references(step: &ProofStepV0) -> [Option<u32>; 2] {
-    match step {
-        ProofStepV0::ModusPonens {
-            premise,
-            implication,
-        } => [Some(*premise), Some(*implication)],
-        ProofStepV0::Generalization { premise, .. } => [Some(*premise), None],
-        _ => [None, None],
-    }
 }
 
 fn preflight_schema_depth(step: u32, parameter_count: usize) -> Result<(), CheckError> {
@@ -300,7 +302,7 @@ mod tests {
 
     use super::{
         CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, charge_formula_work, check, last_uses,
-        references,
+        normalize_and_check,
     };
 
     fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
@@ -421,6 +423,42 @@ mod tests {
 
         assert_eq!(check(&direct), check(&decoded));
         assert_eq!(check(&decoded), Ok(closed_equality(x)));
+    }
+
+    #[test]
+    fn reordered_and_renamed_proofs_share_one_checked_normal_form() {
+        let first = identity_proof(FreeVariable::new(7), false);
+        let reordered = identity_proof(FreeVariable::new(42), true);
+        let (first, expected) = normalize_and_check(first).unwrap();
+        let (reordered, reordered_conclusion) = normalize_and_check(reordered).unwrap();
+
+        assert_eq!(reordered_conclusion, expected);
+        assert_eq!(
+            first.certificate().to_canonical_bytes(),
+            reordered.certificate().to_canonical_bytes()
+        );
+    }
+
+    #[test]
+    fn alternative_derivations_keep_distinct_normal_forms() {
+        let x = FreeVariable::new(5);
+        let direct = certificate(vec![
+            ProofStepV0::EqualityReflexivity { variable: x },
+            ProofStepV0::Generalization {
+                premise: 0,
+                variable: x,
+            },
+        ]);
+        let detour = identity_proof(x, false);
+
+        let (direct, direct_conclusion) = normalize_and_check(direct).unwrap();
+        let (detour, detour_conclusion) = normalize_and_check(detour).unwrap();
+
+        assert_eq!(direct_conclusion, detour_conclusion);
+        assert_ne!(
+            direct.certificate().to_canonical_bytes(),
+            detour.certificate().to_canonical_bytes()
+        );
     }
 
     #[test]
@@ -575,10 +613,11 @@ mod tests {
 
         assert_eq!(last_uses(&steps), [Some(3), Some(3), None, None]);
         assert_eq!(
-            references(&ProofStepV0::ModusPonens {
+            ProofStepV0::ModusPonens {
                 premise: 7,
                 implication: 7,
-            }),
+            }
+            .local_references(),
             [Some(7), Some(7)]
         );
         assert_eq!(
@@ -588,10 +627,11 @@ mod tests {
     }
 
     #[test]
-    fn checker_reports_the_first_invalid_step_even_when_it_is_unused() {
+    fn normalization_discards_invalid_unreachable_steps_before_checking() {
         let element = FreeVariable::new(1);
         let source = FreeVariable::new(2);
         let result = FreeVariable::new(3);
+        let root = FreeVariable::new(4);
         let invalid = Separation {
             predicate: Formula::equal(result, result),
             element,
@@ -601,7 +641,11 @@ mod tests {
         };
         let proof = certificate(vec![
             ProofStepV0::Separation(invalid),
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Extensionality),
+            ProofStepV0::EqualityReflexivity { variable: root },
+            ProofStepV0::Generalization {
+                premise: 1,
+                variable: root,
+            },
         ]);
 
         assert_eq!(
@@ -609,6 +653,54 @@ mod tests {
             Err(CheckError::Schema {
                 step: 0,
                 source: SchemaError::ForbiddenPredicateVariable(result),
+            })
+        );
+        let (normal, conclusion) = normalize_and_check(proof).unwrap();
+        assert_eq!(normal.certificate().steps().len(), 2);
+        assert_eq!(conclusion, closed_equality(root));
+    }
+
+    #[test]
+    fn normalization_reports_reachable_errors_in_normalized_coordinates() {
+        let x = FreeVariable::new(10);
+        let y = FreeVariable::new(11);
+        let proof = certificate(vec![
+            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStepV0::EqualityReflexivity { variable: x },
+            ProofStepV0::Simplification {
+                antecedent: Formula::equal(y, y),
+                consequent: closed_equality(x),
+            },
+            ProofStepV0::ModusPonens {
+                premise: 1,
+                implication: 2,
+            },
+        ]);
+
+        assert_eq!(
+            normalize_and_check(proof),
+            Err(CheckError::Logic {
+                step: 2,
+                source: LogicError::ModusPonensMismatch,
+            })
+        );
+
+        let element = FreeVariable::new(40);
+        let source = FreeVariable::new(50);
+        let result = FreeVariable::new(60);
+        let proof = certificate(vec![ProofStepV0::Separation(Separation {
+            predicate: Formula::equal(result, result),
+            element,
+            source,
+            result,
+            parameters: Vec::new(),
+        })]);
+
+        assert_eq!(
+            normalize_and_check(proof),
+            Err(CheckError::Schema {
+                step: 0,
+                source: SchemaError::ForbiddenPredicateVariable(FreeVariable::new(0)),
             })
         );
     }
@@ -726,6 +818,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn normalization_preserves_a_valid_proof_conclusion() {
+        let x = FreeVariable::new(1);
+        let proof = identity_proof(x, false);
+        let expected = check(&proof).unwrap();
+        let (normal, conclusion) = normalize_and_check(proof).unwrap();
+
+        assert_eq!(conclusion, expected);
+        assert_eq!(check(normal.certificate()), Ok(expected));
     }
 
     #[test]
@@ -1024,5 +1127,33 @@ mod tests {
 
         let child = balanced_closed_formula(depth - 1, variable);
         Formula::implies(child.clone(), child)
+    }
+
+    fn identity_proof(variable: FreeVariable, reordered: bool) -> ProofCertificateV0 {
+        let formula = Formula::equal(variable, variable);
+        let axiom = ProofStepV0::Simplification {
+            antecedent: formula.clone(),
+            consequent: formula,
+        };
+        let reflexivity = ProofStepV0::EqualityReflexivity { variable };
+        let mut steps = if reordered {
+            vec![axiom, reflexivity]
+        } else {
+            vec![reflexivity, axiom]
+        };
+        let (premise, implication) = if reordered { (1, 0) } else { (0, 1) };
+        steps.push(ProofStepV0::ModusPonens {
+            premise,
+            implication,
+        });
+        steps.push(ProofStepV0::ModusPonens {
+            premise,
+            implication: 2,
+        });
+        steps.push(ProofStepV0::Generalization {
+            premise: 3,
+            variable,
+        });
+        certificate(steps)
     }
 }
