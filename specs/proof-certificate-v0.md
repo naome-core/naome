@@ -310,9 +310,10 @@ and does not claim that the selected proof exists.
 Mathematical checking resolves each reachable reference from an immutable
 `ProofStateV0`. That state can only be populated from `CheckedProofV0` values,
 so callers cannot attach an arbitrary formula to an identity. The state maps
-each `ProofId` to its `StatementId` and stores the closed canonical conclusion
-only once per `StatementId`. Alternative proofs of one statement therefore
-remain separately citable without duplicating their conclusion in memory.
+each `ProofId` through its `DerivationId` to its `StatementId` and stores the
+closed canonical conclusion only once per `StatementId`. Genuinely different
+derivations of one statement therefore remain separately citable without
+duplicating their conclusion in memory.
 
 Resolution is local and deterministic:
 
@@ -326,17 +327,17 @@ Resolution is local and deterministic:
   during proof admission.
 
 A reference may itself be the checked root: this is valid proof by citation.
-Registration is stricter than mathematical checking. `ProofStateV0` rejects an
-already registered `ProofId` or a missing cited dependency. Detectable identity
-conflicts fail closed rather than replacing existing state. Transitive
-derivation novelty and reward eligibility require complete dependency ancestry
-and remain future block-admission policy; this in-memory resolver does not
-claim to enforce them.
+Its `DerivationId` is exactly the referenced derivation identity. Registration
+is stricter than mathematical checking: `ProofStateV0` rejects an already
+registered `ProofId`, an already registered `DerivationId`, or a missing cited
+dependency. Detectable identity conflicts fail closed rather than replacing
+existing state.
 
 The chosen citation remains part of the referencing proof's canonical bytes.
-Two proofs that derive the same conclusion through different concrete cited
-`ProofId` values therefore share a `StatementId` but have different `ProofId`
-values themselves.
+Changing only the boundary between inlined steps and references therefore
+changes `ProofId` but not `DerivationId`. Citing genuinely different
+derivations of the same statement changes both the dependent derivation and
+its concrete proof artifact.
 
 For the checked proof in the content-identity golden vector below, the exact
 reference-only certificate is:
@@ -349,8 +350,12 @@ reference-only certificate is:
 Its conclusion retains the golden `StatementId`, while the citation proof has:
 
 ```text
-ProofId = c1d38d88a33f3015d797eccf9f391540ffdedafeedcc553e07ed328b5a88fa71
+DerivationId = d19ab345081f610cd2ab47d68cc7fe8616818768227074fad2c2d83cacf5a449
+ProofId      = c1d38d88a33f3015d797eccf9f391540ffdedafeedcc553e07ed328b5a88fa71
 ```
+
+The derivation identity equals that of the cited proof, so registering this
+alias after the cited proof fails as a duplicate derivation.
 
 This in-memory state is the resolver contract, not a persistent blockchain
 database. A later block layer can hold an immutable parent-state borrow while
@@ -360,12 +365,14 @@ synchronization remain outside this V0 contract.
 
 ## Content identity
 
-Successful proof admission produces two distinct 32-byte content identities:
+Successful proof admission produces three distinct 32-byte content identities:
 
 - `StatementId` identifies the checked closed conclusion independently of its
   derivation; and
-- `ProofId` identifies that statement together with its checked proof normal
-  form.
+- `DerivationId` identifies the checked inference DAG independently of which
+  subgraphs were packaged inline or cited; and
+- `ProofId` identifies the concrete checked proof normal form, including its
+  chosen citation boundaries and cited `ProofId` values.
 
 Both identities use SHA-256 as specified by FIPS 180-4. They are bound to the
 exact UTF-8 bytes of the immutable Foundation V0 identifier
@@ -377,6 +384,7 @@ The exact domain byte strings include their final `00` byte:
 ```text
 statement_domain = 6e616f6d653a73746174656d656e743a763000
 proof_domain     = 6e616f6d653a70726f6f663a763000
+derivation_node_domain = 6e616f6d653a64657269766174696f6e2d6e6f64653a763000
 foundation       = 6e616f6d653a7a66633a7630
 ```
 
@@ -402,14 +410,58 @@ ProofId = SHA256(
 )
 ```
 
+`DerivationId` is computed compositionally while Checker V0 reconstructs the
+normal proof. For every local, non-reference step, let `result_bytes` be its
+reconstructed Formula V0 bytes after renumbering that result's free variables
+to `0, 1, ...` by first occurrence in canonical prefix order. Bound De Bruijn
+indices remain unchanged. This per-node normalization makes the reconstructed
+formula the node's canonical variable interface and prevents identifiers that
+are local to one proof fragment from leaking across an inline/reference
+boundary.
+
+The node derivation identity is:
+
+```text
+node_derivation = SHA256(
+    derivation_node_domain
+    || u32be(length(foundation))
+    || foundation
+    || rule_tag
+    || u32be(length(result_bytes))
+    || result_bytes
+    || ordered_parent_derivation_ids
+)
+```
+
+`rule_tag` is the one-byte certificate step tag. Primitive axiom and schema
+steps have no parents. Modus ponens appends exactly two raw 32-byte parent
+identities in premise-then-implication order; generalization appends exactly
+one premise identity. The rule tag fixes this arity, so no parent count is
+encoded. A `ProofReference` creates no derivation node: it returns the resolved
+proof's registered `DerivationId` unchanged. The final step's value is the
+checked proof's `DerivationId`.
+
+This transcript is defined for exactly the V0 rules above. A future rule whose
+result and ordered parent identities do not preserve its complete variable
+wiring must define additional canonical witness bytes or use a new derivation
+identity version; it cannot silently reuse this transcript.
+
 `statement_bytes` are the canonical Formula V0 bytes of the checked closed
 conclusion. `normal_proof_bytes` are the canonical certificate bytes carried
 by the checked `ProofNormalFormV0`, never the unnormalized submitted bytes.
 Consequently, presentation-only step order, systematic free-variable renaming,
-unreachable steps, and exact duplicate nodes do not change either identity.
-Different valid derivations of one conclusion share a `StatementId` but have
-different `ProofId` values. No logical-equivalence search is performed, so
-structurally different closed formulas retain different statement identities.
+unreachable steps, and exact duplicate nodes do not change any identity.
+Inlining or citing an already checked subderivation can change `ProofId` but
+does not change `DerivationId`. Repeated reference-only aliases also retain the
+referenced `DerivationId` and are rejected as duplicates at registration.
+
+Different inference DAGs of one conclusion share a `StatementId` but normally
+have different `DerivationId` and `ProofId` values. No logical-equivalence,
+proof-minimization, or detour-elimination search is performed. Structurally
+different closed formulas retain different statement identities, and reachable
+alternative derivations remain distinct. Any future theorem-novelty or reward
+policy must therefore use `StatementId`, not the number of distinct proof or
+derivation artifacts.
 
 An identity is an address, not proof that its content exists or is valid.
 Admission must still perform normalization and mathematical checking before it
@@ -429,8 +481,9 @@ normal_proof_bytes = 00000000020600000000210000000000000000
 The resulting identities are:
 
 ```text
-StatementId = 517cddb156208852af848fd6b204b1dca9728f6e52fd6ec9940ef1437b8af15a
-ProofId     = 5a90444e9a1f0e0138eb5bbca12d322ff705e55d155a9273474714dc698ae1bf
+StatementId  = 517cddb156208852af848fd6b204b1dca9728f6e52fd6ec9940ef1437b8af15a
+DerivationId = d19ab345081f610cd2ab47d68cc7fe8616818768227074fad2c2d83cacf5a449
+ProofId      = 5a90444e9a1f0e0138eb5bbca12d322ff705e55d155a9273474714dc698ae1bf
 ```
 
 ## Golden certificate

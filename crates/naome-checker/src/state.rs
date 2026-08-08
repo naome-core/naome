@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt;
 
 use naome_foundation::Formula;
-use naome_proof::{ProofId, ProofStepV0, StatementId};
+use naome_proof::{DerivationId, ProofId, ProofStepV0, StatementId};
 
 use crate::CheckedProofV0;
 
@@ -11,12 +11,14 @@ use crate::CheckedProofV0;
 ///
 /// This in-memory state can only be extended with [`CheckedProofV0`] values.
 /// It stores each closed conclusion once per [`StatementId`] while retaining
-/// every distinct [`ProofId`] that may be cited. Blocks, persistence, reorgs,
-/// and network synchronization are deliberately outside this type.
+/// one concrete [`ProofId`] for every distinct checked derivation that may be
+/// cited. Blocks, persistence, reorgs, and network synchronization are
+/// deliberately outside this type.
 #[derive(Default)]
 #[must_use]
 pub struct ProofStateV0 {
-    proofs: BTreeMap<ProofId, StatementId>,
+    proofs: BTreeMap<ProofId, DerivationId>,
+    derivations: BTreeMap<DerivationId, StatementId>,
     statements: BTreeMap<StatementId, StoredStatementV0>,
 }
 
@@ -25,6 +27,7 @@ impl ProofStateV0 {
     pub const fn new() -> Self {
         Self {
             proofs: BTreeMap::new(),
+            derivations: BTreeMap::new(),
             statements: BTreeMap::new(),
         }
     }
@@ -34,14 +37,25 @@ impl ProofStateV0 {
         self.proofs.contains_key(&proof_id)
     }
 
+    /// Returns whether the state already contains the selected derivation.
+    pub fn contains_derivation(&self, derivation_id: DerivationId) -> bool {
+        self.derivations.contains_key(&derivation_id)
+    }
+
     /// Registers one checked proof without replacing existing state.
     ///
     /// Every external proof cited by the checked normal form must already be
     /// present. This keeps the registry dependency-closed even when a checked
     /// proof is moved from a different state.
     pub fn register(&mut self, proof: CheckedProofV0) -> Result<(), ProofStateError> {
-        if let Some(existing_statement_id) = self.proofs.get(&proof.proof_id) {
-            return if *existing_statement_id == proof.statement_id {
+        if let Some(existing_derivation_id) = self.proofs.get(&proof.proof_id) {
+            let existing_statement_id = self
+                .derivations
+                .get(existing_derivation_id)
+                .expect("every registered proof has a registered derivation");
+            return if *existing_derivation_id == proof.derivation_id
+                && *existing_statement_id == proof.statement_id
+            {
                 Err(ProofStateError::DuplicateProof {
                     proof_id: proof.proof_id,
                 })
@@ -62,10 +76,23 @@ impl ProofStateV0 {
             }
         }
 
+        if let Some(existing_statement_id) = self.derivations.get(&proof.derivation_id) {
+            return if *existing_statement_id == proof.statement_id {
+                Err(ProofStateError::DuplicateDerivation {
+                    derivation_id: proof.derivation_id,
+                })
+            } else {
+                Err(ProofStateError::DerivationIdentityCollision {
+                    derivation_id: proof.derivation_id,
+                })
+            };
+        }
+
         let CheckedProofV0 {
             normal_form: _,
             conclusion,
             statement_id,
+            derivation_id,
             proof_id,
             canonical_conclusion_length,
         } = proof;
@@ -82,13 +109,18 @@ impl ProofStateV0 {
                 });
             }
         }
-        self.proofs.insert(proof_id, statement_id);
+        self.derivations.insert(derivation_id, statement_id);
+        self.proofs.insert(proof_id, derivation_id);
 
         Ok(())
     }
 
     pub(crate) fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProofV0<'_>> {
-        let statement_id = self.proofs.get(&proof_id)?;
+        let derivation_id = *self.proofs.get(&proof_id)?;
+        let statement_id = self
+            .derivations
+            .get(&derivation_id)
+            .expect("every registered proof has a registered derivation");
         let statement = self
             .statements
             .get(statement_id)
@@ -96,6 +128,7 @@ impl ProofStateV0 {
         Some(ResolvedProofV0 {
             conclusion: &statement.conclusion,
             canonical_length: statement.canonical_length,
+            derivation_id,
         })
     }
 }
@@ -108,6 +141,7 @@ struct StoredStatementV0 {
 pub(crate) struct ResolvedProofV0<'a> {
     pub(crate) conclusion: &'a Formula,
     pub(crate) canonical_length: usize,
+    pub(crate) derivation_id: DerivationId,
 }
 
 /// A fail-closed checked-proof state registration failure.
@@ -116,8 +150,12 @@ pub(crate) struct ResolvedProofV0<'a> {
 pub enum ProofStateError {
     /// The selected concrete proof is already registered.
     DuplicateProof { proof_id: ProofId },
+    /// The selected inference DAG is already registered under another proof.
+    DuplicateDerivation { derivation_id: DerivationId },
     /// One proof digest would identify checked records for different statements.
     ProofIdentityCollision { proof_id: ProofId },
+    /// One derivation digest would identify checked records for different statements.
+    DerivationIdentityCollision { derivation_id: DerivationId },
     /// One digest would identify two structurally different conclusions.
     StatementIdentityCollision { statement_id: StatementId },
     /// A cited proof is absent from this state.
@@ -130,8 +168,14 @@ impl fmt::Display for ProofStateError {
             Self::DuplicateProof { .. } => {
                 formatter.write_str("checked proof is already registered")
             }
+            Self::DuplicateDerivation { .. } => {
+                formatter.write_str("checked derivation is already registered")
+            }
             Self::ProofIdentityCollision { .. } => {
                 formatter.write_str("proof identity resolves to conflicting checked records")
+            }
+            Self::DerivationIdentityCollision { .. } => {
+                formatter.write_str("derivation identity resolves to conflicting checked records")
             }
             Self::StatementIdentityCollision { .. } => {
                 formatter.write_str("statement identity resolves to conflicting conclusions")
@@ -194,13 +238,19 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(direct.statement_id, detour.statement_id);
+        assert_ne!(direct.derivation_id, detour.derivation_id);
         assert_ne!(direct.proof_id, detour.proof_id);
+        let direct_derivation_id = direct.derivation_id;
+        let detour_derivation_id = detour.derivation_id;
 
         let mut state = ProofStateV0::new();
         state.register(direct).unwrap();
         state.register(detour).unwrap();
 
+        assert!(state.contains_derivation(direct_derivation_id));
+        assert!(state.contains_derivation(detour_derivation_id));
         assert_eq!(state.proofs.len(), 2);
+        assert_eq!(state.derivations.len(), 2);
         assert_eq!(state.statements.len(), 1);
     }
 
@@ -210,6 +260,7 @@ mod tests {
         let original = direct_identity(x);
         let original_proof_id = original.proof_id;
         let original_statement_id = original.statement_id;
+        let original_derivation_id = original.derivation_id;
         let mut state = ProofStateV0::new();
         state.register(original).unwrap();
 
@@ -233,6 +284,49 @@ mod tests {
             })
         );
 
+        let mut duplicate_derivation = normalize_and_check(certificate(vec![
+            ProofStepV0::EqualityReflexivity { variable: x },
+            ProofStepV0::Simplification {
+                antecedent: Formula::equal(x, x),
+                consequent: Formula::equal(x, x),
+            },
+            ProofStepV0::ModusPonens {
+                premise: 0,
+                implication: 1,
+            },
+            ProofStepV0::ModusPonens {
+                premise: 0,
+                implication: 2,
+            },
+            ProofStepV0::Generalization {
+                premise: 3,
+                variable: x,
+            },
+        ]))
+        .unwrap();
+        let duplicate_derivation_proof_id = duplicate_derivation.proof_id;
+        duplicate_derivation.derivation_id = original_derivation_id;
+        assert_eq!(
+            state.register(duplicate_derivation),
+            Err(ProofStateError::DuplicateDerivation {
+                derivation_id: original_derivation_id,
+            })
+        );
+
+        let mut conflicting_derivation =
+            normalize_and_check(certificate(vec![ProofStepV0::ZfcAxiom(
+                naome_foundation::ZfcAxiom::Pairing,
+            )]))
+            .unwrap();
+        let conflicting_derivation_proof_id = conflicting_derivation.proof_id;
+        conflicting_derivation.derivation_id = original_derivation_id;
+        assert_eq!(
+            state.register(conflicting_derivation),
+            Err(ProofStateError::DerivationIdentityCollision {
+                derivation_id: original_derivation_id,
+            })
+        );
+
         let mut conflicting_statement =
             normalize_and_check(certificate(vec![ProofStepV0::ZfcAxiom(
                 naome_foundation::ZfcAxiom::Extensionality,
@@ -248,7 +342,10 @@ mod tests {
         );
 
         assert_eq!(state.proofs.len(), 1);
+        assert_eq!(state.derivations.len(), 1);
         assert_eq!(state.statements.len(), 1);
         assert!(!state.contains_proof(conflicting_proof_id));
+        assert!(!state.contains_proof(duplicate_derivation_proof_id));
+        assert!(!state.contains_proof(conflicting_derivation_proof_id));
     }
 }

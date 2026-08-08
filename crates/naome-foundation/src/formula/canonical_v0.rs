@@ -4,6 +4,7 @@
 //! [`Formula`]'s well-formedness invariant. The byte format belongs to the
 //! proof protocol, not to the abstract Foundation V0 identity.
 
+use std::collections::{BTreeMap, btree_map::Entry};
 use std::error::Error;
 use std::fmt;
 
@@ -41,7 +42,30 @@ impl Formula {
     pub fn encode_canonical_v0(&self) -> Result<Vec<u8>, FormulaCodecError> {
         let mut output = Vec::new();
         let mut nodes = 0;
-        encode_node(&self.0, 0, &mut nodes, &mut output)?;
+        encode_node(
+            &self.0,
+            0,
+            &mut nodes,
+            &mut FreeVariableEncoding::Preserve,
+            &mut output,
+        )?;
+        Ok(output)
+    }
+
+    /// Encodes this formula after canonicalizing its free-variable identifiers.
+    ///
+    /// Free variables are renumbered to `0, 1, ...` by first occurrence in the
+    /// existing canonical traversal order. Bound De Bruijn indices remain
+    /// unchanged. This representation is used for proof-fragment identities;
+    /// it does not replace [`Self::encode_canonical_v0`] on the certificate wire.
+    pub fn encode_free_variable_normalized_v0(&self) -> Result<Vec<u8>, FormulaCodecError> {
+        let mut output = Vec::new();
+        let mut nodes = 0;
+        let mut variables = FreeVariableEncoding::Normalize {
+            identifiers: BTreeMap::new(),
+            next_identifier: 0,
+        };
+        encode_node(&self.0, 0, &mut nodes, &mut variables, &mut output)?;
         Ok(output)
     }
 
@@ -75,6 +99,7 @@ fn encode_node(
     node: &Node,
     depth: u32,
     nodes: &mut usize,
+    variables: &mut FreeVariableEncoding,
     output: &mut Vec<u8>,
 ) -> Result<(), FormulaCodecError> {
     check_depth(depth)?;
@@ -83,40 +108,70 @@ fn encode_node(
     match node {
         Node::Equal(left, right) => {
             output.push(EQUAL);
-            encode_variable(*left, output);
-            encode_variable(*right, output);
+            encode_variable(*left, variables, output);
+            encode_variable(*right, variables, output);
         }
         Node::Member(element, set) => {
             output.push(MEMBER);
-            encode_variable(*element, output);
-            encode_variable(*set, output);
+            encode_variable(*element, variables, output);
+            encode_variable(*set, variables, output);
         }
         Node::Not(formula) => {
             output.push(NOT);
-            encode_node(formula, depth + 1, nodes, output)?;
+            encode_node(formula, depth + 1, nodes, variables, output)?;
         }
         Node::Implies(antecedent, consequent) => {
             output.push(IMPLIES);
-            encode_node(antecedent, depth + 1, nodes, output)?;
-            encode_node(consequent, depth + 1, nodes, output)?;
+            encode_node(antecedent, depth + 1, nodes, variables, output)?;
+            encode_node(consequent, depth + 1, nodes, variables, output)?;
         }
         Node::ForAll(body) => {
             output.push(FOR_ALL);
-            encode_node(body, depth + 1, nodes, output)?;
+            encode_node(body, depth + 1, nodes, variables, output)?;
         }
     }
 
     Ok(())
 }
 
-fn encode_variable(variable: Variable, output: &mut Vec<u8>) {
+fn encode_variable(variable: Variable, variables: &mut FreeVariableEncoding, output: &mut Vec<u8>) {
     let (tag, value) = match variable {
-        Variable::Free(variable) => (FREE_VARIABLE, variable.identifier()),
+        Variable::Free(variable) => (FREE_VARIABLE, variables.identifier(variable)),
         Variable::Bound(index) => (BOUND_VARIABLE, index),
     };
 
     output.push(tag);
     output.extend_from_slice(&value.to_be_bytes());
+}
+
+enum FreeVariableEncoding {
+    Preserve,
+    Normalize {
+        identifiers: BTreeMap<FreeVariable, u32>,
+        next_identifier: u32,
+    },
+}
+
+impl FreeVariableEncoding {
+    fn identifier(&mut self, variable: FreeVariable) -> u32 {
+        match self {
+            Self::Preserve => variable.identifier(),
+            Self::Normalize {
+                identifiers,
+                next_identifier,
+            } => match identifiers.entry(variable) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    let identifier = *next_identifier;
+                    *next_identifier = next_identifier
+                        .checked_add(1)
+                        .expect("the V0 node limit bounds distinct free variables");
+                    entry.insert(identifier);
+                    identifier
+                }
+            },
+        }
+    }
 }
 
 fn decode_node(
@@ -341,6 +396,54 @@ mod tests {
             [
                 0x02, 0x03, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x00, 0x05, 0x06, 0x07, 0x08, 0x01,
                 0x00, 0x05, 0x06, 0x07, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04,
+            ]
+        );
+    }
+
+    #[test]
+    fn free_variable_normalized_bytes_ignore_identifiers_but_preserve_aliasing() {
+        let x = FreeVariable::new(7);
+        let y = FreeVariable::new(42);
+        let renamed_x = FreeVariable::new(900);
+        let renamed_y = FreeVariable::new(3);
+        let first = Formula::implies(Formula::equal(x, y), Formula::member(y, x));
+        let renamed = Formula::implies(
+            Formula::equal(renamed_x, renamed_y),
+            Formula::member(renamed_y, renamed_x),
+        );
+        let distinct = Formula::implies(Formula::equal(x, x), Formula::member(y, x));
+
+        let expected = [
+            0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        assert_eq!(
+            first.encode_free_variable_normalized_v0().unwrap(),
+            expected
+        );
+        assert_eq!(
+            renamed.encode_free_variable_normalized_v0(),
+            first.encode_free_variable_normalized_v0()
+        );
+        assert_ne!(
+            distinct.encode_free_variable_normalized_v0(),
+            first.encode_free_variable_normalized_v0()
+        );
+    }
+
+    #[test]
+    fn free_variable_normalization_leaves_bound_indices_unchanged() {
+        let x = FreeVariable::new(19);
+        let y = FreeVariable::new(41);
+        let normalized = Formula::for_all(x, Formula::member(y, x))
+            .encode_free_variable_normalized_v0()
+            .unwrap();
+
+        assert_eq!(
+            normalized,
+            [
+                0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
             ]
         );
     }

@@ -17,7 +17,7 @@ use naome_foundation::{
     Formula, FormulaCodecError, FreeVariable, Replacement, Separation, ZfcAxiom,
 };
 
-pub use identity::{ProofId, StatementId};
+pub use identity::{DerivationId, ProofId, StatementId};
 
 /// Maximum encoded length admitted for one V0 proof certificate.
 pub const CERTIFICATE_V0_MAX_BYTES: usize = 4_194_304;
