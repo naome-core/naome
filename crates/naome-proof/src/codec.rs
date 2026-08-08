@@ -1,26 +1,14 @@
 use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
 
 use crate::{
-    CERTIFICATE_V0_MAX_BYTES, CERTIFICATE_V0_MAX_STEPS, ProofCertificateError, ProofCertificateV0,
-    ProofId, ProofStepV0, validate_step_references,
+    CERTIFICATE_V0_MAX_BYTES, CERTIFICATE_V0_MAX_STEPS, CLASSICAL_CONTRAPOSITION,
+    EQUALITY_REFLEXIVITY, EQUALITY_SUBSTITUTION, FREGE, GENERALIZATION, MODUS_PONENS,
+    PROOF_REFERENCE, ProofCertificateError, ProofCertificateV0, ProofId, ProofStepV0, REPLACEMENT,
+    SEPARATION, SIMPLIFICATION, UNIVERSAL_DISTRIBUTION, UNIVERSAL_INSTANTIATION, VACUOUS_UNIVERSAL,
+    ZFC_AXIOM, validate_step_references,
 };
 
 const VERSION: u8 = 0x00;
-
-const SIMPLIFICATION: u8 = 0x00;
-const FREGE: u8 = 0x01;
-const CLASSICAL_CONTRAPOSITION: u8 = 0x02;
-const UNIVERSAL_DISTRIBUTION: u8 = 0x03;
-const VACUOUS_UNIVERSAL: u8 = 0x04;
-const UNIVERSAL_INSTANTIATION: u8 = 0x05;
-const EQUALITY_REFLEXIVITY: u8 = 0x06;
-const EQUALITY_SUBSTITUTION: u8 = 0x07;
-const ZFC_AXIOM: u8 = 0x10;
-const SEPARATION: u8 = 0x11;
-const REPLACEMENT: u8 = 0x12;
-const MODUS_PONENS: u8 = 0x20;
-const GENERALIZATION: u8 = 0x21;
-const PROOF_REFERENCE: u8 = 0x30;
 
 pub(super) fn encode_steps(steps: &[ProofStepV0]) -> Result<Vec<u8>, ProofCertificateError> {
     let step_count =
@@ -78,12 +66,12 @@ pub(super) fn encode_step(
     step: &ProofStepV0,
     output: &mut Vec<u8>,
 ) -> Result<(), ProofCertificateError> {
+    output.push(step.canonical_tag_v0());
     match step {
         ProofStepV0::Simplification {
             antecedent,
             consequent,
         } => {
-            output.push(SIMPLIFICATION);
             write_formula(antecedent, output)?;
             write_formula(consequent, output)?;
         }
@@ -92,7 +80,6 @@ pub(super) fn encode_step(
             second,
             third,
         } => {
-            output.push(FREGE);
             write_formula(first, output)?;
             write_formula(second, output)?;
             write_formula(third, output)?;
@@ -101,7 +88,6 @@ pub(super) fn encode_step(
             antecedent,
             consequent,
         } => {
-            output.push(CLASSICAL_CONTRAPOSITION);
             write_formula(antecedent, output)?;
             write_formula(consequent, output)?;
         }
@@ -110,13 +96,11 @@ pub(super) fn encode_step(
             antecedent,
             consequent,
         } => {
-            output.push(UNIVERSAL_DISTRIBUTION);
             write_variable(*variable, output);
             write_formula(antecedent, output)?;
             write_formula(consequent, output)?;
         }
         ProofStepV0::VacuousUniversal { formula } => {
-            output.push(VACUOUS_UNIVERSAL);
             write_formula(formula, output)?;
         }
         ProofStepV0::UniversalInstantiation {
@@ -124,27 +108,22 @@ pub(super) fn encode_step(
             replacement,
             body,
         } => {
-            output.push(UNIVERSAL_INSTANTIATION);
             write_variable(*variable, output);
             write_variable(*replacement, output);
             write_formula(body, output)?;
         }
         ProofStepV0::EqualityReflexivity { variable } => {
-            output.push(EQUALITY_REFLEXIVITY);
             write_variable(*variable, output);
         }
         ProofStepV0::EqualitySubstitution { from, to, body } => {
-            output.push(EQUALITY_SUBSTITUTION);
             write_variable(*from, output);
             write_variable(*to, output);
             write_formula(body, output)?;
         }
         ProofStepV0::ZfcAxiom(axiom) => {
-            output.push(ZFC_AXIOM);
             output.push(encode_zfc_axiom(*axiom));
         }
         ProofStepV0::Separation(instance) => {
-            output.push(SEPARATION);
             write_formula(&instance.predicate, output)?;
             write_variable(instance.element, output);
             write_variable(instance.source, output);
@@ -152,7 +131,6 @@ pub(super) fn encode_step(
             write_variables(&instance.parameters, output)?;
         }
         ProofStepV0::Replacement(instance) => {
-            output.push(REPLACEMENT);
             write_formula(&instance.predicate, output)?;
             write_variable(instance.input, output);
             write_variable(instance.output, output);
@@ -162,19 +140,16 @@ pub(super) fn encode_step(
             write_variables(&instance.parameters, output)?;
         }
         ProofStepV0::ProofReference { proof_id } => {
-            output.push(PROOF_REFERENCE);
             output.extend_from_slice(proof_id.as_bytes());
         }
         ProofStepV0::ModusPonens {
             premise,
             implication,
         } => {
-            output.push(MODUS_PONENS);
             write_u32(*premise, output);
             write_u32(*implication, output);
         }
         ProofStepV0::Generalization { premise, variable } => {
-            output.push(GENERALIZATION);
             write_u32(*premise, output);
             write_variable(*variable, output);
         }
