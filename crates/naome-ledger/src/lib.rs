@@ -1,9 +1,9 @@
 //! Deterministic single-proof ledger state transitions for NAOME.
 //!
 //! A [`LedgerStateV0`] admits exactly one proof certificate per call. The
-//! candidate is normalized and checked against the already accepted parent
+//! candidate is normalized and checked against the accepted pre-transition
 //! state, then registered only after checking succeeds. Consequently, a proof
-//! can cite only previously accepted proofs. Blocks, persistence, undo,
+//! can cite only proofs present in that state. Blocks, persistence, undo,
 //! rewards, networking, and source parsing remain outside this crate.
 
 use std::error::Error;
@@ -15,9 +15,9 @@ use naome_proof::{DerivationId, ProofCertificateV0, ProofId, StatementId};
 /// The novelty of an accepted proof's closed statement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatementNoveltyV0 {
-    /// The statement was absent from the accepted parent state.
+    /// The statement was absent from the accepted pre-transition state.
     New,
-    /// The statement already had another accepted derivation.
+    /// The statement was present and this distinct derivation was accepted.
     Existing,
 }
 
@@ -123,7 +123,7 @@ impl LedgerStateV0 {
 pub enum LedgerError {
     /// Proof normalization or mathematical checking failed.
     Check { source: CheckError },
-    /// The checked proof could not be registered in the parent state.
+    /// The checked proof could not be registered in the pre-transition state.
     State { source: ProofStateError },
 }
 
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn first_and_alternative_derivations_report_statement_novelty() {
+    fn absent_and_present_statements_report_state_relative_novelty() {
         let variable = FreeVariable::new(7);
         let mut ledger = LedgerStateV0::new();
 
@@ -261,15 +261,15 @@ mod tests {
     }
 
     #[test]
-    fn references_resolve_only_after_the_parent_proof_was_applied() {
+    fn references_resolve_only_from_the_selected_pre_transition_state() {
         let variable = FreeVariable::new(9);
-        let mut parent = LedgerStateV0::new();
-        let source = parent.apply(identity(variable)).unwrap();
-        let child = referenced_generalization(source.proof_id(), variable);
+        let mut selected = LedgerStateV0::new();
+        let source = selected.apply(identity(variable)).unwrap();
+        let dependent = referenced_generalization(source.proof_id(), variable);
 
         let mut independent = LedgerStateV0::new();
         assert_eq!(
-            independent.apply(child.clone()),
+            independent.apply(dependent.clone()),
             Err(LedgerError::Check {
                 source: CheckError::UnknownProofReference {
                     step: 0,
@@ -279,14 +279,14 @@ mod tests {
         );
         assert!(!independent.contains_proof(source.proof_id()));
 
-        let applied_child = parent.apply(child).unwrap();
-        assert_eq!(applied_child.statement_novelty(), StatementNoveltyV0::New);
-        assert!(parent.contains_proof(applied_child.proof_id()));
-        assert!(!independent.contains_proof(applied_child.proof_id()));
+        let applied = selected.apply(dependent).unwrap();
+        assert_eq!(applied.statement_novelty(), StatementNoveltyV0::New);
+        assert!(selected.contains_proof(applied.proof_id()));
+        assert!(!independent.contains_proof(applied.proof_id()));
     }
 
     #[test]
-    fn one_later_proof_can_use_five_previously_accepted_proofs() {
+    fn one_proof_can_use_five_members_of_the_pre_transition_state() {
         let axioms = [
             ZfcAxiom::Extensionality,
             ZfcAxiom::Pairing,
@@ -319,10 +319,10 @@ mod tests {
                     continue;
                 }
 
-                let parent = incomplete
+                let accepted = incomplete
                     .apply(certificate(vec![ProofStepV0::ZfcAxiom(axiom)]))
                     .unwrap();
-                assert_eq!(parent.proof_id(), references[index].0);
+                assert_eq!(accepted.proof_id(), references[index].0);
             }
 
             assert!(matches!(

@@ -355,14 +355,14 @@ ProofId      = c1d38d88a33f3015d797eccf9f391540ffdedafeedcc553e07ed328b5a88fa71
 ```
 
 The derivation identity equals that of the cited proof, so registering this
-alias after the cited proof fails as a duplicate derivation.
+alias into a state containing the cited proof fails as a duplicate derivation.
 
 This in-memory state is the resolver contract, not a persistent blockchain
 database. Ledger State V0 checks exactly one proof against the unchanged
-accepted parent state and registers that proof only after checking succeeds.
-A future block contains exactly one such proof. Block encoding, storage,
-apply/undo persistence, reorgs, pruning, and network synchronization remain
-outside this V0 contract.
+accepted pre-transition state and registers that proof only after checking
+succeeds. A future block contains exactly one such proof. Block encoding,
+storage, apply/undo persistence, reorgs, pruning, and network synchronization
+remain outside this V0 contract.
 
 ## Content identity
 
