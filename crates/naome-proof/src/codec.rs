@@ -73,7 +73,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<ProofCertificateV0, ProofCertificat
     Ok(ProofCertificateV0 { steps })
 }
 
-fn encode_step(step: &ProofStepV0, output: &mut Vec<u8>) -> Result<(), ProofCertificateError> {
+pub(super) fn encode_step(
+    step: &ProofStepV0,
+    output: &mut Vec<u8>,
+) -> Result<(), ProofCertificateError> {
     match step {
         ProofStepV0::Simplification {
             antecedent,

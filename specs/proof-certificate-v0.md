@@ -181,6 +181,104 @@ classified as open or closed.
 The last reconstructed formula is returned only when it contains no free
 variables. Checker V0 never inserts implicit universal quantifiers.
 
+## Canonical proof normal form
+
+One structurally valid certificate has exactly one V0 proof normal form. The
+normal form is a deterministic projection for future content identity; it is
+not an additional proof rule and does not establish mathematical validity.
+
+Normalization proceeds from the certificate's final step as the root:
+
+1. Traverse only root-reachable steps with an explicit stack. Modus-ponens
+   dependencies are visited as premise then implication; generalization visits
+   its premise. No dependency role is sorted.
+2. Emit each step after its dependencies. This dependency-first postorder makes
+   every remapped local reference point to an earlier output step.
+3. During emission, map each previously unseen free-variable identifier to the
+   smallest unused `u32`, starting at zero. Step fields use their wire order and
+   formulas use canonical prefix order. Bound variables remain De Bruijn
+   indices and are not mapped.
+4. Replace local references with their emitted output indices.
+5. Merge a step only when its normalized step tag, complete payload, and
+   ordered local references have exactly the same canonical bytes as an
+   already-emitted step.
+
+The resulting steps use the existing Certificate V0 envelope and step codec.
+Normalization is idempotent and cannot increase the encoded step count or byte
+length. It is invariant under the original topological order, systematic free
+variable renaming, unreachable steps, and exact duplicate proof nodes.
+
+The normal form does not merge steps merely because the checker derives equal
+formulas from them. Alternative rules, dependency structures, or ordered rule
+roles remain distinct. It performs no theorem rewriting, commutative or
+associative sorting, proof minimization, or other mathematical-equivalence
+search.
+
+Because ordinary Certificate V0 permits and checks unused steps, accepting an
+arbitrary certificate requires this order:
+
+```text
+check the complete input certificate
+derive its proof normal form
+check the normal-form certificate
+require both checked conclusions to be equal
+```
+
+The first check prevents an invalid or over-budget unused step from being
+hidden by reachability pruning. The checker exposes this complete sequence as
+one check-and-normalize operation. The proof crate's unchecked structural
+transformation remains available for a future canonical-only admission boundary:
+that boundary may first require submitted certificate bytes to equal their
+normal-form bytes and then mathematically check only the unchanged normal-form
+certificate. Once the complete input check has succeeded, any normal-form check
+failure or conclusion mismatch is reported as a normalization-invariant
+violation rather than as an input-proof failure.
+
+### Normal-form golden vector
+
+The following two structurally valid certificates differ in encoded order,
+free-variable identifiers, and their unused fixed-ZFC step. Each also contains
+duplicate equality-reflexivity and generalization nodes.
+
+Input A:
+
+```text
+00 00000006
+10 01
+06 00000007
+06 00000007
+21 00000001 00000007
+21 00000002 00000007
+20 00000003 00000004
+```
+
+Input B:
+
+```text
+00 00000006
+06 0000002a
+10 06
+21 00000000 0000002a
+06 0000002a
+21 00000003 0000002a
+20 00000002 00000004
+```
+
+Both normalize to these exact bytes:
+
+```text
+00 00000003
+06 00000000
+21 00000000 00000000
+20 00000001 00000001
+```
+
+The unused ZFC step is removed, the duplicate nodes share one output index,
+free variable `7` or `42` becomes `0`, and both modus-ponens references become
+`1`. The final modus-ponens step is intentionally not mathematically valid;
+this vector isolates the structural normal form and must not be admitted as a
+checked proof.
+
 ## Golden certificate
 
 Equality reflexivity for free variable `0x01020304` is:

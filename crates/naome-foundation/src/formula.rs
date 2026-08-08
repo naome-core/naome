@@ -145,12 +145,22 @@ impl Formula {
     /// Free and bound variables have separate representations, so this
     /// operation cannot capture the replacement variable.
     #[must_use]
-    pub fn substitute_free(mut self, from: FreeVariable, to: FreeVariable) -> Self {
+    pub fn substitute_free(self, from: FreeVariable, to: FreeVariable) -> Self {
         if from == to {
             return self;
         }
 
-        substitute_free(&mut self.0, from, to);
+        self.map_free_variables(|variable| if variable == from { to } else { variable })
+    }
+
+    /// Maps every free variable in canonical formula traversal order.
+    ///
+    /// Bound variables use a separate De Bruijn representation and remain
+    /// unchanged. Each free occurrence is transformed exactly once, so the
+    /// mapping is simultaneous rather than a sequence of substitutions.
+    #[must_use]
+    pub fn map_free_variables(mut self, mut map: impl FnMut(FreeVariable) -> FreeVariable) -> Self {
+        map_free_variables(&mut self.0, &mut map);
         self
     }
 
@@ -255,16 +265,16 @@ fn bind_free(node: &mut Node, depth: u32, binding_index: &impl Fn(FreeVariable) 
     }
 }
 
-fn substitute_free(node: &mut Node, from: FreeVariable, to: FreeVariable) {
+fn map_free_variables(node: &mut Node, map: &mut impl FnMut(FreeVariable) -> FreeVariable) {
     match node {
         Node::Equal(left, right) | Node::Member(left, right) => {
-            *left = substitute_variable(*left, from, to);
-            *right = substitute_variable(*right, from, to);
+            *left = map_free_variable(*left, map);
+            *right = map_free_variable(*right, map);
         }
-        Node::Not(formula) | Node::ForAll(formula) => substitute_free(formula, from, to),
+        Node::Not(formula) | Node::ForAll(formula) => map_free_variables(formula, map),
         Node::Implies(antecedent, consequent) => {
-            substitute_free(antecedent, from, to);
-            substitute_free(consequent, from, to);
+            map_free_variables(antecedent, map);
+            map_free_variables(consequent, map);
         }
     }
 }
@@ -318,10 +328,13 @@ fn bind_variable(
     }
 }
 
-fn substitute_variable(value: Variable, from: FreeVariable, to: FreeVariable) -> Variable {
+fn map_free_variable(
+    value: Variable,
+    map: &mut impl FnMut(FreeVariable) -> FreeVariable,
+) -> Variable {
     match value {
-        Variable::Free(candidate) if candidate == from => Variable::Free(to),
-        _ => value,
+        Variable::Free(variable) => Variable::Free(map(variable)),
+        Variable::Bound(_) => value,
     }
 }
 
@@ -439,6 +452,27 @@ mod tests {
 
         assert_eq!(formula.clone().substitute_free(absent, x), formula);
         assert_eq!(formula.clone().substitute_free(x, x), formula);
+    }
+
+    #[test]
+    fn free_variable_mapping_is_simultaneous_and_preserves_bound_variables() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let z = FreeVariable::new(3);
+        let mapped = Formula::implies(Formula::member(x, y), Formula::equal(y, z))
+            .map_free_variables(|variable| match variable {
+                variable if variable == x => y,
+                variable if variable == y => z,
+                _ => x,
+            });
+
+        assert_eq!(
+            mapped,
+            Formula::implies(Formula::member(y, z), Formula::equal(z, x))
+        );
+
+        let under_binder = Formula::for_all(x, Formula::member(x, y)).map_free_variables(|_| x);
+        assert_eq!(under_binder.primitive_structure(), "all(mem(b0,f1))");
     }
 
     #[test]
