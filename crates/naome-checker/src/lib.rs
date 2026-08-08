@@ -4,6 +4,8 @@
 //! Foundation V0 rules, enforces deterministic formula-processing limits, and
 //! accepts only a closed final formula. It is deliberately in-memory and has
 //! no chain state, external proof dependencies, hashing, or source parsing.
+//! Successful proof admission returns a [`CheckedProofV0`] that keeps the
+//! accepted normal form coupled to its reconstructed conclusion.
 
 use std::error::Error;
 use std::fmt;
@@ -21,6 +23,30 @@ use naome_proof::{CERTIFICATE_V0_MAX_BYTES, ProofCertificateV0, ProofNormalFormV
 /// the maximum encoded certificate length and provides one deterministic bound
 /// for retained formulas and repeated inference work.
 pub const CHECKER_V0_MAX_FORMULA_WORK_BYTES: usize = CERTIFICATE_V0_MAX_BYTES;
+
+/// A normalized Foundation V0 proof accepted by Checker V0.
+///
+/// The private fields keep the accepted normal form coupled to the exact
+/// closed conclusion reconstructed from it. This type does not establish
+/// block admission, chain inclusion, or cryptographic identity.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub struct CheckedProofV0 {
+    normal_form: ProofNormalFormV0,
+    conclusion: Formula,
+}
+
+impl CheckedProofV0 {
+    /// Returns the checked proof's canonical normal form.
+    pub const fn normal_form(&self) -> &ProofNormalFormV0 {
+        &self.normal_form
+    }
+
+    /// Returns the closed conclusion reconstructed by Checker V0.
+    pub const fn conclusion(&self) -> &Formula {
+        &self.conclusion
+    }
+}
 
 /// Checks one structurally valid Foundation V0 proof certificate.
 ///
@@ -75,13 +101,15 @@ pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
 ///
 /// Unreachable input steps are not part of the root proof and are removed
 /// before mathematical checking. Reachable steps are checked in their
-/// deterministic normal-form order.
-pub fn normalize_and_check(
-    certificate: ProofCertificateV0,
-) -> Result<(ProofNormalFormV0, Formula), CheckError> {
+/// deterministic normal-form order. On success, the returned value keeps that
+/// exact normal form coupled to the closed conclusion reconstructed from it.
+pub fn normalize_and_check(certificate: ProofCertificateV0) -> Result<CheckedProofV0, CheckError> {
     let normal_form = certificate.into_unchecked_normal_form();
     let conclusion = check(normal_form.certificate())?;
-    Ok((normal_form, conclusion))
+    Ok(CheckedProofV0 {
+        normal_form,
+        conclusion,
+    })
 }
 
 fn last_uses(steps: &[ProofStepV0]) -> Vec<Option<u32>> {
@@ -429,13 +457,13 @@ mod tests {
     fn reordered_and_renamed_proofs_share_one_checked_normal_form() {
         let first = identity_proof(FreeVariable::new(7), false);
         let reordered = identity_proof(FreeVariable::new(42), true);
-        let (first, expected) = normalize_and_check(first).unwrap();
-        let (reordered, reordered_conclusion) = normalize_and_check(reordered).unwrap();
+        let first = normalize_and_check(first).unwrap();
+        let reordered = normalize_and_check(reordered).unwrap();
 
-        assert_eq!(reordered_conclusion, expected);
+        assert_eq!(reordered, first);
         assert_eq!(
-            first.certificate().to_canonical_bytes(),
-            reordered.certificate().to_canonical_bytes()
+            first.normal_form().certificate().to_canonical_bytes(),
+            reordered.normal_form().certificate().to_canonical_bytes()
         );
     }
 
@@ -451,14 +479,63 @@ mod tests {
         ]);
         let detour = identity_proof(x, false);
 
-        let (direct, direct_conclusion) = normalize_and_check(direct).unwrap();
-        let (detour, detour_conclusion) = normalize_and_check(detour).unwrap();
+        let direct = normalize_and_check(direct).unwrap();
+        let detour = normalize_and_check(detour).unwrap();
 
-        assert_eq!(direct_conclusion, detour_conclusion);
+        assert_eq!(direct.conclusion(), detour.conclusion());
         assert_ne!(
-            direct.certificate().to_canonical_bytes(),
-            detour.certificate().to_canonical_bytes()
+            direct.normal_form().certificate().to_canonical_bytes(),
+            detour.normal_form().certificate().to_canonical_bytes()
         );
+    }
+
+    #[test]
+    fn checked_proof_couples_a_nontrivial_hilbert_derivation_to_its_conclusion() {
+        let x = FreeVariable::new(27);
+        let y = FreeVariable::new(42);
+        let proposition = Formula::member(x, y);
+        let self_implication = Formula::implies(proposition.clone(), proposition.clone());
+        let proof = certificate(vec![
+            ProofStepV0::Simplification {
+                antecedent: proposition.clone(),
+                consequent: proposition.clone(),
+            },
+            ProofStepV0::Simplification {
+                antecedent: proposition.clone(),
+                consequent: self_implication.clone(),
+            },
+            ProofStepV0::Frege {
+                first: proposition.clone(),
+                second: self_implication,
+                third: proposition.clone(),
+            },
+            ProofStepV0::ModusPonens {
+                premise: 1,
+                implication: 2,
+            },
+            ProofStepV0::ModusPonens {
+                premise: 0,
+                implication: 3,
+            },
+            ProofStepV0::Generalization {
+                premise: 4,
+                variable: x,
+            },
+            ProofStepV0::Generalization {
+                premise: 5,
+                variable: y,
+            },
+        ]);
+        let expected = LogicV0::generalization(
+            y,
+            LogicV0::generalization(x, Formula::implies(proposition.clone(), proposition)),
+        );
+
+        let checked = normalize_and_check(proof).unwrap();
+
+        assert_eq!(checked.normal_form().certificate().steps().len(), 7);
+        assert_eq!(checked.conclusion(), &expected);
+        assert_eq!(check(checked.normal_form().certificate()), Ok(expected));
     }
 
     #[test]
@@ -655,9 +732,9 @@ mod tests {
                 source: SchemaError::ForbiddenPredicateVariable(result),
             })
         );
-        let (normal, conclusion) = normalize_and_check(proof).unwrap();
-        assert_eq!(normal.certificate().steps().len(), 2);
-        assert_eq!(conclusion, closed_equality(root));
+        let checked = normalize_and_check(proof).unwrap();
+        assert_eq!(checked.normal_form().certificate().steps().len(), 2);
+        assert_eq!(checked.conclusion(), &closed_equality(root));
     }
 
     #[test]
@@ -825,20 +902,20 @@ mod tests {
         let x = FreeVariable::new(1);
         let proof = identity_proof(x, false);
         let expected = check(&proof).unwrap();
-        let (normal, conclusion) = normalize_and_check(proof).unwrap();
+        let checked = normalize_and_check(proof).unwrap();
 
-        assert_eq!(conclusion, expected);
-        assert_eq!(check(normal.certificate()), Ok(expected));
+        assert_eq!(checked.conclusion(), &expected);
+        assert_eq!(check(checked.normal_form().certificate()), Ok(expected));
     }
 
     #[test]
     fn checker_rejects_an_open_conclusion_but_allows_open_intermediate_steps() {
         let x = FreeVariable::new(1);
+        let open = certificate(vec![ProofStepV0::EqualityReflexivity { variable: x }]);
 
+        assert_eq!(check(&open), Err(CheckError::OpenConclusion { step: 0 }));
         assert_eq!(
-            check(&certificate(vec![ProofStepV0::EqualityReflexivity {
-                variable: x
-            }])),
+            normalize_and_check(open),
             Err(CheckError::OpenConclusion { step: 0 })
         );
 
