@@ -296,9 +296,12 @@ mod tests {
         FORMULA_V0_MAX_DEPTH, FORMULA_V0_MAX_NODES, Formula, FormulaCodecError, FreeVariable,
         LogicError, LogicV0, Replacement, SchemaError, Separation, ZfcAxiom,
     };
-    use naome_proof::{ProofCertificateV0, ProofStepV0};
+    use naome_proof::{CERTIFICATE_V0_MAX_STEPS, ProofCertificateV0, ProofStepV0};
 
-    use super::{CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, check, last_uses, references};
+    use super::{
+        CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, charge_formula_work, check, last_uses,
+        references,
+    };
 
     fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
         ProofCertificateV0::new(steps).expect("the test certificate is structurally valid")
@@ -601,15 +604,13 @@ mod tests {
             ProofStepV0::ZfcAxiom(ZfcAxiom::Extensionality),
         ]);
 
-        let error = check(&proof).expect_err("the unused invalid schema step must fail");
         assert_eq!(
-            error,
-            CheckError::Schema {
+            check(&proof),
+            Err(CheckError::Schema {
                 step: 0,
                 source: SchemaError::ForbiddenPredicateVariable(result),
-            }
+            })
         );
-        assert!(error.source().is_some());
     }
 
     #[test]
@@ -660,6 +661,71 @@ mod tests {
                 source: LogicError::ModusPonensMismatch,
             })
         );
+    }
+
+    #[test]
+    fn check_errors_expose_their_step_context_and_sources() {
+        let variable = FreeVariable::new(9);
+        let logic = CheckError::Logic {
+            step: 1,
+            source: LogicError::ModusPonensMismatch,
+        };
+        let schema = CheckError::Schema {
+            step: 2,
+            source: SchemaError::DuplicateParameter(variable),
+        };
+        let derived = CheckError::DerivedFormula {
+            step: 3,
+            source: FormulaCodecError::DepthLimitExceeded {
+                maximum: FORMULA_V0_MAX_DEPTH,
+            },
+        };
+        let work = CheckError::FormulaWorkLimitExceeded {
+            step: 4,
+            actual: 5,
+            maximum: 4,
+        };
+        let open = CheckError::OpenConclusion { step: 5 };
+
+        assert!(
+            logic
+                .source()
+                .unwrap()
+                .downcast_ref::<LogicError>()
+                .is_some()
+        );
+        assert!(
+            schema
+                .source()
+                .unwrap()
+                .downcast_ref::<SchemaError>()
+                .is_some()
+        );
+        assert!(
+            derived
+                .source()
+                .unwrap()
+                .downcast_ref::<FormulaCodecError>()
+                .is_some()
+        );
+        assert!(work.source().is_none());
+        assert!(open.source().is_none());
+
+        for (error, fragments) in [
+            (&logic, &["step 1", "modus ponens"][..]),
+            (&schema, &["step 2", "variable 9"][..]),
+            (&derived, &["step 3", "limit of 256"][..]),
+            (&work, &["step 4", "5 bytes", "limit is 4"][..]),
+            (&open, &["step 5", "not closed"][..]),
+        ] {
+            let rendered = error.to_string();
+            for fragment in fragments {
+                assert!(
+                    rendered.contains(fragment),
+                    "{rendered:?} lacks {fragment:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -725,14 +791,30 @@ mod tests {
     }
 
     #[test]
-    fn schema_depth_is_rejected_before_separation_or_replacement_expansion() {
+    fn schema_depth_preflight_has_an_exact_boundary_and_precedes_schema_errors() {
         let parameters = (0..FORMULA_V0_MAX_DEPTH)
             .map(|offset| FreeVariable::new(1_000 + offset))
             .collect::<Vec<_>>();
         let element = FreeVariable::new(1);
         let source = FreeVariable::new(2);
         let result = FreeVariable::new(3);
-        let expected = Err(CheckError::DerivedFormula {
+        let below_limit = parameters[..parameters.len() - 1].to_vec();
+
+        assert_eq!(
+            check(&certificate(vec![ProofStepV0::Separation(Separation {
+                predicate: Formula::equal(result, result),
+                element,
+                source,
+                result,
+                parameters: below_limit,
+            })])),
+            Err(CheckError::Schema {
+                step: 0,
+                source: SchemaError::ForbiddenPredicateVariable(result),
+            })
+        );
+
+        let depth_error = Err(CheckError::DerivedFormula {
             step: 0,
             source: FormulaCodecError::DepthLimitExceeded {
                 maximum: FORMULA_V0_MAX_DEPTH,
@@ -741,53 +823,116 @@ mod tests {
 
         assert_eq!(
             check(&certificate(vec![ProofStepV0::Separation(Separation {
-                predicate: Formula::member(element, source),
+                predicate: Formula::equal(result, result),
                 element,
                 source,
                 result,
                 parameters: parameters.clone(),
             })])),
-            expected
+            depth_error
         );
 
+        let uniqueness_witness = FreeVariable::new(4);
         assert_eq!(
             check(&certificate(vec![ProofStepV0::Replacement(Replacement {
-                predicate: Formula::equal(element, source),
+                predicate: Formula::equal(uniqueness_witness, source),
                 input: element,
                 output: source,
-                uniqueness_witness: FreeVariable::new(4),
+                uniqueness_witness,
                 source: FreeVariable::new(5),
                 result: FreeVariable::new(6),
                 parameters,
             })])),
-            expected
+            depth_error
         );
     }
 
     #[test]
-    fn result_and_final_closure_charges_share_one_formula_work_budget() {
-        let axiom = ZfcAxiom::Choice;
-        let formula_length = canonical_length(&axiom.formula());
-        let exact_result_count = CHECKER_V0_MAX_FORMULA_WORK_BYTES / formula_length;
-        assert!(exact_result_count < 65_536);
+    fn formula_work_limit_is_exact_and_inclusive() {
+        assert_eq!(CHECKER_V0_MAX_FORMULA_WORK_BYTES, 4_194_304);
 
-        let closure_proof = certificate(vec![ProofStepV0::ZfcAxiom(axiom); exact_result_count]);
+        let mut remaining = CHECKER_V0_MAX_FORMULA_WORK_BYTES;
         assert_eq!(
-            check(&closure_proof),
+            charge_formula_work(7, CHECKER_V0_MAX_FORMULA_WORK_BYTES, &mut remaining),
+            Ok(())
+        );
+        assert_eq!(remaining, 0);
+        assert_eq!(
+            charge_formula_work(8, 1, &mut remaining),
             Err(CheckError::FormulaWorkLimitExceeded {
-                step: u32::try_from(exact_result_count - 1).unwrap(),
-                actual: (exact_result_count + 1) * formula_length,
+                step: 8,
+                actual: CHECKER_V0_MAX_FORMULA_WORK_BYTES + 1,
+                maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn formula_work_budget_enforces_result_and_error_precedence() {
+        let axiom = ZfcAxiom::Choice;
+        let axiom_length = canonical_length(&axiom.formula());
+        let filler_count = CHECKER_V0_MAX_FORMULA_WORK_BYTES / axiom_length;
+        let used = filler_count * axiom_length;
+        let remaining = CHECKER_V0_MAX_FORMULA_WORK_BYTES - used;
+        let fillers = vec![ProofStepV0::ZfcAxiom(axiom); filler_count];
+        let step = u32::try_from(filler_count).unwrap();
+        assert!(filler_count >= 2);
+        assert!(filler_count < CERTIFICATE_V0_MAX_STEPS);
+
+        let mut result_overflow = fillers.clone();
+        result_overflow.push(ProofStepV0::ZfcAxiom(axiom));
+        assert_eq!(
+            check(&certificate(result_overflow)),
+            Err(CheckError::FormulaWorkLimitExceeded {
+                step,
+                actual: used + axiom_length,
                 maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
             })
         );
 
-        let result_proof = certificate(vec![ProofStepV0::ZfcAxiom(axiom); exact_result_count + 1]);
+        let mut invalid_modus_ponens = fillers.clone();
+        invalid_modus_ponens.push(ProofStepV0::ModusPonens {
+            premise: 0,
+            implication: 1,
+        });
         assert_eq!(
-            check(&result_proof),
+            check(&certificate(invalid_modus_ponens)),
             Err(CheckError::FormulaWorkLimitExceeded {
-                step: u32::try_from(exact_result_count).unwrap(),
-                actual: (exact_result_count + 1) * formula_length,
+                step,
+                actual: used + 2 * axiom_length,
                 maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+            })
+        );
+
+        let x = FreeVariable::new(1);
+        let open_length = canonical_length(&LogicV0::equality_reflexivity(x));
+        assert!(open_length <= remaining);
+        assert!(2 * open_length > remaining);
+        let mut open_conclusion = fillers.clone();
+        open_conclusion.push(ProofStepV0::EqualityReflexivity { variable: x });
+        assert_eq!(
+            check(&certificate(open_conclusion)),
+            Err(CheckError::FormulaWorkLimitExceeded {
+                step,
+                actual: used + 2 * open_length,
+                maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+            })
+        );
+
+        let large = balanced_closed_formula(12, x);
+        let mut invalid_derived = fillers;
+        invalid_derived.push(ProofStepV0::Frege {
+            first: large.clone(),
+            second: large.clone(),
+            third: large,
+        });
+        assert_eq!(
+            check(&certificate(invalid_derived)),
+            Err(CheckError::DerivedFormula {
+                step,
+                source: FormulaCodecError::NodeLimitExceeded {
+                    maximum: FORMULA_V0_MAX_NODES,
+                },
             })
         );
     }
@@ -837,7 +982,7 @@ mod tests {
             used += small_length;
         };
 
-        assert!(steps.len() < 65_536);
+        assert!(steps.len() < CERTIFICATE_V0_MAX_STEPS);
         assert_eq!(
             check(&certificate(steps)),
             Err(CheckError::FormulaWorkLimitExceeded {
@@ -861,7 +1006,7 @@ mod tests {
             variable: FreeVariable::new(u32::MAX),
         });
 
-        assert!(steps.len() < 65_536);
+        assert!(steps.len() < CERTIFICATE_V0_MAX_STEPS);
         assert_eq!(
             check(&certificate(steps)),
             Err(CheckError::FormulaWorkLimitExceeded {
