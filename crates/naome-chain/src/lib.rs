@@ -14,7 +14,9 @@ mod proof_set;
 use naome_ledger::{AcceptedProofRecord, LedgerError, LedgerState};
 use naome_proof::ProofId;
 
-pub use proof_set::{ProofSetMembership, ProofSetProof, ProofSetProofError, ProofSetRoot};
+pub use proof_set::{
+    PROOF_SET_PROOF_MAX_BYTES, ProofSetMembership, ProofSetProof, ProofSetProofError, ProofSetRoot,
+};
 
 use proof_set::AuthenticatedProofSet;
 
@@ -88,7 +90,7 @@ mod tests {
     use naome_ledger::LedgerError;
     use naome_proof::{ProofCertificate, ProofId, ProofStep};
 
-    use super::{ProofDag, ProofSetMembership};
+    use super::{ProofDag, ProofSetMembership, ProofSetProof};
 
     fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
         ProofCertificate::new(steps).unwrap()
@@ -261,6 +263,14 @@ mod tests {
                 .contains(&root_id)
         );
 
+        let source_root = original.proof_set_root();
+        let root_witness_bytes = original.proof_set_proof(root_id).to_canonical_bytes();
+        let root_witness = ProofSetProof::from_canonical_bytes(&root_witness_bytes).unwrap();
+        assert_eq!(
+            root_witness.verify(source_root, root_id),
+            Ok(ProofSetMembership::Present)
+        );
+
         let mut replay = ProofDag::new();
         assert_eq!(
             replay.apply_canonical_proof_bytes(child_bytes.clone()),
@@ -272,6 +282,7 @@ mod tests {
             })
         );
         assert!(replay.is_empty());
+        assert_eq!(replay.proof_set_root(), ProofDag::new().proof_set_root());
 
         let _ = replay.apply_canonical_proof_bytes(root_bytes).unwrap();
         let _ = replay.apply_canonical_proof_bytes(child_bytes).unwrap();

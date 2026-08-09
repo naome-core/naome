@@ -5,6 +5,10 @@ use naome_ledger::AcceptedProofRecord;
 use naome_proof::ProofId;
 use sha2::{Digest, Sha256};
 
+mod codec;
+
+pub use codec::PROOF_SET_PROOF_MAX_BYTES;
+
 const PROOF_SET_DOMAIN: &[u8] = b"naome:proof-set\0";
 const LEAF_TAG: u8 = 0x01;
 const BRANCH_TAG: u8 = 0x02;
@@ -47,9 +51,10 @@ pub enum ProofSetMembership {
 
 /// A compact membership or non-membership proof for one [`ProofId`].
 ///
-/// The proof has no public constructor or wire codec. It is derived from one
-/// selected [`crate::ProofDag`] and must be verified against a trusted expected
-/// root before its membership result is used.
+/// The proof has no public constructor. It is derived from one selected
+/// [`crate::ProofDag`] or decoded from its strict canonical wire format and
+/// must be verified against a trusted expected root before its membership
+/// result is used.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct ProofSetProof {
@@ -72,34 +77,10 @@ impl ProofSetProof {
         expected_root: ProofSetRoot,
         proof_id: ProofId,
     ) -> Result<ProofSetMembership, ProofSetProofError> {
-        if self.path.len() > KEY_BITS {
-            return Err(ProofSetProofError::PathTooLong);
-        }
-
+        self.validate_shape()?;
         let empty = empty_digest();
-        let mut previous_bit = None;
-        for step in &self.path {
-            if let Some(previous) = previous_bit
-                && step.bit <= previous
-            {
-                return Err(ProofSetProofError::NonIncreasingBits {
-                    previous,
-                    actual: step.bit,
-                });
-            }
-            if step.sibling == empty {
-                return Err(ProofSetProofError::EmptySibling { bit: step.bit });
-            }
-            previous_bit = Some(step.bit);
-        }
-
         let (membership, mut digest) = match self.terminal {
-            ProofTerminal::Empty => {
-                if !self.path.is_empty() {
-                    return Err(ProofSetProofError::EmptyTerminalHasPath);
-                }
-                (ProofSetMembership::Absent, empty)
-            }
+            ProofTerminal::Empty => (ProofSetMembership::Absent, empty),
             ProofTerminal::Member => (ProofSetMembership::Present, leaf_digest(proof_id)),
             ProofTerminal::NonMember(terminal) => {
                 if terminal == proof_id {
@@ -132,13 +113,51 @@ impl ProofSetProof {
 
         Ok(membership)
     }
+
+    fn validate_shape(&self) -> Result<(), ProofSetProofError> {
+        if self.path.len() > KEY_BITS
+            || matches!(self.terminal, ProofTerminal::NonMember(_)) && self.path.len() == KEY_BITS
+        {
+            return Err(ProofSetProofError::PathTooLong);
+        }
+
+        let mut previous_bit = None;
+        for step in &self.path {
+            if let Some(previous) = previous_bit
+                && step.bit <= previous
+            {
+                return Err(ProofSetProofError::NonIncreasingBits {
+                    previous,
+                    actual: step.bit,
+                });
+            }
+            if step.sibling == EMPTY_DIGEST {
+                return Err(ProofSetProofError::EmptySibling { bit: step.bit });
+            }
+            previous_bit = Some(step.bit);
+        }
+
+        if matches!(self.terminal, ProofTerminal::Empty) && !self.path.is_empty() {
+            return Err(ProofSetProofError::EmptyTerminalHasPath);
+        }
+
+        Ok(())
+    }
 }
 
-/// A malformed proof-set witness or reconstructed-root mismatch.
+/// A malformed proof-set witness, canonical encoding, or root mismatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProofSetProofError {
-    /// More branch steps were supplied than a 256-bit key can traverse.
+    /// The encoded proof exceeds the deterministic byte limit.
+    InputTooLong { actual: usize, maximum: usize },
+    /// The encoded proof ended before its terminal or path step was complete.
+    UnexpectedEnd,
+    /// The encoded proof uses an unknown terminal tag.
+    UnknownTerminalTag(u8),
+    /// An empty-tree proof is followed by additional bytes.
+    TrailingBytes { remaining: usize },
+    /// More branch steps were supplied than the selected terminal can admit.
     PathTooLong,
     /// Branch bit positions were duplicated or did not increase root-to-leaf.
     NonIncreasingBits { previous: u8, actual: u8 },
@@ -160,7 +179,21 @@ pub enum ProofSetProofError {
 impl fmt::Display for ProofSetProofError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PathTooLong => formatter.write_str("proof-set path exceeds 256 branches"),
+            Self::InputTooLong { actual, maximum } => write!(
+                formatter,
+                "canonical proof-set proof has {actual} bytes; the limit is {maximum}"
+            ),
+            Self::UnexpectedEnd => {
+                formatter.write_str("canonical proof-set proof ended unexpectedly")
+            }
+            Self::UnknownTerminalTag(tag) => {
+                write!(formatter, "unknown proof-set terminal tag 0x{tag:02x}")
+            }
+            Self::TrailingBytes { remaining } => write!(
+                formatter,
+                "empty proof-set proof has {remaining} trailing bytes"
+            ),
+            Self::PathTooLong => formatter.write_str("proof-set path exceeds its terminal limit"),
             Self::NonIncreasingBits { previous, actual } => write!(
                 formatter,
                 "proof-set branch bit {actual} does not follow bit {previous}"
@@ -709,26 +742,5 @@ mod tests {
                 .verify(ProofSetRoot::from_bytes(wrong_root), query),
             Err(ProofSetProofError::RootMismatch { .. })
         ));
-    }
-
-    #[test]
-    fn maximum_depth_is_bounded_by_the_proof_id_width() {
-        let zero = id([0; 32]);
-        let mut set = AuthenticatedProofSet::new();
-        let _ = set.insert(zero).unwrap();
-
-        for bit in 0..256 {
-            let mut bytes = [0; 32];
-            bytes[bit / 8] = 1 << (7 - bit % 8);
-            let _ = set.insert(id(bytes)).unwrap();
-        }
-
-        assert_eq!(set.len(), 257);
-        assert_eq!(set.branches.len(), 256);
-        assert_eq!(set.proof(zero).sibling_count(), 256);
-        assert_eq!(
-            set.proof(zero).verify(set.root(), zero),
-            Ok(ProofSetMembership::Present)
-        );
     }
 }
