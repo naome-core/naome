@@ -100,6 +100,37 @@ inclusion. Replaying or importing its bytes must execute strict canonical byte
 admission again; the redundant identities and dependency index must be derived
 again rather than trusted.
 
+## Retained proof DAG
+
+`ProofDagV0` owns one `LedgerStateV0` and retains every record returned by its
+strict canonical-byte admission. A retained proof is addressed directly by its
+checked `ProofId`; V0 adds no redundant `BlockId`, wrapper encoding, height, or
+linear proof-parent field. The canonical proof-certificate bytes are the node
+payload, and the record's direct `ProofId` dependencies are its outgoing DAG
+edges.
+
+The checked ledger and retained-record index are private and advance together.
+Callers cannot insert records, identities, or dependency edges directly. A
+failed decode, canonicality check, mathematical check, dependency lookup, or
+registration leaves both structures unchanged. A successful admission moves
+the returned record into the retained index without copying its proof payload.
+
+Every dependency must already belong to the unchanged selected state before a
+node is admitted. Starting from an empty state, this dependency-first rule
+proves inductively that retained edges are acyclic. Admission creates no
+implicit relationship between nodes that do not cite one another. Map-key
+order has no causal or consensus meaning.
+
+Replay means submitting retained canonical proof bytes to a fresh `ProofDagV0`
+in dependency-first order. Records are revalidated rather than imported as
+trusted metadata. Out-of-order input fails on its first missing dependency and
+may be retried after that dependency is admitted.
+
+This selected proof state is not an order-free mergeable CRDT. Separate states
+may accept different proof artifacts with one `DerivationId`; replaying their
+union accepts the first artifact and rejects the later derivation duplicate.
+Fork selection, state merging, and finality therefore remain consensus policy.
+
 ## Atomicity and errors
 
 Normalization and mathematical checking do not mutate the pre-transition state.
@@ -114,23 +145,20 @@ checking, and registration. Within checking and registration, the deterministic
 error order defined by Proof Certificate V0 remains unchanged. Ledger errors
 retain the complete underlying source error when one exists.
 
-## Future block boundary
+## Future consensus boundary
 
-A future `BlockV0` contains exactly one proof. It must validate that proof
-against an immutable accepted proof-state snapshot selected by the future
-consensus protocol. A proof merely received from the network, or otherwise
-absent from that selected state, is unavailable to resolve a reference.
+One proof-DAG node contains exactly one canonical proof. The mathematical proof
+graph is fixed by checked `ProofReference` edges and has no global linear
+parent. A proof merely received from the network, or otherwise absent from the
+selected state, is unavailable to resolve a reference.
 
 The consensus topology and the rule that selects or combines accepted
-proof-state snapshots remain outside this V0 contract. This includes whether
-proof blocks form a linear history or a DAG; either choice remains separate
-from the already-defined acyclic proof-dependency graph.
+proof-state snapshots remain outside this V0 contract. A future linear economic
+or settlement history is separate from the already-defined acyclic proof DAG.
 
 Whether a `StatementId` is new to a consensus-selected state is future block
 policy. It is not intrinsic proof content and is therefore absent from the
 accepted proof record.
 
-The future block validation transition must pass its single submitted proof
-payload through the strict canonical byte admission defined above. Ledger V0
-still does not define the surrounding block bytes, and the strict path never
-silently repairs the submitted proof payload.
+V0 does not define storage, snapshots, state commitments, fork choice,
+finality, rewards, fees, producer authentication, or networking.
