@@ -5,15 +5,15 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use naome_chain::ProofDagV0;
+use naome_chain::ProofDag;
 use naome_checker::{CheckError, ProofStateError};
 use naome_foundation::{FreeVariable, ZfcAxiom};
 use naome_ledger::LedgerError;
-use naome_proof::{CERTIFICATE_V0_MAX_BYTES, ProofCertificateV0, ProofId, ProofStepV0};
+use naome_proof::{CERTIFICATE_MAX_BYTES, ProofCertificate, ProofId, ProofStep};
 
 use super::{
     AppendPhase, ENTRY_DOMAIN, FRAME_FIXED_BYTES, GENESIS_DOMAIN, JOURNAL_FILE_NAME,
-    JOURNAL_HEADER, JournalCore, JournalError, JournalIo, ProofDagJournalV0, entry_digest,
+    JOURNAL_HEADER, JournalCore, JournalError, JournalIo, ProofDagJournal, entry_digest,
     genesis_digest,
 };
 
@@ -52,11 +52,11 @@ impl Drop for TestDirectory {
     }
 }
 
-fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
-    ProofCertificateV0::new(steps).unwrap()
+fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
+    ProofCertificate::new(steps).unwrap()
 }
 
-fn canonical_bytes(steps: Vec<ProofStepV0>) -> Vec<u8> {
+fn canonical_bytes(steps: Vec<ProofStep>) -> Vec<u8> {
     certificate(steps)
         .into_unchecked_normal_form()
         .canonical_bytes()
@@ -64,13 +64,13 @@ fn canonical_bytes(steps: Vec<ProofStepV0>) -> Vec<u8> {
 }
 
 fn axiom_bytes(axiom: ZfcAxiom) -> Vec<u8> {
-    canonical_bytes(vec![ProofStepV0::ZfcAxiom(axiom)])
+    canonical_bytes(vec![ProofStep::ZfcAxiom(axiom)])
 }
 
 fn referenced_generalization(proof_id: ProofId, variable: FreeVariable) -> Vec<u8> {
     canonical_bytes(vec![
-        ProofStepV0::ProofReference { proof_id },
-        ProofStepV0::Generalization {
+        ProofStep::ProofReference { proof_id },
+        ProofStep::Generalization {
             premise: 0,
             variable,
         },
@@ -116,7 +116,7 @@ struct RecordSnapshot {
     dependencies: Vec<ProofId>,
 }
 
-fn snapshot(record: &naome_ledger::AcceptedProofRecordV0) -> RecordSnapshot {
+fn snapshot(record: &naome_ledger::AcceptedProofRecord) -> RecordSnapshot {
     RecordSnapshot {
         bytes: record.canonical_proof_bytes().to_vec(),
         proof_id: record.proof_id(),
@@ -126,30 +126,30 @@ fn snapshot(record: &naome_ledger::AcceptedProofRecordV0) -> RecordSnapshot {
 
 #[test]
 fn journal_header_and_entry_are_exact_golden_bytes() {
-    assert_eq!(JOURNAL_HEADER.len(), 27);
-    assert_eq!(GENESIS_DOMAIN.len(), 35);
-    assert_eq!(ENTRY_DOMAIN.len(), 33);
+    assert_eq!(JOURNAL_HEADER.len(), 24);
+    assert_eq!(GENESIS_DOMAIN.len(), 32);
+    assert_eq!(ENTRY_DOMAIN.len(), 30);
     assert_eq!(
         genesis_digest().as_slice(),
-        hex_bytes("3656d0996ca6713b1b39e35bbb917c2451940cc71e9fdabf624f45471199ba51")
+        hex_bytes("e1712a2358d91e869a2c3d865deccd7fc4f3557a8c7327febc470becd78684ab")
     );
 
     let pairing = axiom_bytes(ZfcAxiom::Pairing);
-    assert_eq!(pairing, hex_bytes("00000000011001"));
+    assert_eq!(pairing, hex_bytes("000000011001"));
     let (pairing_frame, digest) = frame(genesis_digest(), &pairing);
     assert_eq!(
         digest.as_slice(),
-        hex_bytes("c9c1ca3e1f21812aac694499c704f30b95e8617f400bd65a87153fc05d7f2277")
+        hex_bytes("31d98be3372c21576e6ff70b6796e965924ec358746f1efdd22c2dad1345c73a")
     );
     assert_eq!(
         pairing_frame,
         hex_bytes(
-            "0000000700000000011001c9c1ca3e1f21812aac694499c704f30b95e8617f400bd65a87153fc05d7f2277"
+            "0000000600000001100131d98be3372c21576e6ff70b6796e965924ec358746f1efdd22c2dad1345c73a"
         )
     );
 
     let directory = TestDirectory::new();
-    let mut journal = ProofDagJournalV0::create(&directory.path).unwrap();
+    let mut journal = ProofDagJournal::create(&directory.path).unwrap();
     let _ = journal
         .apply_canonical_proof_bytes(pairing.clone())
         .unwrap();
@@ -163,25 +163,25 @@ fn journal_header_and_entry_are_exact_golden_bytes() {
 #[test]
 fn create_open_and_exclusive_lock_preserve_one_empty_journal() {
     let directory = TestDirectory::new();
-    let journal = ProofDagJournalV0::create(&directory.path).unwrap();
+    let journal = ProofDagJournal::create(&directory.path).unwrap();
     assert!(journal.is_empty().unwrap());
     assert_eq!(journal.len().unwrap(), 0);
 
     assert!(matches!(
-        ProofDagJournalV0::open(&directory.path),
+        ProofDagJournal::open(&directory.path),
         Err(JournalError::Locked)
     ));
     drop(journal);
 
-    let reopened = ProofDagJournalV0::open(&directory.path).unwrap();
+    let reopened = ProofDagJournal::open(&directory.path).unwrap();
     assert!(reopened.is_empty().unwrap());
     assert!(matches!(
-        ProofDagJournalV0::create(&directory.path),
+        ProofDagJournal::create(&directory.path),
         Err(JournalError::Locked)
     ));
     drop(reopened);
     assert!(matches!(
-        ProofDagJournalV0::create(&directory.path),
+        ProofDagJournal::create(&directory.path),
         Err(JournalError::Create { .. })
     ));
 }
@@ -190,7 +190,7 @@ fn create_open_and_exclusive_lock_preserve_one_empty_journal() {
 fn reopen_replays_dependency_chain_exactly() {
     let directory = TestDirectory::new();
     let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
-    let mut journal = ProofDagJournalV0::create(&directory.path).unwrap();
+    let mut journal = ProofDagJournal::create(&directory.path).unwrap();
     let root = snapshot(
         journal
             .apply_canonical_proof_bytes(root_bytes.clone())
@@ -212,7 +212,7 @@ fn reopen_replays_dependency_chain_exactly() {
     assert_eq!(grandchild.dependencies, [child.proof_id]);
     drop(journal);
 
-    let reopened = ProofDagJournalV0::open(&directory.path).unwrap();
+    let reopened = ProofDagJournal::open(&directory.path).unwrap();
     assert_eq!(reopened.len().unwrap(), 3);
     assert_eq!(
         snapshot(reopened.proof(root.proof_id).unwrap().unwrap()),
@@ -232,7 +232,7 @@ fn reopen_replays_dependency_chain_exactly() {
 fn rejected_admissions_write_nothing_and_leave_the_journal_healthy() {
     let directory = TestDirectory::new();
     let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
-    let mut journal = ProofDagJournalV0::create(&directory.path).unwrap();
+    let mut journal = ProofDagJournal::create(&directory.path).unwrap();
     let root_id = journal
         .apply_canonical_proof_bytes(root_bytes.clone())
         .unwrap()
@@ -253,7 +253,7 @@ fn rejected_admissions_write_nothing_and_leave_the_journal_healthy() {
     );
 
     let missing_id = ProofId::from_bytes([0x55; 32]);
-    let missing = canonical_bytes(vec![ProofStepV0::ProofReference {
+    let missing = canonical_bytes(vec![ProofStep::ProofReference {
         proof_id: missing_id,
     }]);
     assert!(matches!(
@@ -286,7 +286,7 @@ fn every_incomplete_final_frame_recovers_only_the_committed_prefix() {
     let prefix = journal_image(std::slice::from_ref(&root_bytes));
     let root_id = {
         let directory = TestDirectory::new();
-        let mut journal = ProofDagJournalV0::create(&directory.path).unwrap();
+        let mut journal = ProofDagJournal::create(&directory.path).unwrap();
         journal
             .apply_canonical_proof_bytes(root_bytes.clone())
             .unwrap()
@@ -296,7 +296,7 @@ fn every_incomplete_final_frame_recovers_only_the_committed_prefix() {
     for cut in prefix.len()..full.len() {
         let directory = TestDirectory::new();
         directory.write_image(&full[..cut]);
-        let mut recovered = ProofDagJournalV0::open(&directory.path).unwrap();
+        let mut recovered = ProofDagJournal::open(&directory.path).unwrap();
         assert_eq!(recovered.len().unwrap(), 1, "cut={cut}");
         assert!(recovered.proof(root_id).unwrap().is_some(), "cut={cut}");
         assert_eq!(
@@ -311,7 +311,7 @@ fn every_incomplete_final_frame_recovers_only_the_committed_prefix() {
             .unwrap()
             .proof_id();
         drop(recovered);
-        let reopened = ProofDagJournalV0::open(&directory.path).unwrap();
+        let reopened = ProofDagJournal::open(&directory.path).unwrap();
         assert_eq!(reopened.len().unwrap(), 2, "cut={cut}");
         assert!(reopened.proof(child_id).unwrap().is_some(), "cut={cut}");
     }
@@ -319,7 +319,7 @@ fn every_incomplete_final_frame_recovers_only_the_committed_prefix() {
     let directory = TestDirectory::new();
     directory.write_image(&full);
     assert_eq!(
-        ProofDagJournalV0::open(&directory.path)
+        ProofDagJournal::open(&directory.path)
             .unwrap()
             .len()
             .unwrap(),
@@ -346,7 +346,7 @@ fn complete_corruption_deletion_and_reordering_fail_closed() {
         image[union_start + index] ^= 0x01;
         directory.write_image(&image);
         assert!(matches!(
-            ProofDagJournalV0::open(&directory.path),
+            ProofDagJournal::open(&directory.path),
             Err(JournalError::EntryDigestMismatch { entry: 1, .. })
         ));
     }
@@ -372,7 +372,7 @@ fn complete_corruption_deletion_and_reordering_fail_closed() {
         }
         directory.write_image(&image);
         assert!(matches!(
-            ProofDagJournalV0::open(&directory.path),
+            ProofDagJournal::open(&directory.path),
             Err(JournalError::EntryDigestMismatch { .. })
         ));
     }
@@ -382,20 +382,20 @@ fn complete_corruption_deletion_and_reordering_fail_closed() {
     bad_header[0] ^= 1;
     directory.write_image(&bad_header);
     assert!(matches!(
-        ProofDagJournalV0::open(&directory.path),
+        ProofDagJournal::open(&directory.path),
         Err(JournalError::InvalidHeader)
     ));
 }
 
 #[test]
 fn frame_lengths_are_preflighted_before_payload_allocation() {
-    for actual in [0, CERTIFICATE_V0_MAX_BYTES as u32 + 1, u32::MAX] {
+    for actual in [0, CERTIFICATE_MAX_BYTES as u32 + 1, u32::MAX] {
         let directory = TestDirectory::new();
         let mut image = JOURNAL_HEADER.to_vec();
         image.extend_from_slice(&actual.to_be_bytes());
         directory.write_image(&image);
         assert!(matches!(
-            ProofDagJournalV0::open(&directory.path),
+            ProofDagJournal::open(&directory.path),
             Err(JournalError::InvalidFrameLength {
                 entry: 0,
                 actual: found,
@@ -406,9 +406,9 @@ fn frame_lengths_are_preflighted_before_payload_allocation() {
 
     let directory = TestDirectory::new();
     let mut short_maximum = JOURNAL_HEADER.to_vec();
-    short_maximum.extend_from_slice(&(CERTIFICATE_V0_MAX_BYTES as u32).to_be_bytes());
+    short_maximum.extend_from_slice(&(CERTIFICATE_MAX_BYTES as u32).to_be_bytes());
     directory.write_image(&short_maximum);
-    let recovered = ProofDagJournalV0::open(&directory.path).unwrap();
+    let recovered = ProofDagJournal::open(&directory.path).unwrap();
     assert!(recovered.is_empty().unwrap());
     assert_eq!(
         fs::metadata(directory.journal_path()).unwrap().len(),
@@ -422,7 +422,7 @@ fn committed_frames_are_strictly_revalidated_in_physical_order() {
     let directory = TestDirectory::new();
     directory.write_image(&journal_image(&[malformed]));
     assert!(matches!(
-        ProofDagJournalV0::open(&directory.path),
+        ProofDagJournal::open(&directory.path),
         Err(JournalError::Replay {
             entry: 0,
             source: LedgerError::Decode { .. },
@@ -431,14 +431,14 @@ fn committed_frames_are_strictly_revalidated_in_physical_order() {
     ));
 
     let noncanonical = certificate(vec![
-        ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
-        ProofStepV0::ZfcAxiom(ZfcAxiom::Union),
+        ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+        ProofStep::ZfcAxiom(ZfcAxiom::Union),
     ])
     .to_canonical_bytes();
     let directory = TestDirectory::new();
     directory.write_image(&journal_image(&[noncanonical]));
     assert!(matches!(
-        ProofDagJournalV0::open(&directory.path),
+        ProofDagJournal::open(&directory.path),
         Err(JournalError::Replay {
             entry: 0,
             source: LedgerError::NonCanonicalProof,
@@ -447,13 +447,13 @@ fn committed_frames_are_strictly_revalidated_in_physical_order() {
     ));
 
     let missing_id = ProofId::from_bytes([0x77; 32]);
-    let missing = canonical_bytes(vec![ProofStepV0::ProofReference {
+    let missing = canonical_bytes(vec![ProofStep::ProofReference {
         proof_id: missing_id,
     }]);
     let directory = TestDirectory::new();
     directory.write_image(&journal_image(&[missing]));
     assert!(matches!(
-        ProofDagJournalV0::open(&directory.path),
+        ProofDagJournal::open(&directory.path),
         Err(JournalError::Replay {
             entry: 0,
             source: LedgerError::Check {
@@ -467,7 +467,7 @@ fn committed_frames_are_strictly_revalidated_in_physical_order() {
     let directory = TestDirectory::new();
     directory.write_image(&journal_image(&[pairing.clone(), pairing]));
     assert!(matches!(
-        ProofDagJournalV0::open(&directory.path),
+        ProofDagJournal::open(&directory.path),
         Err(JournalError::Replay {
             entry: 1,
             source: LedgerError::State {
@@ -479,18 +479,18 @@ fn committed_frames_are_strictly_revalidated_in_physical_order() {
 
     let pairing = axiom_bytes(ZfcAxiom::Pairing);
     let pairing_id = {
-        let mut dag = ProofDagV0::new();
+        let mut dag = ProofDag::new();
         dag.apply_canonical_proof_bytes(pairing.clone())
             .unwrap()
             .proof_id()
     };
-    let alias = canonical_bytes(vec![ProofStepV0::ProofReference {
+    let alias = canonical_bytes(vec![ProofStep::ProofReference {
         proof_id: pairing_id,
     }]);
     let directory = TestDirectory::new();
     directory.write_image(&journal_image(&[pairing, alias]));
     assert!(matches!(
-        ProofDagJournalV0::open(&directory.path),
+        ProofDagJournal::open(&directory.path),
         Err(JournalError::Replay {
             entry: 1,
             source: LedgerError::State {
@@ -799,7 +799,7 @@ fn exclusive_lock_child_probe() {
         return;
     };
     assert!(matches!(
-        ProofDagJournalV0::open(PathBuf::from(path)),
+        ProofDagJournal::open(PathBuf::from(path)),
         Err(JournalError::Locked)
     ));
     println!("NAOME_JOURNAL_LOCK_PROBE_OK");
@@ -808,7 +808,7 @@ fn exclusive_lock_child_probe() {
 #[test]
 fn exclusive_lock_is_enforced_across_processes() {
     let directory = TestDirectory::new();
-    let journal = ProofDagJournalV0::create(&directory.path).unwrap();
+    let journal = ProofDagJournal::create(&directory.path).unwrap();
     let output = Command::new(env::current_exe().unwrap())
         .arg("--exact")
         .arg("tests::exclusive_lock_child_probe")
@@ -829,7 +829,7 @@ fn exclusive_lock_is_enforced_across_processes() {
         String::from_utf8_lossy(&output.stderr)
     );
     drop(journal);
-    assert!(ProofDagJournalV0::open(&directory.path).is_ok());
+    assert!(ProofDagJournal::open(&directory.path).is_ok());
 }
 
 #[test]
@@ -838,7 +838,7 @@ fn incomplete_header_and_existing_garbage_never_auto_initialize() {
         let directory = TestDirectory::new();
         directory.write_image(&JOURNAL_HEADER[..prefix_len]);
         assert!(matches!(
-            ProofDagJournalV0::open(&directory.path),
+            ProofDagJournal::open(&directory.path),
             Err(JournalError::InvalidHeader)
         ));
         assert_eq!(
@@ -850,7 +850,7 @@ fn incomplete_header_and_existing_garbage_never_auto_initialize() {
     let directory = TestDirectory::new();
     directory.write_image(b"not a journal");
     assert!(matches!(
-        ProofDagJournalV0::create(&directory.path),
+        ProofDagJournal::create(&directory.path),
         Err(JournalError::Create { .. })
     ));
     assert_eq!(
@@ -870,14 +870,14 @@ fn complete_footer_mutation_is_never_recovered_as_a_torn_tail() {
         corrupted[index] ^= 0x80;
         directory.write_image(&corrupted);
         assert!(matches!(
-            ProofDagJournalV0::open(&directory.path),
+            ProofDagJournal::open(&directory.path),
             Err(JournalError::EntryDigestMismatch { entry: 0, .. })
         ));
     }
     image.truncate(footer_start + 31);
     let directory = TestDirectory::new();
     directory.write_image(&image);
-    let recovered = ProofDagJournalV0::open(&directory.path).unwrap();
+    let recovered = ProofDagJournal::open(&directory.path).unwrap();
     assert!(recovered.is_empty().unwrap());
 }
 
@@ -891,7 +891,7 @@ fn in_range_length_damage_is_explicitly_treated_as_an_incomplete_suffix() {
     let mut image = journal_image(&[root, union, infinity]);
     image[prefix.len()..prefix.len() + 4].copy_from_slice(&100_u32.to_be_bytes());
     directory.write_image(&image);
-    let recovered = ProofDagJournalV0::open(&directory.path).unwrap();
+    let recovered = ProofDagJournal::open(&directory.path).unwrap();
     assert_eq!(recovered.len().unwrap(), 1);
     assert_eq!(
         fs::metadata(directory.journal_path()).unwrap().len(),
@@ -902,7 +902,7 @@ fn in_range_length_damage_is_explicitly_treated_as_an_incomplete_suffix() {
 #[test]
 fn poisoned_public_handle_hides_state_and_keeps_its_lock() {
     let directory = TestDirectory::new();
-    let mut journal = ProofDagJournalV0::create(&directory.path).unwrap();
+    let mut journal = ProofDagJournal::create(&directory.path).unwrap();
     let proof_id = journal
         .apply_canonical_proof_bytes(axiom_bytes(ZfcAxiom::Pairing))
         .unwrap();
@@ -920,11 +920,11 @@ fn poisoned_public_handle_hides_state_and_keeps_its_lock() {
         Err(JournalError::Poisoned)
     ));
     assert!(matches!(
-        ProofDagJournalV0::open(&directory.path),
+        ProofDagJournal::open(&directory.path),
         Err(JournalError::Locked)
     ));
 
     drop(journal);
-    let reopened = ProofDagJournalV0::open(&directory.path).unwrap();
+    let reopened = ProofDagJournal::open(&directory.path).unwrap();
     assert!(reopened.proof(proof_id).unwrap().is_some());
 }

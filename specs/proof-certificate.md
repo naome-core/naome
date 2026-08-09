@@ -1,9 +1,9 @@
-# NAOME Proof Certificate V0
+# NAOME Proof Certificate
 
 ## Status and scope
 
 This document defines the canonical binary representation of finite,
-assumption-free derivations relative to NAOME Foundation V0. It is a prerelease
+assumption-free derivations relative to NAOME Foundation. It is a prerelease
 protocol contract and may change before the first stable protocol release.
 
 A structurally valid certificate is not necessarily a mathematically valid
@@ -13,14 +13,14 @@ formula. Proof admission first derives the root-proof normal form and checks
 that normal form exactly once.
 
 Definitions, blocks, persistent chain state, rewards, networking, and
-human-readable `.nao` syntax are outside V0. Proof references resolve only
+human-readable `.nao` syntax are outside this contract. Proof references resolve only
 through the checked in-memory state defined below.
 
 ## Integer encoding
 
 Counts, lengths, variable identifiers, and step indices are unsigned `u32`
 values in big-endian byte order. They have exactly one four-byte
-representation. Versions and tags are single `u8` values. No variable-length
+representation. Tags are single `u8` values. No variable-length
 integers, strings, maps, floats, or implicit Rust enum layouts occur in
 canonical bytes. All tag literals and byte dumps in this document are
 hexadecimal.
@@ -46,16 +46,15 @@ Variable tags are:
 
 Binder names are absent. A bound index must be smaller than the number of
 enclosing universal quantifiers. Derived connectives and existential
-quantification are encoded only after expansion to Foundation V0 primitives.
+quantification are encoded only after expansion to Foundation primitives.
 
-The V0 codec admits at most 65,536 formula nodes, a nesting depth of 256, and
+The codec admits at most 65,536 formula nodes, a nesting depth of 256, and
 393,216 formula bytes. These deterministic processing limits do not restrict
-the abstract Foundation V0 language.
+the abstract Foundation language.
 
 ## Certificate envelope
 
 ```text
-version     u8 = 00
 step_count  u32
 steps       step_count consecutive steps
 EOF         no trailing bytes
@@ -65,9 +64,9 @@ A certificate contains at least one step. Steps are zero-indexed and their
 encoded order is part of the concrete certificate. The final step is the
 claimed conclusion.
 
-The V0 codec admits at most 4,194,304 certificate bytes and 65,536 steps. These
+The codec admits at most 4,194,304 certificate bytes and 65,536 steps. These
 standalone processing limits bound expansion into the owned proof model before
-a block format exists; they are not limits of Foundation V0 derivability.
+a block format exists; they are not limits of Foundation derivability.
 
 Every formula-valued step field is encoded as:
 
@@ -114,10 +113,10 @@ Fixed ZFC axiom tags are:
 
 No result formula is stored beside a step. The checker reconstructs it from the
 step tag, its payload, and earlier results. This prevents a certificate from
-carrying separate claimed and derived versions of the same line.
+carrying separate claimed and derived copies of the same line.
 
 Q2 does not encode a quantified-variable identifier. In the locally nameless
-Formula V0 representation, the checker constructs the nameless vacuous binder
+Formula representation, the checker constructs the nameless vacuous binder
 directly. This satisfies the abstract fresh-variable side condition without
 admitting redundant certificate bytes.
 
@@ -125,14 +124,14 @@ admitting redundant certificate bytes.
 
 The decoder accepts bytes exactly when:
 
-- the version and every tag are known;
+- every tag is known;
 - all fixed-width values and formula payloads are complete;
 - the certificate is non-empty;
-- the certificate byte length and step count are within the V0 processing
+- the certificate byte length and step count are within the processing
   limits;
 - every modus-ponens or generalization reference is strictly smaller than the
   index of the referencing step;
-- every canonical formula is well formed and within the V0 processing limits;
+- every canonical formula is well formed and within the processing limits;
 - all counts fit `u32`; and
 - no bytes remain after the declared steps.
 
@@ -145,7 +144,7 @@ closure of the conclusion. Those are mathematical-checker responsibilities.
 
 ## Direct mathematical checking
 
-The direct Checker V0 operation accepts a structurally valid certificate
+The direct Checker operation accepts a structurally valid certificate
 exactly when deterministic execution of every supplied step succeeds and the
 final result is closed. It processes steps in encoded order, including
 duplicate or unused steps. The first failure in that order rejects the
@@ -156,9 +155,9 @@ steps that normalization removes.
 The dependency-free `check` entry point supplies an empty proof state and
 therefore rejects every `ProofReference` as unknown. Reference-aware proof
 admission executes the same checker operation with an explicit immutable
-`ProofStateV0`.
+`ProofState`.
 
-Each step is reconstructed only through the corresponding Foundation V0
+Each step is reconstructed only through the corresponding Foundation
 operation:
 
 - L1 through L3, Q1, Q3, E1, and E2 instantiate their logical axioms;
@@ -172,13 +171,13 @@ operation:
 - modus ponens consumes its referenced premise and implication; and
 - generalization universally quantifies its referenced premise.
 
-Every reconstructed result must satisfy the Formula V0 depth, node, and byte
+Every reconstructed result must satisfy the Formula depth, node, and byte
 limits before it can be referenced. A Separation or Replacement step with at
-least 256 declared parameters is rejected with the Formula V0 depth-limit error
+least 256 declared parameters is rejected with the Formula depth-limit error
 before schema expansion because those parameter binders alone cannot fit the
 formula depth limit.
 
-Checker V0 admits at most 4,194,304 bytes of cumulative canonical formula work.
+Checker admits at most 4,194,304 bytes of cumulative canonical formula work.
 The checker charges:
 
 - the canonical lengths of both referenced operands before modus ponens;
@@ -193,11 +192,11 @@ result charge. The final closure traversal is budgeted before the conclusion is
 classified as open or closed.
 
 The last reconstructed formula is returned only when it contains no free
-variables. Checker V0 never inserts implicit universal quantifiers.
+variables. Checker never inserts implicit universal quantifiers.
 
 ## Canonical proof normal form
 
-One structurally valid certificate has exactly one V0 proof normal form. The
+One structurally valid certificate has exactly one proof normal form. The
 normal form is a deterministic projection for future content identity; it is
 not an additional proof rule and does not establish mathematical validity.
 
@@ -217,7 +216,7 @@ Normalization proceeds from the certificate's final step as the root:
    ordered local references have exactly the same canonical bytes as an
    already-emitted step.
 
-The resulting steps use the existing Certificate V0 envelope and step codec.
+The resulting steps use the existing Certificate envelope and step codec.
 Normalization is idempotent and cannot increase the encoded step count or byte
 length. It is invariant under the original topological order, systematic free
 variable renaming, unreachable steps, and exact duplicate proof nodes.
@@ -254,7 +253,7 @@ errors identify normal-form step indices and normalized free-variable IDs.
 A strict ledger admission layer requires canonical submissions by comparing
 the submitted bytes with the derived normal-form bytes before checking that
 normal form once. A mismatch is rejected rather than repaired. That admission
-policy is outside this V0 certificate contract. Canonical equality never
+policy is outside this certificate contract. Canonical equality never
 replaces mathematical checking.
 
 ### Normal-form golden vector
@@ -266,7 +265,7 @@ duplicate equality-reflexivity and generalization nodes.
 Input A:
 
 ```text
-00 00000006
+00000006
 10 01
 06 00000007
 06 00000007
@@ -278,7 +277,7 @@ Input A:
 Input B:
 
 ```text
-00 00000006
+00000006
 06 0000002a
 10 06
 21 00000000 0000002a
@@ -290,7 +289,7 @@ Input B:
 Both normalize to these exact bytes:
 
 ```text
-00 00000003
+00000003
 06 00000000
 21 00000000 00000000
 20 00000001 00000001
@@ -310,7 +309,7 @@ bytes, or Foundation identifier. Structural decoding accepts any 32-byte value
 and does not claim that the selected proof exists.
 
 Mathematical checking resolves each reachable reference from an immutable
-`ProofStateV0`. That state can only be populated from `CheckedProofV0` values,
+`ProofState`. That state can only be populated from `CheckedProof` values,
 so callers cannot attach an arbitrary formula to an identity. The state maps
 each `ProofId` through its `DerivationId` to its `StatementId` and stores the
 closed canonical conclusion only once per `StatementId`. Genuinely different
@@ -322,7 +321,7 @@ Resolution is local and deterministic:
 - the exact `ProofId` must already exist in the supplied state;
 - an absent reference rejects the normalized step before any inference that
   consumes it;
-- the referenced conclusion is charged against Checker V0's formula-work
+- the referenced conclusion is charged against Checker's formula-work
   budget before it is cloned;
 - the previously checked proof certificate is not executed again; and
 - unreachable references disappear during normalization and are not resolved
@@ -330,7 +329,7 @@ Resolution is local and deterministic:
 
 A reference may itself be the checked root: this is valid proof by citation.
 Its `DerivationId` is exactly the referenced derivation identity. Registration
-is stricter than mathematical checking: `ProofStateV0` rejects an already
+is stricter than mathematical checking: `ProofState` rejects an already
 registered `ProofId`, an already registered `DerivationId`, or a missing cited
 dependency. Detectable identity conflicts fail closed rather than replacing
 existing state.
@@ -345,26 +344,26 @@ For the checked proof in the content-identity golden vector below, the exact
 reference-only certificate is:
 
 ```text
-00 00000001
-30 5a90444e9a1f0e0138eb5bbca12d322ff705e55d155a9273474714dc698ae1bf
+00000001
+30 c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73
 ```
 
 Its conclusion retains the golden `StatementId`, while the citation proof has:
 
 ```text
-DerivationId = d19ab345081f610cd2ab47d68cc7fe8616818768227074fad2c2d83cacf5a449
-ProofId      = c1d38d88a33f3015d797eccf9f391540ffdedafeedcc553e07ed328b5a88fa71
+DerivationId = 59219d63c7c2353dcb6ffd1e604153143380ae6602e04215703bc0ea043243fb
+ProofId      = bfd427b447e1514686cfa31b0b5aa1dd5036464cd8c5d73d0c3112cb46b0519b
 ```
 
 The derivation identity equals that of the cited proof, so registering this
 alias into a state containing the cited proof fails as a duplicate derivation.
 
 This in-memory state is the resolver contract, not a persistent blockchain
-database. Ledger State V0 checks exactly one proof against the unchanged
+database. Ledger State checks exactly one proof against the unchanged
 accepted pre-transition state and registers that proof only after checking
 succeeds. A future block contains exactly one such proof. Block encoding,
 storage, apply/undo persistence, reorgs, pruning, and network synchronization
-remain outside this V0 contract.
+remain outside this contract.
 
 ## Content identity
 
@@ -378,17 +377,17 @@ Successful proof admission produces three distinct 32-byte content identities:
   chosen citation boundaries and cited `ProofId` values.
 
 All three identities use SHA-256 as specified by FIPS 180-4. They are bound to
-the exact UTF-8 bytes of the immutable Foundation V0 identifier
-`naome:zfc:v0`. This is a protocol-namespace binding, not a hash of Foundation
-source or documentation; Foundation V0 has no canonical content serialization.
+the exact UTF-8 bytes of the immutable Foundation identifier
+`naome:zfc`. This is a protocol-namespace binding, not a hash of Foundation
+source or documentation; Foundation has no canonical content serialization.
 
 The exact domain byte strings include their final `00` byte:
 
 ```text
-statement_domain = 6e616f6d653a73746174656d656e743a763000
-proof_domain     = 6e616f6d653a70726f6f663a763000
-derivation_node_domain = 6e616f6d653a64657269766174696f6e2d6e6f64653a763000
-foundation       = 6e616f6d653a7a66633a7630
+statement_domain = 6e616f6d653a73746174656d656e7400
+proof_domain     = 6e616f6d653a70726f6f6600
+derivation_node_domain = 6e616f6d653a64657269766174696f6e2d6e6f646500
+foundation       = 6e616f6d653a7a6663
 ```
 
 Variable fields are framed by their four-byte big-endian length. The raw
@@ -413,9 +412,9 @@ ProofId = SHA256(
 )
 ```
 
-`DerivationId` is computed compositionally while Checker V0 reconstructs the
+`DerivationId` is computed compositionally while Checker reconstructs the
 normal proof. For every local, non-reference step, let `result_bytes` be its
-reconstructed Formula V0 bytes after renumbering that result's free variables
+reconstructed Formula bytes after renumbering that result's free variables
 to `0, 1, ...` by first occurrence in canonical prefix order. Bound De Bruijn
 indices remain unchanged. This per-node normalization makes the reconstructed
 formula the node's canonical variable interface and prevents identifiers that
@@ -444,14 +443,14 @@ encoded. A `ProofReference` creates no derivation node: it returns the resolved
 proof's registered `DerivationId` unchanged. The final step's value is the
 checked proof's `DerivationId`.
 
-This transcript is defined for exactly the V0 rules above. A future rule whose
+This transcript is defined for exactly the rules above. A future rule whose
 result and ordered parent identities do not preserve its complete variable
-wiring must define additional canonical witness bytes or use a new derivation
-identity version; it cannot silently reuse this transcript.
+wiring must define additional canonical witness bytes or use a distinct
+derivation-identity domain; it cannot silently reuse this transcript.
 
-`statement_bytes` are the canonical Formula V0 bytes of the checked closed
+`statement_bytes` are the canonical Formula bytes of the checked closed
 conclusion. `normal_proof_bytes` are the canonical certificate bytes carried
-by the checked `ProofNormalFormV0`, never the unnormalized submitted bytes.
+by the checked `ProofNormalForm`, never the unnormalized submitted bytes.
 Consequently, presentation-only step order, systematic free-variable renaming,
 unreachable steps, and exact duplicate nodes do not change any identity.
 Inlining or citing an already checked subderivation can change `ProofId` but
@@ -478,15 +477,15 @@ bytes are:
 
 ```text
 statement_bytes   = 040001000000000100000000
-normal_proof_bytes = 00000000020600000000210000000000000000
+normal_proof_bytes = 000000020600000000210000000000000000
 ```
 
 The resulting identities are:
 
 ```text
-StatementId  = 517cddb156208852af848fd6b204b1dca9728f6e52fd6ec9940ef1437b8af15a
-DerivationId = d19ab345081f610cd2ab47d68cc7fe8616818768227074fad2c2d83cacf5a449
-ProofId      = 5a90444e9a1f0e0138eb5bbca12d322ff705e55d155a9273474714dc698ae1bf
+StatementId  = f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19
+DerivationId = 59219d63c7c2353dcb6ffd1e604153143380ae6602e04215703bc0ea043243fb
+ProofId      = c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73
 ```
 
 ## Golden certificate
@@ -494,7 +493,6 @@ ProofId      = 5a90444e9a1f0e0138eb5bbca12d322ff705e55d155a9273474714dc698ae1bf
 Equality reflexivity for free variable `0x01020304` is:
 
 ```text
-00                    version 0
 00 00 00 01           one step
 06                    equality-reflexivity step
 01 02 03 04           free-variable identifier
@@ -503,5 +501,5 @@ Equality reflexivity for free variable `0x01020304` is:
 Canonical bytes:
 
 ```text
-00 00 00 00 01 06 01 02 03 04
+00 00 00 01 06 01 02 03 04
 ```

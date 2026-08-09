@@ -1,9 +1,9 @@
 //! Crash-consistent local persistence for the selected NAOME proof DAG.
 //!
-//! [`ProofDagJournalV0`] stores only canonical proof-certificate payloads in
+//! [`ProofDagJournal`] stores only canonical proof-certificate payloads in
 //! dependency-first admission order. Opening a journal reconstructs every
 //! identity, dependency edge, and checked conclusion through strict
-//! [`ProofDagV0`] replay; persisted bytes never bypass proof validation.
+//! [`ProofDag`] replay; persisted bytes never bypass proof validation.
 //!
 //! The journal is a local recovery mechanism. Its physical order is neither a
 //! consensus order nor proof-finality evidence, and it defines no networking,
@@ -15,16 +15,16 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use naome_chain::ProofDagV0;
-use naome_ledger::{AcceptedProofRecordV0, LedgerError};
-use naome_proof::{CERTIFICATE_V0_MAX_BYTES, ProofId};
+use naome_chain::ProofDag;
+use naome_ledger::{AcceptedProofRecord, LedgerError};
+use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
 use sha2::{Digest, Sha256};
 
-const LOCK_FILE_NAME: &str = "proof-dag-v0.lock";
-const JOURNAL_FILE_NAME: &str = "proof-dag-v0.journal";
-const JOURNAL_HEADER: &[u8; 27] = b"naome:proof-dag-journal:v0\0";
-const GENESIS_DOMAIN: &[u8; 35] = b"naome:proof-dag-journal-genesis:v0\0";
-const ENTRY_DOMAIN: &[u8; 33] = b"naome:proof-dag-journal-entry:v0\0";
+const LOCK_FILE_NAME: &str = "proof-dag.lock";
+const JOURNAL_FILE_NAME: &str = "proof-dag.journal";
+const JOURNAL_HEADER: &[u8; 24] = b"naome:proof-dag-journal\0";
+const GENESIS_DOMAIN: &[u8; 32] = b"naome:proof-dag-journal-genesis\0";
+const ENTRY_DOMAIN: &[u8; 30] = b"naome:proof-dag-journal-entry\0";
 const DIGEST_BYTES: u64 = 32;
 const FRAME_FIXED_BYTES: u64 = 4 + DIGEST_BYTES;
 
@@ -35,12 +35,12 @@ const FRAME_FIXED_BYTES: u64 = 4 + DIGEST_BYTES;
 /// then be ahead of durable storage. Dropping and reopening the journal is the
 /// only recovery path.
 #[must_use]
-pub struct ProofDagJournalV0 {
+pub struct ProofDagJournal {
     _lock: File,
     core: JournalCore<File>,
 }
 
-impl ProofDagJournalV0 {
+impl ProofDagJournal {
     /// Creates and exclusively opens a new journal in an existing directory.
     ///
     /// Creation never replaces or reinitializes an existing journal. The new
@@ -96,12 +96,12 @@ impl ProofDagJournalV0 {
     pub fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
-    ) -> Result<&AcceptedProofRecordV0, JournalError> {
+    ) -> Result<&AcceptedProofRecord, JournalError> {
         self.core.apply_canonical_proof_bytes(bytes)
     }
 
     /// Returns one locally committed and replay-checked proof record.
-    pub fn proof(&self, proof_id: ProofId) -> Result<Option<&AcceptedProofRecordV0>, JournalError> {
+    pub fn proof(&self, proof_id: ProofId) -> Result<Option<&AcceptedProofRecord>, JournalError> {
         self.core.ensure_healthy()?;
         Ok(self.core.dag.proof(proof_id))
     }
@@ -167,7 +167,7 @@ impl JournalIo for File {
 
 struct JournalCore<F> {
     file: F,
-    dag: ProofDagV0,
+    dag: ProofDag,
     committed_end: u64,
     chain_digest: [u8; 32],
     poisoned: bool,
@@ -177,7 +177,7 @@ impl<F: JournalIo> JournalCore<F> {
     fn empty(file: F) -> Self {
         Self {
             file,
-            dag: ProofDagV0::new(),
+            dag: ProofDag::new(),
             committed_end: JOURNAL_HEADER.len() as u64,
             chain_digest: genesis_digest(),
             poisoned: false,
@@ -201,7 +201,7 @@ impl<F: JournalIo> JournalCore<F> {
             return Err(JournalError::InvalidHeader);
         }
 
-        let mut dag = ProofDagV0::new();
+        let mut dag = ProofDag::new();
         let mut chain_digest = genesis_digest();
         let mut frame_start = JOURNAL_HEADER.len() as u64;
         let mut entry = 0_u64;
@@ -226,12 +226,12 @@ impl<F: JournalIo> JournalCore<F> {
                     source,
                 })?;
             let payload_len = u32::from_be_bytes(length_bytes);
-            if payload_len == 0 || payload_len as usize > CERTIFICATE_V0_MAX_BYTES {
+            if payload_len == 0 || payload_len as usize > CERTIFICATE_MAX_BYTES {
                 return Err(JournalError::InvalidFrameLength {
                     entry,
                     offset: frame_start,
                     actual: payload_len,
-                    maximum: CERTIFICATE_V0_MAX_BYTES as u32,
+                    maximum: CERTIFICATE_MAX_BYTES as u32,
                 });
             }
 
@@ -299,7 +299,7 @@ impl<F: JournalIo> JournalCore<F> {
     fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
-    ) -> Result<&AcceptedProofRecordV0, JournalError> {
+    ) -> Result<&AcceptedProofRecord, JournalError> {
         self.ensure_healthy()?;
         let record = self
             .dag
@@ -307,8 +307,7 @@ impl<F: JournalIo> JournalCore<F> {
             .map_err(|source| JournalError::Admission { source })?;
         let proof_id = record.proof_id();
         let payload = record.canonical_proof_bytes();
-        let payload_len =
-            u32::try_from(payload.len()).expect("accepted V0 payload length fits u32");
+        let payload_len = u32::try_from(payload.len()).expect("accepted payload length fits u32");
         let length_bytes = payload_len.to_be_bytes();
         let digest = entry_digest(self.chain_digest, length_bytes, payload);
         let commit_result = self
@@ -328,7 +327,7 @@ impl<F: JournalIo> JournalCore<F> {
         self.committed_end = self
             .committed_end
             .checked_add(FRAME_FIXED_BYTES + u64::from(payload_len))
-            .expect("V0 journal offsets fit u64");
+            .expect("journal offsets fit u64");
         self.chain_digest = digest;
         Ok(record)
     }

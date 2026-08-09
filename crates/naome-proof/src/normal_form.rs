@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, btree_map::Entry};
 
 use naome_foundation::{Formula, FreeVariable, Replacement, Separation};
 
-use crate::{ProofCertificateV0, ProofStepV0, codec};
+use crate::{ProofCertificate, ProofStep, codec};
 
-pub(super) fn normalize(certificate: ProofCertificateV0) -> ProofCertificateV0 {
+pub(super) fn normalize(certificate: ProofCertificate) -> ProofCertificate {
     let mut source = certificate.steps.into_iter().map(Some).collect::<Vec<_>>();
     let mut normalized_indices = vec![None; source.len()];
     let mut normalized_steps = Vec::new();
@@ -60,7 +60,7 @@ pub(super) fn normalize(certificate: ProofCertificateV0) -> ProofCertificateV0 {
 
     // Mapping fixed-width identifiers cannot enlarge a step; reachability and
     // interning only remove steps, so every source certificate limit remains.
-    ProofCertificateV0 {
+    ProofCertificate {
         steps: normalized_steps,
     }
 }
@@ -72,65 +72,65 @@ enum Visit {
 }
 
 fn normalize_step(
-    step: ProofStepV0,
+    step: ProofStep,
     normalized_indices: &[Option<u32>],
     variables: &mut VariableNormalizer,
-) -> ProofStepV0 {
+) -> ProofStep {
     match step {
-        ProofStepV0::Simplification {
+        ProofStep::Simplification {
             antecedent,
             consequent,
-        } => ProofStepV0::Simplification {
+        } => ProofStep::Simplification {
             antecedent: variables.formula(antecedent),
             consequent: variables.formula(consequent),
         },
-        ProofStepV0::Frege {
+        ProofStep::Frege {
             first,
             second,
             third,
-        } => ProofStepV0::Frege {
+        } => ProofStep::Frege {
             first: variables.formula(first),
             second: variables.formula(second),
             third: variables.formula(third),
         },
-        ProofStepV0::ClassicalContraposition {
+        ProofStep::ClassicalContraposition {
             antecedent,
             consequent,
-        } => ProofStepV0::ClassicalContraposition {
+        } => ProofStep::ClassicalContraposition {
             antecedent: variables.formula(antecedent),
             consequent: variables.formula(consequent),
         },
-        ProofStepV0::UniversalDistribution {
+        ProofStep::UniversalDistribution {
             variable,
             antecedent,
             consequent,
-        } => ProofStepV0::UniversalDistribution {
+        } => ProofStep::UniversalDistribution {
             variable: variables.variable(variable),
             antecedent: variables.formula(antecedent),
             consequent: variables.formula(consequent),
         },
-        ProofStepV0::VacuousUniversal { formula } => ProofStepV0::VacuousUniversal {
+        ProofStep::VacuousUniversal { formula } => ProofStep::VacuousUniversal {
             formula: variables.formula(formula),
         },
-        ProofStepV0::UniversalInstantiation {
+        ProofStep::UniversalInstantiation {
             variable,
             replacement,
             body,
-        } => ProofStepV0::UniversalInstantiation {
+        } => ProofStep::UniversalInstantiation {
             variable: variables.variable(variable),
             replacement: variables.variable(replacement),
             body: variables.formula(body),
         },
-        ProofStepV0::EqualityReflexivity { variable } => ProofStepV0::EqualityReflexivity {
+        ProofStep::EqualityReflexivity { variable } => ProofStep::EqualityReflexivity {
             variable: variables.variable(variable),
         },
-        ProofStepV0::EqualitySubstitution { from, to, body } => ProofStepV0::EqualitySubstitution {
+        ProofStep::EqualitySubstitution { from, to, body } => ProofStep::EqualitySubstitution {
             from: variables.variable(from),
             to: variables.variable(to),
             body: variables.formula(body),
         },
-        ProofStepV0::ZfcAxiom(axiom) => ProofStepV0::ZfcAxiom(axiom),
-        ProofStepV0::Separation(instance) => {
+        ProofStep::ZfcAxiom(axiom) => ProofStep::ZfcAxiom(axiom),
+        ProofStep::Separation(instance) => {
             let Separation {
                 predicate,
                 element,
@@ -138,7 +138,7 @@ fn normalize_step(
                 result,
                 parameters,
             } = instance;
-            ProofStepV0::Separation(Separation {
+            ProofStep::Separation(Separation {
                 predicate: variables.formula(predicate),
                 element: variables.variable(element),
                 source: variables.variable(source),
@@ -146,7 +146,7 @@ fn normalize_step(
                 parameters: variables.variables(parameters),
             })
         }
-        ProofStepV0::Replacement(instance) => {
+        ProofStep::Replacement(instance) => {
             let Replacement {
                 predicate,
                 input,
@@ -156,7 +156,7 @@ fn normalize_step(
                 result,
                 parameters,
             } = instance;
-            ProofStepV0::Replacement(Replacement {
+            ProofStep::Replacement(Replacement {
                 predicate: variables.formula(predicate),
                 input: variables.variable(input),
                 output: variables.variable(output),
@@ -166,15 +166,15 @@ fn normalize_step(
                 parameters: variables.variables(parameters),
             })
         }
-        ProofStepV0::ProofReference { proof_id } => ProofStepV0::ProofReference { proof_id },
-        ProofStepV0::ModusPonens {
+        ProofStep::ProofReference { proof_id } => ProofStep::ProofReference { proof_id },
+        ProofStep::ModusPonens {
             premise,
             implication,
-        } => ProofStepV0::ModusPonens {
+        } => ProofStep::ModusPonens {
             premise: normalized_reference(premise, normalized_indices),
             implication: normalized_reference(implication, normalized_indices),
         },
-        ProofStepV0::Generalization { premise, variable } => ProofStepV0::Generalization {
+        ProofStep::Generalization { premise, variable } => ProofStep::Generalization {
             premise: normalized_reference(premise, normalized_indices),
             variable: variables.variable(variable),
         },
@@ -224,7 +224,7 @@ impl VariableNormalizer {
 mod tests {
     use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
 
-    use crate::{CERTIFICATE_V0_MAX_STEPS, ProofCertificateV0, ProofId, ProofStepV0};
+    use crate::{CERTIFICATE_MAX_STEPS, ProofCertificate, ProofId, ProofStep};
 
     #[test]
     fn topological_order_and_free_variable_names_do_not_change_the_normal_form() {
@@ -244,24 +244,24 @@ mod tests {
     #[test]
     fn normal_form_golden_prunes_renames_deduplicates_and_remaps_references() {
         let first = [
-            0x00, 0x00, 0x00, 0x00, 0x06, 0x10, 0x01, 0x06, 0x00, 0x00, 0x00, 0x07, 0x06, 0x00,
-            0x00, 0x00, 0x07, 0x21, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x07, 0x21, 0x00,
-            0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x07, 0x20, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00,
-            0x00, 0x04,
+            0x00, 0x00, 0x00, 0x06, 0x10, 0x01, 0x06, 0x00, 0x00, 0x00, 0x07, 0x06, 0x00, 0x00,
+            0x00, 0x07, 0x21, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x07, 0x21, 0x00, 0x00,
+            0x00, 0x02, 0x00, 0x00, 0x00, 0x07, 0x20, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+            0x04,
         ];
         let reordered = [
-            0x00, 0x00, 0x00, 0x00, 0x06, 0x06, 0x00, 0x00, 0x00, 0x2a, 0x10, 0x06, 0x21, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a, 0x06, 0x00, 0x00, 0x00, 0x2a, 0x21, 0x00,
-            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x2a, 0x20, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00,
-            0x00, 0x04,
+            0x00, 0x00, 0x00, 0x06, 0x06, 0x00, 0x00, 0x00, 0x2a, 0x10, 0x06, 0x21, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x2a, 0x06, 0x00, 0x00, 0x00, 0x2a, 0x21, 0x00, 0x00,
+            0x00, 0x03, 0x00, 0x00, 0x00, 0x2a, 0x20, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+            0x04,
         ];
         let expected = [
-            0x00, 0x00, 0x00, 0x00, 0x03, 0x06, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x03, 0x06, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
         ];
 
         for encoded in [&first[..], &reordered[..]] {
-            let normal = ProofCertificateV0::from_canonical_bytes(encoded)
+            let normal = ProofCertificate::from_canonical_bytes(encoded)
                 .unwrap()
                 .into_unchecked_normal_form();
             assert_eq!(normal.certificate().to_canonical_bytes(), expected);
@@ -281,14 +281,14 @@ mod tests {
         assert!(normal.certificate().to_canonical_bytes().len() < original_bytes);
         assert!(matches!(
             normal.certificate().steps()[2],
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             }
         ));
         assert!(matches!(
             normal.certificate().steps()[5],
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 2,
                 implication: 4,
             }
@@ -296,24 +296,24 @@ mod tests {
 
         let formula = Formula::equal(x, x);
         let correct = certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Simplification {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Simplification {
                 antecedent: formula.clone(),
                 consequent: formula,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
         ])
         .into_unchecked_normal_form();
         let swapped = certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Simplification {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Simplification {
                 antecedent: Formula::equal(x, x),
                 consequent: Formula::equal(x, x),
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 0,
             },
@@ -331,20 +331,20 @@ mod tests {
         let first_id = ProofId::from_bytes([0x11; 32]);
         let second_id = ProofId::from_bytes([0x22; 32]);
         let duplicate = certificate(vec![
-            ProofStepV0::ProofReference { proof_id: first_id },
-            ProofStepV0::ProofReference { proof_id: first_id },
-            ProofStepV0::ModusPonens {
+            ProofStep::ProofReference { proof_id: first_id },
+            ProofStep::ProofReference { proof_id: first_id },
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
         ])
         .into_unchecked_normal_form();
         let distinct = certificate(vec![
-            ProofStepV0::ProofReference { proof_id: first_id },
-            ProofStepV0::ProofReference {
+            ProofStep::ProofReference { proof_id: first_id },
+            ProofStep::ProofReference {
                 proof_id: second_id,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(duplicate.certificate().steps().len(), 2);
         assert!(matches!(
             duplicate.certificate().steps()[1],
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 0,
             }
@@ -370,9 +370,9 @@ mod tests {
     fn unreachable_steps_are_removed_and_normalization_is_idempotent() {
         let x = FreeVariable::new(13);
         let certificate = certificate(vec![
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 1,
                 variable: x,
             },
@@ -400,8 +400,8 @@ mod tests {
     fn equal_conclusions_with_different_derivations_remain_different_proofs() {
         let x = FreeVariable::new(4);
         let direct = certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
@@ -428,54 +428,54 @@ mod tests {
         let n = FreeVariable::new;
         let cases = vec![
             (
-                ProofStepV0::Simplification {
+                ProofStep::Simplification {
                     antecedent: Formula::member(b, a),
                     consequent: Formula::equal(c, b),
                 },
-                ProofStepV0::Simplification {
+                ProofStep::Simplification {
                     antecedent: Formula::member(n(0), n(1)),
                     consequent: Formula::equal(n(2), n(0)),
                 },
             ),
             (
-                ProofStepV0::Frege {
+                ProofStep::Frege {
                     first: Formula::equal(a, b),
                     second: Formula::member(c, a),
                     third: Formula::equal(d, c),
                 },
-                ProofStepV0::Frege {
+                ProofStep::Frege {
                     first: Formula::equal(n(0), n(1)),
                     second: Formula::member(n(2), n(0)),
                     third: Formula::equal(n(3), n(2)),
                 },
             ),
             (
-                ProofStepV0::ClassicalContraposition {
+                ProofStep::ClassicalContraposition {
                     antecedent: Formula::member(b, a),
                     consequent: Formula::equal(c, b),
                 },
-                ProofStepV0::ClassicalContraposition {
+                ProofStep::ClassicalContraposition {
                     antecedent: Formula::member(n(0), n(1)),
                     consequent: Formula::equal(n(2), n(0)),
                 },
             ),
             (
-                ProofStepV0::UniversalDistribution {
+                ProofStep::UniversalDistribution {
                     variable: c,
                     antecedent: Formula::equal(a, b),
                     consequent: Formula::member(b, c),
                 },
-                ProofStepV0::UniversalDistribution {
+                ProofStep::UniversalDistribution {
                     variable: n(0),
                     antecedent: Formula::equal(n(1), n(2)),
                     consequent: Formula::member(n(2), n(0)),
                 },
             ),
             (
-                ProofStepV0::VacuousUniversal {
+                ProofStep::VacuousUniversal {
                     formula: Formula::implies(Formula::equal(a, b), Formula::member(c, a)),
                 },
-                ProofStepV0::VacuousUniversal {
+                ProofStep::VacuousUniversal {
                     formula: Formula::implies(
                         Formula::equal(n(0), n(1)),
                         Formula::member(n(2), n(0)),
@@ -483,46 +483,46 @@ mod tests {
                 },
             ),
             (
-                ProofStepV0::UniversalInstantiation {
+                ProofStep::UniversalInstantiation {
                     variable: c,
                     replacement: a,
                     body: Formula::member(b, c),
                 },
-                ProofStepV0::UniversalInstantiation {
+                ProofStep::UniversalInstantiation {
                     variable: n(0),
                     replacement: n(1),
                     body: Formula::member(n(2), n(0)),
                 },
             ),
             (
-                ProofStepV0::EqualityReflexivity { variable: a },
-                ProofStepV0::EqualityReflexivity { variable: n(0) },
+                ProofStep::EqualityReflexivity { variable: a },
+                ProofStep::EqualityReflexivity { variable: n(0) },
             ),
             (
-                ProofStepV0::EqualitySubstitution {
+                ProofStep::EqualitySubstitution {
                     from: b,
                     to: c,
                     body: Formula::implies(Formula::member(a, b), Formula::equal(c, a)),
                 },
-                ProofStepV0::EqualitySubstitution {
+                ProofStep::EqualitySubstitution {
                     from: n(0),
                     to: n(1),
                     body: Formula::implies(Formula::member(n(2), n(0)), Formula::equal(n(1), n(2))),
                 },
             ),
             (
-                ProofStepV0::ZfcAxiom(ZfcAxiom::Choice),
-                ProofStepV0::ZfcAxiom(ZfcAxiom::Choice),
+                ProofStep::ZfcAxiom(ZfcAxiom::Choice),
+                ProofStep::ZfcAxiom(ZfcAxiom::Choice),
             ),
             (
-                ProofStepV0::Separation(Separation {
+                ProofStep::Separation(Separation {
                     predicate: Formula::equal(c, b),
                     element: a,
                     source: d,
                     result: e,
                     parameters: vec![b, f, a],
                 }),
-                ProofStepV0::Separation(Separation {
+                ProofStep::Separation(Separation {
                     predicate: Formula::equal(n(0), n(1)),
                     element: n(2),
                     source: n(3),
@@ -531,7 +531,7 @@ mod tests {
                 }),
             ),
             (
-                ProofStepV0::Replacement(Replacement {
+                ProofStep::Replacement(Replacement {
                     predicate: Formula::member(d, c),
                     input: b,
                     output: e,
@@ -540,7 +540,7 @@ mod tests {
                     result: g,
                     parameters: vec![c, h, b],
                 }),
-                ProofStepV0::Replacement(Replacement {
+                ProofStep::Replacement(Replacement {
                     predicate: Formula::member(n(0), n(1)),
                     input: n(2),
                     output: n(3),
@@ -561,86 +561,86 @@ mod tests {
     #[test]
     fn maximum_step_chain_normalizes_iteratively() {
         let x = FreeVariable::new(u32::MAX);
-        let mut steps = Vec::with_capacity(CERTIFICATE_V0_MAX_STEPS);
-        steps.push(ProofStepV0::EqualityReflexivity { variable: x });
-        while steps.len() < CERTIFICATE_V0_MAX_STEPS {
+        let mut steps = Vec::with_capacity(CERTIFICATE_MAX_STEPS);
+        steps.push(ProofStep::EqualityReflexivity { variable: x });
+        while steps.len() < CERTIFICATE_MAX_STEPS {
             let premise = u32::try_from(steps.len() - 1).unwrap();
-            steps.push(ProofStepV0::Generalization {
+            steps.push(ProofStep::Generalization {
                 premise,
                 variable: x,
             });
         }
 
         let normal = certificate(steps).into_unchecked_normal_form();
-        assert_eq!(normal.certificate().steps().len(), CERTIFICATE_V0_MAX_STEPS);
+        assert_eq!(normal.certificate().steps().len(), CERTIFICATE_MAX_STEPS);
     }
 
-    fn identity_proof(variable: FreeVariable, reordered: bool) -> ProofCertificateV0 {
+    fn identity_proof(variable: FreeVariable, reordered: bool) -> ProofCertificate {
         let formula = Formula::equal(variable, variable);
-        let axiom = ProofStepV0::Simplification {
+        let axiom = ProofStep::Simplification {
             antecedent: formula.clone(),
             consequent: formula,
         };
-        let reflexivity = ProofStepV0::EqualityReflexivity { variable };
+        let reflexivity = ProofStep::EqualityReflexivity { variable };
         let mut steps = if reordered {
             vec![axiom, reflexivity]
         } else {
             vec![reflexivity, axiom]
         };
         let (premise, implication) = if reordered { (1, 0) } else { (0, 1) };
-        steps.push(ProofStepV0::ModusPonens {
+        steps.push(ProofStep::ModusPonens {
             premise,
             implication,
         });
-        steps.push(ProofStepV0::ModusPonens {
+        steps.push(ProofStep::ModusPonens {
             premise,
             implication: 2,
         });
-        steps.push(ProofStepV0::Generalization {
+        steps.push(ProofStep::Generalization {
             premise: 3,
             variable,
         });
         certificate(steps)
     }
 
-    fn duplicate_identity_proof(variable: FreeVariable) -> ProofCertificateV0 {
+    fn duplicate_identity_proof(variable: FreeVariable) -> ProofCertificate {
         let equality = Formula::equal(variable, variable);
         let identity = Formula::implies(equality.clone(), equality.clone());
         certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::Simplification {
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::Simplification {
                 antecedent: equality.clone(),
                 consequent: equality,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 2,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 2,
             },
-            ProofStepV0::Simplification {
+            ProofStep::Simplification {
                 antecedent: identity.clone(),
                 consequent: identity,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 3,
                 implication: 5,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 4,
                 implication: 6,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 7,
                 variable,
             },
         ])
     }
 
-    fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
-        ProofCertificateV0::new(steps).expect("the test proof is structurally valid")
+    fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
+        ProofCertificate::new(steps).expect("the test proof is structurally valid")
     }
 }

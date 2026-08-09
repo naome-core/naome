@@ -3,26 +3,26 @@ use std::error::Error;
 use std::fmt;
 
 use naome_foundation::Formula;
-use naome_proof::{DerivationId, ProofId, ProofStepV0, StatementId};
+use naome_proof::{DerivationId, ProofId, ProofStep, StatementId};
 
-use crate::CheckedProofV0;
+use crate::CheckedProof;
 
 /// The checked proof conclusions available to resolve external references.
 ///
-/// This in-memory state can only be extended with [`CheckedProofV0`] values.
+/// This in-memory state can only be extended with [`CheckedProof`] values.
 /// It stores each closed conclusion once per [`StatementId`] while retaining
 /// one concrete [`ProofId`] for every distinct checked derivation that may be
 /// cited. Blocks, persistence, reorgs, and network synchronization are
 /// deliberately outside this type.
 #[derive(Default)]
 #[must_use]
-pub struct ProofStateV0 {
+pub struct ProofState {
     proofs: BTreeMap<ProofId, DerivationId>,
     derivations: BTreeMap<DerivationId, StatementId>,
-    statements: BTreeMap<StatementId, StoredStatementV0>,
+    statements: BTreeMap<StatementId, StoredStatement>,
 }
 
-impl ProofStateV0 {
+impl ProofState {
     /// Constructs an empty checked-proof state.
     pub const fn new() -> Self {
         Self {
@@ -53,7 +53,7 @@ impl ProofStateV0 {
     /// present. This keeps the registry dependency-closed even when a checked
     /// proof is moved from a different state. On success, the canonical proof
     /// bytes not retained by this resolver state are returned to the caller.
-    pub fn register(&mut self, proof: CheckedProofV0) -> Result<Box<[u8]>, ProofStateError> {
+    pub fn register(&mut self, proof: CheckedProof) -> Result<Box<[u8]>, ProofStateError> {
         if let Some(existing_derivation_id) = self.proofs.get(&proof.proof_id) {
             let existing_statement_id = self
                 .derivations
@@ -82,7 +82,7 @@ impl ProofStateV0 {
         }
 
         for step in proof.normal_form.certificate().steps() {
-            if let ProofStepV0::ProofReference { proof_id } = step
+            if let ProofStep::ProofReference { proof_id } = step
                 && !self.proofs.contains_key(proof_id)
             {
                 return Err(ProofStateError::MissingProofDependency {
@@ -112,7 +112,7 @@ impl ProofStateV0 {
             };
         }
 
-        let CheckedProofV0 {
+        let CheckedProof {
             normal_form,
             conclusion,
             statement_id,
@@ -127,7 +127,7 @@ impl ProofStateV0 {
             }
             Entry::Occupied(_) => {}
             Entry::Vacant(entry) => {
-                entry.insert(StoredStatementV0 {
+                entry.insert(StoredStatement {
                     conclusion,
                     canonical_length: canonical_conclusion_length,
                 });
@@ -139,7 +139,7 @@ impl ProofStateV0 {
         Ok(normal_form.into_canonical_bytes())
     }
 
-    pub(crate) fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProofV0<'_>> {
+    pub(crate) fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProof<'_>> {
         let derivation_id = *self.proofs.get(&proof_id)?;
         let statement_id = self
             .derivations
@@ -149,7 +149,7 @@ impl ProofStateV0 {
             .statements
             .get(statement_id)
             .expect("every registered proof has a stored statement");
-        Some(ResolvedProofV0 {
+        Some(ResolvedProof {
             conclusion: &statement.conclusion,
             canonical_length: statement.canonical_length,
             derivation_id,
@@ -157,12 +157,12 @@ impl ProofStateV0 {
     }
 }
 
-struct StoredStatementV0 {
+struct StoredStatement {
     conclusion: Formula,
     canonical_length: usize,
 }
 
-pub(crate) struct ResolvedProofV0<'a> {
+pub(crate) struct ResolvedProof<'a> {
     pub(crate) conclusion: &'a Formula,
     pub(crate) canonical_length: usize,
     pub(crate) derivation_id: DerivationId,
@@ -216,19 +216,19 @@ impl Error for ProofStateError {}
 #[cfg(test)]
 mod tests {
     use naome_foundation::{Formula, FreeVariable};
-    use naome_proof::{ProofCertificateV0, ProofStepV0};
+    use naome_proof::{ProofCertificate, ProofStep};
 
-    use super::{ProofStateError, ProofStateV0};
+    use super::{ProofState, ProofStateError};
     use crate::normalize_and_check;
 
-    fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
-        ProofCertificateV0::new(steps).unwrap()
+    fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
+        ProofCertificate::new(steps).unwrap()
     }
 
-    fn direct_identity(variable: FreeVariable) -> crate::CheckedProofV0 {
+    fn direct_identity(variable: FreeVariable) -> crate::CheckedProof {
         normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::Generalization {
                 premise: 0,
                 variable,
             },
@@ -242,20 +242,20 @@ mod tests {
         let direct = direct_identity(x);
         let formula = Formula::equal(x, x);
         let detour = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Simplification {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Simplification {
                 antecedent: formula.clone(),
                 consequent: formula,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 2,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 3,
                 variable: x,
             },
@@ -267,7 +267,7 @@ mod tests {
         let direct_derivation_id = direct.derivation_id;
         let detour_derivation_id = detour.derivation_id;
 
-        let mut state = ProofStateV0::new();
+        let mut state = ProofState::new();
         state.register(direct).unwrap();
         state.register(detour).unwrap();
 
@@ -285,22 +285,22 @@ mod tests {
         let original_proof_id = original.proof_id;
         let original_statement_id = original.statement_id;
         let original_derivation_id = original.derivation_id;
-        let mut state = ProofStateV0::new();
+        let mut state = ProofState::new();
         state.register(original).unwrap();
         let different_conclusion = || {
-            normalize_and_check(certificate(vec![ProofStepV0::ZfcAxiom(
+            normalize_and_check(certificate(vec![ProofStep::ZfcAxiom(
                 naome_foundation::ZfcAxiom::Pairing,
             )]))
             .unwrap()
         };
 
         let mut conflicting_proof = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 1,
                 variable: FreeVariable::new(2),
             },
@@ -326,20 +326,20 @@ mod tests {
         );
 
         let mut duplicate_derivation = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Simplification {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Simplification {
                 antecedent: Formula::equal(x, x),
                 consequent: Formula::equal(x, x),
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 2,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 3,
                 variable: x,
             },
@@ -376,7 +376,7 @@ mod tests {
         );
 
         let mut conflicting_statement =
-            normalize_and_check(certificate(vec![ProofStepV0::ZfcAxiom(
+            normalize_and_check(certificate(vec![ProofStep::ZfcAxiom(
                 naome_foundation::ZfcAxiom::Extensionality,
             )]))
             .unwrap();

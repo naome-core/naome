@@ -1,12 +1,12 @@
-//! Deterministic mathematical checking for Foundation V0 proof certificates.
+//! Deterministic mathematical checking for Foundation proof certificates.
 //!
 //! The checker reconstructs every certificate step through the executable
-//! Foundation V0 rules, enforces deterministic formula-processing limits, and
+//! Foundation rules, enforces deterministic formula-processing limits, and
 //! accepts only a closed final formula. External proof references resolve only
-//! through an explicitly supplied, already checked [`ProofStateV0`]. The crate
+//! through an explicitly supplied, already checked [`ProofState`]. The crate
 //! remains deliberately in-memory and has no blocks, persistence, networking,
 //! or source parsing.
-//! Successful proof admission returns a [`CheckedProofV0`] that keeps the
+//! Successful proof admission returns a [`CheckedProof`] that keeps the
 //! accepted normal form, reconstructed conclusion, and content identities
 //! coupled together.
 
@@ -16,31 +16,30 @@ use std::error::Error;
 use std::fmt;
 
 use naome_foundation::{
-    FORMULA_V0_MAX_DEPTH, FOUNDATION_ID, Formula, FormulaCodecError, LogicError, LogicV0,
-    SchemaError,
+    FORMULA_MAX_DEPTH, FOUNDATION_ID, Formula, FormulaCodecError, Logic, LogicError, SchemaError,
 };
 use naome_proof::{
-    CERTIFICATE_V0_MAX_BYTES, DerivationId, ProofCertificateV0, ProofId, ProofNormalFormV0,
-    ProofStepV0, StatementId,
+    CERTIFICATE_MAX_BYTES, DerivationId, ProofCertificate, ProofId, ProofNormalForm, ProofStep,
+    StatementId,
 };
 use sha2::{Digest, Sha256};
 
-pub use state::{ProofStateError, ProofStateV0};
+pub use state::{ProofState, ProofStateError};
 
-const STATEMENT_ID_V0_DOMAIN: &[u8] = b"naome:statement:v0\0";
-const PROOF_ID_V0_DOMAIN: &[u8] = b"naome:proof:v0\0";
-const DERIVATION_NODE_ID_V0_DOMAIN: &[u8] = b"naome:derivation-node:v0\0";
+const STATEMENT_ID_DOMAIN: &[u8] = b"naome:statement\0";
+const PROOF_ID_DOMAIN: &[u8] = b"naome:proof\0";
+const DERIVATION_NODE_ID_DOMAIN: &[u8] = b"naome:derivation-node\0";
 
-/// Maximum cumulative canonical formula work admitted by Checker V0.
+/// Maximum cumulative canonical formula work admitted by Checker.
 ///
 /// Each reconstructed result is charged once. Formulas referenced by modus
 /// ponens or generalization are charged before executing that rule, and the
 /// conclusion is charged once more before checking closure. This value matches
 /// the maximum encoded certificate length and provides one deterministic bound
 /// for retained formulas and repeated inference work.
-pub const CHECKER_V0_MAX_FORMULA_WORK_BYTES: usize = CERTIFICATE_V0_MAX_BYTES;
+pub const CHECKER_MAX_FORMULA_WORK_BYTES: usize = CERTIFICATE_MAX_BYTES;
 
-/// A normalized Foundation V0 proof accepted by Checker V0.
+/// A normalized Foundation proof accepted by Checker.
 ///
 /// The private fields keep the accepted normal form coupled to the exact
 /// closed conclusion and content identities reconstructed from it. Those
@@ -48,8 +47,8 @@ pub const CHECKER_V0_MAX_FORMULA_WORK_BYTES: usize = CERTIFICATE_V0_MAX_BYTES;
 /// admission or chain inclusion.
 #[derive(Debug, PartialEq, Eq)]
 #[must_use]
-pub struct CheckedProofV0 {
-    normal_form: ProofNormalFormV0,
+pub struct CheckedProof {
+    normal_form: ProofNormalForm,
     conclusion: Formula,
     statement_id: StatementId,
     derivation_id: DerivationId,
@@ -57,13 +56,13 @@ pub struct CheckedProofV0 {
     canonical_conclusion_length: usize,
 }
 
-impl CheckedProofV0 {
+impl CheckedProof {
     /// Returns the checked proof's canonical normal form.
-    pub const fn normal_form(&self) -> &ProofNormalFormV0 {
+    pub const fn normal_form(&self) -> &ProofNormalForm {
         &self.normal_form
     }
 
-    /// Returns the closed conclusion reconstructed by Checker V0.
+    /// Returns the closed conclusion reconstructed by Checker.
     pub const fn conclusion(&self) -> &Formula {
         &self.conclusion
     }
@@ -84,39 +83,39 @@ impl CheckedProofV0 {
     }
 }
 
-/// Checks one structurally valid Foundation V0 proof certificate.
+/// Checks one structurally valid Foundation proof certificate.
 ///
 /// Every step is reconstructed in order, including unused or duplicate steps.
 /// External proof references fail because this low-level entry point has no
 /// checked state. On success, the returned formula is the certificate's closed
 /// conclusion.
-pub fn check(certificate: &ProofCertificateV0) -> Result<Formula, CheckError> {
+pub fn check(certificate: &ProofCertificate) -> Result<Formula, CheckError> {
     check_with_canonical_conclusion(
         certificate,
-        &ProofStateV0::new(),
+        &ProofState::new(),
         IdentityMode::OmitDerivation,
     )
     .map(|(conclusion, _, _)| conclusion)
 }
 
 fn check_with_canonical_conclusion(
-    certificate: &ProofCertificateV0,
-    proof_state: &ProofStateV0,
+    certificate: &ProofCertificate,
+    proof_state: &ProofState,
     identity_mode: IdentityMode,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
     let steps = certificate.steps();
     let final_step = u32::try_from(steps.len() - 1)
-        .expect("ProofCertificateV0 is non-empty and has a bounded step count");
+        .expect("ProofCertificate is non-empty and has a bounded step count");
     let last_uses = last_uses(steps);
     let mut results: Vec<Option<CheckedStep>> = Vec::with_capacity(steps.len());
     let mut derivation_ids =
         matches!(identity_mode, IdentityMode::Derive).then(|| Vec::with_capacity(steps.len()));
-    let mut remaining_work = CHECKER_V0_MAX_FORMULA_WORK_BYTES;
+    let mut remaining_work = CHECKER_MAX_FORMULA_WORK_BYTES;
     let mut canonical_conclusion = None;
 
     for (position, step) in steps.iter().enumerate() {
         let position = u32::try_from(position)
-            .expect("ProofCertificateV0 limits make every step index representable");
+            .expect("ProofCertificate limits make every step index representable");
 
         let DerivedStep {
             formula,
@@ -136,8 +135,8 @@ fn check_with_canonical_conclusion(
         let canonical = (precharged_length.is_none() || position == final_step)
             .then(|| {
                 let canonical = match identity_mode {
-                    IdentityMode::OmitDerivation => formula.encode_canonical_v0(),
-                    IdentityMode::Derive => formula.encode_free_variable_normalized_v0(),
+                    IdentityMode::OmitDerivation => formula.encode_canonical(),
+                    IdentityMode::Derive => formula.encode_free_variable_normalized(),
                 };
                 canonical.map_err(|source| CheckError::DerivedFormula {
                     step: position,
@@ -184,7 +183,7 @@ fn check_with_canonical_conclusion(
     } = results
         .pop()
         .flatten()
-        .expect("every ProofCertificateV0 has at least one reconstructed step");
+        .expect("every ProofCertificate has at least one reconstructed step");
     charge_formula_work(final_step, canonical_length, &mut remaining_work)?;
 
     if !conclusion.is_closed() {
@@ -212,8 +211,8 @@ enum IdentityMode {
 /// exact normal form coupled to the closed conclusion and content identities
 /// reconstructed from it. External proof references fail; use
 /// [`normalize_and_check_with_state`] when references are expected.
-pub fn normalize_and_check(certificate: ProofCertificateV0) -> Result<CheckedProofV0, CheckError> {
-    normalize_and_check_with_state(certificate, &ProofStateV0::new())
+pub fn normalize_and_check(certificate: ProofCertificate) -> Result<CheckedProof, CheckError> {
+    normalize_and_check_with_state(certificate, &ProofState::new())
 }
 
 /// Normalizes and checks one proof against an immutable checked-proof state.
@@ -222,9 +221,9 @@ pub fn normalize_and_check(certificate: ProofCertificateV0) -> Result<CheckedPro
 /// must already be present in `proof_state`; the state is never mutated during
 /// checking. On success, the returned proof may be registered afterward.
 pub fn normalize_and_check_with_state(
-    certificate: ProofCertificateV0,
-    proof_state: &ProofStateV0,
-) -> Result<CheckedProofV0, CheckError> {
+    certificate: ProofCertificate,
+    proof_state: &ProofState,
+) -> Result<CheckedProof, CheckError> {
     let normal_form = certificate.into_unchecked_normal_form();
     check_normal_form_with_state(normal_form, proof_state)
 }
@@ -232,13 +231,13 @@ pub fn normalize_and_check_with_state(
 /// Checks one canonical proof normal form against an immutable checked-proof state.
 ///
 /// Unlike [`normalize_and_check_with_state`], this entry point performs no
-/// normalization. The [`ProofNormalFormV0`] type guarantees the structural
+/// normalization. The [`ProofNormalForm`] type guarantees the structural
 /// root-proof projection; this function establishes its mathematical validity
 /// and content identities exactly once.
 pub fn check_normal_form_with_state(
-    normal_form: ProofNormalFormV0,
-    proof_state: &ProofStateV0,
-) -> Result<CheckedProofV0, CheckError> {
+    normal_form: ProofNormalForm,
+    proof_state: &ProofState,
+) -> Result<CheckedProof, CheckError> {
     let (conclusion, canonical_conclusion, derivation_id) = check_with_canonical_conclusion(
         normal_form.certificate(),
         proof_state,
@@ -250,7 +249,7 @@ pub fn check_normal_form_with_state(
     let statement_id = statement_id(&canonical_conclusion);
     drop(canonical_conclusion);
     let proof_id = proof_id(statement_id, &normal_form);
-    Ok(CheckedProofV0 {
+    Ok(CheckedProof {
         normal_form,
         conclusion,
         statement_id,
@@ -261,14 +260,14 @@ pub fn check_normal_form_with_state(
 }
 
 fn derivation_id(
-    step: &ProofStepV0,
+    step: &ProofStep,
     canonical_result: &[u8],
     inputs: [Option<DerivationId>; 2],
 ) -> DerivationId {
     let mut hasher = Sha256::new();
-    hasher.update(DERIVATION_NODE_ID_V0_DOMAIN);
+    hasher.update(DERIVATION_NODE_ID_DOMAIN);
     update_framed(&mut hasher, FOUNDATION_ID.as_bytes());
-    hasher.update([step.canonical_tag_v0()]);
+    hasher.update([step.canonical_tag()]);
     update_framed(&mut hasher, canonical_result);
     for input in inputs.into_iter().flatten() {
         hasher.update(input.as_bytes());
@@ -278,15 +277,15 @@ fn derivation_id(
 
 fn statement_id(canonical_conclusion: &[u8]) -> StatementId {
     StatementId::from_bytes(foundation_scoped_hash(
-        STATEMENT_ID_V0_DOMAIN,
+        STATEMENT_ID_DOMAIN,
         &[],
         canonical_conclusion,
     ))
 }
 
-fn proof_id(statement_id: StatementId, normal_form: &ProofNormalFormV0) -> ProofId {
+fn proof_id(statement_id: StatementId, normal_form: &ProofNormalForm) -> ProofId {
     ProofId::from_bytes(foundation_scoped_hash(
-        PROOF_ID_V0_DOMAIN,
+        PROOF_ID_DOMAIN,
         statement_id.as_bytes(),
         normal_form.canonical_bytes(),
     ))
@@ -302,18 +301,18 @@ fn foundation_scoped_hash(domain: &[u8], binding: &[u8], payload: &[u8]) -> [u8;
 }
 
 fn update_framed(hasher: &mut Sha256, bytes: &[u8]) {
-    let length = u32::try_from(bytes.len())
-        .expect("Foundation V0 identifiers and canonical payloads fit u32");
+    let length =
+        u32::try_from(bytes.len()).expect("Foundation identifiers and canonical payloads fit u32");
     hasher.update(length.to_be_bytes());
     hasher.update(bytes);
 }
 
-fn last_uses(steps: &[ProofStepV0]) -> Vec<Option<u32>> {
+fn last_uses(steps: &[ProofStep]) -> Vec<Option<u32>> {
     let mut last_uses = vec![None; steps.len()];
 
     for (position, step) in steps.iter().enumerate() {
         let position = u32::try_from(position)
-            .expect("ProofCertificateV0 limits make every step index representable");
+            .expect("ProofCertificate limits make every step index representable");
         for reference in step.local_references().into_iter().flatten() {
             last_uses[reference as usize] = Some(position);
         }
@@ -323,11 +322,11 @@ fn last_uses(steps: &[ProofStepV0]) -> Vec<Option<u32>> {
 }
 
 fn preflight_schema_depth(step: u32, parameter_count: usize) -> Result<(), CheckError> {
-    if parameter_count >= FORMULA_V0_MAX_DEPTH as usize {
+    if parameter_count >= FORMULA_MAX_DEPTH as usize {
         return Err(CheckError::DerivedFormula {
             step,
             source: FormulaCodecError::DepthLimitExceeded {
-                maximum: FORMULA_V0_MAX_DEPTH,
+                maximum: FORMULA_MAX_DEPTH,
             },
         });
     }
@@ -337,54 +336,54 @@ fn preflight_schema_depth(step: u32, parameter_count: usize) -> Result<(), Check
 
 fn derive_step(
     step: u32,
-    proof_step: &ProofStepV0,
+    proof_step: &ProofStep,
     results: &[Option<CheckedStep>],
-    proof_state: &ProofStateV0,
+    proof_state: &ProofState,
     remaining_work: &mut usize,
 ) -> Result<DerivedStep, CheckError> {
     let formula = match proof_step {
-        ProofStepV0::Simplification {
+        ProofStep::Simplification {
             antecedent,
             consequent,
-        } => LogicV0::simplification(antecedent.clone(), consequent.clone()),
-        ProofStepV0::Frege {
+        } => Logic::simplification(antecedent.clone(), consequent.clone()),
+        ProofStep::Frege {
             first,
             second,
             third,
-        } => LogicV0::frege(first.clone(), second.clone(), third.clone()),
-        ProofStepV0::ClassicalContraposition {
+        } => Logic::frege(first.clone(), second.clone(), third.clone()),
+        ProofStep::ClassicalContraposition {
             antecedent,
             consequent,
-        } => LogicV0::classical_contraposition(antecedent.clone(), consequent.clone()),
-        ProofStepV0::UniversalDistribution {
+        } => Logic::classical_contraposition(antecedent.clone(), consequent.clone()),
+        ProofStep::UniversalDistribution {
             variable,
             antecedent,
             consequent,
-        } => LogicV0::universal_distribution(*variable, antecedent.clone(), consequent.clone()),
-        ProofStepV0::VacuousUniversal { formula } => LogicV0::vacuous_universal(formula.clone()),
-        ProofStepV0::UniversalInstantiation {
+        } => Logic::universal_distribution(*variable, antecedent.clone(), consequent.clone()),
+        ProofStep::VacuousUniversal { formula } => Logic::vacuous_universal(formula.clone()),
+        ProofStep::UniversalInstantiation {
             variable,
             replacement,
             body,
-        } => LogicV0::universal_instantiation(*variable, *replacement, body.clone()),
-        ProofStepV0::EqualityReflexivity { variable } => LogicV0::equality_reflexivity(*variable),
-        ProofStepV0::EqualitySubstitution { from, to, body } => {
-            LogicV0::equality_substitution(*from, *to, body.clone())
+        } => Logic::universal_instantiation(*variable, *replacement, body.clone()),
+        ProofStep::EqualityReflexivity { variable } => Logic::equality_reflexivity(*variable),
+        ProofStep::EqualitySubstitution { from, to, body } => {
+            Logic::equality_substitution(*from, *to, body.clone())
         }
-        ProofStepV0::ZfcAxiom(axiom) => axiom.formula(),
-        ProofStepV0::Separation(schema) => {
+        ProofStep::ZfcAxiom(axiom) => axiom.formula(),
+        ProofStep::Separation(schema) => {
             preflight_schema_depth(step, schema.parameters.len())?;
             schema
                 .formula()
                 .map_err(|source| CheckError::Schema { step, source })?
         }
-        ProofStepV0::Replacement(schema) => {
+        ProofStep::Replacement(schema) => {
             preflight_schema_depth(step, schema.parameters.len())?;
             schema
                 .formula()
                 .map_err(|source| CheckError::Schema { step, source })?
         }
-        ProofStepV0::ProofReference { proof_id } => {
+        ProofStep::ProofReference { proof_id } => {
             let resolved =
                 proof_state
                     .resolve(*proof_id)
@@ -399,7 +398,7 @@ fn derive_step(
                 referenced_derivation_id: Some(resolved.derivation_id),
             });
         }
-        ProofStepV0::ModusPonens {
+        ProofStep::ModusPonens {
             premise,
             implication,
         } => {
@@ -408,15 +407,15 @@ fn derive_step(
             let referenced_work = premise
                 .canonical_length
                 .checked_add(implication.canonical_length)
-                .expect("two V0 formula lengths fit usize");
+                .expect("two formula lengths fit usize");
             charge_formula_work(step, referenced_work, remaining_work)?;
-            LogicV0::modus_ponens(&premise.formula, &implication.formula)
+            Logic::modus_ponens(&premise.formula, &implication.formula)
                 .map_err(|source| CheckError::Logic { step, source })?
         }
-        ProofStepV0::Generalization { premise, variable } => {
+        ProofStep::Generalization { premise, variable } => {
             let premise = result(results, *premise);
             charge_formula_work(step, premise.canonical_length, remaining_work)?;
-            LogicV0::generalization(*variable, premise.formula.clone())
+            Logic::generalization(*variable, premise.formula.clone())
         }
     };
 
@@ -439,7 +438,7 @@ struct CheckedStep {
 }
 
 fn derivation_inputs(
-    step: &ProofStepV0,
+    step: &ProofStep,
     derivation_ids: &[DerivationId],
 ) -> [Option<DerivationId>; 2] {
     step.local_references()
@@ -450,18 +449,18 @@ fn result(results: &[Option<CheckedStep>], reference: u32) -> &CheckedStep {
     results
         .get(reference as usize)
         .and_then(Option::as_ref)
-        .expect("ProofCertificateV0 guarantees references to earlier steps")
+        .expect("ProofCertificate guarantees references to earlier steps")
 }
 
 fn charge_formula_work(step: u32, amount: usize, remaining: &mut usize) -> Result<(), CheckError> {
     if amount > *remaining {
-        let actual = (CHECKER_V0_MAX_FORMULA_WORK_BYTES - *remaining)
+        let actual = (CHECKER_MAX_FORMULA_WORK_BYTES - *remaining)
             .checked_add(amount)
-            .expect("V0 formula work charges fit usize");
+            .expect("formula work charges fit usize");
         return Err(CheckError::FormulaWorkLimitExceeded {
             step,
             actual,
-            maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+            maximum: CHECKER_MAX_FORMULA_WORK_BYTES,
         });
     }
 
@@ -479,12 +478,12 @@ pub enum CheckError {
     Logic { step: u32, source: LogicError },
     /// A ZFC axiom-schema side condition failed.
     Schema { step: u32, source: SchemaError },
-    /// A reconstructed formula exceeded the canonical Formula V0 limits.
+    /// A reconstructed formula exceeded the canonical Formula limits.
     DerivedFormula {
         step: u32,
         source: FormulaCodecError,
     },
-    /// Cumulative deterministic formula work exceeded the Checker V0 limit.
+    /// Cumulative deterministic formula work exceeded the Checker limit.
     FormulaWorkLimitExceeded {
         step: u32,
         actual: usize,
@@ -503,7 +502,7 @@ impl fmt::Display for CheckError {
             Self::Logic { step, source } => {
                 write!(
                     formatter,
-                    "proof step {step} violates Foundation V0 logic: {source}"
+                    "proof step {step} violates Foundation logic: {source}"
                 )
             }
             Self::Schema { step, source } => {
@@ -514,7 +513,7 @@ impl fmt::Display for CheckError {
             }
             Self::DerivedFormula { step, source } => write!(
                 formatter,
-                "proof step {step} derives a formula outside Formula V0 limits: {source}"
+                "proof step {step} derives a formula outside Formula limits: {source}"
             ),
             Self::FormulaWorkLimitExceeded {
                 step,
@@ -522,7 +521,7 @@ impl fmt::Display for CheckError {
                 maximum,
             } => write!(
                 formatter,
-                "proof step {step} raises formula work to {actual} bytes; the Checker V0 limit is {maximum}"
+                "proof step {step} raises formula work to {actual} bytes; the Checker limit is {maximum}"
             ),
             Self::OpenConclusion { step } => {
                 write!(formatter, "proof conclusion at step {step} is not closed")
@@ -550,19 +549,19 @@ mod tests {
     use std::error::Error as _;
 
     use naome_foundation::{
-        FORMULA_V0_MAX_DEPTH, FORMULA_V0_MAX_NODES, Formula, FormulaCodecError, FreeVariable,
-        LogicError, LogicV0, Replacement, SchemaError, Separation, ZfcAxiom,
+        FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, Formula, FormulaCodecError, FreeVariable, Logic,
+        LogicError, Replacement, SchemaError, Separation, ZfcAxiom,
     };
-    use naome_proof::{CERTIFICATE_V0_MAX_STEPS, ProofCertificateV0, ProofId, ProofStepV0};
+    use naome_proof::{CERTIFICATE_MAX_STEPS, ProofCertificate, ProofId, ProofStep};
 
     use super::{
-        CHECKER_V0_MAX_FORMULA_WORK_BYTES, CheckError, IdentityMode, ProofStateError, ProofStateV0,
+        CHECKER_MAX_FORMULA_WORK_BYTES, CheckError, IdentityMode, ProofState, ProofStateError,
         charge_formula_work, check, check_with_canonical_conclusion, last_uses,
         normalize_and_check, normalize_and_check_with_state,
     };
 
-    fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
-        ProofCertificateV0::new(steps).expect("the test certificate is structurally valid")
+    fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
+        ProofCertificate::new(steps).expect("the test certificate is structurally valid")
     }
 
     fn closed_equality(variable: FreeVariable) -> Formula {
@@ -571,8 +570,8 @@ mod tests {
 
     fn canonical_length(formula: &Formula) -> usize {
         formula
-            .encode_canonical_v0()
-            .expect("the test formula is within Formula V0 limits")
+            .encode_canonical()
+            .expect("the test formula is within Formula limits")
             .len()
     }
 
@@ -589,34 +588,34 @@ mod tests {
 
         let cases = [
             (
-                ProofStepV0::Simplification {
+                ProofStep::Simplification {
                     antecedent: first.clone(),
                     consequent: second.clone(),
                 },
-                LogicV0::simplification(first.clone(), second.clone()),
+                Logic::simplification(first.clone(), second.clone()),
             ),
             (
-                ProofStepV0::Frege {
+                ProofStep::Frege {
                     first: first.clone(),
                     second: second.clone(),
                     third: third.clone(),
                 },
-                LogicV0::frege(first.clone(), second.clone(), third.clone()),
+                Logic::frege(first.clone(), second.clone(), third.clone()),
             ),
             (
-                ProofStepV0::ClassicalContraposition {
+                ProofStep::ClassicalContraposition {
                     antecedent: first.clone(),
                     consequent: second.clone(),
                 },
-                LogicV0::classical_contraposition(first.clone(), second.clone()),
+                Logic::classical_contraposition(first.clone(), second.clone()),
             ),
             (
-                ProofStepV0::UniversalDistribution {
+                ProofStep::UniversalDistribution {
                     variable: x,
                     antecedent: quantified_antecedent.clone(),
                     consequent: quantified_consequent.clone(),
                 },
-                LogicV0::universal_distribution(x, quantified_antecedent, quantified_consequent),
+                Logic::universal_distribution(x, quantified_antecedent, quantified_consequent),
             ),
         ];
 
@@ -629,11 +628,11 @@ mod tests {
     fn vacuous_universal_reconstructs_the_nameless_binder() {
         let zero = FreeVariable::new(0);
         let body = Formula::equal(zero, zero);
-        let vacuous = LogicV0::vacuous_universal(body.clone());
-        let expected = LogicV0::generalization(zero, vacuous);
+        let vacuous = Logic::vacuous_universal(body.clone());
+        let expected = Logic::generalization(zero, vacuous);
         let proof = certificate(vec![
-            ProofStepV0::VacuousUniversal { formula: body },
-            ProofStepV0::Generalization {
+            ProofStep::VacuousUniversal { formula: body },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: zero,
             },
@@ -647,15 +646,15 @@ mod tests {
         let x = FreeVariable::new(1);
         let y = FreeVariable::new(2);
         let body = Formula::member(x, x);
-        let instantiation = LogicV0::universal_instantiation(x, y, body.clone());
-        let expected = LogicV0::generalization(y, instantiation);
+        let instantiation = Logic::universal_instantiation(x, y, body.clone());
+        let expected = Logic::generalization(y, instantiation);
         let proof = certificate(vec![
-            ProofStepV0::UniversalInstantiation {
+            ProofStep::UniversalInstantiation {
                 variable: x,
                 replacement: y,
                 body,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 0,
                 variable: y,
             },
@@ -668,13 +667,13 @@ mod tests {
     fn equality_reflexivity_generalization_round_trips_from_canonical_bytes() {
         let x = FreeVariable::new(0x0102_0304);
         let direct = certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
         ]);
-        let decoded = ProofCertificateV0::from_canonical_bytes(&direct.to_canonical_bytes())
+        let decoded = ProofCertificate::from_canonical_bytes(&direct.to_canonical_bytes())
             .expect("the canonical certificate round-trips");
 
         assert_eq!(check(&direct), check(&decoded));
@@ -701,8 +700,8 @@ mod tests {
     fn alternative_derivations_keep_distinct_normal_forms() {
         let x = FreeVariable::new(5);
         let direct = certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
@@ -726,8 +725,8 @@ mod tests {
     fn content_identity_golden_binds_the_closed_statement_and_normal_proof() {
         let x = FreeVariable::new(42);
         let checked = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
@@ -735,7 +734,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            checked.conclusion().encode_canonical_v0().unwrap(),
+            checked.conclusion().encode_canonical().unwrap(),
             [
                 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
             ]
@@ -743,32 +742,32 @@ mod tests {
         assert_eq!(
             checked.normal_form().certificate().to_canonical_bytes(),
             [
-                0x00, 0x00, 0x00, 0x00, 0x02, 0x06, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x02, 0x06, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
             ]
         );
         assert_eq!(
             checked.statement_id().as_bytes(),
             &[
-                0x51, 0x7c, 0xdd, 0xb1, 0x56, 0x20, 0x88, 0x52, 0xaf, 0x84, 0x8f, 0xd6, 0xb2, 0x04,
-                0xb1, 0xdc, 0xa9, 0x72, 0x8f, 0x6e, 0x52, 0xfd, 0x6e, 0xc9, 0x94, 0x0e, 0xf1, 0x43,
-                0x7b, 0x8a, 0xf1, 0x5a,
+                0xf9, 0x02, 0xf7, 0x99, 0xc2, 0x4f, 0x06, 0x4e, 0xa9, 0x8b, 0xf7, 0xfa, 0x33, 0xc1,
+                0x2c, 0x51, 0x78, 0xf1, 0x72, 0x2f, 0xdf, 0xd9, 0x4b, 0x22, 0x3c, 0x64, 0xea, 0x1a,
+                0xa9, 0xae, 0x3d, 0x19,
             ]
         );
         assert_eq!(
             checked.proof_id().as_bytes(),
             &[
-                0x5a, 0x90, 0x44, 0x4e, 0x9a, 0x1f, 0x0e, 0x01, 0x38, 0xeb, 0x5b, 0xbc, 0xa1, 0x2d,
-                0x32, 0x2f, 0xf7, 0x05, 0xe5, 0x5d, 0x15, 0x5a, 0x92, 0x73, 0x47, 0x47, 0x14, 0xdc,
-                0x69, 0x8a, 0xe1, 0xbf,
+                0xc6, 0x17, 0xc9, 0x22, 0x2d, 0xf9, 0x01, 0xd9, 0x94, 0x04, 0x86, 0x8a, 0xab, 0x41,
+                0x5e, 0x91, 0x7a, 0xf7, 0x6c, 0xe6, 0x56, 0x99, 0x87, 0x63, 0x42, 0xfe, 0x0c, 0x0f,
+                0xf1, 0xe6, 0x2e, 0x73,
             ]
         );
         assert_eq!(
             checked.derivation_id().as_bytes(),
             &[
-                0xd1, 0x9a, 0xb3, 0x45, 0x08, 0x1f, 0x61, 0x0c, 0xd2, 0xab, 0x47, 0xd6, 0x8c, 0xc7,
-                0xfe, 0x86, 0x16, 0x81, 0x87, 0x68, 0x22, 0x70, 0x74, 0xfa, 0xd2, 0xc2, 0xd8, 0x3c,
-                0xac, 0xf5, 0xa4, 0x49,
+                0x59, 0x21, 0x9d, 0x63, 0xc7, 0xc2, 0x35, 0x3d, 0xcb, 0x6f, 0xfd, 0x1e, 0x60, 0x41,
+                0x53, 0x14, 0x33, 0x80, 0xae, 0x66, 0x02, 0xe0, 0x42, 0x15, 0x70, 0x3b, 0xc0, 0xea,
+                0x04, 0x32, 0x43, 0xfb,
             ]
         );
     }
@@ -813,10 +812,10 @@ mod tests {
         let distinct = inline_closed_fragment(shared_identifier, distinct_outer);
 
         let source = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity {
+            ProofStep::EqualityReflexivity {
                 variable: shared_identifier,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 0,
                 variable: shared_identifier,
             },
@@ -825,22 +824,22 @@ mod tests {
         let source_id = source.proof_id();
         let theorem = source.conclusion().clone();
         let outer = Formula::equal(distinct_outer, distinct_outer);
-        let mut state = ProofStateV0::new();
+        let mut state = ProofState::new();
         state.register(source).unwrap();
         let referenced = normalize_and_check_with_state(
             certificate(vec![
-                ProofStepV0::ProofReference {
+                ProofStep::ProofReference {
                     proof_id: source_id,
                 },
-                ProofStepV0::Simplification {
+                ProofStep::Simplification {
                     antecedent: theorem,
                     consequent: outer,
                 },
-                ProofStepV0::ModusPonens {
+                ProofStep::ModusPonens {
                     premise: 0,
                     implication: 1,
                 },
-                ProofStepV0::Generalization {
+                ProofStep::Generalization {
                     premise: 2,
                     variable: distinct_outer,
                 },
@@ -874,20 +873,20 @@ mod tests {
         let x = FreeVariable::new(3);
         let y = FreeVariable::new(4);
         let once = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
         ]))
         .unwrap();
         let twice = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 1,
                 variable: y,
             },
@@ -902,8 +901,8 @@ mod tests {
     fn a_root_proof_reference_resolves_only_from_checked_state() {
         let x = FreeVariable::new(42);
         let source = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
@@ -914,7 +913,7 @@ mod tests {
         let source_statement_id = source.statement_id();
         let source_conclusion = source.conclusion().clone();
         let reference = || {
-            certificate(vec![ProofStepV0::ProofReference {
+            certificate(vec![ProofStep::ProofReference {
                 proof_id: source_proof_id,
             }])
         };
@@ -927,7 +926,7 @@ mod tests {
             })
         );
 
-        let mut state = ProofStateV0::new();
+        let mut state = ProofState::new();
         state.register(source).unwrap();
         let cited = normalize_and_check_with_state(reference(), &state).unwrap();
 
@@ -937,17 +936,17 @@ mod tests {
         assert_eq!(
             cited.normal_form().certificate().to_canonical_bytes(),
             [
-                0x00, 0x00, 0x00, 0x00, 0x01, 0x30, 0x5a, 0x90, 0x44, 0x4e, 0x9a, 0x1f, 0x0e, 0x01,
-                0x38, 0xeb, 0x5b, 0xbc, 0xa1, 0x2d, 0x32, 0x2f, 0xf7, 0x05, 0xe5, 0x5d, 0x15, 0x5a,
-                0x92, 0x73, 0x47, 0x47, 0x14, 0xdc, 0x69, 0x8a, 0xe1, 0xbf,
+                0x00, 0x00, 0x00, 0x01, 0x30, 0xc6, 0x17, 0xc9, 0x22, 0x2d, 0xf9, 0x01, 0xd9, 0x94,
+                0x04, 0x86, 0x8a, 0xab, 0x41, 0x5e, 0x91, 0x7a, 0xf7, 0x6c, 0xe6, 0x56, 0x99, 0x87,
+                0x63, 0x42, 0xfe, 0x0c, 0x0f, 0xf1, 0xe6, 0x2e, 0x73,
             ]
         );
         assert_eq!(
             cited.proof_id().as_bytes(),
             &[
-                0xc1, 0xd3, 0x8d, 0x88, 0xa3, 0x3f, 0x30, 0x15, 0xd7, 0x97, 0xec, 0xcf, 0x9f, 0x39,
-                0x15, 0x40, 0xff, 0xde, 0xda, 0xfe, 0xed, 0xcc, 0x55, 0x3e, 0x07, 0xed, 0x32, 0x8b,
-                0x5a, 0x88, 0xfa, 0x71,
+                0xbf, 0xd4, 0x27, 0xb4, 0x47, 0xe1, 0x51, 0x46, 0x86, 0xcf, 0xa3, 0x1b, 0x0b, 0x5a,
+                0xa1, 0xdd, 0x50, 0x36, 0x46, 0x4c, 0xd8, 0xc5, 0xd7, 0x3d, 0x0c, 0x31, 0x12, 0xcb,
+                0x46, 0xb0, 0x51, 0x9b,
             ]
         );
         assert!(state.contains_proof(source_proof_id));
@@ -959,9 +958,9 @@ mod tests {
         let x = FreeVariable::new(9);
         let proof = || {
             certificate(vec![
-                ProofStepV0::ProofReference { proof_id: missing },
-                ProofStepV0::EqualityReflexivity { variable: x },
-                ProofStepV0::Generalization {
+                ProofStep::ProofReference { proof_id: missing },
+                ProofStep::EqualityReflexivity { variable: x },
+                ProofStep::Generalization {
                     premise: 1,
                     variable: x,
                 },
@@ -975,7 +974,7 @@ mod tests {
                 proof_id: missing,
             })
         );
-        let checked = normalize_and_check_with_state(proof(), &ProofStateV0::new()).unwrap();
+        let checked = normalize_and_check_with_state(proof(), &ProofState::new()).unwrap();
         assert_eq!(checked.conclusion(), &closed_equality(x));
         assert_eq!(checked.normal_form().certificate().steps().len(), 2);
     }
@@ -984,8 +983,8 @@ mod tests {
     fn referenced_theorems_participate_in_inference_without_rechecking_their_proof() {
         let x = FreeVariable::new(7);
         let source = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
@@ -994,19 +993,19 @@ mod tests {
         let source_id = source.proof_id();
         let theorem = source.conclusion().clone();
         let expected = Formula::implies(theorem.clone(), theorem.clone());
-        let mut state = ProofStateV0::new();
+        let mut state = ProofState::new();
         state.register(source).unwrap();
 
         let checked = normalize_and_check_with_state(
             certificate(vec![
-                ProofStepV0::ProofReference {
+                ProofStep::ProofReference {
                     proof_id: source_id,
                 },
-                ProofStepV0::Simplification {
+                ProofStep::Simplification {
                     antecedent: theorem.clone(),
                     consequent: theorem,
                 },
-                ProofStepV0::ModusPonens {
+                ProofStep::ModusPonens {
                     premise: 0,
                     implication: 1,
                 },
@@ -1022,8 +1021,8 @@ mod tests {
     fn selected_alternative_citations_change_proof_identity_not_statement_identity() {
         let x = FreeVariable::new(5);
         let direct = normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
@@ -1033,19 +1032,19 @@ mod tests {
         let direct_id = direct.proof_id();
         let detour_id = detour.proof_id();
         let theorem = direct.conclusion().clone();
-        let mut state = ProofStateV0::new();
+        let mut state = ProofState::new();
         state.register(direct).unwrap();
         state.register(detour).unwrap();
 
         let dependent = |proof_id| {
             normalize_and_check_with_state(
                 certificate(vec![
-                    ProofStepV0::ProofReference { proof_id },
-                    ProofStepV0::Simplification {
+                    ProofStep::ProofReference { proof_id },
+                    ProofStep::Simplification {
                         antecedent: theorem.clone(),
                         consequent: theorem.clone(),
                     },
-                    ProofStepV0::ModusPonens {
+                    ProofStep::ModusPonens {
                         premise: 0,
                         implication: 1,
                     },
@@ -1068,8 +1067,8 @@ mod tests {
         let x = FreeVariable::new(3);
         let checked = || {
             normalize_and_check(certificate(vec![
-                ProofStepV0::EqualityReflexivity { variable: x },
-                ProofStepV0::Generalization {
+                ProofStep::EqualityReflexivity { variable: x },
+                ProofStep::Generalization {
                     premise: 0,
                     variable: x,
                 },
@@ -1079,7 +1078,7 @@ mod tests {
         let first = checked();
         let proof_id = first.proof_id();
         let derivation_id = first.derivation_id();
-        let mut source_state = ProofStateV0::new();
+        let mut source_state = ProofState::new();
         source_state.register(first).unwrap();
         assert_eq!(
             source_state.register(checked()),
@@ -1087,19 +1086,19 @@ mod tests {
         );
 
         let dependent = normalize_and_check_with_state(
-            certificate(vec![ProofStepV0::ProofReference { proof_id }]),
+            certificate(vec![ProofStep::ProofReference { proof_id }]),
             &source_state,
         )
         .unwrap();
         assert_eq!(
-            ProofStateV0::new().register(dependent),
+            ProofState::new().register(dependent),
             Err(ProofStateError::MissingProofDependency { proof_id })
         );
 
-        let mut target_state = ProofStateV0::new();
+        let mut target_state = ProofState::new();
         target_state.register(checked()).unwrap();
         let cited_alias = normalize_and_check_with_state(
-            certificate(vec![ProofStepV0::ProofReference { proof_id }]),
+            certificate(vec![ProofStep::ProofReference { proof_id }]),
             &source_state,
         )
         .unwrap();
@@ -1112,7 +1111,7 @@ mod tests {
         assert!(!target_state.contains_proof(cited_alias_id));
         assert_eq!(
             normalize_and_check_with_state(
-                certificate(vec![ProofStepV0::ProofReference {
+                certificate(vec![ProofStep::ProofReference {
                     proof_id: cited_alias_id,
                 }]),
                 &target_state,
@@ -1126,12 +1125,12 @@ mod tests {
         let theorem = closed_equality(x);
         let dependent = normalize_and_check_with_state(
             certificate(vec![
-                ProofStepV0::ProofReference { proof_id },
-                ProofStepV0::Simplification {
+                ProofStep::ProofReference { proof_id },
+                ProofStep::Simplification {
                     antecedent: theorem.clone(),
                     consequent: theorem,
                 },
-                ProofStepV0::ModusPonens {
+                ProofStep::ModusPonens {
                     premise: 0,
                     implication: 1,
                 },
@@ -1151,39 +1150,39 @@ mod tests {
         let proposition = Formula::member(x, y);
         let self_implication = Formula::implies(proposition.clone(), proposition.clone());
         let proof = certificate(vec![
-            ProofStepV0::Simplification {
+            ProofStep::Simplification {
                 antecedent: proposition.clone(),
                 consequent: proposition.clone(),
             },
-            ProofStepV0::Simplification {
+            ProofStep::Simplification {
                 antecedent: proposition.clone(),
                 consequent: self_implication.clone(),
             },
-            ProofStepV0::Frege {
+            ProofStep::Frege {
                 first: proposition.clone(),
                 second: self_implication,
                 third: proposition.clone(),
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 2,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 3,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 4,
                 variable: x,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 5,
                 variable: y,
             },
         ]);
-        let expected = LogicV0::generalization(
+        let expected = Logic::generalization(
             y,
-            LogicV0::generalization(x, Formula::implies(proposition.clone(), proposition)),
+            Logic::generalization(x, Formula::implies(proposition.clone(), proposition)),
         );
 
         let checked = normalize_and_check(proof).unwrap();
@@ -1198,20 +1197,20 @@ mod tests {
         let x = FreeVariable::new(1);
         let y = FreeVariable::new(2);
         let body = Formula::member(x, x);
-        let substitution = LogicV0::equality_substitution(x, y, body.clone());
-        let after_x = LogicV0::generalization(x, substitution);
-        let expected = LogicV0::generalization(y, after_x);
+        let substitution = Logic::equality_substitution(x, y, body.clone());
+        let after_x = Logic::generalization(x, substitution);
+        let expected = Logic::generalization(y, after_x);
         let proof = certificate(vec![
-            ProofStepV0::EqualitySubstitution {
+            ProofStep::EqualitySubstitution {
                 from: x,
                 to: y,
                 body,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 1,
                 variable: y,
             },
@@ -1234,7 +1233,7 @@ mod tests {
 
         for axiom in axioms {
             assert_eq!(
-                check(&certificate(vec![ProofStepV0::ZfcAxiom(axiom)])),
+                check(&certificate(vec![ProofStep::ZfcAxiom(axiom)])),
                 Ok(axiom.formula())
             );
         }
@@ -1265,7 +1264,7 @@ mod tests {
             .expect("the Separation instance is valid");
 
         assert_eq!(
-            check(&certificate(vec![ProofStepV0::Separation(separation)])),
+            check(&certificate(vec![ProofStep::Separation(separation)])),
             Ok(separation_formula)
         );
 
@@ -1296,7 +1295,7 @@ mod tests {
             .expect("the Replacement instance is valid");
 
         assert_eq!(
-            check(&certificate(vec![ProofStepV0::Replacement(replacement)])),
+            check(&certificate(vec![ProofStep::Replacement(replacement)])),
             Ok(replacement_formula)
         );
     }
@@ -1306,12 +1305,12 @@ mod tests {
         let premise = ZfcAxiom::Extensionality.formula();
         let nested_antecedent = ZfcAxiom::Pairing.formula();
         let proof = certificate(vec![
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Extensionality),
-            ProofStepV0::Simplification {
+            ProofStep::ZfcAxiom(ZfcAxiom::Extensionality),
+            ProofStep::Simplification {
                 antecedent: premise.clone(),
                 consequent: nested_antecedent.clone(),
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
@@ -1328,16 +1327,16 @@ mod tests {
         let premise = ZfcAxiom::Extensionality.formula();
         let nested_antecedent = ZfcAxiom::Choice.formula();
         let steps = vec![
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Extensionality),
-            ProofStepV0::Simplification {
+            ProofStep::ZfcAxiom(ZfcAxiom::Extensionality),
+            ProofStep::Simplification {
                 antecedent: premise.clone(),
                 consequent: nested_antecedent.clone(),
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
@@ -1345,7 +1344,7 @@ mod tests {
 
         assert_eq!(last_uses(&steps), [Some(3), Some(3), None, None]);
         assert_eq!(
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 7,
                 implication: 7,
             }
@@ -1372,9 +1371,9 @@ mod tests {
             parameters: Vec::new(),
         };
         let proof = certificate(vec![
-            ProofStepV0::Separation(invalid),
-            ProofStepV0::EqualityReflexivity { variable: root },
-            ProofStepV0::Generalization {
+            ProofStep::Separation(invalid),
+            ProofStep::EqualityReflexivity { variable: root },
+            ProofStep::Generalization {
                 premise: 1,
                 variable: root,
             },
@@ -1397,13 +1396,13 @@ mod tests {
         let x = FreeVariable::new(10);
         let y = FreeVariable::new(11);
         let proof = certificate(vec![
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Simplification {
+            ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Simplification {
                 antecedent: Formula::equal(y, y),
                 consequent: closed_equality(x),
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 2,
             },
@@ -1420,7 +1419,7 @@ mod tests {
         let element = FreeVariable::new(40);
         let source = FreeVariable::new(50);
         let result = FreeVariable::new(60);
-        let proof = certificate(vec![ProofStepV0::Separation(Separation {
+        let proof = certificate(vec![ProofStep::Separation(Separation {
             predicate: Formula::equal(result, result),
             element,
             source,
@@ -1455,7 +1454,7 @@ mod tests {
         };
 
         assert_eq!(
-            check(&certificate(vec![ProofStepV0::Replacement(
+            check(&certificate(vec![ProofStep::Replacement(
                 invalid_replacement
             )])),
             Err(CheckError::Schema {
@@ -1467,12 +1466,12 @@ mod tests {
         let x = FreeVariable::new(10);
         let y = FreeVariable::new(11);
         let proof = certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Simplification {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Simplification {
                 antecedent: Formula::equal(y, y),
                 consequent: closed_equality(x),
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
@@ -1505,7 +1504,7 @@ mod tests {
         let derived = CheckError::DerivedFormula {
             step: 3,
             source: FormulaCodecError::DepthLimitExceeded {
-                maximum: FORMULA_V0_MAX_DEPTH,
+                maximum: FORMULA_MAX_DEPTH,
             },
         };
         let work = CheckError::FormulaWorkLimitExceeded {
@@ -1572,7 +1571,7 @@ mod tests {
     #[test]
     fn checker_rejects_an_open_conclusion_but_allows_open_intermediate_steps() {
         let x = FreeVariable::new(1);
-        let open = certificate(vec![ProofStepV0::EqualityReflexivity { variable: x }]);
+        let open = certificate(vec![ProofStep::EqualityReflexivity { variable: x }]);
 
         assert_eq!(check(&open), Err(CheckError::OpenConclusion { step: 0 }));
         assert_eq!(
@@ -1582,8 +1581,8 @@ mod tests {
 
         assert!(
             check(&certificate(vec![
-                ProofStepV0::EqualityReflexivity { variable: x },
-                ProofStepV0::Generalization {
+                ProofStep::EqualityReflexivity { variable: x },
+                ProofStep::Generalization {
                     premise: 0,
                     variable: x,
                 },
@@ -1595,9 +1594,9 @@ mod tests {
     #[test]
     fn checker_enforces_derived_depth_and_node_limits() {
         let x = FreeVariable::new(1);
-        let mut depth_steps = vec![ProofStepV0::EqualityReflexivity { variable: x }];
-        for premise in 0..FORMULA_V0_MAX_DEPTH {
-            depth_steps.push(ProofStepV0::Generalization {
+        let mut depth_steps = vec![ProofStep::EqualityReflexivity { variable: x }];
+        for premise in 0..FORMULA_MAX_DEPTH {
+            depth_steps.push(ProofStep::Generalization {
                 premise,
                 variable: x,
             });
@@ -1606,15 +1605,15 @@ mod tests {
         assert_eq!(
             check(&certificate(depth_steps)),
             Err(CheckError::DerivedFormula {
-                step: FORMULA_V0_MAX_DEPTH,
+                step: FORMULA_MAX_DEPTH,
                 source: FormulaCodecError::DepthLimitExceeded {
-                    maximum: FORMULA_V0_MAX_DEPTH,
+                    maximum: FORMULA_MAX_DEPTH,
                 },
             })
         );
 
         let large = balanced_closed_formula(12, x);
-        let node_proof = certificate(vec![ProofStepV0::Frege {
+        let node_proof = certificate(vec![ProofStep::Frege {
             first: large.clone(),
             second: large.clone(),
             third: large,
@@ -1625,7 +1624,7 @@ mod tests {
             Err(CheckError::DerivedFormula {
                 step: 0,
                 source: FormulaCodecError::NodeLimitExceeded {
-                    maximum: FORMULA_V0_MAX_NODES,
+                    maximum: FORMULA_MAX_NODES,
                 },
             })
         );
@@ -1633,7 +1632,7 @@ mod tests {
 
     #[test]
     fn schema_depth_preflight_has_an_exact_boundary_and_precedes_schema_errors() {
-        let parameters = (0..FORMULA_V0_MAX_DEPTH)
+        let parameters = (0..FORMULA_MAX_DEPTH)
             .map(|offset| FreeVariable::new(1_000 + offset))
             .collect::<Vec<_>>();
         let element = FreeVariable::new(1);
@@ -1642,7 +1641,7 @@ mod tests {
         let below_limit = parameters[..parameters.len() - 1].to_vec();
 
         assert_eq!(
-            check(&certificate(vec![ProofStepV0::Separation(Separation {
+            check(&certificate(vec![ProofStep::Separation(Separation {
                 predicate: Formula::equal(result, result),
                 element,
                 source,
@@ -1658,12 +1657,12 @@ mod tests {
         let depth_error = Err(CheckError::DerivedFormula {
             step: 0,
             source: FormulaCodecError::DepthLimitExceeded {
-                maximum: FORMULA_V0_MAX_DEPTH,
+                maximum: FORMULA_MAX_DEPTH,
             },
         });
 
         assert_eq!(
-            check(&certificate(vec![ProofStepV0::Separation(Separation {
+            check(&certificate(vec![ProofStep::Separation(Separation {
                 predicate: Formula::equal(result, result),
                 element,
                 source,
@@ -1675,7 +1674,7 @@ mod tests {
 
         let uniqueness_witness = FreeVariable::new(4);
         assert_eq!(
-            check(&certificate(vec![ProofStepV0::Replacement(Replacement {
+            check(&certificate(vec![ProofStep::Replacement(Replacement {
                 predicate: Formula::equal(uniqueness_witness, source),
                 input: element,
                 output: source,
@@ -1690,11 +1689,11 @@ mod tests {
 
     #[test]
     fn formula_work_limit_is_exact_and_inclusive() {
-        assert_eq!(CHECKER_V0_MAX_FORMULA_WORK_BYTES, 4_194_304);
+        assert_eq!(CHECKER_MAX_FORMULA_WORK_BYTES, 4_194_304);
 
-        let mut remaining = CHECKER_V0_MAX_FORMULA_WORK_BYTES;
+        let mut remaining = CHECKER_MAX_FORMULA_WORK_BYTES;
         assert_eq!(
-            charge_formula_work(7, CHECKER_V0_MAX_FORMULA_WORK_BYTES, &mut remaining),
+            charge_formula_work(7, CHECKER_MAX_FORMULA_WORK_BYTES, &mut remaining),
             Ok(())
         );
         assert_eq!(remaining, 0);
@@ -1702,8 +1701,8 @@ mod tests {
             charge_formula_work(8, 1, &mut remaining),
             Err(CheckError::FormulaWorkLimitExceeded {
                 step: 8,
-                actual: CHECKER_V0_MAX_FORMULA_WORK_BYTES + 1,
-                maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+                actual: CHECKER_MAX_FORMULA_WORK_BYTES + 1,
+                maximum: CHECKER_MAX_FORMULA_WORK_BYTES,
             })
         );
     }
@@ -1712,27 +1711,27 @@ mod tests {
     fn formula_work_budget_enforces_result_and_error_precedence() {
         let axiom = ZfcAxiom::Choice;
         let axiom_length = canonical_length(&axiom.formula());
-        let filler_count = CHECKER_V0_MAX_FORMULA_WORK_BYTES / axiom_length;
+        let filler_count = CHECKER_MAX_FORMULA_WORK_BYTES / axiom_length;
         let used = filler_count * axiom_length;
-        let remaining = CHECKER_V0_MAX_FORMULA_WORK_BYTES - used;
-        let fillers = vec![ProofStepV0::ZfcAxiom(axiom); filler_count];
+        let remaining = CHECKER_MAX_FORMULA_WORK_BYTES - used;
+        let fillers = vec![ProofStep::ZfcAxiom(axiom); filler_count];
         let step = u32::try_from(filler_count).unwrap();
         assert!(filler_count >= 2);
-        assert!(filler_count < CERTIFICATE_V0_MAX_STEPS);
+        assert!(filler_count < CERTIFICATE_MAX_STEPS);
 
         let mut result_overflow = fillers.clone();
-        result_overflow.push(ProofStepV0::ZfcAxiom(axiom));
+        result_overflow.push(ProofStep::ZfcAxiom(axiom));
         assert_eq!(
             check(&certificate(result_overflow)),
             Err(CheckError::FormulaWorkLimitExceeded {
                 step,
                 actual: used + axiom_length,
-                maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+                maximum: CHECKER_MAX_FORMULA_WORK_BYTES,
             })
         );
 
         let mut invalid_modus_ponens = fillers.clone();
-        invalid_modus_ponens.push(ProofStepV0::ModusPonens {
+        invalid_modus_ponens.push(ProofStep::ModusPonens {
             premise: 0,
             implication: 1,
         });
@@ -1741,28 +1740,28 @@ mod tests {
             Err(CheckError::FormulaWorkLimitExceeded {
                 step,
                 actual: used + 2 * axiom_length,
-                maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+                maximum: CHECKER_MAX_FORMULA_WORK_BYTES,
             })
         );
 
         let x = FreeVariable::new(1);
-        let open_length = canonical_length(&LogicV0::equality_reflexivity(x));
+        let open_length = canonical_length(&Logic::equality_reflexivity(x));
         assert!(open_length <= remaining);
         assert!(2 * open_length > remaining);
         let mut open_conclusion = fillers.clone();
-        open_conclusion.push(ProofStepV0::EqualityReflexivity { variable: x });
+        open_conclusion.push(ProofStep::EqualityReflexivity { variable: x });
         assert_eq!(
             check(&certificate(open_conclusion)),
             Err(CheckError::FormulaWorkLimitExceeded {
                 step,
                 actual: used + 2 * open_length,
-                maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+                maximum: CHECKER_MAX_FORMULA_WORK_BYTES,
             })
         );
 
         let large = balanced_closed_formula(12, x);
         let mut invalid_derived = fillers;
-        invalid_derived.push(ProofStepV0::Frege {
+        invalid_derived.push(ProofStep::Frege {
             first: large.clone(),
             second: large.clone(),
             third: large,
@@ -1772,7 +1771,7 @@ mod tests {
             Err(CheckError::DerivedFormula {
                 step,
                 source: FormulaCodecError::NodeLimitExceeded {
-                    maximum: FORMULA_V0_MAX_NODES,
+                    maximum: FORMULA_MAX_NODES,
                 },
             })
         );
@@ -1782,7 +1781,7 @@ mod tests {
     fn repeated_large_antecedent_modus_ponens_charges_both_operands() {
         let small = ZfcAxiom::Extensionality.formula();
         let large = ZfcAxiom::Choice.formula();
-        let implication = LogicV0::simplification(small.clone(), large.clone());
+        let implication = Logic::simplification(small.clone(), large.clone());
         let reduced_implication = Formula::implies(large.clone(), small.clone());
         let small_length = canonical_length(&small);
         let large_length = canonical_length(&large);
@@ -1790,46 +1789,46 @@ mod tests {
         let reduced_length = canonical_length(&reduced_implication);
         let mut used = small_length + large_length + implication_length;
         used += small_length + implication_length + reduced_length;
-        assert!(used < CHECKER_V0_MAX_FORMULA_WORK_BYTES);
+        assert!(used < CHECKER_MAX_FORMULA_WORK_BYTES);
 
         let mut steps = vec![
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Extensionality),
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Choice),
-            ProofStepV0::Simplification {
+            ProofStep::ZfcAxiom(ZfcAxiom::Extensionality),
+            ProofStep::ZfcAxiom(ZfcAxiom::Choice),
+            ProofStep::Simplification {
                 antecedent: small,
                 consequent: large,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 2,
             },
         ];
         let (expected_step, expected_actual) = loop {
             let step = u32::try_from(steps.len()).unwrap();
-            steps.push(ProofStepV0::ModusPonens {
+            steps.push(ProofStep::ModusPonens {
                 premise: 1,
                 implication: 3,
             });
 
             let referenced = large_length + reduced_length;
-            if used + referenced > CHECKER_V0_MAX_FORMULA_WORK_BYTES {
+            if used + referenced > CHECKER_MAX_FORMULA_WORK_BYTES {
                 break (step, used + referenced);
             }
             used += referenced;
 
-            if used + small_length > CHECKER_V0_MAX_FORMULA_WORK_BYTES {
+            if used + small_length > CHECKER_MAX_FORMULA_WORK_BYTES {
                 break (step, used + small_length);
             }
             used += small_length;
         };
 
-        assert!(steps.len() < CERTIFICATE_V0_MAX_STEPS);
+        assert!(steps.len() < CERTIFICATE_MAX_STEPS);
         assert_eq!(
             check(&certificate(steps)),
             Err(CheckError::FormulaWorkLimitExceeded {
                 step: expected_step,
                 actual: expected_actual,
-                maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+                maximum: CHECKER_MAX_FORMULA_WORK_BYTES,
             })
         );
     }
@@ -1838,22 +1837,22 @@ mod tests {
     fn generalization_charges_its_premise_before_execution() {
         let axiom = ZfcAxiom::Choice;
         let premise_length = canonical_length(&axiom.formula());
-        let filler_count = (CHECKER_V0_MAX_FORMULA_WORK_BYTES - premise_length) / premise_length;
+        let filler_count = (CHECKER_MAX_FORMULA_WORK_BYTES - premise_length) / premise_length;
         let used = (filler_count + 1) * premise_length;
-        let mut steps = vec![ProofStepV0::ZfcAxiom(axiom); filler_count + 1];
+        let mut steps = vec![ProofStep::ZfcAxiom(axiom); filler_count + 1];
         let expected_step = u32::try_from(steps.len()).unwrap();
-        steps.push(ProofStepV0::Generalization {
+        steps.push(ProofStep::Generalization {
             premise: 0,
             variable: FreeVariable::new(u32::MAX),
         });
 
-        assert!(steps.len() < CERTIFICATE_V0_MAX_STEPS);
+        assert!(steps.len() < CERTIFICATE_MAX_STEPS);
         assert_eq!(
             check(&certificate(steps)),
             Err(CheckError::FormulaWorkLimitExceeded {
                 step: expected_step,
                 actual: used + premise_length,
-                maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+                maximum: CHECKER_MAX_FORMULA_WORK_BYTES,
             })
         );
     }
@@ -1861,20 +1860,19 @@ mod tests {
     #[test]
     fn proof_reference_result_charge_is_exact() {
         let source =
-            normalize_and_check(certificate(vec![ProofStepV0::ZfcAxiom(ZfcAxiom::Choice)]))
-                .unwrap();
+            normalize_and_check(certificate(vec![ProofStep::ZfcAxiom(ZfcAxiom::Choice)])).unwrap();
         let proof_id = source.proof_id();
         let referenced_length = source.canonical_conclusion_length;
-        let filler_count = CHECKER_V0_MAX_FORMULA_WORK_BYTES / referenced_length;
+        let filler_count = CHECKER_MAX_FORMULA_WORK_BYTES / referenced_length;
         let used = filler_count * referenced_length;
         let expected_step = u32::try_from(filler_count).unwrap();
-        let mut state = ProofStateV0::new();
+        let mut state = ProofState::new();
         state.register(source).unwrap();
-        let mut steps = vec![ProofStepV0::ZfcAxiom(ZfcAxiom::Choice); filler_count];
-        steps.push(ProofStepV0::ProofReference { proof_id });
+        let mut steps = vec![ProofStep::ZfcAxiom(ZfcAxiom::Choice); filler_count];
+        steps.push(ProofStep::ProofReference { proof_id });
 
-        assert!(used + referenced_length > CHECKER_V0_MAX_FORMULA_WORK_BYTES);
-        assert!(steps.len() < CERTIFICATE_V0_MAX_STEPS);
+        assert!(used + referenced_length > CHECKER_MAX_FORMULA_WORK_BYTES);
+        assert!(steps.len() < CERTIFICATE_MAX_STEPS);
         assert_eq!(
             check_with_canonical_conclusion(
                 &certificate(steps),
@@ -1884,7 +1882,7 @@ mod tests {
             Err(CheckError::FormulaWorkLimitExceeded {
                 step: expected_step,
                 actual: used + referenced_length,
-                maximum: CHECKER_V0_MAX_FORMULA_WORK_BYTES,
+                maximum: CHECKER_MAX_FORMULA_WORK_BYTES,
             })
         );
     }
@@ -1898,7 +1896,7 @@ mod tests {
         Formula::implies(child.clone(), child)
     }
 
-    fn partitioned_weakening_proof(cuts: u8) -> (super::CheckedProofV0, ProofStateV0) {
+    fn partitioned_weakening_proof(cuts: u8) -> (super::CheckedProof, ProofState) {
         let x = FreeVariable::new(100);
         let antecedents = [
             ZfcAxiom::Extensionality.formula(),
@@ -1906,10 +1904,10 @@ mod tests {
             ZfcAxiom::Union.formula(),
             ZfcAxiom::PowerSet.formula(),
         ];
-        let mut state = ProofStateV0::new();
+        let mut state = ProofState::new();
         let mut steps = vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
@@ -1922,16 +1920,16 @@ mod tests {
                 let prefix = normalize_and_check_with_state(certificate(steps), &state).unwrap();
                 let proof_id = prefix.proof_id();
                 state.register(prefix).unwrap();
-                steps = vec![ProofStepV0::ProofReference { proof_id }];
+                steps = vec![ProofStep::ProofReference { proof_id }];
                 premise = 0;
             }
 
             let implication = u32::try_from(steps.len()).unwrap();
-            steps.push(ProofStepV0::Simplification {
+            steps.push(ProofStep::Simplification {
                 antecedent: theorem.clone(),
                 consequent: antecedent.clone(),
             });
-            steps.push(ProofStepV0::ModusPonens {
+            steps.push(ProofStep::ModusPonens {
                 premise,
                 implication,
             });
@@ -1944,23 +1942,23 @@ mod tests {
         (checked, state)
     }
 
-    fn inline_closed_fragment(inner: FreeVariable, outer: FreeVariable) -> super::CheckedProofV0 {
+    fn inline_closed_fragment(inner: FreeVariable, outer: FreeVariable) -> super::CheckedProof {
         let theorem = closed_equality(inner);
         normalize_and_check(certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable: inner },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable: inner },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: inner,
             },
-            ProofStepV0::Simplification {
+            ProofStep::Simplification {
                 antecedent: theorem,
                 consequent: Formula::equal(outer, outer),
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 2,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 3,
                 variable: outer,
             },
@@ -1972,33 +1970,33 @@ mod tests {
         hidden: FreeVariable,
         outer: FreeVariable,
         remaining: FreeVariable,
-    ) -> super::CheckedProofV0 {
+    ) -> super::CheckedProof {
         let substitution =
-            LogicV0::equality_substitution(hidden, remaining, Formula::equal(hidden, hidden));
-        let open_fragment = LogicV0::generalization(hidden, substitution);
+            Logic::equality_substitution(hidden, remaining, Formula::equal(hidden, hidden));
+        let open_fragment = Logic::generalization(hidden, substitution);
         normalize_and_check(certificate(vec![
-            ProofStepV0::EqualitySubstitution {
+            ProofStep::EqualitySubstitution {
                 from: hidden,
                 to: remaining,
                 body: Formula::equal(hidden, hidden),
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 0,
                 variable: hidden,
             },
-            ProofStepV0::Simplification {
+            ProofStep::Simplification {
                 antecedent: open_fragment,
                 consequent: Formula::equal(outer, outer),
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 2,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 3,
                 variable: outer,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 4,
                 variable: remaining,
             },
@@ -2006,28 +2004,28 @@ mod tests {
         .unwrap()
     }
 
-    fn identity_proof(variable: FreeVariable, reordered: bool) -> ProofCertificateV0 {
+    fn identity_proof(variable: FreeVariable, reordered: bool) -> ProofCertificate {
         let formula = Formula::equal(variable, variable);
-        let axiom = ProofStepV0::Simplification {
+        let axiom = ProofStep::Simplification {
             antecedent: formula.clone(),
             consequent: formula,
         };
-        let reflexivity = ProofStepV0::EqualityReflexivity { variable };
+        let reflexivity = ProofStep::EqualityReflexivity { variable };
         let mut steps = if reordered {
             vec![axiom, reflexivity]
         } else {
             vec![reflexivity, axiom]
         };
         let (premise, implication) = if reordered { (1, 0) } else { (0, 1) };
-        steps.push(ProofStepV0::ModusPonens {
+        steps.push(ProofStep::ModusPonens {
             premise,
             implication,
         });
-        steps.push(ProofStepV0::ModusPonens {
+        steps.push(ProofStep::ModusPonens {
             premise,
             implication: 2,
         });
-        steps.push(ProofStepV0::Generalization {
+        steps.push(ProofStep::Generalization {
             premise: 3,
             variable,
         });

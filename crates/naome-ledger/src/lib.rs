@@ -1,6 +1,6 @@
 //! Deterministic single-proof ledger state transitions for NAOME.
 //!
-//! A [`LedgerStateV0`] admits exactly one proof certificate per call. The
+//! A [`LedgerState`] admits exactly one proof certificate per call. The
 //! authoring path normalizes an owned certificate; the strict byte path rejects
 //! any submission that is not already its canonical root-proof normal form.
 //! Both paths check against the accepted pre-transition state and register only
@@ -11,17 +11,17 @@ use std::error::Error;
 use std::fmt;
 
 use naome_checker::{
-    CheckError, ProofStateError, ProofStateV0, check_normal_form_with_state,
+    CheckError, ProofState, ProofStateError, check_normal_form_with_state,
     normalize_and_check_with_state,
 };
 use naome_proof::{
-    DerivationId, ProofCertificateError, ProofCertificateV0, ProofId, ProofStepV0, StatementId,
+    DerivationId, ProofCertificate, ProofCertificateError, ProofId, ProofStep, StatementId,
 };
 
 /// The immutable proof payload and metadata produced by one accepted transition.
 #[derive(PartialEq, Eq)]
 #[must_use]
-pub struct AcceptedProofRecordV0 {
+pub struct AcceptedProofRecord {
     canonical_proof_bytes: Box<[u8]>,
     direct_dependencies: Box<[ProofId]>,
     proof_id: ProofId,
@@ -29,7 +29,7 @@ pub struct AcceptedProofRecordV0 {
     statement_id: StatementId,
 }
 
-impl AcceptedProofRecordV0 {
+impl AcceptedProofRecord {
     /// Returns the exact canonical proof-certificate payload that was accepted.
     pub const fn canonical_proof_bytes(&self) -> &[u8] {
         &self.canonical_proof_bytes
@@ -56,10 +56,10 @@ impl AcceptedProofRecordV0 {
     }
 }
 
-impl fmt::Debug for AcceptedProofRecordV0 {
+impl fmt::Debug for AcceptedProofRecord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("AcceptedProofRecordV0")
+            .debug_struct("AcceptedProofRecord")
             .field(
                 "canonical_proof_bytes_len",
                 &self.canonical_proof_bytes.len(),
@@ -79,15 +79,15 @@ impl fmt::Debug for AcceptedProofRecordV0 {
 /// exactly one checked proof; every failure leaves the state unchanged.
 #[derive(Default)]
 #[must_use]
-pub struct LedgerStateV0 {
-    proof_state: ProofStateV0,
+pub struct LedgerState {
+    proof_state: ProofState,
 }
 
-impl LedgerStateV0 {
+impl LedgerState {
     /// Constructs an empty ledger state.
     pub const fn new() -> Self {
         Self {
-            proof_state: ProofStateV0::new(),
+            proof_state: ProofState::new(),
         }
     }
 
@@ -117,8 +117,8 @@ impl LedgerStateV0 {
     /// checking or registration error leaves the state unchanged.
     pub fn apply(
         &mut self,
-        certificate: ProofCertificateV0,
-    ) -> Result<AcceptedProofRecordV0, LedgerError> {
+        certificate: ProofCertificate,
+    ) -> Result<AcceptedProofRecord, LedgerError> {
         let checked = normalize_and_check_with_state(certificate, &self.proof_state)
             .map_err(|source| LedgerError::Check { source })?;
         self.register_checked(checked)
@@ -134,8 +134,8 @@ impl LedgerStateV0 {
     pub fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
-    ) -> Result<AcceptedProofRecordV0, LedgerError> {
-        let certificate = ProofCertificateV0::from_canonical_bytes(&bytes)
+    ) -> Result<AcceptedProofRecord, LedgerError> {
+        let certificate = ProofCertificate::from_canonical_bytes(&bytes)
             .map_err(|source| LedgerError::Decode { source })?;
         let normal_form = certificate
             .into_unchecked_normal_form()
@@ -148,19 +148,19 @@ impl LedgerStateV0 {
 
     fn register_checked(
         &mut self,
-        checked: naome_checker::CheckedProofV0,
-    ) -> Result<AcceptedProofRecordV0, LedgerError> {
+        checked: naome_checker::CheckedProof,
+    ) -> Result<AcceptedProofRecord, LedgerError> {
         let proof_id = checked.proof_id();
         let derivation_id = checked.derivation_id();
         let statement_id = checked.statement_id();
         let steps = checked.normal_form().certificate().steps();
         let dependency_count = steps
             .iter()
-            .filter(|step| matches!(step, ProofStepV0::ProofReference { .. }))
+            .filter(|step| matches!(step, ProofStep::ProofReference { .. }))
             .count();
         let mut direct_dependencies = Vec::with_capacity(dependency_count);
         for step in steps {
-            if let ProofStepV0::ProofReference { proof_id } = step {
+            if let ProofStep::ProofReference { proof_id } = step {
                 direct_dependencies.push(*proof_id);
             }
         }
@@ -169,7 +169,7 @@ impl LedgerStateV0 {
             .register(checked)
             .map_err(|source| LedgerError::State { source })?;
 
-        Ok(AcceptedProofRecordV0 {
+        Ok(AcceptedProofRecord {
             canonical_proof_bytes,
             direct_dependencies: direct_dependencies.into_boxed_slice(),
             proof_id,
@@ -226,55 +226,55 @@ mod tests {
     };
     use naome_foundation::{Formula, FreeVariable, LogicError, Separation, ZfcAxiom};
     use naome_proof::{
-        CERTIFICATE_V0_MAX_BYTES, ProofCertificateError, ProofCertificateV0, ProofId, ProofStepV0,
+        CERTIFICATE_MAX_BYTES, ProofCertificate, ProofCertificateError, ProofId, ProofStep,
     };
 
-    use super::{LedgerError, LedgerStateV0};
+    use super::{LedgerError, LedgerState};
 
-    fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
-        ProofCertificateV0::new(steps).unwrap()
+    fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
+        ProofCertificate::new(steps).unwrap()
     }
 
-    fn identity(variable: FreeVariable) -> ProofCertificateV0 {
+    fn identity(variable: FreeVariable) -> ProofCertificate {
         certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::Generalization {
                 premise: 0,
                 variable,
             },
         ])
     }
 
-    fn identity_detour(variable: FreeVariable) -> ProofCertificateV0 {
+    fn identity_detour(variable: FreeVariable) -> ProofCertificate {
         let equality = Formula::equal(variable, variable);
         certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::Simplification {
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::Simplification {
                 antecedent: equality.clone(),
                 consequent: equality,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 2,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 3,
                 variable,
             },
         ])
     }
 
-    fn referenced_generalization(proof_id: ProofId, variable: FreeVariable) -> ProofCertificateV0 {
+    fn referenced_generalization(proof_id: ProofId, variable: FreeVariable) -> ProofCertificate {
         let equality = Formula::equal(variable, variable);
         let identity = Formula::for_all(variable, equality);
         certificate(vec![
-            ProofStepV0::ProofReference { proof_id },
-            ProofStepV0::VacuousUniversal { formula: identity },
-            ProofStepV0::ModusPonens {
+            ProofStep::ProofReference { proof_id },
+            ProofStep::VacuousUniversal { formula: identity },
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
@@ -284,30 +284,30 @@ mod tests {
     fn proof_using_every_reference(
         references: &[(ProofId, Formula)],
         conclusion_axiom: ZfcAxiom,
-    ) -> ProofCertificateV0 {
+    ) -> ProofCertificate {
         let mut steps = references
             .iter()
-            .map(|(proof_id, _)| ProofStepV0::ProofReference {
+            .map(|(proof_id, _)| ProofStep::ProofReference {
                 proof_id: *proof_id,
             })
             .collect::<Vec<_>>();
         let conclusion = conclusion_axiom.formula();
-        steps.push(ProofStepV0::ZfcAxiom(conclusion_axiom));
+        steps.push(ProofStep::ZfcAxiom(conclusion_axiom));
         let mut conclusion_step = u32::try_from(steps.len() - 1).unwrap();
 
         for (reference_step, (_, premise)) in references.iter().enumerate().rev() {
             let implication_step = u32::try_from(steps.len()).unwrap();
-            steps.push(ProofStepV0::Simplification {
+            steps.push(ProofStep::Simplification {
                 antecedent: conclusion.clone(),
                 consequent: premise.clone(),
             });
             let conditional_step = u32::try_from(steps.len()).unwrap();
-            steps.push(ProofStepV0::ModusPonens {
+            steps.push(ProofStep::ModusPonens {
                 premise: conclusion_step,
                 implication: implication_step,
             });
             conclusion_step = u32::try_from(steps.len()).unwrap();
-            steps.push(ProofStepV0::ModusPonens {
+            steps.push(ProofStep::ModusPonens {
                 premise: u32::try_from(reference_step).unwrap(),
                 implication: conditional_step,
             });
@@ -316,67 +316,67 @@ mod tests {
         certificate(steps)
     }
 
-    fn canonical_bytes(certificate: ProofCertificateV0) -> Vec<u8> {
+    fn canonical_bytes(certificate: ProofCertificate) -> Vec<u8> {
         certificate
             .into_unchecked_normal_form()
             .into_canonical_bytes()
             .into_vec()
     }
 
-    fn reordered_identity_detour(variable: FreeVariable) -> ProofCertificateV0 {
+    fn reordered_identity_detour(variable: FreeVariable) -> ProofCertificate {
         let equality = Formula::equal(variable, variable);
         certificate(vec![
-            ProofStepV0::Simplification {
+            ProofStep::Simplification {
                 antecedent: equality.clone(),
                 consequent: equality,
             },
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::ModusPonens {
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 0,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 2,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 3,
                 variable,
             },
         ])
     }
 
-    fn duplicate_identity(variable: FreeVariable) -> ProofCertificateV0 {
+    fn duplicate_identity(variable: FreeVariable) -> ProofCertificate {
         let equality = Formula::equal(variable, variable);
         let identity = Formula::implies(equality.clone(), equality.clone());
         certificate(vec![
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::Simplification {
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::Simplification {
                 antecedent: equality.clone(),
                 consequent: equality,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 2,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 2,
             },
-            ProofStepV0::Simplification {
+            ProofStep::Simplification {
                 antecedent: identity.clone(),
                 consequent: identity,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 3,
                 implication: 5,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 4,
                 implication: 6,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 7,
                 variable,
             },
@@ -387,10 +387,10 @@ mod tests {
     fn canonical_bytes_match_authoring_admission_and_duplicate_semantics() {
         let variable = FreeVariable::new(42);
         let bytes = canonical_bytes(identity(variable));
-        let mut strict = LedgerStateV0::new();
+        let mut strict = LedgerState::new();
         let strict_applied = strict.apply_canonical_proof_bytes(bytes.clone()).unwrap();
 
-        let mut authoring = LedgerStateV0::new();
+        let mut authoring = LedgerState::new();
         let authoring_applied = authoring.apply(identity(variable)).unwrap();
         assert_eq!(strict_applied, authoring_applied);
         assert_eq!(strict_applied.canonical_proof_bytes(), bytes);
@@ -418,9 +418,9 @@ mod tests {
             (
                 "unreachable valid step",
                 certificate(vec![
-                    ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
-                    ProofStepV0::EqualityReflexivity { variable: zero },
-                    ProofStepV0::Generalization {
+                    ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+                    ProofStep::EqualityReflexivity { variable: zero },
+                    ProofStep::Generalization {
                         premise: 1,
                         variable: zero,
                     },
@@ -429,15 +429,15 @@ mod tests {
             (
                 "unreachable invalid step",
                 certificate(vec![
-                    ProofStepV0::Separation(Separation {
+                    ProofStep::Separation(Separation {
                         predicate: Formula::equal(result, result),
                         element: FreeVariable::new(1),
                         source: FreeVariable::new(2),
                         result,
                         parameters: Vec::new(),
                     }),
-                    ProofStepV0::EqualityReflexivity { variable: zero },
-                    ProofStepV0::Generalization {
+                    ProofStep::EqualityReflexivity { variable: zero },
+                    ProofStep::Generalization {
                         premise: 1,
                         variable: zero,
                     },
@@ -451,7 +451,7 @@ mod tests {
             let canonical = canonical_bytes(certificate);
             assert_ne!(submitted, canonical, "{name}");
 
-            let mut ledger = LedgerStateV0::new();
+            let mut ledger = LedgerState::new();
             assert_eq!(
                 ledger.apply_canonical_proof_bytes(submitted),
                 Err(LedgerError::NonCanonicalProof),
@@ -469,7 +469,7 @@ mod tests {
         let valid = canonical_bytes(identity(FreeVariable::new(0)));
         let mut trailing = valid.clone();
         trailing.push(0);
-        let over_limit = vec![0; CERTIFICATE_V0_MAX_BYTES + 1];
+        let over_limit = vec![0; CERTIFICATE_MAX_BYTES + 1];
         let cases = [
             (&[0][..], ProofCertificateError::UnexpectedEnd),
             (
@@ -479,13 +479,13 @@ mod tests {
             (
                 over_limit.as_slice(),
                 ProofCertificateError::InputTooLong {
-                    actual: CERTIFICATE_V0_MAX_BYTES + 1,
-                    maximum: CERTIFICATE_V0_MAX_BYTES,
+                    actual: CERTIFICATE_MAX_BYTES + 1,
+                    maximum: CERTIFICATE_MAX_BYTES,
                 },
             ),
         ];
 
-        let mut ledger = LedgerStateV0::new();
+        let mut ledger = LedgerState::new();
         for (bytes, source) in cases {
             let error = ledger
                 .apply_canonical_proof_bytes(bytes.to_vec())
@@ -501,19 +501,19 @@ mod tests {
     fn canonicality_precedes_reachable_reference_checking() {
         let missing = ProofId::from_bytes([0x44; 32]);
         let invalid_inference = canonical_bytes(certificate(vec![
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Union),
-            ProofStepV0::ModusPonens {
+            ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStep::ZfcAxiom(ZfcAxiom::Union),
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
         ]));
         let submitted = certificate(vec![
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
-            ProofStepV0::ProofReference { proof_id: missing },
+            ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStep::ProofReference { proof_id: missing },
         ]);
         let canonical = canonical_bytes(submitted.clone());
-        let mut ledger = LedgerStateV0::new();
+        let mut ledger = LedgerState::new();
 
         assert_eq!(
             ledger.apply_canonical_proof_bytes(submitted.to_canonical_bytes()),
@@ -552,7 +552,7 @@ mod tests {
             .iter()
             .copied()
             .map(|axiom| {
-                let proof = certificate(vec![ProofStepV0::ZfcAxiom(axiom)]);
+                let proof = certificate(vec![ProofStep::ZfcAxiom(axiom)]);
                 let proof_id = normalize_and_check(proof.clone()).unwrap().proof_id();
                 (canonical_bytes(proof), proof_id, axiom.formula())
             })
@@ -563,7 +563,7 @@ mod tests {
             .collect::<Vec<_>>();
         let target = proof_using_every_reference(&references, ZfcAxiom::Choice);
         let target_bytes = canonical_bytes(target);
-        let mut ledger = LedgerStateV0::new();
+        let mut ledger = LedgerState::new();
 
         for (bytes, _, _) in &parents[..parents.len() - 1] {
             let _ = ledger.apply_canonical_proof_bytes(bytes.clone()).unwrap();
@@ -597,9 +597,9 @@ mod tests {
 
     #[test]
     fn records_keep_only_unique_direct_dependencies_and_replay_in_dependency_order() {
-        let source_proof = certificate(vec![ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing)]);
+        let source_proof = certificate(vec![ProofStep::ZfcAxiom(ZfcAxiom::Pairing)]);
         let source_bytes = canonical_bytes(source_proof);
-        let mut original = LedgerStateV0::new();
+        let mut original = LedgerState::new();
         let source = original.apply_canonical_proof_bytes(source_bytes).unwrap();
         let repeated = vec![
             (source.proof_id(), ZfcAxiom::Pairing.formula()),
@@ -623,7 +623,7 @@ mod tests {
                 .contains(&source.proof_id())
         );
 
-        let mut replay = LedgerStateV0::new();
+        let mut replay = LedgerState::new();
         assert_eq!(
             replay.apply_canonical_proof_bytes(child.canonical_proof_bytes().to_vec()),
             Err(LedgerError::Check {
@@ -651,12 +651,12 @@ mod tests {
     fn authoring_record_excludes_unreachable_unknown_dependencies() {
         let missing = ProofId::from_bytes([0x77; 32]);
         let expected_bytes =
-            canonical_bytes(certificate(vec![ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing)]));
+            canonical_bytes(certificate(vec![ProofStep::ZfcAxiom(ZfcAxiom::Pairing)]));
         let candidate = certificate(vec![
-            ProofStepV0::ProofReference { proof_id: missing },
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStep::ProofReference { proof_id: missing },
+            ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
         ]);
-        let mut ledger = LedgerStateV0::new();
+        let mut ledger = LedgerState::new();
 
         let record = ledger.apply(candidate).unwrap();
 
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn alternative_derivations_share_a_statement_and_register_distinct_identities() {
         let variable = FreeVariable::new(7);
-        let mut ledger = LedgerStateV0::new();
+        let mut ledger = LedgerState::new();
 
         let direct = ledger.apply(identity(variable)).unwrap();
         assert!(ledger.contains_proof(direct.proof_id()));
@@ -689,12 +689,12 @@ mod tests {
         let variable = FreeVariable::new(7);
         let direct_bytes = canonical_bytes(identity(variable));
 
-        let mut absent = LedgerStateV0::new();
+        let mut absent = LedgerState::new();
         let new = absent
             .apply_canonical_proof_bytes(direct_bytes.clone())
             .unwrap();
 
-        let mut present = LedgerStateV0::new();
+        let mut present = LedgerState::new();
         let detour = present.apply(identity_detour(variable)).unwrap();
         let existing = present.apply_canonical_proof_bytes(direct_bytes).unwrap();
 
@@ -705,11 +705,11 @@ mod tests {
     #[test]
     fn references_resolve_only_from_the_selected_pre_transition_state() {
         let variable = FreeVariable::new(9);
-        let mut selected = LedgerStateV0::new();
+        let mut selected = LedgerState::new();
         let source = selected.apply(identity(variable)).unwrap();
         let dependent = referenced_generalization(source.proof_id(), variable);
 
-        let mut independent = LedgerStateV0::new();
+        let mut independent = LedgerState::new();
         assert_eq!(
             independent.apply(dependent.clone()),
             Err(LedgerError::Check {
@@ -735,13 +735,13 @@ mod tests {
             ZfcAxiom::PowerSet,
             ZfcAxiom::Infinity,
         ];
-        let mut ledger = LedgerStateV0::new();
+        let mut ledger = LedgerState::new();
         let references = axioms
             .iter()
             .copied()
             .map(|axiom| {
                 let applied = ledger
-                    .apply(certificate(vec![ProofStepV0::ZfcAxiom(axiom)]))
+                    .apply(certificate(vec![ProofStep::ZfcAxiom(axiom)]))
                     .unwrap();
                 (applied.proof_id(), axiom.formula())
             })
@@ -753,14 +753,14 @@ mod tests {
         assert!(ledger.contains_proof(applied.proof_id()));
 
         for missing in 0..references.len() {
-            let mut incomplete = LedgerStateV0::new();
+            let mut incomplete = LedgerState::new();
             for (index, axiom) in axioms.iter().copied().enumerate() {
                 if index == missing {
                     continue;
                 }
 
                 let accepted = incomplete
-                    .apply(certificate(vec![ProofStepV0::ZfcAxiom(axiom)]))
+                    .apply(certificate(vec![ProofStep::ZfcAxiom(axiom)]))
                     .unwrap();
                 assert_eq!(accepted.proof_id(), references[index].0);
             }
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn duplicate_artifacts_and_reference_aliases_leave_state_unchanged() {
         let variable = FreeVariable::new(11);
-        let mut ledger = LedgerStateV0::new();
+        let mut ledger = LedgerState::new();
         let source = ledger.apply(identity(variable)).unwrap();
 
         assert_eq!(
@@ -792,7 +792,7 @@ mod tests {
                 },
             })
         );
-        let alias = certificate(vec![ProofStepV0::ProofReference {
+        let alias = certificate(vec![ProofStep::ProofReference {
             proof_id: source.proof_id(),
         }]);
         let alias_id = normalize_and_check_with_state(alias.clone(), &ledger.proof_state)
@@ -816,8 +816,8 @@ mod tests {
     #[test]
     fn checker_and_registration_errors_expose_sources_without_partial_updates() {
         let variable = FreeVariable::new(13);
-        let mut ledger = LedgerStateV0::new();
-        let open = certificate(vec![ProofStepV0::EqualityReflexivity { variable }]);
+        let mut ledger = LedgerState::new();
+        let open = certificate(vec![ProofStep::EqualityReflexivity { variable }]);
         let open_error = ledger.apply(open).unwrap_err();
         assert!(matches!(
             open_error,

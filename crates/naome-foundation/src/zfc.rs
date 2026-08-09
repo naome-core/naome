@@ -1,4 +1,4 @@
-//! The ZFC axioms and axiom schemas selected by Foundation V0.
+//! The ZFC axioms and axiom schemas selected by Foundation.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -6,7 +6,7 @@ use std::fmt;
 
 use crate::{Formula, FreeVariable};
 
-/// Identifies one of the seven fixed ZFC axioms in Foundation V0.
+/// Identifies one of the seven fixed ZFC axioms in Foundation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ZfcAxiom {
     /// Sets with the same elements are equal.
@@ -26,7 +26,7 @@ pub enum ZfcAxiom {
 }
 
 impl ZfcAxiom {
-    /// Expands this axiom into the primitive Foundation V0 formula language.
+    /// Expands this axiom into the primitive Foundation formula language.
     #[must_use]
     pub fn formula(self) -> Formula {
         match self {
