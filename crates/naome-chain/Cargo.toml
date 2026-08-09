@@ -1,0 +1,19 @@
+[package]
+name = "naome-chain"
+version = "0.1.0"
+edition = "2024"
+description = "Content-addressed proof DAG state for NAOME."
+license = "MIT"
+repository = "https://github.com/naome-core/naome"
+publish = false
+
+[dependencies]
+naome-ledger = { path = "../naome-ledger" }
+naome-proof = { path = "../naome-proof" }
+
+[dev-dependencies]
+naome-checker = { path = "../naome-checker" }
+naome-foundation = { path = "../naome-foundation" }
+
+[lints]
+workspace = true

@@ -9,6 +9,7 @@ publish = false
 
 [workspace]
 members = [
+    "crates/naome-chain",
     "crates/naome-checker",
     "crates/naome-foundation",
     "crates/naome-ledger",
