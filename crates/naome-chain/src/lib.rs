@@ -9,10 +9,14 @@
 //! This crate defines neither a linear proof parent nor consensus, finality,
 //! persistence, economy, or peer-to-peer synchronization.
 
-use std::collections::{BTreeMap, btree_map::Entry};
+mod proof_set;
 
 use naome_ledger::{AcceptedProofRecord, LedgerError, LedgerState};
 use naome_proof::ProofId;
+
+pub use proof_set::{ProofSetMembership, ProofSetProof, ProofSetProofError, ProofSetRoot};
+
+use proof_set::AuthenticatedProofSet;
 
 /// A selected, monotonically growing set of accepted proof-DAG nodes.
 ///
@@ -22,7 +26,7 @@ use naome_proof::ProofId;
 #[must_use]
 pub struct ProofDag {
     ledger: LedgerState,
-    records: BTreeMap<ProofId, AcceptedProofRecord>,
+    records: AuthenticatedProofSet<AcceptedProofRecord>,
 }
 
 impl ProofDag {
@@ -30,7 +34,7 @@ impl ProofDag {
     pub const fn new() -> Self {
         Self {
             ledger: LedgerState::new(),
-            records: BTreeMap::new(),
+            records: AuthenticatedProofSet::new(),
         }
     }
 
@@ -46,27 +50,34 @@ impl ProofDag {
 
     /// Returns one locally accepted proof record by its content address.
     pub fn proof(&self, proof_id: ProofId) -> Option<&AcceptedProofRecord> {
-        self.records.get(&proof_id)
+        self.records.get(proof_id)
+    }
+
+    /// Returns the authenticated root of the selected exact [`ProofId`] set.
+    pub fn proof_set_root(&self) -> ProofSetRoot {
+        self.records.root()
+    }
+
+    /// Returns a compact membership or non-membership proof for `proof_id`.
+    pub fn proof_set_proof(&self, proof_id: ProofId) -> ProofSetProof {
+        self.records.proof(proof_id)
     }
 
     /// Strictly admits and retains one canonical proof node.
     ///
     /// Every direct dependency must already belong to this selected state. A
-    /// failure leaves both the checked ledger and retained-record index
+    /// failure leaves both the checked ledger and authenticated proof set
     /// unchanged.
     pub fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
     ) -> Result<&AcceptedProofRecord, LedgerError> {
         let record = self.ledger.apply_canonical_proof_bytes(bytes)?;
-        let proof_id = record.proof_id();
 
-        match self.records.entry(proof_id) {
-            Entry::Vacant(entry) => Ok(entry.insert(record)),
-            Entry::Occupied(_) => {
-                unreachable!("private ledger and retained proof indexes stay aligned")
-            }
-        }
+        let Some(record) = self.records.insert(record) else {
+            unreachable!("private ledger and authenticated proof set stay aligned")
+        };
+        Ok(record)
     }
 }
 
@@ -77,7 +88,7 @@ mod tests {
     use naome_ledger::LedgerError;
     use naome_proof::{ProofCertificate, ProofId, ProofStep};
 
-    use super::ProofDag;
+    use super::{ProofDag, ProofSetMembership};
 
     fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
         ProofCertificate::new(steps).unwrap()
@@ -200,6 +211,19 @@ mod tests {
         let _ = reversed.apply_canonical_proof_bytes(pairing).unwrap();
         assert_eq!(reversed.proof(pairing_id), first.proof(pairing_id));
         assert_eq!(reversed.proof(union_id), first.proof(union_id));
+        assert_eq!(reversed.proof_set_root(), first.proof_set_root());
+        assert_eq!(
+            first
+                .proof_set_proof(pairing_id)
+                .verify(first.proof_set_root(), pairing_id),
+            Ok(ProofSetMembership::Present)
+        );
+        assert_eq!(
+            first
+                .proof_set_proof(unknown)
+                .verify(first.proof_set_root(), unknown),
+            Ok(ProofSetMembership::Absent)
+        );
     }
 
     #[test]
@@ -257,6 +281,7 @@ mod tests {
         assert_eq!(replay.proof(root_id), original.proof(root_id));
         assert_eq!(replay.proof(child_id), original.proof(child_id));
         assert_eq!(replay.proof(grandchild_id), original.proof(grandchild_id));
+        assert_eq!(replay.proof_set_root(), original.proof_set_root());
     }
 
     #[test]
@@ -266,6 +291,7 @@ mod tests {
         let root = dag.apply_canonical_proof_bytes(root_bytes.clone()).unwrap();
         let root_id = root.proof_id();
         let derivation_id = root.derivation_id();
+        let proof_set_root = dag.proof_set_root();
 
         assert_eq!(
             dag.apply_canonical_proof_bytes(root_bytes),
@@ -274,6 +300,7 @@ mod tests {
             })
         );
         assert_eq!(dag.len(), 1);
+        assert_eq!(dag.proof_set_root(), proof_set_root);
 
         let alias = canonical_bytes(vec![ProofStep::ProofReference { proof_id: root_id }]);
         assert_eq!(
@@ -283,6 +310,7 @@ mod tests {
             })
         );
         assert_eq!(dag.len(), 1);
+        assert_eq!(dag.proof_set_root(), proof_set_root);
         assert_eq!(dag.proof(root_id).unwrap().proof_id(), root_id);
     }
 
@@ -316,6 +344,13 @@ mod tests {
             [direct_id, detour_id]
         );
         assert_eq!(dag.len(), 3);
+        for proof_id in [direct_id, detour_id, dependent_id] {
+            assert_eq!(
+                dag.proof_set_proof(proof_id)
+                    .verify(dag.proof_set_root(), proof_id),
+                Ok(ProofSetMembership::Present)
+            );
+        }
     }
 
     #[test]
@@ -350,8 +385,10 @@ mod tests {
             .apply_canonical_proof_bytes(root_bytes.clone())
             .unwrap()
             .proof_id();
+        let committed_root = dag.proof_set_root();
         let assert_root_unchanged = |dag: &ProofDag| {
             assert_eq!(dag.len(), 1);
+            assert_eq!(dag.proof_set_root(), committed_root);
             assert_eq!(
                 dag.proof(root_id).unwrap().canonical_proof_bytes(),
                 root_bytes

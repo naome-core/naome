@@ -15,7 +15,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use naome_chain::ProofDag;
+use naome_chain::{ProofDag, ProofSetProof, ProofSetRoot};
 use naome_ledger::{AcceptedProofRecord, LedgerError};
 use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
 use sha2::{Digest, Sha256};
@@ -87,6 +87,27 @@ impl ProofDagJournal {
         Ok(Self { _lock: lock, core })
     }
 
+    /// Opens, strictly replays, and verifies the complete selected proof set.
+    ///
+    /// The expected root must come from a separately trusted source. Every
+    /// lock, file-format, digest, recovery, and strict replay check completes
+    /// before the final root comparison. This verifies the exact current
+    /// journal state, not an arbitrary historical prefix or subset.
+    pub fn open_verified(
+        directory: impl AsRef<Path>,
+        expected_root: ProofSetRoot,
+    ) -> Result<Self, JournalError> {
+        let journal = Self::open(directory)?;
+        let actual = journal.core.dag.proof_set_root();
+        if actual != expected_root {
+            return Err(JournalError::ProofSetRootMismatch {
+                expected: expected_root,
+                actual,
+            });
+        }
+        Ok(journal)
+    }
+
     /// Strictly admits and durably commits one canonical proof payload.
     ///
     /// Admission errors write nothing and leave the handle healthy. After
@@ -116,6 +137,18 @@ impl ProofDagJournal {
     pub fn is_empty(&self) -> Result<bool, JournalError> {
         self.core.ensure_healthy()?;
         Ok(self.core.dag.is_empty())
+    }
+
+    /// Returns the authenticated root of the locally committed proof set.
+    pub fn proof_set_root(&self) -> Result<ProofSetRoot, JournalError> {
+        self.core.ensure_healthy()?;
+        Ok(self.core.dag.proof_set_root())
+    }
+
+    /// Returns a compact proof-set witness from the locally committed state.
+    pub fn proof_set_proof(&self, proof_id: ProofId) -> Result<ProofSetProof, JournalError> {
+        self.core.ensure_healthy()?;
+        Ok(self.core.dag.proof_set_proof(proof_id))
     }
 }
 
@@ -399,6 +432,11 @@ pub enum JournalError {
     Recovery { offset: u64, source: io::Error },
     /// A fully replayed visible journal image could not be stabilized.
     Stabilize { source: io::Error },
+    /// Strict replay produced a different selected proof set than expected.
+    ProofSetRootMismatch {
+        expected: ProofSetRoot,
+        actual: ProofSetRoot,
+    },
     /// The candidate proof was rejected before journal mutation.
     Admission { source: LedgerError },
     /// Commit durability is unknown and the handle is now poisoned.
@@ -454,6 +492,10 @@ impl fmt::Display for JournalError {
             Self::Stabilize { source } => {
                 write!(formatter, "replayed journal stabilization failed: {source}")
             }
+            Self::ProofSetRootMismatch { expected, actual } => write!(
+                formatter,
+                "proof-set root mismatch: expected {expected:?}, replayed {actual:?}"
+            ),
             Self::Admission { source } => write!(formatter, "proof admission failed: {source}"),
             Self::Commit { proof_id, source } => write!(
                 formatter,
@@ -482,6 +524,7 @@ impl Error for JournalError {
             | Self::InvalidFrameLength { .. }
             | Self::FrameOffsetOverflow { .. }
             | Self::EntryDigestMismatch { .. }
+            | Self::ProofSetRootMismatch { .. }
             | Self::Poisoned => None,
         }
     }
