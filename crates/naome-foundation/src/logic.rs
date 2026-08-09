@@ -1,4 +1,4 @@
-//! The primitive logical calculus selected by Foundation V0.
+//! The primitive logical calculus selected by Foundation.
 
 use std::error::Error;
 use std::fmt;
@@ -7,9 +7,9 @@ use crate::{Formula, FreeVariable};
 
 /// Constructs logical axiom instances and applies primitive inference rules.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LogicV0;
+pub struct Logic;
 
-impl LogicV0 {
+impl Logic {
     /// Instantiates `A → (B → A)`.
     #[must_use]
     pub fn simplification(antecedent: Formula, consequent: Formula) -> Formula {
@@ -131,7 +131,7 @@ impl Error for LogicError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{LogicError, LogicV0};
+    use super::{Logic, LogicError};
     use crate::{Formula, FreeVariable};
 
     #[test]
@@ -145,38 +145,38 @@ mod tests {
         let instances = [
             (
                 "L1",
-                LogicV0::simplification(first.clone(), second.clone()),
+                Logic::simplification(first.clone(), second.clone()),
                 "imp(eq(f1,f1),imp(mem(f1,f2),eq(f1,f1)))",
             ),
             (
                 "L2",
-                LogicV0::frege(first.clone(), second.clone(), third),
+                Logic::frege(first.clone(), second.clone(), third),
                 "imp(imp(eq(f1,f1),imp(mem(f1,f2),eq(f2,f2))),imp(imp(eq(f1,f1),mem(f1,f2)),imp(eq(f1,f1),eq(f2,f2))))",
             ),
             (
                 "L3",
-                LogicV0::classical_contraposition(first.clone(), second.clone()),
+                Logic::classical_contraposition(first.clone(), second.clone()),
                 "imp(imp(not(mem(f1,f2)),not(eq(f1,f1))),imp(eq(f1,f1),mem(f1,f2)))",
             ),
             (
                 "Q1",
-                LogicV0::universal_distribution(x, first.clone(), second.clone()),
+                Logic::universal_distribution(x, first.clone(), second.clone()),
                 "imp(all(imp(eq(b0,b0),mem(b0,f2))),imp(all(eq(b0,b0)),all(mem(b0,f2))))",
             ),
             (
                 "Q2",
-                LogicV0::vacuous_universal(first.clone()),
+                Logic::vacuous_universal(first.clone()),
                 "imp(eq(f1,f1),all(eq(f1,f1)))",
             ),
             (
                 "Q3",
-                LogicV0::universal_instantiation(x, y, second),
+                Logic::universal_instantiation(x, y, second),
                 "imp(all(mem(b0,f2)),mem(f2,f2))",
             ),
-            ("E1", LogicV0::equality_reflexivity(x), "eq(f1,f1)"),
+            ("E1", Logic::equality_reflexivity(x), "eq(f1,f1)"),
             (
                 "E2",
-                LogicV0::equality_substitution(x, y, first),
+                Logic::equality_substitution(x, y, first),
                 "imp(eq(f1,f2),imp(eq(f1,f1),eq(f2,f2)))",
             ),
         ];
@@ -191,7 +191,7 @@ mod tests {
         let x = FreeVariable::new(1);
         let body = Formula::for_all(x, Formula::equal(x, x));
 
-        let instance = LogicV0::vacuous_universal(body);
+        let instance = Logic::vacuous_universal(body);
 
         assert_eq!(
             instance.primitive_structure(),
@@ -206,7 +206,7 @@ mod tests {
         let z = FreeVariable::new(3);
         let body = Formula::for_all(z, Formula::member(x, z));
 
-        let instance = LogicV0::universal_instantiation(x, y, body);
+        let instance = Logic::universal_instantiation(x, y, body);
         let free_variables = instance.free_variables();
 
         assert!(free_variables.contains(&y));
@@ -222,10 +222,7 @@ mod tests {
         let consequent = Formula::member(x, y);
         let implication = Formula::implies(equal_but_separate_premise, consequent.clone());
 
-        assert_eq!(
-            LogicV0::modus_ponens(&premise, &implication),
-            Ok(consequent)
-        );
+        assert_eq!(Logic::modus_ponens(&premise, &implication), Ok(consequent));
     }
 
     #[test]
@@ -238,7 +235,7 @@ mod tests {
 
         for invalid in [&non_implication, &mismatched_implication] {
             assert_eq!(
-                LogicV0::modus_ponens(&premise, invalid),
+                Logic::modus_ponens(&premise, invalid),
                 Err(LogicError::ModusPonensMismatch)
             );
         }
@@ -254,7 +251,7 @@ mod tests {
             Formula::implies(Formula::member(x, z), Formula::equal(y, z)),
         );
 
-        let generalized = LogicV0::generalization(x, premise);
+        let generalized = Logic::generalization(x, premise);
 
         assert_eq!(
             generalized.primitive_structure(),
@@ -270,7 +267,7 @@ mod tests {
         let x = FreeVariable::new(1);
         let premise = Formula::for_all(x, Formula::equal(x, x));
 
-        let generalized = LogicV0::generalization(x, premise);
+        let generalized = Logic::generalization(x, premise);
 
         assert_eq!(generalized.primitive_structure(), "all(all(eq(b0,b0)))");
         assert!(generalized.is_closed());

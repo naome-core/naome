@@ -1,4 +1,4 @@
-//! Canonically encoded, assumption-free proof programs for NAOME Foundation V0.
+//! Canonically encoded, assumption-free proof programs for NAOME Foundation.
 //!
 //! A certificate records primitive axiom witnesses, inference inputs, and
 //! concrete external proof identities. It does not duplicate the formula
@@ -20,11 +20,11 @@ use naome_foundation::{
 
 pub use identity::{DerivationId, ProofId, StatementId};
 
-/// Maximum encoded length admitted for one V0 proof certificate.
-pub const CERTIFICATE_V0_MAX_BYTES: usize = 4_194_304;
+/// Maximum encoded length admitted for one proof certificate.
+pub const CERTIFICATE_MAX_BYTES: usize = 4_194_304;
 
-/// Maximum number of steps admitted in one V0 proof certificate.
-pub const CERTIFICATE_V0_MAX_STEPS: usize = 65_536;
+/// Maximum number of steps admitted in one proof certificate.
+pub const CERTIFICATE_MAX_STEPS: usize = 65_536;
 
 const SIMPLIFICATION: u8 = 0x00;
 const FREGE: u8 = 0x01;
@@ -41,24 +41,24 @@ const MODUS_PONENS: u8 = 0x20;
 const GENERALIZATION: u8 = 0x21;
 const PROOF_REFERENCE: u8 = 0x30;
 
-/// A canonically encoded, assumption-free Foundation V0 proof program.
+/// A canonically encoded, assumption-free Foundation proof program.
 ///
 /// The final step is the root and claimed conclusion. A certificate may carry
 /// structurally valid duplicate or unreachable presentation steps; proof
-/// admission operates on its [`ProofNormalFormV0`].
+/// admission operates on its [`ProofNormalForm`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
-pub struct ProofCertificateV0 {
-    steps: Vec<ProofStepV0>,
+pub struct ProofCertificate {
+    steps: Vec<ProofStep>,
 }
 
-impl ProofCertificateV0 {
+impl ProofCertificate {
     /// Constructs a structurally valid certificate.
     ///
     /// This checks that the certificate is non-empty, all values fit the wire
-    /// format, every formula satisfies the V0 codec limits, and inference
+    /// format, every formula satisfies the codec limits, and inference
     /// inputs refer strictly to earlier steps.
-    pub fn new(steps: Vec<ProofStepV0>) -> Result<Self, ProofCertificateError> {
+    pub fn new(steps: Vec<ProofStep>) -> Result<Self, ProofCertificateError> {
         validate_steps(&steps)?;
         let _ = codec::encode_steps(&steps)?;
         Ok(Self { steps })
@@ -66,18 +66,18 @@ impl ProofCertificateV0 {
 
     /// Returns the proof steps in their encoded execution order.
     #[must_use]
-    pub fn steps(&self) -> &[ProofStepV0] {
+    pub fn steps(&self) -> &[ProofStep] {
         &self.steps
     }
 
-    /// Encodes this certificate in the canonical V0 wire format.
+    /// Encodes this certificate in the canonical wire format.
     #[must_use]
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
         codec::encode_steps(&self.steps)
-            .expect("ProofCertificateV0 construction guarantees canonical encodability")
+            .expect("ProofCertificate construction guarantees canonical encodability")
     }
 
-    /// Decodes one complete canonical V0 certificate.
+    /// Decodes one complete canonical certificate.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ProofCertificateError> {
         codec::decode(bytes)
     }
@@ -89,8 +89,8 @@ impl ProofCertificateV0 {
     /// deterministic dependency-first order. This transformation does not
     /// establish mathematical validity; the checker must validate the
     /// resulting normal-form certificate.
-    pub fn into_unchecked_normal_form(self) -> ProofNormalFormV0 {
-        ProofNormalFormV0 {
+    pub fn into_unchecked_normal_form(self) -> ProofNormalForm {
+        ProofNormalForm {
             certificate: normal_form::normalize(self),
             canonical_bytes: OnceLock::new(),
         }
@@ -102,14 +102,14 @@ impl ProofCertificateV0 {
 /// This type establishes structural identity only. The mathematical checker
 /// must still validate the contained certificate.
 #[must_use]
-pub struct ProofNormalFormV0 {
-    certificate: ProofCertificateV0,
+pub struct ProofNormalForm {
+    certificate: ProofCertificate,
     canonical_bytes: OnceLock<Box<[u8]>>,
 }
 
-impl ProofNormalFormV0 {
+impl ProofNormalForm {
     /// Returns the canonical certificate carried by this normal form.
-    pub const fn certificate(&self) -> &ProofCertificateV0 {
+    pub const fn certificate(&self) -> &ProofCertificate {
         &self.certificate
     }
 
@@ -150,29 +150,29 @@ impl ProofNormalFormV0 {
     }
 }
 
-impl PartialEq for ProofNormalFormV0 {
+impl PartialEq for ProofNormalForm {
     fn eq(&self, other: &Self) -> bool {
         self.certificate == other.certificate
     }
 }
 
-impl Eq for ProofNormalFormV0 {}
+impl Eq for ProofNormalForm {}
 
-impl fmt::Debug for ProofNormalFormV0 {
+impl fmt::Debug for ProofNormalForm {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ProofNormalFormV0")
+            .debug_struct("ProofNormalForm")
             .field("certificate", &self.certificate)
             .finish()
     }
 }
 
-/// One Foundation V0 axiom witness, primitive inference, or proof-reference step.
+/// One Foundation axiom witness, primitive inference, or proof-reference step.
 ///
-/// Local step indices are zero-based. [`ProofCertificateV0`] admits an
+/// Local step indices are zero-based. [`ProofCertificate`] admits an
 /// inference step only when every referenced index is smaller than its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ProofStepV0 {
+pub enum ProofStep {
     /// L1: instantiate `A → (B → A)`.
     Simplification {
         antecedent: Formula,
@@ -231,10 +231,10 @@ pub enum ProofStepV0 {
     },
 }
 
-impl ProofStepV0 {
-    /// Returns this step's one-byte canonical V0 wire tag.
+impl ProofStep {
+    /// Returns this step's one-byte canonical wire tag.
     #[must_use]
-    pub const fn canonical_tag_v0(&self) -> u8 {
+    pub const fn canonical_tag(&self) -> u8 {
         match self {
             Self::Simplification { .. } => SIMPLIFICATION,
             Self::Frege { .. } => FREGE,
@@ -256,7 +256,7 @@ impl ProofStepV0 {
     /// Returns local step references in their rule-role order.
     ///
     /// Modus ponens returns premise then implication. Generalization returns
-    /// only its premise. All other V0 steps carry no local references.
+    /// only its premise. All other steps carry no local references.
     #[must_use]
     pub const fn local_references(&self) -> [Option<u32>; 2] {
         match self {
@@ -281,15 +281,15 @@ impl ProofStepV0 {
     }
 }
 
-fn validate_steps(steps: &[ProofStepV0]) -> Result<(), ProofCertificateError> {
+fn validate_steps(steps: &[ProofStep]) -> Result<(), ProofCertificateError> {
     if steps.is_empty() {
         return Err(ProofCertificateError::EmptyCertificate);
     }
 
-    if steps.len() > CERTIFICATE_V0_MAX_STEPS {
+    if steps.len() > CERTIFICATE_MAX_STEPS {
         return Err(ProofCertificateError::TooManySteps {
             actual: steps.len(),
-            maximum: CERTIFICATE_V0_MAX_STEPS,
+            maximum: CERTIFICATE_MAX_STEPS,
         });
     }
 
@@ -301,10 +301,7 @@ fn validate_steps(steps: &[ProofStepV0]) -> Result<(), ProofCertificateError> {
     Ok(())
 }
 
-fn validate_step_references(
-    position: u32,
-    step: &ProofStepV0,
-) -> Result<(), ProofCertificateError> {
+fn validate_step_references(position: u32, step: &ProofStep) -> Result<(), ProofCertificateError> {
     for reference in step.local_references().into_iter().flatten() {
         validate_reference(position, reference)?;
     }
@@ -320,20 +317,18 @@ fn validate_reference(step: u32, reference: u32) -> Result<(), ProofCertificateE
     Ok(())
 }
 
-/// A structural or canonical-encoding failure for Proof Certificate V0.
+/// A structural or canonical-encoding failure for Proof Certificate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProofCertificateError {
     /// A certificate must contain a claimed conclusion step.
     EmptyCertificate,
-    /// The certificate exceeds the deterministic V0 step limit.
+    /// The certificate exceeds the deterministic step limit.
     TooManySteps { actual: usize, maximum: usize },
-    /// The encoded certificate exceeds the deterministic V0 processing limit.
+    /// The encoded certificate exceeds the deterministic processing limit.
     InputTooLong { actual: usize, maximum: usize },
     /// A local inference input is not strictly earlier than its consumer.
     ReferenceNotEarlier { step: u32, reference: u32 },
-    /// The encoded certificate selects an unsupported format version.
-    UnsupportedVersion(u8),
     /// The encoded certificate ends before the selected value is complete.
     UnexpectedEnd,
     /// The encoded certificate uses an unknown proof-step tag.
@@ -352,19 +347,16 @@ impl fmt::Display for ProofCertificateError {
             Self::EmptyCertificate => formatter.write_str("proof certificate has no steps"),
             Self::TooManySteps { actual, maximum } => write!(
                 formatter,
-                "proof certificate has {actual} steps; the V0 limit is {maximum}"
+                "proof certificate has {actual} steps; the limit is {maximum}"
             ),
             Self::InputTooLong { actual, maximum } => write!(
                 formatter,
-                "proof certificate has {actual} bytes; the V0 limit is {maximum}"
+                "proof certificate has {actual} bytes; the limit is {maximum}"
             ),
             Self::ReferenceNotEarlier { step, reference } => write!(
                 formatter,
                 "step {step} references non-earlier step {reference}"
             ),
-            Self::UnsupportedVersion(version) => {
-                write!(formatter, "unsupported proof certificate version {version}")
-            }
             Self::UnexpectedEnd => formatter.write_str("proof certificate ended unexpectedly"),
             Self::UnknownStepTag(tag) => {
                 write!(formatter, "unknown proof-step tag 0x{tag:02x}")
@@ -400,15 +392,15 @@ impl From<FormulaCodecError> for ProofCertificateError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CERTIFICATE_V0_MAX_BYTES, ProofCertificateError, ProofCertificateV0, ProofStepV0};
+    use super::{CERTIFICATE_MAX_BYTES, ProofCertificate, ProofCertificateError, ProofStep};
     use naome_foundation::{
-        FORMULA_V0_MAX_DEPTH, Formula, FormulaCodecError, FreeVariable, Separation,
+        FORMULA_MAX_DEPTH, Formula, FormulaCodecError, FreeVariable, Separation,
     };
 
     #[test]
     fn certificate_requires_a_conclusion_step() {
         assert_eq!(
-            ProofCertificateV0::new(Vec::new()),
+            ProofCertificate::new(Vec::new()),
             Err(ProofCertificateError::EmptyCertificate)
         );
     }
@@ -418,7 +410,7 @@ mod tests {
         let x = FreeVariable::new(1);
 
         assert_eq!(
-            ProofCertificateV0::new(vec![ProofStepV0::Generalization {
+            ProofCertificate::new(vec![ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             }]),
@@ -429,9 +421,9 @@ mod tests {
         );
 
         assert_eq!(
-            ProofCertificateV0::new(vec![
-                ProofStepV0::EqualityReflexivity { variable: x },
-                ProofStepV0::Generalization {
+            ProofCertificate::new(vec![
+                ProofStep::EqualityReflexivity { variable: x },
+                ProofStep::Generalization {
                     premise: 2,
                     variable: x,
                 },
@@ -446,9 +438,9 @@ mod tests {
     #[test]
     fn certificate_accepts_only_earlier_local_references() {
         let x = FreeVariable::new(1);
-        let certificate = ProofCertificateV0::new(vec![
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::Generalization {
+        let certificate = ProofCertificate::new(vec![
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
                 premise: 0,
                 variable: x,
             },
@@ -462,15 +454,15 @@ mod tests {
     fn certificate_constructor_enforces_formula_codec_limits() {
         let x = FreeVariable::new(1);
         let mut oversized = Formula::equal(x, x);
-        for _ in 0..FORMULA_V0_MAX_DEPTH {
+        for _ in 0..FORMULA_MAX_DEPTH {
             oversized = Formula::negate(oversized);
         }
 
         assert_eq!(
-            ProofCertificateV0::new(vec![ProofStepV0::VacuousUniversal { formula: oversized }]),
+            ProofCertificate::new(vec![ProofStep::VacuousUniversal { formula: oversized }]),
             Err(ProofCertificateError::Formula(
                 FormulaCodecError::DepthLimitExceeded {
-                    maximum: FORMULA_V0_MAX_DEPTH,
+                    maximum: FORMULA_MAX_DEPTH,
                 }
             ))
         );
@@ -482,9 +474,9 @@ mod tests {
         let source = FreeVariable::new(2);
         let result_variable = FreeVariable::new(3);
         let parameter = FreeVariable::new(4);
-        let parameters = vec![parameter; CERTIFICATE_V0_MAX_BYTES / 4 + 1];
+        let parameters = vec![parameter; CERTIFICATE_MAX_BYTES / 4 + 1];
 
-        let construction = ProofCertificateV0::new(vec![ProofStepV0::Separation(Separation {
+        let construction = ProofCertificate::new(vec![ProofStep::Separation(Separation {
             predicate: Formula::member(element, source),
             element,
             source,
@@ -495,7 +487,7 @@ mod tests {
         assert!(matches!(
             construction,
             Err(ProofCertificateError::InputTooLong {
-                maximum: CERTIFICATE_V0_MAX_BYTES,
+                maximum: CERTIFICATE_MAX_BYTES,
                 ..
             })
         ));

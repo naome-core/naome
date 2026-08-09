@@ -1,4 +1,4 @@
-/// The SHA-256 identity of one canonical closed Foundation V0 statement.
+/// The SHA-256 identity of one canonical closed Foundation statement.
 ///
 /// This value is an address, not evidence that the statement has an admitted
 /// proof. [`Self::from_bytes`] therefore does not establish validity.
@@ -18,7 +18,7 @@ impl StatementId {
     }
 }
 
-/// The SHA-256 identity of one reference-transparent Foundation V0 derivation.
+/// The SHA-256 identity of one reference-transparent Foundation derivation.
 ///
 /// This identity describes the checked inference DAG rather than its
 /// certificate packaging. Inlining a checked dependency or citing that same
@@ -40,7 +40,7 @@ impl DerivationId {
     }
 }
 
-/// The SHA-256 identity of one concrete checked Foundation V0 proof artifact.
+/// The SHA-256 identity of one concrete checked Foundation proof artifact.
 ///
 /// Unlike [`DerivationId`], this identity retains the canonical certificate's
 /// citation boundaries and selected proof references. This value is an address,

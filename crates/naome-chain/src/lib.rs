@@ -1,17 +1,17 @@
 //! Content-addressed in-memory state for the NAOME proof DAG.
 //!
-//! Each admitted node is exactly one canonical Foundation V0 proof. Its
+//! Each admitted node is exactly one canonical Foundation proof. Its
 //! [`ProofId`] is the node address and its checked external proof references
 //! are the outgoing dependency edges. Admission delegates all decoding,
 //! canonicality, mathematical checking, and identity validation to
-//! [`LedgerStateV0`] before retaining the resulting record.
+//! [`LedgerState`] before retaining the resulting record.
 //!
 //! This crate defines neither a linear proof parent nor consensus, finality,
 //! persistence, economy, or peer-to-peer synchronization.
 
 use std::collections::{BTreeMap, btree_map::Entry};
 
-use naome_ledger::{AcceptedProofRecordV0, LedgerError, LedgerStateV0};
+use naome_ledger::{AcceptedProofRecord, LedgerError, LedgerState};
 use naome_proof::ProofId;
 
 /// A selected, monotonically growing set of accepted proof-DAG nodes.
@@ -20,16 +20,16 @@ use naome_proof::ProofId;
 /// cannot insert unverified bytes, identities, or dependency edges.
 #[derive(Default)]
 #[must_use]
-pub struct ProofDagV0 {
-    ledger: LedgerStateV0,
-    records: BTreeMap<ProofId, AcceptedProofRecordV0>,
+pub struct ProofDag {
+    ledger: LedgerState,
+    records: BTreeMap<ProofId, AcceptedProofRecord>,
 }
 
-impl ProofDagV0 {
+impl ProofDag {
     /// Constructs an empty proof DAG.
     pub const fn new() -> Self {
         Self {
-            ledger: LedgerStateV0::new(),
+            ledger: LedgerState::new(),
             records: BTreeMap::new(),
         }
     }
@@ -45,7 +45,7 @@ impl ProofDagV0 {
     }
 
     /// Returns one locally accepted proof record by its content address.
-    pub fn proof(&self, proof_id: ProofId) -> Option<&AcceptedProofRecordV0> {
+    pub fn proof(&self, proof_id: ProofId) -> Option<&AcceptedProofRecord> {
         self.records.get(&proof_id)
     }
 
@@ -57,7 +57,7 @@ impl ProofDagV0 {
     pub fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
-    ) -> Result<&AcceptedProofRecordV0, LedgerError> {
+    ) -> Result<&AcceptedProofRecord, LedgerError> {
         let record = self.ledger.apply_canonical_proof_bytes(bytes)?;
         let proof_id = record.proof_id();
 
@@ -75,15 +75,15 @@ mod tests {
     use naome_checker::{CheckError, ProofStateError};
     use naome_foundation::{Formula, FreeVariable, LogicError, ZfcAxiom};
     use naome_ledger::LedgerError;
-    use naome_proof::{ProofCertificateV0, ProofId, ProofStepV0};
+    use naome_proof::{ProofCertificate, ProofId, ProofStep};
 
-    use super::ProofDagV0;
+    use super::ProofDag;
 
-    fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
-        ProofCertificateV0::new(steps).unwrap()
+    fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
+        ProofCertificate::new(steps).unwrap()
     }
 
-    fn canonical_bytes(steps: Vec<ProofStepV0>) -> Vec<u8> {
+    fn canonical_bytes(steps: Vec<ProofStep>) -> Vec<u8> {
         certificate(steps)
             .into_unchecked_normal_form()
             .canonical_bytes()
@@ -91,13 +91,13 @@ mod tests {
     }
 
     fn axiom_bytes(axiom: ZfcAxiom) -> Vec<u8> {
-        canonical_bytes(vec![ProofStepV0::ZfcAxiom(axiom)])
+        canonical_bytes(vec![ProofStep::ZfcAxiom(axiom)])
     }
 
     fn referenced_generalization(proof_id: ProofId, variable: FreeVariable) -> Vec<u8> {
         canonical_bytes(vec![
-            ProofStepV0::ProofReference { proof_id },
-            ProofStepV0::Generalization {
+            ProofStep::ProofReference { proof_id },
+            ProofStep::Generalization {
                 premise: 0,
                 variable,
             },
@@ -106,8 +106,8 @@ mod tests {
 
     fn identity_bytes(variable: FreeVariable) -> Vec<u8> {
         canonical_bytes(vec![
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::Generalization {
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::Generalization {
                 premise: 0,
                 variable,
             },
@@ -117,20 +117,20 @@ mod tests {
     fn identity_detour_bytes(variable: FreeVariable) -> Vec<u8> {
         let equality = Formula::equal(variable, variable);
         canonical_bytes(vec![
-            ProofStepV0::EqualityReflexivity { variable },
-            ProofStepV0::Simplification {
+            ProofStep::EqualityReflexivity { variable },
+            ProofStep::Simplification {
                 antecedent: equality.clone(),
                 consequent: equality,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 2,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 3,
                 variable,
             },
@@ -145,17 +145,17 @@ mod tests {
         let equality = Formula::equal(variable, variable);
         let identity = Formula::for_all(variable, equality);
         canonical_bytes(vec![
-            ProofStepV0::ProofReference { proof_id: direct },
-            ProofStepV0::ProofReference { proof_id: detour },
-            ProofStepV0::Simplification {
+            ProofStep::ProofReference { proof_id: direct },
+            ProofStep::ProofReference { proof_id: detour },
+            ProofStep::Simplification {
                 antecedent: identity.clone(),
                 consequent: identity,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 1,
                 implication: 2,
             },
-            ProofStepV0::ModusPonens {
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 3,
             },
@@ -167,7 +167,7 @@ mod tests {
         let pairing = axiom_bytes(ZfcAxiom::Pairing);
         let union = axiom_bytes(ZfcAxiom::Union);
         let unknown = ProofId::from_bytes([0x55; 32]);
-        let mut first = ProofDagV0::new();
+        let mut first = ProofDag::new();
 
         assert!(first.is_empty());
         assert!(first.proof(unknown).is_none());
@@ -195,7 +195,7 @@ mod tests {
                 .is_empty()
         );
 
-        let mut reversed = ProofDagV0::new();
+        let mut reversed = ProofDag::new();
         let _ = reversed.apply_canonical_proof_bytes(union).unwrap();
         let _ = reversed.apply_canonical_proof_bytes(pairing).unwrap();
         assert_eq!(reversed.proof(pairing_id), first.proof(pairing_id));
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn dependencies_must_precede_admission_and_replay_directly() {
         let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
-        let mut original = ProofDagV0::new();
+        let mut original = ProofDag::new();
         let root_id = original
             .apply_canonical_proof_bytes(root_bytes.clone())
             .unwrap()
@@ -237,7 +237,7 @@ mod tests {
                 .contains(&root_id)
         );
 
-        let mut replay = ProofDagV0::new();
+        let mut replay = ProofDag::new();
         assert_eq!(
             replay.apply_canonical_proof_bytes(child_bytes.clone()),
             Err(LedgerError::Check {
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn duplicate_artifacts_and_reference_aliases_never_overwrite_records() {
         let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
-        let mut dag = ProofDagV0::new();
+        let mut dag = ProofDag::new();
         let root = dag.apply_canonical_proof_bytes(root_bytes.clone()).unwrap();
         let root_id = root.proof_id();
         let derivation_id = root.derivation_id();
@@ -275,7 +275,7 @@ mod tests {
         );
         assert_eq!(dag.len(), 1);
 
-        let alias = canonical_bytes(vec![ProofStepV0::ProofReference { proof_id: root_id }]);
+        let alias = canonical_bytes(vec![ProofStep::ProofReference { proof_id: root_id }]);
         assert_eq!(
             dag.apply_canonical_proof_bytes(alias),
             Err(LedgerError::State {
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn genuine_alternative_derivations_of_one_statement_are_retained() {
         let variable = FreeVariable::new(7);
-        let mut dag = ProofDagV0::new();
+        let mut dag = ProofDag::new();
         let direct_id = dag
             .apply_canonical_proof_bytes(identity_bytes(variable))
             .unwrap()
@@ -321,7 +321,7 @@ mod tests {
     #[test]
     fn unrelated_prior_nodes_do_not_change_an_accepted_record() {
         let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
-        let mut minimal = ProofDagV0::new();
+        let mut minimal = ProofDag::new();
         let root_id = minimal
             .apply_canonical_proof_bytes(root_bytes.clone())
             .unwrap()
@@ -332,7 +332,7 @@ mod tests {
             .unwrap()
             .proof_id();
 
-        let mut extended = ProofDagV0::new();
+        let mut extended = ProofDag::new();
         let _ = extended.apply_canonical_proof_bytes(root_bytes).unwrap();
         let _ = extended
             .apply_canonical_proof_bytes(axiom_bytes(ZfcAxiom::Union))
@@ -344,13 +344,13 @@ mod tests {
 
     #[test]
     fn failed_boundaries_leave_the_retained_dag_unchanged() {
-        let mut dag = ProofDagV0::new();
+        let mut dag = ProofDag::new();
         let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
         let root_id = dag
             .apply_canonical_proof_bytes(root_bytes.clone())
             .unwrap()
             .proof_id();
-        let assert_root_unchanged = |dag: &ProofDagV0| {
+        let assert_root_unchanged = |dag: &ProofDag| {
             assert_eq!(dag.len(), 1);
             assert_eq!(
                 dag.proof(root_id).unwrap().canonical_proof_bytes(),
@@ -365,8 +365,8 @@ mod tests {
         assert_root_unchanged(&dag);
 
         let noncanonical = certificate(vec![
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Union),
+            ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStep::ZfcAxiom(ZfcAxiom::Union),
         ])
         .to_canonical_bytes();
         assert_eq!(
@@ -376,9 +376,9 @@ mod tests {
         assert_root_unchanged(&dag);
 
         let invalid = canonical_bytes(vec![
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Pairing),
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Union),
-            ProofStepV0::ModusPonens {
+            ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStep::ZfcAxiom(ZfcAxiom::Union),
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },

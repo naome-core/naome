@@ -1,21 +1,17 @@
 use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
 
 use crate::{
-    CERTIFICATE_V0_MAX_BYTES, CERTIFICATE_V0_MAX_STEPS, CLASSICAL_CONTRAPOSITION,
-    EQUALITY_REFLEXIVITY, EQUALITY_SUBSTITUTION, FREGE, GENERALIZATION, MODUS_PONENS,
-    PROOF_REFERENCE, ProofCertificateError, ProofCertificateV0, ProofId, ProofStepV0, REPLACEMENT,
-    SEPARATION, SIMPLIFICATION, UNIVERSAL_DISTRIBUTION, UNIVERSAL_INSTANTIATION, VACUOUS_UNIVERSAL,
-    ZFC_AXIOM, validate_step_references,
+    CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_STEPS, CLASSICAL_CONTRAPOSITION, EQUALITY_REFLEXIVITY,
+    EQUALITY_SUBSTITUTION, FREGE, GENERALIZATION, MODUS_PONENS, PROOF_REFERENCE, ProofCertificate,
+    ProofCertificateError, ProofId, ProofStep, REPLACEMENT, SEPARATION, SIMPLIFICATION,
+    UNIVERSAL_DISTRIBUTION, UNIVERSAL_INSTANTIATION, VACUOUS_UNIVERSAL, ZFC_AXIOM,
+    validate_step_references,
 };
 
-const VERSION: u8 = 0x00;
-
-pub(super) fn encode_steps(steps: &[ProofStepV0]) -> Result<Vec<u8>, ProofCertificateError> {
-    let step_count =
-        u32::try_from(steps.len()).expect("ProofCertificateV0 validates its step count");
+pub(super) fn encode_steps(steps: &[ProofStep]) -> Result<Vec<u8>, ProofCertificateError> {
+    let step_count = u32::try_from(steps.len()).expect("ProofCertificate validates its step count");
 
     let mut output = Vec::new();
-    output.push(VERSION);
     write_u32(step_count, &mut output);
 
     for step in steps {
@@ -26,23 +22,18 @@ pub(super) fn encode_steps(steps: &[ProofStepV0]) -> Result<Vec<u8>, ProofCertif
     Ok(output)
 }
 
-pub(super) fn decode(bytes: &[u8]) -> Result<ProofCertificateV0, ProofCertificateError> {
+pub(super) fn decode(bytes: &[u8]) -> Result<ProofCertificate, ProofCertificateError> {
     ensure_within_byte_limit(bytes.len())?;
 
     let mut cursor = Cursor::new(bytes);
-    let version = cursor.read_u8()?;
-    if version != VERSION {
-        return Err(ProofCertificateError::UnsupportedVersion(version));
-    }
-
     let step_count = cursor.read_u32()?;
     if step_count == 0 {
         return Err(ProofCertificateError::EmptyCertificate);
     }
-    if step_count as usize > CERTIFICATE_V0_MAX_STEPS {
+    if step_count as usize > CERTIFICATE_MAX_STEPS {
         return Err(ProofCertificateError::TooManySteps {
             actual: step_count as usize,
-            maximum: CERTIFICATE_V0_MAX_STEPS,
+            maximum: CERTIFICATE_MAX_STEPS,
         });
     }
 
@@ -59,23 +50,23 @@ pub(super) fn decode(bytes: &[u8]) -> Result<ProofCertificateV0, ProofCertificat
         });
     }
 
-    Ok(ProofCertificateV0 { steps })
+    Ok(ProofCertificate { steps })
 }
 
 pub(super) fn encode_step(
-    step: &ProofStepV0,
+    step: &ProofStep,
     output: &mut Vec<u8>,
 ) -> Result<(), ProofCertificateError> {
-    output.push(step.canonical_tag_v0());
+    output.push(step.canonical_tag());
     match step {
-        ProofStepV0::Simplification {
+        ProofStep::Simplification {
             antecedent,
             consequent,
         } => {
             write_formula(antecedent, output)?;
             write_formula(consequent, output)?;
         }
-        ProofStepV0::Frege {
+        ProofStep::Frege {
             first,
             second,
             third,
@@ -84,14 +75,14 @@ pub(super) fn encode_step(
             write_formula(second, output)?;
             write_formula(third, output)?;
         }
-        ProofStepV0::ClassicalContraposition {
+        ProofStep::ClassicalContraposition {
             antecedent,
             consequent,
         } => {
             write_formula(antecedent, output)?;
             write_formula(consequent, output)?;
         }
-        ProofStepV0::UniversalDistribution {
+        ProofStep::UniversalDistribution {
             variable,
             antecedent,
             consequent,
@@ -100,10 +91,10 @@ pub(super) fn encode_step(
             write_formula(antecedent, output)?;
             write_formula(consequent, output)?;
         }
-        ProofStepV0::VacuousUniversal { formula } => {
+        ProofStep::VacuousUniversal { formula } => {
             write_formula(formula, output)?;
         }
-        ProofStepV0::UniversalInstantiation {
+        ProofStep::UniversalInstantiation {
             variable,
             replacement,
             body,
@@ -112,25 +103,25 @@ pub(super) fn encode_step(
             write_variable(*replacement, output);
             write_formula(body, output)?;
         }
-        ProofStepV0::EqualityReflexivity { variable } => {
+        ProofStep::EqualityReflexivity { variable } => {
             write_variable(*variable, output);
         }
-        ProofStepV0::EqualitySubstitution { from, to, body } => {
+        ProofStep::EqualitySubstitution { from, to, body } => {
             write_variable(*from, output);
             write_variable(*to, output);
             write_formula(body, output)?;
         }
-        ProofStepV0::ZfcAxiom(axiom) => {
+        ProofStep::ZfcAxiom(axiom) => {
             output.push(encode_zfc_axiom(*axiom));
         }
-        ProofStepV0::Separation(instance) => {
+        ProofStep::Separation(instance) => {
             write_formula(&instance.predicate, output)?;
             write_variable(instance.element, output);
             write_variable(instance.source, output);
             write_variable(instance.result, output);
             write_variables(&instance.parameters, output)?;
         }
-        ProofStepV0::Replacement(instance) => {
+        ProofStep::Replacement(instance) => {
             write_formula(&instance.predicate, output)?;
             write_variable(instance.input, output);
             write_variable(instance.output, output);
@@ -139,17 +130,17 @@ pub(super) fn encode_step(
             write_variable(instance.result, output);
             write_variables(&instance.parameters, output)?;
         }
-        ProofStepV0::ProofReference { proof_id } => {
+        ProofStep::ProofReference { proof_id } => {
             output.extend_from_slice(proof_id.as_bytes());
         }
-        ProofStepV0::ModusPonens {
+        ProofStep::ModusPonens {
             premise,
             implication,
         } => {
             write_u32(*premise, output);
             write_u32(*implication, output);
         }
-        ProofStepV0::Generalization { premise, variable } => {
+        ProofStep::Generalization { premise, variable } => {
             write_u32(*premise, output);
             write_variable(*variable, output);
         }
@@ -158,51 +149,51 @@ pub(super) fn encode_step(
     Ok(())
 }
 
-fn decode_step(cursor: &mut Cursor<'_>) -> Result<ProofStepV0, ProofCertificateError> {
+fn decode_step(cursor: &mut Cursor<'_>) -> Result<ProofStep, ProofCertificateError> {
     match cursor.read_u8()? {
-        SIMPLIFICATION => Ok(ProofStepV0::Simplification {
+        SIMPLIFICATION => Ok(ProofStep::Simplification {
             antecedent: read_formula(cursor)?,
             consequent: read_formula(cursor)?,
         }),
-        FREGE => Ok(ProofStepV0::Frege {
+        FREGE => Ok(ProofStep::Frege {
             first: read_formula(cursor)?,
             second: read_formula(cursor)?,
             third: read_formula(cursor)?,
         }),
-        CLASSICAL_CONTRAPOSITION => Ok(ProofStepV0::ClassicalContraposition {
+        CLASSICAL_CONTRAPOSITION => Ok(ProofStep::ClassicalContraposition {
             antecedent: read_formula(cursor)?,
             consequent: read_formula(cursor)?,
         }),
-        UNIVERSAL_DISTRIBUTION => Ok(ProofStepV0::UniversalDistribution {
+        UNIVERSAL_DISTRIBUTION => Ok(ProofStep::UniversalDistribution {
             variable: read_variable(cursor)?,
             antecedent: read_formula(cursor)?,
             consequent: read_formula(cursor)?,
         }),
-        VACUOUS_UNIVERSAL => Ok(ProofStepV0::VacuousUniversal {
+        VACUOUS_UNIVERSAL => Ok(ProofStep::VacuousUniversal {
             formula: read_formula(cursor)?,
         }),
-        UNIVERSAL_INSTANTIATION => Ok(ProofStepV0::UniversalInstantiation {
+        UNIVERSAL_INSTANTIATION => Ok(ProofStep::UniversalInstantiation {
             variable: read_variable(cursor)?,
             replacement: read_variable(cursor)?,
             body: read_formula(cursor)?,
         }),
-        EQUALITY_REFLEXIVITY => Ok(ProofStepV0::EqualityReflexivity {
+        EQUALITY_REFLEXIVITY => Ok(ProofStep::EqualityReflexivity {
             variable: read_variable(cursor)?,
         }),
-        EQUALITY_SUBSTITUTION => Ok(ProofStepV0::EqualitySubstitution {
+        EQUALITY_SUBSTITUTION => Ok(ProofStep::EqualitySubstitution {
             from: read_variable(cursor)?,
             to: read_variable(cursor)?,
             body: read_formula(cursor)?,
         }),
-        ZFC_AXIOM => Ok(ProofStepV0::ZfcAxiom(decode_zfc_axiom(cursor.read_u8()?)?)),
-        SEPARATION => Ok(ProofStepV0::Separation(Separation {
+        ZFC_AXIOM => Ok(ProofStep::ZfcAxiom(decode_zfc_axiom(cursor.read_u8()?)?)),
+        SEPARATION => Ok(ProofStep::Separation(Separation {
             predicate: read_formula(cursor)?,
             element: read_variable(cursor)?,
             source: read_variable(cursor)?,
             result: read_variable(cursor)?,
             parameters: read_variables(cursor)?,
         })),
-        REPLACEMENT => Ok(ProofStepV0::Replacement(Replacement {
+        REPLACEMENT => Ok(ProofStep::Replacement(Replacement {
             predicate: read_formula(cursor)?,
             input: read_variable(cursor)?,
             output: read_variable(cursor)?,
@@ -211,7 +202,7 @@ fn decode_step(cursor: &mut Cursor<'_>) -> Result<ProofStepV0, ProofCertificateE
             result: read_variable(cursor)?,
             parameters: read_variables(cursor)?,
         })),
-        PROOF_REFERENCE => Ok(ProofStepV0::ProofReference {
+        PROOF_REFERENCE => Ok(ProofStep::ProofReference {
             proof_id: ProofId::from_bytes(
                 cursor
                     .take(32)?
@@ -219,11 +210,11 @@ fn decode_step(cursor: &mut Cursor<'_>) -> Result<ProofStepV0, ProofCertificateE
                     .expect("the checked slice has exactly 32 bytes"),
             ),
         }),
-        MODUS_PONENS => Ok(ProofStepV0::ModusPonens {
+        MODUS_PONENS => Ok(ProofStep::ModusPonens {
             premise: cursor.read_u32()?,
             implication: cursor.read_u32()?,
         }),
-        GENERALIZATION => Ok(ProofStepV0::Generalization {
+        GENERALIZATION => Ok(ProofStep::Generalization {
             premise: cursor.read_u32()?,
             variable: read_variable(cursor)?,
         }),
@@ -232,9 +223,9 @@ fn decode_step(cursor: &mut Cursor<'_>) -> Result<ProofStepV0, ProofCertificateE
 }
 
 fn write_formula(formula: &Formula, output: &mut Vec<u8>) -> Result<(), ProofCertificateError> {
-    let bytes = formula.encode_canonical_v0()?;
-    let length = u32::try_from(bytes.len())
-        .expect("the canonical V0 formula limit is smaller than u32::MAX");
+    let bytes = formula.encode_canonical()?;
+    let length =
+        u32::try_from(bytes.len()).expect("the canonical formula limit is smaller than u32::MAX");
     ensure_additional_bytes(output.len(), 4 + bytes.len())?;
     write_u32(length, output);
     output.extend_from_slice(&bytes);
@@ -244,7 +235,7 @@ fn write_formula(formula: &Formula, output: &mut Vec<u8>) -> Result<(), ProofCer
 fn read_formula(cursor: &mut Cursor<'_>) -> Result<Formula, ProofCertificateError> {
     let length = usize::try_from(cursor.read_u32()?)
         .expect("u32 is representable as usize on supported Rust targets");
-    Ok(Formula::decode_canonical_v0(cursor.take(length)?)?)
+    Ok(Formula::decode_canonical(cursor.take(length)?)?)
 }
 
 fn write_variables(
@@ -323,10 +314,10 @@ fn ensure_additional_bytes(current: usize, additional: usize) -> Result<(), Proo
 }
 
 fn ensure_within_byte_limit(actual: usize) -> Result<(), ProofCertificateError> {
-    if actual > CERTIFICATE_V0_MAX_BYTES {
+    if actual > CERTIFICATE_MAX_BYTES {
         return Err(ProofCertificateError::InputTooLong {
             actual,
-            maximum: CERTIFICATE_V0_MAX_BYTES,
+            maximum: CERTIFICATE_MAX_BYTES,
         });
     }
 
@@ -381,25 +372,23 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        EQUALITY_REFLEXIVITY, MODUS_PONENS, PROOF_REFERENCE, VERSION, ZFC_AXIOM, encode_step,
-    };
+    use super::{EQUALITY_REFLEXIVITY, MODUS_PONENS, PROOF_REFERENCE, ZFC_AXIOM, encode_step};
     use crate::{
-        CERTIFICATE_V0_MAX_BYTES, CERTIFICATE_V0_MAX_STEPS, ProofCertificateError,
-        ProofCertificateV0, ProofId, ProofStepV0,
+        CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_STEPS, ProofCertificate, ProofCertificateError,
+        ProofId, ProofStep,
     };
     use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
 
     #[test]
     fn equality_reflexivity_has_stable_big_endian_golden_bytes() {
-        let certificate = ProofCertificateV0::new(vec![ProofStepV0::EqualityReflexivity {
+        let certificate = ProofCertificate::new(vec![ProofStep::EqualityReflexivity {
             variable: FreeVariable::new(0x0102_0304),
         }])
         .unwrap();
 
         assert_eq!(
             certificate.to_canonical_bytes(),
-            [VERSION, 0, 0, 0, 1, EQUALITY_REFLEXIVITY, 1, 2, 3, 4]
+            [0, 0, 0, 1, EQUALITY_REFLEXIVITY, 1, 2, 3, 4]
         );
     }
 
@@ -429,57 +418,57 @@ mod tests {
             parameters: vec![],
         };
         let steps = vec![
-            ProofStepV0::Simplification {
+            ProofStep::Simplification {
                 antecedent: first.clone(),
                 consequent: second.clone(),
             },
-            ProofStepV0::Frege {
+            ProofStep::Frege {
                 first: first.clone(),
                 second: second.clone(),
                 third: third.clone(),
             },
-            ProofStepV0::ClassicalContraposition {
+            ProofStep::ClassicalContraposition {
                 antecedent: first.clone(),
                 consequent: second.clone(),
             },
-            ProofStepV0::UniversalDistribution {
+            ProofStep::UniversalDistribution {
                 variable: x,
                 antecedent: first.clone(),
                 consequent: second.clone(),
             },
-            ProofStepV0::VacuousUniversal {
+            ProofStep::VacuousUniversal {
                 formula: first.clone(),
             },
-            ProofStepV0::UniversalInstantiation {
+            ProofStep::UniversalInstantiation {
                 variable: x,
                 replacement: y,
                 body: second.clone(),
             },
-            ProofStepV0::EqualityReflexivity { variable: x },
-            ProofStepV0::EqualitySubstitution {
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::EqualitySubstitution {
                 from: x,
                 to: y,
                 body: first,
             },
-            ProofStepV0::ZfcAxiom(ZfcAxiom::Extensionality),
-            ProofStepV0::Separation(separation),
-            ProofStepV0::Replacement(replacement),
-            ProofStepV0::ModusPonens {
+            ProofStep::ZfcAxiom(ZfcAxiom::Extensionality),
+            ProofStep::Separation(separation),
+            ProofStep::Replacement(replacement),
+            ProofStep::ModusPonens {
                 premise: 0,
                 implication: 1,
             },
-            ProofStepV0::Generalization {
+            ProofStep::Generalization {
                 premise: 11,
                 variable: x,
             },
-            ProofStepV0::ProofReference {
+            ProofStep::ProofReference {
                 proof_id: ProofId::from_bytes([0x5a; 32]),
             },
         ];
-        let certificate = ProofCertificateV0::new(steps).unwrap();
+        let certificate = ProofCertificate::new(steps).unwrap();
 
         let encoded = certificate.to_canonical_bytes();
-        let decoded = ProofCertificateV0::from_canonical_bytes(&encoded).unwrap();
+        let decoded = ProofCertificate::from_canonical_bytes(&encoded).unwrap();
 
         assert_eq!(decoded, certificate);
         assert_eq!(decoded.to_canonical_bytes(), encoded);
@@ -504,14 +493,14 @@ mod tests {
         ]);
 
         assert_step_bytes(
-            &ProofStepV0::Simplification {
+            &ProofStep::Simplification {
                 antecedent: first.clone(),
                 consequent: second.clone(),
             },
             concatenate(&[&[0x00], &first_field, &second_field]),
         );
         assert_step_bytes(
-            &ProofStepV0::Frege {
+            &ProofStep::Frege {
                 first: first.clone(),
                 second: second.clone(),
                 third: third.clone(),
@@ -519,14 +508,14 @@ mod tests {
             concatenate(&[&[0x01], &first_field, &second_field, &third_field]),
         );
         assert_step_bytes(
-            &ProofStepV0::ClassicalContraposition {
+            &ProofStep::ClassicalContraposition {
                 antecedent: first.clone(),
                 consequent: second.clone(),
             },
             concatenate(&[&[0x02], &first_field, &second_field]),
         );
         assert_step_bytes(
-            &ProofStepV0::UniversalDistribution {
+            &ProofStep::UniversalDistribution {
                 variable: x,
                 antecedent: first.clone(),
                 consequent: second.clone(),
@@ -534,13 +523,13 @@ mod tests {
             concatenate(&[&[0x03, 0x01, 0x02, 0x03, 0x04], &first_field, &second_field]),
         );
         assert_step_bytes(
-            &ProofStepV0::VacuousUniversal {
+            &ProofStep::VacuousUniversal {
                 formula: first.clone(),
             },
             concatenate(&[&[0x04], &first_field]),
         );
         assert_step_bytes(
-            &ProofStepV0::UniversalInstantiation {
+            &ProofStep::UniversalInstantiation {
                 variable: x,
                 replacement: y,
                 body: first.clone(),
@@ -551,7 +540,7 @@ mod tests {
             ]),
         );
         assert_step_bytes(
-            &ProofStepV0::EqualitySubstitution {
+            &ProofStep::EqualitySubstitution {
                 from: x,
                 to: y,
                 body: second,
@@ -562,7 +551,7 @@ mod tests {
             ]),
         );
         assert_step_bytes(
-            &ProofStepV0::Generalization {
+            &ProofStep::Generalization {
                 premise: 0x3132_3334,
                 variable: z,
             },
@@ -583,12 +572,12 @@ mod tests {
         ];
 
         for (tag, axiom) in axioms.into_iter().enumerate() {
-            let certificate = ProofCertificateV0::new(vec![ProofStepV0::ZfcAxiom(axiom)]).unwrap();
+            let certificate = ProofCertificate::new(vec![ProofStep::ZfcAxiom(axiom)]).unwrap();
             let encoded = certificate.to_canonical_bytes();
 
-            assert_eq!(encoded, [VERSION, 0, 0, 0, 1, ZFC_AXIOM, tag as u8]);
+            assert_eq!(encoded, [0, 0, 0, 1, ZFC_AXIOM, tag as u8]);
             assert_eq!(
-                ProofCertificateV0::from_canonical_bytes(&encoded).unwrap(),
+                ProofCertificate::from_canonical_bytes(&encoded).unwrap(),
                 certificate
             );
         }
@@ -603,7 +592,7 @@ mod tests {
         let result = FreeVariable::new(0x4142_4344);
         let parameter = FreeVariable::new(0x5152_5354);
 
-        let separation = ProofCertificateV0::new(vec![ProofStepV0::Separation(Separation {
+        let separation = ProofCertificate::new(vec![ProofStep::Separation(Separation {
             predicate: Formula::member(input, source),
             element: input,
             source: output,
@@ -612,17 +601,17 @@ mod tests {
         })])
         .unwrap();
         let separation_bytes = [
-            0x00, 0x00, 0x00, 0x00, 0x01, 0x11, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00, 0x01, 0x02,
-            0x03, 0x04, 0x00, 0x31, 0x32, 0x33, 0x34, 0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13,
-            0x14, 0x21, 0x22, 0x23, 0x24, 0x00, 0x00, 0x00, 0x01, 0x31, 0x32, 0x33, 0x34,
+            0x00, 0x00, 0x00, 0x01, 0x11, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00, 0x01, 0x02, 0x03,
+            0x04, 0x00, 0x31, 0x32, 0x33, 0x34, 0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13, 0x14,
+            0x21, 0x22, 0x23, 0x24, 0x00, 0x00, 0x00, 0x01, 0x31, 0x32, 0x33, 0x34,
         ];
         assert_eq!(separation.to_canonical_bytes(), separation_bytes);
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&separation_bytes).unwrap(),
+            ProofCertificate::from_canonical_bytes(&separation_bytes).unwrap(),
             separation
         );
 
-        let replacement = ProofCertificateV0::new(vec![ProofStepV0::Replacement(Replacement {
+        let replacement = ProofCertificate::new(vec![ProofStep::Replacement(Replacement {
             predicate: Formula::equal(input, output),
             input,
             output,
@@ -633,19 +622,19 @@ mod tests {
         })])
         .unwrap();
         let replacement_bytes = [
-            0x00, 0x00, 0x00, 0x00, 0x01, 0x12, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x01, 0x02,
-            0x03, 0x04, 0x00, 0x11, 0x12, 0x13, 0x14, 0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13,
-            0x14, 0x21, 0x22, 0x23, 0x24, 0x31, 0x32, 0x33, 0x34, 0x41, 0x42, 0x43, 0x44, 0x00,
-            0x00, 0x00, 0x01, 0x51, 0x52, 0x53, 0x54,
+            0x00, 0x00, 0x00, 0x01, 0x12, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x01, 0x02, 0x03,
+            0x04, 0x00, 0x11, 0x12, 0x13, 0x14, 0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13, 0x14,
+            0x21, 0x22, 0x23, 0x24, 0x31, 0x32, 0x33, 0x34, 0x41, 0x42, 0x43, 0x44, 0x00, 0x00,
+            0x00, 0x01, 0x51, 0x52, 0x53, 0x54,
         ];
         assert_eq!(replacement.to_canonical_bytes(), replacement_bytes);
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&replacement_bytes).unwrap(),
+            ProofCertificate::from_canonical_bytes(&replacement_bytes).unwrap(),
             replacement
         );
 
         for end in 0..replacement_bytes.len() {
-            assert!(ProofCertificateV0::from_canonical_bytes(&replacement_bytes[..end]).is_err());
+            assert!(ProofCertificate::from_canonical_bytes(&replacement_bytes[..end]).is_err());
         }
     }
 
@@ -653,7 +642,7 @@ mod tests {
     fn inference_references_have_stable_big_endian_field_order() {
         let mut encoded = Vec::new();
         encode_step(
-            &ProofStepV0::ModusPonens {
+            &ProofStep::ModusPonens {
                 premise: 0x0102_0304,
                 implication: 0x0506_0708,
             },
@@ -675,9 +664,8 @@ mod tests {
             0x1c, 0x1d, 0x1e, 0x1f,
         ]);
         let certificate =
-            ProofCertificateV0::new(vec![ProofStepV0::ProofReference { proof_id }]).unwrap();
+            ProofCertificate::new(vec![ProofStep::ProofReference { proof_id }]).unwrap();
         let expected = [
-            VERSION,
             0,
             0,
             0,
@@ -719,68 +707,82 @@ mod tests {
 
         assert_eq!(certificate.to_canonical_bytes(), expected);
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&expected).unwrap(),
+            ProofCertificate::from_canonical_bytes(&expected).unwrap(),
             certificate
         );
         for end in 0..expected.len() {
-            assert!(ProofCertificateV0::from_canonical_bytes(&expected[..end]).is_err());
+            assert!(ProofCertificate::from_canonical_bytes(&expected[..end]).is_err());
         }
     }
 
     #[test]
     fn decoder_rejects_every_truncated_golden_prefix_and_trailing_bytes() {
-        let certificate = ProofCertificateV0::new(vec![ProofStepV0::EqualityReflexivity {
+        let certificate = ProofCertificate::new(vec![ProofStep::EqualityReflexivity {
             variable: FreeVariable::new(7),
         }])
         .unwrap();
         let encoded = certificate.to_canonical_bytes();
 
         for end in 0..encoded.len() {
-            assert!(ProofCertificateV0::from_canonical_bytes(&encoded[..end]).is_err());
+            assert!(ProofCertificate::from_canonical_bytes(&encoded[..end]).is_err());
         }
 
         let mut trailing = encoded;
         trailing.push(0xff);
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&trailing),
+            ProofCertificate::from_canonical_bytes(&trailing),
             Err(ProofCertificateError::TrailingBytes { remaining: 1 })
         );
     }
 
     #[test]
-    fn decoder_rejects_unknown_versions_and_tags() {
+    fn decoder_rejects_unknown_tags_and_legacy_prefixes() {
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&[1]),
-            Err(ProofCertificateError::UnsupportedVersion(1))
+            ProofCertificate::from_canonical_bytes(&[1]),
+            Err(ProofCertificateError::UnexpectedEnd)
         );
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&[VERSION, 0, 0, 0, 1, 0xff]),
+            ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, 0xff]),
             Err(ProofCertificateError::UnknownStepTag(0xff))
         );
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&[VERSION, 0, 0, 0, 1, ZFC_AXIOM, 0xff,]),
+            ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, ZFC_AXIOM, 0xff,]),
             Err(ProofCertificateError::UnknownZfcAxiomTag(0xff))
         );
+        assert_eq!(
+            ProofCertificate::from_canonical_bytes(&[0, 0, 0, 0, 1, ZFC_AXIOM, 0x01]),
+            Err(ProofCertificateError::EmptyCertificate)
+        );
+    }
+
+    #[test]
+    fn removed_envelope_prefixes_cannot_bypass_step_count_decoding() {
+        for encoded in [[0, 0, 0, 1, 0], [0, 0, 1, 0, 0]] {
+            assert_eq!(
+                ProofCertificate::from_canonical_bytes(&encoded),
+                Err(ProofCertificateError::UnexpectedEnd)
+            );
+        }
     }
 
     #[test]
     fn decoder_rejects_empty_extreme_and_non_acyclic_certificates() {
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&[VERSION, 0, 0, 0, 0]),
+            ProofCertificate::from_canonical_bytes(&[0, 0, 0, 0]),
             Err(ProofCertificateError::EmptyCertificate)
         );
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&[VERSION, 0xff, 0xff, 0xff, 0xff]),
+            ProofCertificate::from_canonical_bytes(&[0xff, 0xff, 0xff, 0xff]),
             Err(ProofCertificateError::TooManySteps {
                 actual: u32::MAX as usize,
-                maximum: CERTIFICATE_V0_MAX_STEPS,
+                maximum: CERTIFICATE_MAX_STEPS,
             })
         );
 
         let self_reference_before_a_missing_second_step =
-            [VERSION, 0, 0, 0, 2, MODUS_PONENS, 0, 0, 0, 0, 0, 0, 0, 0];
+            [0, 0, 0, 2, MODUS_PONENS, 0, 0, 0, 0, 0, 0, 0, 0];
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&self_reference_before_a_missing_second_step,),
+            ProofCertificate::from_canonical_bytes(&self_reference_before_a_missing_second_step,),
             Err(ProofCertificateError::ReferenceNotEarlier {
                 step: 0,
                 reference: 0,
@@ -790,29 +792,31 @@ mod tests {
 
     #[test]
     fn decoder_enforces_certificate_byte_and_step_limits_before_payload_work() {
-        let at_byte_limit = vec![0xff; CERTIFICATE_V0_MAX_BYTES];
+        let at_byte_limit = vec![0xff; CERTIFICATE_MAX_BYTES];
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&at_byte_limit),
-            Err(ProofCertificateError::UnsupportedVersion(0xff))
-        );
-
-        let over_byte_limit = vec![0x00; CERTIFICATE_V0_MAX_BYTES + 1];
-        assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&over_byte_limit),
-            Err(ProofCertificateError::InputTooLong {
-                actual: CERTIFICATE_V0_MAX_BYTES + 1,
-                maximum: CERTIFICATE_V0_MAX_BYTES,
+            ProofCertificate::from_canonical_bytes(&at_byte_limit),
+            Err(ProofCertificateError::TooManySteps {
+                actual: u32::MAX as usize,
+                maximum: CERTIFICATE_MAX_STEPS,
             })
         );
 
-        let excessive_step_count = u32::try_from(CERTIFICATE_V0_MAX_STEPS + 1).unwrap();
-        let mut encoded = vec![VERSION];
-        encoded.extend_from_slice(&excessive_step_count.to_be_bytes());
+        let over_byte_limit = vec![0x00; CERTIFICATE_MAX_BYTES + 1];
         assert_eq!(
-            ProofCertificateV0::from_canonical_bytes(&encoded),
+            ProofCertificate::from_canonical_bytes(&over_byte_limit),
+            Err(ProofCertificateError::InputTooLong {
+                actual: CERTIFICATE_MAX_BYTES + 1,
+                maximum: CERTIFICATE_MAX_BYTES,
+            })
+        );
+
+        let excessive_step_count = u32::try_from(CERTIFICATE_MAX_STEPS + 1).unwrap();
+        let encoded = excessive_step_count.to_be_bytes();
+        assert_eq!(
+            ProofCertificate::from_canonical_bytes(&encoded),
             Err(ProofCertificateError::TooManySteps {
-                actual: CERTIFICATE_V0_MAX_STEPS + 1,
-                maximum: CERTIFICATE_V0_MAX_STEPS,
+                actual: CERTIFICATE_MAX_STEPS + 1,
+                maximum: CERTIFICATE_MAX_STEPS,
             })
         );
     }
@@ -822,11 +826,11 @@ mod tests {
         let dangling_bound_formula = [
             0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
         ];
-        let mut encoded = vec![VERSION, 0, 0, 0, 1, super::SIMPLIFICATION, 0, 0, 0, 11];
+        let mut encoded = vec![0, 0, 0, 1, super::SIMPLIFICATION, 0, 0, 0, 11];
         encoded.extend_from_slice(&dangling_bound_formula);
 
         assert!(matches!(
-            ProofCertificateV0::from_canonical_bytes(&encoded),
+            ProofCertificate::from_canonical_bytes(&encoded),
             Err(ProofCertificateError::Formula(_))
         ));
     }
@@ -845,7 +849,7 @@ mod tests {
         bytes
     }
 
-    fn assert_step_bytes(step: &ProofStepV0, expected: Vec<u8>) {
+    fn assert_step_bytes(step: &ProofStep, expected: Vec<u8>) {
         let mut actual = Vec::new();
         encode_step(step, &mut actual).unwrap();
         assert_eq!(actual, expected);

@@ -1,8 +1,8 @@
-//! Canonical formula bytes used by Proof Certificate V0.
+//! Canonical formula bytes used by Proof Certificate.
 //!
 //! This module stays beside the private formula tree so decoding cannot bypass
 //! [`Formula`]'s well-formedness invariant. The byte format belongs to the
-//! proof protocol, not to the abstract Foundation V0 identity.
+//! proof protocol, not to the abstract Foundation identity.
 
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::error::Error;
@@ -10,20 +10,20 @@ use std::fmt;
 
 use super::{Formula, FreeVariable, Node, Variable};
 
-/// Maximum encoded byte length admitted by the V0 formula codec.
+/// Maximum encoded byte length admitted by the formula codec.
 ///
 /// This follows from the node limit: every node has one tag and at most half
 /// the nodes can be binary leaves containing ten variable bytes.
-pub const FORMULA_V0_MAX_BYTES: usize = 393_216;
+pub const FORMULA_MAX_BYTES: usize = 393_216;
 
-/// Maximum number of nested formula nodes admitted by the V0 codec.
+/// Maximum number of nested formula nodes admitted by the codec.
 ///
 /// This deterministic protocol limit bounds recursive processing. It is not a
-/// limit of the abstract Foundation V0 language.
-pub const FORMULA_V0_MAX_DEPTH: u32 = 256;
+/// limit of the abstract Foundation language.
+pub const FORMULA_MAX_DEPTH: u32 = 256;
 
-/// Maximum number of formula nodes admitted by the V0 codec.
-pub const FORMULA_V0_MAX_NODES: usize = 65_536;
+/// Maximum number of formula nodes admitted by the codec.
+pub const FORMULA_MAX_NODES: usize = 65_536;
 
 const EQUAL: u8 = 0x00;
 const MEMBER: u8 = 0x01;
@@ -35,11 +35,11 @@ const FREE_VARIABLE: u8 = 0x00;
 const BOUND_VARIABLE: u8 = 0x01;
 
 impl Formula {
-    /// Encodes this formula using the canonical Proof Certificate V0 format.
+    /// Encodes this formula using the canonical Proof Certificate format.
     ///
     /// Binder names are absent from the encoding. Bound variables retain the
     /// De Bruijn indices already stored by [`Formula`].
-    pub fn encode_canonical_v0(&self) -> Result<Vec<u8>, FormulaCodecError> {
+    pub fn encode_canonical(&self) -> Result<Vec<u8>, FormulaCodecError> {
         let mut output = Vec::new();
         let mut nodes = 0;
         encode_node(
@@ -57,8 +57,8 @@ impl Formula {
     /// Free variables are renumbered to `0, 1, ...` by first occurrence in the
     /// existing canonical traversal order. Bound De Bruijn indices remain
     /// unchanged. This representation is used for proof-fragment identities;
-    /// it does not replace [`Self::encode_canonical_v0`] on the certificate wire.
-    pub fn encode_free_variable_normalized_v0(&self) -> Result<Vec<u8>, FormulaCodecError> {
+    /// it does not replace [`Self::encode_canonical`] on the certificate wire.
+    pub fn encode_free_variable_normalized(&self) -> Result<Vec<u8>, FormulaCodecError> {
         let mut output = Vec::new();
         let mut nodes = 0;
         let mut variables = FreeVariableEncoding::Normalize {
@@ -69,15 +69,15 @@ impl Formula {
         Ok(output)
     }
 
-    /// Decodes one complete canonical Proof Certificate V0 formula.
+    /// Decodes one complete canonical Proof Certificate formula.
     ///
     /// The decoder rejects dangling De Bruijn indices, unknown tags, excessive
     /// nesting, truncated values, and trailing bytes.
-    pub fn decode_canonical_v0(bytes: &[u8]) -> Result<Self, FormulaCodecError> {
-        if bytes.len() > FORMULA_V0_MAX_BYTES {
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, FormulaCodecError> {
+        if bytes.len() > FORMULA_MAX_BYTES {
             return Err(FormulaCodecError::InputTooLong {
                 actual: bytes.len(),
-                maximum: FORMULA_V0_MAX_BYTES,
+                maximum: FORMULA_MAX_BYTES,
             });
         }
 
@@ -165,7 +165,7 @@ impl FreeVariableEncoding {
                     let identifier = *next_identifier;
                     *next_identifier = next_identifier
                         .checked_add(1)
-                        .expect("the V0 node limit bounds distinct free variables");
+                        .expect("the node limit bounds distinct free variables");
                     entry.insert(identifier);
                     identifier
                 }
@@ -231,9 +231,9 @@ fn decode_variable(
 }
 
 fn check_depth(depth: u32) -> Result<(), FormulaCodecError> {
-    if depth >= FORMULA_V0_MAX_DEPTH {
+    if depth >= FORMULA_MAX_DEPTH {
         return Err(FormulaCodecError::DepthLimitExceeded {
-            maximum: FORMULA_V0_MAX_DEPTH,
+            maximum: FORMULA_MAX_DEPTH,
         });
     }
 
@@ -244,12 +244,12 @@ fn count_node(nodes: &mut usize) -> Result<(), FormulaCodecError> {
     *nodes = nodes
         .checked_add(1)
         .ok_or(FormulaCodecError::NodeLimitExceeded {
-            maximum: FORMULA_V0_MAX_NODES,
+            maximum: FORMULA_MAX_NODES,
         })?;
 
-    if *nodes > FORMULA_V0_MAX_NODES {
+    if *nodes > FORMULA_MAX_NODES {
         return Err(FormulaCodecError::NodeLimitExceeded {
-            maximum: FORMULA_V0_MAX_NODES,
+            maximum: FORMULA_MAX_NODES,
         });
     }
 
@@ -297,15 +297,15 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// A failure while encoding or decoding a canonical V0 formula.
+/// A failure while encoding or decoding a canonical formula.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FormulaCodecError {
-    /// The byte sequence is longer than any admitted V0 formula.
+    /// The byte sequence is longer than any admitted formula.
     InputTooLong { actual: usize, maximum: usize },
-    /// The formula contains more nodes than the V0 codec admits.
+    /// The formula contains more nodes than the codec admits.
     NodeLimitExceeded { maximum: usize },
-    /// Formula nesting exceeds the deterministic V0 processing limit.
+    /// Formula nesting exceeds the deterministic processing limit.
     DepthLimitExceeded { maximum: u32 },
     /// The byte sequence ended before the current value was complete.
     UnexpectedEnd,
@@ -324,16 +324,13 @@ impl fmt::Display for FormulaCodecError {
         match self {
             Self::InputTooLong { actual, maximum } => write!(
                 formatter,
-                "canonical formula has {actual} bytes; the V0 limit is {maximum}"
+                "canonical formula has {actual} bytes; the limit is {maximum}"
             ),
             Self::NodeLimitExceeded { maximum } => {
-                write!(formatter, "formula exceeds the V0 limit of {maximum} nodes")
+                write!(formatter, "formula exceeds the limit of {maximum} nodes")
             }
             Self::DepthLimitExceeded { maximum } => {
-                write!(
-                    formatter,
-                    "formula nesting exceeds the V0 limit of {maximum}"
-                )
+                write!(formatter, "formula nesting exceeds the limit of {maximum}")
             }
             Self::UnexpectedEnd => formatter.write_str("canonical formula ended unexpectedly"),
             Self::UnknownFormulaTag(tag) => {
@@ -363,9 +360,7 @@ impl Error for FormulaCodecError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FORMULA_V0_MAX_BYTES, FORMULA_V0_MAX_DEPTH, FORMULA_V0_MAX_NODES, FormulaCodecError,
-    };
+    use super::{FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FormulaCodecError};
     use crate::{Formula, FreeVariable};
 
     #[test]
@@ -378,8 +373,8 @@ mod tests {
             0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
         ];
 
-        assert_eq!(with_x.encode_canonical_v0().unwrap(), expected);
-        assert_eq!(with_y.encode_canonical_v0().unwrap(), expected);
+        assert_eq!(with_x.encode_canonical().unwrap(), expected);
+        assert_eq!(with_y.encode_canonical().unwrap(), expected);
     }
 
     #[test]
@@ -392,7 +387,7 @@ mod tests {
         ));
 
         assert_eq!(
-            formula.encode_canonical_v0().unwrap(),
+            formula.encode_canonical().unwrap(),
             [
                 0x02, 0x03, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x00, 0x05, 0x06, 0x07, 0x08, 0x01,
                 0x00, 0x05, 0x06, 0x07, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04,
@@ -418,17 +413,14 @@ mod tests {
             0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
 
+        assert_eq!(first.encode_free_variable_normalized().unwrap(), expected);
         assert_eq!(
-            first.encode_free_variable_normalized_v0().unwrap(),
-            expected
-        );
-        assert_eq!(
-            renamed.encode_free_variable_normalized_v0(),
-            first.encode_free_variable_normalized_v0()
+            renamed.encode_free_variable_normalized(),
+            first.encode_free_variable_normalized()
         );
         assert_ne!(
-            distinct.encode_free_variable_normalized_v0(),
-            first.encode_free_variable_normalized_v0()
+            distinct.encode_free_variable_normalized(),
+            first.encode_free_variable_normalized()
         );
     }
 
@@ -437,7 +429,7 @@ mod tests {
         let x = FreeVariable::new(19);
         let y = FreeVariable::new(41);
         let normalized = Formula::for_all(x, Formula::member(y, x))
-            .encode_free_variable_normalized_v0()
+            .encode_free_variable_normalized()
             .unwrap();
 
         assert_eq!(
@@ -454,8 +446,8 @@ mod tests {
         let y = FreeVariable::new(2);
         let formula = Formula::for_all(x, Formula::member(y, x));
 
-        let encoded = formula.encode_canonical_v0().unwrap();
-        let decoded = Formula::decode_canonical_v0(&encoded).unwrap();
+        let encoded = formula.encode_canonical().unwrap();
+        let decoded = Formula::decode_canonical(&encoded).unwrap();
 
         assert_eq!(decoded, formula);
     }
@@ -467,7 +459,7 @@ mod tests {
         ];
 
         assert_eq!(
-            Formula::decode_canonical_v0(&encoded),
+            Formula::decode_canonical(&encoded),
             Err(FormulaCodecError::DanglingBoundVariable {
                 index: 0,
                 binder_depth: 0,
@@ -478,21 +470,21 @@ mod tests {
     #[test]
     fn decoder_rejects_unknown_and_trailing_bytes() {
         assert_eq!(
-            Formula::decode_canonical_v0(&[0xff]),
+            Formula::decode_canonical(&[0xff]),
             Err(FormulaCodecError::UnknownFormulaTag(0xff))
         );
         assert_eq!(
-            Formula::decode_canonical_v0(&[
+            Formula::decode_canonical(&[
                 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ]),
             Err(FormulaCodecError::UnknownVariableTag(0xff))
         );
 
         let x = FreeVariable::new(1);
-        let mut encoded = Formula::equal(x, x).encode_canonical_v0().unwrap();
+        let mut encoded = Formula::equal(x, x).encode_canonical().unwrap();
         encoded.push(0xff);
         assert_eq!(
-            Formula::decode_canonical_v0(&encoded),
+            Formula::decode_canonical(&encoded),
             Err(FormulaCodecError::TrailingBytes { remaining: 1 })
         );
     }
@@ -501,28 +493,28 @@ mod tests {
     fn codec_fails_closed_at_the_depth_limit() {
         let x = FreeVariable::new(1);
         let mut accepted = Formula::equal(x, x);
-        for _ in 1..FORMULA_V0_MAX_DEPTH {
+        for _ in 1..FORMULA_MAX_DEPTH {
             accepted = Formula::negate(accepted);
         }
         let mut rejected = accepted.clone();
         rejected = Formula::negate(rejected);
 
-        assert!(accepted.encode_canonical_v0().is_ok());
+        assert!(accepted.encode_canonical().is_ok());
         assert_eq!(
-            rejected.encode_canonical_v0(),
+            rejected.encode_canonical(),
             Err(FormulaCodecError::DepthLimitExceeded {
-                maximum: FORMULA_V0_MAX_DEPTH,
+                maximum: FORMULA_MAX_DEPTH,
             })
         );
 
-        let mut encoded = vec![0x02; FORMULA_V0_MAX_DEPTH as usize];
+        let mut encoded = vec![0x02; FORMULA_MAX_DEPTH as usize];
         encoded.extend_from_slice(&[
             0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01,
         ]);
         assert_eq!(
-            Formula::decode_canonical_v0(&encoded),
+            Formula::decode_canonical(&encoded),
             Err(FormulaCodecError::DepthLimitExceeded {
-                maximum: FORMULA_V0_MAX_DEPTH,
+                maximum: FORMULA_MAX_DEPTH,
             })
         );
     }
@@ -531,11 +523,11 @@ mod tests {
     fn every_proper_prefix_of_a_formula_is_rejected() {
         let x = FreeVariable::new(1);
         let encoded = Formula::for_all(x, Formula::equal(x, x))
-            .encode_canonical_v0()
+            .encode_canonical()
             .unwrap();
 
         for end in 0..encoded.len() {
-            assert!(Formula::decode_canonical_v0(&encoded[..end]).is_err());
+            assert!(Formula::decode_canonical(&encoded[..end]).is_err());
         }
     }
 
@@ -550,22 +542,22 @@ mod tests {
         let rejected = Formula::negate(accepted.clone());
 
         assert_eq!(
-            accepted.encode_canonical_v0().unwrap().len(),
-            FORMULA_V0_MAX_BYTES
+            accepted.encode_canonical().unwrap().len(),
+            FORMULA_MAX_BYTES
         );
         assert_eq!(
-            rejected.encode_canonical_v0(),
+            rejected.encode_canonical(),
             Err(FormulaCodecError::NodeLimitExceeded {
-                maximum: FORMULA_V0_MAX_NODES,
+                maximum: FORMULA_MAX_NODES,
             })
         );
 
-        let oversized = vec![0x02; FORMULA_V0_MAX_BYTES + 1];
+        let oversized = vec![0x02; FORMULA_MAX_BYTES + 1];
         assert_eq!(
-            Formula::decode_canonical_v0(&oversized),
+            Formula::decode_canonical(&oversized),
             Err(FormulaCodecError::InputTooLong {
-                actual: FORMULA_V0_MAX_BYTES + 1,
-                maximum: FORMULA_V0_MAX_BYTES,
+                actual: FORMULA_MAX_BYTES + 1,
+                maximum: FORMULA_MAX_BYTES,
             })
         );
     }

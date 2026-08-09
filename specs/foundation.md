@@ -1,16 +1,16 @@
-# NAOME ZFC Foundation V0
+# NAOME ZFC Foundation
 
 ## Status and identity
 
 This document normatively defines the mathematical boundary identified as:
 
 ```text
-naome:zfc:v0
+naome:zfc
 ```
 
-A statement accepted under this identifier is derivable relative to Foundation V0. The identifier does not assert that ZFC is consistent or that every mathematical truth is decidable.
+A statement accepted under this identifier is derivable relative to Foundation. The identifier does not assert that ZFC is consistent or that every mathematical truth is decidable.
 
-Foundation V0 is immutable. Any change to primitive syntax, logical axioms, inference rules, set-theory axioms, or schema side conditions requires a new foundation identifier.
+Foundation is immutable. Any change to primitive syntax, logical axioms, inference rules, set-theory axioms, or schema side conditions requires a new foundation identifier.
 
 ## Object language
 
@@ -33,7 +33,7 @@ The quantifier binds De Bruijn index zero in its body. Entering another quantifi
 
 Free-variable identifiers and De Bruijn indices range over the natural numbers, including zero. The abstract language therefore has a countably infinite variable supply. Every individual formula is a finite tree and contains only finitely many identifiers and indices.
 
-An implementation may impose finite representation and resource limits. If an identifier, index, binder depth, or formula size cannot be represented or processed, it must fail without admitting a formula. It must not truncate, wrap, saturate, alias, or otherwise map the input to a different abstract formula. Such a failure does not make the abstract formula invalid. Deterministic limits for encoded proof blocks belong to the later protocol layer and do not change Foundation V0 derivability.
+An implementation may impose finite representation and resource limits. If an identifier, index, binder depth, or formula size cannot be represented or processed, it must fail without admitting a formula. It must not truncate, wrap, saturate, alias, or otherwise map the input to a different abstract formula. Such a failure does not make the abstract formula invalid. Deterministic limits for encoded proof blocks belong to the later protocol layer and do not change Foundation derivability.
 
 The following are eliminable abbreviations, not primitive nodes:
 
@@ -70,7 +70,7 @@ M,ρ,η ⊨ ∀A      iff for every d ∈ D, M,ρ,(d :: η) ⊨ A
 
 Here `M = (D, ∈ᴹ)` and `d :: η` prepends `d` to the De Bruijn environment. Well-formedness guarantees that every bound-variable lookup is defined. A closed formula is true in `M` exactly when it is satisfied with the empty De Bruijn environment; its truth is independent of `ρ`.
 
-A formula is logically valid when every structure satisfies it under every free-variable assignment. A structure is a model of Foundation V0 when it satisfies every fixed ZFC axiom and every admissible instance of the Separation and Replacement schemas. A closed formula is a semantic consequence of Foundation V0 when it is true in every such model.
+A formula is logically valid when every structure satisfies it under every free-variable assignment. A structure is a model of Foundation when it satisfies every fixed ZFC axiom and every admissible instance of the Separation and Replacement schemas. A closed formula is a semantic consequence of Foundation when it is true in every such model.
 
 ## Substitution and binding
 
@@ -82,7 +82,7 @@ Foundation implementations must reject dangling bound indices before admitting a
 
 ## Classical first-order logic with equality
 
-Foundation V0 uses the following logical axiom schemas. `A`, `B`, and `C` range over well-formed formulas.
+Foundation uses the following logical axiom schemas. `A`, `B`, and `C` range over well-formed formulas.
 
 ```text
 L1  A → (B → A)
@@ -106,9 +106,9 @@ Modus ponens:    from A and A → B, derive B
 Generalization:  from A, derive ∀x A
 ```
 
-Generalization binds the selected free variable `x` in `A`. It has no side condition because Foundation V0 has no local assumptions, hypothesis contexts, or assumption-discharge rule.
+Generalization binds the selected free variable `x` in `A`. It has no side condition because Foundation has no local assumptions, hypothesis contexts, or assumption-discharge rule.
 
-A theorem conclusion must be well formed and closed. Intermediate formulas may contain free variables. Closure must be explicit in the derivation; implementations must not implicitly universally close a conclusion. Foundation V0 does not permit an implementation to add hidden logical rules.
+A theorem conclusion must be well formed and closed. Intermediate formulas may contain free variables. Closure must be explicit in the derivation; implementations must not implicitly universally close a conclusion. Foundation does not permit an implementation to add hidden logical rules.
 
 ## Fixed ZFC axioms
 
@@ -150,7 +150,7 @@ Successor(x,s) := ∀z(z ∈ s ↔ (z ∈ x ∨ z = x))
    ∧ ∀x(x ∈ i → ∃s(Successor(x,s) ∧ s ∈ i)))
 ```
 
-The common ten-principle presentation of ZFC lists the Empty Set Axiom separately. Foundation V0 does not include it as a primitive axiom because the formula above directly entails `∃e Empty(e)`; the Empty Set Axiom is therefore a theorem of Foundation V0.
+The common ten-principle presentation of ZFC lists the Empty Set Axiom separately. Foundation does not include it as a primitive axiom because the formula above directly entails `∃e Empty(e)`; the Empty Set Axiom is therefore a theorem of Foundation.
 
 ### Foundation
 
@@ -212,17 +212,17 @@ The input, output, uniqueness witness, source, result, and parameter variables m
 
 ## Definition boundary
 
-Foundation V0 contains no definition rule and no defined mathematical symbol. A later definition contract must ensure that definitions are eliminable and conservative:
+Foundation contains no definition rule and no defined mathematical symbol. A later definition contract must ensure that definitions are eliminable and conservative:
 
 - relation definitions expand to existing formulas;
 - constant definitions reference a proof of unique existence;
 - function definitions reference a proof of total unique existence; and
 - recursive definitions reference the required recursion theorem.
 
-Until that contract exists, no definition block is valid under Foundation V0.
+Until that contract exists, no definition block is valid under Foundation.
 
 ## Verification boundary
 
-This specification is the sole normative definition of the abstract Foundation V0 data and axiom boundary. The `naome-foundation` crate is its executable Rust reference implementation and must conform to it. Neither verifies complete proofs. A proof-block format may choose encoding and line-reference details, but it must preserve an empty local-hypothesis context, only the primitive rules declared here, and an explicitly closed final theorem. The separate checker must return deterministic results.
+This specification is the sole normative definition of the abstract Foundation data and axiom boundary. The `naome-foundation` crate is its executable Rust reference implementation and must conform to it. Neither verifies complete proofs. A proof-block format may choose encoding and line-reference details, but it must preserve an empty local-hypothesis context, only the primitive rules declared here, and an explicitly closed final theorem. The separate checker must return deterministic results.
 
-Canonical serialization, content hashing, proof blocks, definitions, parsers, theorem libraries, storage, networking, and economic consensus are outside Foundation V0.
+Canonical serialization, content hashing, proof blocks, definitions, parsers, theorem libraries, storage, networking, and economic consensus are outside Foundation.

@@ -1,9 +1,9 @@
-# NAOME Proof DAG Journal V0
+# NAOME Proof DAG Journal
 
 ## Status and scope
 
 This document defines a crash-consistent local append journal for one selected
-NAOME `ProofDagV0`. It is a prerelease storage contract and may change before
+NAOME `ProofDag`. It is a prerelease storage contract and may change before
 the first stable protocol release.
 
 The journal persists only canonical proof-certificate payloads in their local
@@ -12,17 +12,17 @@ DAG by strict replay. Persisted identities, conclusions, or dependency indexes
 are never trusted because the format does not store them.
 
 Journal order is local recovery order. It is not proof consensus order,
-finality evidence, a block format, or economic settlement history. V0 defines
+finality evidence, a block format, or economic settlement history. The journal defines
 no snapshots, compaction, pruning, garbage collection, state commitment,
 authenticated rollback detection, fork choice, rewards, fees, or networking.
 
 ## Directory and exclusive ownership
 
-The caller supplies an existing journal directory. Journal V0 uses exactly two
+The caller supplies an existing journal directory. Journal uses exactly two
 fixed files in it:
 
-- `proof-dag-v0.lock`, an advisory exclusive-writer sidecar lock; and
-- `proof-dag-v0.journal`, the append journal defined below.
+- `proof-dag.lock`, an advisory exclusive-writer sidecar lock; and
+- `proof-dag.journal`, the append journal defined below.
 
 The sidecar is opened read/write and locked before the journal is created or
 opened. Lock acquisition is non-blocking. A second cooperative process or
@@ -35,16 +35,16 @@ unrecognized file.
 
 ## File header
 
-Every journal begins with these exact 27 ASCII bytes, including the final NUL:
+Every journal begins with these exact 24 ASCII bytes, including the final NUL:
 
 ```text
-naome:proof-dag-journal:v0\0
+naome:proof-dag-journal\0
 ```
 
 Hexadecimal:
 
 ```text
-6e616f6d653a70726f6f662d6461672d6a6f75726e616c3a763000
+6e616f6d653a70726f6f662d6461672d6a6f75726e616c00
 ```
 
 Any missing or different header byte is an unsupported or corrupt journal.
@@ -59,21 +59,21 @@ canonical_payload  payload_length bytes
 entry_digest       32 bytes
 ```
 
-`payload_length` must be in `1..=CERTIFICATE_V0_MAX_BYTES`. Impossible lengths
+`payload_length` must be in `1..=CERTIFICATE_MAX_BYTES`. Impossible lengths
 are rejected before payload allocation or reading. Checked offset arithmetic
 precedes every frame read.
 
 The initial previous digest is:
 
 ```text
-SHA256("naome:proof-dag-journal-genesis:v0\0")
+SHA256("naome:proof-dag-journal-genesis\0")
 ```
 
 For every frame, in physical order:
 
 ```text
 entry_digest = SHA256(
-    "naome:proof-dag-journal-entry:v0\0"
+    "naome:proof-dag-journal-entry\0"
     || previous_entry_digest[32]
     || payload_length_be[4]
     || canonical_payload[payload_length]
@@ -91,7 +91,7 @@ described under limitations.
 
 One public append processes exactly one caller-owned proof payload:
 
-1. strictly admit the bytes through `ProofDagV0`, including decode,
+1. strictly admit the bytes through `ProofDag`, including decode,
    canonicality, mathematical checking, dependency resolution, and state
    registration;
 2. write `payload_length || canonical_payload` at the current committed end;
@@ -111,7 +111,7 @@ durable only after the corresponding body was synchronized. The second barrier
 is required before success is acknowledged. `sync_all` expresses the portable
 Rust file-content-and-metadata synchronization contract; it does not by itself
 provide a portable guarantee that the parent directory entry survived power
-loss. Directory provisioning durability is outside Journal V0.
+loss. Directory provisioning durability is outside Journal.
 
 ## Open and deterministic recovery
 
@@ -120,7 +120,7 @@ from the first byte after it. For every complete frame it:
 
 1. preflights the length and complete frame boundary;
 2. recomputes and compares the chained digest; and
-3. submits the payload to a fresh `ProofDagV0` through strict canonical-byte
+3. submits the payload to a fresh `ProofDag` through strict canonical-byte
    admission.
 
 Replay never sorts, skips, repairs, or preloads later dependencies. The first
@@ -138,7 +138,7 @@ error fails recovery.
 
 ## Crash and corruption boundary
 
-Journal V0 distinguishes a complete chained frame from an incomplete final
+Journal distinguishes a complete chained frame from an incomplete final
 append. Without a separately durable trusted head, no self-contained append
 file can also distinguish every damaged last-frame length or exact rollback to
 an older valid frame boundary from a crash that left precisely that prefix.
@@ -147,7 +147,7 @@ Accordingly:
 
 - an incomplete final frame is discarded as uncommitted;
 - a structurally complete frame with a wrong digest or failed strict replay is
-  corrupt and never discarded silently; and
+  corrupt and never discarded silently;
 - an in-range damaged length at any frame boundary can make the entire
   remaining suffix indistinguishable from one incomplete append and may be
   truncated to the preceding committed boundary; and
@@ -163,29 +163,29 @@ model. It is not a malicious-filesystem authentication mechanism.
 The genesis digest is:
 
 ```text
-3656d0996ca6713b1b39e35bbb917c2451940cc71e9fdabf624f45471199ba51
+e1712a2358d91e869a2c3d865deccd7fc4f3557a8c7327febc470becd78684ab
 ```
 
-The canonical one-step Pairing proof payload is seven bytes:
+The canonical one-step Pairing proof payload is six bytes:
 
 ```text
-00000000011001
+000000011001
 ```
 
 Its first-frame digest is:
 
 ```text
-c9c1ca3e1f21812aac694499c704f30b95e8617f400bd65a87153fc05d7f2277
+31d98be3372c21576e6ff70b6796e965924ec358746f1efdd22c2dad1345c73a
 ```
 
-The complete 43-byte first frame is:
+The complete 42-byte first frame is:
 
 ```text
-0000000700000000011001c9c1ca3e1f21812aac694499c704f30b95e8617f400bd65a87153fc05d7f2277
+0000000600000001100131d98be3372c21576e6ff70b6796e965924ec358746f1efdd22c2dad1345c73a
 ```
 
-The complete 70-byte one-entry journal is:
+The complete 66-byte one-entry journal is:
 
 ```text
-6e616f6d653a70726f6f662d6461672d6a6f75726e616c3a7630000000000700000000011001c9c1ca3e1f21812aac694499c704f30b95e8617f400bd65a87153fc05d7f2277
+6e616f6d653a70726f6f662d6461672d6a6f75726e616c000000000600000001100131d98be3372c21576e6ff70b6796e965924ec358746f1efdd22c2dad1345c73a
 ```
