@@ -10,7 +10,7 @@ The set is represented as a compressed binary Merkle-Patricia tree. It defines
 one insertion-order-independent `ProofSetRoot` and compact membership and
 non-membership proofs. It does not define a block header, consensus selection,
 finality, signatures, rewards, fees, economic state, network transport, proof
-wire encoding, persistent Merkle nodes, snapshots, pruning, or deletion.
+certificate encoding, persistent Merkle nodes, snapshots, pruning, or deletion.
 
 ## Authenticated content
 
@@ -95,8 +95,7 @@ leave compressed path positions unauthenticated.
 
 ## Compact set proofs
 
-`ProofSetProof` is currently an opaque in-process value and has no protocol
-wire encoding. It represents exactly one of:
+`ProofSetProof` represents exactly one of:
 
 - an empty-tree terminal;
 - a membership terminal whose leaf is the queried `ProofId`; or
@@ -107,9 +106,87 @@ The proof also contains the root-to-terminal branch path. Each step contains
 only its branch bit and sibling digest. Direction is derived from the queried
 key and is not stored redundantly.
 
+### Canonical wire encoding
+
+One complete proof has this count-free canonical encoding:
+
+```text
+Empty     = 00
+Member    = 01 || Path
+NonMember = 02 || terminal_proof_id[32] || Path
+
+Path      = Step*
+Step      = branch_bit_u8 || sibling_digest[32]
+```
+
+The path is encoded from root to terminal. Each step is exactly 33 bytes, so
+the complete input-slice boundary determines the step count. The queried
+`ProofId`, expected root, branch directions, step count, and a format version
+are not duplicated in the proof bytes.
+
+Exact encoded sizes are:
+
+```text
+Empty:      1 byte
+Member:     1 + 33 * path_length bytes
+NonMember: 33 + 33 * path_length bytes
+```
+
+A membership path may contain all 256 key-bit positions and therefore reaches
+the global maximum of 8,449 bytes. A non-membership path contains at most 255
+positions and reaches at most 8,448 bytes: its terminal key must differ from
+the query at a bit that is not already an authenticated branch position.
+
+Decoding executes this order:
+
+1. reject an input longer than 8,449 bytes before path allocation;
+2. require one known terminal tag;
+3. require an empty terminal to end the complete input immediately;
+4. require a non-member terminal to contain its complete 32-byte `ProofId`;
+5. require all remaining bytes to divide exactly into 33-byte path steps;
+6. enforce the terminal-specific 256- or 255-step limit;
+7. require branch bits to increase strictly; and
+8. reject an empty sibling digest.
+
+Canonical decoding validates structure only. Because the format intentionally
+has no redundant step count, truncating or extending a proof by one complete
+33-byte step can produce a different structurally canonical value. Such a
+value must still reconstruct the trusted expected root during verification;
+partial steps are rejected during decoding.
+
+There is exactly one encoding for each in-memory proof value. Decoding does
+not normalize, infer, or repair a proof.
+
+The following canonical encodings are fixed goldens. Let `zero` be 32 zero
+bytes and `high` be `80` followed by 31 zero bytes. The empty proof is `00`, a
+singleton membership proof is `01`, and a singleton non-membership proof that
+terminates at `zero` is:
+
+```text
+02 0000000000000000000000000000000000000000000000000000000000000000
+```
+
+For the set `{zero, high}`, membership of `zero` has this one-step encoding:
+
+```text
+01 00 93e7bd037407e8654873ed319b0130c3117246bd84e184e25dd7d10964a765ed
+```
+
+For the same set, non-membership of `40` followed by 31 zero bytes terminates
+at `zero` and has this encoding:
+
+```text
+02 0000000000000000000000000000000000000000000000000000000000000000
+   00 93e7bd037407e8654873ed319b0130c3117246bd84e184e25dd7d10964a765ed
+```
+
+Whitespace and line breaks above are explanatory and are not encoded.
+
+### Verification
+
 Verification is fail-closed and executes this order:
 
-1. reject more than 256 path steps;
+1. enforce the terminal-specific path limit;
 2. require branch bits to increase strictly;
 3. reject an empty sibling digest because every stored branch has two nonempty
    children;
@@ -160,6 +237,12 @@ not self-authenticating and does not itself provide consensus selection or
 finality. Exact verification also rejects a valid journal that is either
 behind or ahead of the supplied complete-state root.
 
+Likewise, a root and proof supplied together by one untrusted peer establish no
+trust or freshness. Higher protocols must bind the expected root, queried
+`ProofId`, and canonical proof-set-proof bytes to their own authenticated
+request or response context. A previously valid proof remains valid against
+its old root; this codec does not detect rollback to that root.
+
 ## Golden roots
 
 The empty-set root is:
@@ -195,6 +278,10 @@ Proof-set verification authenticates exact set membership relative to that
 address; it does not independently replay the proof certificate, establish
 that the root was selected by consensus, prove data availability, or assign
 economic novelty.
+
+In particular, a membership proof does not insert its terminal `ProofId` into
+another `ProofDag`. A cited proof remains unavailable there until its complete
+canonical certificate bytes have passed normal proof admission.
 
 The order-dependent journal digest remains responsible for local append-chain
 integrity. It must not be replaced by the order-independent proof-set root.
