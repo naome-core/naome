@@ -113,12 +113,28 @@ impl ProofDagJournal {
     /// Admission errors write nothing and leave the handle healthy. After
     /// in-memory admission, the frame body and its commit footer are each
     /// synchronized in order. Any ambiguous commit I/O error poisons the
-    /// handle and requires drop plus reopen.
+    /// handle and requires drop plus reopen. This entry point is not bound to
+    /// an externally requested address; content-addressed retrieval must use
+    /// [`Self::apply_canonical_proof_bytes_with_expected_id`].
     pub fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
     ) -> Result<&AcceptedProofRecord, JournalError> {
         self.core.apply_canonical_proof_bytes(bytes)
+    }
+
+    /// Strictly admits and commits canonical proof bytes at an expected address.
+    ///
+    /// A checked identity mismatch is an ordinary admission error: it performs
+    /// no file I/O, leaves the journal healthy, and does not change the retained
+    /// proof DAG.
+    pub fn apply_canonical_proof_bytes_with_expected_id(
+        &mut self,
+        bytes: Vec<u8>,
+        expected_proof_id: ProofId,
+    ) -> Result<&AcceptedProofRecord, JournalError> {
+        self.core
+            .apply_canonical_proof_bytes_with_expected_id(bytes, expected_proof_id)
     }
 
     /// Returns one locally committed and replay-checked proof record.
@@ -333,11 +349,30 @@ impl<F: JournalIo> JournalCore<F> {
         &mut self,
         bytes: Vec<u8>,
     ) -> Result<&AcceptedProofRecord, JournalError> {
+        self.apply_canonical_proof_bytes_inner(bytes, None)
+    }
+
+    fn apply_canonical_proof_bytes_with_expected_id(
+        &mut self,
+        bytes: Vec<u8>,
+        expected_proof_id: ProofId,
+    ) -> Result<&AcceptedProofRecord, JournalError> {
+        self.apply_canonical_proof_bytes_inner(bytes, Some(expected_proof_id))
+    }
+
+    fn apply_canonical_proof_bytes_inner(
+        &mut self,
+        bytes: Vec<u8>,
+        expected_proof_id: Option<ProofId>,
+    ) -> Result<&AcceptedProofRecord, JournalError> {
         self.ensure_healthy()?;
-        let record = self
-            .dag
-            .apply_canonical_proof_bytes(bytes)
-            .map_err(|source| JournalError::Admission { source })?;
+        let record = match expected_proof_id {
+            Some(expected) => self
+                .dag
+                .apply_canonical_proof_bytes_with_expected_id(bytes, expected),
+            None => self.dag.apply_canonical_proof_bytes(bytes),
+        }
+        .map_err(|source| JournalError::Admission { source })?;
         let proof_id = record.proof_id();
         let payload = record.canonical_proof_bytes();
         let payload_len = u32::try_from(payload.len()).expect("accepted payload length fits u32");

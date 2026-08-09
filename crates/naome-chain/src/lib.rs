@@ -69,17 +69,37 @@ impl ProofDag {
     ///
     /// Every direct dependency must already belong to this selected state. A
     /// failure leaves both the checked ledger and authenticated proof set
-    /// unchanged.
+    /// unchanged. This entry point is not bound to an externally expected
+    /// address; content-addressed retrieval must use
+    /// [`Self::apply_canonical_proof_bytes_with_expected_id`].
     pub fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
     ) -> Result<&AcceptedProofRecord, LedgerError> {
         let record = self.ledger.apply_canonical_proof_bytes(bytes)?;
+        Ok(self.retain_record(record))
+    }
 
+    /// Strictly admits one canonical proof node at an expected content address.
+    ///
+    /// A checked identity mismatch is rejected by the ledger before either the
+    /// ledger state or authenticated proof set changes.
+    pub fn apply_canonical_proof_bytes_with_expected_id(
+        &mut self,
+        bytes: Vec<u8>,
+        expected_proof_id: ProofId,
+    ) -> Result<&AcceptedProofRecord, LedgerError> {
+        let record = self
+            .ledger
+            .apply_canonical_proof_bytes_with_expected_id(bytes, expected_proof_id)?;
+        Ok(self.retain_record(record))
+    }
+
+    fn retain_record(&mut self, record: AcceptedProofRecord) -> &AcceptedProofRecord {
         let Some(record) = self.records.insert(record) else {
             unreachable!("private ledger and authenticated proof set stay aligned")
         };
-        Ok(record)
+        record
     }
 }
 
@@ -293,6 +313,84 @@ mod tests {
         assert_eq!(replay.proof(child_id), original.proof(child_id));
         assert_eq!(replay.proof(grandchild_id), original.proof(grandchild_id));
         assert_eq!(replay.proof_set_root(), original.proof_set_root());
+    }
+
+    #[test]
+    fn expected_proof_id_mismatch_cannot_change_or_unlock_the_dag() {
+        let pairing_bytes = axiom_bytes(ZfcAxiom::Pairing);
+        let union_bytes = axiom_bytes(ZfcAxiom::Union);
+        let mut control = ProofDag::new();
+        let pairing_id = control
+            .apply_canonical_proof_bytes(pairing_bytes.clone())
+            .unwrap()
+            .proof_id();
+        let union_id = control
+            .apply_canonical_proof_bytes(union_bytes.clone())
+            .unwrap()
+            .proof_id();
+        let child_bytes = referenced_generalization(union_id, FreeVariable::new(2));
+        let child_id = control
+            .apply_canonical_proof_bytes(child_bytes.clone())
+            .unwrap()
+            .proof_id();
+
+        let mut exercised = ProofDag::new();
+        let _ = exercised
+            .apply_canonical_proof_bytes(pairing_bytes)
+            .unwrap();
+        let root_before = exercised.proof_set_root();
+        let pairing_before = exercised
+            .proof(pairing_id)
+            .unwrap()
+            .canonical_proof_bytes()
+            .to_vec();
+        let absent_before = exercised.proof_set_proof(union_id).to_canonical_bytes();
+
+        let mismatch =
+            exercised.apply_canonical_proof_bytes_with_expected_id(union_bytes.clone(), pairing_id);
+        assert_eq!(
+            mismatch,
+            Err(LedgerError::ProofIdMismatch {
+                expected: pairing_id,
+                actual: union_id,
+            })
+        );
+        assert_eq!(exercised.len(), 1);
+        assert_eq!(exercised.proof_set_root(), root_before);
+        assert_eq!(
+            exercised.proof(pairing_id).unwrap().canonical_proof_bytes(),
+            pairing_before
+        );
+        assert!(exercised.proof(union_id).is_none());
+        assert_eq!(
+            exercised.proof_set_proof(union_id).to_canonical_bytes(),
+            absent_before
+        );
+
+        assert_eq!(
+            exercised.apply_canonical_proof_bytes(child_bytes.clone()),
+            Err(LedgerError::Check {
+                source: CheckError::UnknownProofReference {
+                    step: 0,
+                    proof_id: union_id,
+                },
+            })
+        );
+        assert_eq!(exercised.proof_set_root(), root_before);
+        assert!(exercised.proof(child_id).is_none());
+
+        let admitted = exercised
+            .apply_canonical_proof_bytes_with_expected_id(union_bytes, union_id)
+            .unwrap();
+        assert_eq!(admitted.proof_id(), union_id);
+        let child = exercised
+            .apply_canonical_proof_bytes_with_expected_id(child_bytes, child_id)
+            .unwrap();
+        assert_eq!(child.proof_id(), child_id);
+        assert_eq!(exercised.proof_set_root(), control.proof_set_root());
+        assert_eq!(exercised.proof(pairing_id), control.proof(pairing_id));
+        assert_eq!(exercised.proof(union_id), control.proof(union_id));
+        assert_eq!(exercised.proof(child_id), control.proof(child_id));
     }
 
     #[test]

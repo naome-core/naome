@@ -329,6 +329,12 @@ fn physical_journal_order_does_not_change_the_proof_set_root() {
 fn rejected_admissions_write_nothing_and_leave_the_journal_healthy() {
     let directory = TestDirectory::new();
     let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
+    let union_bytes = axiom_bytes(ZfcAxiom::Union);
+    let mut union_control = ProofDag::new();
+    let union_id = union_control
+        .apply_canonical_proof_bytes(union_bytes.clone())
+        .unwrap()
+        .proof_id();
     let mut journal = ProofDagJournal::create(&directory.path).unwrap();
     let root_id = journal
         .apply_canonical_proof_bytes(root_bytes.clone())
@@ -336,6 +342,34 @@ fn rejected_admissions_write_nothing_and_leave_the_journal_healthy() {
         .proof_id();
     let committed_len = fs::metadata(directory.journal_path()).unwrap().len();
     let committed_root = journal.proof_set_root().unwrap();
+    let committed_image = fs::read(directory.journal_path()).unwrap();
+
+    assert_ne!(root_id, union_id);
+    assert!(matches!(
+        journal.apply_canonical_proof_bytes_with_expected_id(union_bytes.clone(), root_id),
+        Err(JournalError::Admission {
+            source: LedgerError::ProofIdMismatch {
+                expected,
+                actual,
+            },
+        }) if expected == root_id && actual == union_id
+    ));
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), committed_image);
+    assert_eq!(journal.len().unwrap(), 1);
+    assert_eq!(journal.proof_set_root().unwrap(), committed_root);
+    assert!(journal.proof(union_id).unwrap().is_none());
+
+    let locked_child = referenced_generalization(union_id, FreeVariable::new(1));
+    assert!(matches!(
+        journal.apply_canonical_proof_bytes(locked_child.clone()),
+        Err(JournalError::Admission {
+            source: LedgerError::Check {
+                source: CheckError::UnknownProofReference { proof_id, .. }
+            }
+        }) if proof_id == union_id
+    ));
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), committed_image);
+    assert_eq!(journal.proof_set_root().unwrap(), committed_root);
 
     assert!(matches!(
         journal.apply_canonical_proof_bytes(root_bytes),
@@ -376,6 +410,22 @@ fn rejected_admissions_write_nothing_and_leave_the_journal_healthy() {
         .unwrap()
         .proof_id();
     assert!(journal.proof(child_id).unwrap().is_some());
+
+    let accepted_union = journal
+        .apply_canonical_proof_bytes_with_expected_id(union_bytes, union_id)
+        .unwrap();
+    assert_eq!(accepted_union.proof_id(), union_id);
+    let locked_child_id = journal
+        .apply_canonical_proof_bytes(locked_child)
+        .unwrap()
+        .proof_id();
+    assert!(journal.proof(locked_child_id).unwrap().is_some());
+
+    drop(journal);
+    let reopened = ProofDagJournal::open(&directory.path).unwrap();
+    assert!(reopened.proof(root_id).unwrap().is_some());
+    assert!(reopened.proof(union_id).unwrap().is_some());
+    assert!(reopened.proof(locked_child_id).unwrap().is_some());
 }
 
 #[test]
@@ -748,6 +798,51 @@ impl JournalIo for ScriptedIo {
 }
 
 #[test]
+fn expected_proof_id_mismatch_consumes_no_journal_io_or_fault() {
+    let payload = axiom_bytes(ZfcAxiom::Pairing);
+    let mut control = ProofDag::new();
+    let actual = control
+        .apply_canonical_proof_bytes(payload.clone())
+        .unwrap()
+        .proof_id();
+    let expected = ProofId::from_bytes([0x95; 32]);
+    let fault = Fault::SyncBefore {
+        phase: AppendPhase::Body,
+    };
+    let mut core = JournalCore::empty(ScriptedIo::new(Some(fault.clone())));
+    let volatile_before = core.file.volatile.get_ref().clone();
+    let position_before = core.file.volatile.position();
+    let committed_end_before = core.committed_end;
+    let chain_digest_before = core.chain_digest;
+
+    assert!(matches!(
+        core.apply_canonical_proof_bytes_with_expected_id(payload.clone(), expected),
+        Err(JournalError::Admission {
+            source: LedgerError::ProofIdMismatch {
+                expected: mismatch_expected,
+                actual: mismatch_actual,
+            },
+        }) if mismatch_expected == expected && mismatch_actual == actual
+    ));
+    assert!(core.file.trace.is_empty());
+    assert_eq!(core.file.fault, Some(fault));
+    assert_eq!(core.file.volatile.get_ref(), &volatile_before);
+    assert_eq!(core.file.volatile.position(), position_before);
+    assert_eq!(core.file.durable, JOURNAL_HEADER);
+    assert_eq!(core.committed_end, committed_end_before);
+    assert_eq!(core.chain_digest, chain_digest_before);
+    assert!(core.ensure_healthy().is_ok());
+    assert!(core.dag.is_empty());
+
+    assert!(matches!(
+        core.apply_canonical_proof_bytes_with_expected_id(payload, actual),
+        Err(JournalError::Commit { proof_id, .. }) if proof_id == actual
+    ));
+    assert!(core.file.fault.is_none());
+    assert!(matches!(core.ensure_healthy(), Err(JournalError::Poisoned)));
+}
+
+#[test]
 fn append_barriers_are_ordered_and_every_ambiguous_failure_poisons() {
     let payload = axiom_bytes(ZfcAxiom::Pairing);
     let body_len = 4 + payload.len();
@@ -1031,6 +1126,13 @@ fn poisoned_public_handle_hides_state_and_keeps_its_lock() {
     ));
     assert!(matches!(
         journal.apply_canonical_proof_bytes(axiom_bytes(ZfcAxiom::Union)),
+        Err(JournalError::Poisoned)
+    ));
+    assert!(matches!(
+        journal.apply_canonical_proof_bytes_with_expected_id(
+            axiom_bytes(ZfcAxiom::Union),
+            ProofId::from_bytes([0x96; 32]),
+        ),
         Err(JournalError::Poisoned)
     ));
     assert!(matches!(

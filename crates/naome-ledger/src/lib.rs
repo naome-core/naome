@@ -1,11 +1,12 @@
 //! Deterministic single-proof ledger state transitions for NAOME.
 //!
 //! A [`LedgerState`] admits exactly one proof certificate per call. The
-//! authoring path normalizes an owned certificate; the strict byte path rejects
-//! any submission that is not already its canonical root-proof normal form.
-//! Both paths check against the accepted pre-transition state and register only
-//! after checking succeeds. Blocks, persistence, undo, rewards, networking,
-//! and source parsing remain outside this crate.
+//! authoring path normalizes an owned certificate; strict byte paths reject any
+//! submission that is not already its canonical root-proof normal form. The
+//! addressed strict path additionally binds those checked bytes to one expected
+//! [`ProofId`]. Every path checks against the accepted pre-transition state and
+//! registers only after all admission checks succeed. Blocks, persistence,
+//! undo, rewards, networking, and source parsing remain outside this crate.
 
 use std::error::Error;
 use std::fmt;
@@ -131,9 +132,35 @@ impl LedgerState {
     /// rather than silently rewritten. Once exact equality is established, the
     /// submitted bytes become the accepted record payload. External references
     /// resolve only from the state that existed before this call.
+    ///
+    /// This entry point derives and accepts any resulting [`ProofId`]. Bytes
+    /// received for one externally requested address must use
+    /// [`Self::apply_canonical_proof_bytes_with_expected_id`] instead.
     pub fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
+    ) -> Result<AcceptedProofRecord, LedgerError> {
+        self.apply_canonical_proof_bytes_inner(bytes, None)
+    }
+
+    /// Strictly admits canonical proof bytes only at the expected content address.
+    ///
+    /// Decoding, canonicality, mathematical checking, and external-reference
+    /// resolution precede the address comparison. A different checked
+    /// [`ProofId`] returns [`LedgerError::ProofIdMismatch`] before registration,
+    /// leaving the state unchanged.
+    pub fn apply_canonical_proof_bytes_with_expected_id(
+        &mut self,
+        bytes: Vec<u8>,
+        expected_proof_id: ProofId,
+    ) -> Result<AcceptedProofRecord, LedgerError> {
+        self.apply_canonical_proof_bytes_inner(bytes, Some(expected_proof_id))
+    }
+
+    fn apply_canonical_proof_bytes_inner(
+        &mut self,
+        bytes: Vec<u8>,
+        expected_proof_id: Option<ProofId>,
     ) -> Result<AcceptedProofRecord, LedgerError> {
         let certificate = ProofCertificate::from_canonical_bytes(&bytes)
             .map_err(|source| LedgerError::Decode { source })?;
@@ -143,6 +170,14 @@ impl LedgerState {
             .ok_or(LedgerError::NonCanonicalProof)?;
         let checked = check_normal_form_with_state(normal_form, &self.proof_state)
             .map_err(|source| LedgerError::Check { source })?;
+        if let Some(expected) = expected_proof_id
+            && checked.proof_id() != expected
+        {
+            return Err(LedgerError::ProofIdMismatch {
+                expected,
+                actual: checked.proof_id(),
+            });
+        }
         self.register_checked(checked)
     }
 
@@ -189,6 +224,8 @@ pub enum LedgerError {
     NonCanonicalProof,
     /// Mathematical proof checking failed.
     Check { source: CheckError },
+    /// The checked proof does not have the externally expected content address.
+    ProofIdMismatch { expected: ProofId, actual: ProofId },
     /// The checked proof could not be registered in the pre-transition state.
     State { source: ProofStateError },
 }
@@ -201,6 +238,10 @@ impl fmt::Display for LedgerError {
                 formatter.write_str("submitted proof is not in canonical root-proof normal form")
             }
             Self::Check { source } => write!(formatter, "proof checking failed: {source}"),
+            Self::ProofIdMismatch { expected, actual } => write!(
+                formatter,
+                "proof identity mismatch: expected {expected:?}, checked {actual:?}"
+            ),
             Self::State { source } => write!(formatter, "proof registration failed: {source}"),
         }
     }
@@ -212,6 +253,7 @@ impl Error for LedgerError {
             Self::Decode { source } => Some(source),
             Self::NonCanonicalProof => None,
             Self::Check { source } => Some(source),
+            Self::ProofIdMismatch { .. } => None,
             Self::State { source } => Some(source),
         }
     }
@@ -402,6 +444,100 @@ mod tests {
                     proof_id: strict_applied.proof_id(),
                 },
             })
+        );
+    }
+
+    #[test]
+    fn expected_proof_id_is_checked_before_registration_and_duplicate_state() {
+        let variable = FreeVariable::new(41);
+        let bytes = canonical_bytes(identity(variable));
+        let checked = normalize_and_check(identity(variable)).unwrap();
+        let actual = checked.proof_id();
+        let expected = ProofId::from_bytes([0x91; 32]);
+        assert_ne!(expected, actual);
+        let mut ledger = LedgerState::new();
+
+        let mismatch = ledger
+            .apply_canonical_proof_bytes_with_expected_id(bytes.clone(), expected)
+            .unwrap_err();
+        assert_eq!(mismatch, LedgerError::ProofIdMismatch { expected, actual });
+        assert!(mismatch.source().is_none());
+        assert!(!ledger.contains_proof(actual));
+        assert!(!ledger.contains_derivation(checked.derivation_id()));
+        assert!(!ledger.contains_statement(checked.statement_id()));
+
+        let applied = ledger
+            .apply_canonical_proof_bytes_with_expected_id(bytes.clone(), actual)
+            .unwrap();
+        assert_eq!(applied.proof_id(), actual);
+        assert_eq!(applied.canonical_proof_bytes(), bytes);
+
+        assert_eq!(
+            ledger.apply_canonical_proof_bytes_with_expected_id(bytes.clone(), expected),
+            Err(LedgerError::ProofIdMismatch { expected, actual })
+        );
+        assert_eq!(
+            ledger.apply_canonical_proof_bytes_with_expected_id(bytes, actual),
+            Err(LedgerError::State {
+                source: ProofStateError::DuplicateProof { proof_id: actual },
+            })
+        );
+    }
+
+    #[test]
+    fn validation_errors_precede_expected_proof_id_binding() {
+        let expected = ProofId::from_bytes([0x92; 32]);
+        let variable = FreeVariable::new(0);
+        let noncanonical = identity(FreeVariable::new(42)).to_canonical_bytes();
+        let invalid_inference = canonical_bytes(certificate(vec![
+            ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+            ProofStep::ZfcAxiom(ZfcAxiom::Union),
+            ProofStep::ModusPonens {
+                premise: 0,
+                implication: 1,
+            },
+        ]));
+        let missing = ProofId::from_bytes([0x93; 32]);
+        let missing_reference = canonical_bytes(certificate(vec![ProofStep::ProofReference {
+            proof_id: missing,
+        }]));
+        let mut ledger = LedgerState::new();
+
+        assert_eq!(
+            ledger.apply_canonical_proof_bytes_with_expected_id(vec![0], expected),
+            Err(LedgerError::Decode {
+                source: ProofCertificateError::UnexpectedEnd,
+            })
+        );
+        assert_eq!(
+            ledger.apply_canonical_proof_bytes_with_expected_id(noncanonical, expected),
+            Err(LedgerError::NonCanonicalProof)
+        );
+        assert_eq!(
+            ledger.apply_canonical_proof_bytes_with_expected_id(invalid_inference, expected),
+            Err(LedgerError::Check {
+                source: CheckError::Logic {
+                    step: 2,
+                    source: LogicError::ModusPonensMismatch,
+                },
+            })
+        );
+        assert_eq!(
+            ledger.apply_canonical_proof_bytes_with_expected_id(missing_reference, expected),
+            Err(LedgerError::Check {
+                source: CheckError::UnknownProofReference {
+                    step: 0,
+                    proof_id: missing,
+                },
+            })
+        );
+
+        let valid = canonical_bytes(identity(variable));
+        let actual = normalize_and_check(identity(variable)).unwrap().proof_id();
+        assert!(
+            ledger
+                .apply_canonical_proof_bytes_with_expected_id(valid, actual)
+                .is_ok()
         );
     }
 
@@ -798,8 +934,28 @@ mod tests {
         let alias_id = normalize_and_check_with_state(alias.clone(), &ledger.proof_state)
             .unwrap()
             .proof_id();
+        let alias_bytes = canonical_bytes(alias.clone());
         assert_eq!(
             ledger.apply(alias),
+            Err(LedgerError::State {
+                source: ProofStateError::DuplicateDerivation {
+                    derivation_id: source.derivation_id(),
+                },
+            })
+        );
+        let wrong_expected = ProofId::from_bytes([0x94; 32]);
+        assert_ne!(wrong_expected, alias_id);
+        let mismatch = ledger
+            .apply_canonical_proof_bytes_with_expected_id(alias_bytes.clone(), wrong_expected);
+        assert_eq!(
+            mismatch,
+            Err(LedgerError::ProofIdMismatch {
+                expected: wrong_expected,
+                actual: alias_id,
+            })
+        );
+        assert_eq!(
+            ledger.apply_canonical_proof_bytes_with_expected_id(alias_bytes, alias_id),
             Err(LedgerError::State {
                 source: ProofStateError::DuplicateDerivation {
                     derivation_id: source.derivation_id(),

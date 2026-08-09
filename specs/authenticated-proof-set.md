@@ -210,12 +210,12 @@ accepted proof records. This single structure replaces a separate retained
 record map; lookup, root calculation, and proof generation cannot diverge
 across duplicate indexes.
 
-Strict proof admission remains unchanged through the ledger boundary. Decode,
-canonicality, mathematical checking, dependency resolution, and identity
-registration all succeed before the new record is inserted into the private
-tree. Ledger duplicate rules make that insertion logically infallible. Every
-failed admission leaves the record count, topology, root, and all existing
-proofs unchanged.
+Strict proof admission remains owned by the ledger boundary. Decode,
+canonicality, mathematical checking, dependency resolution, any expected
+`ProofId` comparison, and identity registration all succeed before the new
+record is inserted into the private tree. Ledger duplicate rules make that
+insertion logically infallible. Every failed admission leaves the record count,
+topology, root, and all existing proofs unchanged.
 
 The structure is append-only. Deletion, undo, and state merging require future
 consensus and persistence contracts and are not inferred here.
