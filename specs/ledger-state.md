@@ -7,10 +7,11 @@ NAOME proof state to the next. It is a prerelease protocol contract and may
 change before the first stable protocol release.
 
 One transition processes exactly one Foundation proof certificate. The ledger
-provides both an owned-certificate authoring path and a strict canonical
-proof-byte admission path. It does not define a block envelope, block
-identifier, persistence, undo, reorganization, pruning, rewards, fees,
-networking, or human-readable source syntax.
+provides an owned-certificate authoring path, a strict canonical proof-byte
+admission path, and an addressed strict path that additionally requires the
+checked proof to have one caller-supplied expected `ProofId`. It does not define
+a block envelope, block identifier, persistence, undo, reorganization, pruning,
+rewards, fees, networking, or human-readable source syntax.
 
 ## State
 
@@ -36,8 +37,10 @@ pre-transition state, Ledger applies this order:
    state;
 3. compute its `StatementId`, `DerivationId`, and `ProofId` as specified by
    Proof Certificate;
-4. register the checked proof without replacing any existing state; and
-5. return an immutable accepted-proof record containing the canonical proof
+4. for addressed admission, require that checked `ProofId` to equal the
+   caller-supplied expected `ProofId`;
+5. register the checked proof without replacing any existing state; and
+6. return an immutable accepted-proof record containing the canonical proof
    payload, its direct proof dependencies, and the three identities.
 
 The candidate proof is not visible during step 2. A reference succeeds if and
@@ -59,13 +62,26 @@ order:
    exact equality has been established;
 5. mathematically check that normal form exactly once against the unchanged
    pre-transition state; and
-6. atomically register the checked proof through the same state transition
+6. for addressed admission, compare the checked `ProofId` with the expected
+   content address; and
+7. atomically register the checked proof through the same state transition
    described above.
 
 Structural decoding errors precede canonicality, checking, and registration
-errors. A structurally valid mismatch returns `NonCanonicalProof` before any
-mathematical step or external proof reference is evaluated. Checker errors then
-precede state-registration errors. Every failure leaves the state unchanged.
+errors. A structurally valid representation that differs from its canonical
+root-proof normal form returns `NonCanonicalProof` before any mathematical step
+or external proof reference is evaluated. Checker errors then precede
+`ProofIdMismatch`, which precedes state-registration errors. The identity
+mismatch reports both the expected and checked identities. Every failure leaves
+the state unchanged.
+
+The expected identity is request context rather than proof content. It is
+compared with the `ProofId` derived from the fully checked normal form, never
+with a raw hash or caller-supplied identity field, and is not retained in the
+accepted record. The unaddressed strict entry point binds no external request
+address. Bytes received for a specific requested `ProofId` must use addressed
+admission. This binding does not prove peer authenticity, freshness, consensus
+selection, or statement novelty.
 
 The owned-certificate authoring path continues to normalize its input before
 checking. It must not be used as a substitute for the strict external-byte
@@ -117,10 +133,10 @@ set, not statement novelty, consensus selection, or finality.
 
 The checked ledger and authenticated proof set are private and advance together.
 Callers cannot insert records, identities, or dependency edges directly. A
-failed decode, canonicality check, mathematical check, dependency lookup, or
-registration leaves both structures unchanged. A successful admission moves
-the returned record into the authenticated set without copying its proof
-payload.
+failed decode, canonicality check, mathematical check, expected-identity check,
+dependency lookup, or registration leaves both structures unchanged. A
+successful admission moves the returned record into the authenticated set
+without copying its proof payload.
 
 Every dependency must already belong to the unchanged selected state before a
 node is admitted. Starting from an empty state, this dependency-first rule
@@ -146,11 +162,12 @@ identity condition before inserting anything. Consequently, every error leaves
 the state, retained record tree, and `ProofSetRoot` exactly unchanged and a
 successful call inserts exactly one checked proof.
 
-The strict byte path follows the decode, canonicality, checking, and
-registration order specified above. The authoring path follows normalization,
-checking, and registration. Within checking and registration, the deterministic
-error order defined by Proof Certificate remains unchanged. Ledger errors
-retain the complete underlying source error when one exists.
+The strict byte path follows the decode, canonicality, checking, optional
+expected-identity comparison, and registration order specified above. The
+authoring path follows normalization, checking, and registration. Within
+checking and registration, the deterministic error order defined by Proof
+Certificate remains unchanged. Ledger errors retain the complete underlying
+source error when one exists.
 
 ## Future consensus boundary
 

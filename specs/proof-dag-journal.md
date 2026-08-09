@@ -89,22 +89,27 @@ described under limitations.
 
 ## Durable append
 
-One public append processes exactly one caller-owned proof payload:
+Each public append processes exactly one caller-owned proof payload. The
+addressed variant additionally accepts one expected `ProofId`:
 
-1. strictly admit the bytes through `ProofDag`, including decode,
-   canonicality, mathematical checking, dependency resolution, and state
-   registration;
-2. write `payload_length || canonical_payload` at the current committed end;
-3. call `sync_all` for that frame body;
-4. write the chained `entry_digest` commit footer;
-5. call `sync_all` again; and
-6. only then acknowledge success and expose the retained record.
+1. strictly decode, verify canonicality, mathematically check, and resolve
+   every dependency through `ProofDag`;
+2. for addressed admission, compare the fully checked `ProofId` with the
+   expected identity;
+3. register and retain the proof in memory;
+4. write `payload_length || canonical_payload` at the current committed end;
+5. call `sync_all` for that frame body;
+6. write the chained `entry_digest` commit footer;
+7. call `sync_all` again; and
+8. only then acknowledge success and expose the retained record.
 
-An admission error occurs before file mutation and leaves the handle healthy.
-Any seek, write, or synchronization error after in-memory admission makes
-durability ambiguous. The call returns no record, the handle becomes poisoned,
-and every subsequent read or append fails. Dropping and reopening is the only
-way to reconcile whether that frame reached durable storage.
+An admission error, including `ProofIdMismatch`, occurs before file mutation and
+leaves the handle healthy. The expected identity is request context and is not
+stored in the frame; replay derives the actual identity again from the checked
+payload. Any seek, write, or synchronization error after in-memory admission
+makes durability ambiguous. The call returns no record, the handle becomes
+poisoned, and every subsequent read or append fails. Dropping and reopening is
+the only way to reconcile whether that frame reached durable storage.
 
 The first synchronization barrier ensures that a complete footer can become
 durable only after the corresponding body was synchronized. The second barrier
