@@ -18,20 +18,7 @@ use naome_proof::{
     DerivationId, ProofCertificateError, ProofCertificateV0, ProofId, ProofStepV0, StatementId,
 };
 
-/// The novelty of an accepted proof's closed statement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StatementNoveltyV0 {
-    /// The statement was absent from the accepted pre-transition state.
-    New,
-    /// The statement was present and this distinct derivation was accepted.
-    Existing,
-}
-
 /// The immutable proof payload and metadata produced by one accepted transition.
-///
-/// The canonical bytes and identities describe the accepted proof itself.
-/// Statement novelty is contextual receipt metadata relative to the selected
-/// pre-transition state; it is not part of any content identity.
 #[derive(PartialEq, Eq)]
 #[must_use]
 pub struct AcceptedProofRecordV0 {
@@ -40,7 +27,6 @@ pub struct AcceptedProofRecordV0 {
     proof_id: ProofId,
     derivation_id: DerivationId,
     statement_id: StatementId,
-    statement_novelty: StatementNoveltyV0,
 }
 
 impl AcceptedProofRecordV0 {
@@ -68,11 +54,6 @@ impl AcceptedProofRecordV0 {
     pub const fn statement_id(&self) -> StatementId {
         self.statement_id
     }
-
-    /// Returns whether this transition introduced the statement.
-    pub const fn statement_novelty(&self) -> StatementNoveltyV0 {
-        self.statement_novelty
-    }
 }
 
 impl fmt::Debug for AcceptedProofRecordV0 {
@@ -87,7 +68,6 @@ impl fmt::Debug for AcceptedProofRecordV0 {
             .field("proof_id", &self.proof_id)
             .field("derivation_id", &self.derivation_id)
             .field("statement_id", &self.statement_id)
-            .field("statement_novelty", &self.statement_novelty)
             .finish()
     }
 }
@@ -170,11 +150,6 @@ impl LedgerStateV0 {
         &mut self,
         checked: naome_checker::CheckedProofV0,
     ) -> Result<AcceptedProofRecordV0, LedgerError> {
-        let statement_novelty = if self.proof_state.contains_statement(checked.statement_id()) {
-            StatementNoveltyV0::Existing
-        } else {
-            StatementNoveltyV0::New
-        };
         let proof_id = checked.proof_id();
         let derivation_id = checked.derivation_id();
         let statement_id = checked.statement_id();
@@ -200,7 +175,6 @@ impl LedgerStateV0 {
             proof_id,
             derivation_id,
             statement_id,
-            statement_novelty,
         })
     }
 }
@@ -255,7 +229,7 @@ mod tests {
         CERTIFICATE_V0_MAX_BYTES, ProofCertificateError, ProofCertificateV0, ProofId, ProofStepV0,
     };
 
-    use super::{LedgerError, LedgerStateV0, StatementNoveltyV0};
+    use super::{LedgerError, LedgerStateV0};
 
     fn certificate(steps: Vec<ProofStepV0>) -> ProofCertificateV0 {
         ProofCertificateV0::new(steps).unwrap()
@@ -421,7 +395,6 @@ mod tests {
         assert_eq!(strict_applied, authoring_applied);
         assert_eq!(strict_applied.canonical_proof_bytes(), bytes);
         assert!(strict_applied.direct_dependencies().is_empty());
-        assert_eq!(strict_applied.statement_novelty(), StatementNoveltyV0::New);
         assert_eq!(
             strict.apply_canonical_proof_bytes(bytes),
             Err(LedgerError::State {
@@ -487,7 +460,7 @@ mod tests {
             let applied = ledger
                 .apply_canonical_proof_bytes(canonical)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
-            assert_eq!(applied.statement_novelty(), StatementNoveltyV0::New);
+            assert!(ledger.contains_proof(applied.proof_id()));
         }
     }
 
@@ -520,13 +493,8 @@ mod tests {
             assert_eq!(error, LedgerError::Decode { source });
             assert!(error.source().is_some());
         }
-        assert_eq!(
-            ledger
-                .apply_canonical_proof_bytes(valid)
-                .unwrap()
-                .statement_novelty(),
-            StatementNoveltyV0::New
-        );
+        let applied = ledger.apply_canonical_proof_bytes(valid).unwrap();
+        assert!(ledger.contains_proof(applied.proof_id()));
     }
 
     #[test]
@@ -616,7 +584,6 @@ mod tests {
         let applied = ledger
             .apply_canonical_proof_bytes(target_bytes.clone())
             .unwrap();
-        assert_eq!(applied.statement_novelty(), StatementNoveltyV0::New);
         assert_eq!(applied.canonical_proof_bytes(), target_bytes);
         assert_eq!(
             applied.direct_dependencies(),
@@ -700,12 +667,11 @@ mod tests {
     }
 
     #[test]
-    fn absent_and_present_statements_report_state_relative_novelty() {
+    fn alternative_derivations_share_a_statement_and_register_distinct_identities() {
         let variable = FreeVariable::new(7);
         let mut ledger = LedgerStateV0::new();
 
         let direct = ledger.apply(identity(variable)).unwrap();
-        assert_eq!(direct.statement_novelty(), StatementNoveltyV0::New);
         assert!(ledger.contains_proof(direct.proof_id()));
         assert!(ledger.contains_derivation(direct.derivation_id()));
         assert!(ledger.contains_statement(direct.statement_id()));
@@ -714,13 +680,12 @@ mod tests {
         assert_eq!(detour.statement_id(), direct.statement_id());
         assert_ne!(detour.derivation_id(), direct.derivation_id());
         assert_ne!(detour.proof_id(), direct.proof_id());
-        assert_eq!(detour.statement_novelty(), StatementNoveltyV0::Existing);
         assert!(ledger.contains_proof(detour.proof_id()));
         assert!(ledger.contains_derivation(detour.derivation_id()));
     }
 
     #[test]
-    fn statement_novelty_is_recomputed_from_each_selected_state() {
+    fn accepted_record_content_is_independent_of_the_selected_state() {
         let variable = FreeVariable::new(7);
         let direct_bytes = canonical_bytes(identity(variable));
 
@@ -733,17 +698,8 @@ mod tests {
         let detour = present.apply(identity_detour(variable)).unwrap();
         let existing = present.apply_canonical_proof_bytes(direct_bytes).unwrap();
 
-        assert_eq!(new.statement_novelty(), StatementNoveltyV0::New);
-        assert_eq!(existing.statement_novelty(), StatementNoveltyV0::Existing);
         assert_eq!(existing.statement_id(), detour.statement_id());
-        assert_eq!(
-            new.canonical_proof_bytes(),
-            existing.canonical_proof_bytes()
-        );
-        assert_eq!(new.direct_dependencies(), existing.direct_dependencies());
-        assert_eq!(new.proof_id(), existing.proof_id());
-        assert_eq!(new.derivation_id(), existing.derivation_id());
-        assert_eq!(new.statement_id(), existing.statement_id());
+        assert_eq!(new, existing);
     }
 
     #[test]
@@ -766,7 +722,6 @@ mod tests {
         assert!(!independent.contains_proof(source.proof_id()));
 
         let applied = selected.apply(dependent).unwrap();
-        assert_eq!(applied.statement_novelty(), StatementNoveltyV0::New);
         assert!(selected.contains_proof(applied.proof_id()));
         assert!(!independent.contains_proof(applied.proof_id()));
     }
@@ -795,7 +750,6 @@ mod tests {
         assert_eq!(proof.steps().len(), 21);
 
         let applied = ledger.apply(proof.clone()).unwrap();
-        assert_eq!(applied.statement_novelty(), StatementNoveltyV0::New);
         assert!(ledger.contains_proof(applied.proof_id()));
 
         for missing in 0..references.len() {

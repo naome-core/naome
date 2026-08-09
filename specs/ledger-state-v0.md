@@ -36,12 +36,9 @@ pre-transition state, Ledger V0 applies this order:
    state;
 3. compute its `StatementId`, `DerivationId`, and `ProofId` as specified by
    Proof Certificate V0;
-4. classify the statement as `New` when its `StatementId` is absent from the
-   pre-transition state, otherwise as `Existing`;
-5. register the checked proof without replacing any existing state; and
-6. return an immutable accepted-proof record containing the canonical proof
-   payload, its direct proof dependencies, the three identities, and the
-   statement classification.
+4. register the checked proof without replacing any existing state; and
+5. return an immutable accepted-proof record containing the canonical proof
+   payload, its direct proof dependencies, and the three identities.
 
 The candidate proof is not visible during step 2. A reference succeeds if and
 only if its exact `ProofId` is present in the unchanged pre-transition state.
@@ -62,8 +59,8 @@ order:
    exact equality has been established;
 5. mathematically check that normal form exactly once against the unchanged
    pre-transition state; and
-6. classify and atomically register the checked proof through the same state
-   transition described above.
+6. atomically register the checked proof through the same state transition
+   described above.
 
 Structural decoding errors precede canonicality, checking, and registration
 errors. A structurally valid mismatch returns `NonCanonicalProof` before any
@@ -103,29 +100,6 @@ inclusion. Replaying or importing its bytes must execute strict canonical byte
 admission again; the redundant identities and dependency index must be derived
 again rather than trusted.
 
-`StatementNoveltyV0` is contextual receipt metadata, not intrinsic content. It
-is relative to the selected pre-transition state, is not committed by any of
-the three identities, and must be recomputed on replay. The same canonical
-proof payload can therefore produce `New` in one valid state and `Existing` in
-another.
-
-## Statement novelty
-
-`New` and `Existing` describe only whether the exact closed `StatementId` was
-present before the transition:
-
-- an absent `StatementId` produces `New` when registration succeeds;
-- a present `StatementId` produces `Existing` when a distinct derivation
-  registers successfully;
-- an existing `ProofId` or `DerivationId` is a registration error and produces
-  no novelty result.
-
-This classification is relative only to the selected pre-transition state. It
-does not establish global theorem novelty, calculate a reward, or claim general
-mathematical equivalence between structurally different statements. A later
-consensus policy may use it only together with its topology, finality, fee, and
-resource rules.
-
 ## Atomicity and errors
 
 Normalization and mathematical checking do not mutate the pre-transition state.
@@ -151,6 +125,10 @@ The consensus topology and the rule that selects or combines accepted
 proof-state snapshots remain outside this V0 contract. This includes whether
 proof blocks form a linear history or a DAG; either choice remains separate
 from the already-defined acyclic proof-dependency graph.
+
+Whether a `StatementId` is new to a consensus-selected state is future block
+policy. It is not intrinsic proof content and is therefore absent from the
+accepted proof record.
 
 The future block validation transition must pass its single submitted proof
 payload through the strict canonical byte admission defined above. Ledger V0
