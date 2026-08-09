@@ -160,5 +160,7 @@ Whether a `StatementId` is new to a consensus-selected state is future block
 policy. It is not intrinsic proof content and is therefore absent from the
 accepted proof record.
 
-V0 does not define storage, snapshots, state commitments, fork choice,
-finality, rewards, fees, producer authentication, or networking.
+This ledger-state contract does not define storage, snapshots, state
+commitments, fork choice, finality, rewards, fees, producer authentication, or
+networking. The separate Proof DAG Journal V0 contract defines only local
+crash-consistent replay storage for one selected `ProofDagV0`.
