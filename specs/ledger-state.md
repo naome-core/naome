@@ -103,23 +103,30 @@ again rather than trusted.
 ## Retained proof DAG
 
 `ProofDag` owns one `LedgerState` and retains every record returned by its
-strict canonical-byte admission. A retained proof is addressed directly by its
-checked `ProofId`; it adds no redundant `BlockId`, wrapper encoding, height, or
-linear proof-parent field. The canonical proof-certificate bytes are the node
-payload, and the record's direct `ProofId` dependencies are its outgoing DAG
-edges.
+strict canonical-byte admission in the authenticated set defined by
+Authenticated Proof Set. A retained proof is addressed directly by its checked
+`ProofId`; it adds no redundant `BlockId`, wrapper encoding, height, or linear
+proof-parent field. The canonical proof-certificate bytes are the node payload,
+and the record's direct `ProofId` dependencies are its outgoing DAG edges.
 
-The checked ledger and retained-record index are private and advance together.
+The authenticated set directly owns the retained records and provides lookup,
+an insertion-order-independent `ProofSetRoot`, and compact membership and
+non-membership proofs. It replaces a separate record map rather than adding a
+second index that could diverge. The root binds the exact selected `ProofId`
+set, not statement novelty, consensus selection, or finality.
+
+The checked ledger and authenticated proof set are private and advance together.
 Callers cannot insert records, identities, or dependency edges directly. A
 failed decode, canonicality check, mathematical check, dependency lookup, or
 registration leaves both structures unchanged. A successful admission moves
-the returned record into the retained index without copying its proof payload.
+the returned record into the authenticated set without copying its proof
+payload.
 
 Every dependency must already belong to the unchanged selected state before a
 node is admitted. Starting from an empty state, this dependency-first rule
 proves inductively that retained edges are acyclic. Admission creates no
-implicit relationship between nodes that do not cite one another. Map-key
-order has no causal or consensus meaning.
+implicit relationship between nodes that do not cite one another. Internal
+retention order has no causal or consensus meaning.
 
 Replay means submitting retained canonical proof bytes to a fresh `ProofDag`
 in dependency-first order. Records are revalidated rather than imported as
@@ -136,8 +143,8 @@ Fork selection, state merging, and finality therefore remain consensus policy.
 Normalization and mathematical checking do not mutate the pre-transition state.
 Registration validates every proof, dependency, derivation, and statement
 identity condition before inserting anything. Consequently, every error leaves
-the state exactly unchanged and a successful call inserts exactly one checked
-proof.
+the state, retained record tree, and `ProofSetRoot` exactly unchanged and a
+successful call inserts exactly one checked proof.
 
 The strict byte path follows the decode, canonicality, checking, and
 registration order specified above. The authoring path follows normalization,
@@ -160,7 +167,9 @@ Whether a `StatementId` is new to a consensus-selected state is future block
 policy. It is not intrinsic proof content and is therefore absent from the
 accepted proof record.
 
-This ledger-state contract does not define storage, snapshots, state
-commitments, fork choice, finality, rewards, fees, producer authentication, or
-networking. The separate Proof DAG Journal contract defines only local
-crash-consistent replay storage for one selected `ProofDag`.
+This ledger-state contract does not define snapshots, external checkpoint
+distribution, fork choice, finality, rewards, fees, producer authentication,
+or networking. Authenticated Proof Set defines the selected proof-set
+commitment. The separate Proof DAG Journal contract defines local
+crash-consistent replay storage and exact expected-root verification for one
+selected `ProofDag`.

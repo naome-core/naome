@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 naome-ledger = { path = "../naome-ledger" }
 naome-proof = { path = "../naome-proof" }
+sha2 = { version = "0.11.0", default-features = false }
 
 [dev-dependencies]
 naome-checker = { path = "../naome-checker" }

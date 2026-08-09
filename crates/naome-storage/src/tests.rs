@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use naome_chain::ProofDag;
+use naome_chain::{ProofDag, ProofSetMembership};
 use naome_checker::{CheckError, ProofStateError};
 use naome_foundation::{FreeVariable, ZfcAxiom};
 use naome_ledger::LedgerError;
@@ -166,6 +166,15 @@ fn create_open_and_exclusive_lock_preserve_one_empty_journal() {
     let journal = ProofDagJournal::create(&directory.path).unwrap();
     assert!(journal.is_empty().unwrap());
     assert_eq!(journal.len().unwrap(), 0);
+    let empty_root = journal.proof_set_root().unwrap();
+    let unknown = ProofId::from_bytes([0x55; 32]);
+    assert_eq!(
+        journal
+            .proof_set_proof(unknown)
+            .unwrap()
+            .verify(empty_root, unknown),
+        Ok(ProofSetMembership::Absent)
+    );
 
     assert!(matches!(
         ProofDagJournal::open(&directory.path),
@@ -175,6 +184,7 @@ fn create_open_and_exclusive_lock_preserve_one_empty_journal() {
 
     let reopened = ProofDagJournal::open(&directory.path).unwrap();
     assert!(reopened.is_empty().unwrap());
+    assert_eq!(reopened.proof_set_root().unwrap(), empty_root);
     assert!(matches!(
         ProofDagJournal::create(&directory.path),
         Err(JournalError::Locked)
@@ -210,6 +220,7 @@ fn reopen_replays_dependency_chain_exactly() {
     );
     assert_eq!(child.dependencies, [root.proof_id]);
     assert_eq!(grandchild.dependencies, [child.proof_id]);
+    let expected_root = journal.proof_set_root().unwrap();
     drop(journal);
 
     let reopened = ProofDagJournal::open(&directory.path).unwrap();
@@ -226,6 +237,92 @@ fn reopen_replays_dependency_chain_exactly() {
         snapshot(reopened.proof(grandchild.proof_id).unwrap().unwrap()),
         grandchild
     );
+    assert_eq!(reopened.proof_set_root().unwrap(), expected_root);
+    for proof_id in [root.proof_id, child.proof_id, grandchild.proof_id] {
+        assert_eq!(
+            reopened
+                .proof_set_proof(proof_id)
+                .unwrap()
+                .verify(expected_root, proof_id),
+            Ok(ProofSetMembership::Present)
+        );
+    }
+}
+
+#[test]
+fn verified_open_checks_the_exact_replayed_set_after_all_format_checks() {
+    let directory = TestDirectory::new();
+    let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
+    let union_bytes = axiom_bytes(ZfcAxiom::Union);
+    let mut journal = ProofDagJournal::create(&directory.path).unwrap();
+    let _ = journal
+        .apply_canonical_proof_bytes(root_bytes.clone())
+        .unwrap();
+    let prefix_root = journal.proof_set_root().unwrap();
+    let prefix_len = fs::metadata(directory.journal_path()).unwrap().len();
+    let _ = journal
+        .apply_canonical_proof_bytes(union_bytes.clone())
+        .unwrap();
+    let complete_root = journal.proof_set_root().unwrap();
+    drop(journal);
+
+    let verified = ProofDagJournal::open_verified(&directory.path, complete_root).unwrap();
+    assert_eq!(verified.len().unwrap(), 2);
+    drop(verified);
+
+    assert!(matches!(
+        ProofDagJournal::open_verified(&directory.path, prefix_root),
+        Err(JournalError::ProofSetRootMismatch { expected, actual })
+            if expected == prefix_root && actual == complete_root
+    ));
+
+    let mut corrupt = journal_image(&[root_bytes.clone(), union_bytes]);
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    directory.write_image(&corrupt);
+    assert!(matches!(
+        ProofDagJournal::open_verified(&directory.path, prefix_root),
+        Err(JournalError::EntryDigestMismatch { .. })
+    ));
+
+    directory.write_image(&journal_image(&[root_bytes]));
+    fs::OpenOptions::new()
+        .write(true)
+        .open(directory.journal_path())
+        .unwrap()
+        .set_len(prefix_len)
+        .unwrap();
+    assert!(matches!(
+        ProofDagJournal::open_verified(&directory.path, complete_root),
+        Err(JournalError::ProofSetRootMismatch { expected, actual })
+            if expected == complete_root && actual == prefix_root
+    ));
+}
+
+#[test]
+fn physical_journal_order_does_not_change_the_proof_set_root() {
+    let first_directory = TestDirectory::new();
+    let second_directory = TestDirectory::new();
+    let pairing = axiom_bytes(ZfcAxiom::Pairing);
+    let union = axiom_bytes(ZfcAxiom::Union);
+
+    let mut first = ProofDagJournal::create(&first_directory.path).unwrap();
+    let _ = first.apply_canonical_proof_bytes(pairing.clone()).unwrap();
+    let _ = first.apply_canonical_proof_bytes(union.clone()).unwrap();
+    let first_root = first.proof_set_root().unwrap();
+    drop(first);
+
+    let mut second = ProofDagJournal::create(&second_directory.path).unwrap();
+    let _ = second.apply_canonical_proof_bytes(union).unwrap();
+    let _ = second.apply_canonical_proof_bytes(pairing).unwrap();
+    let second_root = second.proof_set_root().unwrap();
+    drop(second);
+
+    assert_eq!(first_root, second_root);
+    assert_ne!(
+        fs::read(first_directory.journal_path()).unwrap(),
+        fs::read(second_directory.journal_path()).unwrap()
+    );
 }
 
 #[test]
@@ -238,6 +335,7 @@ fn rejected_admissions_write_nothing_and_leave_the_journal_healthy() {
         .unwrap()
         .proof_id();
     let committed_len = fs::metadata(directory.journal_path()).unwrap().len();
+    let committed_root = journal.proof_set_root().unwrap();
 
     assert!(matches!(
         journal.apply_canonical_proof_bytes(root_bytes),
@@ -251,6 +349,7 @@ fn rejected_admissions_write_nothing_and_leave_the_journal_healthy() {
         fs::metadata(directory.journal_path()).unwrap().len(),
         committed_len
     );
+    assert_eq!(journal.proof_set_root().unwrap(), committed_root);
 
     let missing_id = ProofId::from_bytes([0x55; 32]);
     let missing = canonical_bytes(vec![ProofStep::ProofReference {
@@ -268,6 +367,7 @@ fn rejected_admissions_write_nothing_and_leave_the_journal_healthy() {
         fs::metadata(directory.journal_path()).unwrap().len(),
         committed_len
     );
+    assert_eq!(journal.proof_set_root().unwrap(), committed_root);
     assert!(journal.proof(root_id).unwrap().is_some());
 
     let child = referenced_generalization(root_id, FreeVariable::new(0));
@@ -284,13 +384,14 @@ fn every_incomplete_final_frame_recovers_only_the_committed_prefix() {
     let union_bytes = axiom_bytes(ZfcAxiom::Union);
     let full = journal_image(&[root_bytes.clone(), union_bytes.clone()]);
     let prefix = journal_image(std::slice::from_ref(&root_bytes));
-    let root_id = {
+    let (root_id, prefix_root) = {
         let directory = TestDirectory::new();
         let mut journal = ProofDagJournal::create(&directory.path).unwrap();
-        journal
+        let root_id = journal
             .apply_canonical_proof_bytes(root_bytes.clone())
             .unwrap()
-            .proof_id()
+            .proof_id();
+        (root_id, journal.proof_set_root().unwrap())
     };
 
     for cut in prefix.len()..full.len() {
@@ -299,6 +400,11 @@ fn every_incomplete_final_frame_recovers_only_the_committed_prefix() {
         let mut recovered = ProofDagJournal::open(&directory.path).unwrap();
         assert_eq!(recovered.len().unwrap(), 1, "cut={cut}");
         assert!(recovered.proof(root_id).unwrap().is_some(), "cut={cut}");
+        assert_eq!(
+            recovered.proof_set_root().unwrap(),
+            prefix_root,
+            "cut={cut}"
+        );
         assert_eq!(
             fs::metadata(directory.journal_path()).unwrap().len(),
             prefix.len() as u64,
@@ -915,6 +1021,14 @@ fn poisoned_public_handle_hides_state_and_keeps_its_lock() {
     ));
     assert!(matches!(journal.len(), Err(JournalError::Poisoned)));
     assert!(matches!(journal.is_empty(), Err(JournalError::Poisoned)));
+    assert!(matches!(
+        journal.proof_set_root(),
+        Err(JournalError::Poisoned)
+    ));
+    assert!(matches!(
+        journal.proof_set_proof(proof_id),
+        Err(JournalError::Poisoned)
+    ));
     assert!(matches!(
         journal.apply_canonical_proof_bytes(axiom_bytes(ZfcAxiom::Union)),
         Err(JournalError::Poisoned)

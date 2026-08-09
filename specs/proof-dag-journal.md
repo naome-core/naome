@@ -12,9 +12,9 @@ DAG by strict replay. Persisted identities, conclusions, or dependency indexes
 are never trusted because the format does not store them.
 
 Journal order is local recovery order. It is not proof consensus order,
-finality evidence, a block format, or economic settlement history. The journal defines
-no snapshots, compaction, pruning, garbage collection, state commitment,
-authenticated rollback detection, fork choice, rewards, fees, or networking.
+finality evidence, a block format, or economic settlement history. The journal
+defines no snapshots, compaction, pruning, garbage collection, trusted
+checkpoint distribution, fork choice, rewards, fees, or networking.
 
 ## Directory and exclusive ownership
 
@@ -136,6 +136,12 @@ the file to the preceding committed boundary, synchronizes that truncation,
 and only then returns the recovered prefix. A truncation or synchronization
 error fails recovery.
 
+`open_verified` performs this complete open and replay procedure first, then
+compares the reconstructed `ProofSetRoot` with one caller-supplied expected
+root. A mismatch returns no handle. Digest, replay, recovery, and stabilization
+errors therefore precede root mismatch. Verification is for the exact complete
+replayed set; a journal either behind or ahead of that root is rejected.
+
 ## Crash and corruption boundary
 
 Journal distinguishes a complete chained frame from an incomplete final
@@ -151,9 +157,10 @@ Accordingly:
 - an in-range damaged length at any frame boundary can make the entire
   remaining suffix indistinguishable from one incomplete append and may be
   truncated to the preceding committed boundary; and
-- replacement or truncation to an independently valid older prefix is not
-  authenticated until a future external state commitment or finalized
-  checkpoint exists.
+- `open` alone cannot detect replacement or truncation to an independently
+  valid older prefix; `open_verified` detects it only when the caller supplies
+  the expected complete-state root from a separately trusted checkpoint or
+  finalized source.
 
 The journal protects deterministic local recovery under its crash/torn-append
 model. It is not a malicious-filesystem authentication mechanism.
