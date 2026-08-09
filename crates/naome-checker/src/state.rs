@@ -51,8 +51,9 @@ impl ProofStateV0 {
     ///
     /// Every external proof cited by the checked normal form must already be
     /// present. This keeps the registry dependency-closed even when a checked
-    /// proof is moved from a different state.
-    pub fn register(&mut self, proof: CheckedProofV0) -> Result<(), ProofStateError> {
+    /// proof is moved from a different state. On success, the canonical proof
+    /// bytes not retained by this resolver state are returned to the caller.
+    pub fn register(&mut self, proof: CheckedProofV0) -> Result<Box<[u8]>, ProofStateError> {
         if let Some(existing_derivation_id) = self.proofs.get(&proof.proof_id) {
             let existing_statement_id = self
                 .derivations
@@ -112,7 +113,7 @@ impl ProofStateV0 {
         }
 
         let CheckedProofV0 {
-            normal_form: _,
+            normal_form,
             conclusion,
             statement_id,
             derivation_id,
@@ -135,7 +136,7 @@ impl ProofStateV0 {
         self.derivations.insert(derivation_id, statement_id);
         self.proofs.insert(proof_id, derivation_id);
 
-        Ok(())
+        Ok(normal_form.into_canonical_bytes())
     }
 
     pub(crate) fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProofV0<'_>> {

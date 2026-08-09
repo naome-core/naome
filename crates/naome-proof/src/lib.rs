@@ -12,6 +12,7 @@ mod normal_form;
 
 use std::error::Error;
 use std::fmt;
+use std::sync::OnceLock;
 
 use naome_foundation::{
     Formula, FormulaCodecError, FreeVariable, Replacement, Separation, ZfcAxiom,
@@ -91,6 +92,7 @@ impl ProofCertificateV0 {
     pub fn into_unchecked_normal_form(self) -> ProofNormalFormV0 {
         ProofNormalFormV0 {
             certificate: normal_form::normalize(self),
+            canonical_bytes: OnceLock::new(),
         }
     }
 }
@@ -99,16 +101,69 @@ impl ProofCertificateV0 {
 ///
 /// This type establishes structural identity only. The mathematical checker
 /// must still validate the contained certificate.
-#[derive(Debug, PartialEq, Eq)]
 #[must_use]
 pub struct ProofNormalFormV0 {
     certificate: ProofCertificateV0,
+    canonical_bytes: OnceLock<Box<[u8]>>,
 }
 
 impl ProofNormalFormV0 {
     /// Returns the canonical certificate carried by this normal form.
     pub const fn certificate(&self) -> &ProofCertificateV0 {
         &self.certificate
+    }
+
+    /// Returns the canonical bytes of this normal-form certificate.
+    pub fn canonical_bytes(&self) -> &[u8] {
+        self.canonical_bytes
+            .get_or_init(|| self.certificate.to_canonical_bytes().into_boxed_slice())
+    }
+
+    /// Reuses a supplied byte buffer when it exactly encodes this normal form.
+    ///
+    /// Returns `None` when the bytes differ. Equality is established against
+    /// this normal form's independently derived canonical encoding before the
+    /// supplied bytes can become identity-bearing content.
+    #[must_use]
+    pub fn with_matching_canonical_bytes(mut self, canonical_bytes: Box<[u8]>) -> Option<Self> {
+        let matches = match self.canonical_bytes.get() {
+            Some(expected) => expected.as_ref() == canonical_bytes.as_ref(),
+            None => self.certificate.to_canonical_bytes().as_slice() == canonical_bytes.as_ref(),
+        };
+        if !matches {
+            return None;
+        }
+        self.canonical_bytes = OnceLock::from(canonical_bytes);
+        Some(self)
+    }
+
+    /// Consumes this normal form and returns its canonical certificate bytes.
+    #[must_use]
+    pub fn into_canonical_bytes(self) -> Box<[u8]> {
+        let Self {
+            certificate,
+            canonical_bytes,
+        } = self;
+        canonical_bytes
+            .into_inner()
+            .unwrap_or_else(|| certificate.to_canonical_bytes().into_boxed_slice())
+    }
+}
+
+impl PartialEq for ProofNormalFormV0 {
+    fn eq(&self, other: &Self) -> bool {
+        self.certificate == other.certificate
+    }
+}
+
+impl Eq for ProofNormalFormV0 {}
+
+impl fmt::Debug for ProofNormalFormV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProofNormalFormV0")
+            .field("certificate", &self.certificate)
+            .finish()
     }
 }
 
