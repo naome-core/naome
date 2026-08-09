@@ -104,6 +104,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-storage"
+version = "0.1.0"
+dependencies = [
+ "naome-chain",
+ "naome-checker",
+ "naome-foundation",
+ "naome-ledger",
+ "naome-proof",
+ "sha2",
+]
+
+[[package]]
 name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,21 @@
+[package]
+name = "naome-storage"
+version = "0.1.0"
+edition = "2024"
+description = "Crash-consistent local storage for the NAOME proof DAG."
+license = "MIT"
+repository = "https://github.com/naome-core/naome"
+publish = false
+
+[dependencies]
+naome-chain = { path = "../naome-chain" }
+naome-ledger = { path = "../naome-ledger" }
+naome-proof = { path = "../naome-proof" }
+sha2 = { version = "0.11.0", default-features = false }
+
+[dev-dependencies]
+naome-checker = { path = "../naome-checker" }
+naome-foundation = { path = "../naome-foundation" }
+
+[lints]
+workspace = true
