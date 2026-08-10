@@ -5,11 +5,13 @@
 This document defines the prerelease V0 local address-management contract. It
 stores a bounded set of standard libp2p signed peer records and derives a
 small, deterministic, locally diversified set of dial candidates. The store is
-a routing input for a later discovery transport; it does not alter the
+a routing input for a later dynamic-session transport; it does not alter the
 [authenticated proof transport](authenticated-proof-transport.md).
 The transport-neutral [peer-record exchange](peer-record-exchange.md) may
 submit up to 32 ordered records through one atomic store transition without
-making those records proof-authorized peers.
+making those records proof-authorized peers. The separate
+[authenticated peer-record pull](authenticated-peer-record-pull.md) may obtain
+one such batch from an operator-configured bootstrap.
 
 V0 deliberately separates five facts:
 
@@ -34,20 +36,23 @@ address shape is exactly `/ip4/<address>/tcp/<nonzero-port>` or
 operator-controlled bootstrap addresses may be private, loopback, or otherwise
 local for development and private deployments. Duplicate peer identities and
 the local identity are invalid. The expected identity must still be confirmed
-by the authenticated libp2p handshake when a future bootstrap transport dials
+by the authenticated libp2p handshake when the outbound bootstrap client dials
 the address.
 
 Bootstrap peers are operator configuration, not signed-record storage. They
-are initial rendezvous points from which a later protocol may receive signed
-records. Only a configured bootstrap identity may be the source of a V0 store
-entry. The source is diversity provenance, not endorsement of the record
-subject. Bootstrap peers do not become proof peers, and a connection to one
-does not authorize proof requests or responses.
+are exact authenticated endpoints from which the outbound client may receive
+signed records. Only a configured bootstrap identity may be the source of a
+V0 store entry. The source is diversity provenance, not endorsement of the
+record subject. Bootstrap peers do not become proof peers, and a connection to
+one does not authorize proof requests or responses.
 
-This MR defines no bundled default list, DNS resolution, remote list update,
-or authenticated bootstrap socket/session binding. The transport-neutral batch
-bytes are defined separately in [Peer Record Exchange V0](peer-record-exchange.md).
-Supplying and updating bootstrap configuration is an operator responsibility.
+V0 defines no bundled default list, DNS resolution, remote list update,
+listener, or responder. The transport-neutral batch bytes are defined in
+[Peer Record Exchange V0](peer-record-exchange.md), and their dedicated
+outbound-only authenticated binding is defined in
+[Authenticated Peer Record Pull](authenticated-peer-record-pull.md).
+Supplying and updating bootstrap configuration remains an operator
+responsibility.
 
 ## Signed-record admission
 
@@ -158,9 +163,10 @@ rules are normative in [Peer Record Exchange](peer-record-exchange.md).
 
 ## Reachability boundary
 
-V0 records no dial result or reachability score. Receiving, validating,
-persisting, or selecting a record proves no address reachable. A later dynamic
-session layer may observe an authenticated successful connection to the exact
+V0 records no learned-candidate dial result or reachability score. Receiving,
+validating, persisting, selecting, or pulling a record proves no signed address
+reachable. A later dynamic session layer may observe an authenticated
+successful connection to the exact
 subject and address, but that runtime fact must remain separate from signed
 record authenticity, local receipt freshness, bootstrap provenance, and proof
 authorization.
@@ -337,9 +343,9 @@ authenticity, local receipt freshness, retained sequence watermarks, and
 deterministic source- and prefix-aware candidate selection. It does not define
 or claim:
 
-- a socket-bound discovery protocol, address gossip, dynamic proof sessions, or
-  automatic mutation of `StaticProofNetwork`; the transport-neutral batch
-  wrapper defines no socket or authenticated session;
+- a bootstrap responder, address gossip, dynamic proof sessions, or automatic
+  mutation of `StaticProofNetwork`; the separate outbound-only pull client
+  supplies batches but grants no learned identity a session or proof role;
 - DHT, DNS bootstrap, mDNS, rendezvous, NAT traversal, relay, hole punching,
   or external-address verification;
 - peer scoring, reputation, bans, operator identity, source independence,
@@ -350,7 +356,8 @@ or claim:
   protection from non-cooperating writers or filesystem attackers, or an
   online key-management policy.
 
-The next network slice must bind bounded record exchange to authenticated
-bootstrap sessions and define how dynamic discovery sessions are owned,
-expired, and rate-limited. Only a separately explicit authorization policy may
-decide which identities participate in proof exchange.
+The next focused network slice may define a bounded operator-run responder and
+record-publication policy. Dynamic learned-candidate sessions, their expiry and
+rate policy, and any proof-exchange authorization remain later separate
+contracts. Only an explicit authorization policy may decide which identities
+participate in proof exchange.

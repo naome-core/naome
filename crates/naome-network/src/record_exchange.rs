@@ -22,9 +22,9 @@ pub const PEER_RECORD_PULL_REQUEST_BYTES: usize = 0;
 
 /// A request for one bounded batch of signed peer records.
 ///
-/// The request is intentionally empty. A future authenticated transport binds
-/// its source through the session identity rather than through untrusted
-/// request bytes.
+/// The request is intentionally empty. [`crate::PeerRecordBootstrapClient`]
+/// binds its source through the Noise-authenticated peer identity rather than
+/// through untrusted request bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[must_use]
 pub struct PeerRecordPullRequest;

@@ -24,12 +24,12 @@ use super::{
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-struct TestDirectory {
+pub(crate) struct TestDirectory {
     path: PathBuf,
 }
 
 impl TestDirectory {
-    fn new(label: &str) -> Self {
+    pub(crate) fn new(label: &str) -> Self {
         loop {
             let sequence = TEMP_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = env::temp_dir().join(format!(
@@ -44,7 +44,7 @@ impl TestDirectory {
         }
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 

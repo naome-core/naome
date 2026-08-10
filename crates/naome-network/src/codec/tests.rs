@@ -7,7 +7,9 @@ use naome::proof_exchange::{
     PROOF_REQUEST_BYTES, PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse,
 };
 
-use super::{PROTOCOL, ProofCodec};
+use crate::{MAX_PEER_RECORDS_PER_BATCH, MAX_SIGNED_PEER_RECORD_BYTES, PeerRecordBatch};
+
+use super::{PEER_RECORD_PROTOCOL, PROTOCOL, PeerRecordCodec, ProofCodec};
 
 fn request_bytes() -> [u8; PROOF_REQUEST_BYTES] {
     let mut bytes = [0_u8; PROOF_REQUEST_BYTES];
@@ -153,4 +155,118 @@ fn maximum_response_is_accepted() {
     assert_eq!(decoded.len(), PROOF_RESPONSE_MAX_BYTES);
     assert_eq!(decoded.first(), Some(&0x5a));
     assert_eq!(decoded.last(), Some(&0x5a));
+}
+
+#[test]
+fn peer_record_request_and_empty_response_have_exact_framing() {
+    assert_eq!(PEER_RECORD_PROTOCOL.as_ref(), "/naome/peer-record-exchange");
+    let mut codec = PeerRecordCodec;
+
+    let mut request = Cursor::new(Vec::new());
+    assert_eq!(
+        block_on(codec.read_request(&PEER_RECORD_PROTOCOL, &mut request)).unwrap(),
+        crate::PeerRecordPullRequest
+    );
+    let mut trailing = Cursor::new(vec![0xff]);
+    assert_eq!(
+        block_on(codec.read_request(&PEER_RECORD_PROTOCOL, &mut trailing))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+    let mut encoded_request = Cursor::new(Vec::new());
+    block_on(codec.write_request(
+        &PEER_RECORD_PROTOCOL,
+        &mut encoded_request,
+        crate::PeerRecordPullRequest,
+    ))
+    .unwrap();
+    assert!(encoded_request.into_inner().is_empty());
+
+    let mut response = Cursor::new(vec![0]);
+    assert!(
+        block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut response))
+            .unwrap()
+            .is_empty()
+    );
+    let mut encoded_response = Cursor::new(Vec::new());
+    block_on(codec.write_response(
+        &PEER_RECORD_PROTOCOL,
+        &mut encoded_response,
+        PeerRecordBatch::new([]).unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(encoded_response.into_inner(), [0]);
+}
+
+#[test]
+fn peer_record_response_preflights_each_declared_bound() {
+    let mut codec = PeerRecordCodec;
+    let mut excess_count = Cursor::new(vec![
+        u8::try_from(MAX_PEER_RECORDS_PER_BATCH + 1).unwrap(),
+        0xff,
+    ]);
+    assert_eq!(
+        block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut excess_count))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(excess_count.position(), 1);
+
+    for (bytes, position) in [(vec![1, 0, 0], 3), (vec![1, 0x10, 0x01, 0xff], 3)] {
+        let mut input = Cursor::new(bytes);
+        assert_eq!(
+            block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut input))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(input.position(), position);
+    }
+
+    for bytes in [vec![1], vec![1, 0, 1]] {
+        let mut input = Cursor::new(bytes);
+        assert_eq!(
+            block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut input))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+}
+
+#[test]
+fn peer_record_response_rejects_trailing_and_reaches_the_exact_body_cap() {
+    let mut codec = PeerRecordCodec;
+    let mut trailing = Cursor::new(vec![0, 0xff]);
+    assert_eq!(
+        block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut trailing))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+
+    let mut maximum = Vec::with_capacity(crate::PEER_RECORD_BATCH_MAX_BYTES);
+    maximum.push(u8::try_from(MAX_PEER_RECORDS_PER_BATCH).unwrap());
+    for _ in 0..MAX_PEER_RECORDS_PER_BATCH {
+        maximum.extend_from_slice(
+            &u16::try_from(MAX_SIGNED_PEER_RECORD_BYTES)
+                .unwrap()
+                .to_be_bytes(),
+        );
+        maximum.resize(maximum.len() + MAX_SIGNED_PEER_RECORD_BYTES, 0xa5);
+    }
+    assert_eq!(maximum.len(), crate::PEER_RECORD_BATCH_MAX_BYTES);
+    let mut maximum = Cursor::new(maximum);
+    assert_eq!(
+        block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut maximum))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        maximum.position(),
+        u64::try_from(crate::PEER_RECORD_BATCH_MAX_BYTES).unwrap()
+    );
 }
