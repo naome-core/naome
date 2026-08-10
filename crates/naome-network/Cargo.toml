@@ -19,10 +19,12 @@ libp2p = { version = "0.56.0", default-features = false, features = [
     "yamux",
 ] }
 naome = { path = "../.." }
+naome-ledger = { path = "../naome-ledger" }
+naome-proof = { path = "../naome-proof" }
 naome-storage = { path = "../naome-storage" }
 
 [dev-dependencies]
-naome-ledger = { path = "../naome-ledger" }
+naome-foundation = { path = "../naome-foundation" }
 tokio = { version = "1", default-features = false, features = [
     "macros",
     "rt",

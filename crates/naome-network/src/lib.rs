@@ -7,9 +7,11 @@
 //! resistance, discovery, consensus, or proof selection.
 //!
 //! The caller owns the Tokio runtime, drives [`StaticProofNetwork::next_event`],
-//! and decides when an opaque response is admitted to its journal. This crate
-//! starts no background task and owns no [`ProofDagJournal`].
+//! routes correlated responses through a bounded dependency acquisition, and
+//! explicitly promotes the resulting opaque closure. This crate starts no
+//! background task and owns no [`ProofDagJournal`].
 
+mod acquisition;
 mod codec;
 
 use std::collections::HashMap;
@@ -28,11 +30,14 @@ use libp2p::{
     Swarm, SwarmBuilder, allow_block_list, connection_limits, noise, request_response, tcp, yamux,
 };
 use naome::proof_exchange::{
-    PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse, ProofResponseOutcome,
-    admit_proof_response, proof_response,
+    PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse, proof_response,
 };
 use naome_storage::{JournalError, ProofDagJournal};
 
+pub use acquisition::{
+    DependencyAcquisitionError, DependencyAcquisitionProgress, ProofDependencyAcquisition,
+    UnselectedProofClosure,
+};
 pub use libp2p::core::transport::ListenerId;
 pub use libp2p::{Multiaddr, PeerId, identity::Keypair};
 
@@ -189,12 +194,11 @@ impl StaticProofNetwork {
         self.swarm.listen_on(address).map_err(ListenError)
     }
 
-    /// Starts one proof request to an authorized static peer.
-    pub fn request_proof(
+    fn request_proof(
         &mut self,
         peer_id: PeerId,
         request: ProofRequest,
-    ) -> Result<(), RequestStartError> {
+    ) -> Result<request_response::OutboundRequestId, RequestStartError> {
         let address = self
             .peers
             .get(&peer_id)
@@ -225,7 +229,7 @@ impl StaticProofNetwork {
             },
         );
         debug_assert!(replaced.is_none());
-        Ok(())
+        Ok(request_id)
     }
 
     /// Waits for the next proof-network event.
@@ -288,6 +292,7 @@ impl StaticProofNetwork {
                         });
                     }
                     Some(NetworkEvent::Response(ReceivedProofResponse {
+                        request_id,
                         peer_id: peer,
                         request: pending.request,
                         response,
@@ -390,6 +395,7 @@ impl fmt::Debug for InboundProofRequest {
 /// One response cryptographically correlated with its original request.
 #[must_use]
 pub struct ReceivedProofResponse {
+    request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
     request: ProofRequest,
     response: ProofResponse,
@@ -411,20 +417,13 @@ impl ReceivedProofResponse {
     pub const fn is_unavailable(&self) -> bool {
         self.response.is_unavailable()
     }
-
-    /// Strictly admits this response against its immutable requested address.
-    pub fn admit(
-        self,
-        journal: &mut ProofDagJournal,
-    ) -> Result<ProofResponseOutcome, JournalError> {
-        admit_proof_response(journal, self.request, self.response)
-    }
 }
 
 impl fmt::Debug for ReceivedProofResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ReceivedProofResponse")
+            .field("request_id", &self.request_id)
             .field("peer_id", &self.peer_id)
             .field("request", &self.request)
             .field("response", &self.response)

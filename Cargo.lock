@@ -1720,9 +1720,7 @@ dependencies = [
 name = "naome"
 version = "0.1.0"
 dependencies = [
- "naome-checker",
  "naome-foundation",
- "naome-ledger",
  "naome-proof",
  "naome-storage",
 ]
@@ -1767,7 +1765,9 @@ dependencies = [
  "async-trait",
  "libp2p",
  "naome",
+ "naome-foundation",
  "naome-ledger",
+ "naome-proof",
  "naome-storage",
  "tokio",
 ]

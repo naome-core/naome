@@ -71,52 +71,64 @@ Transport-specific writing and buffer ownership remain outside this contract;
 the authenticated libp2p binding documents its one required owned response
 copy.
 
-## Receiving and admission
+## Receiving and closure promotion
 
-A nonempty response is untrusted candidate data. The receiver must pass its
-owned bytes and the immutable request `ProofId` exclusively to
-`ProofDagJournal::apply_canonical_proof_bytes_with_expected_id`. The resulting
-order remains:
+A nonempty response is untrusted candidate data. The immutable request
+`ProofId` must remain coupled to the owned bytes; neither the response nor a
+peer-supplied field may replace that request context. This transport-neutral
+codec deliberately exposes no raw response-to-journal admission helper.
 
-1. proof-certificate decoding;
-2. root-normal-form canonicality verification;
-3. deterministic mathematical checking and dependency resolution;
-4. checked `ProofId` comparison with the request address;
-5. state registration; and
-6. durable journal commit.
+The concrete authenticated transport consumes responses through a bounded
+single-peer closure acquisition. It decodes each response, requires exact
+root-normal-form canonical bytes, and discovers only the normal form's direct
+`ProofReference` addresses. It stops at selected dependencies, deduplicates
+exact addresses, rejects cycles, and returns at most eight addresses observed
+absent during discovery, in dependency-first order with the requested root
+last. Selected state may grow before completion or promotion. These candidates
+remain unselected and have not yet been mathematically checked or proven to
+match their requested addresses.
 
-Malformed, noncanonical, invalid, dependency-incomplete, wrong-address, and
-duplicate candidates preserve the existing nested `JournalError` and
-`LedgerError` precedence. Every such failure leaves the ledger, authenticated
-proof set, proof-set root, retained records, and journal bytes unchanged. A
-valid proof for a different requested ID therefore cannot become locally
-visible as a side effect of rejecting the response.
+The opaque completed closure has one consuming promotion operation through
+`ProofDagJournal::apply_rooted_canonical_proof_batch`. The authoritative order
+then remains:
 
-An empty response performs no proof admission or journal write. The receiver
-still requires a healthy journal handle before reporting the `Unavailable`
-outcome.
+1. journal health verification;
+2. batch count, duplicate expected-address, and root-last preflight;
+3. for each candidate in order: proof-certificate decoding, canonicality
+   verification, deterministic mathematical checking against selected state
+   plus earlier staged dependencies, checked `ProofId` comparison with its
+   immutable request address, and staged state registration;
+4. requested-root reachability validation over all staged records; and
+5. atomic state merge followed by one durable rooted transaction commit.
+
+Malformed or noncanonical responses fail during acquisition with a
+`DependencyAcquisitionError` and never reach the journal. For a completed
+closure, invalid, dependency-incomplete, wrong-address, and duplicate
+candidates preserve the existing nested `JournalError` -> `ProofBatchError` ->
+`LedgerError` precedence. Every ordinary pre-commit failure leaves the ledger,
+authenticated proof set, proof-set root, retained records, and journal bytes
+unchanged. A valid proof for a different requested ID therefore cannot become
+locally visible as a side effect of rejecting its closure. Fetched dependencies
+are not admitted incrementally.
+
+An empty response terminates the current one-peer acquisition, discards its
+quarantine, and performs no proof admission or journal write.
 
 ## Dependency boundary
 
-Proof references remain dependency-first. If a response cites a `ProofId` that
-is absent from the selected local state, admission returns the existing
-`UnknownProofReference` checker error. This exchange performs no recursive
-fetch, retry, orphan retention, quarantine, or raw unaddressed fallback. The
-same response may be retried only after a higher layer has separately admitted
-the missing dependency.
+Proof references remain dependency-first. This transport-neutral message codec
+does not fetch them itself. The concrete static transport may acquire up to
+eight root-reachable absent addresses sequentially from the same authenticated
+peer, while holding received bytes in bounded in-memory quarantine. It performs
+no raw unaddressed fallback and selects no dependency before the complete
+closure is atomically validated.
 
-This restriction is intentional. A malicious peer can otherwise use a wrong
-or expensive candidate to trigger unbounded dependency work before its actual
-`ProofId` is known. Per-peer and global dependency, byte, time, concurrency,
-and checker-work budgets belong to the later network scheduler.
-
-Ledger State and the Proof DAG Journal separately provide a bounded atomic
-rooted proof transaction. A future scheduler may quarantine a complete
-dependency-first closure and submit it once through
-`apply_rooted_canonical_proof_batch`. Every quarantined candidate remains bound
-to its immutable requested `ProofId`, the requested root must be final, and
-unrelated valid candidates are rejected. This exchange does not construct that
-closure or admit dependencies incrementally.
+This restriction is intentional. A malicious peer can send a wrong-address
+candidate whose missing references are discovered before mathematical checking
+can derive its actual `ProofId`. Fixed candidate and request limits bound that
+work; retaining the complete closure unselected prevents such a response from
+smuggling dependencies into selected state. Retries, multi-peer fallback,
+rolling budgets, and total-job deadlines remain later session policy.
 
 ## Explicit exclusions
 
@@ -127,11 +139,12 @@ This contract does not define:
 - peer discovery, bootstrap seeds, address management, DHTs, gossip, scoring,
   bans, retries, or multi-peer selection;
 - batch wire messages, multiplexed correlation IDs, announcements, negative
-  caches, automatic dependency fetching, or orphan pools;
+  caches, persistent orphan pools, or proof availability claims;
 - proof-set checkpoint trust, signatures, fork choice, finality, reorgs, or
   consensus;
 - economic transactions, rewards, fees, balances, or settlement; or
 - compression, erasure coding, snapshots, pruning, or availability proofs.
 
 The next networking layers must preserve this request-address binding and may
-not expose raw unaddressed proof admission to peer-provided response bytes.
+not expose raw unaddressed or incremental proof admission to peer-provided
+response bytes.

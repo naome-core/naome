@@ -8,8 +8,9 @@
 //! [`PROOF_RESPONSE_MAX_BYTES`] before allocating its body.
 //!
 //! This module defines no sockets, peers, retries, dependency fetching,
-//! authentication, consensus, or proof selection. Received proof bytes become
-//! locally visible only through expected-identity-bound journal admission.
+//! authentication, consensus, or proof selection. Received proof bytes remain
+//! unselected until a higher layer explicitly promotes a complete addressed
+//! closure.
 
 use std::error::Error;
 use std::fmt;
@@ -76,7 +77,7 @@ impl ProofResponse {
     ///
     /// An empty message is `Unavailable`. Every nonempty message is a proof
     /// candidate whose structure, canonicality, mathematics, dependencies,
-    /// and identity remain untrusted until [`admit_proof_response`] succeeds.
+    /// and identity remain untrusted.
     pub fn from_wire_bytes(bytes: Vec<u8>) -> Result<Self, ProofExchangeWireError> {
         if bytes.len() > PROOF_RESPONSE_MAX_BYTES {
             return Err(ProofExchangeWireError::ResponseTooLong {
@@ -116,16 +117,6 @@ impl fmt::Debug for ProofResponse {
     }
 }
 
-/// The result of processing one well-framed response.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[must_use]
-pub enum ProofResponseOutcome {
-    /// The response carried no candidate proof bytes.
-    Unavailable,
-    /// The response proof was strictly checked, address-bound, and committed.
-    Accepted,
-}
-
 /// Returns the locally retained response bytes for one request, when present.
 ///
 /// The returned slice is borrowed directly from the immutable accepted record;
@@ -138,28 +129,6 @@ pub fn proof_response(
     Ok(journal
         .proof(request.proof_id())?
         .map(|record| record.canonical_proof_bytes()))
-}
-
-/// Processes one response against its immutable request context.
-///
-/// A proof candidate is always delegated to strict expected-identity journal
-/// admission. The checked [`ProofId`] must equal the request address before any
-/// ledger, authenticated-set, or journal mutation can occur. Missing
-/// dependencies are returned unchanged; this function never fetches, stores,
-/// or retries them automatically.
-pub fn admit_proof_response(
-    journal: &mut ProofDagJournal,
-    request: ProofRequest,
-    response: ProofResponse,
-) -> Result<ProofResponseOutcome, JournalError> {
-    let Some(candidate_proof_bytes) = response.candidate_proof_bytes else {
-        let _ = journal.len()?;
-        return Ok(ProofResponseOutcome::Unavailable);
-    };
-
-    journal
-        .apply_canonical_proof_bytes_with_expected_id(candidate_proof_bytes, request.proof_id())?;
-    Ok(ProofResponseOutcome::Accepted)
 }
 
 /// A fail-closed proof-exchange message-shape error.
