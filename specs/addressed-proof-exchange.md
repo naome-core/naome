@@ -110,6 +110,14 @@ or expensive candidate to trigger unbounded dependency work before its actual
 `ProofId` is known. Per-peer and global dependency, byte, time, concurrency,
 and checker-work budgets belong to the later network scheduler.
 
+Ledger State and the Proof DAG Journal separately provide a bounded atomic
+rooted proof transaction. A future scheduler may quarantine a complete
+dependency-first closure and submit it once through
+`apply_rooted_canonical_proof_batch`. Every quarantined candidate remains bound
+to its immutable requested `ProofId`, the requested root must be final, and
+unrelated valid candidates are rejected. This exchange does not construct that
+closure or admit dependencies incrementally.
+
 ## Explicit exclusions
 
 This contract does not define:
@@ -118,11 +126,11 @@ This contract does not define:
 - timeouts, backpressure, rate limits, connection limits, or worker pools;
 - peer discovery, bootstrap seeds, address management, DHTs, gossip, scoring,
   bans, retries, or multi-peer selection;
-- batches, multiplexed correlation IDs, announcements, negative caches,
-  automatic dependency fetching, or orphan pools;
+- batch wire messages, multiplexed correlation IDs, announcements, negative
+  caches, automatic dependency fetching, or orphan pools;
 - proof-set checkpoint trust, signatures, fork choice, finality, reorgs, or
   consensus;
-- transactions, rewards, fees, balances, or economic settlement; or
+- economic transactions, rewards, fees, balances, or settlement; or
 - compression, erasure coding, snapshots, pruning, or availability proofs.
 
 The next networking layers must preserve this request-address binding and may

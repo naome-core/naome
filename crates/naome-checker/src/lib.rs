@@ -24,7 +24,8 @@ use naome_proof::{
 };
 use sha2::{Digest, Sha256};
 
-pub use state::{ProofState, ProofStateError};
+use state::ProofResolver;
+pub use state::{ProofState, ProofStateBatch, ProofStateError};
 
 const STATEMENT_ID_DOMAIN: &[u8] = b"naome:statement\0";
 const PROOF_ID_DOMAIN: &[u8] = b"naome:proof\0";
@@ -98,9 +99,9 @@ pub fn check(certificate: &ProofCertificate) -> Result<Formula, CheckError> {
     .map(|(conclusion, _, _)| conclusion)
 }
 
-fn check_with_canonical_conclusion(
+fn check_with_canonical_conclusion<R: ProofResolver + ?Sized>(
     certificate: &ProofCertificate,
-    proof_state: &ProofState,
+    proof_state: &R,
     identity_mode: IdentityMode,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
     let steps = certificate.steps();
@@ -238,6 +239,13 @@ pub fn check_normal_form_with_state(
     normal_form: ProofNormalForm,
     proof_state: &ProofState,
 ) -> Result<CheckedProof, CheckError> {
+    check_normal_form_with_resolver(normal_form, proof_state)
+}
+
+fn check_normal_form_with_resolver(
+    normal_form: ProofNormalForm,
+    proof_state: &(impl ProofResolver + ?Sized),
+) -> Result<CheckedProof, CheckError> {
     let (conclusion, canonical_conclusion, derivation_id) = check_with_canonical_conclusion(
         normal_form.certificate(),
         proof_state,
@@ -334,11 +342,11 @@ fn preflight_schema_depth(step: u32, parameter_count: usize) -> Result<(), Check
     Ok(())
 }
 
-fn derive_step(
+fn derive_step<R: ProofResolver + ?Sized>(
     step: u32,
     proof_step: &ProofStep,
     results: &[Option<CheckedStep>],
-    proof_state: &ProofState,
+    proof_state: &R,
     remaining_work: &mut usize,
 ) -> Result<DerivedStep, CheckError> {
     let formula = match proof_step {

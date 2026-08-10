@@ -221,11 +221,13 @@ It does not define or claim:
   request/checker cancellation, or rolling byte/CPU budgets;
 - Sybil resistance, eclipse resistance from network diversity, fork choice,
   checkpoints, signatures, finality, or consensus;
-- transactions, balances, fees, rewards, or economic settlement; or
-- batches, compression, erasure coding, snapshots, pruning, or proof
-  availability guarantees.
+- economic transactions, balances, fees, rewards, or settlement; or
+- batch transport messages, compression, erasure coding, snapshots, pruning,
+  or proof availability guarantees.
 
-The next network slice is a bounded dependency/admission scheduler. Discovery
-and peer-diversity policy follow separately. A consensus-selected checkpoint
-and linear settlement/economy remain later layers and must not be inferred from
-authenticated transport peers.
+The next network slice is a bounded dependency/admission scheduler. It must
+quarantine a complete addressed closure and use the journal's atomic rooted
+proof transaction rather than admitting fetched dependencies incrementally.
+Discovery and peer-diversity policy follow separately. A consensus-selected
+checkpoint and linear settlement/economy remain later layers and must not be
+inferred from authenticated transport peers.

@@ -2,20 +2,18 @@
 
 ## Status and scope
 
-This document defines the deterministic in-memory transition from one accepted
-NAOME proof state to the next. It is a prerelease protocol contract and may
-change before the first stable protocol release.
+This document defines deterministic in-memory transitions over the selected
+NAOME proof state. It is a prerelease protocol contract and may change before
+the first stable protocol release.
 
-One transition processes exactly one Foundation proof certificate. The ledger
-provides an owned-certificate authoring path, a strict canonical proof-byte
-admission path, and an addressed strict path that additionally requires the
-checked proof to have one caller-supplied expected `ProofId`. It does not define
-a block envelope, block identifier, persistence, undo, reorganization, pruning,
-rewards, fees, networking, or human-readable source syntax.
+Ledger provides owned-certificate authoring, strict canonical-byte admission,
+expected-address-bound single-proof admission, and bounded atomic rooted proof
+transactions. It does not define source syntax, networking, persistence,
+blocks, consensus, undo, reorganization, pruning, rewards, or fees.
 
-## State
+## Selected state
 
-Ledger State owns one checked `ProofState`. That state contains:
+`LedgerState` owns one checked `ProofState`. That state contains:
 
 - one `ProofId -> DerivationId` entry for every accepted concrete proof;
 - one `DerivationId -> StatementId` entry for every accepted inference DAG;
@@ -23,170 +21,238 @@ Ledger State owns one checked `ProofState`. That state contains:
 - the canonical conclusion length required by deterministic reference-work
   accounting.
 
-Only a successfully checked proof may add entries. Existing entries are never
-replaced. Identity conflicts fail closed.
+Only successfully checked proofs may add entries. Existing entries are never
+replaced. Proof, derivation, and statement identity conflicts fail closed.
 
-## Single-proof transition
+The state is monotonically growing but is not an order-free mergeable CRDT.
+Separate states may select different exact proof artifacts for one
+`DerivationId`; the first artifact already selected causes a later alternative
+to fail as a duplicate derivation. Consensus selection and state merging remain
+outside this contract.
 
-Given one structurally valid `ProofCertificate` and the accepted
-pre-transition state, Ledger applies this order:
+## Single-proof transitions
 
-1. derive the certificate's canonical root-proof normal form;
-2. mathematically check that normal form exactly once while resolving every
-   reachable `ProofReference` exclusively from the unchanged pre-transition
+### Owned-certificate authoring
+
+The authoring path accepts one constructed `ProofCertificate` and:
+
+1. derives its canonical root-proof normal form;
+2. mathematically checks that normal form once against the unchanged selected
    state;
-3. compute its `StatementId`, `DerivationId`, and `ProofId` as specified by
-   Proof Certificate;
-4. for addressed admission, require that checked `ProofId` to equal the
-   caller-supplied expected `ProofId`;
-5. register the checked proof without replacing any existing state; and
-6. return an immutable accepted-proof record containing the canonical proof
-   payload, its direct proof dependencies, and the three identities.
+3. computes its `StatementId`, `DerivationId`, and `ProofId`;
+4. registers the checked proof without replacing existing state; and
+5. returns its accepted proof record.
 
-The candidate proof is not visible during step 2. A reference succeeds if and
-only if its exact `ProofId` is present in the unchanged pre-transition state.
+The authoring path may normalize representation noise. It is not the external
+byte-admission boundary.
 
-The existing Proof Certificate limits bound the only proof processed by a
-transition. Ledger adds no batch or caller-configurable resource limit.
+### Strict canonical-byte admission
 
-## Strict canonical byte admission
+The strict path accepts one owned byte buffer and processes it in this order:
 
-The strict byte entry point processes external proof-certificate bytes in this
-order:
-
-1. structurally decode exactly one complete certificate from its canonical
-   wire encoding;
+1. decode exactly one structurally valid complete proof certificate;
 2. derive its canonical root-proof normal form;
-3. require the submitted bytes to equal the encoded normal form exactly;
-4. retain the submitted bytes as the normal-form payload only after that
-   exact equality has been established;
-5. mathematically check that normal form exactly once against the unchanged
-   pre-transition state; and
-6. for addressed admission, compare the checked `ProofId` with the expected
-   content address; and
-7. atomically register the checked proof through the same state transition
-   described above.
+3. require the submitted bytes to equal that normal form's encoding exactly;
+4. mathematically check the normal form once against the unchanged selected
+   state;
+5. for addressed admission, require the checked `ProofId` to equal the
+   immutable expected `ProofId`;
+6. atomically register the checked proof; and
+7. return its accepted proof record.
 
-Structural decoding errors precede canonicality, checking, and registration
-errors. A structurally valid representation that differs from its canonical
-root-proof normal form returns `NonCanonicalProof` before any mathematical step
-or external proof reference is evaluated. Checker errors then precede
-`ProofIdMismatch`, which precedes state-registration errors. The identity
-mismatch reports both the expected and checked identities. Every failure leaves
-the state unchanged.
+Structural decoding errors precede `NonCanonicalProof`. Canonicality errors
+precede checker errors, checker errors precede `ProofIdMismatch`, and identity
+mismatch precedes state-registration errors. The identity mismatch reports both
+expected and actual checked IDs.
 
-The expected identity is request context rather than proof content. It is
-compared with the `ProofId` derived from the fully checked normal form, never
-with a raw hash or caller-supplied identity field, and is not retained in the
-accepted record. The unaddressed strict entry point binds no external request
-address. Bytes received for a specific requested `ProofId` must use addressed
-admission. This binding does not prove peer authenticity, freshness, consensus
-selection, or statement novelty.
+The expected ID is request context, not proof content. It is compared with the
+identity derived from the fully checked normal form, never with a raw byte hash
+or caller-supplied field, and is not retained in the accepted record.
 
-The owned-certificate authoring path continues to normalize its input before
-checking. It must not be used as a substitute for the strict external-byte
-boundary.
+The candidate is invisible while checking. Every external proof reference must
+resolve from the unchanged selected state. Every error leaves all state
+unchanged.
 
-## Accepted proof record
+## Atomic rooted proof transactions
 
-Every successful transition returns one `AcceptedProofRecord`. Its intrinsic
-proof content consists of:
+A proof transaction admits one bounded dependency closure all-or-none. Two
+strict entry points share the same transition:
+
+- the unaddressed path accepts canonical proof byte buffers, derives every
+  actual `ProofId`, and is reserved for trusted local construction and journal
+  replay; and
+- the addressed path accepts one immutable `requested_root` plus
+  `AddressedProofCandidate` values that pair each owned canonical byte buffer
+  with its immutable expected `ProofId`.
+
+Network-derived closures must use the addressed path. Raw peer-provided bytes
+must not be routed through unaddressed admission.
+
+### Bounds and shape
+
+A transaction contains `1..=8` candidates. Each candidate independently
+remains subject to the Proof Certificate byte, step, formula-node, and checker
+work limits. The maximum implied candidate payload is eight certificates, or
+`33_554_432` bytes; there is no caller-configurable batch limit.
+
+The caller supplies dependency-first order. Ledger never sorts, retries,
+deduplicates, or partially accepts candidates. In an addressed transaction:
+
+- every expected `ProofId` is unique;
+- the final candidate's expected ID equals `requested_root`; and
+- the final candidate is the transaction root.
+
+Shape preflight occurs before proof work in this order: reject an empty batch,
+reject more than eight candidates, reject the first duplicate expected ID in
+input order, then require the requested root to be final.
+
+### Staged checking
+
+After shape preflight, candidates are processed in input order. Candidate `i`
+can resolve exact proof references from:
+
+- the immutable selected state that existed before the transaction; and
+- successfully checked candidates at indices below `i` in this transaction.
+
+It cannot resolve itself or a later candidate. A missing or forward reference
+therefore returns the ordinary checker `UnknownProofReference` at the current
+candidate and proof step.
+
+Each candidate follows the strict single-proof order:
+
+1. decode;
+2. verify canonical root-proof normal form;
+3. mathematically check and derive its three identities;
+4. when addressed, compare its actual and expected `ProofId`;
+5. validate proof, dependency, derivation, and statement registration against
+   the selected base plus earlier staged candidates; and
+6. stage its accepted record without mutating selected state.
+
+The error identifies the candidate index, retains its expected ID when one was
+provided, and preserves the complete underlying `LedgerError` as its source.
+The first candidate error stops processing and discards all staged state.
+
+### Root closure and smuggling resistance
+
+After every candidate succeeds individually, Ledger computes reachability from
+the final actual `ProofId` over direct exact-`ProofId` dependencies in the
+checked normal forms. Every candidate must be transitively reachable, including
+through other candidates. Dependencies already present in selected state are
+allowed but are not transaction candidates.
+
+Reachability uses exact `ProofId`, never `StatementId`, `DerivationId`, an
+expected address without a matching checked proof, or discarded presentation
+steps. The first unreachable candidate in input order returns
+`UnreachableCandidate` and discards the complete transaction. Consequently, a
+valid unrelated proof cannot be bundled into selected state, even when all
+individual proofs are mathematically valid.
+
+The combination of dependency-first resolution and root closure also proves
+that a successful transaction adds an acyclic, dependency-closed subgraph.
+
+### Commit and atomicity
+
+Checked candidates are held in a private overlay. The overlay resolves staged
+proofs before the immutable base and stores only transaction-local proof,
+derivation, and statement entries. It neither clones nor rebuilds the complete
+selected state.
+
+Only after candidate checking and root closure both succeed are staged entries
+merged into `ProofState`. The corresponding accepted records are then moved
+into the authenticated proof set. All insertion failure conditions were
+validated while selected state was unchanged, so this final internal merge has
+no recoverable failure path.
+
+A successful transaction inserts every candidate exactly once. Any shape,
+decode, canonicality, checker, expected-address, registration, or reachability
+error leaves all of these unchanged:
+
+- proof, derivation, and statement registries;
+- retained records;
+- `ProofDag::len`;
+- the authenticated Patricia tree;
+- `ProofSetRoot`; and
+- membership and non-membership witnesses.
+
+Input ownership is consumed by the call even when admission fails; atomicity
+applies to selected state, not recovery of caller-owned buffers.
+
+## Accepted proof records
+
+Every successful candidate produces one immutable `AcceptedProofRecord` whose
+intrinsic content is:
 
 - the exact canonical root-proof-normal-form certificate bytes;
-- the checked `ProofId`, `DerivationId`, and `StatementId`; and
+- its checked `ProofId`, `DerivationId`, and `StatementId`; and
 - every directly cited `ProofId`, exactly once, in canonical normal-form step
   order.
 
-Direct dependencies are derived only from root-reachable `ProofReference`
-leaves in the checked normal form. They do not include local inference-step
-indices or transitive dependencies. Exact duplicate reference leaves have
-already been interned by normalization. The dependency order is deterministic
-but has no additional priority or execution meaning.
+Direct dependencies include only root-reachable `ProofReference` leaves. They
+exclude transitive dependencies and local inference indices. Exact duplicate
+reference leaves have already been interned by normalization.
 
-Because every direct dependency must already belong to the unchanged
-pre-transition state, records accepted through any valid transition sequence
-form an acyclic proof-dependency graph. This graph describes mathematical
-proof reuse only. It does not define consensus order, fork choice, snapshot
-selection, or the topology of a future block protocol.
+The record has no public constructor and exposes no mutable bytes or dependency
+list. Submitted owned bytes become the retained payload without an explicit
+proof-sized clone after exact canonical equality is established. Storage may
+compact the allocation while converting ownership; pointer identity is not a
+protocol property.
 
-The record has no public constructor, and neither its bytes nor dependencies
-are mutable. It is a transition result and proof-payload record, not a block
-envelope, proof-state snapshot, persistence format, or evidence of consensus
-inclusion. Replaying or importing its bytes must execute strict canonical byte
-admission again; the redundant identities and dependency index must be derived
-again rather than trusted.
+Records are proof-DAG nodes, not block envelopes, state snapshots, consensus
+receipts, or evidence of novelty. Replaying their bytes must perform strict
+admission again; retained identities and dependency indexes are derived
+metadata and are never trusted on import.
 
-## Retained proof DAG
+## Retained proof DAG and authenticated set
 
-`ProofDag` owns one `LedgerState` and retains every record returned by its
-strict canonical-byte admission in the authenticated set defined by
-Authenticated Proof Set. A retained proof is addressed directly by its checked
-`ProofId`; it adds no redundant `BlockId`, wrapper encoding, height, or linear
-proof-parent field. The canonical proof-certificate bytes are the node payload,
-and the record's direct `ProofId` dependencies are its outgoing DAG edges.
+`ProofDag` privately owns one `LedgerState` and one
+`AuthenticatedProofSet<AcceptedProofRecord>`. The authenticated set directly
+owns records, so there is no second record map that can diverge.
 
-The authenticated set directly owns the retained records and provides lookup,
-an insertion-order-independent `ProofSetRoot`, and compact membership and
-non-membership proofs. It replaces a separate record map rather than adding a
-second index that could diverge. The root binds the exact selected `ProofId`
-set, not statement novelty, consensus selection, or finality.
+Single-proof success inserts one record. Rooted-transaction success inserts all
+records in supplied dependency-first order and returns the final root record.
+The resulting `ProofSetRoot` binds the exact selected `ProofId` set and is
+independent of insertion order or transaction grouping. Journal digest order
+remains a separate local-recovery property.
 
-The checked ledger and authenticated proof set are private and advance together.
-Callers cannot insert records, identities, or dependency edges directly. A
-failed decode, canonicality check, mathematical check, expected-identity check,
-dependency lookup, or registration leaves both structures unchanged. A
-successful admission moves the returned record into the authenticated set
-without copying its proof payload.
+Callers cannot insert unchecked bytes, identities, dependency edges, or
+authenticated-set leaves directly. A successful in-memory transition does not
+establish durability; the separate
+[Proof DAG Journal](proof-dag-journal.md) defines atomic persistent proof
+transactions and crash recovery.
 
-Every dependency must already belong to the unchanged selected state before a
-node is admitted. Starting from an empty state, this dependency-first rule
-proves inductively that retained edges are acyclic. Admission creates no
-implicit relationship between nodes that do not cite one another. Internal
-retention order has no causal or consensus meaning.
+## Resource and performance boundary
 
-Replay means submitting retained canonical proof bytes to a fresh `ProofDag`
-in dependency-first order. Records are revalidated rather than imported as
-trusted metadata. Out-of-order input fails on its first missing dependency and
-may be retried after that dependency is admitted.
+Every candidate is decoded, canonicality-checked, and mathematically checked
+once. The overlay retains at most eight candidates and performs lookups against
+the selected base rather than cloning it. Committing staged registry entries is
+bounded by transaction size and logarithmic selected-state lookup/insertion;
+it must not scan or rebuild unrelated selected state.
 
-This selected proof state is not an order-free mergeable CRDT. Separate states
-may accept different proof artifacts with one `DerivationId`; replaying their
-union accepts the first artifact and rejects the later derivation duplicate.
-Fork selection, state merging, and finality therefore remain consensus policy.
+Canonical payloads move from caller-owned buffers into accepted records.
+Authenticated-set insertion hashes only proof identities. The journal streams
+retained slices into one transaction body and digest rather than constructing a
+second aggregate proof buffer.
 
-## Atomicity and errors
-
-Normalization and mathematical checking do not mutate the pre-transition state.
-Registration validates every proof, dependency, derivation, and statement
-identity condition before inserting anything. Consequently, every error leaves
-the state, retained record tree, and `ProofSetRoot` exactly unchanged and a
-successful call inserts exactly one checked proof.
-
-The strict byte path follows the decode, canonicality, checking, optional
-expected-identity comparison, and registration order specified above. The
-authoring path follows normalization, checking, and registration. Within
-checking and registration, the deterministic error order defined by Proof
-Certificate remains unchanged. Ledger errors retain the complete underlying
-source error when one exists.
+These are implementation obligations, not permission to weaken deterministic
+certificate or checker limits.
 
 ## Future consensus boundary
 
-One proof-DAG node contains exactly one canonical proof. The mathematical proof
-graph is fixed by checked `ProofReference` edges and has no global linear
-parent. A proof merely received from the network, or otherwise absent from the
-selected state, is unavailable to resolve a reference.
+Mathematical checking decides whether a proof is valid. A successful local
+transaction only adds a root-closed proof dependency subgraph to one selected
+local state. It does not establish network availability, peer honesty,
+statement novelty, consensus inclusion, finality, rewards, or economic
+settlement.
 
-The consensus topology and the rule that selects or combines accepted
-proof-state snapshots remain outside this contract. A future linear economic
-or settlement history is separate from the already-defined acyclic proof DAG.
+The mathematical graph is fixed by exact checked `ProofReference` edges and has
+no implicit linear parent. A future block or checkpoint protocol may commit a
+selected proof-state root, but that policy remains separate from Ledger State.
 
-Whether a `StatementId` is new to a consensus-selected state is future block
-policy. It is not intrinsic proof content and is therefore absent from the
-accepted proof record.
+## Explicit exclusions
 
-This ledger-state contract does not define snapshots, external checkpoint
-distribution, fork choice, finality, rewards, fees, producer authentication,
-or networking. Authenticated Proof Set defines the selected proof-set
-commitment. The separate Proof DAG Journal contract defines local
-crash-consistent replay storage and exact expected-root verification for one
-selected `ProofDag`.
+This contract defines no automatic dependency fetching, quarantine, retry,
+batch network message, unordered topological sort, partial success, dynamic
+limit, public arbitrary proof resolver, generic rollback, deletion,
+reorganization, snapshot, compaction, pruning, source syntax, networking,
+block format, consensus, checkpoint trust, finality, rewards, fees, balances,
+or settlement.

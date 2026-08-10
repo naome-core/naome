@@ -5,7 +5,7 @@ use std::fmt;
 use naome_foundation::Formula;
 use naome_proof::{DerivationId, ProofId, ProofStep, StatementId};
 
-use crate::CheckedProof;
+use crate::{CheckError, CheckedProof};
 
 /// The checked proof conclusions available to resolve external references.
 ///
@@ -54,21 +54,110 @@ impl ProofState {
     /// proof is moved from a different state. On success, the canonical proof
     /// bytes not retained by this resolver state are returned to the caller.
     pub fn register(&mut self, proof: CheckedProof) -> Result<Box<[u8]>, ProofStateError> {
-        if let Some(existing_derivation_id) = self.proofs.get(&proof.proof_id) {
+        let empty = Self::new();
+        ProofStateBatch {
+            base: &empty,
+            staged: self,
+        }
+        .register(proof)
+    }
+
+    /// Runs one synchronous checked-proof transaction against this state.
+    ///
+    /// Registrations made through `operation` resolve earlier registrations in
+    /// the same transaction but remain invisible in this state until the
+    /// operation succeeds. An error drops the complete staged transaction.
+    pub fn apply_batch<T, E>(
+        &mut self,
+        operation: impl FnOnce(&mut ProofStateBatch<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut staged = Self::new();
+        let result = {
+            let mut batch = ProofStateBatch {
+                base: self,
+                staged: &mut staged,
+            };
+            operation(&mut batch)?
+        };
+        for (statement_id, statement) in staged.statements {
+            match self.statements.entry(statement_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(statement);
+                }
+                Entry::Occupied(_) => unreachable!("validated batch statements are new"),
+            }
+        }
+        for (derivation_id, statement_id) in staged.derivations {
+            match self.derivations.entry(derivation_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(statement_id);
+                }
+                Entry::Occupied(_) => unreachable!("validated batch derivations are new"),
+            }
+        }
+        for (proof_id, derivation_id) in staged.proofs {
+            match self.proofs.entry(proof_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(derivation_id);
+                }
+                Entry::Occupied(_) => unreachable!("validated batch proofs are new"),
+            }
+        }
+        Ok(result)
+    }
+
+    fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProof<'_>> {
+        let derivation_id = *self.proofs.get(&proof_id)?;
+        let statement_id = self
+            .derivations
+            .get(&derivation_id)
+            .expect("every registered proof has a registered derivation");
+        let statement = self
+            .statements
+            .get(statement_id)
+            .expect("every registered proof has a stored statement");
+        Some(ResolvedProof {
+            conclusion: &statement.conclusion,
+            canonical_length: statement.canonical_length,
+            derivation_id,
+        })
+    }
+}
+
+/// A non-escapable checked-proof transaction over one immutable base state.
+///
+/// Values of this type are created only by [`ProofState::apply_batch`]. The
+/// transaction has no independent commit operation: returning success from
+/// the enclosing callback commits it, while returning an error drops it.
+pub struct ProofStateBatch<'a> {
+    base: &'a ProofState,
+    staged: &'a mut ProofState,
+}
+
+impl ProofStateBatch<'_> {
+    /// Checks one canonical proof against the base plus earlier staged proofs.
+    pub fn check_normal_form(
+        &self,
+        normal_form: naome_proof::ProofNormalForm,
+    ) -> Result<CheckedProof, CheckError> {
+        crate::check_normal_form_with_resolver(normal_form, self)
+    }
+
+    /// Stages one checked proof without replacing existing transaction state.
+    pub fn register(&mut self, proof: CheckedProof) -> Result<Box<[u8]>, ProofStateError> {
+        if let Some(existing_derivation_id) = self.proof_derivation(proof.proof_id) {
             let existing_statement_id = self
-                .derivations
-                .get(existing_derivation_id)
+                .derivation_statement(existing_derivation_id)
                 .expect("every registered proof has a registered derivation");
-            if *existing_derivation_id != proof.derivation_id
-                || *existing_statement_id != proof.statement_id
+            if existing_derivation_id != proof.derivation_id
+                || existing_statement_id != proof.statement_id
             {
                 return Err(ProofStateError::ProofIdentityCollision {
                     proof_id: proof.proof_id,
                 });
             }
             let existing_statement = self
-                .statements
-                .get(existing_statement_id)
+                .statement(existing_statement_id)
                 .expect("every registered proof has a stored statement");
             return if existing_statement.conclusion == proof.conclusion {
                 Err(ProofStateError::DuplicateProof {
@@ -83,7 +172,7 @@ impl ProofState {
 
         for step in proof.normal_form.certificate().steps() {
             if let ProofStep::ProofReference { proof_id } = step
-                && !self.proofs.contains_key(proof_id)
+                && self.proof_derivation(*proof_id).is_none()
             {
                 return Err(ProofStateError::MissingProofDependency {
                     proof_id: *proof_id,
@@ -91,15 +180,14 @@ impl ProofState {
             }
         }
 
-        if let Some(existing_statement_id) = self.derivations.get(&proof.derivation_id) {
-            if *existing_statement_id != proof.statement_id {
+        if let Some(existing_statement_id) = self.derivation_statement(proof.derivation_id) {
+            if existing_statement_id != proof.statement_id {
                 return Err(ProofStateError::DerivationIdentityCollision {
                     derivation_id: proof.derivation_id,
                 });
             }
             let existing_statement = self
-                .statements
-                .get(existing_statement_id)
+                .statement(existing_statement_id)
                 .expect("every registered derivation has a stored statement");
             return if existing_statement.conclusion == proof.conclusion {
                 Err(ProofStateError::DuplicateDerivation {
@@ -121,39 +209,46 @@ impl ProofState {
             canonical_conclusion_length,
         } = proof;
 
-        match self.statements.entry(statement_id) {
-            Entry::Occupied(entry) if entry.get().conclusion != conclusion => {
+        if let Some(existing_statement) = self.statement(statement_id) {
+            if existing_statement.conclusion != conclusion {
                 return Err(ProofStateError::StatementIdentityCollision { statement_id });
             }
-            Entry::Occupied(_) => {}
-            Entry::Vacant(entry) => {
-                entry.insert(StoredStatement {
+        } else {
+            self.staged.statements.insert(
+                statement_id,
+                StoredStatement {
                     conclusion,
                     canonical_length: canonical_conclusion_length,
-                });
-            }
+                },
+            );
         }
-        self.derivations.insert(derivation_id, statement_id);
-        self.proofs.insert(proof_id, derivation_id);
+        self.staged.derivations.insert(derivation_id, statement_id);
+        self.staged.proofs.insert(proof_id, derivation_id);
 
         Ok(normal_form.into_canonical_bytes())
     }
 
-    pub(crate) fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProof<'_>> {
-        let derivation_id = *self.proofs.get(&proof_id)?;
-        let statement_id = self
+    fn proof_derivation(&self, proof_id: ProofId) -> Option<DerivationId> {
+        self.staged
+            .proofs
+            .get(&proof_id)
+            .or_else(|| self.base.proofs.get(&proof_id))
+            .copied()
+    }
+
+    fn derivation_statement(&self, derivation_id: DerivationId) -> Option<StatementId> {
+        self.staged
             .derivations
             .get(&derivation_id)
-            .expect("every registered proof has a registered derivation");
-        let statement = self
+            .or_else(|| self.base.derivations.get(&derivation_id))
+            .copied()
+    }
+
+    fn statement(&self, statement_id: StatementId) -> Option<&StoredStatement> {
+        self.staged
             .statements
-            .get(statement_id)
-            .expect("every registered proof has a stored statement");
-        Some(ResolvedProof {
-            conclusion: &statement.conclusion,
-            canonical_length: statement.canonical_length,
-            derivation_id,
-        })
+            .get(&statement_id)
+            .or_else(|| self.base.statements.get(&statement_id))
     }
 }
 
@@ -166,6 +261,33 @@ pub(crate) struct ResolvedProof<'a> {
     pub(crate) conclusion: &'a Formula,
     pub(crate) canonical_length: usize,
     pub(crate) derivation_id: DerivationId,
+}
+
+pub(crate) trait ProofResolver {
+    fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProof<'_>>;
+}
+
+impl ProofResolver for ProofState {
+    fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProof<'_>> {
+        self.resolve(proof_id)
+    }
+}
+
+impl ProofResolver for ProofStateBatch<'_> {
+    fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProof<'_>> {
+        let derivation_id = self.proof_derivation(proof_id)?;
+        let statement_id = self
+            .derivation_statement(derivation_id)
+            .expect("every registered proof has a registered derivation");
+        let statement = self
+            .statement(statement_id)
+            .expect("every registered proof has a stored statement");
+        Some(ResolvedProof {
+            conclusion: &statement.conclusion,
+            canonical_length: statement.canonical_length,
+            derivation_id,
+        })
+    }
 }
 
 /// A fail-closed checked-proof state registration failure.
@@ -215,7 +337,7 @@ impl Error for ProofStateError {}
 
 #[cfg(test)]
 mod tests {
-    use naome_foundation::{Formula, FreeVariable};
+    use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
     use naome_proof::{ProofCertificate, ProofStep};
 
     use super::{ProofState, ProofStateError};
@@ -234,6 +356,24 @@ mod tests {
             },
         ]))
         .unwrap()
+    }
+
+    fn axiom(axiom: ZfcAxiom) -> crate::CheckedProof {
+        normalize_and_check(certificate(vec![ProofStep::ZfcAxiom(axiom)])).unwrap()
+    }
+
+    fn referenced_generalization(
+        proof_id: naome_proof::ProofId,
+        variable: FreeVariable,
+    ) -> naome_proof::ProofNormalForm {
+        certificate(vec![
+            ProofStep::ProofReference { proof_id },
+            ProofStep::Generalization {
+                premise: 0,
+                variable,
+            },
+        ])
+        .into_unchecked_normal_form()
     }
 
     #[test]
@@ -396,5 +536,94 @@ mod tests {
         assert!(!state.contains_proof(duplicate_derivation_proof_id));
         assert!(!state.contains_proof(forged_derivation_proof_id));
         assert!(!state.contains_proof(conflicting_derivation_proof_id));
+    }
+
+    #[test]
+    fn batch_resolves_staged_dependencies_and_commits_only_on_success() {
+        let root = axiom(ZfcAxiom::Pairing);
+        let root_id = root.proof_id();
+        let mut state = ProofState::new();
+
+        let child_id = state
+            .apply_batch(|batch| {
+                batch.register(root).unwrap();
+                let child = batch
+                    .check_normal_form(referenced_generalization(root_id, FreeVariable::new(0)))
+                    .unwrap();
+                let child_id = child.proof_id();
+                batch.register(child).unwrap();
+                Ok::<_, ()>(child_id)
+            })
+            .unwrap();
+
+        assert!(state.contains_proof(root_id));
+        assert!(state.contains_proof(child_id));
+        assert_eq!(state.proofs.len(), 2);
+        assert_eq!(state.derivations.len(), 2);
+        assert_eq!(state.statements.len(), 2);
+    }
+
+    #[test]
+    fn batch_error_discards_staged_dependencies_and_collisions() {
+        let selected = axiom(ZfcAxiom::Union);
+        let selected_id = selected.proof_id();
+        let staged = axiom(ZfcAxiom::Pairing);
+        let staged_id = staged.proof_id();
+        let mut state = ProofState::new();
+        state.register(selected).unwrap();
+
+        let mut dependent_id = None;
+        let aborted = state.apply_batch(|batch| {
+            batch.register(staged).unwrap();
+            let dependent = batch
+                .check_normal_form(referenced_generalization(staged_id, FreeVariable::new(1)))
+                .unwrap();
+            dependent_id = Some(dependent.proof_id());
+            batch.register(dependent).unwrap();
+            Err::<(), _>("abort")
+        });
+        assert_eq!(aborted, Err("abort"));
+        assert!(state.contains_proof(selected_id));
+        assert!(!state.contains_proof(staged_id));
+        assert!(!state.contains_proof(dependent_id.unwrap()));
+        assert_eq!(state.proofs.len(), 1);
+        assert_eq!(state.derivations.len(), 1);
+        assert_eq!(state.statements.len(), 1);
+
+        let staged = axiom(ZfcAxiom::Pairing);
+        let duplicate_selected = axiom(ZfcAxiom::Union);
+        let base_collision = state.apply_batch(|batch| {
+            batch.register(staged).unwrap();
+            batch.register(duplicate_selected)
+        });
+        assert_eq!(
+            base_collision,
+            Err(ProofStateError::DuplicateProof {
+                proof_id: selected_id,
+            })
+        );
+        assert!(state.contains_proof(selected_id));
+        assert!(!state.contains_proof(staged_id));
+        assert_eq!(state.proofs.len(), 1);
+        assert_eq!(state.derivations.len(), 1);
+        assert_eq!(state.statements.len(), 1);
+
+        let first = axiom(ZfcAxiom::Pairing);
+        let duplicate = axiom(ZfcAxiom::Pairing);
+        let collision = state.apply_batch(|batch| {
+            batch.register(first).unwrap();
+            batch.register(duplicate)
+        });
+        assert_eq!(
+            collision,
+            Err(ProofStateError::DuplicateProof {
+                proof_id: staged_id,
+            })
+        );
+        assert!(state.contains_proof(selected_id));
+        assert!(!state.contains_proof(staged_id));
+        assert_eq!(state.proofs.len(), 1);
+        assert_eq!(state.derivations.len(), 1);
+        assert_eq!(state.statements.len(), 1);
     }
 }
