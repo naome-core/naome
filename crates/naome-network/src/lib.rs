@@ -37,6 +37,7 @@ use libp2p::{
 use naome::proof_exchange::{
     PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse, proof_response,
 };
+use naome_ledger::PROOF_BATCH_MAX_CANDIDATES;
 use naome_storage::{JournalError, ProofDagJournal};
 use session::Behaviour as SessionBehaviour;
 use tokio::time::Instant;
@@ -65,6 +66,9 @@ pub const MAX_STATIC_PEERS: usize = 8;
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
 /// Maximum number of pending outbound proof requests.
 pub const MAX_PENDING_REQUESTS: usize = 8;
+/// Maximum requests issued by one dependency acquisition across all peers.
+pub const MAX_DEPENDENCY_ACQUISITION_REQUESTS: usize =
+    PROOF_BATCH_MAX_CANDIDATES + MAX_STATIC_PEERS - 1;
 /// Maximum concurrent request-response streams on one connection.
 pub const MAX_STREAMS_PER_CONNECTION: usize = 2;
 /// Maximum total Yamux substreams on one connection.
@@ -261,7 +265,7 @@ impl StaticProofNetwork {
         &mut self,
         peer_id: PeerId,
         request: ProofRequest,
-        control: Arc<AcquisitionControl>,
+        control: &Arc<AcquisitionControl>,
     ) -> Result<request_response::OutboundRequestId, RequestStartError> {
         let Some(session_connected) = self.swarm.behaviour().sessions.connection_status(&peer_id)
         else {
@@ -296,7 +300,7 @@ impl StaticProofNetwork {
             PendingRequest {
                 peer_id,
                 request,
-                control,
+                control: Arc::clone(control),
                 _permit: permit,
             },
         );
@@ -317,7 +321,7 @@ impl StaticProofNetwork {
             Arc::clone(&self.pending_budget),
             deadline,
         ));
-        self.request_acquisition_proof(peer_id, request, control)
+        self.request_acquisition_proof(peer_id, request, &control)
     }
 
     /// Waits for the next proof-network event.

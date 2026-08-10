@@ -124,6 +124,8 @@ The initial static implementation fixes these limits:
 | Connection establishment timeout | 10 seconds |
 | Negotiated request/response phase timeout | 30 seconds |
 | Absolute dependency-acquisition deadline | 120 seconds, monotonic |
+| Requests issued by one dependency acquisition | 15 |
+| Candidate response bodies received by one acquisition | at most 60 MiB |
 | Managed-session idle expiry | effectively disabled; at most 8 idle sessions remain |
 | Outbound redial delay | 1, 2, 4, 8, 16, 32, then 60 seconds |
 | Stable-session threshold for backoff reset | 60 seconds |
@@ -168,17 +170,28 @@ is released only when that candidate is dropped or promotion returns. The same
 eight-permit limit therefore bounds pending requests plus received responses,
 quarantined candidates, and completed closure candidates for one
 `StaticProofNetwork` instance. At most eight proof payload buffers, each at
-most 4 MiB, can be retained this way; this 32 MiB figure is a payload-only
-bound, not a bound on transient decode or checker memory. The request-response
-stream and connection limits separately bound concurrently owned server
-responses.
+most 4 MiB, can be retained this way; this 32 MiB figure is a concurrent
+payload-only bound, not a bound on transient decode or checker memory. The
+request-response stream and connection limits separately bound concurrently
+owned server responses.
 
-These are concurrent-count, per-object, managed-redial, and global inbound
-authentication-rate bounds. They do not provide per-source fairness or
-cumulative bandwidth/checker-CPU budgets. An authorized peer can still send
-repeated valid, invalid, or expensive proofs over time. Rolling byte and
-proof-work budgets remain later policy beyond this fixed eight-candidate
-envelope.
+One acquisition issues at most fifteen requests across all configured peers.
+The bound permits a full eight-candidate closure after up to seven failed
+attempts; an incomplete acquisition may spend a larger share of the same fixed
+budget on failures. It is never reset when the acquisition changes peer or
+proof address. Across those fifteen attempts, declared proof-response body
+bytes read, whether complete or partial, are at most 60 MiB. Length prefixes,
+protocol negotiation, multiplexing, and other transport overhead are separate.
+Structural certificate decoding and normalization run at most eight times:
+decode and noncanonical errors are terminal, while successful candidates remain
+capped at eight. The 60 MiB ingress envelope and the 32 MiB concurrent
+retained-payload bound are different guarantees.
+
+These are concurrent-count, per-object, per-acquisition, managed-redial, and
+global inbound authentication-rate bounds. They do not provide per-source
+fairness or rolling node-wide bandwidth/checker-CPU budgets across repeated
+acquisitions. An authorized peer can still send repeated valid, invalid, or
+expensive proofs over time.
 
 The connection timeout covers TCP, Noise, and Yamux establishment. The
 request-response timeout starts after multistream protocol negotiation; the
@@ -201,10 +214,15 @@ address. The acquisition-control budget identity also binds the acquisition,
 event, and follow-up requests to one `StaticProofNetwork` instance; request
 handles from separate libp2p behaviours are not treated as globally unique.
 
-One acquisition uses one configured peer and has exactly one request in flight.
-It starts only when that peer has an established session and the requested root
-is absent from the healthy selected journal. Each correlated nonempty response
-is processed as follows:
+One acquisition has exactly one request in flight. The caller supplies an
+initial preferred configured peer. For each proof address, that peer is tried
+first, followed by every other configured peer in raw `PeerId::to_bytes()`
+order. A peer is considered at most once for that address. A disconnected or
+already-busy peer is skipped without issuing a request, waiting, or opening a
+connection. After one peer supplies a canonical candidate, that peer becomes
+the preferred peer for the next dependency. The requested root must be absent
+from the healthy selected journal before the first attempt. Each correlated
+nonempty response is processed as follows:
 
 1. decode one complete structurally bounded `ProofCertificate`;
 2. derive its unchecked root-proof normal form and require the supplied bytes
@@ -250,9 +268,18 @@ duplicate or derivation collision. The transport never retries with raw
 unaddressed or incremental single-proof admission and does not redefine the
 selected-state first-arrival policy.
 
-An `Unavailable` response reports only that this peer returned no payload for
-this request. It terminates the one-peer acquisition, discards its quarantine,
-creates no negative cache, and proves no global absence.
+An `Unavailable` response reports only that one peer returned no payload for
+this request. An ordinary correlated transport failure or `Unavailable`
+response may advance to the next unattempted, currently usable configured peer
+for the same proof address. The completed response and its permit are dropped
+before a replacement request is issued. Certificate decoding failure,
+noncanonical candidate bytes, peer-identity mismatch, selected-state failure,
+candidate or cycle bounds, deadline, and cancellation remain terminal and do
+not rotate peers. Exhausting eligible peers returns the last correlated remote
+failure; attempting to issue a sixteenth request returns the explicit
+request-limit error. Fallback retains the same immutable request, acquisition
+control, quarantine, and absolute deadline, creates no negative cache, and
+proves no global absence.
 
 ## Absolute acquisition deadline and cancellation
 
@@ -356,21 +383,20 @@ It does not define or claim:
 - identity-key storage, rotation, recovery, or operator enrollment;
 - a seed-node list, persisted address manager, DNS or fixed-seed bootstrap,
   dynamic peer discovery, DHTs, address gossip, or NAT traversal;
-- peer scoring, bans, proof-request retries, multi-peer selection,
-  announcements, or proof gossip;
+- peer scoring, bans, retrying one peer for the same proof address, parallel or
+  hedged requests, announcements, or proof gossip;
 - parallel dependency fetching, a persistent orphan/cache store, admission
   worker, wire-level request abort, synchronous proof/checker/journal
-  cancellation, or rolling byte/CPU budgets or per-source connection-rate
-  policy;
+  cancellation, or rolling cross-acquisition byte/CPU budgets or per-source
+  connection-rate policy;
 - Sybil resistance, eclipse resistance from network diversity, fork choice,
   checkpoints, signatures, finality, or consensus;
 - economic transactions, balances, fees, rewards, or settlement; or
 - batch transport messages, compression, erasure coding, snapshots, pruning,
   or proof availability guarantees.
 
-The next network slice is bounded multi-peer fallback on the existing
-non-resetting deadline and permit-preserving cancellation substrate. It must not
-reset total attempt, byte, work, or time budgets when changing peers.
-Discovery, bootstrap, persisted addresses, and peer-diversity policy follow
-separately. A consensus-selected checkpoint and linear settlement/economy
-remain later layers and must not be inferred from authenticated transport peers.
+The next network slice is persisted bootstrap/address management and bounded
+discovery with explicit peer-diversity policy. It must not turn static
+authentication into a claim of Sybil or eclipse resistance. A
+consensus-selected checkpoint and linear settlement/economy remain later
+layers and must not be inferred from authenticated transport peers.
