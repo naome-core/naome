@@ -11,8 +11,8 @@ use naome_proof::{ProofCertificate, ProofCertificateError, ProofId, ProofNormalF
 use naome_storage::{JournalError, ProofDagJournal};
 
 use super::{
-    PeerId, PendingBudget, PendingPermit, ReceivedProofResponse, RequestStartError,
-    StaticProofNetwork,
+    AcquisitionControl, DEPENDENCY_ACQUISITION_TIMEOUT, OutboundProofEvent, OutboundProofFailure,
+    OutboundProofOutcome, PeerId, PendingPermit, RequestStartError, StaticProofNetwork,
 };
 
 /// One caller-driven acquisition of a bounded proof-reference closure.
@@ -23,7 +23,7 @@ use super::{
 /// state.
 #[must_use]
 pub struct ProofDependencyAcquisition {
-    network_budget: Arc<PendingBudget>,
+    cancellation: CancellationGuard,
     peer_id: PeerId,
     requested_root: ProofId,
     pending_request: ProofRequest,
@@ -32,14 +32,44 @@ pub struct ProofDependencyAcquisition {
     candidates: Vec<QuarantinedCandidate>,
 }
 
+struct CancellationGuard {
+    control: Option<Arc<AcquisitionControl>>,
+}
+
+impl CancellationGuard {
+    fn new(control: Arc<AcquisitionControl>) -> Self {
+        Self {
+            control: Some(control),
+        }
+    }
+
+    fn control(&self) -> &Arc<AcquisitionControl> {
+        self.control
+            .as_ref()
+            .expect("an active acquisition retains cancellation control")
+    }
+
+    fn disarm(&mut self) {
+        self.control = None;
+    }
+}
+
+impl Drop for CancellationGuard {
+    fn drop(&mut self) {
+        if let Some(control) = &self.control {
+            control.cancel();
+        }
+    }
+}
+
 impl StaticProofNetwork {
     /// Starts acquiring the root-reachable proof references absent from
     /// `selected`.
     ///
     /// Exactly one request is active for this acquisition. The caller must
     /// continue driving [`Self::next_event`](StaticProofNetwork::next_event)
-    /// and pass the correlated response to
-    /// [`ProofDependencyAcquisition::on_response`].
+    /// and pass the correlated outbound event to
+    /// [`ProofDependencyAcquisition::on_event`].
     pub fn start_dependency_acquisition(
         &mut self,
         selected: &ProofDagJournal,
@@ -56,18 +86,25 @@ impl StaticProofNetwork {
             });
         }
 
+        let deadline = tokio::time::Instant::now()
+            .checked_add(DEPENDENCY_ACQUISITION_TIMEOUT)
+            .expect("the fixed acquisition timeout fits Tokio Instant");
+        let control = Arc::new(AcquisitionControl::new(
+            Arc::clone(&self.pending_budget),
+            deadline,
+        ));
         let pending_request = ProofRequest::new(requested_root);
-        let pending_request_id =
-            self.request_proof(peer_id, pending_request)
-                .map_err(|source| DependencyAcquisitionError::RequestStart {
-                    proof_id: requested_root,
-                    source,
-                })?;
+        let pending_request_id = self
+            .request_acquisition_proof(peer_id, pending_request, Arc::clone(&control))
+            .map_err(|source| DependencyAcquisitionError::RequestStart {
+                proof_id: requested_root,
+                source,
+            })?;
 
         let mut discovered = Vec::with_capacity(PROOF_BATCH_MAX_CANDIDATES);
         discovered.push(requested_root);
         Ok(ProofDependencyAcquisition {
-            network_budget: Arc::clone(&self.pending_budget),
+            cancellation: CancellationGuard::new(control),
             peer_id,
             requested_root,
             pending_request,
@@ -84,24 +121,32 @@ impl ProofDependencyAcquisition {
         self.peer_id
     }
 
-    /// Returns the exact request whose response advances this acquisition.
+    /// Returns the exact request whose terminal event this acquisition awaits.
     pub const fn pending_request(&self) -> ProofRequest {
         self.pending_request
     }
 
-    /// Returns whether `received` is the exact response awaited by this
+    /// Cancels this acquisition while the transport drains its current
+    /// request.
+    ///
+    /// Already quarantined candidates are released immediately. The current
+    /// request continues to occupy its peer slot and one global permit until
+    /// libp2p emits its terminal response or failure.
+    pub fn cancel(self) {}
+
+    /// Returns whether `event` is the exact terminal outcome awaited by this
     /// acquisition generation.
     ///
     /// Callers driving more than one logical workflow can use this predicate
-    /// to route a late response without consuming an unrelated acquisition.
-    pub fn accepts_response(&self, received: &ReceivedProofResponse) -> bool {
-        Arc::ptr_eq(&self.network_budget, &received._permit.budget)
-            && received.request_id == self.pending_request_id
-            && received.peer_id == self.peer_id
-            && received.request == self.pending_request
+    /// to route a late event without consuming an unrelated acquisition.
+    pub fn accepts_event(&self, event: &OutboundProofEvent) -> bool {
+        Arc::ptr_eq(self.cancellation.control(), &event.control)
+            && event.request_id == self.pending_request_id
+            && event.peer_id == self.peer_id
+            && event.request == self.pending_request
     }
 
-    /// Consumes the expected response and either starts the next dependency
+    /// Consumes the expected terminal event and either starts the next dependency
     /// request or returns the complete unselected closure.
     ///
     /// `network` must be the same instance that started this acquisition;
@@ -112,33 +157,62 @@ impl ProofDependencyAcquisition {
     /// acquisition, though its append-only state may grow between calls. Final
     /// atomic admission repeats every authoritative validation against the
     /// then-current selected state.
-    pub fn on_response(
+    pub fn on_event(
         mut self,
         network: &mut StaticProofNetwork,
         selected: &ProofDagJournal,
-        received: ReceivedProofResponse,
+        event: OutboundProofEvent,
     ) -> Result<DependencyAcquisitionProgress, DependencyAcquisitionError> {
-        if !Arc::ptr_eq(&self.network_budget, &network.pending_budget)
-            || !Arc::ptr_eq(&self.network_budget, &received._permit.budget)
+        if !Arc::ptr_eq(
+            &self.cancellation.control().network_budget,
+            &network.pending_budget,
+        ) || !Arc::ptr_eq(&event.control.network_budget, &network.pending_budget)
         {
             return Err(DependencyAcquisitionError::NetworkInstanceMismatch);
         }
-        let ReceivedProofResponse {
+        let OutboundProofEvent {
             request_id,
             peer_id,
             request,
-            response,
-            _permit,
-        } = received;
+            outcome,
+            ..
+        } = event;
 
-        if request_id != self.pending_request_id
+        if !Arc::ptr_eq(self.cancellation.control(), &event.control)
+            || request_id != self.pending_request_id
             || peer_id != self.peer_id
             || request != self.pending_request
         {
-            return Err(DependencyAcquisitionError::UnexpectedResponse);
+            return Err(DependencyAcquisitionError::UnexpectedEvent);
         }
 
         let proof_id = self.pending_request.proof_id();
+        let outcome = match outcome {
+            OutboundProofOutcome::Failure(source)
+                if matches!(source.as_ref(), OutboundProofFailure::PeerMismatch { .. }) =>
+            {
+                return Err(DependencyAcquisitionError::RequestFailed {
+                    peer_id,
+                    proof_id,
+                    source,
+                });
+            }
+            outcome => outcome,
+        };
+        if matches!(outcome, OutboundProofOutcome::DeadlineExceeded) || self.deadline_expired() {
+            return Err(self.deadline_error());
+        }
+        let (response, permit) = match outcome {
+            OutboundProofOutcome::Response { response, _permit } => (response, _permit),
+            OutboundProofOutcome::Failure(source) => {
+                return Err(DependencyAcquisitionError::RequestFailed {
+                    peer_id,
+                    proof_id,
+                    source,
+                });
+            }
+            OutboundProofOutcome::DeadlineExceeded => unreachable!("handled above"),
+        };
         if response.is_unavailable() {
             return Err(DependencyAcquisitionError::Unavailable { peer_id, proof_id });
         }
@@ -183,25 +257,36 @@ impl ProofDependencyAcquisition {
             expected_proof_id: proof_id,
             canonical_proof_bytes,
             direct_dependencies,
-            _permit,
+            _permit: permit,
         });
+
+        if self.deadline_expired() {
+            return Err(self.deadline_error());
+        }
 
         if let Some(next_proof_id) = self.discovered.get(self.candidates.len()).copied() {
             let next_request = ProofRequest::new(next_proof_id);
-            let next_request_id =
-                network
-                    .request_proof(self.peer_id, next_request)
-                    .map_err(|source| DependencyAcquisitionError::RequestStart {
-                        proof_id: next_proof_id,
-                        source,
-                    })?;
+            let next_request_id = network
+                .request_acquisition_proof(
+                    self.peer_id,
+                    next_request,
+                    Arc::clone(self.cancellation.control()),
+                )
+                .map_err(|source| DependencyAcquisitionError::RequestStart {
+                    proof_id: next_proof_id,
+                    source,
+                })?;
             self.pending_request = next_request;
             self.pending_request_id = next_request_id;
             return Ok(DependencyAcquisitionProgress::AwaitingResponse(self));
         }
 
         let order = dependency_order(&self.candidates, self.requested_root)?;
+        if self.deadline_expired() {
+            return Err(self.deadline_error());
+        }
         debug_assert_eq!(order.len(), self.candidates.len());
+        self.cancellation.disarm();
         let mut candidates = self.candidates.into_iter().map(Some).collect::<Vec<_>>();
         let candidates = order
             .into_iter()
@@ -219,6 +304,17 @@ impl ProofDependencyAcquisition {
             },
         ))
     }
+
+    fn deadline_expired(&self) -> bool {
+        tokio::time::Instant::now() >= self.cancellation.control().deadline
+    }
+
+    fn deadline_error(&self) -> DependencyAcquisitionError {
+        DependencyAcquisitionError::DeadlineExceeded {
+            peer_id: self.peer_id,
+            pending_proof_id: self.pending_request.proof_id(),
+        }
+    }
 }
 
 impl fmt::Debug for ProofDependencyAcquisition {
@@ -233,7 +329,7 @@ impl fmt::Debug for ProofDependencyAcquisition {
     }
 }
 
-/// The result of advancing one dependency acquisition response.
+/// The result of advancing one dependency acquisition event.
 #[derive(Debug)]
 #[must_use]
 pub enum DependencyAcquisitionProgress {
@@ -390,10 +486,22 @@ pub enum DependencyAcquisitionError {
         proof_id: ProofId,
         source: RequestStartError,
     },
-    /// The response or driver belongs to another transport instance.
+    /// The event or driver belongs to another transport instance.
     NetworkInstanceMismatch,
-    /// The supplied response did not belong to this acquisition generation.
-    UnexpectedResponse,
+    /// The supplied event did not belong to this acquisition generation.
+    UnexpectedEvent,
+    /// The request failed before the deadline, or its terminal peer mismatched
+    /// the immutable request correlation.
+    RequestFailed {
+        peer_id: PeerId,
+        proof_id: ProofId,
+        source: Box<OutboundProofFailure>,
+    },
+    /// The immutable acquisition deadline was reached.
+    DeadlineExceeded {
+        peer_id: PeerId,
+        pending_proof_id: ProofId,
+    },
     /// The authenticated peer reported no payload for a required address.
     Unavailable { peer_id: PeerId, proof_id: ProofId },
     /// A response was not one structurally valid complete certificate.
@@ -427,8 +535,27 @@ impl fmt::Display for DependencyAcquisitionError {
             Self::NetworkInstanceMismatch => {
                 formatter.write_str("acquisition was routed through another network instance")
             }
-            Self::UnexpectedResponse => {
-                formatter.write_str("response does not belong to this acquisition")
+            Self::UnexpectedEvent => {
+                formatter.write_str("outbound event does not belong to this acquisition")
+            }
+            Self::RequestFailed {
+                peer_id,
+                proof_id,
+                source,
+            } => {
+                write!(
+                    formatter,
+                    "peer {peer_id} failed proof request {proof_id:?}: {source}"
+                )
+            }
+            Self::DeadlineExceeded {
+                peer_id,
+                pending_proof_id,
+            } => {
+                write!(
+                    formatter,
+                    "proof acquisition from {peer_id} exceeded {DEPENDENCY_ACQUISITION_TIMEOUT:?} while awaiting {pending_proof_id:?}"
+                )
             }
             Self::Unavailable { peer_id, proof_id } => {
                 write!(formatter, "peer {peer_id} has no proof at {proof_id:?}")
@@ -456,6 +583,7 @@ impl Error for DependencyAcquisitionError {
         match self {
             Self::SelectedState { source } => Some(source),
             Self::RequestStart { source, .. } => Some(source),
+            Self::RequestFailed { source, .. } => Some(source.as_ref()),
             Self::Decode { source, .. } => Some(source),
             _ => None,
         }
@@ -470,13 +598,16 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
+    use libp2p::request_response;
+    use libp2p::swarm::ConnectionId;
     use naome::proof_exchange::ProofResponse;
     use naome_foundation::{FreeVariable, ZfcAxiom};
     use naome_ledger::ProofBatchError;
 
     use super::*;
-    use crate::{PendingBudget, StaticPeer};
+    use crate::{CancellationDrainOutcome, NetworkEvent, PendingBudget, StaticPeer};
 
     static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -582,15 +713,29 @@ mod tests {
     }
 
     fn test_network_for_peer(remote_peer_id: PeerId) -> StaticProofNetwork {
+        test_network_for_peers(&[remote_peer_id])
+    }
+
+    fn test_network_for_peers(remote_peer_ids: &[PeerId]) -> StaticProofNetwork {
         let local = crate::Keypair::generate_ed25519();
-        let address = "/ip4/127.0.0.1/tcp/9".parse().unwrap();
-        let mut network =
-            StaticProofNetwork::new(local, [StaticPeer::new(remote_peer_id, address)]).unwrap();
-        network
-            .swarm
-            .behaviour_mut()
-            .sessions
-            .mark_connected_for_test(remote_peer_id);
+        assert!(!remote_peer_ids.contains(&local.public().to_peer_id()));
+        let peers = remote_peer_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, peer_id)| {
+                let address = format!("/ip4/127.0.0.1/tcp/{}", 9 + index).parse().unwrap();
+                StaticPeer::new(peer_id, address)
+            })
+            .collect::<Vec<_>>();
+        let mut network = StaticProofNetwork::new(local, peers).unwrap();
+        for &peer_id in remote_peer_ids {
+            network
+                .swarm
+                .behaviour_mut()
+                .sessions
+                .mark_connected_for_test(peer_id);
+        }
         network
     }
 
@@ -598,19 +743,56 @@ mod tests {
         network: &mut StaticProofNetwork,
         acquisition: &ProofDependencyAcquisition,
         bytes: Vec<u8>,
-    ) -> ReceivedProofResponse {
+    ) -> OutboundProofEvent {
         let request_id = acquisition.pending_request_id;
         let pending = network
             .pending
             .remove(&request_id)
             .expect("the acquisition request is pending");
-        ReceivedProofResponse {
+        OutboundProofEvent {
             request_id,
             peer_id: pending.peer_id,
             request: pending.request,
-            response: ProofResponse::from_wire_bytes(bytes).unwrap(),
-            _permit: pending._permit,
+            control: Arc::clone(&pending.control),
+            outcome: OutboundProofOutcome::Response {
+                response: ProofResponse::from_wire_bytes(bytes).unwrap(),
+                _permit: pending._permit,
+            },
         }
+    }
+
+    fn transport_response(
+        network: &mut StaticProofNetwork,
+        request_id: OutboundRequestId,
+        peer_id: PeerId,
+        bytes: Vec<u8>,
+    ) -> NetworkEvent {
+        network
+            .handle_exchange_event(request_response::Event::Message {
+                peer: peer_id,
+                connection_id: ConnectionId::new_unchecked(700),
+                message: request_response::Message::Response {
+                    request_id,
+                    response: ProofResponse::from_wire_bytes(bytes).unwrap(),
+                },
+            })
+            .expect("the retained request produces one terminal event")
+    }
+
+    fn transport_failure(
+        network: &mut StaticProofNetwork,
+        request_id: OutboundRequestId,
+        peer_id: PeerId,
+        error: request_response::OutboundFailure,
+    ) -> NetworkEvent {
+        network
+            .handle_exchange_event(request_response::Event::OutboundFailure {
+                peer: peer_id,
+                connection_id: ConnectionId::new_unchecked(701),
+                request_id,
+                error,
+            })
+            .expect("the retained request produces one terminal event")
     }
 
     fn start(
@@ -702,7 +884,7 @@ mod tests {
         let response = response_for(&mut network, &acquisition, root_bytes);
 
         let DependencyAcquisitionProgress::Complete(closure) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("selected dependency unexpectedly caused another request");
@@ -765,7 +947,7 @@ mod tests {
             let acquisition = start(&mut network, &selected, peer_id, requested);
             let response = response_for(&mut network, &acquisition, bytes);
             let error = acquisition
-                .on_response(&mut network, &selected, response)
+                .on_event(&mut network, &selected, response)
                 .unwrap_err();
             assert!(
                 matches!(error, DependencyAcquisitionError::Decode { proof_id, .. } if decode && proof_id == requested)
@@ -796,7 +978,7 @@ mod tests {
         let response = response_for(&mut network, &acquisition, bytes);
 
         assert!(matches!(
-            acquisition.on_response(&mut network, &selected, response),
+            acquisition.on_event(&mut network, &selected, response),
             Err(DependencyAcquisitionError::NonCanonical { proof_id }) if proof_id == requested
         ));
         assert!(network.pending.is_empty());
@@ -821,7 +1003,7 @@ mod tests {
         );
 
         assert!(matches!(
-            acquisition.on_response(&mut network, &selected, response),
+            acquisition.on_event(&mut network, &selected, response),
             Err(DependencyAcquisitionError::TooManyCandidates { actual, maximum })
                 if actual == PROOF_BATCH_MAX_CANDIDATES + 1
                     && maximum == PROOF_BATCH_MAX_CANDIDATES
@@ -846,7 +1028,7 @@ mod tests {
             reference_closure_bytes(&dependencies),
         );
         let DependencyAcquisitionProgress::AwaitingResponse(mut acquisition) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("maximum closure did not request its dependencies");
@@ -855,7 +1037,7 @@ mod tests {
         let closure = loop {
             let response = response_for(&mut network, &acquisition, pairing_bytes());
             match acquisition
-                .on_response(&mut network, &selected, response)
+                .on_event(&mut network, &selected, response)
                 .unwrap()
             {
                 DependencyAcquisitionProgress::AwaitingResponse(next) => acquisition = next,
@@ -887,7 +1069,7 @@ mod tests {
             reference_closure_bytes(&[first, first, shared]),
         );
         let DependencyAcquisitionProgress::AwaitingResponse(acquisition) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("root did not request its first unique dependency");
@@ -900,7 +1082,7 @@ mod tests {
             reference_closure_bytes(&[shared]),
         );
         let DependencyAcquisitionProgress::AwaitingResponse(acquisition) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("shared dependency was not requested");
@@ -908,7 +1090,7 @@ mod tests {
         assert_eq!(acquisition.pending_request().proof_id(), shared);
         let response = response_for(&mut network, &acquisition, pairing_bytes());
         let DependencyAcquisitionProgress::Complete(closure) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("deduplicated closure did not complete");
@@ -934,7 +1116,7 @@ mod tests {
             reference_closure_bytes(&[dependency]),
         );
         let DependencyAcquisitionProgress::AwaitingResponse(acquisition) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("dependency was not requested");
@@ -942,7 +1124,7 @@ mod tests {
         assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 2);
         let response = response_for(&mut network, &acquisition, Vec::new());
         assert!(matches!(
-            acquisition.on_response(&mut network, &selected, response),
+            acquisition.on_event(&mut network, &selected, response),
             Err(DependencyAcquisitionError::Unavailable { proof_id, .. })
                 if proof_id == dependency
         ));
@@ -966,7 +1148,7 @@ mod tests {
             reference_closure_bytes(&[self_id]),
         );
         assert!(matches!(
-            self_acquisition.on_response(&mut self_network, &selected, self_response),
+            self_acquisition.on_event(&mut self_network, &selected, self_response),
             Err(DependencyAcquisitionError::DependencyCycle { from, dependency })
                 if from == self_id && dependency == self_id
         ));
@@ -985,7 +1167,7 @@ mod tests {
             reference_closure_bytes(&[child]),
         );
         let DependencyAcquisitionProgress::AwaitingResponse(acquisition) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("two-node cycle did not request its second node");
@@ -993,7 +1175,7 @@ mod tests {
         assert_eq!(acquisition.pending_request().proof_id(), child);
         let response = response_for(&mut network, &acquisition, reference_closure_bytes(&[root]));
         assert!(matches!(
-            acquisition.on_response(&mut network, &selected, response),
+            acquisition.on_event(&mut network, &selected, response),
             Err(DependencyAcquisitionError::DependencyCycle { from, dependency })
                 if from == child && dependency == root
         ));
@@ -1012,15 +1194,14 @@ mod tests {
         drop(first);
 
         let current = start(&mut network, &selected, peer_id, requested);
-        assert!(!current.accepts_response(&stale));
+        assert!(!current.accepts_event(&stale));
         assert_eq!(current.pending_request().proof_id(), requested);
         drop(stale);
         assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
 
         let response = response_for(&mut network, &current, pairing_bytes());
-        let DependencyAcquisitionProgress::Complete(closure) = current
-            .on_response(&mut network, &selected, response)
-            .unwrap()
+        let DependencyAcquisitionProgress::Complete(closure) =
+            current.on_event(&mut network, &selected, response).unwrap()
         else {
             panic!("leaf candidate unexpectedly requested a dependency");
         };
@@ -1040,10 +1221,10 @@ mod tests {
 
         let current = start(&mut network, &selected, peer_id, requested);
         let current_request_id = current.pending_request_id;
-        assert!(!current.accepts_response(&stale_unavailable));
+        assert!(!current.accepts_event(&stale_unavailable));
         assert!(matches!(
-            current.on_response(&mut network, &selected, stale_unavailable),
-            Err(DependencyAcquisitionError::UnexpectedResponse)
+            current.on_event(&mut network, &selected, stale_unavailable),
+            Err(DependencyAcquisitionError::UnexpectedEvent)
         ));
         assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
         drop(network.pending.remove(&current_request_id));
@@ -1062,10 +1243,10 @@ mod tests {
         let requested = proof_id(0x73);
         let acquisition = start(&mut origin, &selected, peer_id, requested);
         let response = response_for(&mut origin, &acquisition, pairing_bytes());
-        assert!(acquisition.accepts_response(&response));
+        assert!(acquisition.accepts_event(&response));
 
         assert!(matches!(
-            acquisition.on_response(&mut wrong_driver, &selected, response),
+            acquisition.on_event(&mut wrong_driver, &selected, response),
             Err(DependencyAcquisitionError::NetworkInstanceMismatch)
         ));
         assert_eq!(origin.pending_budget.active.load(Ordering::Relaxed), 0);
@@ -1090,9 +1271,9 @@ mod tests {
         let mut other_response = response_for(&mut other, &other_acquisition, pairing_bytes());
         other_response.request_id = origin_request_id;
 
-        assert!(!acquisition.accepts_response(&other_response));
+        assert!(!acquisition.accepts_event(&other_response));
         assert!(matches!(
-            acquisition.on_response(&mut origin, &selected, other_response),
+            acquisition.on_event(&mut origin, &selected, other_response),
             Err(DependencyAcquisitionError::NetworkInstanceMismatch)
         ));
         assert_eq!(other.pending_budget.active.load(Ordering::Relaxed), 0);
@@ -1113,7 +1294,7 @@ mod tests {
         let acquisition = start(&mut network, &selected, peer_id, requested);
         let response = response_for(&mut network, &acquisition, pairing_bytes());
         let DependencyAcquisitionProgress::Complete(closure) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("leaf candidate unexpectedly requested a dependency");
@@ -1140,14 +1321,14 @@ mod tests {
         let acquisition = start(&mut network, &selected, peer_id, root_id);
         let response = response_for(&mut network, &acquisition, root_bytes);
         let DependencyAcquisitionProgress::AwaitingResponse(acquisition) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("root dependency was not requested");
         };
         let response = response_for(&mut network, &acquisition, parent_bytes.clone());
         let DependencyAcquisitionProgress::Complete(closure) = acquisition
-            .on_response(&mut network, &selected, response)
+            .on_event(&mut network, &selected, response)
             .unwrap()
         else {
             panic!("complete two-node closure did not finish");
@@ -1170,5 +1351,550 @@ mod tests {
         assert!(selected.proof(parent_id).unwrap().is_some());
         assert!(selected.proof(root_id).unwrap().is_none());
         assert_eq!(directory.journal_bytes(), before);
+    }
+
+    #[test]
+    fn cancellation_releases_quarantine_but_retains_the_wire_permit_until_drain() {
+        let (parent_bytes, _parent_id, root_bytes, root_id) = valid_parent_and_root();
+        let directory = TestDirectory::new("cancel-retains-wire-permit");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let before = directory.journal_bytes();
+        let (mut network, peer_id) = test_network();
+        let acquisition = start(&mut network, &selected, peer_id, root_id);
+        let event = response_for(&mut network, &acquisition, root_bytes);
+        let DependencyAcquisitionProgress::AwaitingResponse(acquisition) = acquisition
+            .on_event(&mut network, &selected, event)
+            .unwrap()
+        else {
+            panic!("root dependency was not requested");
+        };
+        let request_id = acquisition.pending_request_id;
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 2);
+
+        acquisition.cancel();
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+        assert!(network.pending.contains_key(&request_id));
+        assert!(network.pending[&request_id].control.is_cancelled());
+        assert!(matches!(
+            network.request_proof(peer_id, ProofRequest::new(proof_id(0x91))),
+            Err(RequestStartError::AlreadyPending(actual)) if actual == peer_id
+        ));
+
+        let event = transport_response(&mut network, request_id, peer_id, parent_bytes);
+        assert!(matches!(
+            event,
+            NetworkEvent::CancellationDrained {
+                peer_id: actual,
+                outcome: CancellationDrainOutcome::ResponseDiscarded,
+                ..
+            } if actual == peer_id
+        ));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+        assert!(network.pending.is_empty());
+        assert!(selected.is_empty().unwrap());
+        assert_eq!(directory.journal_bytes(), before);
+    }
+
+    #[test]
+    fn cancelled_transport_failure_settles_once_with_its_typed_cause() {
+        let directory = TestDirectory::new("cancel-failure-drain");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let acquisition = start(&mut network, &selected, peer_id, proof_id(0x92));
+        let request_id = acquisition.pending_request_id;
+        acquisition.cancel();
+
+        let event = transport_failure(
+            &mut network,
+            request_id,
+            peer_id,
+            request_response::OutboundFailure::Timeout,
+        );
+        assert!(matches!(
+            event,
+            NetworkEvent::CancellationDrained {
+                outcome: CancellationDrainOutcome::Failure(source),
+                ..
+            } if matches!(
+                source.as_ref(),
+                OutboundProofFailure::Transport(request_response::OutboundFailure::Timeout)
+            )
+        ));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+        assert!(
+            network
+                .handle_exchange_event(request_response::Event::OutboundFailure {
+                    peer: peer_id,
+                    connection_id: ConnectionId::new_unchecked(702),
+                    request_id,
+                    error: request_response::OutboundFailure::Timeout,
+                })
+                .is_none()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn session_disconnect_does_not_settle_a_cancelled_request() {
+        let directory = TestDirectory::new("cancel-disconnect-order");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let acquisition = start(&mut network, &selected, peer_id, proof_id(0x9b));
+        let request_id = acquisition.pending_request_id;
+        acquisition.cancel();
+
+        network
+            .swarm
+            .behaviour_mut()
+            .sessions
+            .mark_disconnected_for_test(peer_id);
+        assert!(matches!(
+            network.next_event().await,
+            NetworkEvent::PeerSession(crate::PeerSessionEvent::Disconnected {
+                peer_id: disconnected,
+            }) if disconnected == peer_id
+        ));
+        assert!(network.pending.contains_key(&request_id));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+        assert!(matches!(
+            network.request_proof(peer_id, ProofRequest::new(proof_id(0x9c))),
+            Err(RequestStartError::AlreadyPending(actual)) if actual == peer_id
+        ));
+
+        assert!(matches!(
+            transport_failure(
+                &mut network,
+                request_id,
+                peer_id,
+                request_response::OutboundFailure::ConnectionClosed,
+            ),
+            NetworkEvent::CancellationDrained {
+                outcome: CancellationDrainOutcome::Failure(source),
+                ..
+            } if matches!(
+                source.as_ref(),
+                OutboundProofFailure::Transport(
+                    request_response::OutboundFailure::ConnectionClosed
+                )
+            )
+        ));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+        assert!(matches!(
+            network.request_proof(peer_id, ProofRequest::new(proof_id(0x9d))),
+            Err(RequestStartError::PeerDisconnected(actual)) if actual == peer_id
+        ));
+    }
+
+    #[test]
+    fn cancelled_requests_retain_the_complete_global_budget_until_exact_drain() {
+        let directory = TestDirectory::new("cancel-global-budget");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let peer_ids = (0..crate::MAX_PENDING_REQUESTS)
+            .map(|_| crate::Keypair::generate_ed25519().public().to_peer_id())
+            .collect::<Vec<_>>();
+        let mut network = test_network_for_peers(&peer_ids);
+        let request_ids = peer_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, peer_id)| {
+                let acquisition = start(
+                    &mut network,
+                    &selected,
+                    peer_id,
+                    proof_id(u8::try_from(0xa0 + index).unwrap()),
+                );
+                let request_id = acquisition.pending_request_id;
+                acquisition.cancel();
+                request_id
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            network.pending_budget.active.load(Ordering::Relaxed),
+            crate::MAX_PENDING_REQUESTS
+        );
+        assert!(PendingBudget::try_acquire(&network.pending_budget).is_none());
+
+        for (index, (&peer_id, &request_id)) in peer_ids.iter().zip(&request_ids).enumerate() {
+            assert!(matches!(
+                transport_response(&mut network, request_id, peer_id, pairing_bytes()),
+                NetworkEvent::CancellationDrained {
+                    outcome: CancellationDrainOutcome::ResponseDiscarded,
+                    ..
+                }
+            ));
+            assert_eq!(
+                network.pending_budget.active.load(Ordering::Relaxed),
+                crate::MAX_PENDING_REQUESTS - index - 1
+            );
+        }
+        assert!(network.pending.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn next_event_expires_once_at_the_absolute_deadline_and_drains_later() {
+        let directory = TestDirectory::new("absolute-deadline-event");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let acquisition = start(&mut network, &selected, peer_id, proof_id(0x93));
+        let request_id = acquisition.pending_request_id;
+
+        tokio::time::advance(DEPENDENCY_ACQUISITION_TIMEOUT).await;
+        let event = network.next_event().await;
+        let NetworkEvent::OutboundProof(event) = event else {
+            panic!("absolute deadline did not produce an outbound proof event");
+        };
+        assert!(event.is_deadline_exceeded());
+        assert!(acquisition.accepts_event(&event));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+        assert!(network.pending[&request_id].control.is_cancelled());
+        assert!(
+            network
+                .take_due_acquisition_deadline(tokio::time::Instant::now())
+                .is_none()
+        );
+        assert!(matches!(
+            acquisition.on_event(&mut network, &selected, event),
+            Err(DependencyAcquisitionError::DeadlineExceeded {
+                pending_proof_id,
+                ..
+            }) if pending_proof_id == proof_id(0x93)
+        ));
+
+        let event = transport_response(&mut network, request_id, peer_id, pairing_bytes());
+        assert!(matches!(
+            event,
+            NetworkEvent::CancellationDrained {
+                outcome: CancellationDrainOutcome::ResponseDiscarded,
+                ..
+            }
+        ));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_equality_expires_but_completed_closures_do_not() {
+        let (parent_bytes, parent_id, _root_bytes, _root_id) = valid_parent_and_root();
+        let directory = TestDirectory::new("deadline-boundary");
+        let mut selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+
+        let acquisition = start(&mut network, &selected, peer_id, parent_id);
+        tokio::time::advance(DEPENDENCY_ACQUISITION_TIMEOUT - Duration::from_nanos(1)).await;
+        let event = response_for(&mut network, &acquisition, parent_bytes.clone());
+        let DependencyAcquisitionProgress::Complete(closure) = acquisition
+            .on_event(&mut network, &selected, event)
+            .unwrap()
+        else {
+            panic!("leaf closure did not complete before its deadline");
+        };
+        tokio::time::advance(Duration::from_nanos(2)).await;
+        assert_eq!(
+            closure
+                .apply_to_selected_state(&mut selected)
+                .unwrap()
+                .proof_id(),
+            parent_id
+        );
+
+        let requested = proof_id(0x94);
+        let acquisition = start(&mut network, &selected, peer_id, requested);
+        tokio::time::advance(DEPENDENCY_ACQUISITION_TIMEOUT).await;
+        let event = response_for(&mut network, &acquisition, pairing_bytes());
+        assert!(matches!(
+            acquisition.on_event(&mut network, &selected, event),
+            Err(DependencyAcquisitionError::DeadlineExceeded {
+                pending_proof_id,
+                ..
+            }) if pending_proof_id == requested
+        ));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_precedes_unavailable_malformed_and_ordinary_transport_failure() {
+        let directory = TestDirectory::new("deadline-error-precedence");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+
+        for (requested, bytes) in [(proof_id(0xb0), Vec::new()), (proof_id(0xb1), vec![0xff])] {
+            let acquisition = start(&mut network, &selected, peer_id, requested);
+            tokio::time::advance(DEPENDENCY_ACQUISITION_TIMEOUT).await;
+            let event = response_for(&mut network, &acquisition, bytes);
+            assert!(matches!(
+                acquisition.on_event(&mut network, &selected, event),
+                Err(DependencyAcquisitionError::DeadlineExceeded {
+                    pending_proof_id,
+                    ..
+                }) if pending_proof_id == requested
+            ));
+        }
+
+        let requested = proof_id(0xb2);
+        let acquisition = start(&mut network, &selected, peer_id, requested);
+        tokio::time::advance(DEPENDENCY_ACQUISITION_TIMEOUT).await;
+        let event = transport_failure(
+            &mut network,
+            acquisition.pending_request_id,
+            peer_id,
+            request_response::OutboundFailure::Timeout,
+        );
+        assert!(matches!(
+            acquisition.on_event(&mut network, &selected, match event {
+                NetworkEvent::OutboundProof(event) => event,
+                _ => panic!("deadline did not replace the ordinary transport failure"),
+            }),
+            Err(DependencyAcquisitionError::DeadlineExceeded {
+                pending_proof_id,
+                ..
+            }) if pending_proof_id == requested
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn equal_deadlines_are_emitted_once_in_request_generation_order() {
+        let directory = TestDirectory::new("equal-deadline-order");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let peer_ids = (0..2)
+            .map(|_| crate::Keypair::generate_ed25519().public().to_peer_id())
+            .collect::<Vec<_>>();
+        let mut network = test_network_for_peers(&peer_ids);
+        let first = start(&mut network, &selected, peer_ids[0], proof_id(0xb3));
+        let second = start(&mut network, &selected, peer_ids[1], proof_id(0xb4));
+
+        tokio::time::advance(DEPENDENCY_ACQUISITION_TIMEOUT).await;
+        let NetworkEvent::OutboundProof(first_event) = network
+            .take_due_acquisition_deadline(tokio::time::Instant::now())
+            .expect("the first equal deadline is due")
+        else {
+            panic!("deadline did not produce an outbound proof event");
+        };
+        assert!(first.accepts_event(&first_event));
+        assert!(!second.accepts_event(&first_event));
+
+        let NetworkEvent::OutboundProof(second_event) = network
+            .take_due_acquisition_deadline(tokio::time::Instant::now())
+            .expect("the second equal deadline is due")
+        else {
+            panic!("deadline did not produce an outbound proof event");
+        };
+        assert!(second.accepts_event(&second_event));
+        assert!(
+            network
+                .take_due_acquisition_deadline(tokio::time::Instant::now())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn every_dependency_request_inherits_one_control_and_deadline() {
+        let (_parent_bytes, _parent_id, root_bytes, root_id) = valid_parent_and_root();
+        let directory = TestDirectory::new("one-absolute-deadline");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let acquisition = start(&mut network, &selected, peer_id, root_id);
+        let first_control = Arc::clone(acquisition.cancellation.control());
+        let deadline = first_control.deadline;
+        let event = response_for(&mut network, &acquisition, root_bytes);
+
+        let DependencyAcquisitionProgress::AwaitingResponse(acquisition) = acquisition
+            .on_event(&mut network, &selected, event)
+            .unwrap()
+        else {
+            panic!("root dependency was not requested");
+        };
+        assert!(Arc::ptr_eq(
+            &first_control,
+            acquisition.cancellation.control()
+        ));
+        assert_eq!(acquisition.cancellation.control().deadline, deadline);
+        assert!(Arc::ptr_eq(
+            &network.pending[&acquisition.pending_request_id].control,
+            &first_control
+        ));
+    }
+
+    #[test]
+    fn pre_deadline_failure_and_cancelled_peer_mismatch_are_typed() {
+        let directory = TestDirectory::new("failure-precedence");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let acquisition = start(&mut network, &selected, peer_id, proof_id(0x95));
+        let request_id = acquisition.pending_request_id;
+        let event = transport_failure(
+            &mut network,
+            request_id,
+            peer_id,
+            request_response::OutboundFailure::ConnectionClosed,
+        );
+        let NetworkEvent::OutboundProof(event) = event else {
+            panic!("active failure was not surfaced");
+        };
+        assert!(matches!(
+            acquisition.on_event(&mut network, &selected, event),
+            Err(DependencyAcquisitionError::RequestFailed {
+                source,
+                ..
+            }) if matches!(
+                source.as_ref(),
+                OutboundProofFailure::Transport(
+                    request_response::OutboundFailure::ConnectionClosed
+                )
+            )
+        ));
+
+        let requested = proof_id(0x96);
+        let acquisition = start(&mut network, &selected, peer_id, requested);
+        let request_id = acquisition.pending_request_id;
+        acquisition
+            .cancellation
+            .control()
+            .cancelled
+            .store(true, Ordering::Relaxed);
+        let actual = crate::Keypair::generate_ed25519().public().to_peer_id();
+        let event = transport_response(&mut network, request_id, actual, pairing_bytes());
+        assert!(matches!(
+            event,
+            NetworkEvent::CancellationDrained {
+                outcome: CancellationDrainOutcome::Failure(source),
+                ..
+            } if matches!(
+                source.as_ref(),
+                OutboundProofFailure::PeerMismatch {
+                        expected,
+                        actual: received,
+                } if *expected == peer_id && *received == actual
+            )
+        ));
+        drop(acquisition);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_processed_peer_mismatch_outranks_the_acquisition_deadline() {
+        let directory = TestDirectory::new("peer-mismatch-deadline");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let requested = proof_id(0x98);
+        let acquisition = start(&mut network, &selected, peer_id, requested);
+        let request_id = acquisition.pending_request_id;
+        tokio::time::advance(DEPENDENCY_ACQUISITION_TIMEOUT).await;
+        let actual = crate::Keypair::generate_ed25519().public().to_peer_id();
+        let event = transport_response(&mut network, request_id, actual, pairing_bytes());
+        let NetworkEvent::OutboundProof(event) = event else {
+            panic!("active peer mismatch was not surfaced");
+        };
+        assert!(matches!(
+            acquisition.on_event(&mut network, &selected, event),
+            Err(DependencyAcquisitionError::RequestFailed {
+                source,
+                ..
+            }) if matches!(
+                source.as_ref(),
+                OutboundProofFailure::PeerMismatch {
+                    expected,
+                    actual: received,
+                } if *expected == peer_id && *received == actual
+            )
+        ));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_deadline_emitted_first_preserves_later_peer_mismatch_on_drain() {
+        let directory = TestDirectory::new("deadline-before-peer-mismatch");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let acquisition = start(&mut network, &selected, peer_id, proof_id(0xb5));
+        let request_id = acquisition.pending_request_id;
+        tokio::time::advance(DEPENDENCY_ACQUISITION_TIMEOUT).await;
+        let deadline = network
+            .take_due_acquisition_deadline(tokio::time::Instant::now())
+            .expect("the logical deadline is due");
+
+        let actual = crate::Keypair::generate_ed25519().public().to_peer_id();
+        assert!(matches!(
+            transport_response(&mut network, request_id, actual, pairing_bytes()),
+            NetworkEvent::CancellationDrained {
+                outcome: CancellationDrainOutcome::Failure(source),
+                ..
+            } if matches!(
+                source.as_ref(),
+                OutboundProofFailure::PeerMismatch {
+                    expected,
+                    actual: received,
+                } if *expected == peer_id && *received == actual
+            )
+        ));
+        let NetworkEvent::OutboundProof(deadline) = deadline else {
+            panic!("logical deadline did not produce an outbound proof event");
+        };
+        assert!(matches!(
+            acquisition.on_event(&mut network, &selected, deadline),
+            Err(DependencyAcquisitionError::DeadlineExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn dropping_an_acquisition_tombstones_its_current_generation() {
+        let directory = TestDirectory::new("drop-acquisition");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let acquisition = start(&mut network, &selected, peer_id, proof_id(0x99));
+        let request_id = acquisition.pending_request_id;
+        drop(acquisition);
+
+        assert!(network.pending[&request_id].control.is_cancelled());
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+        let event = transport_response(&mut network, request_id, peer_id, pairing_bytes());
+        assert!(matches!(
+            event,
+            NetworkEvent::CancellationDrained {
+                outcome: CancellationDrainOutcome::ResponseDiscarded,
+                ..
+            }
+        ));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn stale_failure_cannot_consume_a_new_same_address_generation() {
+        let directory = TestDirectory::new("stale-failure-generation");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let requested = proof_id(0x9a);
+        let old = start(&mut network, &selected, peer_id, requested);
+        let event = transport_failure(
+            &mut network,
+            old.pending_request_id,
+            peer_id,
+            request_response::OutboundFailure::Timeout,
+        );
+        let NetworkEvent::OutboundProof(stale) = event else {
+            panic!("active failure was not surfaced");
+        };
+        drop(old);
+
+        let current = start(&mut network, &selected, peer_id, requested);
+        let current_request_id = current.pending_request_id;
+        assert!(!current.accepts_event(&stale));
+        assert!(matches!(
+            current.on_event(&mut network, &selected, stale),
+            Err(DependencyAcquisitionError::UnexpectedEvent)
+        ));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+        drop(network.pending.remove(&current_request_id));
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn dropping_the_network_releases_every_tombstoned_permit() {
+        let directory = TestDirectory::new("drop-network-tombstones");
+        let selected = ProofDagJournal::create(directory.path()).unwrap();
+        let (mut network, peer_id) = test_network();
+        let budget = Arc::clone(&network.pending_budget);
+        start(&mut network, &selected, peer_id, proof_id(0x97)).cancel();
+        assert_eq!(budget.active.load(Ordering::Relaxed), 1);
+        drop(network);
+        assert_eq!(budget.active.load(Ordering::Relaxed), 0);
     }
 }

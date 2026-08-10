@@ -128,8 +128,10 @@ candidate whose missing references are discovered before mathematical checking
 can derive its actual `ProofId`. Fixed candidate and request limits bound that
 work; retaining the complete closure unselected prevents such a response from
 smuggling dependencies into selected state. Proof-request retries, multi-peer
-fallback, rolling work budgets, and total-job deadlines remain later policy;
-managed transport redial is specified separately by the authenticated binding.
+fallback, and rolling work budgets remain later policy. The authenticated
+binding supplies one non-resetting absolute acquisition deadline and
+permit-preserving cancellation tombstones; managed transport redial is
+specified separately there.
 
 ## Explicit exclusions
 

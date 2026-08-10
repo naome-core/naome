@@ -11,7 +11,7 @@
 //! session and never open connections.
 //!
 //! The caller owns the Tokio runtime, drives [`StaticProofNetwork::next_event`],
-//! routes correlated responses through a bounded dependency acquisition, and
+//! routes correlated outbound events through a bounded dependency acquisition, and
 //! explicitly promotes the resulting opaque closure. This crate starts no
 //! NAOME-owned background task and owns no [`ProofDagJournal`].
 
@@ -24,7 +24,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -39,6 +39,7 @@ use naome::proof_exchange::{
 };
 use naome_storage::{JournalError, ProofDagJournal};
 use session::Behaviour as SessionBehaviour;
+use tokio::time::Instant;
 
 const MANAGED_SESSION_IDLE_TIMEOUT: Duration = Duration::MAX;
 const DIAL_RETRY_DELAYS: [Duration; 7] = [
@@ -74,6 +75,8 @@ pub const TCP_LISTEN_BACKLOG: u32 = 16;
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum duration of the negotiated request-response phase.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Absolute monotonic budget for one dependency acquisition.
+pub const DEPENDENCY_ACQUISITION_TIMEOUT: Duration = Duration::from_secs(120);
 /// Initial delay after one failed managed-session dial.
 pub const DIAL_RETRY_BASE: Duration = DIAL_RETRY_DELAYS[0];
 /// Maximum delay between managed-session dial attempts.
@@ -123,7 +126,32 @@ struct Behaviour {
 struct PendingRequest {
     peer_id: PeerId,
     request: ProofRequest,
+    control: Arc<AcquisitionControl>,
     _permit: PendingPermit,
+}
+
+struct AcquisitionControl {
+    network_budget: Arc<PendingBudget>,
+    deadline: Instant,
+    cancelled: AtomicBool,
+}
+
+impl AcquisitionControl {
+    fn new(network_budget: Arc<PendingBudget>, deadline: Instant) -> Self {
+        Self {
+            network_budget,
+            deadline,
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
+    fn cancel(&self) -> bool {
+        !self.cancelled.swap(true, Ordering::Relaxed)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
 }
 
 /// Authenticated proof transport over a fixed set of authorized peers.
@@ -229,10 +257,11 @@ impl StaticProofNetwork {
         self.swarm.listen_on(address).map_err(ListenError)
     }
 
-    fn request_proof(
+    fn request_acquisition_proof(
         &mut self,
         peer_id: PeerId,
         request: ProofRequest,
+        control: Arc<AcquisitionControl>,
     ) -> Result<request_response::OutboundRequestId, RequestStartError> {
         let Some(session_connected) = self.swarm.behaviour().sessions.connection_status(&peer_id)
         else {
@@ -267,6 +296,7 @@ impl StaticProofNetwork {
             PendingRequest {
                 peer_id,
                 request,
+                control,
                 _permit: permit,
             },
         );
@@ -274,10 +304,40 @@ impl StaticProofNetwork {
         Ok(request_id)
     }
 
+    #[cfg(test)]
+    fn request_proof(
+        &mut self,
+        peer_id: PeerId,
+        request: ProofRequest,
+    ) -> Result<request_response::OutboundRequestId, RequestStartError> {
+        let deadline = Instant::now()
+            .checked_add(DEPENDENCY_ACQUISITION_TIMEOUT)
+            .expect("the fixed acquisition timeout fits Tokio Instant");
+        let control = Arc::new(AcquisitionControl::new(
+            Arc::clone(&self.pending_budget),
+            deadline,
+        ));
+        self.request_acquisition_proof(peer_id, request, control)
+    }
+
     /// Waits for the next proof-network event.
     pub async fn next_event(&mut self) -> NetworkEvent {
         loop {
-            match self.swarm.select_next_some().await {
+            if let Some(event) = self.take_due_acquisition_deadline(Instant::now()) {
+                return event;
+            }
+
+            let swarm_event = if let Some(deadline) = self.next_acquisition_deadline() {
+                tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep_until(deadline) => continue,
+                    event = self.swarm.select_next_some() => event,
+                }
+            } else {
+                self.swarm.select_next_some().await
+            };
+
+            match swarm_event {
                 SwarmEvent::Behaviour(BehaviourEvent::Exchange(event)) => {
                     if let Some(event) = self.handle_exchange_event(event) {
                         return event;
@@ -308,6 +368,39 @@ impl StaticProofNetwork {
         }
     }
 
+    fn next_acquisition_deadline(&self) -> Option<Instant> {
+        self.pending
+            .values()
+            .filter(|pending| !pending.control.is_cancelled())
+            .map(|pending| pending.control.deadline)
+            .min()
+    }
+
+    fn take_due_acquisition_deadline(&mut self, now: Instant) -> Option<NetworkEvent> {
+        let request_id = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| {
+                !pending.control.is_cancelled() && now >= pending.control.deadline
+            })
+            .min_by_key(|(request_id, pending)| (pending.control.deadline, **request_id))
+            .map(|(request_id, _)| *request_id)?;
+        let pending = self
+            .pending
+            .get(&request_id)
+            .expect("the due request remains pending");
+        if !pending.control.cancel() {
+            return None;
+        }
+        Some(NetworkEvent::OutboundProof(OutboundProofEvent {
+            request_id,
+            peer_id: pending.peer_id,
+            request: pending.request,
+            control: Arc::clone(&pending.control),
+            outcome: OutboundProofOutcome::DeadlineExceeded,
+        }))
+    }
+
     fn handle_exchange_event(
         &mut self,
         event: request_response::Event<ProofRequest, ProofResponse>,
@@ -330,18 +423,44 @@ impl StaticProofNetwork {
                 } => {
                     let pending = self.pending.remove(&request_id)?;
                     if pending.peer_id != peer {
-                        return Some(NetworkEvent::ResponsePeerMismatch {
-                            expected: pending.peer_id,
-                            actual: peer,
+                        let expected = pending.peer_id;
+                        return Some(
+                            self.finish_peer_mismatch(request_id, pending, expected, peer),
+                        );
+                    }
+                    if pending.control.is_cancelled() {
+                        return Some(NetworkEvent::CancellationDrained {
+                            peer_id: pending.peer_id,
                             request: pending.request,
+                            outcome: CancellationDrainOutcome::ResponseDiscarded,
                         });
                     }
-                    Some(NetworkEvent::Response(ReceivedProofResponse {
+                    if Instant::now() >= pending.control.deadline {
+                        return Some(if pending.control.cancel() {
+                            NetworkEvent::OutboundProof(OutboundProofEvent {
+                                request_id,
+                                peer_id: pending.peer_id,
+                                request: pending.request,
+                                control: pending.control,
+                                outcome: OutboundProofOutcome::DeadlineExceeded,
+                            })
+                        } else {
+                            NetworkEvent::CancellationDrained {
+                                peer_id: pending.peer_id,
+                                request: pending.request,
+                                outcome: CancellationDrainOutcome::ResponseDiscarded,
+                            }
+                        });
+                    }
+                    Some(NetworkEvent::OutboundProof(OutboundProofEvent {
                         request_id,
                         peer_id: peer,
                         request: pending.request,
-                        response,
-                        _permit: pending._permit,
+                        control: pending.control,
+                        outcome: OutboundProofOutcome::Response {
+                            response,
+                            _permit: pending._permit,
+                        },
                     }))
                 }
             },
@@ -350,14 +469,18 @@ impl StaticProofNetwork {
                 request_id,
                 error,
                 ..
-            } => self
-                .pending
-                .remove(&request_id)
-                .map(|pending| NetworkEvent::OutboundFailure {
-                    peer_id: peer,
-                    request: pending.request,
-                    error,
-                }),
+            } => {
+                let pending = self.pending.remove(&request_id)?;
+                if pending.peer_id != peer {
+                    let expected = pending.peer_id;
+                    return Some(self.finish_peer_mismatch(request_id, pending, expected, peer));
+                }
+                Some(self.finish_failed_request(
+                    request_id,
+                    pending,
+                    Box::new(OutboundProofFailure::Transport(error)),
+                ))
+            }
             request_response::Event::InboundFailure {
                 peer,
                 request_id,
@@ -370,6 +493,69 @@ impl StaticProofNetwork {
             }),
             request_response::Event::ResponseSent { .. } => None,
         }
+    }
+
+    fn finish_peer_mismatch(
+        &self,
+        request_id: request_response::OutboundRequestId,
+        pending: PendingRequest,
+        expected: PeerId,
+        actual: PeerId,
+    ) -> NetworkEvent {
+        let error = Box::new(OutboundProofFailure::PeerMismatch { expected, actual });
+        if pending.control.is_cancelled() {
+            return NetworkEvent::CancellationDrained {
+                peer_id: pending.peer_id,
+                request: pending.request,
+                outcome: CancellationDrainOutcome::Failure(error),
+            };
+        }
+        NetworkEvent::OutboundProof(OutboundProofEvent {
+            request_id,
+            peer_id: pending.peer_id,
+            request: pending.request,
+            control: pending.control,
+            outcome: OutboundProofOutcome::Failure(error),
+        })
+    }
+
+    fn finish_failed_request(
+        &self,
+        request_id: request_response::OutboundRequestId,
+        pending: PendingRequest,
+        error: Box<OutboundProofFailure>,
+    ) -> NetworkEvent {
+        if pending.control.is_cancelled() {
+            return NetworkEvent::CancellationDrained {
+                peer_id: pending.peer_id,
+                request: pending.request,
+                outcome: CancellationDrainOutcome::Failure(error),
+            };
+        }
+        if Instant::now() >= pending.control.deadline {
+            return if pending.control.cancel() {
+                NetworkEvent::OutboundProof(OutboundProofEvent {
+                    request_id,
+                    peer_id: pending.peer_id,
+                    request: pending.request,
+                    control: pending.control,
+                    outcome: OutboundProofOutcome::DeadlineExceeded,
+                })
+            } else {
+                NetworkEvent::CancellationDrained {
+                    peer_id: pending.peer_id,
+                    request: pending.request,
+                    outcome: CancellationDrainOutcome::Failure(error),
+                }
+            };
+        }
+        NetworkEvent::OutboundProof(OutboundProofEvent {
+            request_id,
+            peer_id: pending.peer_id,
+            request: pending.request,
+            control: pending.control,
+            outcome: OutboundProofOutcome::Failure(error),
+        })
     }
 
     /// Serves one authenticated request from the healthy local journal.
@@ -437,43 +623,106 @@ impl fmt::Debug for InboundProofRequest {
     }
 }
 
-/// One response cryptographically correlated with its original request.
+/// One terminal outcome correlated with its exact outbound proof request.
 #[must_use]
-pub struct ReceivedProofResponse {
+pub struct OutboundProofEvent {
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
     request: ProofRequest,
-    response: ProofResponse,
-    _permit: PendingPermit,
+    control: Arc<AcquisitionControl>,
+    outcome: OutboundProofOutcome,
 }
 
-impl ReceivedProofResponse {
-    /// Returns the authenticated responder.
+impl OutboundProofEvent {
+    /// Returns the expected authenticated peer.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
-    /// Returns the immutable request that caused this response.
+    /// Returns the immutable request that caused this terminal outcome.
     pub const fn request(&self) -> ProofRequest {
         self.request
     }
 
-    /// Returns whether the peer supplied no proof payload.
-    pub const fn is_unavailable(&self) -> bool {
-        self.response.is_unavailable()
+    /// Returns the terminal request failure, when this was not a response or
+    /// acquisition deadline.
+    pub fn failure(&self) -> Option<&OutboundProofFailure> {
+        match &self.outcome {
+            OutboundProofOutcome::Failure(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the absolute acquisition deadline caused this event.
+    pub const fn is_deadline_exceeded(&self) -> bool {
+        matches!(self.outcome, OutboundProofOutcome::DeadlineExceeded)
     }
 }
 
-impl fmt::Debug for ReceivedProofResponse {
+impl fmt::Debug for OutboundProofEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let outcome = match &self.outcome {
+            OutboundProofOutcome::Response { .. } => "Response",
+            OutboundProofOutcome::Failure(_) => "Failure",
+            OutboundProofOutcome::DeadlineExceeded => "DeadlineExceeded",
+        };
         formatter
-            .debug_struct("ReceivedProofResponse")
+            .debug_struct("OutboundProofEvent")
             .field("request_id", &self.request_id)
             .field("peer_id", &self.peer_id)
             .field("request", &self.request)
-            .field("response", &self.response)
-            .finish()
+            .field("outcome", &outcome)
+            .finish_non_exhaustive()
     }
+}
+
+enum OutboundProofOutcome {
+    Response {
+        response: ProofResponse,
+        _permit: PendingPermit,
+    },
+    Failure(Box<OutboundProofFailure>),
+    DeadlineExceeded,
+}
+
+/// A typed terminal failure for one exact outbound proof request.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum OutboundProofFailure {
+    Transport(request_response::OutboundFailure),
+    PeerMismatch { expected: PeerId, actual: PeerId },
+}
+
+impl fmt::Display for OutboundProofFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transport(source) => write!(formatter, "proof request failed: {source}"),
+            Self::PeerMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "proof terminal event came from {actual}, expected {expected}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for OutboundProofFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Transport(source) => Some(source),
+            Self::PeerMismatch { .. } => None,
+        }
+    }
+}
+
+/// The physical terminal result that released one cancelled request slot.
+#[derive(Debug)]
+#[must_use]
+#[non_exhaustive]
+pub enum CancellationDrainOutcome {
+    ResponseDiscarded,
+    Failure(Box<OutboundProofFailure>),
 }
 
 /// An externally relevant transport event.
@@ -485,21 +734,16 @@ pub enum NetworkEvent {
         address: Multiaddr,
     },
     InboundRequest(InboundProofRequest),
-    Response(ReceivedProofResponse),
-    OutboundFailure {
+    OutboundProof(OutboundProofEvent),
+    CancellationDrained {
         peer_id: PeerId,
         request: ProofRequest,
-        error: request_response::OutboundFailure,
+        outcome: CancellationDrainOutcome,
     },
     InboundFailure {
         peer_id: PeerId,
         request_id: request_response::InboundRequestId,
         error: request_response::InboundFailure,
-    },
-    ResponsePeerMismatch {
-        expected: PeerId,
-        actual: PeerId,
-        request: ProofRequest,
     },
     PeerSession(PeerSessionEvent),
     ListenerError {

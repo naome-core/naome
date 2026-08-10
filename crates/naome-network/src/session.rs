@@ -211,6 +211,18 @@ impl Behaviour {
     }
 
     #[cfg(test)]
+    pub(super) fn mark_disconnected_for_test(&mut self, peer_id: PeerId) {
+        assert!(self.record_closed(
+            peer_id,
+            ConnectionId::new_unchecked(usize::MAX),
+            0,
+            Instant::now(),
+        ));
+        self.pending_events
+            .push_back(PeerSessionEvent::Disconnected { peer_id });
+    }
+
+    #[cfg(test)]
     pub(super) fn is_test_connected(&self, peer_id: &PeerId) -> bool {
         self.peer(peer_id).is_some_and(|peer| {
             matches!(
