@@ -1,0 +1,33 @@
+[package]
+name = "naome-network"
+version = "0.1.0"
+edition = "2024"
+description = "Authenticated bounded proof transport for static NAOME peers."
+license = "MIT"
+repository = "https://github.com/naome-core/naome"
+publish = false
+
+[dependencies]
+async-trait = "0.1.91"
+libp2p = { version = "0.56.0", default-features = false, features = [
+    "ed25519",
+    "macros",
+    "noise",
+    "request-response",
+    "tcp",
+    "tokio",
+    "yamux",
+] }
+naome = { path = "../.." }
+naome-storage = { path = "../naome-storage" }
+
+[dev-dependencies]
+naome-ledger = { path = "../naome-ledger" }
+tokio = { version = "1", default-features = false, features = [
+    "macros",
+    "rt",
+    "time",
+] }
+
+[lints]
+workspace = true

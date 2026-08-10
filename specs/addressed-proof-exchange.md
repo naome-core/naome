@@ -11,6 +11,11 @@ The contract assumes that an outer transport already provides one exact
 message boundary and distinguishes successful message completion from transport
 failure. It defines neither sockets nor a complete peer-to-peer network.
 
+The [authenticated proof transport](authenticated-proof-transport.md) defines
+one concrete static TCP + Noise + Yamux binding for this exchange. This
+transport-neutral contract remains authoritative for request-address binding
+and journal admission.
+
 ## Request
 
 A `ProofRequest` is exactly the 32 raw bytes of one `ProofId`:
@@ -39,11 +44,11 @@ proof-set root, or wrapper encoding. A successfully completed empty message is
 the sole `Unavailable` representation.
 
 The outer transport must reject an announced response length above
-`CERTIFICATE_MAX_BYTES` before allocating the body. A transport reset, timeout,
-truncation, or absent response must remain a transport error and must never be
-converted to `Unavailable`. This object codec can reject an already supplied
-oversized message but does not itself provide network allocation limits,
-timeouts, or backpressure.
+`CERTIFICATE_MAX_BYTES` before allocating the body. A reset or timeout before
+the declared outer message completes, a truncation, or an absent response must
+remain a transport error and must never be converted to `Unavailable`. This
+object codec can reject an already supplied oversized message but does not
+itself provide network allocation limits, timeouts, or backpressure.
 
 `Unavailable` reports only that one sender supplied no payload for this
 request. It is not evidence of global absence, non-membership in a
@@ -60,9 +65,11 @@ A local responder looks up the exact requested `ProofId` in its healthy
 - a poisoned or unreadable journal yields its existing `JournalError` rather
   than a response.
 
-Serving does not re-encode the proof, duplicate identities, or allocate a second
-proof-sized buffer. Transport-specific writing and buffer ownership remain
-outside this contract.
+Serving does not re-encode the proof or duplicate identities. The
+transport-neutral lookup itself borrows the retained bytes without allocating.
+Transport-specific writing and buffer ownership remain outside this contract;
+the authenticated libp2p binding documents its one required owned response
+copy.
 
 ## Receiving and admission
 
