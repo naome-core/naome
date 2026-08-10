@@ -8,11 +8,11 @@ transition into the [peer-address store](peer-address-management.md). It is an
 NAOME batch wrapper around standard interoperable libp2p signed peer records,
 not a new peer-record format.
 
-The exchange defines bytes and store admission only. It does not open sockets,
-select a libp2p protocol identifier, authenticate a source, create discovery
-sessions, or alter the authenticated proof transport. A caller may submit a
-decoded response only with the exact configured source identity authenticated
-by a separately defined transport.
+This document defines bytes and store admission only. The separate
+[Authenticated Peer Record Pull](authenticated-peer-record-pull.md) binds
+these exact bytes to one outbound-only libp2p client and authenticates the
+configured source. Neither layer creates dynamic discovery sessions or alters
+the authenticated proof transport.
 
 ## Request
 
@@ -23,8 +23,9 @@ end of stream
 ```
 
 Any request byte is invalid. V0 has no filter, cursor, requested identity,
-sequence watermark, pagination token, or correlation field. Transport-level
-request correlation remains the responsibility of a future binding.
+sequence watermark, pagination token, or correlation field. The authenticated
+pull binding correlates it with a private libp2p request ID and expected Noise
+identity rather than adding untrusted request bytes.
 
 ## Response
 
@@ -137,10 +138,11 @@ quota preflight, stale-replay TTL preservation, and at most one durable store
 transition. These guarantees do not establish that an address is reachable or
 that a source and subject represent independent operators.
 
-This contract does not define or claim:
+This transport-neutral body and transaction contract does not define or claim:
 
-- a libp2p stream protocol, socket, listener, dial, timeout, retry, request
-  correlation, or authenticated transport binding;
+- a listener, responder, publication policy, inbound admission, retry, or
+  dynamic-session policy; the separate outbound binding defines
+  only the client protocol, authentication, correlation, and fixed timeouts;
 - push gossip, subscriptions, cursors, deltas, pagination, Rendezvous, DHT,
   DNS, mDNS, NAT traversal, relay, or hole punching;
 - dynamic session ownership, learned-peer connection authorization, peer
@@ -151,6 +153,6 @@ This contract does not define or claim:
 - a replacement for the standard libp2p signed peer-record payload, domain,
   signature, or sequence semantics.
 
-The next slice may bind this exchange to explicitly authenticated bootstrap
-sessions. Dynamic peer sessions and any proof-exchange authorization remain
-separate designs.
+The next network slice may define a bounded operator-run responder and record
+publication policy. Dynamic peer sessions and any proof-exchange authorization
+remain separate designs.

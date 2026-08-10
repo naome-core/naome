@@ -1211,12 +1211,14 @@ impl From<BootstrapConfigError> for PeerAddressStoreError {
     }
 }
 
-fn validate_bootstraps(
+pub(crate) fn validate_bootstraps(
     local_peer_id: PeerId,
     bootstraps: impl IntoIterator<Item = BootstrapPeer>,
 ) -> Result<Vec<BootstrapPeer>, BootstrapConfigError> {
     validate_configured_peer_id("local", local_peer_id)?;
-    let mut result = Vec::with_capacity(MAX_BOOTSTRAP_PEERS);
+    let bootstraps = bootstraps.into_iter();
+    let initial_capacity = bootstraps.size_hint().0.min(MAX_BOOTSTRAP_PEERS);
+    let mut result = Vec::with_capacity(initial_capacity);
     for bootstrap in bootstraps {
         validate_configured_peer_id("bootstrap", bootstrap.peer_id)?;
         if bootstrap.peer_id == local_peer_id {

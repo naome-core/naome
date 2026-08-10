@@ -1,4 +1,4 @@
-//! Authenticated proof transport plus bounded untrusted peer-address storage.
+//! Authenticated proof transport plus bounded untrusted peer-address routing.
 //!
 //! TCP carries mutually authenticated Noise sessions, Yamux provides one
 //! substream per exchange, and the retained libp2p request handle plus
@@ -10,13 +10,20 @@
 //! configured pair owns dialing; proof requests reuse that managed full-duplex
 //! session and never open connections.
 //!
-//! The caller owns the Tokio runtime, drives [`StaticProofNetwork::next_event`],
-//! routes correlated outbound events through a bounded dependency acquisition, and
-//! explicitly promotes the resulting opaque closure. This crate starts no
-//! NAOME-owned background task and owns no [`ProofDagJournal`].
+//! A separate outbound-only [`PeerRecordBootstrapClient`] authenticates exact
+//! operator-configured bootstrap endpoints and returns source-bound record
+//! batches for explicit atomic admission. It exposes no listener, installs no
+//! proof protocol, and never converts a learned candidate into proof authority.
+//!
+//! The caller owns the Tokio runtime, drives network event loops, routes
+//! correlated proof events through a bounded dependency acquisition, and
+//! explicitly promotes the resulting opaque closure or admits a peer-record
+//! batch. This crate starts no NAOME-owned background task and owns no
+//! [`ProofDagJournal`].
 
 mod acquisition;
 mod address_store;
+mod bootstrap;
 mod codec;
 mod record_exchange;
 mod session;
@@ -66,6 +73,10 @@ pub use address_store::{
     MAX_RECORDS_PER_BOOTSTRAP, MAX_RECORDS_PER_NETWORK_GROUP, MAX_SIGNED_PEER_RECORD_BYTES,
     PEER_RECORD_TTL, PeerAddressStore, PeerAddressStoreError, PeerRecordAdmission,
     PeerRecordBatchAdmission, SignedPeerRecord, SignedPeerRecordError,
+};
+pub use bootstrap::{
+    AuthenticatedPeerRecordBatch, PeerRecordBootstrapBuildError, PeerRecordBootstrapClient,
+    PeerRecordBootstrapEvent, PeerRecordPullFailure, PeerRecordPullStartError,
 };
 pub use libp2p::core::transport::ListenerId;
 pub use libp2p::{Multiaddr, PeerId, identity::Keypair};
@@ -245,7 +256,7 @@ impl StaticProofNetwork {
             .with_tcp(
                 tcp::Config::new().listen_backlog(TCP_LISTEN_BACKLOG),
                 noise::Config::new,
-                yamux_config,
+                || yamux_config(MAX_YAMUX_STREAMS_PER_CONNECTION),
             )
             .map_err(BuildError::Noise)?
             .with_behaviour(|_| behaviour)
@@ -603,9 +614,9 @@ impl StaticProofNetwork {
     }
 }
 
-fn yamux_config() -> yamux::Config {
+fn yamux_config(max_streams: usize) -> yamux::Config {
     let mut config = yamux::Config::default();
-    config.set_max_num_streams(MAX_YAMUX_STREAMS_PER_CONNECTION);
+    config.set_max_num_streams(max_streams);
     config
 }
 
