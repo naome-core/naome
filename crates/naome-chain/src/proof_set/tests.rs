@@ -1,0 +1,225 @@
+use std::fmt::Write;
+
+use super::{
+    AuthenticatedProofSet, ProofPathStep, ProofSetMembership, ProofSetProofError, ProofSetRoot,
+    ProofSetValue, empty_digest, first_differing_bit, key_bit,
+};
+use naome_proof::ProofId;
+
+impl ProofSetValue for ProofId {
+    fn proof_id(&self) -> ProofId {
+        *self
+    }
+}
+
+fn id(bytes: [u8; 32]) -> ProofId {
+    ProofId::from_bytes(bytes)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").unwrap();
+    }
+    encoded
+}
+
+fn root_for(order: &[ProofId]) -> ProofSetRoot {
+    let mut set = AuthenticatedProofSet::new();
+    for proof_id in order {
+        assert!(set.insert(*proof_id).is_some());
+    }
+    set.root()
+}
+
+fn reference_root(keys: &[ProofId]) -> ProofSetRoot {
+    let mut keys = keys.to_vec();
+    keys.sort_unstable();
+    keys.dedup();
+    reference_subtree(&keys)
+}
+
+fn reference_subtree(keys: &[ProofId]) -> ProofSetRoot {
+    match keys {
+        [] => ProofSetRoot(empty_digest()),
+        [key] => ProofSetRoot(super::leaf_digest(*key)),
+        _ => {
+            let bit = first_differing_bit(keys[0], keys[keys.len() - 1]);
+            let split = keys.partition_point(|key| !key_bit(*key, bit));
+            ProofSetRoot(super::branch_digest(
+                bit,
+                reference_subtree(&keys[..split]).0,
+                reference_subtree(&keys[split..]).0,
+            ))
+        }
+    }
+}
+
+fn permutations(values: &mut [ProofId], start: usize, roots: &mut Vec<ProofSetRoot>) {
+    if start == values.len() {
+        roots.push(root_for(values));
+        return;
+    }
+    for index in start..values.len() {
+        values.swap(start, index);
+        permutations(values, start + 1, roots);
+        values.swap(start, index);
+    }
+}
+
+#[test]
+fn empty_leaf_and_branch_roots_have_stable_goldens() {
+    let zero = id([0; 32]);
+    let mut high = [0; 32];
+    high[0] = 0x80;
+    let mut low = [0; 32];
+    low[31] = 0x01;
+
+    assert_eq!(
+        hex(root_for(&[]).as_bytes()),
+        "e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca"
+    );
+    assert_eq!(empty_digest(), super::tagged_digest(0x00, &[]));
+    assert_eq!(
+        hex(root_for(&[zero]).as_bytes()),
+        "6035299a52844d846d83ca0395e1a7df37e62b7de9adc638ea2cbaf97d799a04"
+    );
+    assert_eq!(
+        hex(root_for(&[zero, id(high)]).as_bytes()),
+        "4c77fb731087d077c434cc706d41eea1fc9aa9b324638f709747b492cbb52687"
+    );
+    assert_eq!(
+        hex(root_for(&[zero, id(high), id(low)]).as_bytes()),
+        "00d65391369a613d7a56aca448277a0da7cc44e57a12a8b2159f0b1c5712c396"
+    );
+}
+
+#[test]
+fn every_insertion_order_matches_an_independent_canonical_root() {
+    let mut values = [id([0; 32]), id([0x55; 32]), id([0xaa; 32]), id([0xff; 32])];
+    let expected = reference_root(&values);
+    let mut roots = Vec::new();
+    permutations(&mut values, 0, &mut roots);
+
+    assert_eq!(roots.len(), 24);
+    assert!(roots.into_iter().all(|root| root == expected));
+}
+
+#[test]
+fn long_shared_prefixes_store_only_one_branch() {
+    let zero = id([0; 32]);
+    let mut last_bit = [0; 32];
+    last_bit[31] = 1;
+    let mut set = AuthenticatedProofSet::new();
+
+    let _ = set.insert(zero).unwrap();
+    let _ = set.insert(id(last_bit)).unwrap();
+
+    assert_eq!(set.leaves.len(), 2);
+    assert_eq!(set.branches.len(), 1);
+    assert_eq!(set.branches[0].bit, 255);
+    assert_eq!(set.root(), reference_root(&[zero, id(last_bit)]));
+}
+
+#[test]
+fn membership_and_nonmembership_proofs_verify_exclusively() {
+    let members = [id([0x11; 32]), id([0x77; 32]), id([0xee; 32])];
+    let absent = id([0x55; 32]);
+    let mut set = AuthenticatedProofSet::new();
+    for member in members {
+        let _ = set.insert(member).unwrap();
+    }
+    let root = set.root();
+
+    for member in members {
+        assert_eq!(
+            set.proof(member).verify(root, member),
+            Ok(ProofSetMembership::Present)
+        );
+    }
+    assert_eq!(
+        set.proof(absent).verify(root, absent),
+        Ok(ProofSetMembership::Absent)
+    );
+    assert_eq!(
+        AuthenticatedProofSet::<ProofId>::new()
+            .proof(absent)
+            .verify(ProofSetRoot(empty_digest()), absent),
+        Ok(ProofSetMembership::Absent)
+    );
+}
+
+#[test]
+fn duplicate_insertions_do_not_change_structure_or_root() {
+    let proof_id = id([0x44; 32]);
+    let mut set = AuthenticatedProofSet::new();
+    let _ = set.insert(proof_id).unwrap();
+    let root = set.root();
+
+    assert!(set.insert(proof_id).is_none());
+    assert_eq!(set.len(), 1);
+    assert_eq!(set.branches.len(), 0);
+    assert_eq!(set.root(), root);
+}
+
+#[test]
+fn malformed_or_mutated_proofs_fail_closed() {
+    let members = [id([0x10; 32]), id([0x40; 32]), id([0xf0; 32])];
+    let query = id([0x20; 32]);
+    let mut set = AuthenticatedProofSet::new();
+    for member in members {
+        let _ = set.insert(member).unwrap();
+    }
+    let root = set.root();
+    let proof = set.proof(query);
+
+    let mut changed_sibling = proof.clone();
+    changed_sibling.path[0].sibling[0] ^= 1;
+    assert!(matches!(
+        changed_sibling.verify(root, query),
+        Err(ProofSetProofError::RootMismatch { .. })
+    ));
+
+    let mut changed_bit = proof.clone();
+    changed_bit.path[0].bit = changed_bit.path[1].bit;
+    assert!(matches!(
+        changed_bit.verify(root, query),
+        Err(ProofSetProofError::NonIncreasingBits { .. })
+    ));
+
+    let mut empty_sibling = proof.clone();
+    empty_sibling.path[0].sibling = empty_digest();
+    assert!(matches!(
+        empty_sibling.verify(root, query),
+        Err(ProofSetProofError::EmptySibling { .. })
+    ));
+
+    let mut wrong_terminal = proof.clone();
+    wrong_terminal.terminal = super::ProofTerminal::NonMember(id([0xa0; 32]));
+    assert!(matches!(
+        wrong_terminal.verify(root, query),
+        Err(ProofSetProofError::TerminalPathMismatch { .. })
+    ));
+
+    let mut too_long = proof;
+    too_long.path = vec![
+        ProofPathStep {
+            sibling: [0x55; 32],
+            bit: 0,
+        };
+        257
+    ]
+    .into_boxed_slice();
+    assert_eq!(
+        too_long.verify(root, query),
+        Err(ProofSetProofError::PathTooLong)
+    );
+
+    let mut wrong_root = *root.as_bytes();
+    wrong_root[0] ^= 1;
+    assert!(matches!(
+        set.proof(query)
+            .verify(ProofSetRoot::from_bytes(wrong_root), query),
+        Err(ProofSetProofError::RootMismatch { .. })
+    ));
+}

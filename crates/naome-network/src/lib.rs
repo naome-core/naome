@@ -428,9 +428,9 @@ impl StaticProofNetwork {
                     let pending = self.pending.remove(&request_id)?;
                     if pending.peer_id != peer {
                         let expected = pending.peer_id;
-                        return Some(
-                            self.finish_peer_mismatch(request_id, pending, expected, peer),
-                        );
+                        return Some(Self::finish_peer_mismatch(
+                            request_id, pending, expected, peer,
+                        ));
                     }
                     if pending.control.is_cancelled() {
                         return Some(NetworkEvent::CancellationDrained {
@@ -477,9 +477,11 @@ impl StaticProofNetwork {
                 let pending = self.pending.remove(&request_id)?;
                 if pending.peer_id != peer {
                     let expected = pending.peer_id;
-                    return Some(self.finish_peer_mismatch(request_id, pending, expected, peer));
+                    return Some(Self::finish_peer_mismatch(
+                        request_id, pending, expected, peer,
+                    ));
                 }
-                Some(self.finish_failed_request(
+                Some(Self::finish_failed_request(
                     request_id,
                     pending,
                     Box::new(OutboundProofFailure::Transport(error)),
@@ -500,7 +502,6 @@ impl StaticProofNetwork {
     }
 
     fn finish_peer_mismatch(
-        &self,
         request_id: request_response::OutboundRequestId,
         pending: PendingRequest,
         expected: PeerId,
@@ -524,7 +525,6 @@ impl StaticProofNetwork {
     }
 
     fn finish_failed_request(
-        &self,
         request_id: request_response::OutboundRequestId,
         pending: PendingRequest,
         error: Box<OutboundProofFailure>,

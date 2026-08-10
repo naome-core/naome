@@ -1,11 +1,11 @@
 [package]
 name = "naome"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "A decentralized protocol for formally verified mathematical knowledge."
-license = "MIT"
-repository = "https://github.com/naome-core/naome"
-publish = false
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [workspace]
 members = [
@@ -18,6 +18,16 @@ members = [
     "crates/naome-storage",
 ]
 resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/naome-core/naome"
+publish = false
+
+[workspace.dependencies]
+sha2 = { version = "0.11.0", default-features = false }
 
 [dependencies]
 naome-proof = { path = "crates/naome-proof" }
