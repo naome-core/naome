@@ -290,6 +290,147 @@ async fn dependency_acquisition_is_unselected_until_one_explicit_atomic_promotio
 }
 
 #[tokio::test]
+async fn dependency_acquisition_falls_back_to_another_authenticated_peer() {
+    let mut identities = vec![
+        super::Keypair::generate_ed25519(),
+        super::Keypair::generate_ed25519(),
+        super::Keypair::generate_ed25519(),
+    ];
+    identities.sort_unstable_by_key(|identity| identity.public().to_peer_id().to_bytes());
+    let client_identity = identities.remove(0);
+    let preferred_identity = identities.remove(0);
+    let fallback_identity = identities.remove(0);
+    let client_peer_id = client_identity.public().to_peer_id();
+    let preferred_peer_id = preferred_identity.public().to_peer_id();
+    let fallback_peer_id = fallback_identity.public().to_peer_id();
+
+    let mut preferred = StaticProofNetwork::new(
+        preferred_identity,
+        [StaticPeer::new(client_peer_id, address(1))],
+    )
+    .unwrap();
+    let preferred_address = listening_address(&mut preferred).await;
+    let mut fallback = StaticProofNetwork::new(
+        fallback_identity,
+        [StaticPeer::new(client_peer_id, address(2))],
+    )
+    .unwrap();
+    let fallback_address = listening_address(&mut fallback).await;
+    let mut client = StaticProofNetwork::new(
+        client_identity,
+        [
+            StaticPeer::new(fallback_peer_id, fallback_address),
+            StaticPeer::new(preferred_peer_id, preferred_address),
+        ],
+    )
+    .unwrap();
+
+    let mut client_preferred = false;
+    let mut client_fallback = false;
+    let mut preferred_client = false;
+    let mut fallback_client = false;
+    timeout(Duration::from_secs(10), async {
+        while !(client_preferred && client_fallback && preferred_client && fallback_client) {
+            tokio::select! {
+                event = client.next_event() => {
+                    if let NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) = event {
+                        if peer_id == preferred_peer_id {
+                            client_preferred = true;
+                        } else if peer_id == fallback_peer_id {
+                            client_fallback = true;
+                        }
+                    }
+                },
+                event = preferred.next_event() => {
+                    if let NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) = event {
+                        assert_eq!(peer_id, client_peer_id);
+                        preferred_client = true;
+                    }
+                },
+                event = fallback.next_event() => {
+                    if let NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) = event {
+                        assert_eq!(peer_id, client_peer_id);
+                        fallback_client = true;
+                    }
+                },
+            }
+        }
+    })
+    .await
+    .expect("all three managed peer sessions did not establish");
+
+    let preferred_directory = TestDirectory::new("fallback-preferred-server");
+    let preferred_journal = ProofDagJournal::create(preferred_directory.path()).unwrap();
+    let fallback_directory = TestDirectory::new("fallback-source-server");
+    let mut fallback_journal = ProofDagJournal::create(fallback_directory.path()).unwrap();
+    let parent_id = fallback_journal
+        .apply_canonical_proof_bytes(pairing_bytes())
+        .unwrap()
+        .proof_id();
+    let root_id = fallback_journal
+        .apply_canonical_proof_bytes(referenced_generalization(parent_id))
+        .unwrap()
+        .proof_id();
+    let client_directory = TestDirectory::new("fallback-client");
+    let mut client_journal = ProofDagJournal::create(client_directory.path()).unwrap();
+    let empty_bytes = client_directory.journal_bytes();
+    let mut acquisition = client
+        .start_dependency_acquisition(&client_journal, preferred_peer_id, root_id)
+        .unwrap();
+    let mut observed_fallback = false;
+
+    let closure = timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => {
+                    let NetworkEvent::OutboundProof(event) = event else {
+                        continue;
+                    };
+                    assert!(acquisition.accepts_event(&event));
+                    let response_peer = event.peer_id();
+                    match acquisition.on_event(&mut client, &client_journal, event).unwrap() {
+                        DependencyAcquisitionProgress::AwaitingResponse(next) => {
+                            if response_peer == preferred_peer_id {
+                                assert_eq!(next.pending_peer_id(), fallback_peer_id);
+                                observed_fallback = true;
+                            }
+                            acquisition = next;
+                        }
+                        DependencyAcquisitionProgress::Complete(closure) => break closure,
+                    }
+                },
+                event = preferred.next_event() => {
+                    if let NetworkEvent::InboundRequest(inbound) = event {
+                        preferred.respond_from_journal(inbound, &preferred_journal).unwrap();
+                    }
+                },
+                event = fallback.next_event() => {
+                    if let NetworkEvent::InboundRequest(inbound) = event {
+                        fallback.respond_from_journal(inbound, &fallback_journal).unwrap();
+                    }
+                },
+            }
+        }
+    })
+    .await
+    .expect("multi-peer dependency acquisition timed out");
+
+    assert!(observed_fallback);
+    assert_eq!(closure.candidate_count(), 2);
+    assert_eq!(client_directory.journal_bytes(), empty_bytes);
+    assert!(client_journal.is_empty().unwrap());
+    assert_eq!(
+        closure
+            .apply_to_selected_state(&mut client_journal)
+            .unwrap()
+            .proof_id(),
+        root_id
+    );
+    assert_eq!(client_journal.len().unwrap(), 2);
+    assert!(client_journal.proof(parent_id).unwrap().is_some());
+}
+
+#[tokio::test]
 async fn static_configuration_rejects_local_duplicate_and_excess_peers() {
     let local = super::Keypair::generate_ed25519();
     let local_peer_id = local.public().to_peer_id();

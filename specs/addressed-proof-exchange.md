@@ -79,14 +79,14 @@ peer-supplied field may replace that request context. This transport-neutral
 codec deliberately exposes no raw response-to-journal admission helper.
 
 The concrete authenticated transport consumes responses through a bounded
-single-peer closure acquisition. It decodes each response, requires exact
-root-normal-form canonical bytes, and discovers only the normal form's direct
-`ProofReference` addresses. It stops at selected dependencies, deduplicates
-exact addresses, rejects cycles, and returns at most eight addresses observed
-absent during discovery, in dependency-first order with the requested root
-last. Selected state may grow before completion or promotion. These candidates
-remain unselected and have not yet been mathematically checked or proven to
-match their requested addresses.
+sequential multi-peer closure acquisition. It decodes each found response,
+requires exact root-normal-form canonical bytes, and discovers only the normal
+form's direct `ProofReference` addresses. It stops at selected dependencies,
+deduplicates exact addresses, rejects cycles, and returns at most eight
+addresses observed absent during discovery, in dependency-first order with the
+requested root last. Selected state may grow before completion or promotion.
+These candidates remain unselected and have not yet been mathematically
+checked or proven to match their requested addresses.
 
 The opaque completed closure has one consuming promotion operation through
 `ProofDagJournal::apply_rooted_canonical_proof_batch`. The authoritative order
@@ -111,27 +111,31 @@ unchanged. A valid proof for a different requested ID therefore cannot become
 locally visible as a side effect of rejecting its closure. Fetched dependencies
 are not admitted incrementally.
 
-An empty response terminates the current one-peer acquisition, discards its
-quarantine, and performs no proof admission or journal write.
+An empty response may advance the concrete transport to another configured
+peer under its fixed request and deadline bounds. Exhaustion discards the
+quarantine and performs no proof admission or journal write. `Unavailable`
+never proves global absence.
 
 ## Dependency boundary
 
 Proof references remain dependency-first. This transport-neutral message codec
 does not fetch them itself. The concrete static transport may acquire up to
-eight root-reachable absent addresses sequentially from the same authenticated
-peer, while holding received bytes in bounded in-memory quarantine. It performs
-no raw unaddressed fallback and selects no dependency before the complete
-closure is atomically validated.
+eight root-reachable absent addresses sequentially across its configured
+authenticated peers, while holding received bytes in bounded in-memory
+quarantine. It performs no raw unaddressed fallback and selects no dependency
+before the complete closure is atomically validated.
 
 This restriction is intentional. A malicious peer can send a wrong-address
 candidate whose missing references are discovered before mathematical checking
 can derive its actual `ProofId`. Fixed candidate and request limits bound that
 work; retaining the complete closure unselected prevents such a response from
-smuggling dependencies into selected state. Proof-request retries, multi-peer
-fallback, and rolling work budgets remain later policy. The authenticated
-binding supplies one non-resetting absolute acquisition deadline and
-permit-preserving cancellation tombstones; managed transport redial is
-specified separately there.
+smuggling dependencies into selected state. The authenticated binding rotates
+only after `Unavailable` or an ordinary transport failure, considers one peer
+at most once per proof address, issues at most fifteen requests, and retains
+one non-resetting absolute acquisition deadline across every peer. It also
+supplies permit-preserving cancellation tombstones. Malformed or noncanonical
+candidates do not trigger fallback, and rolling cross-acquisition work budgets
+remain later policy. Managed transport redial is specified separately there.
 
 ## Explicit exclusions
 
@@ -140,7 +144,7 @@ This contract does not define:
 - socket or stream I/O, transport encryption, peer identities, or handshakes;
 - timeouts, backpressure, rate limits, connection limits, or worker pools;
 - peer discovery, bootstrap seeds, address management, DHTs, gossip, scoring,
-  bans, retries, or multi-peer selection;
+  bans, parallel or hedged requests, or peer-reputation policy;
 - batch wire messages, multiplexed correlation IDs, announcements, negative
   caches, persistent orphan pools, or proof availability claims;
 - proof-set checkpoint trust, signatures, fork choice, finality, reorgs, or

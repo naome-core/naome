@@ -62,6 +62,18 @@ impl Behaviour {
             .map(|peer| matches!(peer.link, Link::Connected { .. }))
     }
 
+    pub(super) fn peer_count(&self) -> usize {
+        self.peers.len()
+    }
+
+    pub(super) fn peer_id_at(&self, index: usize) -> Option<PeerId> {
+        self.peers.get(index).map(|peer| peer.peer_id)
+    }
+
+    pub(super) fn peer_index(&self, peer_id: &PeerId) -> Option<usize> {
+        self.peers.iter().position(|peer| peer.peer_id == *peer_id)
+    }
+
     fn peer(&self, peer_id: &PeerId) -> Option<&PeerSession> {
         self.peers.iter().find(|peer| peer.peer_id == *peer_id)
     }
@@ -535,6 +547,27 @@ mod tests {
             let (lower, higher) = ordered_peer_ids();
             assert!(owns_dial(&lower.to_bytes(), higher));
             assert!(!owns_dial(&higher.to_bytes(), lower));
+        }
+    }
+
+    #[test]
+    fn configured_peer_indices_follow_raw_identity_order() {
+        let local = PeerId::random();
+        let mut hashed_bytes = vec![0x12, 0x20];
+        hashed_bytes.extend_from_slice(&[0xa5; 32]);
+        let hashed = PeerId::from_bytes(&hashed_bytes).unwrap();
+        let mut expected = [PeerId::random(), hashed, PeerId::random()];
+        assert!(!expected.contains(&local));
+        expected.sort_unstable_by_key(|peer_id| peer_id.to_bytes());
+        let configured = [expected[2], expected[0], expected[1]]
+            .into_iter()
+            .map(|peer_id| StaticPeer::new(peer_id, address()));
+
+        let behaviour = Behaviour::new(local, configured);
+        assert_eq!(behaviour.peer_count(), expected.len());
+        for (index, peer_id) in expected.into_iter().enumerate() {
+            assert_eq!(behaviour.peer_id_at(index), Some(peer_id));
+            assert_eq!(behaviour.peer_index(&peer_id), Some(index));
         }
     }
 
