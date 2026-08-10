@@ -1,21 +1,24 @@
-use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
+use naome_foundation::{
+    Formula, FormulaCodecError, FreeVariable, Replacement, Separation, ZfcAxiom,
+};
 
 use crate::{
-    CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_STEPS, CLASSICAL_CONTRAPOSITION, EQUALITY_REFLEXIVITY,
-    EQUALITY_SUBSTITUTION, FREGE, GENERALIZATION, MODUS_PONENS, PROOF_REFERENCE, ProofCertificate,
-    ProofCertificateError, ProofId, ProofStep, REPLACEMENT, SEPARATION, SIMPLIFICATION,
-    UNIVERSAL_DISTRIBUTION, UNIVERSAL_INSTANTIATION, VACUOUS_UNIVERSAL, ZFC_AXIOM,
-    validate_step_references,
+    CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS,
+    CLASSICAL_CONTRAPOSITION, EQUALITY_REFLEXIVITY, EQUALITY_SUBSTITUTION, FREGE, GENERALIZATION,
+    MODUS_PONENS, PROOF_REFERENCE, ProofCertificate, ProofCertificateError, ProofId, ProofStep,
+    REPLACEMENT, SEPARATION, SIMPLIFICATION, UNIVERSAL_DISTRIBUTION, UNIVERSAL_INSTANTIATION,
+    VACUOUS_UNIVERSAL, ZFC_AXIOM, validate_step_references,
 };
 
 pub(super) fn encode_steps(steps: &[ProofStep]) -> Result<Vec<u8>, ProofCertificateError> {
     let step_count = u32::try_from(steps.len()).expect("ProofCertificate validates its step count");
 
     let mut output = Vec::new();
+    let mut remaining_formula_nodes = CERTIFICATE_MAX_FORMULA_NODES;
     write_u32(step_count, &mut output);
 
     for step in steps {
-        encode_step(step, &mut output)?;
+        encode_step_with_formula_budget(step, &mut output, &mut remaining_formula_nodes)?;
         ensure_within_byte_limit(output.len())?;
     }
 
@@ -38,8 +41,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<ProofCertificate, ProofCertificateE
     }
 
     let mut steps = Vec::new();
+    let mut remaining_formula_nodes = CERTIFICATE_MAX_FORMULA_NODES;
     for position in 0..step_count {
-        let step = decode_step(&mut cursor)?;
+        let step = decode_step(&mut cursor, &mut remaining_formula_nodes)?;
         validate_step_references(position, &step)?;
         steps.push(step);
     }
@@ -57,30 +61,39 @@ pub(super) fn encode_step(
     step: &ProofStep,
     output: &mut Vec<u8>,
 ) -> Result<(), ProofCertificateError> {
+    let mut remaining_formula_nodes = CERTIFICATE_MAX_FORMULA_NODES;
+    encode_step_with_formula_budget(step, output, &mut remaining_formula_nodes)
+}
+
+fn encode_step_with_formula_budget(
+    step: &ProofStep,
+    output: &mut Vec<u8>,
+    remaining_formula_nodes: &mut usize,
+) -> Result<(), ProofCertificateError> {
     output.push(step.canonical_tag());
     match step {
         ProofStep::Simplification {
             antecedent,
             consequent,
         } => {
-            write_formula(antecedent, output)?;
-            write_formula(consequent, output)?;
+            write_formula(antecedent, output, remaining_formula_nodes)?;
+            write_formula(consequent, output, remaining_formula_nodes)?;
         }
         ProofStep::Frege {
             first,
             second,
             third,
         } => {
-            write_formula(first, output)?;
-            write_formula(second, output)?;
-            write_formula(third, output)?;
+            write_formula(first, output, remaining_formula_nodes)?;
+            write_formula(second, output, remaining_formula_nodes)?;
+            write_formula(third, output, remaining_formula_nodes)?;
         }
         ProofStep::ClassicalContraposition {
             antecedent,
             consequent,
         } => {
-            write_formula(antecedent, output)?;
-            write_formula(consequent, output)?;
+            write_formula(antecedent, output, remaining_formula_nodes)?;
+            write_formula(consequent, output, remaining_formula_nodes)?;
         }
         ProofStep::UniversalDistribution {
             variable,
@@ -88,11 +101,11 @@ pub(super) fn encode_step(
             consequent,
         } => {
             write_variable(*variable, output);
-            write_formula(antecedent, output)?;
-            write_formula(consequent, output)?;
+            write_formula(antecedent, output, remaining_formula_nodes)?;
+            write_formula(consequent, output, remaining_formula_nodes)?;
         }
         ProofStep::VacuousUniversal { formula } => {
-            write_formula(formula, output)?;
+            write_formula(formula, output, remaining_formula_nodes)?;
         }
         ProofStep::UniversalInstantiation {
             variable,
@@ -101,7 +114,7 @@ pub(super) fn encode_step(
         } => {
             write_variable(*variable, output);
             write_variable(*replacement, output);
-            write_formula(body, output)?;
+            write_formula(body, output, remaining_formula_nodes)?;
         }
         ProofStep::EqualityReflexivity { variable } => {
             write_variable(*variable, output);
@@ -109,20 +122,20 @@ pub(super) fn encode_step(
         ProofStep::EqualitySubstitution { from, to, body } => {
             write_variable(*from, output);
             write_variable(*to, output);
-            write_formula(body, output)?;
+            write_formula(body, output, remaining_formula_nodes)?;
         }
         ProofStep::ZfcAxiom(axiom) => {
             output.push(encode_zfc_axiom(*axiom));
         }
         ProofStep::Separation(instance) => {
-            write_formula(&instance.predicate, output)?;
+            write_formula(&instance.predicate, output, remaining_formula_nodes)?;
             write_variable(instance.element, output);
             write_variable(instance.source, output);
             write_variable(instance.result, output);
             write_variables(&instance.parameters, output)?;
         }
         ProofStep::Replacement(instance) => {
-            write_formula(&instance.predicate, output)?;
+            write_formula(&instance.predicate, output, remaining_formula_nodes)?;
             write_variable(instance.input, output);
             write_variable(instance.output, output);
             write_variable(instance.uniqueness_witness, output);
@@ -149,33 +162,36 @@ pub(super) fn encode_step(
     Ok(())
 }
 
-fn decode_step(cursor: &mut Cursor<'_>) -> Result<ProofStep, ProofCertificateError> {
+fn decode_step(
+    cursor: &mut Cursor<'_>,
+    remaining_formula_nodes: &mut usize,
+) -> Result<ProofStep, ProofCertificateError> {
     match cursor.read_u8()? {
         SIMPLIFICATION => Ok(ProofStep::Simplification {
-            antecedent: read_formula(cursor)?,
-            consequent: read_formula(cursor)?,
+            antecedent: read_formula(cursor, remaining_formula_nodes)?,
+            consequent: read_formula(cursor, remaining_formula_nodes)?,
         }),
         FREGE => Ok(ProofStep::Frege {
-            first: read_formula(cursor)?,
-            second: read_formula(cursor)?,
-            third: read_formula(cursor)?,
+            first: read_formula(cursor, remaining_formula_nodes)?,
+            second: read_formula(cursor, remaining_formula_nodes)?,
+            third: read_formula(cursor, remaining_formula_nodes)?,
         }),
         CLASSICAL_CONTRAPOSITION => Ok(ProofStep::ClassicalContraposition {
-            antecedent: read_formula(cursor)?,
-            consequent: read_formula(cursor)?,
+            antecedent: read_formula(cursor, remaining_formula_nodes)?,
+            consequent: read_formula(cursor, remaining_formula_nodes)?,
         }),
         UNIVERSAL_DISTRIBUTION => Ok(ProofStep::UniversalDistribution {
             variable: read_variable(cursor)?,
-            antecedent: read_formula(cursor)?,
-            consequent: read_formula(cursor)?,
+            antecedent: read_formula(cursor, remaining_formula_nodes)?,
+            consequent: read_formula(cursor, remaining_formula_nodes)?,
         }),
         VACUOUS_UNIVERSAL => Ok(ProofStep::VacuousUniversal {
-            formula: read_formula(cursor)?,
+            formula: read_formula(cursor, remaining_formula_nodes)?,
         }),
         UNIVERSAL_INSTANTIATION => Ok(ProofStep::UniversalInstantiation {
             variable: read_variable(cursor)?,
             replacement: read_variable(cursor)?,
-            body: read_formula(cursor)?,
+            body: read_formula(cursor, remaining_formula_nodes)?,
         }),
         EQUALITY_REFLEXIVITY => Ok(ProofStep::EqualityReflexivity {
             variable: read_variable(cursor)?,
@@ -183,18 +199,18 @@ fn decode_step(cursor: &mut Cursor<'_>) -> Result<ProofStep, ProofCertificateErr
         EQUALITY_SUBSTITUTION => Ok(ProofStep::EqualitySubstitution {
             from: read_variable(cursor)?,
             to: read_variable(cursor)?,
-            body: read_formula(cursor)?,
+            body: read_formula(cursor, remaining_formula_nodes)?,
         }),
         ZFC_AXIOM => Ok(ProofStep::ZfcAxiom(decode_zfc_axiom(cursor.read_u8()?)?)),
         SEPARATION => Ok(ProofStep::Separation(Separation {
-            predicate: read_formula(cursor)?,
+            predicate: read_formula(cursor, remaining_formula_nodes)?,
             element: read_variable(cursor)?,
             source: read_variable(cursor)?,
             result: read_variable(cursor)?,
             parameters: read_variables(cursor)?,
         })),
         REPLACEMENT => Ok(ProofStep::Replacement(Replacement {
-            predicate: read_formula(cursor)?,
+            predicate: read_formula(cursor, remaining_formula_nodes)?,
             input: read_variable(cursor)?,
             output: read_variable(cursor)?,
             uniqueness_witness: read_variable(cursor)?,
@@ -222,8 +238,17 @@ fn decode_step(cursor: &mut Cursor<'_>) -> Result<ProofStep, ProofCertificateErr
     }
 }
 
-fn write_formula(formula: &Formula, output: &mut Vec<u8>) -> Result<(), ProofCertificateError> {
-    let bytes = formula.encode_canonical()?;
+fn write_formula(
+    formula: &Formula,
+    output: &mut Vec<u8>,
+    remaining_formula_nodes: &mut usize,
+) -> Result<(), ProofCertificateError> {
+    let (bytes, used_nodes) = formula
+        .encode_canonical_with_node_limit(*remaining_formula_nodes)
+        .map_err(map_formula_error)?;
+    *remaining_formula_nodes = remaining_formula_nodes
+        .checked_sub(used_nodes)
+        .expect("Formula reports no more nodes than the supplied limit");
     let length =
         u32::try_from(bytes.len()).expect("the canonical formula limit is smaller than u32::MAX");
     ensure_additional_bytes(output.len(), 4 + bytes.len())?;
@@ -232,10 +257,30 @@ fn write_formula(formula: &Formula, output: &mut Vec<u8>) -> Result<(), ProofCer
     Ok(())
 }
 
-fn read_formula(cursor: &mut Cursor<'_>) -> Result<Formula, ProofCertificateError> {
+fn read_formula(
+    cursor: &mut Cursor<'_>,
+    remaining_formula_nodes: &mut usize,
+) -> Result<Formula, ProofCertificateError> {
     let length = usize::try_from(cursor.read_u32()?)
         .expect("u32 is representable as usize on supported Rust targets");
-    Ok(Formula::decode_canonical(cursor.take(length)?)?)
+    let (formula, used_nodes) =
+        Formula::decode_canonical_with_node_limit(cursor.take(length)?, *remaining_formula_nodes)
+            .map_err(map_formula_error)?;
+    *remaining_formula_nodes = remaining_formula_nodes
+        .checked_sub(used_nodes)
+        .expect("Formula reports no more nodes than the supplied limit");
+    Ok(formula)
+}
+
+fn map_formula_error(source: FormulaCodecError) -> ProofCertificateError {
+    match source {
+        FormulaCodecError::NodeLimitExceeded { .. } => {
+            ProofCertificateError::FormulaNodeLimitExceeded {
+                maximum: CERTIFICATE_MAX_FORMULA_NODES,
+            }
+        }
+        source => ProofCertificateError::Formula(source),
+    }
 }
 
 fn write_variables(
@@ -372,10 +417,13 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EQUALITY_REFLEXIVITY, MODUS_PONENS, PROOF_REFERENCE, ZFC_AXIOM, encode_step};
+    use super::{
+        Cursor, EQUALITY_REFLEXIVITY, FREGE, MODUS_PONENS, PROOF_REFERENCE, VACUOUS_UNIVERSAL,
+        ZFC_AXIOM, decode_step, encode_step, encode_step_with_formula_budget,
+    };
     use crate::{
-        CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_STEPS, ProofCertificate, ProofCertificateError,
-        ProofId, ProofStep,
+        CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS,
+        ProofCertificate, ProofCertificateError, ProofId, ProofStep,
     };
     use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
 
@@ -822,6 +870,226 @@ mod tests {
     }
 
     #[test]
+    fn certificate_formula_node_budget_spans_steps_and_fields() {
+        let half_limit = half_limit_formula();
+        let leaf = Formula::equal(FreeVariable::new(9), FreeVariable::new(9));
+        let exact = ProofCertificate::new(vec![
+            ProofStep::VacuousUniversal {
+                formula: half_limit.clone(),
+            },
+            ProofStep::VacuousUniversal {
+                formula: half_limit.clone(),
+            },
+        ])
+        .unwrap();
+        let exact_bytes = exact.to_canonical_bytes();
+
+        assert_eq!(CERTIFICATE_MAX_FORMULA_NODES, 65_536);
+        assert_eq!(
+            ProofCertificate::from_canonical_bytes(&exact_bytes).unwrap(),
+            exact
+        );
+
+        let across_steps = vec![
+            ProofStep::VacuousUniversal {
+                formula: half_limit.clone(),
+            },
+            ProofStep::VacuousUniversal {
+                formula: half_limit.clone(),
+            },
+            ProofStep::VacuousUniversal {
+                formula: leaf.clone(),
+            },
+        ];
+        assert_eq!(
+            ProofCertificate::new(across_steps),
+            Err(ProofCertificateError::FormulaNodeLimitExceeded {
+                maximum: CERTIFICATE_MAX_FORMULA_NODES,
+            })
+        );
+
+        let half_bytes = half_limit.encode_canonical().unwrap();
+        let leaf_bytes = leaf.encode_canonical().unwrap();
+        let across_steps_bytes = raw_certificate(&[
+            raw_formula_step(VACUOUS_UNIVERSAL, &[&half_bytes]),
+            raw_formula_step(VACUOUS_UNIVERSAL, &[&half_bytes]),
+            raw_formula_step(VACUOUS_UNIVERSAL, &[&leaf_bytes]),
+        ]);
+        assert_eq!(
+            ProofCertificate::from_canonical_bytes(&across_steps_bytes),
+            Err(ProofCertificateError::FormulaNodeLimitExceeded {
+                maximum: CERTIFICATE_MAX_FORMULA_NODES,
+            })
+        );
+
+        let across_fields = ProofStep::Frege {
+            first: half_limit.clone(),
+            second: half_limit,
+            third: leaf,
+        };
+        assert_eq!(
+            ProofCertificate::new(vec![across_fields]),
+            Err(ProofCertificateError::FormulaNodeLimitExceeded {
+                maximum: CERTIFICATE_MAX_FORMULA_NODES,
+            })
+        );
+        let across_fields_bytes = raw_certificate(&[raw_formula_step(
+            FREGE,
+            &[&half_bytes, &half_bytes, &leaf_bytes],
+        )]);
+        assert_eq!(
+            ProofCertificate::from_canonical_bytes(&across_fields_bytes),
+            Err(ProofCertificateError::FormulaNodeLimitExceeded {
+                maximum: CERTIFICATE_MAX_FORMULA_NODES,
+            })
+        );
+
+        let invalid_suffix_bytes = raw_certificate(&[
+            raw_formula_step(VACUOUS_UNIVERSAL, &[&half_bytes]),
+            raw_formula_step(VACUOUS_UNIVERSAL, &[&half_bytes]),
+            raw_formula_step(VACUOUS_UNIVERSAL, &[&[0xff]]),
+        ]);
+        assert_eq!(
+            ProofCertificate::from_canonical_bytes(&invalid_suffix_bytes),
+            Err(ProofCertificateError::FormulaNodeLimitExceeded {
+                maximum: CERTIFICATE_MAX_FORMULA_NODES,
+            })
+        );
+    }
+
+    #[test]
+    fn every_formula_step_field_uses_the_shared_node_budget() {
+        let x = FreeVariable::new(1);
+        let y = FreeVariable::new(2);
+        let leaf = Formula::equal(x, y);
+        let cases = [
+            (
+                ProofStep::Simplification {
+                    antecedent: leaf.clone(),
+                    consequent: leaf.clone(),
+                },
+                2,
+            ),
+            (
+                ProofStep::Frege {
+                    first: leaf.clone(),
+                    second: leaf.clone(),
+                    third: leaf.clone(),
+                },
+                3,
+            ),
+            (
+                ProofStep::ClassicalContraposition {
+                    antecedent: leaf.clone(),
+                    consequent: leaf.clone(),
+                },
+                2,
+            ),
+            (
+                ProofStep::UniversalDistribution {
+                    variable: x,
+                    antecedent: leaf.clone(),
+                    consequent: leaf.clone(),
+                },
+                2,
+            ),
+            (
+                ProofStep::VacuousUniversal {
+                    formula: leaf.clone(),
+                },
+                1,
+            ),
+            (
+                ProofStep::UniversalInstantiation {
+                    variable: x,
+                    replacement: y,
+                    body: leaf.clone(),
+                },
+                1,
+            ),
+            (
+                ProofStep::EqualitySubstitution {
+                    from: x,
+                    to: y,
+                    body: leaf.clone(),
+                },
+                1,
+            ),
+            (
+                ProofStep::Separation(Separation {
+                    predicate: leaf.clone(),
+                    element: x,
+                    source: y,
+                    result: x,
+                    parameters: Vec::new(),
+                }),
+                1,
+            ),
+            (
+                ProofStep::Replacement(Replacement {
+                    predicate: leaf,
+                    input: x,
+                    output: y,
+                    uniqueness_witness: x,
+                    source: y,
+                    result: x,
+                    parameters: Vec::new(),
+                }),
+                1,
+            ),
+        ];
+
+        for (step, formula_fields) in cases {
+            let expected = ProofCertificateError::FormulaNodeLimitExceeded {
+                maximum: CERTIFICATE_MAX_FORMULA_NODES,
+            };
+            let mut remaining = formula_fields - 1;
+            assert_eq!(
+                encode_step_with_formula_budget(&step, &mut Vec::new(), &mut remaining),
+                Err(expected.clone()),
+                "encode omitted a formula field for {step:?}"
+            );
+
+            let mut encoded = Vec::new();
+            encode_step(&step, &mut encoded).unwrap();
+            let mut cursor = Cursor::new(&encoded);
+            let mut remaining = formula_fields - 1;
+            assert_eq!(
+                decode_step(&mut cursor, &mut remaining),
+                Err(expected),
+                "decode omitted a formula field for {step:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn byte_limit_attack_shaped_certificate_stops_at_the_cumulative_node_budget() {
+        let mut formula = vec![0x02; 255];
+        formula.extend_from_slice(&[0x00, 0x00, 0, 0, 0, 0, 0x00, 0, 0, 0, 0]);
+        assert_eq!(formula.len(), 266);
+
+        let formula_step_bytes = 1 + 4 + formula.len();
+        let formula_steps = (CERTIFICATE_MAX_BYTES - 4 - 33) / formula_step_bytes;
+        let framed_formula_step = raw_formula_step(VACUOUS_UNIVERSAL, &[&formula]);
+        let mut encoded = Vec::with_capacity(CERTIFICATE_MAX_BYTES);
+        encoded.extend_from_slice(&u32::try_from(formula_steps + 1).unwrap().to_be_bytes());
+        for _ in 0..formula_steps {
+            encoded.extend_from_slice(&framed_formula_step);
+        }
+        encoded.push(PROOF_REFERENCE);
+        encoded.extend_from_slice(&[0; 32]);
+
+        assert_eq!(encoded.len(), CERTIFICATE_MAX_BYTES);
+        assert_eq!(formula_steps * 256, 3_962_112);
+        assert_eq!(
+            ProofCertificate::from_canonical_bytes(&encoded),
+            Err(ProofCertificateError::FormulaNodeLimitExceeded {
+                maximum: CERTIFICATE_MAX_FORMULA_NODES,
+            })
+        );
+    }
+
+    #[test]
     fn decoder_propagates_canonical_formula_failures() {
         let dangling_bound_formula = [
             0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
@@ -845,6 +1113,33 @@ mod tests {
         let mut bytes = Vec::new();
         for part in parts {
             bytes.extend_from_slice(part);
+        }
+        bytes
+    }
+
+    fn half_limit_formula() -> Formula {
+        let variable = FreeVariable::new(1);
+        let mut formula = Formula::equal(variable, variable);
+        for _ in 0..14 {
+            formula = Formula::implies(formula.clone(), formula);
+        }
+        Formula::negate(formula)
+    }
+
+    fn raw_formula_step(tag: u8, formulas: &[&[u8]]) -> Vec<u8> {
+        let mut step = vec![tag];
+        for formula in formulas {
+            step.extend_from_slice(&u32::try_from(formula.len()).unwrap().to_be_bytes());
+            step.extend_from_slice(formula);
+        }
+        step
+    }
+
+    fn raw_certificate(steps: &[Vec<u8>]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&u32::try_from(steps.len()).unwrap().to_be_bytes());
+        for step in steps {
+            bytes.extend_from_slice(step);
         }
         bytes
     }
