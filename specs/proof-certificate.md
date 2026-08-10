@@ -370,11 +370,12 @@ The derivation identity equals that of the cited proof, so registering this
 alias into a state containing the cited proof fails as a duplicate derivation.
 
 This in-memory state is the resolver contract, not a persistent blockchain
-database. Ledger State checks exactly one proof against the unchanged
-accepted pre-transition state and registers that proof only after checking
-succeeds. A future block contains exactly one such proof. Block encoding,
-storage, apply/undo persistence, reorgs, pruning, and network synchronization
-remain outside this contract.
+database. Ledger State supports both single-proof admission against the
+unchanged selected state and bounded atomic rooted transactions in which later
+proofs may resolve earlier staged proofs. Registration becomes visible only
+after the applicable single-proof or complete-transaction checks succeed, as
+specified by [Ledger State](ledger-state.md). Block encoding, apply/undo,
+reorgs, pruning, and network synchronization remain outside this contract.
 
 ## Content identity
 

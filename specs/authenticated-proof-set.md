@@ -223,9 +223,10 @@ consensus and persistence contracts and are not inferred here.
 ## Journal reconstruction and expected roots
 
 The Proof DAG Journal stores no Merkle nodes or roots. Strict dependency-first
-replay reconstructs the authenticated set from canonical proof payloads.
-Different physical orders of mutually admissible independent proofs produce
-different journal digest chains but the same `ProofSetRoot`.
+transaction replay reconstructs the authenticated set from canonical proof
+payloads. Different physical orders of independent proofs, or different valid
+transaction groupings of dependency-related proofs, produce different journal
+digest chains but the same `ProofSetRoot`.
 
 `ProofDagJournal::open_verified` first completes every lock, format, digest,
 strict replay, tail recovery, and stabilization check. It then compares the

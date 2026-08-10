@@ -14,6 +14,8 @@ mod proof_set;
 use naome_ledger::{AcceptedProofRecord, LedgerError, LedgerState};
 use naome_proof::ProofId;
 
+pub use naome_ledger::{AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, ProofBatchError};
+
 pub use proof_set::{
     PROOF_SET_PROOF_MAX_BYTES, ProofSetMembership, ProofSetProof, ProofSetProofError, ProofSetRoot,
 };
@@ -95,11 +97,59 @@ impl ProofDag {
         Ok(self.retain_record(record))
     }
 
+    /// Atomically admits one dependency-first canonical proof transaction.
+    ///
+    /// The final proof is the transaction root and every earlier proof must be
+    /// transitively reachable from it. This unaddressed path is for trusted
+    /// local construction and deterministic replay; requested network content
+    /// must use [`Self::apply_rooted_canonical_proof_batch`].
+    pub fn apply_canonical_proof_batch(
+        &mut self,
+        candidates: Vec<Vec<u8>>,
+    ) -> Result<&AcceptedProofRecord, ProofBatchError> {
+        let records = self.ledger.apply_canonical_proof_batch(candidates)?;
+        let root = records
+            .last()
+            .expect("successful proof batches are nonempty")
+            .proof_id();
+        self.retain_records(records);
+        Ok(self
+            .records
+            .get(root)
+            .expect("the rooted batch inserted its final record"))
+    }
+
+    /// Atomically admits one dependency closure at expected content addresses.
+    ///
+    /// A batch error leaves both the checked ledger and authenticated proof set
+    /// unchanged. The final candidate must be `requested_root`, and unrelated
+    /// valid candidates are rejected before the transaction becomes visible.
+    pub fn apply_rooted_canonical_proof_batch(
+        &mut self,
+        requested_root: ProofId,
+        candidates: Vec<AddressedProofCandidate>,
+    ) -> Result<&AcceptedProofRecord, ProofBatchError> {
+        let records = self
+            .ledger
+            .apply_rooted_canonical_proof_batch(requested_root, candidates)?;
+        self.retain_records(records);
+        Ok(self
+            .records
+            .get(requested_root)
+            .expect("the rooted batch inserted its requested root"))
+    }
+
     fn retain_record(&mut self, record: AcceptedProofRecord) -> &AcceptedProofRecord {
         let Some(record) = self.records.insert(record) else {
             unreachable!("private ledger and authenticated proof set stay aligned")
         };
         record
+    }
+
+    fn retain_records(&mut self, records: Box<[AcceptedProofRecord]>) {
+        for record in records.into_vec() {
+            let _ = self.retain_record(record);
+        }
     }
 }
 
@@ -107,7 +157,7 @@ impl ProofDag {
 mod tests {
     use naome_checker::{CheckError, ProofStateError};
     use naome_foundation::{Formula, FreeVariable, LogicError, ZfcAxiom};
-    use naome_ledger::LedgerError;
+    use naome_ledger::{AddressedProofCandidate, LedgerError, ProofBatchError};
     use naome_proof::{ProofCertificate, ProofId, ProofStep};
 
     use super::{ProofDag, ProofSetMembership, ProofSetProof};
@@ -560,5 +610,133 @@ mod tests {
             .unwrap();
         assert_eq!(child.direct_dependencies(), [root_id]);
         assert_eq!(dag.len(), 2);
+    }
+
+    #[test]
+    fn rooted_batch_failures_preserve_dag_root_records_and_witnesses() {
+        let selected_bytes = axiom_bytes(ZfcAxiom::Extensionality);
+        let parent_bytes = axiom_bytes(ZfcAxiom::Pairing);
+        let unrelated_bytes = axiom_bytes(ZfcAxiom::Union);
+
+        let mut control = ProofDag::new();
+        let selected_id = control
+            .apply_canonical_proof_bytes(selected_bytes.clone())
+            .unwrap()
+            .proof_id();
+        let parent_id = control
+            .apply_canonical_proof_bytes(parent_bytes.clone())
+            .unwrap()
+            .proof_id();
+        let root_bytes = referenced_generalization(parent_id, FreeVariable::new(0));
+        let root_id = control
+            .apply_canonical_proof_bytes(root_bytes.clone())
+            .unwrap()
+            .proof_id();
+
+        let mut scratch = ProofDag::new();
+        let unrelated_id = scratch
+            .apply_canonical_proof_bytes(unrelated_bytes.clone())
+            .unwrap()
+            .proof_id();
+
+        let mut dag = ProofDag::new();
+        let _ = dag
+            .apply_canonical_proof_bytes(selected_bytes.clone())
+            .unwrap();
+        let committed_root = dag.proof_set_root();
+        let selected_record = dag
+            .proof(selected_id)
+            .unwrap()
+            .canonical_proof_bytes()
+            .to_vec();
+        let selected_witness = dag.proof_set_proof(selected_id).to_canonical_bytes();
+        let parent_witness = dag.proof_set_proof(parent_id).to_canonical_bytes();
+        let root_witness = dag.proof_set_proof(root_id).to_canonical_bytes();
+        let unrelated_witness = dag.proof_set_proof(unrelated_id).to_canonical_bytes();
+        let assert_unchanged = |dag: &ProofDag| {
+            assert_eq!(dag.len(), 1);
+            assert_eq!(dag.proof_set_root(), committed_root);
+            assert_eq!(
+                dag.proof(selected_id).unwrap().canonical_proof_bytes(),
+                selected_record
+            );
+            assert!(dag.proof(parent_id).is_none());
+            assert!(dag.proof(root_id).is_none());
+            assert!(dag.proof(unrelated_id).is_none());
+            assert_eq!(
+                dag.proof_set_proof(selected_id).to_canonical_bytes(),
+                selected_witness
+            );
+            assert_eq!(
+                dag.proof_set_proof(parent_id).to_canonical_bytes(),
+                parent_witness
+            );
+            assert_eq!(
+                dag.proof_set_proof(root_id).to_canonical_bytes(),
+                root_witness
+            );
+            assert_eq!(
+                dag.proof_set_proof(unrelated_id).to_canonical_bytes(),
+                unrelated_witness
+            );
+        };
+
+        let wrong_root = ProofId::from_bytes([0x88; 32]);
+        assert_eq!(
+            dag.apply_rooted_canonical_proof_batch(
+                wrong_root,
+                vec![
+                    AddressedProofCandidate::new(parent_id, parent_bytes.clone()),
+                    AddressedProofCandidate::new(wrong_root, root_bytes.clone()),
+                ],
+            ),
+            Err(ProofBatchError::Candidate {
+                index: 1,
+                expected: Some(wrong_root),
+                source: LedgerError::ProofIdMismatch {
+                    expected: wrong_root,
+                    actual: root_id,
+                },
+            })
+        );
+        assert_unchanged(&dag);
+
+        assert_eq!(
+            dag.apply_rooted_canonical_proof_batch(
+                root_id,
+                vec![
+                    AddressedProofCandidate::new(unrelated_id, unrelated_bytes),
+                    AddressedProofCandidate::new(parent_id, parent_bytes.clone()),
+                    AddressedProofCandidate::new(root_id, root_bytes.clone()),
+                ],
+            ),
+            Err(ProofBatchError::UnreachableCandidate {
+                index: 0,
+                proof_id: unrelated_id,
+            })
+        );
+        assert_unchanged(&dag);
+
+        let accepted_root = dag
+            .apply_rooted_canonical_proof_batch(
+                root_id,
+                vec![
+                    AddressedProofCandidate::new(parent_id, parent_bytes),
+                    AddressedProofCandidate::new(root_id, root_bytes),
+                ],
+            )
+            .unwrap()
+            .proof_id();
+        assert_eq!(accepted_root, root_id);
+        assert_eq!(dag.len(), 3);
+        assert_eq!(dag.proof_set_root(), control.proof_set_root());
+        for proof_id in [selected_id, parent_id, root_id] {
+            assert_eq!(dag.proof(proof_id), control.proof(proof_id));
+            assert_eq!(
+                dag.proof_set_proof(proof_id)
+                    .verify(dag.proof_set_root(), proof_id),
+                Ok(ProofSetMembership::Present)
+            );
+        }
     }
 }

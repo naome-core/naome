@@ -4,7 +4,10 @@ use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use naome_chain::{ProofDag, ProofSetMembership};
+use naome_chain::{
+    AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, ProofBatchError, ProofDag,
+    ProofSetMembership,
+};
 use naome_checker::{CheckError, ProofStateError};
 use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 use naome_ledger::LedgerError;
@@ -12,11 +15,12 @@ use naome_proof::{
     CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, ProofCertificate, ProofCertificateError,
     ProofId, ProofStep,
 };
+use sha2::Digest;
 
 use super::{
-    AppendPhase, ENTRY_DOMAIN, FRAME_FIXED_BYTES, GENESIS_DOMAIN, JOURNAL_FILE_NAME,
-    JOURNAL_HEADER, JournalCore, JournalError, JournalIo, ProofDagJournal, entry_digest,
-    genesis_digest,
+    AppendPhase, GENESIS_DOMAIN, JOURNAL_FILE_NAME, JOURNAL_HEADER, JournalCore, JournalError,
+    JournalIo, ProofDagJournal, TRANSACTION_DOMAIN, TRANSACTION_FIXED_BYTES,
+    TRANSACTION_MAX_BODY_BYTES, TRANSACTION_MIN_BODY_BYTES, genesis_digest, transaction_hasher,
 };
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -79,6 +83,50 @@ fn referenced_generalization(proof_id: ProofId, variable: FreeVariable) -> Vec<u
     ])
 }
 
+fn dependency_chain() -> (Vec<Vec<u8>>, Vec<ProofId>) {
+    dependency_chain_with_len(3)
+}
+
+fn dependency_chain_with_len(length: usize) -> (Vec<Vec<u8>>, Vec<ProofId>) {
+    assert!(length > 0);
+    let mut dag = ProofDag::new();
+    let root = axiom_bytes(ZfcAxiom::Pairing);
+    let root_id = dag
+        .apply_canonical_proof_bytes(root.clone())
+        .unwrap()
+        .proof_id();
+    let mut payloads = Vec::with_capacity(length);
+    let mut proof_ids = Vec::with_capacity(length);
+    payloads.push(root);
+    proof_ids.push(root_id);
+    for index in 1..length {
+        let payload = referenced_generalization(
+            *proof_ids.last().unwrap(),
+            FreeVariable::new(u32::try_from(index).unwrap()),
+        );
+        let proof_id = dag
+            .apply_canonical_proof_bytes(payload.clone())
+            .unwrap()
+            .proof_id();
+        payloads.push(payload);
+        proof_ids.push(proof_id);
+    }
+    (payloads, proof_ids)
+}
+
+fn addressed_candidates(
+    payloads: &[Vec<u8>],
+    proof_ids: &[ProofId],
+) -> Vec<AddressedProofCandidate> {
+    assert_eq!(payloads.len(), proof_ids.len());
+    payloads
+        .iter()
+        .cloned()
+        .zip(proof_ids.iter().copied())
+        .map(|(payload, proof_id)| AddressedProofCandidate::new(proof_id, payload))
+        .collect()
+}
+
 fn over_formula_node_budget_bytes() -> Vec<u8> {
     let variable = FreeVariable::new(1);
     let mut half_limit = Formula::equal(variable, variable);
@@ -106,21 +154,49 @@ fn over_formula_node_budget_bytes() -> Vec<u8> {
     bytes
 }
 
-fn frame(previous: [u8; 32], payload: &[u8]) -> (Vec<u8>, [u8; 32]) {
-    let length = u32::try_from(payload.len()).unwrap().to_be_bytes();
-    let digest = entry_digest(previous, length, payload);
-    let mut frame = Vec::with_capacity(FRAME_FIXED_BYTES as usize + payload.len());
-    frame.extend_from_slice(&length);
-    frame.extend_from_slice(payload);
-    frame.extend_from_slice(&digest);
-    (frame, digest)
+fn transaction(previous: [u8; 32], payloads: &[Vec<u8>]) -> (Vec<u8>, [u8; 32]) {
+    assert!((1..=PROOF_BATCH_MAX_CANDIDATES).contains(&payloads.len()));
+    let body_length = 1 + payloads
+        .iter()
+        .map(|payload| 4 + payload.len())
+        .sum::<usize>();
+    let mut body = Vec::with_capacity(body_length);
+    body.push(payloads.len() as u8);
+    for payload in payloads {
+        body.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+        body.extend_from_slice(payload);
+    }
+    raw_transaction(previous, &body)
+}
+
+fn raw_transaction(previous: [u8; 32], body: &[u8]) -> (Vec<u8>, [u8; 32]) {
+    let body_length_bytes = u32::try_from(body.len()).unwrap().to_be_bytes();
+    let mut hasher = transaction_hasher(previous, body_length_bytes);
+    hasher.update(body);
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut encoded = Vec::with_capacity(TRANSACTION_FIXED_BYTES as usize + body.len());
+    encoded.extend_from_slice(&body_length_bytes);
+    encoded.extend_from_slice(body);
+    encoded.extend_from_slice(&digest);
+    (encoded, digest)
 }
 
 fn journal_image(payloads: &[Vec<u8>]) -> Vec<u8> {
     let mut image = JOURNAL_HEADER.to_vec();
     let mut previous = genesis_digest();
     for payload in payloads {
-        let (encoded, digest) = frame(previous, payload);
+        let (encoded, digest) = transaction(previous, std::slice::from_ref(payload));
+        image.extend_from_slice(&encoded);
+        previous = digest;
+    }
+    image
+}
+
+fn journal_transaction_image(transactions: &[Vec<Vec<u8>>]) -> Vec<u8> {
+    let mut image = JOURNAL_HEADER.to_vec();
+    let mut previous = genesis_digest();
+    for payloads in transactions {
+        let (encoded, digest) = transaction(previous, payloads);
         image.extend_from_slice(&encoded);
         previous = digest;
     }
@@ -154,26 +230,35 @@ fn snapshot(record: &naome_ledger::AcceptedProofRecord) -> RecordSnapshot {
 }
 
 #[test]
-fn journal_header_and_entry_are_exact_golden_bytes() {
-    assert_eq!(JOURNAL_HEADER.len(), 24);
-    assert_eq!(GENESIS_DOMAIN.len(), 32);
-    assert_eq!(ENTRY_DOMAIN.len(), 30);
+fn journal_header_and_transaction_are_exact_golden_bytes() {
+    assert_eq!(JOURNAL_HEADER.len(), 36);
+    assert_eq!(GENESIS_DOMAIN.len(), 44);
+    assert_eq!(TRANSACTION_DOMAIN.len(), 28);
+    assert_eq!(TRANSACTION_MIN_BODY_BYTES, 6);
+    assert_eq!(TRANSACTION_MAX_BODY_BYTES, 33_554_465);
     assert_eq!(
         genesis_digest().as_slice(),
-        hex_bytes("e1712a2358d91e869a2c3d865deccd7fc4f3557a8c7327febc470becd78684ab")
+        hex_bytes("7127edbfaed6d7b39d6a9ef69b3e3412a5ade11c0c13b2622b0ca33f11523764")
     );
 
     let pairing = axiom_bytes(ZfcAxiom::Pairing);
     assert_eq!(pairing, hex_bytes("000000011001"));
-    let (pairing_frame, digest) = frame(genesis_digest(), &pairing);
+    let (pairing_transaction, digest) =
+        transaction(genesis_digest(), std::slice::from_ref(&pairing));
     assert_eq!(
         digest.as_slice(),
-        hex_bytes("31d98be3372c21576e6ff70b6796e965924ec358746f1efdd22c2dad1345c73a")
+        hex_bytes("a7ac477d54ca4421cfbeb77a1bace81be2b98588af20d2f5abeae8ffc6a84b4f")
     );
     assert_eq!(
-        pairing_frame,
+        pairing_transaction,
         hex_bytes(
-            "0000000600000001100131d98be3372c21576e6ff70b6796e965924ec358746f1efdd22c2dad1345c73a"
+            "0000000b0100000006000000011001a7ac477d54ca4421cfbeb77a1bace81be2b98588af20d2f5abeae8ffc6a84b4f"
+        )
+    );
+    assert_eq!(
+        journal_image(std::slice::from_ref(&pairing)),
+        hex_bytes(
+            "6e616f6d653a70726f6f662d6461672d7472616e73616374696f6e2d6a6f75726e616c000000000b0100000006000000011001a7ac477d54ca4421cfbeb77a1bace81be2b98588af20d2f5abeae8ffc6a84b4f"
         )
     );
 
@@ -279,6 +364,123 @@ fn reopen_replays_dependency_chain_exactly() {
 }
 
 #[test]
+fn maximum_rooted_batch_is_one_transaction_and_replays_the_complete_closure() {
+    let directory = TestDirectory::new();
+    let (payloads, proof_ids) = dependency_chain_with_len(PROOF_BATCH_MAX_CANDIDATES);
+    let requested_root = *proof_ids.last().unwrap();
+    let expected_image = journal_transaction_image(std::slice::from_ref(&payloads));
+    let mut journal = ProofDagJournal::create(&directory.path).unwrap();
+
+    let root = journal
+        .apply_rooted_canonical_proof_batch(
+            requested_root,
+            addressed_candidates(&payloads, &proof_ids),
+        )
+        .unwrap();
+    assert_eq!(root.proof_id(), requested_root);
+    assert_eq!(journal.len().unwrap(), payloads.len());
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), expected_image);
+    let expected_root = journal.proof_set_root().unwrap();
+    for proof_id in &proof_ids {
+        assert!(journal.proof(*proof_id).unwrap().is_some());
+    }
+    drop(journal);
+
+    let reopened = ProofDagJournal::open(&directory.path).unwrap();
+    assert_eq!(reopened.len().unwrap(), payloads.len());
+    assert_eq!(reopened.proof_set_root().unwrap(), expected_root);
+    for proof_id in proof_ids {
+        assert!(reopened.proof(proof_id).unwrap().is_some());
+    }
+}
+
+#[test]
+fn late_address_mismatch_in_rooted_batch_consumes_no_journal_io_or_fault() {
+    let (payloads, proof_ids) = dependency_chain();
+    let requested_root = *proof_ids.last().unwrap();
+    let wrong_id = ProofId::from_bytes([0xa7; 32]);
+    let mut wrong_ids = proof_ids.clone();
+    wrong_ids[1] = wrong_id;
+    let fault = Fault::SyncBefore {
+        phase: AppendPhase::Body,
+    };
+    let mut core = JournalCore::empty(ScriptedIo::new(Some(fault.clone())));
+    let volatile_before = core.file.volatile.get_ref().clone();
+    let committed_end_before = core.committed_end;
+    let chain_digest_before = core.chain_digest;
+
+    assert!(matches!(
+        core.apply_rooted_canonical_proof_batch(
+            requested_root,
+            addressed_candidates(&payloads, &wrong_ids),
+        ),
+        Err(JournalError::BatchAdmission { source })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::Candidate {
+                    index: 1,
+                    expected: Some(expected),
+                    source: LedgerError::ProofIdMismatch { actual, .. },
+                } if *expected == wrong_id && *actual == proof_ids[1]
+            )
+    ));
+    assert!(core.file.trace.is_empty());
+    assert_eq!(core.file.fault, Some(fault));
+    assert_eq!(core.file.volatile.get_ref(), &volatile_before);
+    assert_eq!(core.file.durable, JOURNAL_HEADER);
+    assert_eq!(core.committed_end, committed_end_before);
+    assert_eq!(core.chain_digest, chain_digest_before);
+    assert!(core.ensure_healthy().is_ok());
+    assert!(core.dag.is_empty());
+
+    assert!(matches!(
+        core.apply_rooted_canonical_proof_batch(
+            requested_root,
+            addressed_candidates(&payloads, &proof_ids),
+        ),
+        Err(JournalError::Commit {
+            root_proof_id,
+            proof_count: 3,
+            ..
+        }) if root_proof_id == requested_root
+    ));
+    assert!(core.file.fault.is_none());
+    assert!(matches!(core.ensure_healthy(), Err(JournalError::Poisoned)));
+}
+
+#[test]
+fn oversized_rooted_batch_fails_before_secondary_allocation_or_journal_io() {
+    let requested_root = ProofId::from_bytes([0xf0; 32]);
+    let candidates = (0..=PROOF_BATCH_MAX_CANDIDATES)
+        .map(|index| {
+            let expected = if index == PROOF_BATCH_MAX_CANDIDATES {
+                requested_root
+            } else {
+                ProofId::from_bytes([u8::try_from(index).unwrap(); 32])
+            };
+            AddressedProofCandidate::new(expected, Vec::new())
+        })
+        .collect();
+    let mut core = JournalCore::empty(ScriptedIo::new(Some(Fault::Seek)));
+
+    assert!(matches!(
+        core.apply_rooted_canonical_proof_batch(requested_root, candidates),
+        Err(JournalError::BatchAdmission { source })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::TooManyCandidates {
+                    actual,
+                    maximum: PROOF_BATCH_MAX_CANDIDATES,
+                } if *actual == PROOF_BATCH_MAX_CANDIDATES + 1
+            )
+    ));
+    assert_eq!(core.file.fault, Some(Fault::Seek));
+    assert!(core.file.trace.is_empty());
+    assert!(core.dag.is_empty());
+    assert!(core.ensure_healthy().is_ok());
+}
+
+#[test]
 fn verified_open_checks_the_exact_replayed_set_after_all_format_checks() {
     let directory = TestDirectory::new();
     let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
@@ -311,7 +513,7 @@ fn verified_open_checks_the_exact_replayed_set_after_all_format_checks() {
     directory.write_image(&corrupt);
     assert!(matches!(
         ProofDagJournal::open_verified(&directory.path, prefix_root),
-        Err(JournalError::EntryDigestMismatch { .. })
+        Err(JournalError::TransactionDigestMismatch { .. })
     ));
 
     directory.write_image(&journal_image(&[root_bytes]));
@@ -502,13 +704,17 @@ fn formula_node_limit_rejection_is_atomic_and_complete_replay_fails_closed() {
     replay_directory.write_image(&complete_over_budget_image);
     assert!(matches!(
         ProofDagJournal::open(&replay_directory.path),
-        Err(JournalError::Replay {
-            entry: 0,
-            source: LedgerError::Decode {
-                source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
-            },
-            ..
-        }) if maximum == CERTIFICATE_MAX_FORMULA_NODES
+        Err(JournalError::Replay { transaction: 0, source, .. })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::Candidate {
+                    index: 0,
+                    source: LedgerError::Decode {
+                        source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
+                    },
+                    ..
+                } if *maximum == CERTIFICATE_MAX_FORMULA_NODES
+            )
     ));
     assert_eq!(
         fs::read(replay_directory.journal_path()).unwrap(),
@@ -517,7 +723,7 @@ fn formula_node_limit_rejection_is_atomic_and_complete_replay_fails_closed() {
 }
 
 #[test]
-fn every_incomplete_final_frame_recovers_only_the_committed_prefix() {
+fn every_incomplete_final_transaction_recovers_only_the_committed_prefix() {
     let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
     let union_bytes = axiom_bytes(ZfcAxiom::Union);
     let full = journal_image(&[root_bytes.clone(), union_bytes.clone()]);
@@ -576,48 +782,49 @@ fn complete_corruption_deletion_and_reordering_fail_closed() {
     let root = axiom_bytes(ZfcAxiom::Pairing);
     let union = axiom_bytes(ZfcAxiom::Union);
     let infinity = axiom_bytes(ZfcAxiom::Infinity);
-    let (root_frame, root_digest) = frame(genesis_digest(), &root);
-    let (union_frame, union_digest) = frame(root_digest, &union);
-    let (infinity_frame, _) = frame(union_digest, &infinity);
+    let (root_transaction, root_digest) =
+        transaction(genesis_digest(), std::slice::from_ref(&root));
+    let (union_transaction, union_digest) = transaction(root_digest, std::slice::from_ref(&union));
+    let (infinity_transaction, _) = transaction(union_digest, std::slice::from_ref(&infinity));
 
-    for index in 4..union_frame.len() {
+    for index in 9..union_transaction.len() {
         let directory = TestDirectory::new();
         let mut image = JOURNAL_HEADER.to_vec();
-        image.extend_from_slice(&root_frame);
+        image.extend_from_slice(&root_transaction);
         let union_start = image.len();
-        image.extend_from_slice(&union_frame);
-        image.extend_from_slice(&infinity_frame);
+        image.extend_from_slice(&union_transaction);
+        image.extend_from_slice(&infinity_transaction);
         image[union_start + index] ^= 0x01;
         directory.write_image(&image);
         assert!(matches!(
             ProofDagJournal::open(&directory.path),
-            Err(JournalError::EntryDigestMismatch { entry: 1, .. })
+            Err(JournalError::TransactionDigestMismatch { transaction: 1, .. })
         ));
     }
 
-    for frames in [
-        vec![root_frame.clone(), infinity_frame.clone()],
+    for transactions in [
+        vec![root_transaction.clone(), infinity_transaction.clone()],
         vec![
-            root_frame.clone(),
-            infinity_frame.clone(),
-            union_frame.clone(),
+            root_transaction.clone(),
+            infinity_transaction.clone(),
+            union_transaction.clone(),
         ],
         vec![
-            root_frame.clone(),
-            union_frame.clone(),
-            union_frame.clone(),
-            infinity_frame.clone(),
+            root_transaction.clone(),
+            union_transaction.clone(),
+            union_transaction.clone(),
+            infinity_transaction.clone(),
         ],
     ] {
         let directory = TestDirectory::new();
         let mut image = JOURNAL_HEADER.to_vec();
-        for frame in frames {
-            image.extend_from_slice(&frame);
+        for transaction in transactions {
+            image.extend_from_slice(&transaction);
         }
         directory.write_image(&image);
         assert!(matches!(
             ProofDagJournal::open(&directory.path),
-            Err(JournalError::EntryDigestMismatch { .. })
+            Err(JournalError::TransactionDigestMismatch { .. })
         ));
     }
 
@@ -632,16 +839,21 @@ fn complete_corruption_deletion_and_reordering_fail_closed() {
 }
 
 #[test]
-fn frame_lengths_are_preflighted_before_payload_allocation() {
-    for actual in [0, CERTIFICATE_MAX_BYTES as u32 + 1, u32::MAX] {
+fn transaction_lengths_are_preflighted_before_payload_allocation() {
+    for actual in [
+        0,
+        TRANSACTION_MIN_BODY_BYTES - 1,
+        TRANSACTION_MAX_BODY_BYTES + 1,
+        u32::MAX,
+    ] {
         let directory = TestDirectory::new();
         let mut image = JOURNAL_HEADER.to_vec();
         image.extend_from_slice(&actual.to_be_bytes());
         directory.write_image(&image);
         assert!(matches!(
             ProofDagJournal::open(&directory.path),
-            Err(JournalError::InvalidFrameLength {
-                entry: 0,
+            Err(JournalError::InvalidTransactionLength {
+                transaction: 0,
                 actual: found,
                 ..
             }) if found == actual
@@ -650,7 +862,7 @@ fn frame_lengths_are_preflighted_before_payload_allocation() {
 
     let directory = TestDirectory::new();
     let mut short_maximum = JOURNAL_HEADER.to_vec();
-    short_maximum.extend_from_slice(&(CERTIFICATE_MAX_BYTES as u32).to_be_bytes());
+    short_maximum.extend_from_slice(&TRANSACTION_MAX_BODY_BYTES.to_be_bytes());
     directory.write_image(&short_maximum);
     let recovered = ProofDagJournal::open(&directory.path).unwrap();
     assert!(recovered.is_empty().unwrap());
@@ -661,17 +873,168 @@ fn frame_lengths_are_preflighted_before_payload_allocation() {
 }
 
 #[test]
-fn committed_frames_are_strictly_revalidated_in_physical_order() {
+fn transaction_inner_shape_is_preflighted_without_payload_overread() {
+    let cases = [
+        (vec![0, 0, 0, 0, 1, 0], "zero proof count", 0_u8, None),
+        (
+            vec![(PROOF_BATCH_MAX_CANDIDATES + 1) as u8, 0, 0, 0, 1, 0],
+            "over-limit proof count",
+            (PROOF_BATCH_MAX_CANDIDATES + 1) as u8,
+            None,
+        ),
+        (vec![1, 0, 0, 0, 0, 0], "zero proof length", 1, Some(0)),
+        (
+            {
+                let mut body = vec![1];
+                body.extend_from_slice(&(CERTIFICATE_MAX_BYTES as u32 + 1).to_be_bytes());
+                body.push(0);
+                body
+            },
+            "over-limit proof length",
+            1,
+            Some(CERTIFICATE_MAX_BYTES as u32 + 1),
+        ),
+    ];
+
+    for (body, name, proof_count, proof_length) in cases {
+        let directory = TestDirectory::new();
+        let (encoded, _) = raw_transaction(genesis_digest(), &body);
+        let mut image = JOURNAL_HEADER.to_vec();
+        image.extend_from_slice(&encoded);
+        directory.write_image(&image);
+        let error = match ProofDagJournal::open(&directory.path) {
+            Err(error) => error,
+            Ok(_) => panic!("case={name}: malformed transaction opened"),
+        };
+        if let Some(expected_length) = proof_length {
+            assert!(
+                matches!(
+                    &error,
+                    JournalError::InvalidTransactionProofLength {
+                        transaction: 0,
+                        proof: 0,
+                        actual,
+                        ..
+                    } if *actual == expected_length
+                ),
+                "case={name}: {error:?}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    &error,
+                    JournalError::InvalidTransactionProofCount {
+                        transaction: 0,
+                        actual,
+                        ..
+                    } if *actual == proof_count
+                ),
+                "case={name}: {error:?}"
+            );
+        }
+    }
+
+    for body in [
+        vec![1, 0, 0, 0, 2, 0],
+        vec![1, 0, 0, 0, 1, 0, 0],
+        vec![2, 0, 0, 0, 1, 0],
+    ] {
+        let directory = TestDirectory::new();
+        let (encoded, _) = raw_transaction(genesis_digest(), &body);
+        let mut image = JOURNAL_HEADER.to_vec();
+        image.extend_from_slice(&encoded);
+        directory.write_image(&image);
+        assert!(matches!(
+            ProofDagJournal::open(&directory.path),
+            Err(JournalError::InvalidTransactionBody { transaction: 0, .. })
+        ));
+    }
+}
+
+#[test]
+fn digest_valid_batch_replay_enforces_dependency_order_and_root_reachability() {
+    let (payloads, _) = dependency_chain();
+    let reversed = payloads.iter().cloned().rev().collect::<Vec<_>>();
+    let directory = TestDirectory::new();
+    let reversed_image = journal_transaction_image(&[reversed]);
+    directory.write_image(&reversed_image);
+    assert!(matches!(
+        ProofDagJournal::open(&directory.path),
+        Err(JournalError::Replay { transaction: 0, source, .. })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::Candidate {
+                    index: 0,
+                    source: LedgerError::Check {
+                        source: CheckError::UnknownProofReference { .. },
+                    },
+                    ..
+                }
+            )
+    ));
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), reversed_image);
+
+    let unrelated = axiom_bytes(ZfcAxiom::Union);
+    let closure_with_unrelated = vec![payloads[0].clone(), unrelated, payloads[1].clone()];
+    let directory = TestDirectory::new();
+    let unrelated_image = journal_transaction_image(&[closure_with_unrelated]);
+    directory.write_image(&unrelated_image);
+    assert!(matches!(
+        ProofDagJournal::open(&directory.path),
+        Err(JournalError::Replay { transaction: 0, source, .. })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::UnreachableCandidate { index: 1, .. }
+            )
+    ));
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), unrelated_image);
+}
+
+#[test]
+fn every_batch_payload_and_footer_mutation_fails_the_transaction_digest() {
+    let (payloads, _) = dependency_chain();
+    let full = journal_transaction_image(std::slice::from_ref(&payloads));
+    let transaction_start = JOURNAL_HEADER.len();
+    let mut cursor = transaction_start + 4 + 1;
+    let mut mutation_offsets = Vec::new();
+    for payload in &payloads {
+        cursor += 4;
+        mutation_offsets.extend(cursor..cursor + payload.len());
+        cursor += payload.len();
+    }
+    mutation_offsets.extend(full.len() - 32..full.len());
+
+    for offset in mutation_offsets {
+        let directory = TestDirectory::new();
+        let mut mutated = full.clone();
+        mutated[offset] ^= 0x01;
+        directory.write_image(&mutated);
+        assert!(
+            matches!(
+                ProofDagJournal::open(&directory.path),
+                Err(JournalError::TransactionDigestMismatch { transaction: 0, .. })
+            ),
+            "offset={offset}"
+        );
+    }
+}
+
+#[test]
+fn committed_transactions_are_strictly_revalidated_in_physical_order() {
     let malformed = vec![0x00];
     let directory = TestDirectory::new();
     directory.write_image(&journal_image(&[malformed]));
     assert!(matches!(
         ProofDagJournal::open(&directory.path),
-        Err(JournalError::Replay {
-            entry: 0,
-            source: LedgerError::Decode { .. },
-            ..
-        })
+        Err(JournalError::Replay { transaction: 0, source, .. })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::Candidate {
+                    index: 0,
+                    source: LedgerError::Decode { .. },
+                    ..
+                }
+            )
     ));
 
     let noncanonical = certificate(vec![
@@ -683,11 +1046,15 @@ fn committed_frames_are_strictly_revalidated_in_physical_order() {
     directory.write_image(&journal_image(&[noncanonical]));
     assert!(matches!(
         ProofDagJournal::open(&directory.path),
-        Err(JournalError::Replay {
-            entry: 0,
-            source: LedgerError::NonCanonicalProof,
-            ..
-        })
+        Err(JournalError::Replay { transaction: 0, source, .. })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::Candidate {
+                    index: 0,
+                    source: LedgerError::NonCanonicalProof,
+                    ..
+                }
+            )
     ));
 
     let missing_id = ProofId::from_bytes([0x77; 32]);
@@ -698,13 +1065,17 @@ fn committed_frames_are_strictly_revalidated_in_physical_order() {
     directory.write_image(&journal_image(&[missing]));
     assert!(matches!(
         ProofDagJournal::open(&directory.path),
-        Err(JournalError::Replay {
-            entry: 0,
-            source: LedgerError::Check {
-                source: CheckError::UnknownProofReference { proof_id, .. }
-            },
-            ..
-        }) if proof_id == missing_id
+        Err(JournalError::Replay { transaction: 0, source, .. })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::Candidate {
+                    index: 0,
+                    source: LedgerError::Check {
+                        source: CheckError::UnknownProofReference { proof_id, .. }
+                    },
+                    ..
+                } if *proof_id == missing_id
+            )
     ));
 
     let pairing = axiom_bytes(ZfcAxiom::Pairing);
@@ -712,13 +1083,17 @@ fn committed_frames_are_strictly_revalidated_in_physical_order() {
     directory.write_image(&journal_image(&[pairing.clone(), pairing]));
     assert!(matches!(
         ProofDagJournal::open(&directory.path),
-        Err(JournalError::Replay {
-            entry: 1,
-            source: LedgerError::State {
-                source: ProofStateError::DuplicateProof { .. }
-            },
-            ..
-        })
+        Err(JournalError::Replay { transaction: 1, source, .. })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::Candidate {
+                    index: 0,
+                    source: LedgerError::State {
+                        source: ProofStateError::DuplicateProof { .. }
+                    },
+                    ..
+                }
+            )
     ));
 
     let pairing = axiom_bytes(ZfcAxiom::Pairing);
@@ -735,18 +1110,23 @@ fn committed_frames_are_strictly_revalidated_in_physical_order() {
     directory.write_image(&journal_image(&[pairing, alias]));
     assert!(matches!(
         ProofDagJournal::open(&directory.path),
-        Err(JournalError::Replay {
-            entry: 1,
-            source: LedgerError::State {
-                source: ProofStateError::DuplicateDerivation { .. }
-            },
-            ..
-        })
+        Err(JournalError::Replay { transaction: 1, source, .. })
+            if matches!(
+                source.as_ref(),
+                ProofBatchError::Candidate {
+                    index: 0,
+                    source: LedgerError::State {
+                        source: ProofStateError::DuplicateDerivation { .. }
+                    },
+                    ..
+                }
+            )
     ));
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Fault {
+    Seek,
     Write { phase: AppendPhase, after: usize },
     SyncBefore { phase: AppendPhase },
     SyncAfter { phase: AppendPhase },
@@ -819,6 +1199,10 @@ impl Write for ScriptedIo {
 
 impl Seek for ScriptedIo {
     fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        if self.fault == Some(Fault::Seek) {
+            self.fault = None;
+            return Err(io::Error::other("injected append seek failure"));
+        }
         self.volatile.seek(position)
     }
 }
@@ -924,65 +1308,61 @@ fn expected_proof_id_mismatch_consumes_no_journal_io_or_fault() {
 
     assert!(matches!(
         core.apply_canonical_proof_bytes_with_expected_id(payload, actual),
-        Err(JournalError::Commit { proof_id, .. }) if proof_id == actual
+        Err(JournalError::Commit { root_proof_id, .. }) if root_proof_id == actual
     ));
     assert!(core.file.fault.is_none());
     assert!(matches!(core.ensure_healthy(), Err(JournalError::Poisoned)));
 }
 
 #[test]
-fn append_barriers_are_ordered_and_every_ambiguous_failure_poisons() {
-    let payload = axiom_bytes(ZfcAxiom::Pairing);
-    let body_len = 4 + payload.len();
-    let faults = [
-        Fault::Write {
-            phase: AppendPhase::Body,
-            after: 0,
-        },
-        Fault::Write {
-            phase: AppendPhase::Body,
-            after: 1,
-        },
-        Fault::Write {
-            phase: AppendPhase::Body,
-            after: body_len,
-        },
+fn batch_append_barriers_are_ordered_and_every_ambiguous_failure_is_all_or_none() {
+    let (payloads, proof_ids) = dependency_chain();
+    let root_id = *proof_ids.last().unwrap();
+    let body_write_bytes = 4
+        + 1
+        + payloads
+            .iter()
+            .map(|payload| 4 + payload.len())
+            .sum::<usize>();
+    let mut faults = vec![Fault::Seek];
+    faults.extend((0..=body_write_bytes).map(|after| Fault::Write {
+        phase: AppendPhase::Body,
+        after,
+    }));
+    faults.extend([
         Fault::SyncBefore {
             phase: AppendPhase::Body,
         },
         Fault::SyncAfter {
             phase: AppendPhase::Body,
         },
-        Fault::Write {
-            phase: AppendPhase::Commit,
-            after: 0,
-        },
-        Fault::Write {
-            phase: AppendPhase::Commit,
-            after: 1,
-        },
-        Fault::Write {
-            phase: AppendPhase::Commit,
-            after: 31,
-        },
-        Fault::Write {
-            phase: AppendPhase::Commit,
-            after: 32,
-        },
+    ]);
+    faults.extend((0..=32).map(|after| Fault::Write {
+        phase: AppendPhase::Commit,
+        after,
+    }));
+    faults.extend([
         Fault::SyncBefore {
             phase: AppendPhase::Commit,
         },
         Fault::SyncAfter {
             phase: AppendPhase::Commit,
         },
-    ];
+    ]);
 
     for fault in faults {
         let mut core = JournalCore::empty(ScriptedIo::new(Some(fault.clone())));
         assert!(
             matches!(
-                core.apply_canonical_proof_bytes(payload.clone()),
-                Err(JournalError::Commit { .. })
+                core.apply_rooted_canonical_proof_batch(
+                    root_id,
+                    addressed_candidates(&payloads, &proof_ids),
+                ),
+                Err(JournalError::Commit {
+                    root_proof_id,
+                    proof_count: 3,
+                    ..
+                }) if root_proof_id == root_id
             ),
             "fault={fault:?}"
         );
@@ -992,7 +1372,10 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_poisons() {
         );
         assert!(matches!(core.ensure_healthy(), Err(JournalError::Poisoned)));
         assert!(matches!(
-            core.apply_canonical_proof_bytes(payload.clone()),
+            core.apply_rooted_canonical_proof_batch(
+                root_id,
+                addressed_candidates(&payloads, &proof_ids),
+            ),
             Err(JournalError::Poisoned)
         ));
 
@@ -1024,11 +1407,18 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_poisons() {
                 JournalCore::replay(ScriptedIo::from_images(image, durable.clone())).unwrap();
             assert_eq!(
                 replayed.dag.len(),
-                usize::from(expected_present),
+                usize::from(expected_present) * payloads.len(),
                 "fault={fault:?} image={name}"
             );
+            for proof_id in &proof_ids {
+                assert_eq!(
+                    replayed.dag.proof(*proof_id).is_some(),
+                    expected_present,
+                    "fault={fault:?} image={name} proof_id={proof_id:?}"
+                );
+            }
             let expected_image = if expected_present {
-                journal_image(std::slice::from_ref(&payload))
+                journal_transaction_image(std::slice::from_ref(&payloads))
             } else {
                 JOURNAL_HEADER.to_vec()
             };
@@ -1037,15 +1427,24 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_poisons() {
                 "fault={fault:?} image={name} was not stabilized"
             );
 
-            let retry = replayed.apply_canonical_proof_bytes(payload.clone());
+            let retry = replayed.apply_rooted_canonical_proof_batch(
+                root_id,
+                addressed_candidates(&payloads, &proof_ids),
+            );
             if expected_present {
                 assert!(matches!(
                     retry,
-                    Err(JournalError::Admission {
-                        source: LedgerError::State {
-                            source: ProofStateError::DuplicateProof { .. }
-                        }
-                    })
+                    Err(JournalError::BatchAdmission { source })
+                        if matches!(
+                            source.as_ref(),
+                            ProofBatchError::Candidate {
+                                index: 0,
+                                source: LedgerError::State {
+                                    source: ProofStateError::DuplicateProof { .. }
+                                },
+                                ..
+                            }
+                        )
                 ));
             } else {
                 assert!(retry.is_ok(), "fault={fault:?} image={name}");
@@ -1054,20 +1453,24 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_poisons() {
     }
 
     let mut success = JournalCore::empty(ScriptedIo::new(None));
-    let _ = success
-        .apply_canonical_proof_bytes(payload.clone())
+    success
+        .apply_rooted_canonical_proof_batch(root_id, addressed_candidates(&payloads, &proof_ids))
         .unwrap();
-    assert_eq!(
-        success.file.trace,
-        [
-            Trace::Write(AppendPhase::Body, 4),
-            Trace::Write(AppendPhase::Body, payload.len()),
-            Trace::Sync(AppendPhase::Body),
-            Trace::Write(AppendPhase::Commit, 32),
-            Trace::Sync(AppendPhase::Commit),
-        ]
-    );
-    assert_eq!(success.file.durable, journal_image(&[payload]));
+    let mut expected_trace = vec![
+        Trace::Write(AppendPhase::Body, 4),
+        Trace::Write(AppendPhase::Body, 1),
+    ];
+    for payload in &payloads {
+        expected_trace.push(Trace::Write(AppendPhase::Body, 4));
+        expected_trace.push(Trace::Write(AppendPhase::Body, payload.len()));
+    }
+    expected_trace.extend([
+        Trace::Sync(AppendPhase::Body),
+        Trace::Write(AppendPhase::Commit, 32),
+        Trace::Sync(AppendPhase::Commit),
+    ]);
+    assert_eq!(success.file.trace, expected_trace);
+    assert_eq!(success.file.durable, journal_transaction_image(&[payloads]));
 }
 
 #[test]
@@ -1121,7 +1524,7 @@ fn complete_footer_mutation_is_never_recovered_as_a_torn_tail() {
         directory.write_image(&corrupted);
         assert!(matches!(
             ProofDagJournal::open(&directory.path),
-            Err(JournalError::EntryDigestMismatch { entry: 0, .. })
+            Err(JournalError::TransactionDigestMismatch { transaction: 0, .. })
         ));
     }
     image.truncate(footer_start + 31);
