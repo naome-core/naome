@@ -6,9 +6,10 @@ NAOME is a protocol for a blockchain of machine-verifiable mathematical proofs.
 This repository currently implements the deterministic proof, selected-state,
 local-persistence, authenticated static-transport, and bounded local
 peer-address-management layers, including a transport-neutral atomic record
-batch and a dedicated outbound-only authenticated bootstrap pull client. It
-does not yet define a bootstrap responder, bundled seed list, dynamic learned
-peer sessions, consensus, finality, fork choice, settlement, rewards, or fees.
+batch, a dedicated outbound-only authenticated bootstrap pull client, and a
+separate bounded inbound-only responder for one immutable operator publication.
+It does not yet define a bundled seed list, dynamic learned peer sessions,
+consensus, finality, fork choice, settlement, rewards, or fees.
 
 ## Architecture
 
@@ -27,9 +28,11 @@ also depend directly on an earlier crate whose types remain part of their
 contract. The network layer also owns the separate persisted peer-address
 candidate store and bounded peer-record batch wrapper; learned routing
 candidates do not become static proof peers.
-The bootstrap client runs in a separate swarm that cannot negotiate the proof
-protocol; authenticated record provenance therefore remains routing input, not
-proof authorization.
+The bootstrap client and responder run in separate dedicated swarms that cannot
+negotiate the proof protocol. The responder serves only its explicit immutable
+operator-supplied batch and never exports the local peer-address store;
+authenticated record provenance therefore remains routing input, not proof
+authorization.
 
 ## Protocol contracts
 
@@ -43,6 +46,7 @@ proof authorization.
 - [Peer Address Management](specs/peer-address-management.md)
 - [Peer Record Exchange](specs/peer-record-exchange.md)
 - [Authenticated Peer Record Pull](specs/authenticated-peer-record-pull.md)
+- [Authenticated Peer Record Responder](specs/authenticated-peer-record-responder.md)
 
 The specifications are normative. The Rust crates are executable reference
 implementations of their stated boundaries.

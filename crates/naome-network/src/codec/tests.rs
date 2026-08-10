@@ -1,5 +1,10 @@
 use std::io;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
+use libp2p::futures::AsyncRead;
 use libp2p::futures::executor::block_on;
 use libp2p::futures::io::Cursor;
 use libp2p::request_response::Codec;
@@ -9,7 +14,37 @@ use naome::proof_exchange::{
 
 use crate::{MAX_PEER_RECORDS_PER_BATCH, MAX_SIGNED_PEER_RECORD_BYTES, PeerRecordBatch};
 
-use super::{PEER_RECORD_PROTOCOL, PROTOCOL, PeerRecordCodec, ProofCodec};
+use super::{
+    PEER_RECORD_PROTOCOL, PROTOCOL, PeerRecordCodec, PeerRecordResponderCodec,
+    PeerRecordResponderRequest, ProofCodec,
+};
+
+struct PendingReader;
+
+impl AsyncRead for PendingReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Pending
+    }
+}
+
+struct FailingReader;
+
+impl AsyncRead for FailingReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Err(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "synthetic reset",
+        )))
+    }
+}
 
 fn request_bytes() -> [u8; PROOF_REQUEST_BYTES] {
     let mut bytes = [0_u8; PROOF_REQUEST_BYTES];
@@ -269,4 +304,60 @@ fn peer_record_response_rejects_trailing_and_reaches_the_exact_body_cap() {
         maximum.position(),
         u64::try_from(crate::PEER_RECORD_BATCH_MAX_BYTES).unwrap()
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn responder_request_reader_classifies_eof_invalid_timeout_and_io() {
+    let mut codec = PeerRecordResponderCodec;
+
+    let mut exact = Cursor::new(Vec::new());
+    assert!(matches!(
+        codec
+            .read_request(&PEER_RECORD_PROTOCOL, &mut exact)
+            .await
+            .unwrap(),
+        PeerRecordResponderRequest::Valid
+    ));
+
+    let mut nonempty = Cursor::new(vec![0xff; 64]);
+    assert!(matches!(
+        codec
+            .read_request(&PEER_RECORD_PROTOCOL, &mut nonempty)
+            .await
+            .unwrap(),
+        PeerRecordResponderRequest::Invalid
+    ));
+    assert_eq!(nonempty.position(), 1);
+
+    let started = tokio::time::Instant::now();
+    let mut pending = PendingReader;
+    assert!(matches!(
+        codec
+            .read_request(&PEER_RECORD_PROTOCOL, &mut pending)
+            .await
+            .unwrap(),
+        PeerRecordResponderRequest::ReadTimedOut
+    ));
+    assert_eq!(
+        tokio::time::Instant::now() - started,
+        Duration::from_secs(10)
+    );
+
+    let mut failing = FailingReader;
+    let PeerRecordResponderRequest::ReadFailed(source) = codec
+        .read_request(&PEER_RECORD_PROTOCOL, &mut failing)
+        .await
+        .unwrap()
+    else {
+        panic!("expected the exact read failure")
+    };
+    assert_eq!(source.kind(), io::ErrorKind::ConnectionReset);
+
+    let publication = Arc::new(vec![0_u8]);
+    let mut encoded = Cursor::new(Vec::new());
+    codec
+        .write_response(&PEER_RECORD_PROTOCOL, &mut encoded, publication)
+        .await
+        .unwrap();
+    assert_eq!(encoded.into_inner(), [0]);
 }

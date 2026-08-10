@@ -1,86 +1,14 @@
 use std::time::{Duration, SystemTime};
 
 use libp2p::core::{Endpoint, UpgradeInfo, peer_record::PeerRecord, transport::PortUse};
-use libp2p::futures::StreamExt;
-use libp2p::swarm::{ConnectionHandler, ConnectionId, NetworkBehaviour, SwarmEvent};
-use libp2p::{Swarm, SwarmBuilder, connection_limits, request_response, tcp};
+use libp2p::request_response;
+use libp2p::swarm::{ConnectionHandler, ConnectionId, NetworkBehaviour};
 use tokio::time::timeout;
 
 use super::*;
-use crate::Multiaddr;
 use crate::address_store::SignedPeerRecord;
 use crate::tests::TestDirectory;
-
-#[derive(NetworkBehaviour)]
-struct ServerBehaviour {
-    limits: connection_limits::Behaviour,
-    exchange: request_response::Behaviour<PeerRecordCodec>,
-}
-
-struct TestServer {
-    swarm: Swarm<ServerBehaviour>,
-}
-
-impl TestServer {
-    fn new(identity: Keypair) -> Self {
-        let maximum = u32::try_from(MAX_BOOTSTRAP_PEERS).unwrap();
-        let limits = connection_limits::Behaviour::new(
-            connection_limits::ConnectionLimits::default()
-                .with_max_pending_incoming(Some(maximum))
-                .with_max_pending_outgoing(Some(0))
-                .with_max_established_incoming(Some(maximum))
-                .with_max_established_outgoing(Some(0))
-                .with_max_established(Some(maximum))
-                .with_max_established_per_peer(Some(MAX_CONNECTIONS_PER_PEER)),
-        );
-        let exchange = request_response::Behaviour::with_codec(
-            PeerRecordCodec,
-            [(
-                PEER_RECORD_PROTOCOL,
-                request_response::ProtocolSupport::Inbound,
-            )],
-            request_response::Config::default()
-                .with_request_timeout(REQUEST_TIMEOUT)
-                .with_max_concurrent_streams(1),
-        );
-        let behaviour = ServerBehaviour { limits, exchange };
-        let swarm = SwarmBuilder::with_existing_identity(identity)
-            .with_tokio()
-            .with_tcp(tcp::Config::new(), noise::Config::new, || {
-                yamux_config(MAX_BOOTSTRAP_STREAMS_PER_CONNECTION)
-            })
-            .unwrap()
-            .with_behaviour(|_| behaviour)
-            .unwrap()
-            .with_swarm_config(|config| {
-                config
-                    .with_idle_connection_timeout(BOOTSTRAP_IDLE_TIMEOUT)
-                    .with_max_negotiating_inbound_streams(MAX_BOOTSTRAP_STREAMS_PER_CONNECTION)
-            })
-            .with_connection_timeout(CONNECTION_TIMEOUT)
-            .build();
-        Self { swarm }
-    }
-
-    async fn listen(&mut self) -> Multiaddr {
-        self.swarm
-            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
-            .unwrap();
-        timeout(Duration::from_secs(10), async {
-            loop {
-                match self.swarm.select_next_some().await {
-                    SwarmEvent::NewListenAddr { address, .. } => return address,
-                    SwarmEvent::ListenerError { error, .. } => {
-                        panic!("bootstrap test listener failed: {error}")
-                    }
-                    _ => {}
-                }
-            }
-        })
-        .await
-        .expect("bootstrap test listener did not start")
-    }
-}
+use crate::{Multiaddr, PeerRecordBootstrapResponder, PeerRecordBootstrapResponderEvent};
 
 fn signed_record(identity: &Keypair, address: Multiaddr) -> SignedPeerRecord {
     let record = PeerRecord::new_interop(identity, vec![address]).unwrap();
@@ -88,32 +16,37 @@ fn signed_record(identity: &Keypair, address: Multiaddr) -> SignedPeerRecord {
         .unwrap()
 }
 
+async fn listen(server: &mut PeerRecordBootstrapResponder) -> Multiaddr {
+    server
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    timeout(Duration::from_secs(10), async {
+        match server.next_event().await {
+            PeerRecordBootstrapResponderEvent::Listening { address } => address,
+            event => panic!("unexpected responder event before listening: {event:?}"),
+        }
+    })
+    .await
+    .expect("bootstrap responder did not start listening")
+}
+
+fn observe_server(event: PeerRecordBootstrapResponderEvent) {
+    match event {
+        PeerRecordBootstrapResponderEvent::ResponseSent { .. }
+        | PeerRecordBootstrapResponderEvent::Listening { .. } => {}
+        event => panic!("bootstrap responder failed while serving: {event:?}"),
+    }
+}
+
 async fn receive(
     client: &mut PeerRecordBootstrapClient,
-    server: &mut TestServer,
-    response: PeerRecordBatch,
+    server: &mut PeerRecordBootstrapResponder,
 ) -> PeerRecordBootstrapEvent {
     timeout(Duration::from_secs(10), async {
-        let mut response = Some(response);
         loop {
             tokio::select! {
                 event = client.next_event() => return event,
-                event = server.swarm.select_next_some() => {
-                    if let SwarmEvent::Behaviour(ServerBehaviourEvent::Exchange(
-                        request_response::Event::Message {
-                            message: request_response::Message::Request { request, channel, .. },
-                            ..
-                        },
-                    )) = event {
-                        assert_eq!(request, PeerRecordPullRequest);
-                        server
-                            .swarm
-                            .behaviour_mut()
-                            .exchange
-                            .send_response(channel, response.take().expect("one request expected"))
-                            .unwrap();
-                    }
-                }
+                event = server.next_event() => observe_server(event),
             }
         }
     })
@@ -125,8 +58,12 @@ async fn receive(
 async fn authenticated_batch_keeps_its_source_through_atomic_admission_and_reopen() {
     let server_identity = Keypair::generate_ed25519();
     let server_peer_id = server_identity.public().to_peer_id();
-    let mut server = TestServer::new(server_identity);
-    let server_address = server.listen().await;
+    let record_identity = Keypair::generate_ed25519();
+    let record = signed_record(&record_identity, "/ip4/11.2.3.4/tcp/4001".parse().unwrap());
+    let mut server =
+        PeerRecordBootstrapResponder::new(server_identity, PeerRecordBatch::new([record]).unwrap())
+            .unwrap();
+    let server_address = listen(&mut server).await;
 
     let client_identity = Keypair::generate_ed25519();
     let client_peer_id = client_identity.public().to_peer_id();
@@ -135,14 +72,7 @@ async fn authenticated_batch_keeps_its_source_through_atomic_admission_and_reope
     assert_eq!(client.bootstrap_peers(), std::slice::from_ref(&configured));
     client.start_pull(server_peer_id).unwrap();
 
-    let record_identity = Keypair::generate_ed25519();
-    let record = signed_record(&record_identity, "/ip4/11.2.3.4/tcp/4001".parse().unwrap());
-    let event = receive(
-        &mut client,
-        &mut server,
-        PeerRecordBatch::new([record]).unwrap(),
-    )
-    .await;
+    let event = receive(&mut client, &mut server).await;
     let PeerRecordBootstrapEvent::Received(batch) = event else {
         panic!("expected one authenticated batch")
     };
@@ -194,10 +124,14 @@ async fn pull_uses_the_requested_nonfirst_bootstrap_address_and_identity() {
         };
     let first_peer_id = first_identity.public().to_peer_id();
     let second_peer_id = second_identity.public().to_peer_id();
-    let mut first_server = TestServer::new(first_identity);
-    let mut second_server = TestServer::new(second_identity);
-    let first_address = first_server.listen().await;
-    let second_address = second_server.listen().await;
+    let mut first_server =
+        PeerRecordBootstrapResponder::new(first_identity, PeerRecordBatch::new([]).unwrap())
+            .unwrap();
+    let mut second_server =
+        PeerRecordBootstrapResponder::new(second_identity, PeerRecordBatch::new([]).unwrap())
+            .unwrap();
+    let first_address = listen(&mut first_server).await;
+    let second_address = listen(&mut second_server).await;
     assert_ne!(first_address, second_address);
 
     let first = BootstrapPeer::new(first_peer_id, first_address).unwrap();
@@ -209,42 +143,13 @@ async fn pull_uses_the_requested_nonfirst_bootstrap_address_and_identity() {
     client.start_pull(second_peer_id).unwrap();
 
     let event = timeout(Duration::from_secs(10), async {
-        let mut response = Some(PeerRecordBatch::new([]).unwrap());
         loop {
             tokio::select! {
                 event = client.next_event() => return event,
-                event = first_server.swarm.select_next_some() => {
-                    if matches!(
-                        event,
-                        SwarmEvent::Behaviour(ServerBehaviourEvent::Exchange(
-                            request_response::Event::Message {
-                                message: request_response::Message::Request { .. },
-                                ..
-                            },
-                        ))
-                    ) {
-                        panic!("the requested second source used the first source address")
-                    }
+                event = first_server.next_event() => {
+                    panic!("the requested second source reached the first source: {event:?}")
                 }
-                event = second_server.swarm.select_next_some() => {
-                    if let SwarmEvent::Behaviour(ServerBehaviourEvent::Exchange(
-                        request_response::Event::Message {
-                            message: request_response::Message::Request { request, channel, .. },
-                            ..
-                        },
-                    )) = event {
-                        assert_eq!(request, PeerRecordPullRequest);
-                        second_server
-                            .swarm
-                            .behaviour_mut()
-                            .exchange
-                            .send_response(
-                                channel,
-                                response.take().expect("one request expected"),
-                            )
-                            .unwrap();
-                    }
-                }
+                event = second_server.next_event() => observe_server(event),
             }
         }
     })
@@ -260,14 +165,16 @@ async fn pull_uses_the_requested_nonfirst_bootstrap_address_and_identity() {
 async fn retained_and_dropped_empty_batches_hold_then_release_the_source_slot() {
     let server_identity = Keypair::generate_ed25519();
     let server_peer_id = server_identity.public().to_peer_id();
-    let mut server = TestServer::new(server_identity);
-    let server_address = server.listen().await;
+    let mut server =
+        PeerRecordBootstrapResponder::new(server_identity, PeerRecordBatch::new([]).unwrap())
+            .unwrap();
+    let server_address = listen(&mut server).await;
     let configured = BootstrapPeer::new(server_peer_id, server_address).unwrap();
     let mut client =
         PeerRecordBootstrapClient::new(Keypair::generate_ed25519(), [configured]).unwrap();
 
     client.start_pull(server_peer_id).unwrap();
-    let event = receive(&mut client, &mut server, PeerRecordBatch::new([]).unwrap()).await;
+    let event = receive(&mut client, &mut server).await;
     let PeerRecordBootstrapEvent::Received(batch) = event else {
         panic!("expected an empty authenticated batch")
     };
@@ -276,7 +183,7 @@ async fn retained_and_dropped_empty_batches_hold_then_release_the_source_slot() 
     drop(batch);
     assert_eq!(client.active_source_count(), 0);
     client.start_pull(server_peer_id).unwrap();
-    let event = receive(&mut client, &mut server, PeerRecordBatch::new([]).unwrap()).await;
+    let event = receive(&mut client, &mut server).await;
     let PeerRecordBootstrapEvent::Received(batch) = event else {
         panic!("expected another empty authenticated batch")
     };
@@ -293,8 +200,10 @@ async fn retained_and_dropped_empty_batches_hold_then_release_the_source_slot() 
 #[tokio::test]
 async fn wrong_noise_identity_fails_and_releases_the_source_slot() {
     let actual_identity = Keypair::generate_ed25519();
-    let mut server = TestServer::new(actual_identity);
-    let server_address = server.listen().await;
+    let mut server =
+        PeerRecordBootstrapResponder::new(actual_identity, PeerRecordBatch::new([]).unwrap())
+            .unwrap();
+    let server_address = listen(&mut server).await;
     let expected_identity = Keypair::generate_ed25519();
     let expected_peer_id = expected_identity.public().to_peer_id();
     let configured = BootstrapPeer::new(expected_peer_id, server_address).unwrap();
@@ -306,7 +215,7 @@ async fn wrong_noise_identity_fails_and_releases_the_source_slot() {
         loop {
             tokio::select! {
                 event = client.next_event() => return event,
-                _ = server.swarm.select_next_some() => {}
+                event = server.next_event() => observe_server(event),
             }
         }
     })

@@ -73,41 +73,6 @@ fn retry_delay_is_exponential_and_capped() {
 }
 
 #[test]
-fn inbound_budget_enforces_burst_refill_and_cap() {
-    let start = Instant::now();
-    let mut budget = InboundBudget::new(start);
-    for _ in 0..INBOUND_AUTH_BURST {
-        assert!(budget.try_take(start));
-    }
-    assert!(!budget.try_take(start));
-    assert!(!budget.try_take(start + INBOUND_AUTH_REFILL_INTERVAL / 2));
-    assert!(budget.try_take(start + INBOUND_AUTH_REFILL_INTERVAL));
-    assert!(!budget.try_take(start + INBOUND_AUTH_REFILL_INTERVAL));
-
-    let later = start + Duration::from_secs(10_000);
-    for _ in 0..INBOUND_AUTH_BURST {
-        assert!(budget.try_take(later));
-    }
-    assert!(!budget.try_take(later));
-
-    let mut full_after_idle = InboundBudget::new(start);
-    for _ in 0..INBOUND_AUTH_BURST {
-        assert!(full_after_idle.try_take(later));
-    }
-    assert!(!full_after_idle.try_take(later));
-
-    let mut fractional = InboundBudget::new(start);
-    for _ in 0..INBOUND_AUTH_BURST {
-        assert!(fractional.try_take(start));
-    }
-    assert!(fractional.try_take(start + INBOUND_AUTH_REFILL_INTERVAL * 3 / 2));
-    assert!(
-        !fractional.try_take(start + INBOUND_AUTH_REFILL_INTERVAL * 2 - Duration::from_nanos(1))
-    );
-    assert!(fractional.try_take(start + INBOUND_AUTH_REFILL_INTERVAL * 2));
-}
-
-#[test]
 fn stale_generations_cannot_change_the_active_dial() {
     let (mut behaviour, peer_id) = owner_behaviour();
     let now = Instant::now();

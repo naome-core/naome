@@ -1,4 +1,6 @@
 use std::io;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use libp2p::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -21,6 +23,19 @@ pub(super) struct ProofCodec;
 
 #[derive(Clone)]
 pub(super) struct PeerRecordCodec;
+
+#[derive(Clone)]
+pub(super) struct PeerRecordResponderCodec;
+
+#[derive(Debug)]
+pub(super) enum PeerRecordResponderRequest {
+    Valid,
+    Invalid,
+    ReadTimedOut,
+    ReadFailed(io::Error),
+}
+
+const RESPONDER_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[async_trait]
 impl request_response::Codec for ProofCodec {
@@ -209,6 +224,71 @@ impl request_response::Codec for PeerRecordCodec {
             .to_wire_bytes()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         io.write_all(&bytes).await
+    }
+}
+
+#[async_trait]
+impl request_response::Codec for PeerRecordResponderCodec {
+    type Protocol = StreamProtocol;
+    type Request = PeerRecordResponderRequest;
+    type Response = Arc<Vec<u8>>;
+
+    async fn read_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut trailing = [0_u8; 1];
+        match tokio::time::timeout(RESPONDER_REQUEST_READ_TIMEOUT, io.read(&mut trailing)).await {
+            Ok(Ok(0)) => Ok(PeerRecordResponderRequest::Valid),
+            Ok(Ok(_)) => Ok(PeerRecordResponderRequest::Invalid),
+            Ok(Err(source)) => Ok(PeerRecordResponderRequest::ReadFailed(source)),
+            Err(_) => Ok(PeerRecordResponderRequest::ReadTimedOut),
+        }
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        _io: &mut T,
+    ) -> io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the inbound-only peer-record responder cannot read responses",
+        ))
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        _io: &mut T,
+        _request: Self::Request,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the inbound-only peer-record responder cannot write requests",
+        ))
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        response: Self::Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        io.write_all(&response).await
     }
 }
 

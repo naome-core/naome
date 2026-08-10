@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use libp2p::futures::StreamExt;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
@@ -16,10 +16,10 @@ use crate::address_store::{
 };
 use crate::codec::{PEER_RECORD_PROTOCOL, PeerRecordCodec};
 use crate::record_exchange::{PeerRecordBatch, PeerRecordPullRequest};
-use crate::{CONNECTION_TIMEOUT, MAX_CONNECTIONS_PER_PEER, REQUEST_TIMEOUT, yamux_config};
-
-const MAX_BOOTSTRAP_STREAMS_PER_CONNECTION: usize = 1;
-const BOOTSTRAP_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::{
+    CONNECTION_TIMEOUT, MAX_CONNECTIONS_PER_PEER, MAX_PEER_RECORD_STREAMS_PER_CONNECTION,
+    PEER_RECORD_IDLE_TIMEOUT, REQUEST_TIMEOUT, yamux_config,
+};
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
@@ -75,20 +75,20 @@ impl PeerRecordBootstrapClient {
             )],
             request_response::Config::default()
                 .with_request_timeout(REQUEST_TIMEOUT)
-                .with_max_concurrent_streams(MAX_BOOTSTRAP_STREAMS_PER_CONNECTION),
+                .with_max_concurrent_streams(MAX_PEER_RECORD_STREAMS_PER_CONNECTION),
         );
         let behaviour = Behaviour { limits, exchange };
         let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
             .with_tcp(tcp::Config::new(), noise::Config::new, || {
-                yamux_config(MAX_BOOTSTRAP_STREAMS_PER_CONNECTION)
+                yamux_config(MAX_PEER_RECORD_STREAMS_PER_CONNECTION)
             })
             .map_err(PeerRecordBootstrapBuildError::Noise)?
             .with_behaviour(|_| behaviour)
             .expect("constructing the fixed bootstrap-client behavior is infallible")
             .with_swarm_config(|config| {
                 config
-                    .with_idle_connection_timeout(BOOTSTRAP_IDLE_TIMEOUT)
+                    .with_idle_connection_timeout(PEER_RECORD_IDLE_TIMEOUT)
                     .with_max_negotiating_inbound_streams(0)
             })
             .with_connection_timeout(CONNECTION_TIMEOUT)

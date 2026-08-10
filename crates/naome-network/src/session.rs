@@ -15,6 +15,8 @@ use libp2p::swarm::{
 };
 use tokio::time::{Instant, Sleep, sleep_until};
 
+use crate::rate_limit::TokenBucket;
+
 #[cfg(test)]
 use super::{DIAL_RETRY_BASE, DIAL_RETRY_MAX};
 use super::{
@@ -24,7 +26,7 @@ use super::{
 
 pub(super) struct Behaviour {
     peers: Vec<PeerSession>,
-    inbound_budget: InboundBudget,
+    inbound_budget: TokenBucket,
     pending_events: VecDeque<PeerSessionEvent>,
     retry_timer: Option<Pin<Box<Sleep>>>,
 }
@@ -51,7 +53,7 @@ impl Behaviour {
         peers.sort_unstable_by_key(|peer| peer.peer_id);
         Self {
             peers,
-            inbound_budget: InboundBudget::new(now),
+            inbound_budget: TokenBucket::new(INBOUND_AUTH_BURST, INBOUND_AUTH_REFILL_INTERVAL, now),
             pending_events: VecDeque::new(),
             retry_timer: None,
         }
@@ -247,7 +249,7 @@ impl Behaviour {
 
     #[cfg(test)]
     pub(super) fn inbound_tokens_for_test(&self) -> u32 {
-        self.inbound_budget.tokens
+        self.inbound_budget.tokens()
     }
 }
 
@@ -453,43 +455,6 @@ fn owns_dial(local_peer_bytes: &[u8], remote_peer_id: PeerId) -> bool {
 fn retry_delay(failures: u32) -> Duration {
     let index = usize::try_from(failures.saturating_sub(1)).unwrap_or(usize::MAX);
     DIAL_RETRY_DELAYS[index.min(DIAL_RETRY_DELAYS.len() - 1)]
-}
-
-struct InboundBudget {
-    tokens: u32,
-    last_refill: Instant,
-}
-
-impl InboundBudget {
-    fn new(now: Instant) -> Self {
-        Self {
-            tokens: INBOUND_AUTH_BURST,
-            last_refill: now,
-        }
-    }
-
-    fn try_take(&mut self, now: Instant) -> bool {
-        let elapsed = now.saturating_duration_since(self.last_refill);
-        let interval_nanos = INBOUND_AUTH_REFILL_INTERVAL.as_nanos();
-        let intervals = elapsed.as_nanos() / interval_nanos;
-        if intervals != 0 {
-            let elapsed_intervals = u32::try_from(intervals).unwrap_or(u32::MAX);
-            self.tokens = self
-                .tokens
-                .saturating_add(elapsed_intervals)
-                .min(INBOUND_AUTH_BURST);
-            if self.tokens == INBOUND_AUTH_BURST {
-                self.last_refill = now;
-            } else {
-                self.last_refill += INBOUND_AUTH_REFILL_INTERVAL * elapsed_intervals;
-            }
-        }
-        if self.tokens == 0 {
-            return false;
-        }
-        self.tokens -= 1;
-        true
-    }
 }
 
 #[derive(Debug)]

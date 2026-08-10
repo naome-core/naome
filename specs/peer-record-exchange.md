@@ -11,8 +11,11 @@ not a new peer-record format.
 This document defines bytes and store admission only. The separate
 [Authenticated Peer Record Pull](authenticated-peer-record-pull.md) binds
 these exact bytes to one outbound-only libp2p client and authenticates the
-configured source. Neither layer creates dynamic discovery sessions or alters
-the authenticated proof transport.
+configured source. The separate
+[Authenticated Peer Record Responder](authenticated-peer-record-responder.md)
+serves the same bytes from one inbound-only libp2p boundary. None of these
+layers creates dynamic discovery sessions or alters the authenticated proof
+transport.
 
 ## Request
 
@@ -24,8 +27,9 @@ end of stream
 
 Any request byte is invalid. V0 has no filter, cursor, requested identity,
 sequence watermark, pagination token, or correlation field. The authenticated
-pull binding correlates it with a private libp2p request ID and expected Noise
-identity rather than adding untrusted request bytes.
+bindings correlate it with private libp2p request IDs rather than adding
+untrusted request bytes. The outbound pull client additionally requires the
+configured expected Noise identity.
 
 ## Response
 
@@ -138,13 +142,17 @@ quota preflight, stale-replay TTL preservation, and at most one durable store
 transition. These guarantees do not establish that an address is reachable or
 that a source and subject represent independent operators.
 
-This transport-neutral body and transaction contract does not define or claim:
+This transport-neutral body and transaction contract does not itself define or
+claim:
 
-- a listener, responder, publication policy, inbound admission, retry, or
-  dynamic-session policy; the separate outbound binding defines
-  only the client protocol, authentication, correlation, and fixed timeouts;
-- push gossip, subscriptions, cursors, deltas, pagination, Rendezvous, DHT,
-  DNS, mDNS, NAT traversal, relay, or hole punching;
+- a listener, dial, retry, inbound-admission, or dynamic-session policy; the
+  separate pull and responder bindings define their respective directional
+  protocol, authentication, correlation, timeout, and resource boundaries;
+- store export, mutable publication, serving selection, freshness, pagination,
+  or coverage policy; the responder binding serves only one explicit immutable
+  operator-supplied batch and adds no completeness commitment;
+- push gossip, subscriptions, deltas, Rendezvous, DHT, DNS, mDNS, NAT
+  traversal, relay, or hole punching;
 - dynamic session ownership, learned-peer connection authorization, peer
   scoring, reputation, bans, Sybil resistance, or eclipse resistance;
 - conversion of a learned record into `StaticPeer`, proof availability, proof
@@ -153,6 +161,5 @@ This transport-neutral body and transaction contract does not define or claim:
 - a replacement for the standard libp2p signed peer-record payload, domain,
   signature, or sequence semantics.
 
-The next network slice may define a bounded operator-run responder and record
-publication policy. Dynamic peer sessions and any proof-exchange authorization
-remain separate designs.
+Dynamic peer sessions and any proof-exchange authorization remain separate
+designs.
