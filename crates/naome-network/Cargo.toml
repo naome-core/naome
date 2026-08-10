@@ -2,13 +2,14 @@
 name = "naome-network"
 version.workspace = true
 edition.workspace = true
-description = "Authenticated bounded proof transport for static NAOME peers."
+description = "Authenticated proof transport and bounded peer-address storage for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
 [dependencies]
 async-trait = "0.1.91"
+getrandom = "0.3.4"
 libp2p = { version = "0.56.0", default-features = false, features = [
     "ed25519",
     "macros",
@@ -22,6 +23,7 @@ naome = { path = "../.." }
 naome-ledger = { path = "../naome-ledger" }
 naome-proof = { path = "../naome-proof" }
 naome-storage = { path = "../naome-storage" }
+sha2.workspace = true
 tokio = { version = "1", default-features = false, features = ["macros", "time"] }
 
 [dev-dependencies]

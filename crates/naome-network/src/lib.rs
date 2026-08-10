@@ -1,4 +1,4 @@
-//! Authenticated and resource-bounded proof transport for static NAOME peers.
+//! Authenticated proof transport plus bounded untrusted peer-address storage.
 //!
 //! TCP carries mutually authenticated Noise sessions, Yamux provides one
 //! substream per exchange, and the retained libp2p request handle plus
@@ -16,6 +16,7 @@
 //! NAOME-owned background task and owns no [`ProofDagJournal`].
 
 mod acquisition;
+mod address_store;
 mod codec;
 mod session;
 
@@ -56,6 +57,14 @@ const DIAL_RETRY_DELAYS: [Duration; 7] = [
 pub use acquisition::{
     DependencyAcquisitionError, DependencyAcquisitionProgress, ProofDependencyAcquisition,
     UnselectedProofClosure,
+};
+pub use address_store::{
+    BootstrapConfigError, BootstrapPeer, BootstrapPeerError, DialCandidate,
+    MAX_ADDRESSES_PER_PEER_RECORD, MAX_BOOTSTRAP_PEERS, MAX_DIAL_CANDIDATES,
+    MAX_DIAL_CANDIDATES_PER_BOOTSTRAP, MAX_PEER_ADDRESS_BYTES, MAX_PEER_ADDRESS_RECORDS,
+    MAX_RECORDS_PER_BOOTSTRAP, MAX_RECORDS_PER_NETWORK_GROUP, MAX_SIGNED_PEER_RECORD_BYTES,
+    PEER_RECORD_TTL, PeerAddressStore, PeerAddressStoreError, PeerRecordAdmission,
+    SignedPeerRecord, SignedPeerRecordError,
 };
 pub use libp2p::core::transport::ListenerId;
 pub use libp2p::{Multiaddr, PeerId, identity::Keypair};

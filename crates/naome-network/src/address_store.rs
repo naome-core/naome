@@ -1,0 +1,1492 @@
+use std::collections::TryReserveError;
+use std::error::Error;
+use std::fmt;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{self, Read, Write};
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use libp2p::core::multiaddr::Protocol;
+use libp2p::core::peer_record::{FromEnvelopeError, PeerRecord};
+use libp2p::core::signed_envelope::{DecodingError as EnvelopeDecodingError, SignedEnvelope};
+use libp2p::{Multiaddr, PeerId};
+use sha2::{Digest, Sha256};
+
+const STORE_HEADER: &[u8] = b"naome:peer-address-store-v0\0";
+const STORE_CHECKSUM_DOMAIN: &[u8] = b"naome:peer-address-store-checksum-v0\0";
+const BOOTSTRAP_DIGEST_DOMAIN: &[u8] = b"naome:peer-address-bootstrap-config-v0\0";
+const CANDIDATE_ORDER_DOMAIN: &[u8] = b"naome:peer-address-rank-v0\0";
+const STORE_FILE_NAME: &str = "peer-address-store.bin";
+const LOCK_FILE_NAME: &str = "peer-address-store.lock";
+const TEMP_FILE_NAME: &str = "peer-address-store.tmp";
+const CHECKSUM_BYTES: usize = 32;
+const SALT_BYTES: usize = 32;
+const MAX_PEER_ID_BYTES: usize = 44;
+const MIN_STORED_RECORD_BYTES: usize = 1 + 1 + 8 + 2 + 1;
+const SECONDS_PER_DAY: u64 = 86_400;
+
+/// Maximum number of operator-configured bootstrap peers.
+pub const MAX_BOOTSTRAP_PEERS: usize = 8;
+/// Maximum number of retained signed peer records.
+pub const MAX_PEER_ADDRESS_RECORDS: usize = 256;
+/// Maximum number of signed addresses in one peer record.
+pub const MAX_ADDRESSES_PER_PEER_RECORD: usize = 4;
+/// Maximum encoded bytes in one signed peer-record envelope.
+pub const MAX_SIGNED_PEER_RECORD_BYTES: usize = 4_096;
+/// Maximum binary bytes in one stored multi-address.
+pub const MAX_PEER_ADDRESS_BYTES: usize = 256;
+/// Maximum records first learned from one configured bootstrap peer.
+pub const MAX_RECORDS_PER_BOOTSTRAP: usize = 32;
+/// Maximum stored records that cover one IPv4 /16 or IPv6 /32 group.
+pub const MAX_RECORDS_PER_NETWORK_GROUP: usize = 8;
+/// Maximum candidates returned by one selection.
+pub const MAX_DIAL_CANDIDATES: usize = 8;
+/// Maximum selected candidates first learned from one bootstrap peer.
+pub const MAX_DIAL_CANDIDATES_PER_BOOTSTRAP: usize = 2;
+/// Local freshness lifetime of one signed peer record.
+pub const PEER_RECORD_TTL: Duration = Duration::from_secs(7 * SECONDS_PER_DAY);
+
+// Header + local peer + bootstrap digest + salt + count + maximum entries + checksum.
+const MAX_STORE_BYTES: usize = STORE_HEADER.len()
+    + 1
+    + MAX_PEER_ID_BYTES
+    + CHECKSUM_BYTES
+    + SALT_BYTES
+    + 2
+    + MAX_PEER_ADDRESS_RECORDS * (1 + MAX_PEER_ID_BYTES + 8 + 2 + MAX_SIGNED_PEER_RECORD_BYTES)
+    + CHECKSUM_BYTES;
+
+/// One operator-selected first-contact endpoint.
+///
+/// A bootstrap peer is routing configuration. It is not a proof-authorized
+/// [`crate::StaticPeer`] and cannot be converted into one implicitly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct BootstrapPeer {
+    peer_id: PeerId,
+    address: Multiaddr,
+}
+
+impl BootstrapPeer {
+    /// Creates one exact IP/TCP bootstrap endpoint.
+    ///
+    /// Operator bootstrap addresses may be private or loopback so the same
+    /// contract remains usable for private deployments and local tests.
+    pub fn new(peer_id: PeerId, address: Multiaddr) -> Result<Self, BootstrapPeerError> {
+        validate_endpoint(&address, false).map_err(|reason| BootstrapPeerError {
+            address: Box::new(address.clone()),
+            reason,
+        })?;
+        Ok(Self { peer_id, address })
+    }
+
+    /// Returns the expected authenticated bootstrap identity.
+    pub const fn peer_id(&self) -> PeerId {
+        self.peer_id
+    }
+
+    /// Returns the operator-configured first-contact address.
+    pub const fn address(&self) -> &Multiaddr {
+        &self.address
+    }
+}
+
+/// Error constructing one bootstrap endpoint.
+#[derive(Debug)]
+pub struct BootstrapPeerError {
+    address: Box<Multiaddr>,
+    reason: AddressReason,
+}
+
+impl fmt::Display for BootstrapPeerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "invalid bootstrap address {}: {}",
+            self.address, self.reason
+        )
+    }
+}
+
+impl Error for BootstrapPeerError {}
+
+/// One verified standard interoperable libp2p signed peer record.
+#[derive(Clone, PartialEq, Eq)]
+#[must_use]
+pub struct SignedPeerRecord {
+    peer_id: PeerId,
+    sequence: u64,
+    addresses: Vec<Multiaddr>,
+    envelope_bytes: Vec<u8>,
+}
+
+impl SignedPeerRecord {
+    /// Verifies and normalizes one bounded standard signed peer-record envelope.
+    pub fn from_envelope_bytes(bytes: Vec<u8>) -> Result<Self, SignedPeerRecordError> {
+        if bytes.is_empty() {
+            return Err(SignedPeerRecordError::Empty);
+        }
+        if bytes.len() > MAX_SIGNED_PEER_RECORD_BYTES {
+            return Err(SignedPeerRecordError::InputTooLong {
+                actual: bytes.len(),
+                maximum: MAX_SIGNED_PEER_RECORD_BYTES,
+            });
+        }
+
+        let envelope = SignedEnvelope::from_protobuf_encoding(&bytes)
+            .map_err(|source| SignedPeerRecordError::Envelope(Box::new(source)))?;
+        let peer_record = PeerRecord::from_signed_envelope_interop(envelope.clone())
+            .map_err(|source| SignedPeerRecordError::PeerRecord(Box::new(source)))?;
+        let peer_id_length = peer_record.peer_id().as_ref().encoded_len();
+        if peer_id_length > MAX_PEER_ID_BYTES {
+            return Err(SignedPeerRecordError::PeerIdTooLong {
+                actual: peer_id_length,
+                maximum: MAX_PEER_ID_BYTES,
+            });
+        }
+        let envelope_bytes = envelope.into_protobuf_encoding();
+        if envelope_bytes.len() > MAX_SIGNED_PEER_RECORD_BYTES {
+            return Err(SignedPeerRecordError::NormalizedTooLong {
+                actual: envelope_bytes.len(),
+                maximum: MAX_SIGNED_PEER_RECORD_BYTES,
+            });
+        }
+
+        let addresses = peer_record.addresses().to_vec();
+        if addresses.is_empty() || addresses.len() > MAX_ADDRESSES_PER_PEER_RECORD {
+            return Err(SignedPeerRecordError::AddressCount {
+                actual: addresses.len(),
+                maximum: MAX_ADDRESSES_PER_PEER_RECORD,
+            });
+        }
+
+        for (index, address) in addresses.iter().enumerate() {
+            if address.len() > MAX_PEER_ADDRESS_BYTES {
+                return Err(SignedPeerRecordError::AddressTooLong {
+                    index,
+                    actual: address.len(),
+                    maximum: MAX_PEER_ADDRESS_BYTES,
+                });
+            }
+            endpoint_group(address, true).map_err(|_| {
+                SignedPeerRecordError::UnsupportedAddress {
+                    index,
+                    address: Box::new(address.clone()),
+                }
+            })?;
+            if addresses[..index].contains(address) {
+                return Err(SignedPeerRecordError::DuplicateAddress { index });
+            }
+        }
+
+        Ok(Self {
+            peer_id: peer_record.peer_id(),
+            sequence: peer_record.seq(),
+            addresses,
+            envelope_bytes,
+        })
+    }
+
+    /// Returns the identity that signed this address claim.
+    pub const fn peer_id(&self) -> PeerId {
+        self.peer_id
+    }
+
+    /// Returns the signer-controlled monotonic sequence.
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the exact signed addresses.
+    pub fn addresses(&self) -> &[Multiaddr] {
+        &self.addresses
+    }
+
+    /// Returns the normalized standard signed-envelope bytes.
+    pub fn envelope_bytes(&self) -> &[u8] {
+        &self.envelope_bytes
+    }
+}
+
+impl fmt::Debug for SignedPeerRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SignedPeerRecord")
+            .field("peer_id", &self.peer_id)
+            .field("sequence", &self.sequence)
+            .field("address_count", &self.addresses.len())
+            .field("envelope_bytes", &self.envelope_bytes.len())
+            .finish()
+    }
+}
+
+/// Error decoding or validating a signed peer record.
+#[derive(Debug)]
+pub enum SignedPeerRecordError {
+    /// The envelope was empty.
+    Empty,
+    /// The input exceeded the envelope cap before decoding.
+    InputTooLong { actual: usize, maximum: usize },
+    /// The signed-envelope protobuf was invalid.
+    Envelope(Box<EnvelopeDecodingError>),
+    /// The standard peer-record payload or signature was invalid.
+    PeerRecord(Box<FromEnvelopeError>),
+    /// Normalized envelope bytes exceeded the envelope cap.
+    NormalizedTooLong { actual: usize, maximum: usize },
+    /// The signing identity exceeded the persisted identity cap.
+    PeerIdTooLong { actual: usize, maximum: usize },
+    /// The record had zero or too many addresses.
+    AddressCount { actual: usize, maximum: usize },
+    /// One address exceeded its byte cap.
+    AddressTooLong {
+        index: usize,
+        actual: usize,
+        maximum: usize,
+    },
+    /// One address was not an exact globally routable IP/TCP endpoint.
+    UnsupportedAddress {
+        index: usize,
+        address: Box<Multiaddr>,
+    },
+    /// One signed address appeared more than once.
+    DuplicateAddress { index: usize },
+}
+
+impl fmt::Display for SignedPeerRecordError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("signed peer record is empty"),
+            Self::InputTooLong { actual, maximum } => write!(
+                formatter,
+                "signed peer record has {actual} bytes; maximum is {maximum}"
+            ),
+            Self::Envelope(source) => write!(formatter, "invalid signed envelope: {source}"),
+            Self::PeerRecord(source) => write!(formatter, "invalid standard peer record: {source}"),
+            Self::NormalizedTooLong { actual, maximum } => write!(
+                formatter,
+                "normalized signed peer record has {actual} bytes; maximum is {maximum}"
+            ),
+            Self::PeerIdTooLong { actual, maximum } => write!(
+                formatter,
+                "signed peer identity has {actual} bytes; maximum is {maximum}"
+            ),
+            Self::AddressCount { actual, maximum } => write!(
+                formatter,
+                "signed peer record has {actual} addresses; expected 1..={maximum}"
+            ),
+            Self::AddressTooLong {
+                index,
+                actual,
+                maximum,
+            } => write!(
+                formatter,
+                "signed peer record address {index} has {actual} bytes; maximum is {maximum}"
+            ),
+            Self::UnsupportedAddress { index, address } => write!(
+                formatter,
+                "signed peer record address {index} ({address}) is not an exact globally routable IP/TCP endpoint"
+            ),
+            Self::DuplicateAddress { index } => {
+                write!(
+                    formatter,
+                    "signed peer record address {index} is duplicated"
+                )
+            }
+        }
+    }
+}
+
+impl Error for SignedPeerRecordError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Envelope(source) => Some(source.as_ref()),
+            Self::PeerRecord(source) => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// One untrusted, locally diversified future dial input.
+///
+/// This type deliberately has no conversion into [`crate::StaticPeer`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct DialCandidate {
+    peer_id: PeerId,
+    address: Multiaddr,
+    source_peer_id: PeerId,
+}
+
+impl DialCandidate {
+    /// Returns the self-certified peer identity.
+    pub const fn peer_id(&self) -> PeerId {
+        self.peer_id
+    }
+
+    /// Returns the selected self-certified address.
+    pub const fn address(&self) -> &Multiaddr {
+        &self.address
+    }
+
+    /// Returns the bootstrap that first introduced this subject.
+    pub const fn source_peer_id(&self) -> PeerId {
+        self.source_peer_id
+    }
+}
+
+#[derive(Clone)]
+struct StoredRecord {
+    source_peer_id: PeerId,
+    received_at: u64,
+    record: SignedPeerRecord,
+}
+
+/// Outcome of admitting one valid signed record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum PeerRecordAdmission {
+    /// A previously unknown subject was stored.
+    Inserted,
+    /// A strictly newer record replaced the subject's prior signed claim.
+    Replaced,
+    /// An exact replay or older sequence was ignored without refreshing TTL.
+    IgnoredStale,
+}
+
+/// Exclusive bounded local store for self-signed peer-address candidates.
+pub struct PeerAddressStore {
+    directory: PathBuf,
+    _lock: File,
+    local_peer_id: PeerId,
+    bootstraps: Vec<BootstrapPeer>,
+    bootstrap_digest: [u8; CHECKSUM_BYTES],
+    ordering_salt: [u8; SALT_BYTES],
+    records: Vec<StoredRecord>,
+    poisoned: bool,
+}
+
+impl PeerAddressStore {
+    /// Creates one new empty store in `directory`.
+    pub fn create(
+        directory: impl AsRef<Path>,
+        local_peer_id: PeerId,
+        bootstraps: impl IntoIterator<Item = BootstrapPeer>,
+    ) -> Result<Self, PeerAddressStoreError> {
+        let directory = directory.as_ref().to_path_buf();
+        let bootstraps = validate_bootstraps(local_peer_id, bootstraps)?;
+        fs::create_dir_all(&directory).map_err(PeerAddressStoreError::CreateDirectory)?;
+        let lock = open_lock(&directory)?;
+        let snapshot_path = directory.join(STORE_FILE_NAME);
+        if snapshot_path
+            .try_exists()
+            .map_err(PeerAddressStoreError::ReadSnapshot)?
+        {
+            return Err(PeerAddressStoreError::AlreadyExists(snapshot_path));
+        }
+
+        let bootstrap_digest = bootstrap_digest(&bootstraps);
+        let mut ordering_salt = [0_u8; SALT_BYTES];
+        getrandom::fill(&mut ordering_salt).map_err(PeerAddressStoreError::Random)?;
+        let mut store = Self {
+            directory,
+            _lock: lock,
+            local_peer_id,
+            bootstraps,
+            bootstrap_digest,
+            ordering_salt,
+            records: Vec::new(),
+            poisoned: false,
+        };
+        let bytes = store.encode_snapshot(None)?;
+        store.commit_snapshot(&bytes)?;
+        Ok(store)
+    }
+
+    /// Opens and strictly verifies one existing store.
+    pub fn open(
+        directory: impl AsRef<Path>,
+        local_peer_id: PeerId,
+        bootstraps: impl IntoIterator<Item = BootstrapPeer>,
+    ) -> Result<Self, PeerAddressStoreError> {
+        let directory = directory.as_ref().to_path_buf();
+        let bootstraps = validate_bootstraps(local_peer_id, bootstraps)?;
+        let lock = open_lock(&directory)?;
+        let bootstrap_digest = bootstrap_digest(&bootstraps);
+        let snapshot_path = directory.join(STORE_FILE_NAME);
+        let file = File::open(&snapshot_path)
+            .map_err(|source| PeerAddressStoreError::OpenSnapshot { source })?;
+        let length = usize::try_from(
+            file.metadata()
+                .map_err(PeerAddressStoreError::ReadSnapshot)?
+                .len(),
+        )
+        .map_err(|_| PeerAddressStoreError::SnapshotTooLong {
+            actual: usize::MAX,
+            maximum: MAX_STORE_BYTES,
+        })?;
+        if length > MAX_STORE_BYTES {
+            return Err(PeerAddressStoreError::SnapshotTooLong {
+                actual: length,
+                maximum: MAX_STORE_BYTES,
+            });
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(PeerAddressStoreError::Allocation)?;
+        file.take(u64::try_from(MAX_STORE_BYTES + 1).expect("the snapshot cap fits in u64"))
+            .read_to_end(&mut bytes)
+            .map_err(PeerAddressStoreError::ReadSnapshot)?;
+        if bytes.len() > MAX_STORE_BYTES {
+            return Err(PeerAddressStoreError::SnapshotTooLong {
+                actual: bytes.len(),
+                maximum: MAX_STORE_BYTES,
+            });
+        }
+        let (ordering_salt, records) =
+            decode_snapshot(&bytes, local_peer_id, &bootstraps, bootstrap_digest)?;
+        Ok(Self {
+            directory,
+            _lock: lock,
+            local_peer_id,
+            bootstraps,
+            bootstrap_digest,
+            ordering_salt,
+            records,
+            poisoned: false,
+        })
+    }
+
+    /// Returns the immutable operator bootstrap configuration.
+    pub fn bootstrap_peers(&self) -> Result<&[BootstrapPeer], PeerAddressStoreError> {
+        self.ensure_healthy()?;
+        Ok(&self.bootstraps)
+    }
+
+    /// Returns the number of retained sequence watermarks.
+    pub fn len(&self) -> Result<usize, PeerAddressStoreError> {
+        self.ensure_healthy()?;
+        Ok(self.records.len())
+    }
+
+    /// Returns whether the store contains no retained record.
+    pub fn is_empty(&self) -> Result<bool, PeerAddressStoreError> {
+        self.ensure_healthy()?;
+        Ok(self.records.is_empty())
+    }
+
+    /// Admits one already-verified record from a configured bootstrap source.
+    pub fn admit_record(
+        &mut self,
+        source_peer_id: PeerId,
+        record: SignedPeerRecord,
+        received_at: SystemTime,
+    ) -> Result<PeerRecordAdmission, PeerAddressStoreError> {
+        self.ensure_healthy()?;
+        if !self
+            .bootstraps
+            .iter()
+            .any(|bootstrap| bootstrap.peer_id == source_peer_id)
+        {
+            return Err(PeerAddressStoreError::UnknownSource(Box::new(
+                source_peer_id,
+            )));
+        }
+        if record.peer_id == self.local_peer_id {
+            return Err(PeerAddressStoreError::LocalRecord(Box::new(record.peer_id)));
+        }
+        let received_at = unix_seconds(received_at)?;
+        validate_receipt_time(received_at)?;
+        let search = self
+            .records
+            .binary_search_by_key(&record.peer_id, |stored| stored.record.peer_id);
+        let (index, existing, admission) = match search {
+            Ok(index) => {
+                let existing = &self.records[index];
+                if record.sequence < existing.record.sequence
+                    || (record.sequence == existing.record.sequence
+                        && record.envelope_bytes == existing.record.envelope_bytes)
+                {
+                    return Ok(PeerRecordAdmission::IgnoredStale);
+                }
+                if record.sequence == existing.record.sequence {
+                    return Err(PeerAddressStoreError::SequenceConflict {
+                        peer_id: Box::new(record.peer_id),
+                        sequence: record.sequence,
+                    });
+                }
+                (index, Some(index), PeerRecordAdmission::Replaced)
+            }
+            Err(index) => (index, None, PeerRecordAdmission::Inserted),
+        };
+
+        let source_peer_id = existing
+            .map(|existing| self.records[existing].source_peer_id)
+            .unwrap_or(source_peer_id);
+        validate_record_capacity(&self.records, &record, source_peer_id, existing)?;
+        if existing.is_none() {
+            self.records
+                .try_reserve(1)
+                .map_err(PeerAddressStoreError::Allocation)?;
+        }
+        let next = StoredRecord {
+            source_peer_id,
+            received_at,
+            record,
+        };
+        let mutation = Some(SnapshotMutation {
+            index,
+            replace: existing.is_some(),
+            record: &next,
+        });
+        let bytes = self.encode_snapshot(mutation)?;
+        self.commit_snapshot(&bytes)?;
+        if existing.is_some() {
+            self.records[index] = next;
+        } else {
+            self.records.insert(index, next);
+        }
+        Ok(admission)
+    }
+
+    /// Selects a deterministic, prefix- and source-diversified candidate set.
+    pub fn dial_candidates(
+        &self,
+        now: SystemTime,
+    ) -> Result<Vec<DialCandidate>, PeerAddressStoreError> {
+        self.ensure_healthy()?;
+        let now = unix_seconds(now)?;
+        let epoch = now / SECONDS_PER_DAY;
+        let ranked_capacity = self
+            .records
+            .iter()
+            .filter(|stored| is_fresh(stored.received_at, now))
+            .map(|stored| stored.record.addresses.len())
+            .sum();
+        let mut ranked = Vec::new();
+        ranked
+            .try_reserve_exact(ranked_capacity)
+            .map_err(PeerAddressStoreError::Allocation)?;
+        for stored in &self.records {
+            if !is_fresh(stored.received_at, now) {
+                continue;
+            }
+            for address in &stored.record.addresses {
+                ranked.push(RankedCandidate {
+                    score: candidate_score(
+                        &self.ordering_salt,
+                        epoch,
+                        stored.record.peer_id,
+                        address,
+                        stored.source_peer_id,
+                    ),
+                    peer_id: stored.record.peer_id,
+                    address,
+                    source_peer_id: stored.source_peer_id,
+                    group: network_group(address).expect("stored addresses are validated"),
+                });
+            }
+        }
+        ranked.sort_unstable_by(|left, right| {
+            left.score
+                .cmp(&right.score)
+                .then_with(|| left.peer_id.cmp(&right.peer_id))
+                .then_with(|| left.address.as_ref().cmp(right.address.as_ref()))
+                .then_with(|| left.source_peer_id.cmp(&right.source_peer_id))
+        });
+
+        let mut selected = Vec::<DialCandidate>::new();
+        selected
+            .try_reserve_exact(MAX_DIAL_CANDIDATES)
+            .map_err(PeerAddressStoreError::Allocation)?;
+        let mut groups = [NetworkGroup::Ipv4([0; 2]); MAX_DIAL_CANDIDATES];
+        for candidate in ranked {
+            if selected.len() == MAX_DIAL_CANDIDATES {
+                break;
+            }
+            if selected
+                .iter()
+                .any(|selected| selected.peer_id == candidate.peer_id)
+                || groups[..selected.len()].contains(&candidate.group)
+            {
+                continue;
+            }
+            let source_count = selected
+                .iter()
+                .filter(|selected| selected.source_peer_id == candidate.source_peer_id)
+                .count();
+            if source_count == MAX_DIAL_CANDIDATES_PER_BOOTSTRAP {
+                continue;
+            }
+            groups[selected.len()] = candidate.group;
+            selected.push(DialCandidate {
+                peer_id: candidate.peer_id,
+                address: candidate.address.clone(),
+                source_peer_id: candidate.source_peer_id,
+            });
+        }
+        Ok(selected)
+    }
+
+    fn ensure_healthy(&self) -> Result<(), PeerAddressStoreError> {
+        if self.poisoned {
+            Err(PeerAddressStoreError::Poisoned)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn encode_snapshot(
+        &self,
+        mutation: Option<SnapshotMutation<'_>>,
+    ) -> Result<Vec<u8>, PeerAddressStoreError> {
+        let count = self.records.len() + usize::from(mutation.is_some_and(|item| !item.replace));
+        let count = u16::try_from(count).expect("the record cap fits u16");
+        let encoded_length = self.snapshot_encoded_length(mutation)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(encoded_length)
+            .map_err(PeerAddressStoreError::Allocation)?;
+        bytes.extend_from_slice(STORE_HEADER);
+        write_peer_id(&mut bytes, self.local_peer_id);
+        bytes.extend_from_slice(&self.bootstrap_digest);
+        bytes.extend_from_slice(&self.ordering_salt);
+        bytes.extend_from_slice(&count.to_be_bytes());
+
+        for index in 0..=self.records.len() {
+            if let Some(item) = mutation
+                && item.index == index
+            {
+                write_stored_record(&mut bytes, item.record);
+                if item.replace {
+                    continue;
+                }
+            }
+            if let Some(record) = self.records.get(index) {
+                if mutation.is_some_and(|item| item.replace && item.index == index) {
+                    continue;
+                }
+                write_stored_record(&mut bytes, record);
+            }
+        }
+        let checksum = checksum(&bytes);
+        bytes.extend_from_slice(&checksum);
+        if bytes.len() > MAX_STORE_BYTES {
+            return Err(PeerAddressStoreError::SnapshotTooLong {
+                actual: bytes.len(),
+                maximum: MAX_STORE_BYTES,
+            });
+        }
+        debug_assert_eq!(bytes.len(), encoded_length);
+        Ok(bytes)
+    }
+
+    fn snapshot_encoded_length(
+        &self,
+        mutation: Option<SnapshotMutation<'_>>,
+    ) -> Result<usize, PeerAddressStoreError> {
+        let local_peer_id_length = self.local_peer_id.as_ref().encoded_len();
+        let fixed = STORE_HEADER.len()
+            + 1
+            + local_peer_id_length
+            + CHECKSUM_BYTES
+            + SALT_BYTES
+            + 2
+            + CHECKSUM_BYTES;
+        let mut length = self.records.iter().try_fold(fixed, |length, record| {
+            length
+                .checked_add(stored_record_encoded_length(record))
+                .ok_or(PeerAddressStoreError::SnapshotTooLong {
+                    actual: usize::MAX,
+                    maximum: MAX_STORE_BYTES,
+                })
+        })?;
+        if let Some(mutation) = mutation {
+            if mutation.replace {
+                length -= stored_record_encoded_length(&self.records[mutation.index]);
+            }
+            length = length
+                .checked_add(stored_record_encoded_length(mutation.record))
+                .ok_or(PeerAddressStoreError::SnapshotTooLong {
+                    actual: usize::MAX,
+                    maximum: MAX_STORE_BYTES,
+                })?;
+        }
+        if length > MAX_STORE_BYTES {
+            return Err(PeerAddressStoreError::SnapshotTooLong {
+                actual: length,
+                maximum: MAX_STORE_BYTES,
+            });
+        }
+        Ok(length)
+    }
+
+    fn commit_snapshot(&mut self, bytes: &[u8]) -> Result<(), PeerAddressStoreError> {
+        let result = commit_snapshot(&self.directory, bytes);
+        if let Err(source) = result {
+            self.poisoned = true;
+            return Err(PeerAddressStoreError::Commit { source });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SnapshotMutation<'a> {
+    index: usize,
+    replace: bool,
+    record: &'a StoredRecord,
+}
+
+struct RankedCandidate<'a> {
+    score: [u8; CHECKSUM_BYTES],
+    peer_id: PeerId,
+    address: &'a Multiaddr,
+    source_peer_id: PeerId,
+    group: NetworkGroup,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum NetworkGroup {
+    Ipv4([u8; 2]),
+    Ipv6([u8; 4]),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum AddressReason {
+    TooLong,
+    WrongShape,
+    ZeroPort,
+    NotGloballyRoutable,
+}
+
+impl fmt::Display for AddressReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLong => formatter.write_str("binary multi-address is too long"),
+            Self::WrongShape => formatter.write_str("expected exactly /ip4|ip6/.../tcp/..."),
+            Self::ZeroPort => formatter.write_str("TCP port zero is not dialable"),
+            Self::NotGloballyRoutable => formatter.write_str("IP address is not globally routable"),
+        }
+    }
+}
+
+/// Error validating operator bootstrap configuration.
+#[derive(Debug)]
+pub enum BootstrapConfigError {
+    /// The local or bootstrap identity exceeded the persisted identity cap.
+    PeerIdTooLong {
+        role: &'static str,
+        actual: usize,
+        maximum: usize,
+    },
+    /// The local identity was configured as a bootstrap.
+    LocalPeer(Box<PeerId>),
+    /// One bootstrap identity was configured more than once.
+    DuplicatePeer(Box<PeerId>),
+    /// The configuration exceeded the fixed cap.
+    TooManyPeers { actual: usize, maximum: usize },
+}
+
+impl fmt::Display for BootstrapConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PeerIdTooLong {
+                role,
+                actual,
+                maximum,
+            } => write!(
+                formatter,
+                "{role} peer identity has {actual} bytes; maximum is {maximum}"
+            ),
+            Self::LocalPeer(peer_id) => {
+                write!(formatter, "local peer {peer_id} cannot bootstrap itself")
+            }
+            Self::DuplicatePeer(peer_id) => {
+                write!(formatter, "bootstrap peer {peer_id} is duplicated")
+            }
+            Self::TooManyPeers { actual, maximum } => write!(
+                formatter,
+                "bootstrap configuration has {actual} peers; maximum is {maximum}"
+            ),
+        }
+    }
+}
+
+impl Error for BootstrapConfigError {}
+
+/// Error creating, opening, or mutating a peer-address store.
+#[derive(Debug)]
+pub enum PeerAddressStoreError {
+    /// Bootstrap configuration was invalid.
+    BootstrapConfig(BootstrapConfigError),
+    /// Store directory creation failed.
+    CreateDirectory(io::Error),
+    /// Store lock creation failed.
+    OpenLock(io::Error),
+    /// Another store handle owns the directory.
+    Locked,
+    /// The store snapshot already exists.
+    AlreadyExists(PathBuf),
+    /// Opening the store snapshot failed.
+    OpenSnapshot { source: io::Error },
+    /// Reading the snapshot failed.
+    ReadSnapshot(io::Error),
+    /// The snapshot exceeded the fixed byte cap.
+    SnapshotTooLong { actual: usize, maximum: usize },
+    /// Random salt generation failed.
+    Random(getrandom::Error),
+    /// Reserving a bounded in-memory store buffer failed.
+    Allocation(TryReserveError),
+    /// The snapshot header was wrong or incomplete.
+    InvalidHeader,
+    /// The snapshot checksum did not match.
+    ChecksumMismatch,
+    /// The snapshot was truncated or had trailing bytes.
+    InvalidSnapshot(&'static str),
+    /// The snapshot belongs to another local peer.
+    LocalPeerMismatch,
+    /// The operator bootstrap configuration does not match the snapshot.
+    BootstrapConfigurationMismatch,
+    /// A persisted peer identity was invalid.
+    InvalidPeerId,
+    /// One persisted signed record was invalid.
+    InvalidRecord {
+        index: usize,
+        source: Box<SignedPeerRecordError>,
+    },
+    /// The supplying bootstrap is not configured.
+    UnknownSource(Box<PeerId>),
+    /// A record tried to add the local identity.
+    LocalRecord(Box<PeerId>),
+    /// The same subject signed different bytes at one sequence.
+    SequenceConflict { peer_id: Box<PeerId>, sequence: u64 },
+    /// The fixed retained-record capacity was exhausted.
+    RecordCapacity { maximum: usize },
+    /// One bootstrap source reached its retained-record quota.
+    SourceCapacity { source: Box<PeerId>, maximum: usize },
+    /// One target network group reached its retained-record quota.
+    NetworkGroupCapacity { maximum: usize },
+    /// A supplied local time preceded the Unix epoch.
+    TimeBeforeUnixEpoch,
+    /// A supplied receipt time cannot represent the complete fixed TTL.
+    ReceiptTimeOverflow,
+    /// Atomic snapshot replacement failed and poisoned the handle.
+    Commit { source: io::Error },
+    /// A prior commit I/O failure poisoned the handle.
+    Poisoned,
+}
+
+impl fmt::Display for PeerAddressStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BootstrapConfig(source) => {
+                write!(formatter, "invalid bootstrap configuration: {source}")
+            }
+            Self::CreateDirectory(source) => {
+                write!(formatter, "cannot create address-store directory: {source}")
+            }
+            Self::OpenLock(source) => write!(formatter, "cannot open address-store lock: {source}"),
+            Self::Locked => formatter.write_str("peer-address store is already locked"),
+            Self::AlreadyExists(path) => write!(
+                formatter,
+                "peer-address store already exists at {}",
+                path.display()
+            ),
+            Self::OpenSnapshot { source } => {
+                write!(formatter, "cannot open peer-address snapshot: {source}")
+            }
+            Self::ReadSnapshot(source) => {
+                write!(formatter, "cannot read peer-address snapshot: {source}")
+            }
+            Self::SnapshotTooLong { actual, maximum } => write!(
+                formatter,
+                "peer-address snapshot has {actual} bytes; maximum is {maximum}"
+            ),
+            Self::Random(source) => write!(
+                formatter,
+                "cannot generate address-selection salt: {source}"
+            ),
+            Self::Allocation(source) => {
+                write!(
+                    formatter,
+                    "cannot reserve peer-address store buffer: {source}"
+                )
+            }
+            Self::InvalidHeader => formatter.write_str("peer-address snapshot header is invalid"),
+            Self::ChecksumMismatch => {
+                formatter.write_str("peer-address snapshot checksum is invalid")
+            }
+            Self::InvalidSnapshot(reason) => {
+                write!(formatter, "peer-address snapshot is invalid: {reason}")
+            }
+            Self::LocalPeerMismatch => {
+                formatter.write_str("peer-address snapshot belongs to another local peer")
+            }
+            Self::BootstrapConfigurationMismatch => {
+                formatter.write_str("peer-address snapshot bootstrap configuration differs")
+            }
+            Self::InvalidPeerId => {
+                formatter.write_str("peer-address snapshot contains an invalid peer id")
+            }
+            Self::InvalidRecord { index, source } => write!(
+                formatter,
+                "peer-address snapshot record {index} is invalid: {source}"
+            ),
+            Self::UnknownSource(peer_id) => write!(
+                formatter,
+                "peer-address record source {peer_id} is not configured"
+            ),
+            Self::LocalRecord(peer_id) => write!(
+                formatter,
+                "peer-address record cannot describe local peer {peer_id}"
+            ),
+            Self::SequenceConflict { peer_id, sequence } => write!(
+                formatter,
+                "peer {peer_id} signed conflicting records at sequence {sequence}"
+            ),
+            Self::RecordCapacity { maximum } => write!(
+                formatter,
+                "peer-address record capacity {maximum} is exhausted"
+            ),
+            Self::SourceCapacity { source, maximum } => write!(
+                formatter,
+                "bootstrap source {source} reached record capacity {maximum}"
+            ),
+            Self::NetworkGroupCapacity { maximum } => write!(
+                formatter,
+                "target network group reached record capacity {maximum}"
+            ),
+            Self::TimeBeforeUnixEpoch => {
+                formatter.write_str("peer-address receipt time precedes Unix epoch")
+            }
+            Self::ReceiptTimeOverflow => formatter
+                .write_str("peer-address receipt time cannot represent the complete record TTL"),
+            Self::Commit { source } => {
+                write!(formatter, "peer-address snapshot commit failed: {source}")
+            }
+            Self::Poisoned => {
+                formatter.write_str("peer-address store is poisoned; drop and reopen it")
+            }
+        }
+    }
+}
+
+impl Error for PeerAddressStoreError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::BootstrapConfig(source) => Some(source),
+            Self::CreateDirectory(source)
+            | Self::OpenLock(source)
+            | Self::ReadSnapshot(source)
+            | Self::Commit { source }
+            | Self::OpenSnapshot { source } => Some(source),
+            Self::Random(source) => Some(source),
+            Self::Allocation(source) => Some(source),
+            Self::InvalidRecord { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl From<BootstrapConfigError> for PeerAddressStoreError {
+    fn from(source: BootstrapConfigError) -> Self {
+        Self::BootstrapConfig(source)
+    }
+}
+
+fn validate_bootstraps(
+    local_peer_id: PeerId,
+    bootstraps: impl IntoIterator<Item = BootstrapPeer>,
+) -> Result<Vec<BootstrapPeer>, BootstrapConfigError> {
+    validate_configured_peer_id("local", local_peer_id)?;
+    let mut result = Vec::with_capacity(MAX_BOOTSTRAP_PEERS);
+    for bootstrap in bootstraps {
+        validate_configured_peer_id("bootstrap", bootstrap.peer_id)?;
+        if bootstrap.peer_id == local_peer_id {
+            return Err(BootstrapConfigError::LocalPeer(Box::new(local_peer_id)));
+        }
+        if result
+            .iter()
+            .any(|existing: &BootstrapPeer| existing.peer_id == bootstrap.peer_id)
+        {
+            return Err(BootstrapConfigError::DuplicatePeer(Box::new(
+                bootstrap.peer_id,
+            )));
+        }
+        if result.len() == MAX_BOOTSTRAP_PEERS {
+            return Err(BootstrapConfigError::TooManyPeers {
+                actual: result.len() + 1,
+                maximum: MAX_BOOTSTRAP_PEERS,
+            });
+        }
+        result.push(bootstrap);
+    }
+    result.sort_unstable_by_key(|bootstrap| bootstrap.peer_id);
+    Ok(result)
+}
+
+fn validate_configured_peer_id(
+    role: &'static str,
+    peer_id: PeerId,
+) -> Result<(), BootstrapConfigError> {
+    let actual = peer_id.as_ref().encoded_len();
+    if actual > MAX_PEER_ID_BYTES {
+        return Err(BootstrapConfigError::PeerIdTooLong {
+            role,
+            actual,
+            maximum: MAX_PEER_ID_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn validate_record_capacity(
+    records: &[StoredRecord],
+    record: &SignedPeerRecord,
+    source_peer_id: PeerId,
+    replacing: Option<usize>,
+) -> Result<(), PeerAddressStoreError> {
+    if replacing.is_none() && records.len() == MAX_PEER_ADDRESS_RECORDS {
+        return Err(PeerAddressStoreError::RecordCapacity {
+            maximum: MAX_PEER_ADDRESS_RECORDS,
+        });
+    }
+    let source_count = records
+        .iter()
+        .enumerate()
+        .filter(|(index, stored)| {
+            Some(*index) != replacing && stored.source_peer_id == source_peer_id
+        })
+        .count();
+    if source_count == MAX_RECORDS_PER_BOOTSTRAP {
+        return Err(PeerAddressStoreError::SourceCapacity {
+            source: Box::new(source_peer_id),
+            maximum: MAX_RECORDS_PER_BOOTSTRAP,
+        });
+    }
+
+    for (address_index, address) in record.addresses.iter().enumerate() {
+        let group = network_group(address).expect("validated records have network groups");
+        if record.addresses[..address_index].iter().any(|prior| {
+            network_group(prior).expect("validated records have network groups") == group
+        }) {
+            continue;
+        }
+        let count = records
+            .iter()
+            .enumerate()
+            .filter(|(index, stored)| {
+                Some(*index) != replacing
+                    && stored.record.addresses.iter().any(|address| {
+                        network_group(address).expect("stored records are validated") == group
+                    })
+            })
+            .count();
+        if count == MAX_RECORDS_PER_NETWORK_GROUP {
+            return Err(PeerAddressStoreError::NetworkGroupCapacity {
+                maximum: MAX_RECORDS_PER_NETWORK_GROUP,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_endpoint(
+    address: &Multiaddr,
+    require_global: bool,
+) -> Result<NetworkGroup, AddressReason> {
+    if address.len() > MAX_PEER_ADDRESS_BYTES {
+        return Err(AddressReason::TooLong);
+    }
+    endpoint_group(address, require_global)
+}
+
+fn endpoint_group(
+    address: &Multiaddr,
+    require_global: bool,
+) -> Result<NetworkGroup, AddressReason> {
+    let mut protocols = address.iter();
+    let first = protocols.next();
+    let second = protocols.next();
+    if protocols.next().is_some() {
+        return Err(AddressReason::WrongShape);
+    }
+    let port = match second {
+        Some(Protocol::Tcp(port)) if port != 0 => port,
+        Some(Protocol::Tcp(_)) => return Err(AddressReason::ZeroPort),
+        _ => return Err(AddressReason::WrongShape),
+    };
+    let _ = port;
+    match first {
+        Some(Protocol::Ip4(address)) => {
+            if require_global && !is_global_ipv4(address) {
+                return Err(AddressReason::NotGloballyRoutable);
+            }
+            Ok(NetworkGroup::Ipv4([
+                address.octets()[0],
+                address.octets()[1],
+            ]))
+        }
+        Some(Protocol::Ip6(address)) => {
+            if require_global && !is_global_ipv6(address) {
+                return Err(AddressReason::NotGloballyRoutable);
+            }
+            let octets = address.octets();
+            Ok(NetworkGroup::Ipv6([
+                octets[0], octets[1], octets[2], octets[3],
+            ]))
+        }
+        _ => Err(AddressReason::WrongShape),
+    }
+}
+
+fn network_group(address: &Multiaddr) -> Option<NetworkGroup> {
+    endpoint_group(address, false).ok()
+}
+
+fn is_global_ipv4(address: Ipv4Addr) -> bool {
+    let value = u32::from(address);
+    !in_ipv4(value, [0, 0, 0, 0], 8)
+        && !in_ipv4(value, [10, 0, 0, 0], 8)
+        && !in_ipv4(value, [100, 64, 0, 0], 10)
+        && !in_ipv4(value, [127, 0, 0, 0], 8)
+        && !in_ipv4(value, [169, 254, 0, 0], 16)
+        && !in_ipv4(value, [172, 16, 0, 0], 12)
+        && !in_ipv4(value, [192, 0, 0, 0], 24)
+        && !in_ipv4(value, [192, 0, 2, 0], 24)
+        && !in_ipv4(value, [192, 168, 0, 0], 16)
+        && !in_ipv4(value, [198, 18, 0, 0], 15)
+        && !in_ipv4(value, [198, 51, 100, 0], 24)
+        && !in_ipv4(value, [203, 0, 113, 0], 24)
+        && !in_ipv4(value, [224, 0, 0, 0], 4)
+        && !in_ipv4(value, [240, 0, 0, 0], 4)
+}
+
+fn in_ipv4(value: u32, base: [u8; 4], prefix: u32) -> bool {
+    let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
+    value & mask == u32::from(Ipv4Addr::from(base)) & mask
+}
+
+fn is_global_ipv6(address: Ipv6Addr) -> bool {
+    let octets = address.octets();
+    let global_unicast = octets[0] & 0xe0 == 0x20;
+    global_unicast
+        && !in_ipv6(address, Ipv6Addr::new(0x2001, 0x0002, 0, 0, 0, 0, 0, 0), 48)
+        && !in_ipv6(address, Ipv6Addr::new(0x2001, 0x0010, 0, 0, 0, 0, 0, 0), 28)
+        && !in_ipv6(address, Ipv6Addr::new(0x2001, 0x0020, 0, 0, 0, 0, 0, 0), 28)
+        && !in_ipv6(address, Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0), 32)
+}
+
+fn in_ipv6(value: Ipv6Addr, base: Ipv6Addr, prefix: u32) -> bool {
+    let mask = u128::MAX.checked_shl(128 - prefix).unwrap_or(0);
+    u128::from(value) & mask == u128::from(base) & mask
+}
+
+fn unix_seconds(time: SystemTime) -> Result<u64, PeerAddressStoreError> {
+    time.duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| PeerAddressStoreError::TimeBeforeUnixEpoch)
+}
+
+fn validate_receipt_time(received_at: u64) -> Result<(), PeerAddressStoreError> {
+    received_at
+        .checked_add(PEER_RECORD_TTL.as_secs())
+        .map(|_| ())
+        .ok_or(PeerAddressStoreError::ReceiptTimeOverflow)
+}
+
+fn is_fresh(received_at: u64, now: u64) -> bool {
+    received_at <= now
+        && received_at
+            .checked_add(PEER_RECORD_TTL.as_secs())
+            .is_some_and(|expires_at| now < expires_at)
+}
+
+fn candidate_score(
+    salt: &[u8; SALT_BYTES],
+    epoch: u64,
+    peer_id: PeerId,
+    address: &Multiaddr,
+    source_peer_id: PeerId,
+) -> [u8; CHECKSUM_BYTES] {
+    let mut hasher = Sha256::new();
+    hasher.update(CANDIDATE_ORDER_DOMAIN);
+    hasher.update(salt);
+    hasher.update(epoch.to_be_bytes());
+    let (peer_id, peer_id_length) = encode_peer_id(peer_id);
+    hasher.update([u8::try_from(peer_id_length).expect("peer id fits u8")]);
+    hasher.update(&peer_id[..peer_id_length]);
+    let address = address.as_ref();
+    hasher.update(
+        u16::try_from(address.len())
+            .expect("validated address fits u16")
+            .to_be_bytes(),
+    );
+    hasher.update(address);
+    let (source_peer_id, source_peer_id_length) = encode_peer_id(source_peer_id);
+    hasher.update([u8::try_from(source_peer_id_length).expect("peer id fits u8")]);
+    hasher.update(&source_peer_id[..source_peer_id_length]);
+    hasher.finalize().into()
+}
+
+fn bootstrap_digest(bootstraps: &[BootstrapPeer]) -> [u8; CHECKSUM_BYTES] {
+    let mut hasher = Sha256::new();
+    hasher.update(BOOTSTRAP_DIGEST_DOMAIN);
+    hasher.update([u8::try_from(bootstraps.len()).expect("bootstrap cap fits u8")]);
+    for bootstrap in bootstraps {
+        let (peer_id, peer_id_length) = encode_peer_id(bootstrap.peer_id);
+        hasher.update([u8::try_from(peer_id_length).expect("peer id fits u8")]);
+        hasher.update(&peer_id[..peer_id_length]);
+        let address = bootstrap.address.as_ref();
+        hasher.update(
+            u16::try_from(address.len())
+                .expect("bootstrap address fits u16")
+                .to_be_bytes(),
+        );
+        hasher.update(address);
+    }
+    hasher.finalize().into()
+}
+
+fn checksum(bytes: &[u8]) -> [u8; CHECKSUM_BYTES] {
+    let mut hasher = Sha256::new();
+    hasher.update(STORE_CHECKSUM_DOMAIN);
+    hasher.update(bytes);
+    hasher.finalize().into()
+}
+
+fn write_peer_id(bytes: &mut Vec<u8>, peer_id: PeerId) {
+    let (peer_id, peer_id_length) = encode_peer_id(peer_id);
+    bytes.push(u8::try_from(peer_id_length).expect("libp2p peer id fits u8"));
+    bytes.extend_from_slice(&peer_id[..peer_id_length]);
+}
+
+fn write_stored_record(bytes: &mut Vec<u8>, record: &StoredRecord) {
+    write_peer_id(bytes, record.source_peer_id);
+    bytes.extend_from_slice(&record.received_at.to_be_bytes());
+    bytes.extend_from_slice(
+        &u16::try_from(record.record.envelope_bytes.len())
+            .expect("envelope cap fits u16")
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(&record.record.envelope_bytes);
+}
+
+fn stored_record_encoded_length(record: &StoredRecord) -> usize {
+    1 + record.source_peer_id.as_ref().encoded_len() + 8 + 2 + record.record.envelope_bytes.len()
+}
+
+fn encode_peer_id(peer_id: PeerId) -> ([u8; MAX_PEER_ID_BYTES], usize) {
+    let length = peer_id.as_ref().encoded_len();
+    assert!(
+        length <= MAX_PEER_ID_BYTES,
+        "validated peer identities fit the snapshot cap"
+    );
+    let mut bytes = [0_u8; MAX_PEER_ID_BYTES];
+    let written = peer_id
+        .as_ref()
+        .write(&mut bytes[..])
+        .expect("the fixed peer-id buffer has validated capacity");
+    debug_assert_eq!(written, length);
+    (bytes, written)
+}
+
+fn open_lock(directory: &Path) -> Result<File, PeerAddressStoreError> {
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join(LOCK_FILE_NAME))
+        .map_err(PeerAddressStoreError::OpenLock)?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(TryLockError::WouldBlock) => Err(PeerAddressStoreError::Locked),
+        Err(TryLockError::Error(source)) => Err(PeerAddressStoreError::OpenLock(source)),
+    }
+}
+
+fn commit_snapshot(directory: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp_path = directory.join(TEMP_FILE_NAME);
+    let mut temp = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temp_path)?;
+    temp.write_all(bytes)?;
+    temp.sync_all()?;
+    fs::rename(temp_path, directory.join(STORE_FILE_NAME))?;
+    sync_directory(directory)
+}
+
+#[cfg(unix)]
+fn sync_directory(directory: &Path) -> io::Result<()> {
+    File::open(directory)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path) -> io::Result<()> {
+    // std exposes no safe portable parent-directory synchronization contract
+    // on every non-Unix target. The file contents are synchronized before
+    // atomic rename.
+    Ok(())
+}
+
+fn decode_snapshot(
+    bytes: &[u8],
+    local_peer_id: PeerId,
+    bootstraps: &[BootstrapPeer],
+    expected_bootstrap_digest: [u8; CHECKSUM_BYTES],
+) -> Result<([u8; SALT_BYTES], Vec<StoredRecord>), PeerAddressStoreError> {
+    let minimum = STORE_HEADER.len() + 1 + 1 + CHECKSUM_BYTES + SALT_BYTES + 2 + CHECKSUM_BYTES;
+    if bytes.len() < minimum {
+        return Err(PeerAddressStoreError::InvalidHeader);
+    }
+    let body_length = bytes.len() - CHECKSUM_BYTES;
+    let (body, expected_checksum) = bytes.split_at(body_length);
+    if checksum(body).as_slice() != expected_checksum {
+        return Err(PeerAddressStoreError::ChecksumMismatch);
+    }
+    let Some(remainder) = body.strip_prefix(STORE_HEADER) else {
+        return Err(PeerAddressStoreError::InvalidHeader);
+    };
+    let mut cursor = Cursor::new(remainder);
+    if cursor.read_peer_id()? != local_peer_id {
+        return Err(PeerAddressStoreError::LocalPeerMismatch);
+    }
+    if cursor.read_array::<CHECKSUM_BYTES>()? != expected_bootstrap_digest {
+        return Err(PeerAddressStoreError::BootstrapConfigurationMismatch);
+    }
+    let ordering_salt = cursor.read_array::<SALT_BYTES>()?;
+    let count = usize::from(cursor.read_u16()?);
+    if count > MAX_PEER_ADDRESS_RECORDS {
+        return Err(PeerAddressStoreError::RecordCapacity {
+            maximum: MAX_PEER_ADDRESS_RECORDS,
+        });
+    }
+    let minimum_entries_length = count.checked_mul(MIN_STORED_RECORD_BYTES).ok_or(
+        PeerAddressStoreError::InvalidSnapshot("record count length overflow"),
+    )?;
+    if cursor.remaining() < minimum_entries_length {
+        return Err(PeerAddressStoreError::InvalidSnapshot(
+            "record count exceeds remaining bytes",
+        ));
+    }
+    let mut records = Vec::new();
+    records
+        .try_reserve_exact(count)
+        .map_err(PeerAddressStoreError::Allocation)?;
+    for index in 0..count {
+        let source_peer_id = cursor.read_peer_id()?;
+        if !bootstraps
+            .iter()
+            .any(|bootstrap| bootstrap.peer_id == source_peer_id)
+        {
+            return Err(PeerAddressStoreError::UnknownSource(Box::new(
+                source_peer_id,
+            )));
+        }
+        let received_at = cursor.read_u64()?;
+        validate_receipt_time(received_at)?;
+        let envelope_length = usize::from(cursor.read_u16()?);
+        if envelope_length == 0 || envelope_length > MAX_SIGNED_PEER_RECORD_BYTES {
+            return Err(PeerAddressStoreError::InvalidSnapshot(
+                "envelope length is outside bounds",
+            ));
+        }
+        let envelope = cursor.read_exact(envelope_length)?;
+        let record =
+            SignedPeerRecord::from_envelope_bytes(envelope.to_vec()).map_err(|source| {
+                PeerAddressStoreError::InvalidRecord {
+                    index,
+                    source: Box::new(source),
+                }
+            })?;
+        if record.envelope_bytes.as_slice() != envelope {
+            return Err(PeerAddressStoreError::InvalidSnapshot(
+                "signed envelope is not normalized",
+            ));
+        }
+        if record.peer_id == local_peer_id {
+            return Err(PeerAddressStoreError::LocalRecord(Box::new(record.peer_id)));
+        }
+        if records
+            .last()
+            .is_some_and(|prior: &StoredRecord| prior.record.peer_id >= record.peer_id)
+        {
+            return Err(PeerAddressStoreError::InvalidSnapshot(
+                "record subjects are not strictly ordered",
+            ));
+        }
+        validate_record_capacity(&records, &record, source_peer_id, None)?;
+        records.push(StoredRecord {
+            source_peer_id,
+            received_at,
+            record,
+        });
+    }
+    if !cursor.is_empty() {
+        return Err(PeerAddressStoreError::InvalidSnapshot("trailing bytes"));
+    }
+    Ok((ordering_salt, records))
+}
+
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> Cursor<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    fn read_exact(&mut self, length: usize) -> Result<&'a [u8], PeerAddressStoreError> {
+        let end = self
+            .position
+            .checked_add(length)
+            .ok_or(PeerAddressStoreError::InvalidSnapshot("length overflow"))?;
+        let value = self
+            .bytes
+            .get(self.position..end)
+            .ok_or(PeerAddressStoreError::InvalidSnapshot("truncated field"))?;
+        self.position = end;
+        Ok(value)
+    }
+
+    fn read_u16(&mut self) -> Result<u16, PeerAddressStoreError> {
+        Ok(u16::from_be_bytes(self.read_array()?))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, PeerAddressStoreError> {
+        Ok(u64::from_be_bytes(self.read_array()?))
+    }
+
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], PeerAddressStoreError> {
+        self.read_exact(N)?
+            .try_into()
+            .map_err(|_| PeerAddressStoreError::InvalidSnapshot("invalid fixed field"))
+    }
+
+    fn read_peer_id(&mut self) -> Result<PeerId, PeerAddressStoreError> {
+        let length = usize::from(*self.read_exact(1)?.first().expect("one byte was read"));
+        if length == 0 || length > MAX_PEER_ID_BYTES {
+            return Err(PeerAddressStoreError::InvalidPeerId);
+        }
+        PeerId::from_bytes(self.read_exact(length)?)
+            .map_err(|_| PeerAddressStoreError::InvalidPeerId)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.position == self.bytes.len()
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.position
+    }
+}
+
+#[cfg(test)]
+mod tests;
