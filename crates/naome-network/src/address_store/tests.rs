@@ -129,6 +129,10 @@ fn record(signer: &Keypair, sequence: u64, addresses: Vec<Multiaddr>) -> SignedP
     .unwrap()
 }
 
+fn batch(records: impl IntoIterator<Item = SignedPeerRecord>) -> PeerRecordBatch {
+    PeerRecordBatch::new(records).unwrap()
+}
+
 fn replace_checksum(bytes: &mut Vec<u8>) {
     bytes.truncate(bytes.len() - CHECKSUM_BYTES);
     bytes.extend_from_slice(&checksum(bytes));
@@ -215,6 +219,36 @@ fn bootstrap_configuration_is_exact_bounded_and_canonical() {
         })
     ));
     assert_eq!(MAX_STORE_BYTES, 1_062_827);
+}
+
+#[test]
+fn peer_id_comparator_matches_raw_encoded_identity_order() {
+    let identity_short =
+        PeerId::from_multihash(libp2p::multihash::Multihash::<64>::wrap(0, &[0x11; 4]).unwrap())
+            .unwrap();
+    let identity_long =
+        PeerId::from_multihash(libp2p::multihash::Multihash::<64>::wrap(0, &[0x22; 20]).unwrap())
+            .unwrap();
+    let sha256 = PeerId::from_multihash(
+        libp2p::multihash::Multihash::<64>::wrap(0x12, &[0x33; 32]).unwrap(),
+    )
+    .unwrap();
+    let peer_ids = [
+        deterministic_key(6).public().to_peer_id(),
+        deterministic_key(7).public().to_peer_id(),
+        identity_short,
+        identity_long,
+        sha256,
+    ];
+
+    for left in peer_ids {
+        for right in peer_ids {
+            assert_eq!(
+                compare_peer_id_bytes(&left, &right),
+                left.to_bytes().cmp(&right.to_bytes())
+            );
+        }
+    }
 }
 
 #[test]
@@ -470,6 +504,496 @@ fn sequence_admission_is_atomic_and_retains_first_source() {
             .unwrap(),
         PeerRecordAdmission::Inserted
     );
+}
+
+#[test]
+fn batch_admission_matches_single_admissions_and_reopens_identically() {
+    let batch_directory = TestDirectory::new("batch-equivalence");
+    let single_directory = TestDirectory::new("single-equivalence");
+    let local = deterministic_key(5);
+    let first_source = deterministic_key(6);
+    let second_source = deterministic_key(7);
+    let first_subject = deterministic_key(8);
+    let stale_subject = deterministic_key(9);
+    let new_subject = deterministic_key(10);
+    let bootstraps = vec![
+        bootstrap(&first_source, 4001),
+        bootstrap(&second_source, 4002),
+    ];
+    let mut batch_store = PeerAddressStore::create(
+        batch_directory.path(),
+        local.public().to_peer_id(),
+        bootstraps.clone(),
+    )
+    .unwrap();
+    let mut single_store = PeerAddressStore::create(
+        single_directory.path(),
+        local.public().to_peer_id(),
+        bootstraps.clone(),
+    )
+    .unwrap();
+    batch_store.ordering_salt = [0x5a; SALT_BYTES];
+    single_store.ordering_salt = [0x5a; SALT_BYTES];
+
+    let initial_first = record(&first_subject, 5, vec![global_address(21, 1, 4001)]);
+    let initial_stale = record(&stale_subject, 5, vec![global_address(22, 1, 4001)]);
+    for store in [&mut batch_store, &mut single_store] {
+        let _ = store
+            .admit_record(
+                first_source.public().to_peer_id(),
+                initial_first.clone(),
+                unix_time(100),
+            )
+            .unwrap();
+        let _ = store
+            .admit_record(
+                first_source.public().to_peer_id(),
+                initial_stale.clone(),
+                unix_time(100),
+            )
+            .unwrap();
+    }
+
+    let replacement = record(&first_subject, 6, vec![global_address(23, 1, 4002)]);
+    let insertion = record(&new_subject, 1, vec![global_address(24, 1, 4001)]);
+    let source_id = second_source.public().to_peer_id();
+    let commit_attempts = batch_store.commit_attempts;
+    let admission = batch_store
+        .admit_record_batch(
+            source_id,
+            batch([
+                insertion.clone(),
+                initial_stale.clone(),
+                replacement.clone(),
+            ]),
+            unix_time(200),
+        )
+        .unwrap();
+    assert_eq!(admission.inserted(), 1);
+    assert_eq!(admission.replaced(), 1);
+    assert_eq!(admission.ignored_stale(), 1);
+    assert_eq!(admission.total(), 3);
+    assert_eq!(batch_store.commit_attempts, commit_attempts + 1);
+
+    assert_eq!(
+        single_store
+            .admit_record(source_id, insertion, unix_time(200))
+            .unwrap(),
+        PeerRecordAdmission::Inserted
+    );
+    assert_eq!(
+        single_store
+            .admit_record(source_id, initial_stale, unix_time(200))
+            .unwrap(),
+        PeerRecordAdmission::IgnoredStale
+    );
+    assert_eq!(
+        single_store
+            .admit_record(source_id, replacement, unix_time(200))
+            .unwrap(),
+        PeerRecordAdmission::Replaced
+    );
+    assert_eq!(batch_directory.snapshot(), single_directory.snapshot());
+    let stored_first = batch_store
+        .records
+        .iter()
+        .find(|stored| stored.record.peer_id == first_subject.public().to_peer_id())
+        .unwrap();
+    assert_eq!(
+        stored_first.source_peer_id,
+        first_source.public().to_peer_id()
+    );
+    let stored_stale = batch_store
+        .records
+        .iter()
+        .find(|stored| stored.record.peer_id == stale_subject.public().to_peer_id())
+        .unwrap();
+    assert_eq!(stored_stale.received_at, 100);
+    drop(batch_store);
+
+    let reopened = PeerAddressStore::open(
+        batch_directory.path(),
+        local.public().to_peer_id(),
+        bootstraps,
+    )
+    .unwrap();
+    assert_eq!(reopened.len().unwrap(), 3);
+    assert_eq!(batch_directory.snapshot(), single_directory.snapshot());
+}
+
+#[test]
+fn empty_and_stale_batches_perform_no_commit() {
+    let directory = TestDirectory::new("batch-stale");
+    let local = deterministic_key(11);
+    let source = deterministic_key(12);
+    let first = deterministic_key(13);
+    let second = deterministic_key(14);
+    let source_id = source.public().to_peer_id();
+    let mut store = PeerAddressStore::create(
+        directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&source, 4001)],
+    )
+    .unwrap();
+    let first_record = record(&first, 5, vec![global_address(25, 1, 4001)]);
+    let second_record = record(&second, 5, vec![global_address(26, 1, 4001)]);
+    let _ = store
+        .admit_record(source_id, first_record.clone(), unix_time(100))
+        .unwrap();
+    let _ = store
+        .admit_record(source_id, second_record, unix_time(100))
+        .unwrap();
+    let before = directory.snapshot();
+    let commit_attempts = store.commit_attempts;
+    fs::create_dir(directory.path().join(TEMP_FILE_NAME)).unwrap();
+
+    let empty = store
+        .admit_record_batch(source_id, batch([]), unix_time(200))
+        .unwrap();
+    assert_eq!(empty.total(), 0);
+    let stale = store
+        .admit_record_batch(
+            source_id,
+            batch([
+                first_record,
+                record(&second, 4, vec![global_address(27, 1, 4001)]),
+            ]),
+            unix_time(200),
+        )
+        .unwrap();
+    assert_eq!(stale.ignored_stale(), 2);
+    assert_eq!(stale.inserted(), 0);
+    assert_eq!(stale.replaced(), 0);
+    assert_eq!(directory.snapshot(), before);
+    assert_eq!(store.len().unwrap(), 2);
+    assert_eq!(store.commit_attempts, commit_attempts);
+    fs::remove_dir(directory.path().join(TEMP_FILE_NAME)).unwrap();
+}
+
+#[test]
+fn batch_preflight_errors_reject_every_record() {
+    let directory = TestDirectory::new("batch-preflight");
+    let local = deterministic_key(15);
+    let source = deterministic_key(16);
+    let unknown_source = deterministic_key(17);
+    let first_subject = deterministic_key(18);
+    let second_subject = deterministic_key(19);
+    let first_subject_id = first_subject.public().to_peer_id();
+    let second_subject_id = second_subject.public().to_peer_id();
+    let (valid_subject, existing_subject) =
+        if compare_peer_id_bytes(&first_subject_id, &second_subject_id).is_lt() {
+            (first_subject, second_subject)
+        } else {
+            (second_subject, first_subject)
+        };
+    let source_id = source.public().to_peer_id();
+    let mut store = PeerAddressStore::create(
+        directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&source, 4001)],
+    )
+    .unwrap();
+    let initial = record(&existing_subject, 5, vec![global_address(28, 1, 4001)]);
+    let _ = store
+        .admit_record(source_id, initial, unix_time(100))
+        .unwrap();
+    let before = directory.snapshot();
+
+    let conflict = record(&existing_subject, 5, vec![global_address(29, 1, 4001)]);
+    let valid_subject_id = valid_subject.public().to_peer_id();
+    let existing_subject_id = existing_subject.public().to_peer_id();
+    assert!(compare_peer_id_bytes(&valid_subject_id, &existing_subject_id).is_lt());
+    assert!(matches!(
+        store.admit_record_batch(
+            source_id,
+            batch([
+                record(&valid_subject, 1, vec![global_address(30, 1, 4001)]),
+                conflict,
+            ]),
+            unix_time(200),
+        ),
+        Err(PeerAddressStoreError::SequenceConflict { .. })
+    ));
+    assert_eq!(directory.snapshot(), before);
+    assert_eq!(store.len().unwrap(), 1);
+
+    assert!(matches!(
+        store.admit_record_batch(
+            source_id,
+            batch([
+                record(&local, 1, vec![global_address(31, 1, 4001)]),
+                record(&existing_subject, 5, vec![global_address(29, 1, 4001)]),
+            ]),
+            unix_time(200),
+        ),
+        Err(PeerAddressStoreError::LocalRecord(_))
+    ));
+    assert_eq!(directory.snapshot(), before);
+    assert!(matches!(
+        store.admit_record_batch(
+            unknown_source.public().to_peer_id(),
+            batch([record(&valid_subject, 1, vec![global_address(30, 1, 4001)])]),
+            UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap(),
+        ),
+        Err(PeerAddressStoreError::UnknownSource(_))
+    ));
+    assert_eq!(directory.snapshot(), before);
+    assert!(matches!(
+        store.admit_record_batch(
+            source_id,
+            batch([
+                record(&local, 1, vec![global_address(31, 1, 4001)]),
+                record(&existing_subject, 5, vec![global_address(29, 1, 4001)]),
+            ]),
+            UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap(),
+        ),
+        Err(PeerAddressStoreError::TimeBeforeUnixEpoch)
+    ));
+    assert_eq!(directory.snapshot(), before);
+}
+
+#[test]
+fn batch_capacity_uses_the_complete_projected_state() {
+    let release_directory = TestDirectory::new("batch-group-release");
+    let local = deterministic_key(32);
+    let source = deterministic_key(33);
+    let source_id = source.public().to_peer_id();
+    let mut release_store = PeerAddressStore::create(
+        release_directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&source, 4001)],
+    )
+    .unwrap();
+    let subjects = (34..34 + MAX_RECORDS_PER_NETWORK_GROUP as u8)
+        .map(deterministic_key)
+        .collect::<Vec<_>>();
+    let initial = subjects
+        .iter()
+        .enumerate()
+        .map(|(index, subject)| record(subject, 1, vec![global_address(80, index as u8 + 1, 4001)]))
+        .collect::<Vec<_>>();
+    let _ = release_store
+        .admit_record_batch(source_id, batch(initial), unix_time(100))
+        .unwrap();
+    let replacement_subject = subjects
+        .iter()
+        .max_by(|left, right| {
+            compare_peer_id_bytes(&left.public().to_peer_id(), &right.public().to_peer_id())
+        })
+        .unwrap();
+    let new_subject = (100..=u8::MAX)
+        .map(deterministic_key)
+        .find(|candidate| {
+            compare_peer_id_bytes(
+                &candidate.public().to_peer_id(),
+                &replacement_subject.public().to_peer_id(),
+            )
+            .is_lt()
+        })
+        .expect("a deterministic insertion subject sorts before the replacement");
+    assert!(
+        compare_peer_id_bytes(
+            &new_subject.public().to_peer_id(),
+            &replacement_subject.public().to_peer_id()
+        )
+        .is_lt()
+    );
+    let replacement = record(replacement_subject, 2, vec![global_address(81, 1, 4001)]);
+    let insertion = record(&new_subject, 1, vec![global_address(80, 99, 4001)]);
+    let admission = release_store
+        .admit_record_batch(source_id, batch([insertion, replacement]), unix_time(200))
+        .unwrap();
+    assert_eq!(admission.inserted(), 1);
+    assert_eq!(admission.replaced(), 1);
+    assert_eq!(
+        release_store.len().unwrap(),
+        MAX_RECORDS_PER_NETWORK_GROUP + 1
+    );
+
+    let source_directory = TestDirectory::new("batch-source-cap");
+    let mut source_store = PeerAddressStore::create(
+        source_directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&source, 4001)],
+    )
+    .unwrap();
+    let initial = (0..MAX_RECORDS_PER_BOOTSTRAP - 1)
+        .map(|index| {
+            let subject = deterministic_key(60 + index as u8);
+            record(
+                &subject,
+                1,
+                vec![global_address(150 + index as u8, 1, 4001)],
+            )
+        })
+        .collect::<Vec<_>>();
+    let _ = source_store
+        .admit_record_batch(source_id, batch(initial), unix_time(100))
+        .unwrap();
+    let before = source_directory.snapshot();
+    assert!(matches!(
+        source_store.admit_record_batch(
+            source_id,
+            batch([
+                record(
+                    &deterministic_key(100),
+                    1,
+                    vec![global_address(200, 1, 4001)]
+                ),
+                record(
+                    &deterministic_key(101),
+                    1,
+                    vec![global_address(201, 1, 4001)]
+                ),
+            ]),
+            unix_time(200),
+        ),
+        Err(PeerAddressStoreError::SourceCapacity { .. })
+    ));
+    assert_eq!(source_store.len().unwrap(), MAX_RECORDS_PER_BOOTSTRAP - 1);
+    assert_eq!(source_directory.snapshot(), before);
+
+    let group_directory = TestDirectory::new("batch-group-cap");
+    let mut group_store = PeerAddressStore::create(
+        group_directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&source, 4001)],
+    )
+    .unwrap();
+    let initial = (0..MAX_RECORDS_PER_NETWORK_GROUP)
+        .map(|index| {
+            record(
+                &deterministic_key(110 + index as u8),
+                1,
+                vec![global_address(210, index as u8 + 1, 4001)],
+            )
+        })
+        .collect::<Vec<_>>();
+    let _ = group_store
+        .admit_record_batch(source_id, batch(initial), unix_time(100))
+        .unwrap();
+    let before = group_directory.snapshot();
+    assert!(matches!(
+        group_store.admit_record_batch(
+            source_id,
+            batch([
+                record(
+                    &deterministic_key(118),
+                    1,
+                    vec![global_address(211, 1, 4001)]
+                ),
+                record(
+                    &deterministic_key(119),
+                    1,
+                    vec![global_address(210, 99, 4001)]
+                ),
+            ]),
+            unix_time(200),
+        ),
+        Err(PeerAddressStoreError::NetworkGroupCapacity { .. })
+    ));
+    assert_eq!(group_store.len().unwrap(), MAX_RECORDS_PER_NETWORK_GROUP);
+    assert_eq!(group_directory.snapshot(), before);
+}
+
+#[test]
+fn full_store_rejects_a_whole_batch_without_mutation() {
+    let directory = TestDirectory::new("batch-total-cap");
+    let local = deterministic_key(129);
+    let sources = (130..130 + MAX_BOOTSTRAP_PEERS as u8)
+        .map(deterministic_key)
+        .collect::<Vec<_>>();
+    let bootstraps = sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| bootstrap(source, 4001 + index as u16))
+        .collect::<Vec<_>>();
+    let mut store =
+        PeerAddressStore::create(directory.path(), local.public().to_peer_id(), bootstraps)
+            .unwrap();
+    for (source_index, source) in sources.iter().enumerate() {
+        let records = (0..MAX_RECORDS_PER_BOOTSTRAP)
+            .map(|record_index| {
+                let subject = Keypair::generate_ed25519();
+                let group = 40 + source_index as u8 * 4 + record_index as u8 / 8;
+                record(
+                    &subject,
+                    1,
+                    vec![global_address(group, record_index as u8 % 8 + 1, 4001)],
+                )
+            })
+            .collect::<Vec<_>>();
+        let admission = store
+            .admit_record_batch(source.public().to_peer_id(), batch(records), unix_time(100))
+            .unwrap();
+        assert_eq!(admission.inserted(), MAX_RECORDS_PER_BOOTSTRAP);
+    }
+    assert_eq!(store.len().unwrap(), MAX_PEER_ADDRESS_RECORDS);
+    let before = directory.snapshot();
+    let extra = Keypair::generate_ed25519();
+    assert!(matches!(
+        store.admit_record_batch(
+            sources[0].public().to_peer_id(),
+            batch([record(&extra, 1, vec![global_address(72, 1, 4001)])]),
+            unix_time(200),
+        ),
+        Err(PeerAddressStoreError::RecordCapacity { .. })
+    ));
+    assert_eq!(store.len().unwrap(), MAX_PEER_ADDRESS_RECORDS);
+    assert_eq!(directory.snapshot(), before);
+}
+
+#[test]
+fn failed_batch_commit_poisoning_never_installs_a_prefix() {
+    let directory = TestDirectory::new("batch-poison");
+    let local = deterministic_key(102);
+    let source = deterministic_key(103);
+    let source_id = source.public().to_peer_id();
+    let bootstraps = vec![bootstrap(&source, 4001)];
+    let mut store = PeerAddressStore::create(
+        directory.path(),
+        local.public().to_peer_id(),
+        bootstraps.clone(),
+    )
+    .unwrap();
+    let before = directory.snapshot();
+    let commit_attempts = store.commit_attempts;
+    fs::create_dir(directory.path().join(TEMP_FILE_NAME)).unwrap();
+    assert!(matches!(
+        store.admit_record_batch(
+            source_id,
+            batch([
+                record(
+                    &deterministic_key(104),
+                    1,
+                    vec![global_address(152, 1, 4001)]
+                ),
+                record(
+                    &deterministic_key(105),
+                    1,
+                    vec![global_address(153, 1, 4001)]
+                ),
+            ]),
+            unix_time(200),
+        ),
+        Err(PeerAddressStoreError::Commit { .. })
+    ));
+    assert_eq!(directory.snapshot(), before);
+    assert!(matches!(store.len(), Err(PeerAddressStoreError::Poisoned)));
+    assert_eq!(store.commit_attempts, commit_attempts + 1);
+    assert!(matches!(
+        store.admit_record_batch(
+            deterministic_key(106).public().to_peer_id(),
+            batch([record(&local, 1, vec![global_address(154, 1, 4001)])]),
+            UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap(),
+        ),
+        Err(PeerAddressStoreError::Poisoned)
+    ));
+    drop(store);
+    fs::remove_dir(directory.path().join(TEMP_FILE_NAME)).unwrap();
+    let reopened =
+        PeerAddressStore::open(directory.path(), local.public().to_peer_id(), bootstraps).unwrap();
+    assert!(reopened.is_empty().unwrap());
 }
 
 #[test]
@@ -902,7 +1426,7 @@ fn snapshot_revalidates_source_membership_and_subject_order() {
     }
 
     store.records.swap(0, 1);
-    let unsorted = store.encode_snapshot(None).unwrap();
+    let unsorted = store.encode_snapshot(&[]).unwrap();
     assert!(matches!(
         decode_snapshot(
             &unsorted,
@@ -917,7 +1441,7 @@ fn snapshot_revalidates_source_membership_and_subject_order() {
     store.records.swap(0, 1);
 
     store.records[1].record = store.records[0].record.clone();
-    let duplicate_subject = store.encode_snapshot(None).unwrap();
+    let duplicate_subject = store.encode_snapshot(&[]).unwrap();
     assert!(matches!(
         decode_snapshot(
             &duplicate_subject,
@@ -931,7 +1455,7 @@ fn snapshot_revalidates_source_membership_and_subject_order() {
     ));
 
     store.records[0].source_peer_id = deterministic_key(225).public().to_peer_id();
-    let unknown_source = store.encode_snapshot(None).unwrap();
+    let unknown_source = store.encode_snapshot(&[]).unwrap();
     assert!(matches!(
         decode_snapshot(
             &unknown_source,
@@ -1042,7 +1566,7 @@ fn one_entry_snapshot_has_a_stable_complete_golden() {
         )
         .unwrap();
     assert_eq!(
-        hex(&store.encode_snapshot(None).unwrap()),
+        hex(&store.encode_snapshot(&[]).unwrap()),
         "6e616f6d653a706565722d616464726573732d73746f72652d76300026002408011220c91cb3ce2b84e4ba85f562ece41edfe4e27afc52d88d507f66a18638df823e9f86776c57419f43682c59f2d0dcf037803733fecf552aa4a2822035d0d2da6fea000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0001260024080112204dd9b6496a27571acb089a5e3482dfc86acdeddc4d1f28e15a9b04f026d7f226000000000001e24000a40a240801122099a7a471e0ad5d0eb66af0e10ab93292b943eb805de97911637db4be0c072e42120203011a360a2600240801122099a7a471e0ad5d0eb66af0e10ab93292b943eb805de97911637db4be0c072e4210091a0a0a08046f020304060fa12a4034b5287dce85c393caf8669500437d0504ed26de32d415de64b60fffe0cf1254c6ed2d5fc117e17685cd9d90b50f9ce079843ab4474b4c208cc5fd05025ba402b488267bb44977848979a805664f49e12c1b3372f2c860c022f1b6fff2868803"
     );
 }

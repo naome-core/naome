@@ -7,6 +7,9 @@ stores a bounded set of standard libp2p signed peer records and derives a
 small, deterministic, locally diversified set of dial candidates. The store is
 a routing input for a later discovery transport; it does not alter the
 [authenticated proof transport](authenticated-proof-transport.md).
+The transport-neutral [peer-record exchange](peer-record-exchange.md) may
+submit up to 32 ordered records through one atomic store transition without
+making those records proof-authorized peers.
 
 V0 deliberately separates five facts:
 
@@ -42,8 +45,9 @@ subject. Bootstrap peers do not become proof peers, and a connection to one
 does not authorize proof requests or responses.
 
 This MR defines no bundled default list, DNS resolution, remote list update,
-or bootstrap wire exchange. Supplying and updating bootstrap configuration is
-an operator responsibility.
+or authenticated bootstrap socket/session binding. The transport-neutral batch
+bytes are defined separately in [Peer Record Exchange V0](peer-record-exchange.md).
+Supplying and updating bootstrap configuration is an operator responsibility.
 
 ## Signed-record admission
 
@@ -65,8 +69,8 @@ Admission is strict and all-or-nothing:
    consisting exactly of one globally routable IPv4 or IPv6 component followed
    by one nonzero TCP port;
 6. require every binary address encoding to be in `1..=256` bytes;
-7. require a record sequence strictly greater than the currently stored
-   sequence for the same subject; and
+7. apply the stale, conflict, insertion, or strictly newer replacement policy
+   for the subject's retained sequence watermark; and
 8. require all fixed total, source, and IP-group capacity limits to remain
    satisfied.
 
@@ -136,6 +140,21 @@ bounded sequence watermarks and continue to occupy capacity. This prevents a
 replayed equal or older record from being reintroduced with a fresh local TTL.
 A strictly newer signed sequence may replace an expired or unexpired record;
 an equal or older sequence may not extend its lifetime.
+
+## Atomic record batches
+
+The store also admits the bounded batch defined by Peer Record Exchange. One
+configured authenticated source and one local receipt time apply to the whole
+batch. It preflights every subject decision and the complete final total,
+source, and IP-group quotas before mutation. Stale records are ignored without
+refreshing receipt time; a sequence conflict, local subject, unknown source, or
+capacity failure rejects the complete batch without a snapshot write.
+
+An all-stale or empty batch performs no commit. A batch with at least one
+insertion or replacement produces exactly one atomic snapshot commit, never
+one commit per record. Strictly newer replacements retain their originally
+recorded bootstrap source. The detailed framing, ordering, error, and atomicity
+rules are normative in [Peer Record Exchange](peer-record-exchange.md).
 
 ## Reachability boundary
 
@@ -318,8 +337,9 @@ authenticity, local receipt freshness, retained sequence watermarks, and
 deterministic source- and prefix-aware candidate selection. It does not define
 or claim:
 
-- a wire discovery protocol, address gossip, dynamic proof sessions, or
-  automatic mutation of `StaticProofNetwork`;
+- a socket-bound discovery protocol, address gossip, dynamic proof sessions, or
+  automatic mutation of `StaticProofNetwork`; the transport-neutral batch
+  wrapper defines no socket or authenticated session;
 - DHT, DNS bootstrap, mDNS, rendezvous, NAT traversal, relay, hole punching,
   or external-address verification;
 - peer scoring, reputation, bans, operator identity, source independence,
@@ -330,7 +350,7 @@ or claim:
   protection from non-cooperating writers or filesystem attackers, or an
   online key-management policy.
 
-The next network slice must define how authenticated sessions exchange these
-bounded records and how dynamic discovery sessions are owned, expired, and
-rate-limited. Only a separately explicit authorization policy may decide which
-identities participate in proof exchange.
+The next network slice must bind bounded record exchange to authenticated
+bootstrap sessions and define how dynamic discovery sessions are owned,
+expired, and rate-limited. Only a separately explicit authorization policy may
+decide which identities participate in proof exchange.

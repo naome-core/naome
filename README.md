@@ -5,8 +5,9 @@
 NAOME is a protocol for a blockchain of machine-verifiable mathematical proofs.
 This repository currently implements the deterministic proof, selected-state,
 local-persistence, authenticated static-transport, and bounded local
-peer-address-management layers. It does not yet define dynamic discovery,
-consensus, finality, fork choice, settlement, rewards, or fees.
+peer-address-management layers, including a transport-neutral atomic record
+batch. It does not yet define a record-exchange socket binding, dynamic
+discovery, consensus, finality, fork choice, settlement, rewards, or fees.
 
 ## Architecture
 
@@ -23,7 +24,8 @@ authenticated proof DAG, its crash-consistent local journal, transport-neutral
 addressed exchange, and the concrete bounded libp2p transport. Later crates may
 also depend directly on an earlier crate whose types remain part of their
 contract. The network layer also owns the separate persisted peer-address
-candidate store; learned routing candidates do not become static proof peers.
+candidate store and bounded peer-record batch wrapper; learned routing
+candidates do not become static proof peers.
 
 ## Protocol contracts
 
@@ -35,6 +37,7 @@ candidate store; learned routing candidates do not become static proof peers.
 - [Addressed Proof Exchange](specs/addressed-proof-exchange.md)
 - [Authenticated Proof Transport](specs/authenticated-proof-transport.md)
 - [Peer Address Management](specs/peer-address-management.md)
+- [Peer Record Exchange](specs/peer-record-exchange.md)
 
 The specifications are normative. The Rust crates are executable reference
 implementations of their stated boundaries.

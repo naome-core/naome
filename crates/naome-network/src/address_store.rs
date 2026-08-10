@@ -13,6 +13,8 @@ use libp2p::core::signed_envelope::{DecodingError as EnvelopeDecodingError, Sign
 use libp2p::{Multiaddr, PeerId};
 use sha2::{Digest, Sha256};
 
+use crate::record_exchange::{MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch};
+
 const STORE_HEADER: &[u8] = b"naome:peer-address-store-v0\0";
 const STORE_CHECKSUM_DOMAIN: &[u8] = b"naome:peer-address-store-checksum-v0\0";
 const BOOTSTRAP_DIGEST_DOMAIN: &[u8] = b"naome:peer-address-bootstrap-config-v0\0";
@@ -124,6 +126,10 @@ pub struct SignedPeerRecord {
 impl SignedPeerRecord {
     /// Verifies and normalizes one bounded standard signed peer-record envelope.
     pub fn from_envelope_bytes(bytes: Vec<u8>) -> Result<Self, SignedPeerRecordError> {
+        Self::from_envelope_slice(&bytes)
+    }
+
+    pub(crate) fn from_envelope_slice(bytes: &[u8]) -> Result<Self, SignedPeerRecordError> {
         if bytes.is_empty() {
             return Err(SignedPeerRecordError::Empty);
         }
@@ -134,9 +140,9 @@ impl SignedPeerRecord {
             });
         }
 
-        let envelope = SignedEnvelope::from_protobuf_encoding(&bytes)
+        let envelope = SignedEnvelope::from_protobuf_encoding(bytes)
             .map_err(|source| SignedPeerRecordError::Envelope(Box::new(source)))?;
-        let peer_record = PeerRecord::from_signed_envelope_interop(envelope.clone())
+        let peer_record = PeerRecord::from_signed_envelope_interop(envelope)
             .map_err(|source| SignedPeerRecordError::PeerRecord(Box::new(source)))?;
         let peer_id_length = peer_record.peer_id().as_ref().encoded_len();
         if peer_id_length > MAX_PEER_ID_BYTES {
@@ -145,7 +151,10 @@ impl SignedPeerRecord {
                 maximum: MAX_PEER_ID_BYTES,
             });
         }
-        let envelope_bytes = envelope.into_protobuf_encoding();
+        let peer_id = peer_record.peer_id();
+        let sequence = peer_record.seq();
+        let addresses = peer_record.addresses().to_vec();
+        let envelope_bytes = peer_record.into_signed_envelope().into_protobuf_encoding();
         if envelope_bytes.len() > MAX_SIGNED_PEER_RECORD_BYTES {
             return Err(SignedPeerRecordError::NormalizedTooLong {
                 actual: envelope_bytes.len(),
@@ -153,7 +162,6 @@ impl SignedPeerRecord {
             });
         }
 
-        let addresses = peer_record.addresses().to_vec();
         if addresses.is_empty() || addresses.len() > MAX_ADDRESSES_PER_PEER_RECORD {
             return Err(SignedPeerRecordError::AddressCount {
                 actual: addresses.len(),
@@ -181,8 +189,8 @@ impl SignedPeerRecord {
         }
 
         Ok(Self {
-            peer_id: peer_record.peer_id(),
-            sequence: peer_record.seq(),
+            peer_id,
+            sequence,
             addresses,
             envelope_bytes,
         })
@@ -191,6 +199,10 @@ impl SignedPeerRecord {
     /// Returns the identity that signed this address claim.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
+    }
+
+    pub(crate) const fn peer_id_ref(&self) -> &PeerId {
+        &self.peer_id
     }
 
     /// Returns the signer-controlled monotonic sequence.
@@ -354,6 +366,37 @@ pub enum PeerRecordAdmission {
     IgnoredStale,
 }
 
+/// Summary of one atomic signed peer-record batch admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct PeerRecordBatchAdmission {
+    inserted: u8,
+    replaced: u8,
+    ignored_stale: u8,
+}
+
+impl PeerRecordBatchAdmission {
+    /// Returns the number of previously unknown subjects inserted.
+    pub const fn inserted(&self) -> usize {
+        self.inserted as usize
+    }
+
+    /// Returns the number of strictly newer subject records installed.
+    pub const fn replaced(&self) -> usize {
+        self.replaced as usize
+    }
+
+    /// Returns the number of older or byte-identical replay records ignored.
+    pub const fn ignored_stale(&self) -> usize {
+        self.ignored_stale as usize
+    }
+
+    /// Returns the number of input records classified by this admission.
+    pub const fn total(&self) -> usize {
+        self.inserted as usize + self.replaced as usize + self.ignored_stale as usize
+    }
+}
+
 /// Exclusive bounded local store for self-signed peer-address candidates.
 pub struct PeerAddressStore {
     directory: PathBuf,
@@ -364,6 +407,8 @@ pub struct PeerAddressStore {
     ordering_salt: [u8; SALT_BYTES],
     records: Vec<StoredRecord>,
     poisoned: bool,
+    #[cfg(test)]
+    commit_attempts: usize,
 }
 
 impl PeerAddressStore {
@@ -397,8 +442,10 @@ impl PeerAddressStore {
             ordering_salt,
             records: Vec::new(),
             poisoned: false,
+            #[cfg(test)]
+            commit_attempts: 0,
         };
-        let bytes = store.encode_snapshot(None)?;
+        let bytes = store.encode_snapshot(&[])?;
         store.commit_snapshot(&bytes)?;
         Ok(store)
     }
@@ -455,6 +502,8 @@ impl PeerAddressStore {
             ordering_salt,
             records,
             poisoned: false,
+            #[cfg(test)]
+            commit_attempts: 0,
         })
     }
 
@@ -498,9 +547,9 @@ impl PeerAddressStore {
         }
         let received_at = unix_seconds(received_at)?;
         validate_receipt_time(received_at)?;
-        let search = self
-            .records
-            .binary_search_by_key(&record.peer_id, |stored| stored.record.peer_id);
+        let search = self.records.binary_search_by(|stored| {
+            compare_peer_id_bytes(&stored.record.peer_id, &record.peer_id)
+        });
         let (index, existing, admission) = match search {
             Ok(index) => {
                 let existing = &self.records[index];
@@ -525,27 +574,149 @@ impl PeerAddressStore {
             .map(|existing| self.records[existing].source_peer_id)
             .unwrap_or(source_peer_id);
         validate_record_capacity(&self.records, &record, source_peer_id, existing)?;
-        if existing.is_none() {
-            self.records
-                .try_reserve(1)
-                .map_err(PeerAddressStoreError::Allocation)?;
-        }
         let next = StoredRecord {
             source_peer_id,
             received_at,
             record,
         };
-        let mutation = Some(SnapshotMutation {
-            index,
+        let mutation = BatchMutation {
             replace: existing.is_some(),
-            record: &next,
-        });
-        let bytes = self.encode_snapshot(mutation)?;
+            record: next,
+        };
+        if existing.is_none() {
+            self.records
+                .try_reserve(1)
+                .map_err(PeerAddressStoreError::Allocation)?;
+        }
+        let bytes = self.encode_snapshot(std::slice::from_ref(&mutation))?;
         self.commit_snapshot(&bytes)?;
+        let next = mutation.record;
         if existing.is_some() {
             self.records[index] = next;
         } else {
             self.records.insert(index, next);
+        }
+        Ok(admission)
+    }
+
+    /// Atomically admits one canonical batch from one authenticated bootstrap.
+    ///
+    /// Every record is classified and the complete proposed final state is
+    /// validated before one snapshot replacement. Older and exact replay
+    /// records do not refresh their local receipt time. Any error rejects the
+    /// whole batch without installing a prefix.
+    pub fn admit_record_batch(
+        &mut self,
+        source_peer_id: PeerId,
+        batch: PeerRecordBatch,
+        received_at: SystemTime,
+    ) -> Result<PeerRecordBatchAdmission, PeerAddressStoreError> {
+        self.ensure_healthy()?;
+        if !self
+            .bootstraps
+            .iter()
+            .any(|bootstrap| bootstrap.peer_id == source_peer_id)
+        {
+            return Err(PeerAddressStoreError::UnknownSource(Box::new(
+                source_peer_id,
+            )));
+        }
+        let received_at = unix_seconds(received_at)?;
+        validate_receipt_time(received_at)?;
+
+        let records = batch.into_records();
+        if let Some(record) = records
+            .iter()
+            .find(|record| record.peer_id == self.local_peer_id)
+        {
+            return Err(PeerAddressStoreError::LocalRecord(Box::new(record.peer_id)));
+        }
+        let record_count = records.len();
+        let mut mutations = Vec::<BatchMutation>::new();
+        let mut admission = PeerRecordBatchAdmission {
+            inserted: 0,
+            replaced: 0,
+            ignored_stale: 0,
+        };
+        for (batch_index, record) in records.into_iter().enumerate() {
+            match self.records.binary_search_by(|stored| {
+                compare_peer_id_bytes(&stored.record.peer_id, &record.peer_id)
+            }) {
+                Ok(index) => {
+                    let existing = &self.records[index];
+                    if record.sequence < existing.record.sequence
+                        || (record.sequence == existing.record.sequence
+                            && record.envelope_bytes == existing.record.envelope_bytes)
+                    {
+                        admission.ignored_stale += 1;
+                        continue;
+                    }
+                    if record.sequence == existing.record.sequence {
+                        return Err(PeerAddressStoreError::SequenceConflict {
+                            peer_id: Box::new(record.peer_id),
+                            sequence: record.sequence,
+                        });
+                    }
+                    push_batch_mutation(
+                        &mut mutations,
+                        record_count - batch_index,
+                        BatchMutation {
+                            replace: true,
+                            record: StoredRecord {
+                                source_peer_id: existing.source_peer_id,
+                                received_at,
+                                record,
+                            },
+                        },
+                    )?;
+                    admission.replaced += 1;
+                }
+                Err(_) => {
+                    push_batch_mutation(
+                        &mut mutations,
+                        record_count - batch_index,
+                        BatchMutation {
+                            replace: false,
+                            record: StoredRecord {
+                                source_peer_id,
+                                received_at,
+                                record,
+                            },
+                        },
+                    )?;
+                    admission.inserted += 1;
+                }
+            }
+        }
+
+        if mutations.is_empty() {
+            return Ok(admission);
+        }
+        validate_projected_capacity(&self.records, &mutations)?;
+        let insertions = mutations
+            .iter()
+            .filter(|mutation| !mutation.replace)
+            .count();
+        self.records
+            .try_reserve(insertions)
+            .map_err(PeerAddressStoreError::Allocation)?;
+        let bytes = self.encode_snapshot(&mutations)?;
+        self.commit_snapshot(&bytes)?;
+        for mutation in mutations {
+            let peer_id = mutation.record.record.peer_id;
+            match self
+                .records
+                .binary_search_by(|stored| compare_peer_id_bytes(&stored.record.peer_id, &peer_id))
+            {
+                Ok(index) => {
+                    debug_assert!(mutation.replace);
+                    self.records[index] = mutation.record;
+                }
+                Err(index) => {
+                    debug_assert!(!mutation.replace);
+                    self.records.insert(index, mutation.record);
+                }
+            }
         }
         Ok(admission)
     }
@@ -591,9 +762,9 @@ impl PeerAddressStore {
         ranked.sort_unstable_by(|left, right| {
             left.score
                 .cmp(&right.score)
-                .then_with(|| left.peer_id.cmp(&right.peer_id))
+                .then_with(|| compare_peer_id_bytes(&left.peer_id, &right.peer_id))
                 .then_with(|| left.address.as_ref().cmp(right.address.as_ref()))
-                .then_with(|| left.source_peer_id.cmp(&right.source_peer_id))
+                .then_with(|| compare_peer_id_bytes(&left.source_peer_id, &right.source_peer_id))
         });
 
         let mut selected = Vec::<DialCandidate>::new();
@@ -639,11 +810,36 @@ impl PeerAddressStore {
 
     fn encode_snapshot(
         &self,
-        mutation: Option<SnapshotMutation<'_>>,
+        mutations: &[BatchMutation],
     ) -> Result<Vec<u8>, PeerAddressStoreError> {
-        let count = self.records.len() + usize::from(mutation.is_some_and(|item| !item.replace));
+        let count = self.records.len()
+            + mutations
+                .iter()
+                .filter(|mutation| !mutation.replace)
+                .count();
         let count = u16::try_from(count).expect("the record cap fits u16");
-        let encoded_length = self.snapshot_encoded_length(mutation)?;
+        let records = ProjectedRecords::new(&self.records, mutations);
+        let fixed_length = STORE_HEADER.len()
+            + 1
+            + self.local_peer_id.as_ref().encoded_len()
+            + CHECKSUM_BYTES
+            + SALT_BYTES
+            + 2
+            + CHECKSUM_BYTES;
+        let encoded_length = records.clone().try_fold(fixed_length, |length, record| {
+            length
+                .checked_add(stored_record_encoded_length(record))
+                .ok_or(PeerAddressStoreError::SnapshotTooLong {
+                    actual: usize::MAX,
+                    maximum: MAX_STORE_BYTES,
+                })
+        })?;
+        if encoded_length > MAX_STORE_BYTES {
+            return Err(PeerAddressStoreError::SnapshotTooLong {
+                actual: encoded_length,
+                maximum: MAX_STORE_BYTES,
+            });
+        }
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(encoded_length)
@@ -654,75 +850,20 @@ impl PeerAddressStore {
         bytes.extend_from_slice(&self.ordering_salt);
         bytes.extend_from_slice(&count.to_be_bytes());
 
-        for index in 0..=self.records.len() {
-            if let Some(item) = mutation
-                && item.index == index
-            {
-                write_stored_record(&mut bytes, item.record);
-                if item.replace {
-                    continue;
-                }
-            }
-            if let Some(record) = self.records.get(index) {
-                if mutation.is_some_and(|item| item.replace && item.index == index) {
-                    continue;
-                }
-                write_stored_record(&mut bytes, record);
-            }
+        for record in records {
+            write_stored_record(&mut bytes, record);
         }
         let checksum = checksum(&bytes);
         bytes.extend_from_slice(&checksum);
-        if bytes.len() > MAX_STORE_BYTES {
-            return Err(PeerAddressStoreError::SnapshotTooLong {
-                actual: bytes.len(),
-                maximum: MAX_STORE_BYTES,
-            });
-        }
         debug_assert_eq!(bytes.len(), encoded_length);
         Ok(bytes)
     }
 
-    fn snapshot_encoded_length(
-        &self,
-        mutation: Option<SnapshotMutation<'_>>,
-    ) -> Result<usize, PeerAddressStoreError> {
-        let local_peer_id_length = self.local_peer_id.as_ref().encoded_len();
-        let fixed = STORE_HEADER.len()
-            + 1
-            + local_peer_id_length
-            + CHECKSUM_BYTES
-            + SALT_BYTES
-            + 2
-            + CHECKSUM_BYTES;
-        let mut length = self.records.iter().try_fold(fixed, |length, record| {
-            length
-                .checked_add(stored_record_encoded_length(record))
-                .ok_or(PeerAddressStoreError::SnapshotTooLong {
-                    actual: usize::MAX,
-                    maximum: MAX_STORE_BYTES,
-                })
-        })?;
-        if let Some(mutation) = mutation {
-            if mutation.replace {
-                length -= stored_record_encoded_length(&self.records[mutation.index]);
-            }
-            length = length
-                .checked_add(stored_record_encoded_length(mutation.record))
-                .ok_or(PeerAddressStoreError::SnapshotTooLong {
-                    actual: usize::MAX,
-                    maximum: MAX_STORE_BYTES,
-                })?;
-        }
-        if length > MAX_STORE_BYTES {
-            return Err(PeerAddressStoreError::SnapshotTooLong {
-                actual: length,
-                maximum: MAX_STORE_BYTES,
-            });
-        }
-        Ok(length)
-    }
-
     fn commit_snapshot(&mut self, bytes: &[u8]) -> Result<(), PeerAddressStoreError> {
+        #[cfg(test)]
+        {
+            self.commit_attempts += 1;
+        }
         let result = commit_snapshot(&self.directory, bytes);
         if let Err(source) = result {
             self.poisoned = true;
@@ -732,11 +873,85 @@ impl PeerAddressStore {
     }
 }
 
-#[derive(Clone, Copy)]
-struct SnapshotMutation<'a> {
-    index: usize,
+struct BatchMutation {
     replace: bool,
-    record: &'a StoredRecord,
+    record: StoredRecord,
+}
+
+fn push_batch_mutation(
+    mutations: &mut Vec<BatchMutation>,
+    maximum_remaining: usize,
+    mutation: BatchMutation,
+) -> Result<(), PeerAddressStoreError> {
+    if mutations.is_empty() {
+        mutations
+            .try_reserve_exact(maximum_remaining)
+            .map_err(PeerAddressStoreError::Allocation)?;
+    }
+    mutations.push(mutation);
+    Ok(())
+}
+
+#[derive(Clone)]
+struct ProjectedRecords<'a> {
+    existing: &'a [StoredRecord],
+    mutations: &'a [BatchMutation],
+    existing_index: usize,
+    mutation_index: usize,
+}
+
+impl<'a> ProjectedRecords<'a> {
+    const fn new(existing: &'a [StoredRecord], mutations: &'a [BatchMutation]) -> Self {
+        Self {
+            existing,
+            mutations,
+            existing_index: 0,
+            mutation_index: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for ProjectedRecords<'a> {
+    type Item = &'a StoredRecord;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let existing = self.existing.get(self.existing_index);
+        let mutation = self.mutations.get(self.mutation_index);
+        match (existing, mutation) {
+            (Some(existing), Some(mutation)) => {
+                match compare_peer_id_bytes(
+                    &existing.record.peer_id,
+                    &mutation.record.record.peer_id,
+                ) {
+                    std::cmp::Ordering::Less => {
+                        self.existing_index += 1;
+                        Some(existing)
+                    }
+                    std::cmp::Ordering::Equal => {
+                        debug_assert!(mutation.replace);
+                        self.existing_index += 1;
+                        self.mutation_index += 1;
+                        Some(&mutation.record)
+                    }
+                    std::cmp::Ordering::Greater => {
+                        debug_assert!(!mutation.replace);
+                        self.mutation_index += 1;
+                        Some(&mutation.record)
+                    }
+                }
+            }
+            (Some(existing), None) => {
+                self.existing_index += 1;
+                Some(existing)
+            }
+            (None, Some(mutation)) => {
+                debug_assert!(!mutation.replace);
+                self.mutation_index += 1;
+                Some(&mutation.record)
+            }
+            (None, None) => None,
+        }
+    }
 }
 
 struct RankedCandidate<'a> {
@@ -1023,7 +1238,7 @@ fn validate_bootstraps(
         }
         result.push(bootstrap);
     }
-    result.sort_unstable_by_key(|bootstrap| bootstrap.peer_id);
+    result.sort_unstable_by(|left, right| compare_peer_id_bytes(&left.peer_id, &right.peer_id));
     Ok(result)
 }
 
@@ -1088,6 +1303,88 @@ fn validate_record_capacity(
             return Err(PeerAddressStoreError::NetworkGroupCapacity {
                 maximum: MAX_RECORDS_PER_NETWORK_GROUP,
             });
+        }
+    }
+    Ok(())
+}
+
+fn validate_projected_capacity(
+    records: &[StoredRecord],
+    mutations: &[BatchMutation],
+) -> Result<(), PeerAddressStoreError> {
+    let insertions = mutations
+        .iter()
+        .filter(|mutation| !mutation.replace)
+        .count();
+    let projected_count =
+        records
+            .len()
+            .checked_add(insertions)
+            .ok_or(PeerAddressStoreError::RecordCapacity {
+                maximum: MAX_PEER_ADDRESS_RECORDS,
+            })?;
+    if projected_count > MAX_PEER_ADDRESS_RECORDS {
+        return Err(PeerAddressStoreError::RecordCapacity {
+            maximum: MAX_PEER_ADDRESS_RECORDS,
+        });
+    }
+
+    for (index, mutation) in mutations.iter().enumerate() {
+        let source_peer_id = mutation.record.source_peer_id;
+        if mutations[..index]
+            .iter()
+            .any(|prior| prior.record.source_peer_id == source_peer_id)
+        {
+            continue;
+        }
+        let source_count = ProjectedRecords::new(records, mutations)
+            .filter(|stored| stored.source_peer_id == source_peer_id)
+            .count();
+        if source_count > MAX_RECORDS_PER_BOOTSTRAP {
+            return Err(PeerAddressStoreError::SourceCapacity {
+                source: Box::new(source_peer_id),
+                maximum: MAX_RECORDS_PER_BOOTSTRAP,
+            });
+        }
+    }
+
+    let mut groups =
+        [NetworkGroup::Ipv4([0; 2]); MAX_PEER_RECORDS_PER_BATCH * MAX_ADDRESSES_PER_PEER_RECORD];
+    let mut group_count = 0_usize;
+    for mutation in mutations {
+        for address in &mutation.record.record.addresses {
+            let group = network_group(address).expect("validated records have network groups");
+            if groups[..group_count].contains(&group) {
+                continue;
+            }
+            groups[group_count] = group;
+            group_count += 1;
+        }
+    }
+
+    let mut counts = [0_u8; MAX_PEER_RECORDS_PER_BATCH * MAX_ADDRESSES_PER_PEER_RECORD];
+    for stored in ProjectedRecords::new(records, mutations) {
+        let mut record_groups = [NetworkGroup::Ipv4([0; 2]); MAX_ADDRESSES_PER_PEER_RECORD];
+        let mut record_group_count = 0_usize;
+        for address in &stored.record.addresses {
+            let group = network_group(address).expect("stored records are validated");
+            if record_groups[..record_group_count].contains(&group) {
+                continue;
+            }
+            record_groups[record_group_count] = group;
+            record_group_count += 1;
+            let Some(index) = groups[..group_count]
+                .iter()
+                .position(|candidate| *candidate == group)
+            else {
+                continue;
+            };
+            counts[index] += 1;
+            if usize::from(counts[index]) > MAX_RECORDS_PER_NETWORK_GROUP {
+                return Err(PeerAddressStoreError::NetworkGroupCapacity {
+                    maximum: MAX_RECORDS_PER_NETWORK_GROUP,
+                });
+            }
         }
     }
     Ok(())
@@ -1293,6 +1590,22 @@ fn encode_peer_id(peer_id: PeerId) -> ([u8; MAX_PEER_ID_BYTES], usize) {
     (bytes, written)
 }
 
+pub(crate) fn compare_peer_id_bytes(left: &PeerId, right: &PeerId) -> std::cmp::Ordering {
+    let left_hash = left.as_ref();
+    let right_hash = right.as_ref();
+    if left_hash.code() < 0x80 && right_hash.code() < 0x80 {
+        return left_hash
+            .code()
+            .cmp(&right_hash.code())
+            .then_with(|| left_hash.size().cmp(&right_hash.size()))
+            .then_with(|| left_hash.digest().cmp(right_hash.digest()));
+    }
+
+    let (left, left_length) = encode_peer_id(*left);
+    let (right, right_length) = encode_peer_id(*right);
+    left[..left_length].cmp(&right[..right_length])
+}
+
 fn open_lock(directory: &Path) -> Result<File, PeerAddressStoreError> {
     let lock = OpenOptions::new()
         .create(true)
@@ -1397,13 +1710,12 @@ fn decode_snapshot(
             ));
         }
         let envelope = cursor.read_exact(envelope_length)?;
-        let record =
-            SignedPeerRecord::from_envelope_bytes(envelope.to_vec()).map_err(|source| {
-                PeerAddressStoreError::InvalidRecord {
-                    index,
-                    source: Box::new(source),
-                }
-            })?;
+        let record = SignedPeerRecord::from_envelope_slice(envelope).map_err(|source| {
+            PeerAddressStoreError::InvalidRecord {
+                index,
+                source: Box::new(source),
+            }
+        })?;
         if record.envelope_bytes.as_slice() != envelope {
             return Err(PeerAddressStoreError::InvalidSnapshot(
                 "signed envelope is not normalized",
@@ -1412,10 +1724,10 @@ fn decode_snapshot(
         if record.peer_id == local_peer_id {
             return Err(PeerAddressStoreError::LocalRecord(Box::new(record.peer_id)));
         }
-        if records
-            .last()
-            .is_some_and(|prior: &StoredRecord| prior.record.peer_id >= record.peer_id)
-        {
+        if records.last().is_some_and(|prior: &StoredRecord| {
+            compare_peer_id_bytes(&prior.record.peer_id, &record.peer_id)
+                != std::cmp::Ordering::Less
+        }) {
             return Err(PeerAddressStoreError::InvalidSnapshot(
                 "record subjects are not strictly ordered",
             ));
