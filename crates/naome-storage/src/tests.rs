@@ -6,9 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use naome_chain::{ProofDag, ProofSetMembership};
 use naome_checker::{CheckError, ProofStateError};
-use naome_foundation::{FreeVariable, ZfcAxiom};
+use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 use naome_ledger::LedgerError;
-use naome_proof::{CERTIFICATE_MAX_BYTES, ProofCertificate, ProofId, ProofStep};
+use naome_proof::{
+    CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, ProofCertificate, ProofCertificateError,
+    ProofId, ProofStep,
+};
 
 use super::{
     AppendPhase, ENTRY_DOMAIN, FRAME_FIXED_BYTES, GENESIS_DOMAIN, JOURNAL_FILE_NAME,
@@ -74,6 +77,33 @@ fn referenced_generalization(proof_id: ProofId, variable: FreeVariable) -> Vec<u
             variable,
         },
     ])
+}
+
+fn over_formula_node_budget_bytes() -> Vec<u8> {
+    let variable = FreeVariable::new(1);
+    let mut half_limit = Formula::equal(variable, variable);
+    for _ in 0..14 {
+        half_limit = Formula::implies(half_limit.clone(), half_limit);
+    }
+    let half_limit = Formula::negate(half_limit);
+    let (half_bytes, half_nodes) = half_limit
+        .encode_canonical_with_node_limit(CERTIFICATE_MAX_FORMULA_NODES)
+        .unwrap();
+    let leaf_bytes = Formula::equal(variable, variable)
+        .encode_canonical()
+        .unwrap();
+    assert_eq!(half_nodes, CERTIFICATE_MAX_FORMULA_NODES / 2);
+
+    let formulas = [&half_bytes[..], &half_bytes[..], &leaf_bytes[..]];
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&u32::try_from(formulas.len()).unwrap().to_be_bytes());
+    for formula in formulas {
+        bytes.push(0x04);
+        bytes.extend_from_slice(&u32::try_from(formula.len()).unwrap().to_be_bytes());
+        bytes.extend_from_slice(formula);
+    }
+    assert!(bytes.len() < CERTIFICATE_MAX_BYTES);
+    bytes
 }
 
 fn frame(previous: [u8; 32], payload: &[u8]) -> (Vec<u8>, [u8; 32]) {
@@ -425,6 +455,65 @@ fn rejected_admissions_write_nothing_and_leave_the_journal_healthy() {
     assert!(reopened.proof(root_id).unwrap().is_some());
     assert!(reopened.proof(union_id).unwrap().is_some());
     assert!(reopened.proof(locked_child_id).unwrap().is_some());
+}
+
+#[test]
+fn formula_node_limit_rejection_is_atomic_and_complete_replay_fails_closed() {
+    let directory = TestDirectory::new();
+    let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
+    let next_bytes = axiom_bytes(ZfcAxiom::Union);
+    let over_budget = over_formula_node_budget_bytes();
+    let mut journal = ProofDagJournal::create(&directory.path).unwrap();
+    let root_id = journal
+        .apply_canonical_proof_bytes(root_bytes)
+        .unwrap()
+        .proof_id();
+    let committed_image = fs::read(directory.journal_path()).unwrap();
+    let committed_root = journal.proof_set_root().unwrap();
+
+    assert!(matches!(
+        journal.apply_canonical_proof_bytes_with_expected_id(
+            over_budget.clone(),
+            ProofId::from_bytes([0x51; 32]),
+        ),
+        Err(JournalError::Admission {
+            source: LedgerError::Decode {
+                source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
+            },
+        }) if maximum == CERTIFICATE_MAX_FORMULA_NODES
+    ));
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), committed_image);
+    assert_eq!(journal.len().unwrap(), 1);
+    assert_eq!(journal.proof_set_root().unwrap(), committed_root);
+    assert!(journal.proof(root_id).unwrap().is_some());
+
+    let next_id = journal
+        .apply_canonical_proof_bytes(next_bytes)
+        .unwrap()
+        .proof_id();
+    drop(journal);
+    let reopened = ProofDagJournal::open(&directory.path).unwrap();
+    assert!(reopened.proof(root_id).unwrap().is_some());
+    assert!(reopened.proof(next_id).unwrap().is_some());
+    drop(reopened);
+
+    let replay_directory = TestDirectory::new();
+    let complete_over_budget_image = journal_image(std::slice::from_ref(&over_budget));
+    replay_directory.write_image(&complete_over_budget_image);
+    assert!(matches!(
+        ProofDagJournal::open(&replay_directory.path),
+        Err(JournalError::Replay {
+            entry: 0,
+            source: LedgerError::Decode {
+                source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
+            },
+            ..
+        }) if maximum == CERTIFICATE_MAX_FORMULA_NODES
+    ));
+    assert_eq!(
+        fs::read(replay_directory.journal_path()).unwrap(),
+        complete_over_budget_image
+    );
 }
 
 #[test]

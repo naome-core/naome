@@ -48,9 +48,9 @@ Binder names are absent. A bound index must be smaller than the number of
 enclosing universal quantifiers. Derived connectives and existential
 quantification are encoded only after expansion to Foundation primitives.
 
-The codec admits at most 65,536 formula nodes, a nesting depth of 256, and
-393,216 formula bytes. These deterministic processing limits do not restrict
-the abstract Foundation language.
+The standalone Formula codec admits at most 65,536 nodes in one formula, a
+nesting depth of 256, and 393,216 formula bytes. These deterministic processing
+limits do not restrict the abstract Foundation language.
 
 ## Certificate envelope
 
@@ -64,9 +64,19 @@ A certificate contains at least one step. Steps are zero-indexed and their
 encoded order is part of the concrete certificate. The final step is the
 claimed conclusion.
 
-The codec admits at most 4,194,304 certificate bytes and 65,536 steps. These
-standalone processing limits bound expansion into the owned proof model before
-a block format exists; they are not limits of Foundation derivability.
+The codec admits at most 4,194,304 certificate bytes, 65,536 steps, and 65,536
+cumulative nodes across all explicitly encoded formula fields. Formula nodes
+are charged in encoded step and field order. Every occurrence is charged, even
+when equal formula bytes repeat. The cumulative budget is checked before the
+next formula node is decoded or allocated. Fixed ZFC expansions, resolved
+proof-reference conclusions, and checker-derived results are not certificate
+payload formulas and remain governed by Checker's separate work budget.
+
+These standalone processing limits bound expansion into the owned proof model;
+they are not limits of Foundation derivability. The cumulative certificate
+limit equals the standalone per-formula node limit, so one maximally sized
+formula remains representable without allowing that limit to reset for every
+field.
 
 Every formula-valued step field is encoded as:
 
@@ -132,6 +142,7 @@ The decoder accepts bytes exactly when:
 - every modus-ponens or generalization reference is strictly smaller than the
   index of the referencing step;
 - every canonical formula is well formed and within the processing limits;
+- all encoded formula occurrences cumulatively contain at most 65,536 nodes;
 - all counts fit `u32`; and
 - no bytes remain after the declared steps.
 

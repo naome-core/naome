@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::OnceLock;
 
 use naome_foundation::{
-    Formula, FormulaCodecError, FreeVariable, Replacement, Separation, ZfcAxiom,
+    FORMULA_MAX_NODES, Formula, FormulaCodecError, FreeVariable, Replacement, Separation, ZfcAxiom,
 };
 
 pub use identity::{DerivationId, ProofId, StatementId};
@@ -25,6 +25,14 @@ pub const CERTIFICATE_MAX_BYTES: usize = 4_194_304;
 
 /// Maximum number of steps admitted in one proof certificate.
 pub const CERTIFICATE_MAX_STEPS: usize = 65_536;
+
+/// Maximum cumulative formula nodes encoded across one proof certificate.
+///
+/// Every formula occurrence is charged in step and field order, including
+/// repeated equal formulas. This equals the standalone Formula node limit so
+/// one maximally sized formula remains representable without allowing the
+/// per-formula limit to reset across a certificate.
+pub const CERTIFICATE_MAX_FORMULA_NODES: usize = FORMULA_MAX_NODES;
 
 const SIMPLIFICATION: u8 = 0x00;
 const FREGE: u8 = 0x01;
@@ -56,8 +64,9 @@ impl ProofCertificate {
     /// Constructs a structurally valid certificate.
     ///
     /// This checks that the certificate is non-empty, all values fit the wire
-    /// format, every formula satisfies the codec limits, and inference
-    /// inputs refer strictly to earlier steps.
+    /// format, every formula satisfies its codec limits, all formula fields
+    /// fit the cumulative certificate node limit, and inference inputs refer
+    /// strictly to earlier steps.
     pub fn new(steps: Vec<ProofStep>) -> Result<Self, ProofCertificateError> {
         validate_steps(&steps)?;
         let _ = codec::encode_steps(&steps)?;
@@ -335,6 +344,8 @@ pub enum ProofCertificateError {
     UnknownStepTag(u8),
     /// The encoded certificate uses an unknown fixed-ZFC-axiom tag.
     UnknownZfcAxiomTag(u8),
+    /// Formula occurrences cumulatively exceed the certificate node budget.
+    FormulaNodeLimitExceeded { maximum: usize },
     /// A canonical formula inside the certificate is malformed or unsupported.
     Formula(FormulaCodecError),
     /// A complete certificate is followed by additional bytes.
@@ -364,6 +375,10 @@ impl fmt::Display for ProofCertificateError {
             Self::UnknownZfcAxiomTag(tag) => {
                 write!(formatter, "unknown fixed-ZFC-axiom tag 0x{tag:02x}")
             }
+            Self::FormulaNodeLimitExceeded { maximum } => write!(
+                formatter,
+                "proof certificate exceeds the cumulative limit of {maximum} formula nodes"
+            ),
             Self::Formula(error) => write!(formatter, "invalid canonical formula: {error}"),
             Self::TrailingBytes { remaining } => {
                 write!(

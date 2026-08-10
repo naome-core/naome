@@ -40,16 +40,20 @@ impl Formula {
     /// Binder names are absent from the encoding. Bound variables retain the
     /// De Bruijn indices already stored by [`Formula`].
     pub fn encode_canonical(&self) -> Result<Vec<u8>, FormulaCodecError> {
-        let mut output = Vec::new();
-        let mut nodes = 0;
-        encode_node(
-            &self.0,
-            0,
-            &mut nodes,
-            &mut FreeVariableEncoding::Preserve,
-            &mut output,
-        )?;
-        Ok(output)
+        self.encode_canonical_with_node_limit(FORMULA_MAX_NODES)
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// Encodes this formula within a caller-supplied node limit.
+    ///
+    /// The effective limit never exceeds [`FORMULA_MAX_NODES`]. The returned
+    /// node count lets a containing canonical format enforce one cumulative
+    /// budget across multiple formulas without inspecting the private tree.
+    pub fn encode_canonical_with_node_limit(
+        &self,
+        maximum_nodes: usize,
+    ) -> Result<(Vec<u8>, usize), FormulaCodecError> {
+        self.encode_with_node_limit(maximum_nodes, FreeVariableEncoding::Preserve)
     }
 
     /// Encodes this formula after canonicalizing its free-variable identifiers.
@@ -59,14 +63,14 @@ impl Formula {
     /// unchanged. This representation is used for proof-fragment identities;
     /// it does not replace [`Self::encode_canonical`] on the certificate wire.
     pub fn encode_free_variable_normalized(&self) -> Result<Vec<u8>, FormulaCodecError> {
-        let mut output = Vec::new();
-        let mut nodes = 0;
-        let mut variables = FreeVariableEncoding::Normalize {
-            identifiers: BTreeMap::new(),
-            next_identifier: 0,
-        };
-        encode_node(&self.0, 0, &mut nodes, &mut variables, &mut output)?;
-        Ok(output)
+        self.encode_with_node_limit(
+            FORMULA_MAX_NODES,
+            FreeVariableEncoding::Normalize {
+                identifiers: BTreeMap::new(),
+                next_identifier: 0,
+            },
+        )
+        .map(|(bytes, _)| bytes)
     }
 
     /// Decodes one complete canonical Proof Certificate formula.
@@ -74,6 +78,19 @@ impl Formula {
     /// The decoder rejects dangling De Bruijn indices, unknown tags, excessive
     /// nesting, truncated values, and trailing bytes.
     pub fn decode_canonical(bytes: &[u8]) -> Result<Self, FormulaCodecError> {
+        Self::decode_canonical_with_node_limit(bytes, FORMULA_MAX_NODES).map(|(formula, _)| formula)
+    }
+
+    /// Decodes one complete formula within a caller-supplied node limit.
+    ///
+    /// The effective limit never exceeds [`FORMULA_MAX_NODES`]. Node
+    /// exhaustion is checked before the next node is decoded or allocated.
+    /// The returned count lets a containing canonical format share one
+    /// cumulative budget across multiple formulas.
+    pub fn decode_canonical_with_node_limit(
+        bytes: &[u8],
+        maximum_nodes: usize,
+    ) -> Result<(Self, usize), FormulaCodecError> {
         if bytes.len() > FORMULA_MAX_BYTES {
             return Err(FormulaCodecError::InputTooLong {
                 actual: bytes.len(),
@@ -82,7 +99,7 @@ impl Formula {
         }
 
         let mut cursor = Cursor::new(bytes);
-        let mut nodes = 0;
+        let mut nodes = NodeBudget::new(maximum_nodes);
         let node = decode_node(&mut cursor, 0, 0, &mut nodes)?;
 
         if cursor.remaining() != 0 {
@@ -91,19 +108,30 @@ impl Formula {
             });
         }
 
-        Ok(Self(node))
+        Ok((Self(node), nodes.used()))
+    }
+
+    fn encode_with_node_limit(
+        &self,
+        maximum_nodes: usize,
+        mut variables: FreeVariableEncoding,
+    ) -> Result<(Vec<u8>, usize), FormulaCodecError> {
+        let mut output = Vec::new();
+        let mut nodes = NodeBudget::new(maximum_nodes);
+        encode_node(&self.0, 0, &mut nodes, &mut variables, &mut output)?;
+        Ok((output, nodes.used()))
     }
 }
 
 fn encode_node(
     node: &Node,
     depth: u32,
-    nodes: &mut usize,
+    nodes: &mut NodeBudget,
     variables: &mut FreeVariableEncoding,
     output: &mut Vec<u8>,
 ) -> Result<(), FormulaCodecError> {
     check_depth(depth)?;
-    count_node(nodes)?;
+    nodes.charge()?;
 
     match node {
         Node::Equal(left, right) => {
@@ -178,10 +206,10 @@ fn decode_node(
     cursor: &mut Cursor<'_>,
     depth: u32,
     binder_depth: u32,
-    nodes: &mut usize,
+    nodes: &mut NodeBudget,
 ) -> Result<Node, FormulaCodecError> {
     check_depth(depth)?;
-    count_node(nodes)?;
+    nodes.charge()?;
 
     match cursor.read_u8()? {
         EQUAL => Ok(Node::Equal(
@@ -240,20 +268,32 @@ fn check_depth(depth: u32) -> Result<(), FormulaCodecError> {
     Ok(())
 }
 
-fn count_node(nodes: &mut usize) -> Result<(), FormulaCodecError> {
-    *nodes = nodes
-        .checked_add(1)
-        .ok_or(FormulaCodecError::NodeLimitExceeded {
-            maximum: FORMULA_MAX_NODES,
-        })?;
+struct NodeBudget {
+    used: usize,
+    maximum: usize,
+}
 
-    if *nodes > FORMULA_MAX_NODES {
-        return Err(FormulaCodecError::NodeLimitExceeded {
-            maximum: FORMULA_MAX_NODES,
-        });
+impl NodeBudget {
+    fn new(maximum: usize) -> Self {
+        Self {
+            used: 0,
+            maximum: maximum.min(FORMULA_MAX_NODES),
+        }
     }
 
-    Ok(())
+    const fn used(&self) -> usize {
+        self.used
+    }
+
+    fn charge(&mut self) -> Result<(), FormulaCodecError> {
+        if self.used == self.maximum {
+            return Err(FormulaCodecError::NodeLimitExceeded {
+                maximum: self.maximum,
+            });
+        }
+        self.used += 1;
+        Ok(())
+    }
 }
 
 struct Cursor<'a> {
@@ -303,7 +343,7 @@ impl<'a> Cursor<'a> {
 pub enum FormulaCodecError {
     /// The byte sequence is longer than any admitted formula.
     InputTooLong { actual: usize, maximum: usize },
-    /// The formula contains more nodes than the codec admits.
+    /// The formula contains more nodes than the effective node limit admits.
     NodeLimitExceeded { maximum: usize },
     /// Formula nesting exceeds the deterministic processing limit.
     DepthLimitExceeded { maximum: u32 },
@@ -360,7 +400,10 @@ impl Error for FormulaCodecError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FormulaCodecError};
+    use super::{
+        EQUAL, FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FormulaCodecError, IMPLIES,
+        NOT,
+    };
     use crate::{Formula, FreeVariable};
 
     #[test]
@@ -450,6 +493,49 @@ mod tests {
         let decoded = Formula::decode_canonical(&encoded).unwrap();
 
         assert_eq!(decoded, formula);
+    }
+
+    #[test]
+    fn caller_node_limits_are_counted_before_the_next_node() {
+        let x = FreeVariable::new(1);
+        let leaf = Formula::equal(x, x);
+        let formula = Formula::negate(Formula::equal(x, x));
+        let (encoded, encoded_nodes) = formula.encode_canonical_with_node_limit(2).unwrap();
+        let (decoded, decoded_nodes) =
+            Formula::decode_canonical_with_node_limit(&encoded, 2).unwrap();
+
+        assert_eq!(encoded_nodes, 2);
+        assert_eq!(decoded_nodes, 2);
+        assert_eq!(decoded, formula);
+        assert_eq!(
+            formula.encode_canonical_with_node_limit(1),
+            Err(FormulaCodecError::NodeLimitExceeded { maximum: 1 })
+        );
+        assert_eq!(
+            Formula::decode_canonical_with_node_limit(&encoded, 1),
+            Err(FormulaCodecError::NodeLimitExceeded { maximum: 1 })
+        );
+        assert_eq!(
+            leaf.encode_canonical_with_node_limit(0),
+            Err(FormulaCodecError::NodeLimitExceeded { maximum: 0 })
+        );
+        assert_eq!(
+            Formula::decode_canonical_with_node_limit(&[EQUAL], 0),
+            Err(FormulaCodecError::NodeLimitExceeded { maximum: 0 })
+        );
+
+        assert_eq!(
+            Formula::decode_canonical_with_node_limit(&[NOT, 0xff], 1),
+            Err(FormulaCodecError::NodeLimitExceeded { maximum: 1 })
+        );
+
+        let mut invalid_second_branch = vec![IMPLIES];
+        invalid_second_branch.extend_from_slice(&leaf.encode_canonical().unwrap());
+        invalid_second_branch.push(0xff);
+        assert_eq!(
+            Formula::decode_canonical_with_node_limit(&invalid_second_branch, 2),
+            Err(FormulaCodecError::NodeLimitExceeded { maximum: 2 })
+        );
     }
 
     #[test]
@@ -547,6 +633,12 @@ mod tests {
         );
         assert_eq!(
             rejected.encode_canonical(),
+            Err(FormulaCodecError::NodeLimitExceeded {
+                maximum: FORMULA_MAX_NODES,
+            })
+        );
+        assert_eq!(
+            rejected.encode_canonical_with_node_limit(usize::MAX),
             Err(FormulaCodecError::NodeLimitExceeded {
                 maximum: FORMULA_MAX_NODES,
             })
