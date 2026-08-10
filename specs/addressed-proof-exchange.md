@@ -127,8 +127,9 @@ This restriction is intentional. A malicious peer can send a wrong-address
 candidate whose missing references are discovered before mathematical checking
 can derive its actual `ProofId`. Fixed candidate and request limits bound that
 work; retaining the complete closure unselected prevents such a response from
-smuggling dependencies into selected state. Retries, multi-peer fallback,
-rolling budgets, and total-job deadlines remain later session policy.
+smuggling dependencies into selected state. Proof-request retries, multi-peer
+fallback, rolling work budgets, and total-job deadlines remain later policy;
+managed transport redial is specified separately by the authenticated binding.
 
 ## Explicit exclusions
 

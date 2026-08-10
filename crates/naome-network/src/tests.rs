@@ -4,8 +4,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
+use libp2p::core::{Endpoint, transport::PortUse};
+use libp2p::futures::StreamExt;
+use libp2p::swarm::{ConnectionId, NetworkBehaviour, ToSwarm};
 use naome::proof_exchange::ProofRequest;
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofStep};
@@ -14,7 +18,8 @@ use tokio::time::timeout;
 
 use super::{
     BuildError, DependencyAcquisitionProgress, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS,
-    NetworkEvent, PeerId, PendingBudget, RequestStartError, StaticPeer, StaticProofNetwork,
+    NetworkEvent, PeerId, PeerSessionEvent, PendingBudget, RequestStartError, StaticPeer,
+    StaticProofNetwork,
 };
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -88,6 +93,16 @@ fn peer(identity: &super::Keypair, address: super::Multiaddr) -> StaticPeer {
     StaticPeer::new(identity.public().to_peer_id(), address)
 }
 
+fn ordered_identities() -> (super::Keypair, super::Keypair) {
+    let first = super::Keypair::generate_ed25519();
+    let second = super::Keypair::generate_ed25519();
+    if first.public().to_peer_id().to_bytes() < second.public().to_peer_id().to_bytes() {
+        (first, second)
+    } else {
+        (second, first)
+    }
+}
+
 async fn listening_address(network: &mut StaticProofNetwork) -> super::Multiaddr {
     network.listen_on(address(0)).unwrap();
     timeout(Duration::from_secs(10), async {
@@ -106,6 +121,62 @@ async fn listening_address(network: &mut StaticProofNetwork) -> super::Multiaddr
     })
     .await
     .expect("listener did not start")
+}
+
+async fn await_session(
+    owner: &mut StaticProofNetwork,
+    passive: &mut StaticProofNetwork,
+    owner_peer_id: PeerId,
+    passive_peer_id: PeerId,
+) {
+    let mut owner_established = false;
+    let mut passive_established = false;
+    timeout(Duration::from_secs(10), async {
+        while !owner_established || !passive_established {
+            tokio::select! {
+                event = owner.next_event() => match event {
+                    NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) => {
+                        assert_eq!(peer_id, passive_peer_id);
+                        owner_established = true;
+                    }
+                    NetworkEvent::PeerSession(PeerSessionEvent::DialFailed { peer_id }) => {
+                        panic!("managed dial to {peer_id} failed");
+                    }
+                    NetworkEvent::ListenerError { error, .. } => panic!("owner listener failed: {error}"),
+                    _ => {}
+                },
+                event = passive.next_event() => match event {
+                    NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) => {
+                        assert_eq!(peer_id, owner_peer_id);
+                        passive_established = true;
+                    }
+                    NetworkEvent::ListenerError { error, .. } => panic!("passive listener failed: {error}"),
+                    _ => {}
+                },
+            }
+        }
+    })
+    .await
+    .expect("managed peer session did not establish");
+}
+
+async fn connected_pair() -> (StaticProofNetwork, StaticProofNetwork, PeerId, PeerId) {
+    let (owner_identity, passive_identity) = ordered_identities();
+    let owner_peer_id = owner_identity.public().to_peer_id();
+    let passive_peer_id = passive_identity.public().to_peer_id();
+    let mut passive = StaticProofNetwork::new(
+        passive_identity,
+        [StaticPeer::new(owner_peer_id, address(1))],
+    )
+    .unwrap();
+    let passive_address = listening_address(&mut passive).await;
+    let mut owner = StaticProofNetwork::new(
+        owner_identity,
+        [StaticPeer::new(passive_peer_id, passive_address)],
+    )
+    .unwrap();
+    await_session(&mut owner, &mut passive, owner_peer_id, passive_peer_id).await;
+    (owner, passive, owner_peer_id, passive_peer_id)
 }
 
 async fn exchange_once(
@@ -155,22 +226,7 @@ async fn receive_once(
 
 #[tokio::test]
 async fn dependency_acquisition_is_unselected_until_one_explicit_atomic_promotion() {
-    let server_identity = super::Keypair::generate_ed25519();
-    let client_identity = super::Keypair::generate_ed25519();
-    let server_peer_id = server_identity.public().to_peer_id();
-    let client_peer_id = client_identity.public().to_peer_id();
-
-    let mut server = StaticProofNetwork::new(
-        server_identity,
-        [StaticPeer::new(client_peer_id, address(1))],
-    )
-    .unwrap();
-    let server_address = listening_address(&mut server).await;
-    let mut client = StaticProofNetwork::new(
-        client_identity,
-        [StaticPeer::new(server_peer_id, server_address)],
-    )
-    .unwrap();
+    let (mut client, mut server, _, server_peer_id) = connected_pair().await;
 
     let server_directory = TestDirectory::new("closure-server");
     let mut server_journal = ProofDagJournal::create(server_directory.path()).unwrap();
@@ -258,6 +314,151 @@ async fn static_configuration_rejects_local_duplicate_and_excess_peers() {
 }
 
 #[tokio::test]
+async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
+    let (owner_identity, passive_identity) = ordered_identities();
+    let owner_peer_id = owner_identity.public().to_peer_id();
+    let passive_peer_id = passive_identity.public().to_peer_id();
+    let local_address = address(8);
+    let remote_address = address(9);
+
+    let mut owner = StaticProofNetwork::new(
+        owner_identity,
+        [StaticPeer::new(passive_peer_id, remote_address.clone())],
+    )
+    .unwrap();
+    assert!(
+        NetworkBehaviour::handle_established_inbound_connection(
+            owner.swarm.behaviour_mut(),
+            ConnectionId::new_unchecked(500),
+            passive_peer_id,
+            &local_address,
+            &remote_address,
+        )
+        .is_err()
+    );
+    assert!(
+        !owner
+            .swarm
+            .behaviour()
+            .exchange
+            .is_connected(&passive_peer_id)
+    );
+
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
+    let managed_connection_id =
+        match NetworkBehaviour::poll(&mut owner.swarm.behaviour_mut().sessions, &mut context) {
+            Poll::Ready(ToSwarm::Dial { opts }) => opts.connection_id(),
+            _ => panic!("the dial owner did not produce its initial managed dial"),
+        };
+    let stale_connection_id = ConnectionId::new_unchecked(501);
+    assert_ne!(managed_connection_id, stale_connection_id);
+    assert!(
+        NetworkBehaviour::handle_established_outbound_connection(
+            owner.swarm.behaviour_mut(),
+            stale_connection_id,
+            passive_peer_id,
+            &remote_address,
+            Endpoint::Dialer,
+            PortUse::New,
+        )
+        .is_err()
+    );
+    assert!(
+        !owner
+            .swarm
+            .behaviour()
+            .exchange
+            .is_connected(&passive_peer_id)
+    );
+    assert!(
+        NetworkBehaviour::handle_established_outbound_connection(
+            owner.swarm.behaviour_mut(),
+            managed_connection_id,
+            passive_peer_id,
+            &remote_address,
+            Endpoint::Dialer,
+            PortUse::New,
+        )
+        .is_ok()
+    );
+
+    let mut passive = StaticProofNetwork::new(
+        passive_identity,
+        [StaticPeer::new(owner_peer_id, local_address.clone())],
+    )
+    .unwrap();
+    assert!(
+        NetworkBehaviour::handle_established_outbound_connection(
+            passive.swarm.behaviour_mut(),
+            ConnectionId::new_unchecked(502),
+            owner_peer_id,
+            &local_address,
+            Endpoint::Dialer,
+            PortUse::New,
+        )
+        .is_err()
+    );
+    assert!(
+        !passive
+            .swarm
+            .behaviour()
+            .exchange
+            .is_connected(&owner_peer_id)
+    );
+    assert!(
+        NetworkBehaviour::handle_established_inbound_connection(
+            passive.swarm.behaviour_mut(),
+            ConnectionId::new_unchecked(503),
+            owner_peer_id,
+            &remote_address,
+            &local_address,
+        )
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn connection_limit_rejection_does_not_consume_pre_authentication_budget() {
+    let local_identity = super::Keypair::generate_ed25519();
+    let remote_identity = super::Keypair::generate_ed25519();
+    let remote_peer_id = remote_identity.public().to_peer_id();
+    let mut network = StaticProofNetwork::new(
+        local_identity,
+        [StaticPeer::new(remote_peer_id, address(9))],
+    )
+    .unwrap();
+    let local_address = address(8);
+    let remote_address = address(9);
+
+    for index in 0..MAX_STATIC_PEERS {
+        NetworkBehaviour::handle_pending_inbound_connection(
+            &mut network.swarm.behaviour_mut().limits,
+            ConnectionId::new_unchecked(index),
+            &local_address,
+            &remote_address,
+        )
+        .unwrap();
+    }
+    let tokens_before = network.swarm.behaviour().sessions.inbound_tokens_for_test();
+    assert_eq!(tokens_before, super::INBOUND_AUTH_BURST);
+
+    assert!(
+        NetworkBehaviour::handle_pending_inbound_connection(
+            network.swarm.behaviour_mut(),
+            ConnectionId::new_unchecked(MAX_STATIC_PEERS),
+            &local_address,
+            &remote_address,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        network.swarm.behaviour().sessions.inbound_tokens_for_test(),
+        tokens_before
+    );
+}
+
+#[tokio::test]
 async fn outbound_requests_are_authorized_and_bounded() {
     let local = super::Keypair::generate_ed25519();
     let remote = super::Keypair::generate_ed25519();
@@ -271,6 +472,16 @@ async fn outbound_requests_are_authorized_and_bounded() {
         network.request_proof(unknown, requested),
         Err(RequestStartError::UnknownPeer(unknown))
     );
+    assert_eq!(
+        network.request_proof(remote_peer_id, requested),
+        Err(RequestStartError::PeerDisconnected(remote_peer_id))
+    );
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    network
+        .swarm
+        .behaviour_mut()
+        .sessions
+        .mark_connected_for_test(remote_peer_id);
     network.request_proof(remote_peer_id, requested).unwrap();
     assert_eq!(
         network.request_proof(remote_peer_id, request([0x22; 32])),
@@ -292,6 +503,19 @@ async fn outbound_requests_are_authorized_and_bounded() {
     assert!(PendingBudget::try_acquire(&budget).is_none());
     assert_eq!(
         limited.request_proof(limited_peer_id, request([0x55; 32])),
+        Err(RequestStartError::PeerDisconnected(limited_peer_id))
+    );
+    assert_eq!(
+        limited.pending_budget.active.load(Ordering::Relaxed),
+        MAX_PENDING_REQUESTS
+    );
+    limited
+        .swarm
+        .behaviour_mut()
+        .sessions
+        .mark_connected_for_test(limited_peer_id);
+    assert_eq!(
+        limited.request_proof(limited_peer_id, request([0x66; 32])),
         Err(RequestStartError::GlobalLimit {
             maximum: MAX_PENDING_REQUESTS,
         })
@@ -301,23 +525,39 @@ async fn outbound_requests_are_authorized_and_bounded() {
 }
 
 #[tokio::test]
-async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
-    let server_identity = super::Keypair::generate_ed25519();
-    let client_identity = super::Keypair::generate_ed25519();
-    let server_peer_id = server_identity.public().to_peer_id();
-    let client_peer_id = client_identity.public().to_peer_id();
+async fn a_disconnected_passive_peer_request_cannot_trigger_a_dial() {
+    let (remote_owner, local_passive) = ordered_identities();
+    let remote_peer_id = remote_owner.public().to_peer_id();
+    let mut network =
+        StaticProofNetwork::new(local_passive, [StaticPeer::new(remote_peer_id, address(9))])
+            .unwrap();
+    let requested = request([0x56; 32]);
 
-    let mut server = StaticProofNetwork::new(
-        server_identity,
-        [StaticPeer::new(client_peer_id, address(1))],
-    )
-    .unwrap();
-    let server_address = listening_address(&mut server).await;
-    let mut client = StaticProofNetwork::new(
-        client_identity,
-        [StaticPeer::new(server_peer_id, server_address)],
-    )
-    .unwrap();
+    assert_eq!(
+        network.request_proof(remote_peer_id, requested),
+        Err(RequestStartError::PeerDisconnected(remote_peer_id))
+    );
+    assert!(network.pending.is_empty());
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    assert!(
+        timeout(Duration::from_millis(50), network.swarm.select_next_some())
+            .await
+            .is_err(),
+        "a disconnected proof request unexpectedly caused network activity"
+    );
+    assert_eq!(
+        network
+            .swarm
+            .behaviour()
+            .sessions
+            .connection_status(&remote_peer_id),
+        Some(false)
+    );
+}
+
+#[tokio::test]
+async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
+    let (mut client, mut server, _, server_peer_id) = connected_pair().await;
 
     let server_directory = TestDirectory::new("server");
     let mut server_journal = ProofDagJournal::create(server_directory.path()).unwrap();
@@ -363,13 +603,66 @@ async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
 }
 
 #[tokio::test]
+async fn an_established_session_redials_after_close_and_remains_usable() {
+    let (mut owner, mut passive, owner_peer_id, passive_peer_id) = connected_pair().await;
+    owner.swarm.disconnect_peer_id(passive_peer_id).unwrap();
+
+    let mut owner_disconnected = false;
+    let mut passive_disconnected = false;
+    let mut owner_reestablished = false;
+    let mut passive_reestablished = false;
+    timeout(Duration::from_secs(10), async {
+        while !owner_reestablished || !passive_reestablished {
+            tokio::select! {
+                event = owner.next_event() => match event {
+                    NetworkEvent::PeerSession(PeerSessionEvent::Disconnected { peer_id }) => {
+                        assert_eq!(peer_id, passive_peer_id);
+                        owner_disconnected = true;
+                    }
+                    NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) => {
+                        assert!(owner_disconnected);
+                        assert_eq!(peer_id, passive_peer_id);
+                        owner_reestablished = true;
+                    }
+                    NetworkEvent::PeerSession(PeerSessionEvent::DialFailed { peer_id }) => {
+                        panic!("managed redial to {peer_id} failed");
+                    }
+                    _ => {}
+                },
+                event = passive.next_event() => match event {
+                    NetworkEvent::PeerSession(PeerSessionEvent::Disconnected { peer_id }) => {
+                        assert_eq!(peer_id, owner_peer_id);
+                        passive_disconnected = true;
+                    }
+                    NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) => {
+                        assert!(passive_disconnected);
+                        assert_eq!(peer_id, owner_peer_id);
+                        passive_reestablished = true;
+                    }
+                    _ => {}
+                },
+            }
+        }
+    })
+    .await
+    .expect("managed session did not re-establish after close");
+
+    let directory = TestDirectory::new("redial-server");
+    let journal = ProofDagJournal::create(directory.path()).unwrap();
+    let response = exchange_once(
+        &mut owner,
+        &mut passive,
+        &journal,
+        passive_peer_id,
+        request([0x77; 32]),
+    )
+    .await;
+    assert!(response.is_unavailable());
+}
+
+#[tokio::test]
 async fn simultaneous_bidirectional_requests_are_correlated() {
-    let identity_a = super::Keypair::generate_ed25519();
-    let identity_b = super::Keypair::generate_ed25519();
-    let peer_a = identity_a.public().to_peer_id();
-    let peer_b = identity_b.public().to_peer_id();
-    let reserved_b = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let port_b = reserved_b.local_addr().unwrap().port();
+    let (mut network_a, mut network_b, peer_a, peer_b) = connected_pair().await;
 
     let directory_a = TestDirectory::new("bidirectional-a");
     let mut journal_a = ProofDagJournal::create(directory_a.path()).unwrap();
@@ -383,34 +676,6 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
         .apply_canonical_proof_bytes(union_bytes())
         .unwrap()
         .proof_id();
-
-    let mut network_a =
-        StaticProofNetwork::new(identity_a, [StaticPeer::new(peer_b, address(port_b))]).unwrap();
-    let address_a = listening_address(&mut network_a).await;
-    drop(reserved_b);
-    let mut network_b =
-        StaticProofNetwork::new(identity_b, [StaticPeer::new(peer_a, address_a)]).unwrap();
-    network_b.listen_on(address(port_b)).unwrap();
-    timeout(Duration::from_secs(10), async {
-        loop {
-            if let NetworkEvent::Listening { .. } = network_b.next_event().await {
-                return;
-            }
-        }
-    })
-    .await
-    .expect("second bidirectional listener did not start");
-
-    let warmup = exchange_once(
-        &mut network_a,
-        &mut network_b,
-        &journal_b,
-        peer_b,
-        request([0x7f; 32]),
-    )
-    .await;
-    assert!(warmup.is_unavailable());
-    drop(warmup);
 
     network_a
         .request_proof(peer_b, ProofRequest::new(proof_b))
@@ -465,21 +730,7 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
 
 #[tokio::test]
 async fn a_closed_response_channel_is_never_reported_as_unavailable() {
-    let server_identity = super::Keypair::generate_ed25519();
-    let client_identity = super::Keypair::generate_ed25519();
-    let server_peer_id = server_identity.public().to_peer_id();
-    let client_peer_id = client_identity.public().to_peer_id();
-    let mut server = StaticProofNetwork::new(
-        server_identity,
-        [StaticPeer::new(client_peer_id, address(1))],
-    )
-    .unwrap();
-    let server_address = listening_address(&mut server).await;
-    let mut client = StaticProofNetwork::new(
-        client_identity,
-        [StaticPeer::new(server_peer_id, server_address)],
-    )
-    .unwrap();
+    let (mut client, mut server, _, server_peer_id) = connected_pair().await;
     client
         .request_proof(server_peer_id, request([0xb6; 32]))
         .unwrap();
@@ -514,11 +765,15 @@ async fn a_closed_response_channel_is_never_reported_as_unavailable() {
 
 #[tokio::test]
 async fn unlisted_authenticated_peer_cannot_deliver_a_request() {
-    let server_identity = super::Keypair::generate_ed25519();
-    let authorized_identity = super::Keypair::generate_ed25519();
-    let attacker_identity = super::Keypair::generate_ed25519();
+    let (attacker_identity, server_identity) = ordered_identities();
     let server_peer_id = server_identity.public().to_peer_id();
     let attacker_peer_id = attacker_identity.public().to_peer_id();
+    let authorized_identity = loop {
+        let candidate = super::Keypair::generate_ed25519();
+        if candidate.public().to_peer_id().to_bytes() < server_peer_id.to_bytes() {
+            break candidate;
+        }
+    };
 
     let mut server =
         StaticProofNetwork::new(server_identity, [peer(&authorized_identity, address(1))]).unwrap();
@@ -528,17 +783,38 @@ async fn unlisted_authenticated_peer_cannot_deliver_a_request() {
         [StaticPeer::new(server_peer_id, server_address)],
     )
     .unwrap();
-    attacker
-        .request_proof(server_peer_id, request([0x33; 32]))
-        .unwrap();
+    assert_eq!(
+        attacker.request_proof(server_peer_id, request([0x33; 32])),
+        Err(RequestStartError::PeerDisconnected(server_peer_id))
+    );
+    assert_eq!(attacker.pending_budget.active.load(Ordering::Relaxed), 0);
 
+    let requested = request([0x33; 32]);
     timeout(Duration::from_secs(10), async {
+        let mut request_started = false;
         loop {
             tokio::select! {
                 event = attacker.next_event() => {
-                    if let NetworkEvent::OutboundFailure { peer_id, .. } = event {
-                        assert_eq!(peer_id, server_peer_id);
-                        return;
+                    match event {
+                        NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id })
+                            if !request_started =>
+                        {
+                            assert_eq!(peer_id, server_peer_id);
+                            attacker.request_proof(server_peer_id, requested).unwrap();
+                            request_started = true;
+                        }
+                        NetworkEvent::OutboundFailure { peer_id, request, .. } => {
+                            assert_eq!(peer_id, server_peer_id);
+                            assert_eq!(request, requested);
+                            return;
+                        }
+                        NetworkEvent::PeerSession(PeerSessionEvent::DialFailed { peer_id })
+                            if !request_started =>
+                        {
+                            assert_eq!(peer_id, server_peer_id);
+                            return;
+                        }
+                        _ => {}
                     }
                 },
                 event = server.next_event() => {
@@ -553,16 +829,28 @@ async fn unlisted_authenticated_peer_cannot_deliver_a_request() {
     .expect("unlisted peer was not rejected");
 
     assert_ne!(attacker_peer_id, authorized_identity.public().to_peer_id());
+    assert_eq!(
+        attacker.request_proof(server_peer_id, request([0x34; 32])),
+        Err(RequestStartError::PeerDisconnected(server_peer_id))
+    );
+    assert_eq!(attacker.pending_budget.active.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
 async fn expected_peer_id_mismatch_never_delivers_a_request() {
-    let server_identity = super::Keypair::generate_ed25519();
-    let client_identity = super::Keypair::generate_ed25519();
-    let claimed_server = super::Keypair::generate_ed25519();
+    let (client_identity, claimed_server) = ordered_identities();
+    let client_peer_id = client_identity.public().to_peer_id();
+    let client_peer_bytes = client_peer_id.to_bytes();
+    let server_identity = loop {
+        let candidate = super::Keypair::generate_ed25519();
+        if candidate.public().to_peer_id().to_bytes() > client_peer_bytes
+            && candidate.public().to_peer_id() != claimed_server.public().to_peer_id()
+        {
+            break candidate;
+        }
+    };
     let actual_server_peer_id = server_identity.public().to_peer_id();
     let claimed_server_peer_id = claimed_server.public().to_peer_id();
-    let client_peer_id = client_identity.public().to_peer_id();
 
     let mut server = StaticProofNetwork::new(
         server_identity,
@@ -575,15 +863,16 @@ async fn expected_peer_id_mismatch_never_delivers_a_request() {
         [StaticPeer::new(claimed_server_peer_id, server_address)],
     )
     .unwrap();
-    client
-        .request_proof(claimed_server_peer_id, request([0x44; 32]))
-        .unwrap();
+    assert_eq!(
+        client.request_proof(claimed_server_peer_id, request([0x44; 32])),
+        Err(RequestStartError::PeerDisconnected(claimed_server_peer_id))
+    );
 
     timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
                 event = client.next_event() => {
-                    if let NetworkEvent::OutboundFailure { peer_id, .. } = event {
+                    if let NetworkEvent::PeerSession(PeerSessionEvent::DialFailed { peer_id }) = event {
                         assert_eq!(peer_id, claimed_server_peer_id);
                         return;
                     }
@@ -604,11 +893,18 @@ async fn expected_peer_id_mismatch_never_delivers_a_request() {
 
 #[tokio::test]
 async fn static_address_is_reused_after_a_transient_dial_failure() {
-    let server_identity = super::Keypair::generate_ed25519();
-    let wrong_server_identity = super::Keypair::generate_ed25519();
-    let client_identity = super::Keypair::generate_ed25519();
+    let (client_identity, server_identity) = ordered_identities();
     let server_peer_id = server_identity.public().to_peer_id();
     let client_peer_id = client_identity.public().to_peer_id();
+    let client_peer_bytes = client_peer_id.to_bytes();
+    let wrong_server_identity = loop {
+        let candidate = super::Keypair::generate_ed25519();
+        if candidate.public().to_peer_id().to_bytes() > client_peer_bytes
+            && candidate.public().to_peer_id() != server_peer_id
+        {
+            break candidate;
+        }
+    };
     let server_directory = TestDirectory::new("redial-server");
     let mut server_journal = ProofDagJournal::create(server_directory.path()).unwrap();
     let proof_id = server_journal
@@ -627,14 +923,15 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
         [StaticPeer::new(server_peer_id, retry_address.clone())],
     )
     .unwrap();
-    client
-        .request_proof(server_peer_id, ProofRequest::new(proof_id))
-        .unwrap();
+    assert_eq!(
+        client.request_proof(server_peer_id, ProofRequest::new(proof_id)),
+        Err(RequestStartError::PeerDisconnected(server_peer_id))
+    );
     timeout(Duration::from_secs(15), async {
         loop {
             tokio::select! {
                 event = client.next_event() => {
-                    if let NetworkEvent::OutboundFailure { peer_id, .. } = event {
+                    if let NetworkEvent::PeerSession(PeerSessionEvent::DialFailed { peer_id }) = event {
                         assert_eq!(peer_id, server_peer_id);
                         return;
                     }
@@ -668,6 +965,8 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
     })
     .await
     .expect("server did not bind the configured retry address");
+
+    await_session(&mut client, &mut server, client_peer_id, server_peer_id).await;
 
     let response = exchange_once(
         &mut client,

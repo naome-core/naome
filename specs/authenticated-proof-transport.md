@@ -13,7 +13,8 @@ provides a caller-driven, bounded path for acquiring one root-reachable proof
 closure without selecting any received bytes, followed by one explicit atomic
 rooted journal transaction. The caller constructs and drives it on a Tokio
 runtime with I/O and time drivers enabled; the crate creates no runtime or
-background task.
+NAOME-owned background task. One caller-driven swarm owns all connection,
+session, request, and retry state.
 
 This is not a decentralized peer-discovery system or a consensus protocol.
 Static peer identities provide authentication and authorization, not Sybil
@@ -35,12 +36,25 @@ and one dial `Multiaddr`.
 A local identity cannot appear in its own peer set, and duplicate `PeerId`
 entries are rejected. Inbound and outbound connections are allowed only for
 the configured peer identities. Dialing a configured address whose Noise
-identity differs from the expected `PeerId` fails before any proof request is
-delivered.
+identity differs from the expected `PeerId` cannot deliver a proof request to
+that endpoint.
 
-The configured address is supplied afresh on every request-driven dial. A
-transient failed dial may clear libp2p's ephemeral address cache, but it does
-not consume or remove the static address from this transport configuration.
+For each configured pair, the endpoints lexicographically compare the raw
+binary multihash bytes returned by `PeerId::to_bytes`. The lower value is the
+sole dial owner. It proactively maintains one connection to the higher value;
+the higher endpoint accepts that direction and never dials the lower endpoint.
+The configured address is retained and supplied on every managed dial attempt,
+including after transient failure. Every dial is bound to one exact libp2p
+connection generation, so a stale failure or close event cannot alter a newer
+connection.
+
+This deterministic rule requires symmetric static peer configuration, a
+reachable configured listener on the higher endpoint, and continuously driven
+event loops on both endpoints for useful connectivity. The lower endpoint does
+not need a listener for this pair. The rule deliberately has no grace-period
+role reversal. A proof request never opens a connection: without an established
+managed session it returns `PeerDisconnected` before acquiring a payload permit
+or queuing a request.
 
 The address is routing information, not identity. Possession of an allowed
 identity proves neither honest behavior nor uniqueness of a human, machine,
@@ -109,7 +123,11 @@ The initial static implementation fixes these limits:
 | TCP listen backlog | 16 |
 | Connection establishment timeout | 10 seconds |
 | Negotiated request/response phase timeout | 30 seconds |
-| Authenticated idle-connection timeout | 30 seconds |
+| Managed-session idle expiry | effectively disabled; at most 8 idle sessions remain |
+| Outbound redial delay | 1, 2, 4, 8, 16, 32, then 60 seconds |
+| Stable-session threshold for backoff reset | 60 seconds |
+| Pre-Noise inbound authentication burst | 8 attempts |
+| Pre-Noise inbound authentication refill | 1 attempt per second, global |
 
 The Yamux cap is intentionally larger than the two proof-exchange streams so
 simultaneous bidirectional negotiation can complete while arbitrary mux stream
@@ -119,10 +137,28 @@ is not yet measured.
 
 One established connection per peer prevents one identity from concentrating
 the node-wide connection budget. The authenticated Yamux connection is
-full-duplex: once established, both peers can issue proof requests concurrently
-over that connection. Simultaneous initial cross-dial coordination is not part
-of this transport contract; a later session coordinator may assign deterministic
-dial ownership without weakening this connection bound.
+full-duplex: once the deterministic owner establishes it, both peers can issue
+proof requests concurrently over that same connection. There is no initial
+cross-dial race and no request-driven second dial.
+
+The owner dials immediately. After successive terminal dial failures or session
+closures it waits `1, 2, 4, 8, 16, 32, 60, ...` seconds before trying again.
+With instantaneous failures, cumulative backoff waits start at
+`0, 1, 3, 7, 15, 31, 63, 123, ...` seconds; each failed connection attempt may
+add up to the separate ten-second establishment timeout. Only a session that
+remained connected for at least 60 seconds resets the next failure to the
+one-second delay; rapid authenticate-and-close churn therefore cannot collapse
+the backoff. Idle expiry is effectively disabled with the largest representable
+configured duration because a 30-second idle timeout would close every quiet
+connection before that stability threshold and create periodic authentication
+churn. The fixed eight-peer cap bounds retained idle sockets.
+
+Before Noise work begins, pending connection-count limits run first and a
+global token bucket then admits a burst of eight inbound attempts with one
+token refilled per second. Starting from a full bucket, at most 68 attempts can
+be admitted in 60 seconds. The bucket retains no per-connection or per-source
+state. It bounds aggregate admission to authentication work, but it is not
+per-IP fairness, upstream DDoS filtering, or Sybil resistance.
 
 The global outbound permit is acquired before libp2p queues a request. During
 dependency acquisition it moves with the response into quarantine, then into
@@ -136,12 +172,12 @@ bound, not a bound on transient decode or checker memory. The request-response
 stream and connection limits separately bound concurrently owned server
 responses.
 
-These are concurrent-count and per-object bounds, not connection-rate,
-authentication-work, cumulative-bandwidth, or checker-CPU budgets. A remote
-endpoint can still repeat TCP/Noise handshakes, and an authorized peer can send
-repeated valid, invalid, or expensive proofs over time. Connection-rate policy
-belongs to the later session/peer-policy layer; rolling byte and proof-work
-budgets remain later policy beyond this fixed eight-candidate envelope.
+These are concurrent-count, per-object, managed-redial, and global inbound
+authentication-rate bounds. They do not provide per-source fairness or
+cumulative bandwidth/checker-CPU budgets. An authorized peer can still send
+repeated valid, invalid, or expensive proofs over time. Rolling byte and
+proof-work budgets remain later policy beyond this fixed eight-candidate
+envelope.
 
 The connection timeout covers TCP, Noise, and Yamux establishment. The
 request-response timeout starts after multistream protocol negotiation; the
@@ -163,8 +199,9 @@ and follow-up requests to one `StaticProofNetwork` instance; request handles
 from separate libp2p behaviours are not treated as globally unique.
 
 One acquisition uses one configured peer and has exactly one request in flight.
-It starts only when the requested root is absent from the healthy selected
-journal. Each correlated nonempty response is processed as follows:
+It starts only when that peer has an established session and the requested root
+is absent from the healthy selected journal. Each correlated nonempty response
+is processed as follows:
 
 1. decode one complete structurally bounded `ProofCertificate`;
 2. derive its unchecked root-proof normal form and require the supplied bytes
@@ -218,8 +255,8 @@ There is no separate absolute closure deadline or cancellation protocol in this
 slice. Existing connection, negotiation, and per-request timeouts apply to each
 of at most eight sequential requests. The caller may drop the acquisition, but
 libp2p still owns any already-issued request until a terminal transport event;
-later session policy may add explicit cancellation tombstones and a shorter
-total job deadline without changing closure admission.
+later acquisition-job policy may add explicit cancellation tombstones and a
+shorter total deadline without changing closure admission.
 
 ## Serving and ownership
 
@@ -242,7 +279,9 @@ capacity. The Rust allocator may reserve additional capacity.
 
 Outbound request failures and inbound failures after a request was delivered
 to the application retain their typed causes in network events. Listener errors
-and closure are also observable. The pinned request-response behavior does not
+and closure are also observable. Managed session establishment, dial failure,
+and disconnection are separate events; connection identifiers and backoff state
+remain private. The pinned request-response behavior does not
 surface every pre-delivery inbound negotiation or request-read failure as an
 application event. A dropped or closed response channel is a transport failure,
 not `Unavailable`.
@@ -256,28 +295,32 @@ the existing drop-and-reopen recovery procedure.
 
 The transport guarantees authenticated peer identity, static authorization,
 exact framing, per-object length preflight, bounded concurrent connections and
-requests, immutable request/response correlation, bounded unselected closure
-acquisition, and one explicit expected-identity rooted promotion.
+requests, deterministic connection ownership, bounded managed redial and
+global pre-authentication admission, immutable request/response correlation,
+bounded unselected closure acquisition, and one explicit expected-identity
+rooted promotion.
 
 It does not define or claim:
 
 - identity-key storage, rotation, recovery, or operator enrollment;
-- DNS, dynamic bootstrapping, peer discovery, DHTs, address gossip, or NAT
-  traversal;
-- peer scoring, bans, retries, multi-peer selection, announcements, or proof
-  gossip;
+- a seed-node list, persisted address manager, DNS or fixed-seed bootstrap,
+  dynamic peer discovery, DHTs, address gossip, or NAT traversal;
+- peer scoring, bans, proof-request retries, multi-peer selection,
+  announcements, or proof gossip;
 - parallel dependency fetching, a persistent orphan/cache store, admission
   worker, request/checker cancellation, an absolute closure deadline, or
-  rolling byte/CPU/rate budgets;
+  rolling byte/CPU budgets or per-source connection-rate policy;
 - Sybil resistance, eclipse resistance from network diversity, fork choice,
   checkpoints, signatures, finality, or consensus;
 - economic transactions, balances, fees, rewards, or settlement; or
 - batch transport messages, compression, erasure coding, snapshots, pruning,
   or proof availability guarantees.
 
-The next network slice is static session policy: deterministic dial ownership,
-bounded retry/backoff, total-job deadlines, connection/authentication rate
-limits, and multi-peer fallback without weakening immutable request generations.
-Discovery, bootstrap, and peer-diversity policy follow separately. A
+The next network slice is an absolute acquisition deadline with explicit
+cancellation tombstones; libp2p owns an issued request until its terminal event,
+so cancelling a caller-visible job must not release its peer slot or payload
+permit early. Bounded multi-peer fallback follows on that substrate without
+resetting total attempt, byte, work, or time budgets. Discovery, bootstrap,
+persisted addresses, and peer-diversity policy follow separately. A
 consensus-selected checkpoint and linear settlement/economy remain later layers
 and must not be inferred from authenticated transport peers.
