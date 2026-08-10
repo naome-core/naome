@@ -52,6 +52,9 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --all-features --locked
 
+      - name: Run documentation tests
+        run: cargo test --workspace --doc --all-features --locked
+
   platform:
     name: Rust platform (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
@@ -85,9 +88,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features --locked --no-fail-fast
-
-      - name: Run documentation tests
-        run: cargo test --workspace --doc --all-features --locked
 
       - name: Build release profile
         run: cargo build --workspace --release --all-targets --all-features --locked

@@ -1,11 +1,11 @@
 [package]
 name = "naome-network"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Authenticated bounded proof transport for static NAOME peers."
-license = "MIT"
-repository = "https://github.com/naome-core/naome"
-publish = false
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 async-trait = "0.1.91"

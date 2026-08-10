@@ -1,11 +1,11 @@
 [package]
 name = "naome-foundation"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "The Rust reference implementation of NAOME Foundation."
-license = "MIT"
-repository = "https://github.com/naome-core/naome"
-publish = false
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
