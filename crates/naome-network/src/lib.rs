@@ -18,6 +18,7 @@
 mod acquisition;
 mod address_store;
 mod codec;
+mod record_exchange;
 mod session;
 
 use std::collections::HashMap;
@@ -64,10 +65,14 @@ pub use address_store::{
     MAX_DIAL_CANDIDATES_PER_BOOTSTRAP, MAX_PEER_ADDRESS_BYTES, MAX_PEER_ADDRESS_RECORDS,
     MAX_RECORDS_PER_BOOTSTRAP, MAX_RECORDS_PER_NETWORK_GROUP, MAX_SIGNED_PEER_RECORD_BYTES,
     PEER_RECORD_TTL, PeerAddressStore, PeerAddressStoreError, PeerRecordAdmission,
-    SignedPeerRecord, SignedPeerRecordError,
+    PeerRecordBatchAdmission, SignedPeerRecord, SignedPeerRecordError,
 };
 pub use libp2p::core::transport::ListenerId;
 pub use libp2p::{Multiaddr, PeerId, identity::Keypair};
+pub use record_exchange::{
+    MAX_PEER_RECORDS_PER_BATCH, PEER_RECORD_BATCH_MAX_BYTES, PEER_RECORD_PULL_REQUEST_BYTES,
+    PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
+};
 
 /// Maximum number of peers configured in one static transport.
 pub const MAX_STATIC_PEERS: usize = 8;
