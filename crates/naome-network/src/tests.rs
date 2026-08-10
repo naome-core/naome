@@ -6,14 +6,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use naome::proof_exchange::{ProofRequest, ProofResponse, ProofResponseOutcome};
-use naome_ledger::LedgerError;
-use naome_storage::{JournalError, ProofDagJournal};
+use naome::proof_exchange::ProofRequest;
+use naome_foundation::FreeVariable;
+use naome_proof::{ProofCertificate, ProofStep};
+use naome_storage::ProofDagJournal;
 use tokio::time::timeout;
 
 use super::{
-    BuildError, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent, PeerId, PendingBudget,
-    RequestStartError, StaticPeer, StaticProofNetwork,
+    BuildError, DependencyAcquisitionProgress, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS,
+    NetworkEvent, PeerId, PendingBudget, RequestStartError, StaticPeer, StaticProofNetwork,
 };
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -61,6 +62,20 @@ fn union_bytes() -> Vec<u8> {
     vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x02]
 }
 
+fn referenced_generalization(proof_id: naome_proof::ProofId) -> Vec<u8> {
+    ProofCertificate::new(vec![
+        ProofStep::ProofReference { proof_id },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: FreeVariable::new(7),
+        },
+    ])
+    .unwrap()
+    .into_unchecked_normal_form()
+    .canonical_bytes()
+    .to_vec()
+}
+
 fn request(bytes: [u8; 32]) -> ProofRequest {
     ProofRequest::from_wire_bytes(&bytes).unwrap()
 }
@@ -101,6 +116,14 @@ async fn exchange_once(
     request: ProofRequest,
 ) -> super::ReceivedProofResponse {
     client.request_proof(server_peer_id, request).unwrap();
+    receive_once(client, server, server_journal).await
+}
+
+async fn receive_once(
+    client: &mut StaticProofNetwork,
+    server: &mut StaticProofNetwork,
+    server_journal: &ProofDagJournal,
+) -> super::ReceivedProofResponse {
     timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
@@ -128,6 +151,80 @@ async fn exchange_once(
     })
     .await
     .expect("proof exchange timed out")
+}
+
+#[tokio::test]
+async fn dependency_acquisition_is_unselected_until_one_explicit_atomic_promotion() {
+    let server_identity = super::Keypair::generate_ed25519();
+    let client_identity = super::Keypair::generate_ed25519();
+    let server_peer_id = server_identity.public().to_peer_id();
+    let client_peer_id = client_identity.public().to_peer_id();
+
+    let mut server = StaticProofNetwork::new(
+        server_identity,
+        [StaticPeer::new(client_peer_id, address(1))],
+    )
+    .unwrap();
+    let server_address = listening_address(&mut server).await;
+    let mut client = StaticProofNetwork::new(
+        client_identity,
+        [StaticPeer::new(server_peer_id, server_address)],
+    )
+    .unwrap();
+
+    let server_directory = TestDirectory::new("closure-server");
+    let mut server_journal = ProofDagJournal::create(server_directory.path()).unwrap();
+    let parent_id = server_journal
+        .apply_canonical_proof_bytes(pairing_bytes())
+        .unwrap()
+        .proof_id();
+    let root_id = server_journal
+        .apply_canonical_proof_bytes(referenced_generalization(parent_id))
+        .unwrap()
+        .proof_id();
+
+    let client_directory = TestDirectory::new("closure-client");
+    let mut client_journal = ProofDagJournal::create(client_directory.path()).unwrap();
+    let empty_bytes = client_directory.journal_bytes();
+    let empty_root = client_journal.proof_set_root().unwrap();
+    let mut acquisition = client
+        .start_dependency_acquisition(&client_journal, server_peer_id, root_id)
+        .unwrap();
+
+    let closure = loop {
+        let response = receive_once(&mut client, &mut server, &server_journal).await;
+        assert!(acquisition.accepts_response(&response));
+        assert_eq!(client_directory.journal_bytes(), empty_bytes);
+        assert_eq!(client_journal.proof_set_root().unwrap(), empty_root);
+        match acquisition
+            .on_response(&mut client, &client_journal, response)
+            .unwrap()
+        {
+            DependencyAcquisitionProgress::AwaitingResponse(next) => acquisition = next,
+            DependencyAcquisitionProgress::Complete(closure) => break closure,
+        }
+    };
+
+    assert_eq!(closure.requested_root(), root_id);
+    assert_eq!(closure.candidate_count(), 2);
+    assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 2);
+    assert_eq!(client_directory.journal_bytes(), empty_bytes);
+    assert_eq!(client_journal.proof_set_root().unwrap(), empty_root);
+    assert!(client_journal.is_empty().unwrap());
+
+    let accepted = closure
+        .apply_to_selected_state(&mut client_journal)
+        .unwrap();
+    assert_eq!(accepted.proof_id(), root_id);
+    assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 0);
+    assert_eq!(client_journal.len().unwrap(), 2);
+    assert!(client_journal.proof(parent_id).unwrap().is_some());
+    assert!(client_journal.proof(root_id).unwrap().is_some());
+
+    let selected_root = client_journal.proof_set_root().unwrap();
+    drop(client_journal);
+    let reopened = ProofDagJournal::open_verified(client_directory.path(), selected_root).unwrap();
+    assert_eq!(reopened.len().unwrap(), 2);
 }
 
 #[tokio::test]
@@ -229,7 +326,7 @@ async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
         .unwrap()
         .proof_id();
     let client_directory = TestDirectory::new("client");
-    let mut client_journal = ProofDagJournal::create(client_directory.path()).unwrap();
+    let client_journal = ProofDagJournal::create(client_directory.path()).unwrap();
 
     let found = exchange_once(
         &mut client,
@@ -243,12 +340,10 @@ async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
     assert_eq!(found.peer_id(), server_peer_id);
     assert_eq!(found.request(), ProofRequest::new(proof_id));
     assert!(!found.is_unavailable());
-    assert_eq!(
-        found.admit(&mut client_journal).unwrap(),
-        ProofResponseOutcome::Accepted
-    );
+    assert!(client_journal.is_empty().unwrap());
+    drop(found);
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 0);
-    assert!(client_journal.proof(proof_id).unwrap().is_some());
+    assert!(client_journal.proof(proof_id).unwrap().is_none());
 
     let unknown = request([0xa5; 32]);
     let unavailable = exchange_once(
@@ -262,10 +357,7 @@ async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 1);
     assert!(unavailable.is_unavailable());
     let before = client_directory.journal_bytes();
-    assert_eq!(
-        unavailable.admit(&mut client_journal).unwrap(),
-        ProofResponseOutcome::Unavailable
-    );
+    drop(unavailable);
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 0);
     assert_eq!(client_directory.journal_bytes(), before);
 }
@@ -363,18 +455,12 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
     assert_eq!(response_a.request(), ProofRequest::new(proof_b));
     assert_eq!(response_b.peer_id(), peer_a);
     assert_eq!(response_b.request(), ProofRequest::new(proof_a));
-    assert_eq!(
-        response_a.admit(&mut journal_a).unwrap(),
-        ProofResponseOutcome::Accepted
-    );
-    assert_eq!(
-        response_b.admit(&mut journal_b).unwrap(),
-        ProofResponseOutcome::Accepted
-    );
-    assert_eq!(
-        journal_a.proof_set_root().unwrap(),
-        journal_b.proof_set_root().unwrap()
-    );
+    drop(response_a);
+    drop(response_b);
+    assert!(journal_a.proof(proof_a).unwrap().is_some());
+    assert!(journal_a.proof(proof_b).unwrap().is_none());
+    assert!(journal_b.proof(proof_b).unwrap().is_some());
+    assert!(journal_b.proof(proof_a).unwrap().is_none());
 }
 
 #[tokio::test]
@@ -592,52 +678,4 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
     )
     .await;
     assert!(!response.is_unavailable());
-}
-
-#[test]
-fn opaque_response_admission_binds_body_to_immutable_request() {
-    let directory = TestDirectory::new("binding");
-    let mut journal = ProofDagJournal::create(directory.path()).unwrap();
-    let actual_id = {
-        let control_directory = TestDirectory::new("binding-control");
-        let mut control = ProofDagJournal::create(control_directory.path()).unwrap();
-        control
-            .apply_canonical_proof_bytes(pairing_bytes())
-            .unwrap()
-            .proof_id()
-    };
-    let expected = request([0xd4; 32]);
-    assert_ne!(expected.proof_id(), actual_id);
-    let before_file = directory.journal_bytes();
-    let before_root = journal.proof_set_root().unwrap();
-    let budget = Arc::new(PendingBudget::default());
-    let received = super::ReceivedProofResponse {
-        peer_id: super::Keypair::generate_ed25519().public().to_peer_id(),
-        request: expected,
-        response: ProofResponse::from_wire_bytes(pairing_bytes()).unwrap(),
-        _permit: PendingBudget::try_acquire(&budget).unwrap(),
-    };
-
-    let error = received.admit(&mut journal).unwrap_err();
-    assert!(matches!(
-        error,
-        JournalError::Admission {
-            source: LedgerError::ProofIdMismatch { expected: mismatch_expected, actual },
-        } if mismatch_expected == expected.proof_id() && actual == actual_id
-    ));
-    assert_eq!(directory.journal_bytes(), before_file);
-    assert_eq!(journal.proof_set_root().unwrap(), before_root);
-    assert!(journal.is_empty().unwrap());
-
-    let received = super::ReceivedProofResponse {
-        peer_id: super::Keypair::generate_ed25519().public().to_peer_id(),
-        request: ProofRequest::new(actual_id),
-        response: ProofResponse::from_wire_bytes(pairing_bytes()).unwrap(),
-        _permit: PendingBudget::try_acquire(&budget).unwrap(),
-    };
-    assert_eq!(
-        received.admit(&mut journal).unwrap(),
-        ProofResponseOutcome::Accepted
-    );
-    assert!(journal.proof(actual_id).unwrap().is_some());
 }

@@ -9,9 +9,11 @@ transport contract and may change before the first stable protocol release.
 The transport connects a fixed set of explicitly configured peers over TCP,
 authenticates both endpoints with Noise identity keys, multiplexes exchanges
 with Yamux, and carries one proof request per request-response substream. It
-provides a safe untrusted-byte path into expected-`ProofId` journal admission.
-The caller constructs and drives it on a Tokio runtime with I/O and time drivers
-enabled; the crate creates no runtime or background task.
+provides a caller-driven, bounded path for acquiring one root-reachable proof
+closure without selecting any received bytes, followed by one explicit atomic
+rooted journal transaction. The caller constructs and drives it on a Tokio
+runtime with I/O and time drivers enabled; the crate creates no runtime or
+background task.
 
 This is not a decentralized peer-discovery system or a consensus protocol.
 Static peer identities provide authentication and authorization, not Sybil
@@ -122,18 +124,24 @@ over that connection. Simultaneous initial cross-dial coordination is not part
 of this transport contract; a later session coordinator may assign deterministic
 dial ownership without weakening this connection bound.
 
-The global outbound permit is acquired before libp2p queues a request and is
-held until the resulting response object is admitted or dropped. This bounds
-queued requests even when a peer is disconnected and bounds proof payloads
-retained by callers after network receipt. The request-response stream and
-connection limits bound concurrently owned server responses.
+The global outbound permit is acquired before libp2p queues a request. During
+dependency acquisition it moves with the response into quarantine, then into
+the completed closure, and remains held across final synchronous promotion. It
+is released only when that candidate is dropped or promotion returns. The same
+eight-permit limit therefore bounds pending requests plus received responses,
+quarantined candidates, and completed closure candidates for one
+`StaticProofNetwork` instance. At most eight proof payload buffers, each at
+most 4 MiB, can be retained this way; this 32 MiB figure is a payload-only
+bound, not a bound on transient decode or checker memory. The request-response
+stream and connection limits separately bound concurrently owned server
+responses.
 
 These are concurrent-count and per-object bounds, not connection-rate,
 authentication-work, cumulative-bandwidth, or checker-CPU budgets. A remote
 endpoint can still repeat TCP/Noise handshakes, and an authorized peer can send
 repeated valid, invalid, or expensive proofs over time. Connection-rate policy
-belongs to the later session/peer-policy layer; rolling byte, proof work, and
-dependency budgets belong to the later admission scheduler.
+belongs to the later session/peer-policy layer; rolling byte and proof-work
+budgets remain later policy beyond this fixed eight-candidate envelope.
 
 The connection timeout covers TCP, Noise, and Yamux establishment. The
 request-response timeout starts after multistream protocol negotiation; the
@@ -142,36 +150,76 @@ can therefore consume negotiation time plus the 30-second negotiated exchange
 phase. Neither timeout is a promise that synchronous proof checking or durable
 journal admission can be cancelled.
 
-## Request correlation and admission
+## Request correlation and closure acquisition
 
 For every outbound request, the transport retains the libp2p request handle,
 the authenticated expected peer, the immutable `ProofRequest`, and its resource
 permit. A response is accepted from the matching handle and peer exactly once.
-The public received-response object does not expose its candidate bytes or an
-unbound `into_parts` path. Its only admission operation delegates to the
-transport-neutral addressed exchange, which calls:
+An acquisition also retains the exact outbound request handle it currently
+awaits. Callers route an event with `accepts_response` before consuming it, so a
+late response for an older request cannot advance a newer acquisition of the
+same address. The retained permit identity also binds the acquisition, response,
+and follow-up requests to one `StaticProofNetwork` instance; request handles
+from separate libp2p behaviours are not treated as globally unique.
+
+One acquisition uses one configured peer and has exactly one request in flight.
+It starts only when the requested root is absent from the healthy selected
+journal. Each correlated nonempty response is processed as follows:
+
+1. decode one complete structurally bounded `ProofCertificate`;
+2. derive its unchecked root-proof normal form and require the supplied bytes
+   to match that form exactly;
+3. inspect only normal-form `ProofReference` addresses in canonical step order;
+4. stop traversal at dependencies already present in the selected journal;
+5. deduplicate exact `ProofId` addresses already discovered by this acquisition;
+6. reject before another request if the closure would exceed eight candidates;
+7. request the next absent dependency sequentially; and
+8. after all candidates arrive, reject address-level cycles and emit each unique
+   candidate in dependency-first order with the requested root last.
+
+This is structural acquisition, not proof validation. It deliberately cannot
+derive a candidate's actual `ProofId` before its referenced conclusions are
+available and the proof is mathematically checked. A canonical but invalid or
+wrong-address response may therefore reach the completed closure, but it
+cannot reach selected state.
+
+The public `UnselectedProofClosure` is non-cloneable and exposes neither proof
+buffers nor an unbound candidate list. Its sole consuming transition calls:
 
 ```text
-ProofDagJournal::apply_canonical_proof_bytes_with_expected_id(
-    candidate_bytes,
-    requested_proof_id,
+ProofDagJournal::apply_rooted_canonical_proof_batch(
+    requested_root,
+    dependency_first_addressed_candidates,
 )
 ```
 
-After the journal health check, the existing admission order remains decode,
-canonicality verification, mathematical checking and dependency resolution,
-checked-identity comparison, state registration, and durable commit. `Poisoned`
-therefore precedes every response outcome; on a healthy handle, a valid proof
-body for another request returns `ProofIdMismatch` without changing the ledger,
-proof set, root, records, or journal.
+Promotion first verifies journal health, then preflights batch count, duplicate
+expected addresses, and root-last shape. Each candidate is decoded,
+canonicality-checked, mathematically checked against selected state plus earlier
+staged candidates, compared with its requested `ProofId`, and staged in input
+order. Root reachability is checked only after all candidates pass; the staged
+state is then merged and durably committed as one transaction. On a healthy
+handle, any ordinary pre-commit failure changes neither the ledger, proof set,
+root, records, nor journal. No dependency is selected merely because it was
+fetched for a root that later fails.
 
-`UnknownProofReference` ends the exchange without fetching or retaining an
-orphan. The transport never retries with raw unaddressed admission. Duplicate
-proof and derivation errors remain state errors; the network does not redefine
-the selected-state first-arrival policy.
+Selected state may grow after acquisition and before promotion. Promotion does
+not prune, refetch, reorder, or reinterpret the closure; the atomic batch
+revalidates it against the then-current state and may fail with an existing
+duplicate or derivation collision. The transport never retries with raw
+unaddressed or incremental single-proof admission and does not redefine the
+selected-state first-arrival policy.
 
-An `Unavailable` response only reports that this peer returned no payload for
-this request. It creates no negative cache and proves no global absence.
+An `Unavailable` response reports only that this peer returned no payload for
+this request. It terminates the one-peer acquisition, discards its quarantine,
+creates no negative cache, and proves no global absence.
+
+There is no separate absolute closure deadline or cancellation protocol in this
+slice. Existing connection, negotiation, and per-request timeouts apply to each
+of at most eight sequential requests. The caller may drop the acquisition, but
+libp2p still owns any already-issued request until a terminal transport event;
+later session policy may add explicit cancellation tombstones and a shorter
+total job deadline without changing closure admission.
 
 ## Serving and ownership
 
@@ -186,8 +234,9 @@ serving a found response. Avoiding that copy would require changing immutable
 record ownership across ledger, DAG, storage, and transport or replacing the
 standard request-response behavior. Neither expansion is justified in this
 MR. Receiving requests one payload buffer sized to the declared length and
-moves it through strict admission without a second proof-sized copy; the Rust
-allocator may reserve additional capacity.
+moves it into quarantine and later rooted admission without a deliberate
+proof-sized clone; an owned-vector-to-box conversion may legally adjust
+capacity. The Rust allocator may reserve additional capacity.
 
 ## Failure visibility
 
@@ -198,17 +247,17 @@ surface every pre-delivery inbound negotiation or request-read failure as an
 application event. A dropped or closed response channel is a transport failure,
 not `Unavailable`.
 
-Transport framing or authentication failure never reaches proof admission.
-Proof validation and journal errors are returned unchanged by received-response
-admission. A journal `Commit` or `Poisoned` error is not translated into a peer
-response and requires the existing drop-and-reopen recovery procedure.
+Transport framing or authentication failure never reaches closure acquisition.
+Structural acquisition and final journal errors remain distinct. A journal
+`Commit` or `Poisoned` error is not translated into a peer response and requires
+the existing drop-and-reopen recovery procedure.
 
 ## Security boundary and exclusions
 
 The transport guarantees authenticated peer identity, static authorization,
 exact framing, per-object length preflight, bounded concurrent connections and
-requests, immutable request/response correlation, and expected-identity proof
-admission.
+requests, immutable request/response correlation, bounded unselected closure
+acquisition, and one explicit expected-identity rooted promotion.
 
 It does not define or claim:
 
@@ -217,17 +266,18 @@ It does not define or claim:
   traversal;
 - peer scoring, bans, retries, multi-peer selection, announcements, or proof
   gossip;
-- recursive dependency fetching, an orphan pool, quarantine, admission worker,
-  request/checker cancellation, or rolling byte/CPU budgets;
+- parallel dependency fetching, a persistent orphan/cache store, admission
+  worker, request/checker cancellation, an absolute closure deadline, or
+  rolling byte/CPU/rate budgets;
 - Sybil resistance, eclipse resistance from network diversity, fork choice,
   checkpoints, signatures, finality, or consensus;
 - economic transactions, balances, fees, rewards, or settlement; or
 - batch transport messages, compression, erasure coding, snapshots, pruning,
   or proof availability guarantees.
 
-The next network slice is a bounded dependency/admission scheduler. It must
-quarantine a complete addressed closure and use the journal's atomic rooted
-proof transaction rather than admitting fetched dependencies incrementally.
-Discovery and peer-diversity policy follow separately. A consensus-selected
-checkpoint and linear settlement/economy remain later layers and must not be
-inferred from authenticated transport peers.
+The next network slice is static session policy: deterministic dial ownership,
+bounded retry/backoff, total-job deadlines, connection/authentication rate
+limits, and multi-peer fallback without weakening immutable request generations.
+Discovery, bootstrap, and peer-diversity policy follow separately. A
+consensus-selected checkpoint and linear settlement/economy remain later layers
+and must not be inferred from authenticated transport peers.

@@ -24,9 +24,7 @@ naome-proof = { path = "crates/naome-proof" }
 naome-storage = { path = "crates/naome-storage" }
 
 [dev-dependencies]
-naome-checker = { path = "crates/naome-checker" }
 naome-foundation = { path = "crates/naome-foundation" }
-naome-ledger = { path = "crates/naome-ledger" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
