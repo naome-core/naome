@@ -381,8 +381,10 @@ rooted promotion.
 It does not define or claim:
 
 - identity-key storage, rotation, recovery, or operator enrollment;
-- a seed-node list, persisted address manager, DNS or fixed-seed bootstrap,
-  dynamic peer discovery, DHTs, address gossip, or NAT traversal;
+- a seed-node list, DNS or fixed-seed bootstrap, dynamic peer discovery, DHTs,
+  address gossip, or NAT traversal; the separate bounded
+  [peer-address manager](peer-address-management.md) is not wired into these
+  static sessions;
 - peer scoring, bans, retrying one peer for the same proof address, parallel or
   hedged requests, announcements, or proof gossip;
 - parallel dependency fetching, a persistent orphan/cache store, admission
@@ -395,8 +397,9 @@ It does not define or claim:
 - batch transport messages, compression, erasure coding, snapshots, pruning,
   or proof availability guarantees.
 
-The next network slice is persisted bootstrap/address management and bounded
-discovery with explicit peer-diversity policy. It must not turn static
-authentication into a claim of Sybil or eclipse resistance. A
-consensus-selected checkpoint and linear settlement/economy remain later
+The next network slice is an authenticated record-exchange protocol and a
+redesign from symmetric static sessions to bounded dynamic discovery sessions.
+It must preserve explicit proof authorization and must not turn signed address
+claims or local diversity policy into a claim of Sybil or eclipse resistance.
+A consensus-selected checkpoint and linear settlement/economy remain later
 layers and must not be inferred from authenticated transport peers.

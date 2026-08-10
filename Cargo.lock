@@ -1763,12 +1763,14 @@ name = "naome-network"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "getrandom 0.3.4",
  "libp2p",
  "naome",
  "naome-foundation",
  "naome-ledger",
  "naome-proof",
  "naome-storage",
+ "sha2 0.11.0",
  "tokio",
 ]
 
