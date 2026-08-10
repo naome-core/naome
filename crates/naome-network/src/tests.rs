@@ -18,8 +18,8 @@ use tokio::time::timeout;
 
 use super::{
     BuildError, DependencyAcquisitionProgress, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS,
-    NetworkEvent, PeerId, PeerSessionEvent, PendingBudget, RequestStartError, StaticPeer,
-    StaticProofNetwork,
+    NetworkEvent, OutboundProofEvent, PeerId, PeerSessionEvent, PendingBudget, RequestStartError,
+    StaticPeer, StaticProofNetwork,
 };
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -185,7 +185,7 @@ async fn exchange_once(
     server_journal: &ProofDagJournal,
     server_peer_id: PeerId,
     request: ProofRequest,
-) -> super::ReceivedProofResponse {
+) -> OutboundProofEvent {
     client.request_proof(server_peer_id, request).unwrap();
     receive_once(client, server, server_journal).await
 }
@@ -194,19 +194,18 @@ async fn receive_once(
     client: &mut StaticProofNetwork,
     server: &mut StaticProofNetwork,
     server_journal: &ProofDagJournal,
-) -> super::ReceivedProofResponse {
+) -> OutboundProofEvent {
     timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
-                event = client.next_event() => match event {
-                    NetworkEvent::Response(response) => return response,
-                    NetworkEvent::OutboundFailure { error, .. } => {
-                        panic!("outbound proof exchange failed: {error}")
+                event = client.next_event() => {
+                    if let NetworkEvent::OutboundProof(event) = event {
+                        if let Some(error) = event.failure() {
+                            panic!("outbound proof exchange failed: {error}");
+                        }
+                        assert!(!event.is_deadline_exceeded(), "proof exchange exceeded its deadline");
+                        return event;
                     }
-                    NetworkEvent::ResponsePeerMismatch { expected, actual, .. } => {
-                        panic!("response peer mismatch: {expected} != {actual}")
-                    }
-                    _ => {}
                 },
                 event = server.next_event() => match event {
                     NetworkEvent::InboundRequest(inbound) => {
@@ -222,6 +221,13 @@ async fn receive_once(
     })
     .await
     .expect("proof exchange timed out")
+}
+
+fn event_is_unavailable(event: &OutboundProofEvent) -> bool {
+    match &event.outcome {
+        super::OutboundProofOutcome::Response { response, .. } => response.is_unavailable(),
+        _ => false,
+    }
 }
 
 #[tokio::test]
@@ -249,11 +255,11 @@ async fn dependency_acquisition_is_unselected_until_one_explicit_atomic_promotio
 
     let closure = loop {
         let response = receive_once(&mut client, &mut server, &server_journal).await;
-        assert!(acquisition.accepts_response(&response));
+        assert!(acquisition.accepts_event(&response));
         assert_eq!(client_directory.journal_bytes(), empty_bytes);
         assert_eq!(client_journal.proof_set_root().unwrap(), empty_root);
         match acquisition
-            .on_response(&mut client, &client_journal, response)
+            .on_event(&mut client, &client_journal, response)
             .unwrap()
         {
             DependencyAcquisitionProgress::AwaitingResponse(next) => acquisition = next,
@@ -579,7 +585,7 @@ async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 1);
     assert_eq!(found.peer_id(), server_peer_id);
     assert_eq!(found.request(), ProofRequest::new(proof_id));
-    assert!(!found.is_unavailable());
+    assert!(!event_is_unavailable(&found));
     assert!(client_journal.is_empty().unwrap());
     drop(found);
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 0);
@@ -595,7 +601,7 @@ async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
     )
     .await;
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 1);
-    assert!(unavailable.is_unavailable());
+    assert!(event_is_unavailable(&unavailable));
     let before = client_directory.journal_bytes();
     drop(unavailable);
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 0);
@@ -657,7 +663,7 @@ async fn an_established_session_redials_after_close_and_remains_usable() {
         request([0x77; 32]),
     )
     .await;
-    assert!(response.is_unavailable());
+    assert!(event_is_unavailable(&response));
 }
 
 #[tokio::test]
@@ -692,9 +698,12 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
                     NetworkEvent::InboundRequest(inbound) => {
                         network_a.respond_from_journal(inbound, &journal_a).unwrap();
                     }
-                    NetworkEvent::Response(response) => response_a = Some(response),
-                    NetworkEvent::OutboundFailure { error, .. } => {
-                        panic!("peer A request failed: {error}");
+                    NetworkEvent::OutboundProof(event) => {
+                        if let Some(error) = event.failure() {
+                            panic!("peer A request failed: {error}");
+                        }
+                        assert!(!event.is_deadline_exceeded());
+                        response_a = Some(event);
                     }
                     _ => {}
                 },
@@ -702,9 +711,12 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
                     NetworkEvent::InboundRequest(inbound) => {
                         network_b.respond_from_journal(inbound, &journal_b).unwrap();
                     }
-                    NetworkEvent::Response(response) => response_b = Some(response),
-                    NetworkEvent::OutboundFailure { error, .. } => {
-                        panic!("peer B request failed: {error}");
+                    NetworkEvent::OutboundProof(event) => {
+                        if let Some(error) = event.failure() {
+                            panic!("peer B request failed: {error}");
+                        }
+                        assert!(!event.is_deadline_exceeded());
+                        response_b = Some(event);
                     }
                     _ => {}
                 },
@@ -738,18 +750,14 @@ async fn a_closed_response_channel_is_never_reported_as_unavailable() {
     timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
-                event = client.next_event() => match event {
-                    NetworkEvent::OutboundFailure { peer_id, .. } => {
-                        assert_eq!(peer_id, server_peer_id);
-                        return;
+                event = client.next_event() => {
+                    if let NetworkEvent::OutboundProof(event) = event {
+                        assert_eq!(event.peer_id(), server_peer_id);
+                        if event.failure().is_some() {
+                            return;
+                        }
+                        panic!("closed response channel became a successful proof response");
                     }
-                    NetworkEvent::Response(response) => {
-                        panic!(
-                            "closed response channel became unavailable: {}",
-                            response.is_unavailable()
-                        );
-                    }
-                    _ => {}
                 },
                 event = server.next_event() => {
                     if let NetworkEvent::InboundRequest(inbound) = event {
@@ -803,9 +811,9 @@ async fn unlisted_authenticated_peer_cannot_deliver_a_request() {
                             attacker.request_proof(server_peer_id, requested).unwrap();
                             request_started = true;
                         }
-                        NetworkEvent::OutboundFailure { peer_id, request, .. } => {
-                            assert_eq!(peer_id, server_peer_id);
-                            assert_eq!(request, requested);
+                        NetworkEvent::OutboundProof(event) if event.failure().is_some() => {
+                            assert_eq!(event.peer_id(), server_peer_id);
+                            assert_eq!(event.request(), requested);
                             return;
                         }
                         NetworkEvent::PeerSession(PeerSessionEvent::DialFailed { peer_id })
@@ -976,5 +984,5 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
         ProofRequest::new(proof_id),
     )
     .await;
-    assert!(!response.is_unavailable());
+    assert!(!event_is_unavailable(&response));
 }

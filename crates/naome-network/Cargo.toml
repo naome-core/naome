@@ -22,14 +22,13 @@ naome = { path = "../.." }
 naome-ledger = { path = "../naome-ledger" }
 naome-proof = { path = "../naome-proof" }
 naome-storage = { path = "../naome-storage" }
-tokio = { version = "1", default-features = false, features = ["time"] }
+tokio = { version = "1", default-features = false, features = ["macros", "time"] }
 
 [dev-dependencies]
 naome-foundation = { path = "../naome-foundation" }
 tokio = { version = "1", default-features = false, features = [
-    "macros",
     "rt",
-    "time",
+    "test-util",
 ] }
 
 [lints]

@@ -123,6 +123,7 @@ The initial static implementation fixes these limits:
 | TCP listen backlog | 16 |
 | Connection establishment timeout | 10 seconds |
 | Negotiated request/response phase timeout | 30 seconds |
+| Absolute dependency-acquisition deadline | 120 seconds, monotonic |
 | Managed-session idle expiry | effectively disabled; at most 8 idle sessions remain |
 | Outbound redial delay | 1, 2, 4, 8, 16, 32, then 60 seconds |
 | Stable-session threshold for backoff reset | 60 seconds |
@@ -183,20 +184,22 @@ The connection timeout covers TCP, Noise, and Yamux establishment. The
 request-response timeout starts after multistream protocol negotiation; the
 pinned libp2p swarm separately bounds that negotiation to 10 seconds. A request
 can therefore consume negotiation time plus the 30-second negotiated exchange
-phase. Neither timeout is a promise that synchronous proof checking or durable
-journal admission can be cancelled.
+phase. The absolute acquisition deadline is a separate total bound shared by
+all sequential dependency requests. None of these timeouts is a promise that
+synchronous proof processing or durable journal admission can be preempted.
 
 ## Request correlation and closure acquisition
 
 For every outbound request, the transport retains the libp2p request handle,
-the authenticated expected peer, the immutable `ProofRequest`, and its resource
-permit. A response is accepted from the matching handle and peer exactly once.
-An acquisition also retains the exact outbound request handle it currently
-awaits. Callers route an event with `accepts_response` before consuming it, so a
-late response for an older request cannot advance a newer acquisition of the
-same address. The retained permit identity also binds the acquisition, response,
-and follow-up requests to one `StaticProofNetwork` instance; request handles
-from separate libp2p behaviours are not treated as globally unique.
+the authenticated expected peer, the immutable `ProofRequest`, its acquisition
+control, and its resource permit. A response or failure is accepted from the
+matching handle and peer exactly once. An acquisition also retains the exact
+outbound request handle it currently awaits. Callers route the opaque
+`OutboundProofEvent` with `accepts_event` before consuming it, so a late response
+or failure for an older request cannot advance a newer acquisition of the same
+address. The acquisition-control budget identity also binds the acquisition,
+event, and follow-up requests to one `StaticProofNetwork` instance; request
+handles from separate libp2p behaviours are not treated as globally unique.
 
 One acquisition uses one configured peer and has exactly one request in flight.
 It starts only when that peer has an established session and the requested root
@@ -251,12 +254,55 @@ An `Unavailable` response reports only that this peer returned no payload for
 this request. It terminates the one-peer acquisition, discards its quarantine,
 creates no negative cache, and proves no global absence.
 
-There is no separate absolute closure deadline or cancellation protocol in this
-slice. Existing connection, negotiation, and per-request timeouts apply to each
-of at most eight sequential requests. The caller may drop the acquisition, but
-libp2p still owns any already-issued request until a terminal transport event;
-later acquisition-job policy may add explicit cancellation tombstones and a
-shorter total deadline without changing closure admission.
+## Absolute acquisition deadline and cancellation
+
+One 120-second monotonic deadline is created after selected-root preflight and
+before the root request is issued. Every dependency request inherits that exact
+deadline; receiving a response, reconnecting a managed session, or issuing a
+follow-up never resets it. Equality expires the acquisition. The deadline
+includes request negotiation, response exchange, and in-process structural
+acquisition between the first request and completion. It excludes connection
+establishment before acquisition starts and excludes promotion of an already
+completed `UnselectedProofClosure`.
+
+`StaticProofNetwork::next_event` owns one timer for the earliest of at most
+eight active acquisition deadlines. At a deadline it emits one correlated
+outbound deadline event and marks the exact pending request as cancelled. A
+response or ordinary transport failure that becomes terminal at or after the
+deadline is likewise reported as the deadline rather than interpreted as
+`Unavailable`, candidate bytes, or a pre-deadline transport failure. When a
+physical terminal is processed before the logical deadline event is emitted,
+peer-identity mismatch is never replaced by the deadline. If the deadline event
+was emitted first, a later mismatched terminal remains visible in
+`CancellationDrained`. A synchronous decode already in progress cannot be
+interrupted, so the acquisition checks the same deadline again after successful
+structural work and issues neither another request nor a completed closure once
+it has expired.
+
+Explicitly calling `cancel` or dropping `ProofDependencyAcquisition` marks its
+current request as a tombstone. Already quarantined candidates and their
+permits are released immediately. libp2p exposes no request-cancellation API,
+so the exact in-flight request remains in the pending map and retains one peer
+slot and one global payload permit until libp2p emits its terminal response or
+failure. That terminal is discarded, releases the retained resources, and is
+reported as `CancellationDrained`; it can never advance or complete an
+acquisition. Cancelling does not close the shared full-duplex connection or
+trigger session redial.
+
+`CancellationDrained` is a capacity-release notification, not an
+acknowledgement that follows every `DeadlineExceeded`. If logical expiry was
+emitted while libp2p still owned the request, its later physical terminal
+produces the drain notification. If the response or failure had already become
+physically terminal, the deadline event itself releases the permit and no later
+drain exists.
+
+The 120-second value is a fixed initial policy, not a measured WAN optimum. A
+request issued immediately before the logical deadline can still require up to
+the pinned 10-second negotiation plus 30-second exchange envelope to drain when
+the network is continuously polled. A found response may be fully received and
+boundedly allocated before the local tombstone discards it. If the caller stops
+driving `next_event`, neither logical deadline delivery nor physical request
+settlement has a wall-time guarantee.
 
 ## Serving and ownership
 
@@ -270,21 +316,25 @@ The adapter therefore performs exactly one bounded proof-sized copy when
 serving a found response. Avoiding that copy would require changing immutable
 record ownership across ledger, DAG, storage, and transport or replacing the
 standard request-response behavior. Neither expansion is justified in this
-MR. Receiving requests one payload buffer sized to the declared length and
+MR. Receiving allocates one payload buffer sized to the declared length and
 moves it into quarantine and later rooted admission without a deliberate
 proof-sized clone; an owned-vector-to-box conversion may legally adjust
 capacity. The Rust allocator may reserve additional capacity.
 
 ## Failure visibility
 
-Outbound request failures and inbound failures after a request was delivered
-to the application retain their typed causes in network events. Listener errors
-and closure are also observable. Managed session establishment, dial failure,
-and disconnection are separate events; connection identifiers and backoff state
-remain private. The pinned request-response behavior does not
-surface every pre-delivery inbound negotiation or request-read failure as an
-application event. A dropped or closed response channel is a transport failure,
-not `Unavailable`.
+Outbound proof responses, request failures, and deadline expiry share one
+opaque, exactly correlated outbound event family. Pre-deadline transport
+failures and authenticated-peer mismatch retain their typed causes. A later
+terminal event for a cancelled request instead reports physical cancellation
+drain and can expose its typed failure cause without exposing response bytes.
+Inbound failures after a request was delivered to the application, listener
+errors, and listener closure are also observable. Managed session
+establishment, dial failure, and disconnection are separate events; connection
+identifiers and backoff state remain private. The pinned request-response
+behavior does not surface every pre-delivery inbound negotiation or request-read
+failure as an application event. A dropped or closed response channel is a
+transport failure, not `Unavailable`.
 
 Transport framing or authentication failure never reaches closure acquisition.
 Structural acquisition and final journal errors remain distinct. A journal
@@ -297,7 +347,8 @@ The transport guarantees authenticated peer identity, static authorization,
 exact framing, per-object length preflight, bounded concurrent connections and
 requests, deterministic connection ownership, bounded managed redial and
 global pre-authentication admission, immutable request/response correlation,
-bounded unselected closure acquisition, and one explicit expected-identity
+bounded unselected closure acquisition, one non-resetting acquisition deadline,
+permit-preserving cancellation tombstones, and one explicit expected-identity
 rooted promotion.
 
 It does not define or claim:
@@ -308,19 +359,18 @@ It does not define or claim:
 - peer scoring, bans, proof-request retries, multi-peer selection,
   announcements, or proof gossip;
 - parallel dependency fetching, a persistent orphan/cache store, admission
-  worker, request/checker cancellation, an absolute closure deadline, or
-  rolling byte/CPU budgets or per-source connection-rate policy;
+  worker, wire-level request abort, synchronous proof/checker/journal
+  cancellation, or rolling byte/CPU budgets or per-source connection-rate
+  policy;
 - Sybil resistance, eclipse resistance from network diversity, fork choice,
   checkpoints, signatures, finality, or consensus;
 - economic transactions, balances, fees, rewards, or settlement; or
 - batch transport messages, compression, erasure coding, snapshots, pruning,
   or proof availability guarantees.
 
-The next network slice is an absolute acquisition deadline with explicit
-cancellation tombstones; libp2p owns an issued request until its terminal event,
-so cancelling a caller-visible job must not release its peer slot or payload
-permit early. Bounded multi-peer fallback follows on that substrate without
-resetting total attempt, byte, work, or time budgets. Discovery, bootstrap,
-persisted addresses, and peer-diversity policy follow separately. A
-consensus-selected checkpoint and linear settlement/economy remain later layers
-and must not be inferred from authenticated transport peers.
+The next network slice is bounded multi-peer fallback on the existing
+non-resetting deadline and permit-preserving cancellation substrate. It must not
+reset total attempt, byte, work, or time budgets when changing peers.
+Discovery, bootstrap, persisted addresses, and peer-diversity policy follow
+separately. A consensus-selected checkpoint and linear settlement/economy
+remain later layers and must not be inferred from authenticated transport peers.
