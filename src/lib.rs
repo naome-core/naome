@@ -1,1 +1,3 @@
-//! Core library for the NAOME protocol.
+//! Core integration contracts for the NAOME protocol.
+
+pub mod proof_exchange;

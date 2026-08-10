@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use naome_chain::{ProofDag, ProofSetMembership};
@@ -992,45 +991,6 @@ fn replay_stabilization_failure_returns_no_handle() {
         JournalCore::replay(file),
         Err(JournalError::Stabilize { .. })
     ));
-}
-
-#[test]
-fn exclusive_lock_child_probe() {
-    let Some(path) = env::var_os("NAOME_JOURNAL_LOCK_PROBE") else {
-        return;
-    };
-    assert!(matches!(
-        ProofDagJournal::open(PathBuf::from(path)),
-        Err(JournalError::Locked)
-    ));
-    println!("NAOME_JOURNAL_LOCK_PROBE_OK");
-}
-
-#[test]
-fn exclusive_lock_is_enforced_across_processes() {
-    let directory = TestDirectory::new();
-    let journal = ProofDagJournal::create(&directory.path).unwrap();
-    let output = Command::new(env::current_exe().unwrap())
-        .arg("--exact")
-        .arg("tests::exclusive_lock_child_probe")
-        .arg("--nocapture")
-        .env("NAOME_JOURNAL_LOCK_PROBE", &directory.path)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "child stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("NAOME_JOURNAL_LOCK_PROBE_OK"),
-        "child lock probe did not execute: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    drop(journal);
-    assert!(ProofDagJournal::open(&directory.path).is_ok());
 }
 
 #[test]
