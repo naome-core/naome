@@ -584,7 +584,14 @@ mod tests {
     fn test_network_for_peer(remote_peer_id: PeerId) -> StaticProofNetwork {
         let local = crate::Keypair::generate_ed25519();
         let address = "/ip4/127.0.0.1/tcp/9".parse().unwrap();
-        StaticProofNetwork::new(local, [StaticPeer::new(remote_peer_id, address)]).unwrap()
+        let mut network =
+            StaticProofNetwork::new(local, [StaticPeer::new(remote_peer_id, address)]).unwrap();
+        network
+            .swarm
+            .behaviour_mut()
+            .sessions
+            .mark_connected_for_test(remote_peer_id);
+        network
     }
 
     fn response_for(

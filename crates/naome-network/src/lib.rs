@@ -6,13 +6,18 @@
 //! [`ProofRequest`] that caused it. Static authorization is not Sybil
 //! resistance, discovery, consensus, or proof selection.
 //!
+//! The endpoint with the lexicographically lower raw binary `PeerId` in each
+//! configured pair owns dialing; proof requests reuse that managed full-duplex
+//! session and never open connections.
+//!
 //! The caller owns the Tokio runtime, drives [`StaticProofNetwork::next_event`],
 //! routes correlated responses through a bounded dependency acquisition, and
 //! explicitly promotes the resulting opaque closure. This crate starts no
-//! background task and owns no [`ProofDagJournal`].
+//! NAOME-owned background task and owns no [`ProofDagJournal`].
 
 mod acquisition;
 mod codec;
+mod session;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -33,6 +38,18 @@ use naome::proof_exchange::{
     PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse, proof_response,
 };
 use naome_storage::{JournalError, ProofDagJournal};
+use session::Behaviour as SessionBehaviour;
+
+const MANAGED_SESSION_IDLE_TIMEOUT: Duration = Duration::MAX;
+const DIAL_RETRY_DELAYS: [Duration; 7] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(16),
+    Duration::from_secs(32),
+    Duration::from_secs(60),
+];
 
 pub use acquisition::{
     DependencyAcquisitionError, DependencyAcquisitionProgress, ProofDependencyAcquisition,
@@ -57,10 +74,20 @@ pub const TCP_LISTEN_BACKLOG: u32 = 16;
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum duration of the negotiated request-response phase.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Duration after which an unused authenticated connection closes.
-pub const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+/// Initial delay after one failed managed-session dial.
+pub const DIAL_RETRY_BASE: Duration = DIAL_RETRY_DELAYS[0];
+/// Maximum delay between managed-session dial attempts.
+pub const DIAL_RETRY_MAX: Duration = DIAL_RETRY_DELAYS[DIAL_RETRY_DELAYS.len() - 1];
+/// Connected duration required before the next failure resets dial backoff.
+pub const STABLE_SESSION_DURATION: Duration = Duration::from_secs(60);
+/// Maximum pre-authentication inbound connection burst.
+pub const INBOUND_AUTH_BURST: u32 = 8;
+/// Sustained pre-authentication inbound connection refill interval.
+pub const INBOUND_AUTH_REFILL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// One statically authorized peer and its dial address.
+/// One manually authorized peer and its complete dial address.
+///
+/// This is a fixed endpoint, not a bootstrap seed or discovered address.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct StaticPeer {
@@ -89,6 +116,7 @@ impl StaticPeer {
 struct Behaviour {
     limits: connection_limits::Behaviour,
     allowed: allow_block_list::Behaviour<allow_block_list::AllowedPeers>,
+    sessions: SessionBehaviour,
     exchange: request_response::Behaviour<ProofCodec>,
 }
 
@@ -101,7 +129,6 @@ struct PendingRequest {
 /// Authenticated proof transport over a fixed set of authorized peers.
 pub struct StaticProofNetwork {
     swarm: Swarm<Behaviour>,
-    peers: HashMap<PeerId, Multiaddr>,
     pending: HashMap<request_response::OutboundRequestId, PendingRequest>,
     pending_budget: Arc<PendingBudget>,
 }
@@ -110,25 +137,32 @@ impl StaticProofNetwork {
     /// Builds a bounded TCP + Noise + Yamux proof transport.
     ///
     /// This must run inside a Tokio runtime with I/O and time drivers enabled.
+    /// Useful connectivity requires both endpoints to configure each other,
+    /// the higher raw binary `PeerId` to expose the configured listener, and
+    /// both event loops to remain driven. The lower `PeerId` owns dialing.
     pub fn new(
         identity: Keypair,
         peers: impl IntoIterator<Item = StaticPeer>,
     ) -> Result<Self, BuildError> {
         let local_peer_id = identity.public().to_peer_id();
-        let mut peer_map = HashMap::new();
+        let mut static_peers = Vec::with_capacity(MAX_STATIC_PEERS);
         for peer in peers {
             if peer.peer_id == local_peer_id {
                 return Err(BuildError::LocalPeer(local_peer_id));
             }
-            if peer_map.insert(peer.peer_id, peer.address).is_some() {
+            if static_peers
+                .iter()
+                .any(|configured: &StaticPeer| configured.peer_id == peer.peer_id)
+            {
                 return Err(BuildError::DuplicatePeer(peer.peer_id));
             }
-            if peer_map.len() > MAX_STATIC_PEERS {
+            if static_peers.len() == MAX_STATIC_PEERS {
                 return Err(BuildError::TooManyPeers {
-                    actual: peer_map.len(),
+                    actual: static_peers.len() + 1,
                     maximum: MAX_STATIC_PEERS,
                 });
             }
+            static_peers.push(peer);
         }
 
         let peers_u32 = u32::try_from(MAX_STATIC_PEERS).expect("MAX_STATIC_PEERS fits u32");
@@ -140,9 +174,10 @@ impl StaticProofNetwork {
         let limits = connection_limits::Behaviour::new(connection_limits);
 
         let mut allowed = allow_block_list::Behaviour::default();
-        for peer_id in peer_map.keys() {
-            allowed.allow_peer(*peer_id);
+        for peer in &static_peers {
+            allowed.allow_peer(peer.peer_id);
         }
+        let sessions = SessionBehaviour::new(local_peer_id, static_peers);
 
         let exchange_config = request_response::Config::default()
             .with_request_timeout(REQUEST_TIMEOUT)
@@ -156,6 +191,7 @@ impl StaticProofNetwork {
         let behaviour = Behaviour {
             limits,
             allowed,
+            sessions,
             exchange,
         };
         let swarm = SwarmBuilder::with_existing_identity(identity)
@@ -170,7 +206,7 @@ impl StaticProofNetwork {
             .expect("constructing the fixed proof-network behavior is infallible")
             .with_swarm_config(|config| {
                 config
-                    .with_idle_connection_timeout(IDLE_CONNECTION_TIMEOUT)
+                    .with_idle_connection_timeout(MANAGED_SESSION_IDLE_TIMEOUT)
                     .with_max_negotiating_inbound_streams(MAX_STREAMS_PER_CONNECTION)
             })
             .with_connection_timeout(CONNECTION_TIMEOUT)
@@ -178,7 +214,6 @@ impl StaticProofNetwork {
 
         Ok(Self {
             swarm,
-            peers: peer_map,
             pending: HashMap::new(),
             pending_budget: Arc::new(PendingBudget::default()),
         })
@@ -199,16 +234,23 @@ impl StaticProofNetwork {
         peer_id: PeerId,
         request: ProofRequest,
     ) -> Result<request_response::OutboundRequestId, RequestStartError> {
-        let address = self
-            .peers
-            .get(&peer_id)
-            .ok_or(RequestStartError::UnknownPeer(peer_id))?;
+        let Some(session_connected) = self.swarm.behaviour().sessions.connection_status(&peer_id)
+        else {
+            return Err(RequestStartError::UnknownPeer(peer_id));
+        };
         if self
             .pending
             .values()
             .any(|pending| pending.peer_id == peer_id)
         {
             return Err(RequestStartError::AlreadyPending(peer_id));
+        }
+        let transport_connected = self.swarm.behaviour().exchange.is_connected(&peer_id);
+        #[cfg(test)]
+        let transport_connected =
+            transport_connected || self.swarm.behaviour().sessions.is_test_connected(&peer_id);
+        if !session_connected || !transport_connected {
+            return Err(RequestStartError::PeerDisconnected(peer_id));
         }
         let permit = PendingBudget::try_acquire(&self.pending_budget).ok_or(
             RequestStartError::GlobalLimit {
@@ -219,7 +261,7 @@ impl StaticProofNetwork {
             .swarm
             .behaviour_mut()
             .exchange
-            .send_request_with_addresses(&peer_id, request, vec![address.clone()]);
+            .send_request(&peer_id, request);
         let replaced = self.pending.insert(
             request_id,
             PendingRequest {
@@ -240,6 +282,9 @@ impl StaticProofNetwork {
                     if let Some(event) = self.handle_exchange_event(event) {
                         return event;
                     }
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::Sessions(event)) => {
+                    return NetworkEvent::PeerSession(event);
                 }
                 SwarmEvent::NewListenAddr { address, .. } => {
                     return NetworkEvent::Listening { address };
@@ -456,6 +501,7 @@ pub enum NetworkEvent {
         actual: PeerId,
         request: ProofRequest,
     },
+    PeerSession(PeerSessionEvent),
     ListenerError {
         listener_id: ListenerId,
         error: std::io::Error,
@@ -561,6 +607,7 @@ impl Error for ListenError {
 pub enum RequestStartError {
     UnknownPeer(PeerId),
     AlreadyPending(PeerId),
+    PeerDisconnected(PeerId),
     GlobalLimit { maximum: usize },
 }
 
@@ -576,6 +623,9 @@ impl fmt::Display for RequestStartError {
                     "peer {peer_id} already has a pending proof request"
                 )
             }
+            Self::PeerDisconnected(peer_id) => {
+                write!(formatter, "peer {peer_id} has no established session")
+            }
             Self::GlobalLimit { maximum } => {
                 write!(
                     formatter,
@@ -587,6 +637,27 @@ impl fmt::Display for RequestStartError {
 }
 
 impl Error for RequestStartError {}
+
+/// One externally visible managed static-peer session transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+#[non_exhaustive]
+pub enum PeerSessionEvent {
+    Established { peer_id: PeerId },
+    DialFailed { peer_id: PeerId },
+    Disconnected { peer_id: PeerId },
+}
+
+impl PeerSessionEvent {
+    /// Returns the configured peer whose session changed.
+    pub const fn peer_id(self) -> PeerId {
+        match self {
+            Self::Established { peer_id }
+            | Self::DialFailed { peer_id }
+            | Self::Disconnected { peer_id } => peer_id,
+        }
+    }
+}
 
 /// Failure to serve an authenticated inbound request.
 #[derive(Debug)]
