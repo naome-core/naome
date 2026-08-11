@@ -11,7 +11,7 @@ use libp2p::core::{Endpoint, transport::PortUse};
 use libp2p::futures::StreamExt;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, ToSwarm};
 use naome::proof_exchange::ProofRequest;
-use naome_chain::{AddressedProofCandidate, ProofChainId, ProofDag};
+use naome_chain::{AddressedProofCandidate, ProofBlockId, ProofChainId, ProofDag, ProofSetRoot};
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofStep};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
@@ -27,6 +27,33 @@ static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct TestDirectory {
     path: PathBuf,
+}
+
+pub(crate) struct JournalSnapshot {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) head: ProofBlockId,
+    pub(crate) root: ProofSetRoot,
+    pub(crate) len: usize,
+}
+
+pub(crate) fn snapshot(directory: &TestDirectory, journal: &ProofChainJournal) -> JournalSnapshot {
+    JournalSnapshot {
+        bytes: directory.journal_bytes(),
+        head: journal.head_block_id().unwrap(),
+        root: journal.proof_set_root().unwrap(),
+        len: journal.len().unwrap(),
+    }
+}
+
+pub(crate) fn assert_snapshot(
+    directory: &TestDirectory,
+    journal: &ProofChainJournal,
+    expected: &JournalSnapshot,
+) {
+    assert_eq!(directory.journal_bytes(), expected.bytes);
+    assert_eq!(journal.head_block_id().unwrap(), expected.head);
+    assert_eq!(journal.proof_set_root().unwrap(), expected.root);
+    assert_eq!(journal.len().unwrap(), expected.len);
 }
 
 impl TestDirectory {
@@ -144,7 +171,7 @@ fn apply_referenced_pair(
     (parent_id, root_id)
 }
 
-fn union_bytes() -> Vec<u8> {
+pub(crate) fn union_bytes() -> Vec<u8> {
     vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x02]
 }
 

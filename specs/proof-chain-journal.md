@@ -460,6 +460,15 @@ empty. It adds no journal mutation or format, and a receiver must not treat the
 observation as a trusted checkpoint or automatic import target.
 
 The separate
+[Caller-Selected Proof Block Ancestry Pull](caller-selected-proof-block-ancestry-pull.md)
+captures the healthy current head and proof-set root, then uses exact committed
+block lookup to reject a backward path that reaches indexed selected history
+and a direct virtual-genesis comparison to reject that anchor before the
+captured head. These reads add no journal method,
+scan, write, format, selection rule, or competing-branch store. A returned path
+remains unselected and may become stale immediately after completion.
+
+The separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
 may retrieve one exact caller-chosen direct child, acquire its existing bounded
 proof closure, and invoke the same journal application path. It adds no journal

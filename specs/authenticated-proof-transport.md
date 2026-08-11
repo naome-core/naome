@@ -29,6 +29,10 @@ The separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
 orchestrates those two existing exchanges for one exact direct-child target;
 it does not consume the head protocol or grant peer-side selection policy.
+The separate
+[Caller-Selected Proof Block Ancestry Pull](caller-selected-proof-block-ancestry-pull.md)
+retrieves at most sixteen exact parent-linked blocks from one caller-selected
+peer without acquiring proof payloads or mutating selected state.
 
 This is not a decentralized peer-discovery system or a consensus protocol.
 Static peer identities provide authentication and authorization, not Sybil

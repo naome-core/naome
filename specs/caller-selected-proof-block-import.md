@@ -30,6 +30,12 @@ may supply an untrusted candidate identity to caller policy, but it never starts
 this importer or changes the requirement that the caller explicitly select the
 exact target.
 
+The separate
+[Caller-Selected Proof Block Ancestry Pull](caller-selected-proof-block-ancestry-pull.md)
+may retrieve a bounded unselected path to the current local head, but it never
+starts this importer, acquires proof payloads, or changes this contract's
+single-direct-child mutation boundary.
+
 ## Public surface
 
 The public Rust surface is equivalent to:
@@ -89,12 +95,14 @@ avoids storing the import beside a redundant completion variant.
 `start_proof_block_import` performs these checks in order:
 
 1. read the healthy journal's current head;
-2. reject the target as `TargetAlreadySelected` when it equals that current
-   head;
-3. otherwise query the healthy journal's committed exact-ID block index and
+2. derive the chain's virtual genesis anchor from the journal's immutable
+   chain context;
+3. reject the target as `TargetAlreadySelected` when it equals that current
+   head or virtual genesis anchor;
+4. otherwise query the healthy journal's committed exact-ID block index and
    reject the target as `TargetAlreadySelected` when it already belongs to the
    selected ancestry; and
-4. call the existing `request_block` with the caller's peer and exact target,
+5. call the existing `request_block` with the caller's peer and exact target,
    preserving its `UnknownPeer`, `AlreadyPending`, `PeerDisconnected`, and
    `GlobalLimit` precedence inside `RequestStart`.
 

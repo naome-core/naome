@@ -247,10 +247,15 @@ the [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md).
 
 After applying its own policy, a caller may explicitly use a found ID with the
 [Authenticated Proof Block Transport](authenticated-proof-block-transport.md)
-or explicitly choose it as a target for the existing direct-child importer.
-That separate importer retains exact block identity, current-parent, proof-root,
-payload, mathematical-validation, atomicity, and durable-commit checks. There is
-no convenience API that converts `OutboundChainHead` directly into an import.
+or explicitly choose it as the target for the
+[Caller-Selected Proof Block Ancestry Pull](caller-selected-proof-block-ancestry-pull.md).
+That separate bounded operation retrieves only a structurally root-continuous,
+unselected path to the caller's captured local head. The caller may instead
+explicitly choose a direct child as a target for the existing importer, which
+retains exact block identity, current-parent, proof-root, payload,
+mathematical-validation, atomicity, and durable-commit checks. There is no
+convenience API that converts `OutboundChainHead` directly into either
+operation.
 
 The observation must not be passed to `ProofChainJournal::open_verified` as a
 trusted expected head solely because Noise authenticated the serving peer.

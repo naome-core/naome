@@ -4,13 +4,13 @@ use std::error::Error;
 use std::fmt;
 
 use naome::block_exchange::ProofBlockRequest;
-use naome_chain::{ProofBlock, ProofBlockId, ProofSetRoot};
+use naome_chain::{ProofBlock, ProofBlockId, ProofChainState, ProofSetRoot};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 use super::{
     BlockRequestTicket, DependencyAcquisitionError, DependencyAcquisitionProgress, NetworkEvent,
     OutboundProofBlockFailure, OutboundProofFailure, PeerId, ProofDependencyAcquisition,
-    RequestStartError, StaticProofNetwork,
+    RequestStartError, StaticProofNetwork, selected_context_contains_block,
 };
 
 /// One caller-selected direct-child block import in progress.
@@ -41,8 +41,9 @@ impl StaticProofNetwork {
     /// Starts importing one caller-selected block that must directly extend
     /// `selected`.
     ///
-    /// The target is rejected before network work when it is already present
-    /// in the selected ancestry. The returned import remains caller-driven;
+    /// The target is rejected before network work when it is the current head,
+    /// virtual genesis anchor, or a committed selected block. The returned
+    /// import remains caller-driven;
     /// route only events accepted by [`ProofBlockImport::accepts_event`] into
     /// [`ProofBlockImport::on_event`].
     pub fn start_proof_block_import(
@@ -54,11 +55,9 @@ impl StaticProofNetwork {
         let current_head = selected
             .head_block_id()
             .map_err(ProofBlockImportError::selected_state)?;
-        if target_block_id == current_head
-            || selected
-                .block(target_block_id)
-                .map_err(ProofBlockImportError::selected_state)?
-                .is_some()
+        let virtual_genesis = ProofChainState::new(selected.chain_id()).head_block_id();
+        if selected_context_contains_block(selected, current_head, virtual_genesis, target_block_id)
+            .map_err(ProofBlockImportError::selected_state)?
         {
             return Err(ProofBlockImportError::TargetAlreadySelected {
                 block_id: target_block_id,
@@ -271,7 +270,7 @@ pub type ProofBlockImportProgress = Option<ProofBlockImport>;
 pub enum ProofBlockImportError {
     /// The selected journal failed a read, preparation, application, or commit.
     SelectedState { source: Box<ProofChainJournalError> },
-    /// The target is already part of the local selected ancestry.
+    /// The target is the current head, virtual genesis, or a selected block.
     TargetAlreadySelected { block_id: ProofBlockId },
     /// The exact target block request could not be started.
     RequestStart {
