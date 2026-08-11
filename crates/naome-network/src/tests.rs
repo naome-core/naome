@@ -11,9 +11,10 @@ use libp2p::core::{Endpoint, transport::PortUse};
 use libp2p::futures::StreamExt;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, ToSwarm};
 use naome::proof_exchange::ProofRequest;
+use naome_chain::{AddressedProofCandidate, ProofChainId, ProofDag};
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofStep};
-use naome_storage::ProofDagJournal;
+use naome_storage::{ProofChainJournal, ProofChainJournalError};
 use tokio::time::timeout;
 
 use super::{
@@ -48,8 +49,8 @@ impl TestDirectory {
         &self.path
     }
 
-    fn journal_bytes(&self) -> Vec<u8> {
-        fs::read(self.path.join("proof-dag.journal")).unwrap()
+    pub(crate) fn journal_bytes(&self) -> Vec<u8> {
+        fs::read(self.path.join("proof-chain.journal")).unwrap()
     }
 }
 
@@ -61,6 +62,64 @@ impl Drop for TestDirectory {
 
 fn pairing_bytes() -> Vec<u8> {
     vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x01]
+}
+
+pub(crate) fn create_journal(
+    directory: impl AsRef<Path>,
+) -> Result<ProofChainJournal, ProofChainJournalError> {
+    ProofChainJournal::create(directory, test_chain_id())
+}
+
+fn test_chain_id() -> ProofChainId {
+    ProofChainId::from_bytes([0x41; 32])
+}
+
+pub(crate) fn apply_fresh_blocks(
+    journal: &mut ProofChainJournal,
+    payloads: impl IntoIterator<Item = Vec<u8>>,
+) -> Vec<naome_proof::ProofId> {
+    let mut identity = ProofDag::new();
+    payloads
+        .into_iter()
+        .map(|bytes| {
+            let proof_id = identity
+                .apply_canonical_proof_bytes(bytes.clone())
+                .unwrap()
+                .proof_id();
+            let block = journal.prepare_block(vec![proof_id]).unwrap();
+            journal
+                .apply_block(&block, vec![AddressedProofCandidate::new(proof_id, bytes)])
+                .unwrap();
+            proof_id
+        })
+        .collect()
+}
+
+fn apply_referenced_pair(
+    journal: &mut ProofChainJournal,
+) -> (naome_proof::ProofId, naome_proof::ProofId) {
+    let parent_bytes = pairing_bytes();
+    let mut identity = ProofDag::new();
+    let parent_id = identity
+        .apply_canonical_proof_bytes(parent_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let root_bytes = referenced_generalization(parent_id);
+    let root_id = identity
+        .apply_canonical_proof_bytes(root_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let block = journal.prepare_block(vec![parent_id, root_id]).unwrap();
+    journal
+        .apply_block(
+            &block,
+            vec![
+                AddressedProofCandidate::new(parent_id, parent_bytes),
+                AddressedProofCandidate::new(root_id, root_bytes),
+            ],
+        )
+        .unwrap();
+    (parent_id, root_id)
 }
 
 fn union_bytes() -> Vec<u8> {
@@ -182,7 +241,7 @@ async fn connected_pair() -> (StaticProofNetwork, StaticProofNetwork, PeerId, Pe
 async fn exchange_once(
     client: &mut StaticProofNetwork,
     server: &mut StaticProofNetwork,
-    server_journal: &ProofDagJournal,
+    server_journal: &ProofChainJournal,
     server_peer_id: PeerId,
     request: ProofRequest,
 ) -> OutboundProofEvent {
@@ -193,7 +252,7 @@ async fn exchange_once(
 async fn receive_once(
     client: &mut StaticProofNetwork,
     server: &mut StaticProofNetwork,
-    server_journal: &ProofDagJournal,
+    server_journal: &ProofChainJournal,
 ) -> OutboundProofEvent {
     timeout(Duration::from_secs(10), async {
         loop {
@@ -235,18 +294,11 @@ async fn dependency_acquisition_is_unselected_until_one_explicit_atomic_promotio
     let (mut client, mut server, _, server_peer_id) = connected_pair().await;
 
     let server_directory = TestDirectory::new("closure-server");
-    let mut server_journal = ProofDagJournal::create(server_directory.path()).unwrap();
-    let parent_id = server_journal
-        .apply_canonical_proof_bytes(pairing_bytes())
-        .unwrap()
-        .proof_id();
-    let root_id = server_journal
-        .apply_canonical_proof_bytes(referenced_generalization(parent_id))
-        .unwrap()
-        .proof_id();
+    let mut server_journal = create_journal(server_directory.path()).unwrap();
+    let (parent_id, root_id) = apply_referenced_pair(&mut server_journal);
 
     let client_directory = TestDirectory::new("closure-client");
-    let mut client_journal = ProofDagJournal::create(client_directory.path()).unwrap();
+    let mut client_journal = create_journal(client_directory.path()).unwrap();
     let empty_bytes = client_directory.journal_bytes();
     let empty_root = client_journal.proof_set_root().unwrap();
     let mut acquisition = client
@@ -274,18 +326,21 @@ async fn dependency_acquisition_is_unselected_until_one_explicit_atomic_promotio
     assert_eq!(client_journal.proof_set_root().unwrap(), empty_root);
     assert!(client_journal.is_empty().unwrap());
 
-    let accepted = closure
-        .apply_to_selected_state(&mut client_journal)
+    let block = client_journal
+        .prepare_block(vec![parent_id, root_id])
         .unwrap();
+    let accepted = closure.apply_block(&mut client_journal, &block).unwrap();
     assert_eq!(accepted.proof_id(), root_id);
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 0);
     assert_eq!(client_journal.len().unwrap(), 2);
     assert!(client_journal.proof(parent_id).unwrap().is_some());
     assert!(client_journal.proof(root_id).unwrap().is_some());
 
-    let selected_root = client_journal.proof_set_root().unwrap();
+    let selected_head = client_journal.head_block_id().unwrap();
     drop(client_journal);
-    let reopened = ProofDagJournal::open_verified(client_directory.path(), selected_root).unwrap();
+    let reopened =
+        ProofChainJournal::open_verified(client_directory.path(), test_chain_id(), selected_head)
+            .unwrap();
     assert_eq!(reopened.len().unwrap(), 2);
 }
 
@@ -360,19 +415,12 @@ async fn dependency_acquisition_falls_back_to_another_authenticated_peer() {
     .expect("all three managed peer sessions did not establish");
 
     let preferred_directory = TestDirectory::new("fallback-preferred-server");
-    let preferred_journal = ProofDagJournal::create(preferred_directory.path()).unwrap();
+    let preferred_journal = create_journal(preferred_directory.path()).unwrap();
     let fallback_directory = TestDirectory::new("fallback-source-server");
-    let mut fallback_journal = ProofDagJournal::create(fallback_directory.path()).unwrap();
-    let parent_id = fallback_journal
-        .apply_canonical_proof_bytes(pairing_bytes())
-        .unwrap()
-        .proof_id();
-    let root_id = fallback_journal
-        .apply_canonical_proof_bytes(referenced_generalization(parent_id))
-        .unwrap()
-        .proof_id();
+    let mut fallback_journal = create_journal(fallback_directory.path()).unwrap();
+    let (parent_id, root_id) = apply_referenced_pair(&mut fallback_journal);
     let client_directory = TestDirectory::new("fallback-client");
-    let mut client_journal = ProofDagJournal::create(client_directory.path()).unwrap();
+    let mut client_journal = create_journal(client_directory.path()).unwrap();
     let empty_bytes = client_directory.journal_bytes();
     let mut acquisition = client
         .start_dependency_acquisition(&client_journal, preferred_peer_id, root_id)
@@ -419,9 +467,12 @@ async fn dependency_acquisition_falls_back_to_another_authenticated_peer() {
     assert_eq!(closure.candidate_count(), 2);
     assert_eq!(client_directory.journal_bytes(), empty_bytes);
     assert!(client_journal.is_empty().unwrap());
+    let block = client_journal
+        .prepare_block(vec![parent_id, root_id])
+        .unwrap();
     assert_eq!(
         closure
-            .apply_to_selected_state(&mut client_journal)
+            .apply_block(&mut client_journal, &block)
             .unwrap()
             .proof_id(),
         root_id
@@ -707,13 +758,10 @@ async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
     let (mut client, mut server, _, server_peer_id) = connected_pair().await;
 
     let server_directory = TestDirectory::new("server");
-    let mut server_journal = ProofDagJournal::create(server_directory.path()).unwrap();
-    let proof_id = server_journal
-        .apply_canonical_proof_bytes(pairing_bytes())
-        .unwrap()
-        .proof_id();
+    let mut server_journal = create_journal(server_directory.path()).unwrap();
+    let proof_id = apply_fresh_blocks(&mut server_journal, [pairing_bytes()])[0];
     let client_directory = TestDirectory::new("client");
-    let client_journal = ProofDagJournal::create(client_directory.path()).unwrap();
+    let client_journal = create_journal(client_directory.path()).unwrap();
 
     let found = exchange_once(
         &mut client,
@@ -795,7 +843,7 @@ async fn an_established_session_redials_after_close_and_remains_usable() {
     .expect("managed session did not re-establish after close");
 
     let directory = TestDirectory::new("redial-server");
-    let journal = ProofDagJournal::create(directory.path()).unwrap();
+    let journal = create_journal(directory.path()).unwrap();
     let response = exchange_once(
         &mut owner,
         &mut passive,
@@ -812,17 +860,11 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
     let (mut network_a, mut network_b, peer_a, peer_b) = connected_pair().await;
 
     let directory_a = TestDirectory::new("bidirectional-a");
-    let mut journal_a = ProofDagJournal::create(directory_a.path()).unwrap();
-    let proof_a = journal_a
-        .apply_canonical_proof_bytes(pairing_bytes())
-        .unwrap()
-        .proof_id();
+    let mut journal_a = create_journal(directory_a.path()).unwrap();
+    let proof_a = apply_fresh_blocks(&mut journal_a, [pairing_bytes()])[0];
     let directory_b = TestDirectory::new("bidirectional-b");
-    let mut journal_b = ProofDagJournal::create(directory_b.path()).unwrap();
-    let proof_b = journal_b
-        .apply_canonical_proof_bytes(union_bytes())
-        .unwrap()
-        .proof_id();
+    let mut journal_b = create_journal(directory_b.path()).unwrap();
+    let proof_b = apply_fresh_blocks(&mut journal_b, [union_bytes()])[0];
 
     network_a
         .request_proof(peer_b, ProofRequest::new(proof_b))
@@ -1055,11 +1097,8 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
         }
     };
     let server_directory = TestDirectory::new("redial-server");
-    let mut server_journal = ProofDagJournal::create(server_directory.path()).unwrap();
-    let proof_id = server_journal
-        .apply_canonical_proof_bytes(pairing_bytes())
-        .unwrap()
-        .proof_id();
+    let mut server_journal = create_journal(server_directory.path()).unwrap();
+    let proof_id = apply_fresh_blocks(&mut server_journal, [pairing_bytes()])[0];
 
     let mut wrong_server = StaticProofNetwork::new(
         wrong_server_identity,

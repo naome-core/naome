@@ -4,9 +4,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use naome_chain::{AddressedProofCandidate, ProofChainId, ProofDag};
 use naome_foundation::ZfcAxiom;
 use naome_proof::{CERTIFICATE_MAX_BYTES, ProofCertificate, ProofId, ProofStep};
-use naome_storage::ProofDagJournal;
+use naome_storage::ProofChainJournal;
 
 use super::{
     PROOF_REQUEST_BYTES, PROOF_RESPONSE_MAX_BYTES, ProofExchangeWireError, ProofRequest,
@@ -134,12 +135,21 @@ fn response_limit_is_the_certificate_limit_and_precedes_proof_parsing() {
 #[test]
 fn serving_borrows_exact_retained_bytes_and_missing_is_only_local() {
     let directory = TestDirectory::new();
-    let mut journal = ProofDagJournal::create(directory.path()).unwrap();
+    let mut journal =
+        ProofChainJournal::create(directory.path(), ProofChainId::from_bytes([0x31; 32])).unwrap();
     let pairing = axiom_bytes(ZfcAxiom::Pairing);
-    let record = journal
+    let mut identity = ProofDag::new();
+    let pairing_id = identity
         .apply_canonical_proof_bytes(pairing.clone())
         .unwrap();
-    let pairing_id = record.proof_id();
+    let pairing_id = pairing_id.proof_id();
+    let block = journal.prepare_block(vec![pairing_id]).unwrap();
+    let record = journal
+        .apply_block(
+            &block,
+            vec![AddressedProofCandidate::new(pairing_id, pairing.clone())],
+        )
+        .unwrap();
     let retained_pointer = record.canonical_proof_bytes().as_ptr();
 
     let served = proof_response(&journal, ProofRequest::new(pairing_id))

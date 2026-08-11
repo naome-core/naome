@@ -22,6 +22,9 @@ transition's bytes or admission rules. This contract itself defines no parent
 block, height, timestamp, chain identifier, proposer, signature, proof of work,
 fork choice, finality, network message, persistence format, reward, fee,
 balance, or settlement.
+The separate [Proof Chain Journal](proof-chain-journal.md) persists a transition
+only as part of one exact-parent block together with the transition's ordered
+proof payloads.
 
 ## Canonical value
 
@@ -219,6 +222,12 @@ chain context without changing this transition's canonical bytes or
 mathematical admission rules. That parent binding still establishes no time,
 authority, consensus selection, or finality.
 
+The [Proof Chain Journal](proof-chain-journal.md) reconstructs durable selected
+state by decoding each stored block and applying its transition through this
+same boundary. Journal replay derives expected candidate addresses from the
+transition and never treats stored payload order as an independent state
+transition.
+
 ## Resource boundary
 
 The transition itself commits at most eight 32-byte proof identities and is
@@ -253,7 +262,7 @@ This transition contract defines no block or header format, block parent,
 height, timestamp, chain identifier, proposer identity, signature, proof of
 work, validator set, voting, fork choice, reorganization, rollback, finality,
 checkpoint trust, data-availability protocol, proof fetching, network message,
-peer discovery, source attribution, persistent journal entry, snapshot,
-reward, fee, balance, novelty policy, or settlement. Exact linear parent
-binding is defined only by the separate [Proof Block](proof-block.md)
-contract.
+peer discovery, source attribution, snapshot, reward, fee, balance, novelty
+policy, or settlement. Exact linear parent binding is defined only by the
+separate [Proof Block](proof-block.md) contract, and local durable replay only
+by the separate [Proof Chain Journal](proof-chain-journal.md).

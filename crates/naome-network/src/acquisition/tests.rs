@@ -1,56 +1,17 @@
-use std::env;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
 use naome::proof_exchange::ProofResponse;
-use naome_foundation::{FreeVariable, ZfcAxiom};
+use naome_chain::{ProofBlockApplyError, ProofDag, ProofTransitionApplyError};
+use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 use naome_ledger::ProofBatchError;
 
 use super::*;
+use crate::tests::{TestDirectory, apply_fresh_blocks, create_journal};
 use crate::{CancellationDrainOutcome, NetworkEvent, PendingBudget, StaticPeer};
-
-static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-struct TestDirectory {
-    path: PathBuf,
-}
-
-impl TestDirectory {
-    fn new(label: &str) -> Self {
-        loop {
-            let sequence = TEMP_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = env::temp_dir().join(format!(
-                "naome-network-acquisition-{label}-{}-{sequence}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Self { path },
-                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(source) => panic!("temporary test directory failed: {source}"),
-            }
-        }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn journal_bytes(&self) -> Vec<u8> {
-        fs::read(self.path.join("proof-dag.journal")).unwrap()
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.path).unwrap();
-    }
-}
 
 fn proof_id(byte: u8) -> ProofId {
     ProofId::from_bytes([byte; 32])
@@ -96,16 +57,73 @@ fn referenced_generalization_bytes(parent: ProofId) -> Vec<u8> {
     ])
 }
 
+fn identity_bytes(variable: FreeVariable) -> Vec<u8> {
+    canonical_bytes(vec![
+        ProofStep::EqualityReflexivity { variable },
+        ProofStep::Generalization {
+            premise: 0,
+            variable,
+        },
+    ])
+}
+
+fn identity_detour_bytes(variable: FreeVariable) -> Vec<u8> {
+    let equality = Formula::equal(variable, variable);
+    canonical_bytes(vec![
+        ProofStep::EqualityReflexivity { variable },
+        ProofStep::Simplification {
+            antecedent: equality.clone(),
+            consequent: equality,
+        },
+        ProofStep::ModusPonens {
+            premise: 0,
+            implication: 1,
+        },
+        ProofStep::ModusPonens {
+            premise: 0,
+            implication: 2,
+        },
+        ProofStep::Generalization {
+            premise: 3,
+            variable,
+        },
+    ])
+}
+
+fn proof_citing_both_identities(
+    direct: ProofId,
+    detour: ProofId,
+    variable: FreeVariable,
+) -> Vec<u8> {
+    let equality = Formula::equal(variable, variable);
+    let identity = Formula::for_all(variable, equality);
+    canonical_bytes(vec![
+        ProofStep::ProofReference { proof_id: direct },
+        ProofStep::ProofReference { proof_id: detour },
+        ProofStep::Simplification {
+            antecedent: identity.clone(),
+            consequent: identity,
+        },
+        ProofStep::ModusPonens {
+            premise: 1,
+            implication: 2,
+        },
+        ProofStep::ModusPonens {
+            premise: 0,
+            implication: 3,
+        },
+    ])
+}
+
 fn valid_parent_and_root() -> (Vec<u8>, ProofId, Vec<u8>, ProofId) {
-    let directory = TestDirectory::new("source");
-    let mut journal = ProofDagJournal::create(directory.path()).unwrap();
     let parent_bytes = pairing_bytes();
-    let parent_id = journal
+    let mut identity = ProofDag::new();
+    let parent_id = identity
         .apply_canonical_proof_bytes(parent_bytes.clone())
         .unwrap()
         .proof_id();
     let root_bytes = referenced_generalization_bytes(parent_id);
-    let root_id = journal
+    let root_id = identity
         .apply_canonical_proof_bytes(root_bytes.clone())
         .unwrap()
         .proof_id();
@@ -203,7 +221,7 @@ fn transport_failure(
 
 fn start(
     network: &mut StaticProofNetwork,
-    selected: &ProofDagJournal,
+    selected: &ProofChainJournal,
     peer_id: PeerId,
     requested_root: ProofId,
 ) -> ProofDependencyAcquisition {
@@ -260,29 +278,125 @@ fn closure_debug_does_not_expose_candidate_bytes() {
 }
 
 #[test]
-fn addressed_conversion_keeps_the_payload_permit_separate() {
+fn caller_block_order_reorders_an_equivalent_quarantined_topology() {
+    let directory = TestDirectory::new("caller-block-order");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let variable = FreeVariable::new(17);
+    let direct_bytes = identity_bytes(variable);
+    let detour_bytes = identity_detour_bytes(variable);
+    let mut identity = ProofDag::new();
+    let direct_id = identity
+        .apply_canonical_proof_bytes(direct_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let detour_id = identity
+        .apply_canonical_proof_bytes(detour_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let root_bytes = proof_citing_both_identities(direct_id, detour_id, variable);
+    let root_id = identity
+        .apply_canonical_proof_bytes(root_bytes.clone())
+        .unwrap()
+        .proof_id();
+
     let budget = Arc::new(PendingBudget::default());
-    let permit = PendingBudget::try_acquire(&budget).unwrap();
-    let candidate = QuarantinedCandidate {
-        expected_proof_id: proof_id(0x33),
-        canonical_proof_bytes: pairing_bytes(),
-        direct_dependencies: Vec::new(),
-        _permit: permit,
+    let quarantined =
+        |expected_proof_id, canonical_proof_bytes, direct_dependencies| QuarantinedCandidate {
+            expected_proof_id,
+            canonical_proof_bytes,
+            direct_dependencies,
+            _permit: PendingBudget::try_acquire(&budget).unwrap(),
+        };
+    let closure = UnselectedProofClosure {
+        requested_root: root_id,
+        candidates: vec![
+            quarantined(direct_id, direct_bytes, Vec::new()),
+            quarantined(detour_id, detour_bytes, Vec::new()),
+            quarantined(root_id, root_bytes, vec![direct_id, detour_id]),
+        ],
+    };
+    assert_eq!(budget.active.load(Ordering::Relaxed), 3);
+
+    let block = selected
+        .prepare_block(vec![detour_id, direct_id, root_id])
+        .unwrap();
+    assert_eq!(
+        closure
+            .apply_block(&mut selected, &block)
+            .unwrap()
+            .proof_id(),
+        root_id
+    );
+    assert_eq!(selected.head_block_id().unwrap(), block.id());
+    assert_eq!(selected.len().unwrap(), 3);
+    assert_eq!(budget.active.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn closure_count_mismatch_releases_permits_and_stale_parent_wins() {
+    let directory = TestDirectory::new("closure-shape-mismatch");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let first = proof_id(0x31);
+    let second = proof_id(0x32);
+    let extra = proof_id(0x33);
+    let block = selected.prepare_block(vec![first, second]).unwrap();
+    let initial_head = selected.head_block_id().unwrap();
+    let initial_bytes = directory.journal_bytes();
+
+    let closure_with = |ids: &[ProofId], budget: &Arc<PendingBudget>| UnselectedProofClosure {
+        requested_root: second,
+        candidates: ids
+            .iter()
+            .copied()
+            .map(|expected_proof_id| QuarantinedCandidate {
+                expected_proof_id,
+                canonical_proof_bytes: vec![0xff],
+                direct_dependencies: Vec::new(),
+                _permit: PendingBudget::try_acquire(budget).unwrap(),
+            })
+            .collect(),
     };
 
-    let (addressed, permit) = candidate.into_addressed_and_permit();
-    drop(addressed);
-    assert_eq!(budget.active.load(Ordering::Relaxed), 1);
-    drop(permit);
+    let budget = Arc::new(PendingBudget::default());
+    let incomplete = closure_with(&[first], &budget);
+    assert!(matches!(
+        incomplete.apply_block(&mut selected, &block),
+        Err(ProofChainJournalError::BlockAdmission {
+            source: ProofBlockApplyError::Transition {
+                source: ProofTransitionApplyError::CandidateCountMismatch { .. }
+            }
+        })
+    ));
     assert_eq!(budget.active.load(Ordering::Relaxed), 0);
+    assert_eq!(selected.head_block_id().unwrap(), initial_head);
+    assert!(selected.is_empty().unwrap());
+    assert_eq!(directory.journal_bytes(), initial_bytes);
+
+    apply_fresh_blocks(&mut selected, [pairing_bytes()]);
+    let advanced_head = selected.head_block_id().unwrap();
+    let advanced_bytes = directory.journal_bytes();
+    let budget = Arc::new(PendingBudget::default());
+    let malformed = closure_with(&[extra], &budget);
+    assert!(matches!(
+        malformed.apply_block(&mut selected, &block),
+        Err(ProofChainJournalError::BlockAdmission {
+            source: ProofBlockApplyError::ParentBlockIdMismatch { .. }
+        })
+    ));
+    assert_eq!(budget.active.load(Ordering::Relaxed), 0);
+    assert_eq!(selected.head_block_id().unwrap(), advanced_head);
+    assert_eq!(directory.journal_bytes(), advanced_bytes);
 }
 
 #[test]
 fn selected_dependency_is_a_cut_and_promotion_adds_only_the_root() {
     let (parent_bytes, parent_id, root_bytes, root_id) = valid_parent_and_root();
     let directory = TestDirectory::new("selected-cut");
-    let mut selected = ProofDagJournal::create(directory.path()).unwrap();
-    selected.apply_canonical_proof_bytes(parent_bytes).unwrap();
+    let mut selected = create_journal(directory.path()).unwrap();
+    assert_eq!(
+        apply_fresh_blocks(&mut selected, [parent_bytes]),
+        [parent_id]
+    );
     let before = directory.journal_bytes();
     let before_root = selected.proof_set_root().unwrap();
     let (mut network, peer_id) = test_network();
@@ -300,9 +414,10 @@ fn selected_dependency_is_a_cut_and_promotion_adds_only_the_root() {
     assert_eq!(selected.proof_set_root().unwrap(), before_root);
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
 
+    let block = selected.prepare_block(vec![root_id]).unwrap();
     assert_eq!(
         closure
-            .apply_to_selected_state(&mut selected)
+            .apply_block(&mut selected, &block)
             .unwrap()
             .proof_id(),
         root_id
@@ -315,11 +430,8 @@ fn selected_dependency_is_a_cut_and_promotion_adds_only_the_root() {
 #[test]
 fn selected_root_and_unknown_peer_fail_before_a_request_is_retained() {
     let directory = TestDirectory::new("start-preflight");
-    let mut selected = ProofDagJournal::create(directory.path()).unwrap();
-    let selected_root = selected
-        .apply_canonical_proof_bytes(pairing_bytes())
-        .unwrap()
-        .proof_id();
+    let mut selected = create_journal(directory.path()).unwrap();
+    let selected_root = apply_fresh_blocks(&mut selected, [pairing_bytes()])[0];
     let (mut network, peer_id) = test_network();
 
     assert!(matches!(
@@ -366,7 +478,7 @@ fn selected_root_and_unknown_peer_fail_before_a_request_is_retained() {
 #[test]
 fn unavailable_and_malformed_responses_drop_the_complete_quarantine() {
     let directory = TestDirectory::new("terminal-response-errors");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let before = directory.journal_bytes();
 
     for (bytes, decode) in [(Vec::new(), false), (vec![0xff], true)] {
@@ -390,7 +502,7 @@ fn unavailable_and_malformed_responses_drop_the_complete_quarantine() {
 #[test]
 fn unavailable_retries_the_same_request_after_releasing_its_permit() {
     let directory = TestDirectory::new("unavailable-fallback");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let preferred = crate::Keypair::generate_ed25519().public().to_peer_id();
     let fallback = crate::Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[fallback, preferred]);
@@ -436,7 +548,7 @@ fn unavailable_retries_the_same_request_after_releasing_its_permit() {
 #[test]
 fn fallback_visits_preferred_then_raw_order_without_repeating_a_peer() {
     let directory = TestDirectory::new("fallback-order");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let mut peers = [
         crate::Keypair::generate_ed25519().public().to_peer_id(),
         crate::Keypair::generate_ed25519().public().to_peer_id(),
@@ -480,7 +592,7 @@ fn fallback_visits_preferred_then_raw_order_without_repeating_a_peer() {
 #[test]
 fn disconnected_and_busy_peers_are_skipped_without_consuming_attempts() {
     let directory = TestDirectory::new("fallback-skips");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let mut peers = [
         crate::Keypair::generate_ed25519().public().to_peer_id(),
         crate::Keypair::generate_ed25519().public().to_peer_id(),
@@ -508,7 +620,7 @@ fn disconnected_and_busy_peers_are_skipped_without_consuming_attempts() {
 #[test]
 fn transport_failure_falls_back_without_reusing_the_failed_peer() {
     let directory = TestDirectory::new("transport-fallback");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let preferred = crate::Keypair::generate_ed25519().public().to_peer_id();
     let fallback = crate::Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[preferred, fallback]);
@@ -540,7 +652,7 @@ fn transport_failure_falls_back_without_reusing_the_failed_peer() {
 fn fallback_provider_is_preferred_for_the_next_dependency() {
     let (parent_bytes, parent_id, root_bytes, root_id) = valid_parent_and_root();
     let directory = TestDirectory::new("fallback-stickiness");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let preferred = crate::Keypair::generate_ed25519().public().to_peer_id();
     let fallback = crate::Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[preferred, fallback]);
@@ -578,7 +690,7 @@ fn fallback_provider_is_preferred_for_the_next_dependency() {
 #[test]
 fn malformed_and_noncanonical_candidates_do_not_fall_back() {
     let directory = TestDirectory::new("structural-errors-do-not-fallback");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let preferred = crate::Keypair::generate_ed25519().public().to_peer_id();
     let fallback = crate::Keypair::generate_ed25519().public().to_peer_id();
     let noncanonical = ProofCertificate::new(vec![
@@ -611,7 +723,7 @@ fn malformed_and_noncanonical_candidates_do_not_fall_back() {
 #[test]
 fn request_attempt_limit_never_resets_for_a_new_dependency() {
     let directory = TestDirectory::new("request-attempt-limit");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let requested = proof_id(0xa3);
     let first_dependency = proof_id(0xa4);
@@ -653,7 +765,7 @@ fn request_attempt_limit_never_resets_for_a_new_dependency() {
 #[test]
 fn seven_fallbacks_and_eight_candidates_complete_at_exact_request_limit() {
     let directory = TestDirectory::new("exact-request-limit-completion");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let peer_ids = (0..crate::MAX_STATIC_PEERS)
         .map(|_| crate::Keypair::generate_ed25519().public().to_peer_id())
         .collect::<Vec<_>>();
@@ -724,7 +836,7 @@ fn seven_fallbacks_and_eight_candidates_complete_at_exact_request_limit() {
 #[test]
 fn fifteenth_terminal_request_cannot_start_a_sixteenth_attempt() {
     let directory = TestDirectory::new("terminal-request-attempt-limit");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let preferred = crate::Keypair::generate_ed25519().public().to_peer_id();
     let fallback = crate::Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[preferred, fallback]);
@@ -748,7 +860,7 @@ fn fifteenth_terminal_request_cannot_start_a_sixteenth_attempt() {
 #[test]
 fn noncanonical_candidate_cannot_trigger_an_unreachable_reference_request() {
     let directory = TestDirectory::new("noncanonical");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let requested = proof_id(0x42);
     let unreachable = proof_id(0x99);
@@ -775,7 +887,7 @@ fn noncanonical_candidate_cannot_trigger_an_unreachable_reference_request() {
 #[test]
 fn ninth_absent_candidate_is_rejected_before_another_request() {
     let directory = TestDirectory::new("candidate-bound");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let requested = proof_id(0x50);
     let dependencies = (0..PROOF_BATCH_MAX_CANDIDATES)
@@ -801,7 +913,7 @@ fn ninth_absent_candidate_is_rejected_before_another_request() {
 #[test]
 fn exact_maximum_closure_holds_all_permits_until_drop() {
     let directory = TestDirectory::new("maximum-closure");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let requested = proof_id(0x51);
     let dependencies = (0..PROOF_BATCH_MAX_CANDIDATES - 1)
@@ -843,7 +955,7 @@ fn exact_maximum_closure_holds_all_permits_until_drop() {
 #[test]
 fn repeated_and_shared_references_are_requested_once() {
     let directory = TestDirectory::new("reference-dedup");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let requested = proof_id(0x52);
     let first = proof_id(0x01);
@@ -890,7 +1002,7 @@ fn repeated_and_shared_references_are_requested_once() {
 #[test]
 fn later_unavailable_response_discards_the_earlier_quarantine() {
     let directory = TestDirectory::new("later-unavailable");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let before = directory.journal_bytes();
     let (mut network, peer_id) = test_network();
     let requested = proof_id(0x53);
@@ -923,7 +1035,7 @@ fn later_unavailable_response_discards_the_earlier_quarantine() {
 #[test]
 fn acquired_self_and_two_node_cycles_terminate_without_selection() {
     let directory = TestDirectory::new("cycles");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
 
     let (mut self_network, self_peer) = test_network();
     let self_id = proof_id(0x61);
@@ -972,7 +1084,7 @@ fn acquired_self_and_two_node_cycles_terminate_without_selection() {
 #[test]
 fn stale_same_address_response_does_not_consume_a_new_generation() {
     let directory = TestDirectory::new("late-response");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let requested = proof_id(0x71);
     let first = start(&mut network, &selected, peer_id, requested);
@@ -998,7 +1110,7 @@ fn stale_same_address_response_does_not_consume_a_new_generation() {
 #[test]
 fn unexpected_generation_precedes_payload_interpretation() {
     let directory = TestDirectory::new("unexpected-generation");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let requested = proof_id(0x74);
     let previous = start(&mut network, &selected, peer_id, requested);
@@ -1021,7 +1133,7 @@ fn unexpected_generation_precedes_payload_interpretation() {
 #[test]
 fn follow_up_request_must_use_the_originating_network_instance() {
     let directory = TestDirectory::new("follow-up-network-instance");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let remote = crate::Keypair::generate_ed25519();
     let peer_id = remote.public().to_peer_id();
     let mut origin = test_network_for_peer(peer_id);
@@ -1045,7 +1157,7 @@ fn follow_up_request_must_use_the_originating_network_instance() {
 #[test]
 fn response_must_come_from_the_originating_network_instance() {
     let directory = TestDirectory::new("response-network-instance");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let remote = crate::Keypair::generate_ed25519();
     let peer_id = remote.public().to_peer_id();
     let mut origin = test_network_for_peer(peer_id);
@@ -1072,7 +1184,7 @@ fn response_must_come_from_the_originating_network_instance() {
 #[test]
 fn wrong_address_promotion_is_atomic_and_releases_its_permit() {
     let directory = TestDirectory::new("wrong-address");
-    let mut selected = ProofDagJournal::create(directory.path()).unwrap();
+    let mut selected = create_journal(directory.path()).unwrap();
     let before = directory.journal_bytes();
     let before_root = selected.proof_set_root().unwrap();
     let (mut network, peer_id) = test_network();
@@ -1086,11 +1198,17 @@ fn wrong_address_promotion_is_atomic_and_releases_its_permit() {
         panic!("leaf candidate unexpectedly requested a dependency");
     };
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+    let block = selected.prepare_block(vec![requested]).unwrap();
 
     assert!(matches!(
-        closure.apply_to_selected_state(&mut selected),
-        Err(JournalError::BatchAdmission { source })
-            if matches!(*source, ProofBatchError::Candidate { index: 0, .. })
+        closure.apply_block(&mut selected, &block),
+        Err(ProofChainJournalError::BlockAdmission {
+            source: ProofBlockApplyError::Transition {
+                source: ProofTransitionApplyError::Batch {
+                    source: ProofBatchError::Candidate { index: 0, .. }
+                }
+            }
+        })
     ));
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert_eq!(selected.proof_set_root().unwrap(), before_root);
@@ -1102,7 +1220,7 @@ fn wrong_address_promotion_is_atomic_and_releases_its_permit() {
 fn selected_state_drift_is_revalidated_without_filtering_the_closure() {
     let (parent_bytes, parent_id, root_bytes, root_id) = valid_parent_and_root();
     let directory = TestDirectory::new("state-drift");
-    let mut selected = ProofDagJournal::create(directory.path()).unwrap();
+    let mut selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let acquisition = start(&mut network, &selected, peer_id, root_id);
     let response = response_for(&mut network, &acquisition, root_bytes);
@@ -1122,14 +1240,19 @@ fn selected_state_drift_is_revalidated_without_filtering_the_closure() {
     assert_eq!(closure.candidate_count(), 2);
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 2);
 
-    selected.apply_canonical_proof_bytes(parent_bytes).unwrap();
+    let stale_block = selected.prepare_block(vec![parent_id, root_id]).unwrap();
+    assert_eq!(
+        apply_fresh_blocks(&mut selected, [parent_bytes]),
+        [parent_id]
+    );
     let before = directory.journal_bytes();
     let before_root = selected.proof_set_root().unwrap();
     let before_len = selected.len().unwrap();
     assert!(matches!(
-        closure.apply_to_selected_state(&mut selected),
-        Err(JournalError::BatchAdmission { source })
-            if matches!(*source, ProofBatchError::Candidate { index: 0, .. })
+        closure.apply_block(&mut selected, &stale_block),
+        Err(ProofChainJournalError::BlockAdmission {
+            source: ProofBlockApplyError::ParentBlockIdMismatch { .. }
+        })
     ));
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert_eq!(selected.len().unwrap(), before_len);
@@ -1143,7 +1266,7 @@ fn selected_state_drift_is_revalidated_without_filtering_the_closure() {
 fn cancellation_releases_quarantine_but_retains_the_wire_permit_until_drain() {
     let (parent_bytes, _parent_id, root_bytes, root_id) = valid_parent_and_root();
     let directory = TestDirectory::new("cancel-retains-wire-permit");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let before = directory.journal_bytes();
     let (mut network, peer_id) = test_network();
     let acquisition = start(&mut network, &selected, peer_id, root_id);
@@ -1184,7 +1307,7 @@ fn cancellation_releases_quarantine_but_retains_the_wire_permit_until_drain() {
 #[test]
 fn cancelled_transport_failure_settles_once_with_its_typed_cause() {
     let directory = TestDirectory::new("cancel-failure-drain");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let acquisition = start(&mut network, &selected, peer_id, proof_id(0x92));
     let request_id = acquisition.pending_request_id;
@@ -1222,7 +1345,7 @@ fn cancelled_transport_failure_settles_once_with_its_typed_cause() {
 #[tokio::test(start_paused = true)]
 async fn session_disconnect_does_not_settle_a_cancelled_request() {
     let directory = TestDirectory::new("cancel-disconnect-order");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let acquisition = start(&mut network, &selected, peer_id, proof_id(0x9b));
     let request_id = acquisition.pending_request_id;
@@ -1273,7 +1396,7 @@ async fn session_disconnect_does_not_settle_a_cancelled_request() {
 #[test]
 fn cancelled_requests_retain_the_complete_global_budget_until_exact_drain() {
     let directory = TestDirectory::new("cancel-global-budget");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let peer_ids = (0..crate::MAX_PENDING_REQUESTS)
         .map(|_| crate::Keypair::generate_ed25519().public().to_peer_id())
         .collect::<Vec<_>>();
@@ -1320,7 +1443,7 @@ fn cancelled_requests_retain_the_complete_global_budget_until_exact_drain() {
 #[tokio::test(start_paused = true)]
 async fn next_event_expires_once_at_the_absolute_deadline_and_drains_later() {
     let directory = TestDirectory::new("absolute-deadline-event");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let acquisition = start(&mut network, &selected, peer_id, proof_id(0x93));
     let request_id = acquisition.pending_request_id;
@@ -1362,7 +1485,7 @@ async fn next_event_expires_once_at_the_absolute_deadline_and_drains_later() {
 async fn deadline_equality_expires_but_completed_closures_do_not() {
     let (parent_bytes, parent_id, _root_bytes, _root_id) = valid_parent_and_root();
     let directory = TestDirectory::new("deadline-boundary");
-    let mut selected = ProofDagJournal::create(directory.path()).unwrap();
+    let mut selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
 
     let acquisition = start(&mut network, &selected, peer_id, parent_id);
@@ -1375,9 +1498,10 @@ async fn deadline_equality_expires_but_completed_closures_do_not() {
         panic!("leaf closure did not complete before its deadline");
     };
     tokio::time::advance(Duration::from_nanos(2)).await;
+    let block = selected.prepare_block(vec![parent_id]).unwrap();
     assert_eq!(
         closure
-            .apply_to_selected_state(&mut selected)
+            .apply_block(&mut selected, &block)
             .unwrap()
             .proof_id(),
         parent_id
@@ -1400,7 +1524,7 @@ async fn deadline_equality_expires_but_completed_closures_do_not() {
 #[tokio::test(start_paused = true)]
 async fn deadline_precedes_unavailable_malformed_and_ordinary_transport_failure() {
     let directory = TestDirectory::new("deadline-error-precedence");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let peer_id = crate::Keypair::generate_ed25519().public().to_peer_id();
     let fallback = crate::Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[peer_id, fallback]);
@@ -1442,7 +1566,7 @@ async fn deadline_precedes_unavailable_malformed_and_ordinary_transport_failure(
 #[tokio::test(start_paused = true)]
 async fn equal_deadlines_are_emitted_once_in_request_generation_order() {
     let directory = TestDirectory::new("equal-deadline-order");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let peer_ids = (0..2)
         .map(|_| crate::Keypair::generate_ed25519().public().to_peer_id())
         .collect::<Vec<_>>();
@@ -1478,7 +1602,7 @@ async fn equal_deadlines_are_emitted_once_in_request_generation_order() {
 fn every_dependency_request_inherits_one_control_and_deadline() {
     let (_parent_bytes, _parent_id, root_bytes, root_id) = valid_parent_and_root();
     let directory = TestDirectory::new("one-absolute-deadline");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let acquisition = start(&mut network, &selected, peer_id, root_id);
     let first_control = Arc::clone(acquisition.cancellation.control());
@@ -1505,7 +1629,7 @@ fn every_dependency_request_inherits_one_control_and_deadline() {
 #[test]
 fn pre_deadline_failure_and_cancelled_peer_mismatch_are_typed() {
     let directory = TestDirectory::new("failure-precedence");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let acquisition = start(&mut network, &selected, peer_id, proof_id(0x95));
     let request_id = acquisition.pending_request_id;
@@ -1560,7 +1684,7 @@ fn pre_deadline_failure_and_cancelled_peer_mismatch_are_typed() {
 #[tokio::test(start_paused = true)]
 async fn a_processed_peer_mismatch_outranks_the_acquisition_deadline() {
     let directory = TestDirectory::new("peer-mismatch-deadline");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let peer_id = crate::Keypair::generate_ed25519().public().to_peer_id();
     let fallback = crate::Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[peer_id, fallback]);
@@ -1593,7 +1717,7 @@ async fn a_processed_peer_mismatch_outranks_the_acquisition_deadline() {
 #[tokio::test(start_paused = true)]
 async fn a_deadline_emitted_first_preserves_later_peer_mismatch_on_drain() {
     let directory = TestDirectory::new("deadline-before-peer-mismatch");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let acquisition = start(&mut network, &selected, peer_id, proof_id(0xb5));
     let request_id = acquisition.pending_request_id;
@@ -1628,7 +1752,7 @@ async fn a_deadline_emitted_first_preserves_later_peer_mismatch_on_drain() {
 #[test]
 fn dropping_an_acquisition_tombstones_its_current_generation() {
     let directory = TestDirectory::new("drop-acquisition");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let acquisition = start(&mut network, &selected, peer_id, proof_id(0x99));
     let request_id = acquisition.pending_request_id;
@@ -1650,7 +1774,7 @@ fn dropping_an_acquisition_tombstones_its_current_generation() {
 #[test]
 fn stale_failure_cannot_consume_a_new_same_address_generation() {
     let directory = TestDirectory::new("stale-failure-generation");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let requested = proof_id(0x9a);
     let old = start(&mut network, &selected, peer_id, requested);
@@ -1680,7 +1804,7 @@ fn stale_failure_cannot_consume_a_new_same_address_generation() {
 #[test]
 fn dropping_the_network_releases_every_tombstoned_permit() {
     let directory = TestDirectory::new("drop-network-tombstones");
-    let selected = ProofDagJournal::create(directory.path()).unwrap();
+    let selected = create_journal(directory.path()).unwrap();
     let (mut network, peer_id) = test_network();
     let budget = Arc::clone(&network.pending_budget);
     start(&mut network, &selected, peer_id, proof_id(0x97)).cancel();

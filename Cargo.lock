@@ -1720,6 +1720,7 @@ dependencies = [
 name = "naome"
 version = "0.1.0"
 dependencies = [
+ "naome-chain",
  "naome-foundation",
  "naome-proof",
  "naome-storage",
@@ -1766,6 +1767,7 @@ dependencies = [
  "getrandom 0.3.4",
  "libp2p",
  "naome",
+ "naome-chain",
  "naome-foundation",
  "naome-ledger",
  "naome-proof",
@@ -1790,7 +1792,6 @@ dependencies = [
  "naome-foundation",
  "naome-ledger",
  "naome-proof",
- "sha2 0.11.0",
 ]
 
 [[package]]
