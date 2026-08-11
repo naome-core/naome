@@ -220,6 +220,16 @@ establish durability; the separate
 [Proof DAG Journal](proof-dag-journal.md) defines atomic persistent proof
 transactions and crash recovery.
 
+The separate [Proof-State Transition](proof-state-transition.md) contract binds
+one addressed rooted batch to exact before-and-after `ProofSetRoot` values. Its
+current-root check, exact ordered candidate correlation, and read-only
+resulting-root projection all occur before this contract's rooted admission.
+It then delegates the exact correlated batch to
+`apply_rooted_canonical_proof_batch` once. Ledger remains the sole authority for
+certificate validity, dependency order, root closure, identity registration,
+and atomic mutation; the transition layer neither duplicates nor weakens those
+checks.
+
 ## Resource and performance boundary
 
 Every candidate is decoded, canonicality-checked, and mathematically checked
@@ -246,7 +256,8 @@ settlement.
 
 The mathematical graph is fixed by exact checked `ProofReference` edges and has
 no implicit linear parent. A future block or checkpoint protocol may commit a
-selected proof-state root, but that policy remains separate from Ledger State.
+canonical proof-state transition, but parentage and selection policy remain
+separate from Ledger State and from the consensus-neutral transition contract.
 
 ## Explicit exclusions
 

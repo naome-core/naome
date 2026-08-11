@@ -3,7 +3,10 @@ use naome_foundation::{Formula, FreeVariable, LogicError, ZfcAxiom};
 use naome_ledger::{AddressedProofCandidate, LedgerError, ProofBatchError};
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
 
-use super::{ProofDag, ProofSetMembership, ProofSetProof};
+use super::{
+    PROOF_BATCH_MAX_CANDIDATES, PROOF_TRANSITION_MAX_BYTES, ProofDag, ProofSetMembership,
+    ProofSetProof, ProofSetRoot, ProofTransition, ProofTransitionApplyError, ProofTransitionError,
+};
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
     ProofCertificate::new(steps).unwrap()
@@ -86,6 +89,46 @@ fn proof_citing_both_identities(
             implication: 3,
         },
     ])
+}
+
+fn addressed_chain(count: usize) -> (Vec<ProofId>, Vec<Vec<u8>>) {
+    assert!(count > 0);
+    let mut scratch = ProofDag::new();
+    let mut proof_ids = Vec::with_capacity(count);
+    let mut payloads = Vec::with_capacity(count);
+
+    let first = axiom_bytes(ZfcAxiom::Pairing);
+    let mut previous = scratch
+        .apply_canonical_proof_bytes(first.clone())
+        .unwrap()
+        .proof_id();
+    proof_ids.push(previous);
+    payloads.push(first);
+
+    for index in 1..count {
+        let bytes =
+            referenced_generalization(previous, FreeVariable::new(u32::try_from(index).unwrap()));
+        previous = scratch
+            .apply_canonical_proof_bytes(bytes.clone())
+            .unwrap()
+            .proof_id();
+        proof_ids.push(previous);
+        payloads.push(bytes);
+    }
+
+    (proof_ids, payloads)
+}
+
+fn addressed_candidates(
+    proof_ids: &[ProofId],
+    payloads: &[Vec<u8>],
+) -> Vec<AddressedProofCandidate> {
+    proof_ids
+        .iter()
+        .copied()
+        .zip(payloads)
+        .map(|(proof_id, bytes)| AddressedProofCandidate::new(proof_id, bytes.clone()))
+        .collect()
 }
 
 #[test]
@@ -576,4 +619,491 @@ fn rooted_batch_failures_preserve_dag_root_records_and_witnesses() {
             Ok(ProofSetMembership::Present)
         );
     }
+}
+
+#[test]
+fn prepared_transition_projects_and_applies_one_exact_rooted_closure() {
+    let selected_bytes = axiom_bytes(ZfcAxiom::Extensionality);
+    let mut dag = ProofDag::new();
+    let selected_id = dag
+        .apply_canonical_proof_bytes(selected_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let previous_root = dag.proof_set_root();
+    let selected_witness = dag.proof_set_proof(selected_id).to_canonical_bytes();
+    let (proof_ids, payloads) = addressed_chain(3);
+
+    let transition = dag.prepare_proof_transition(proof_ids.clone()).unwrap();
+    assert_eq!(transition.previous_proof_set_root(), previous_root);
+    assert_eq!(transition.proof_ids(), proof_ids);
+    assert_eq!(transition.root_proof_id(), *proof_ids.last().unwrap());
+    assert_eq!(dag.len(), 1);
+    assert_eq!(dag.proof_set_root(), previous_root);
+    assert_eq!(
+        dag.proof_set_proof(selected_id).to_canonical_bytes(),
+        selected_witness
+    );
+
+    let root_id = transition.root_proof_id();
+    let accepted = dag
+        .apply_proof_transition(&transition, addressed_candidates(&proof_ids, &payloads))
+        .unwrap();
+    assert_eq!(accepted.proof_id(), root_id);
+    assert_eq!(dag.len(), 4);
+    assert_eq!(dag.proof_set_root(), transition.resulting_proof_set_root());
+    for proof_id in proof_ids.iter().copied().chain([selected_id]) {
+        assert_eq!(
+            dag.proof_set_proof(proof_id)
+                .verify(dag.proof_set_root(), proof_id),
+            Ok(ProofSetMembership::Present)
+        );
+    }
+
+    let actual_replay_root = dag.proof_set_root();
+    assert!(matches!(
+        dag.apply_proof_transition(&transition, Vec::new()),
+        Err(ProofTransitionApplyError::PreviousProofSetRootMismatch {
+            expected,
+            actual,
+        }) if expected == previous_root && actual == actual_replay_root
+    ));
+
+    let mut control = ProofDag::new();
+    let _ = control.apply_canonical_proof_bytes(selected_bytes).unwrap();
+    let _ = control
+        .apply_rooted_canonical_proof_batch(root_id, addressed_candidates(&proof_ids, &payloads))
+        .unwrap();
+    assert_eq!(control.proof_set_root(), dag.proof_set_root());
+}
+
+#[test]
+fn singleton_transition_projects_and_applies_from_the_empty_state() {
+    let (proof_ids, payloads) = addressed_chain(1);
+    let mut dag = ProofDag::new();
+    let previous_root = dag.proof_set_root();
+    let transition = dag.prepare_proof_transition(proof_ids.clone()).unwrap();
+
+    assert_eq!(transition.previous_proof_set_root(), previous_root);
+    assert_ne!(transition.resulting_proof_set_root(), previous_root);
+    assert!(dag.is_empty());
+    assert_eq!(dag.proof_set_root(), previous_root);
+
+    let accepted = dag
+        .apply_proof_transition(&transition, addressed_candidates(&proof_ids, &payloads))
+        .unwrap();
+    assert_eq!(accepted.proof_id(), proof_ids[0]);
+    assert_eq!(dag.len(), 1);
+    assert_eq!(dag.proof_set_root(), transition.resulting_proof_set_root());
+}
+
+#[test]
+fn transition_binding_errors_precede_payload_work_and_preserve_witnesses() {
+    let selected_bytes = axiom_bytes(ZfcAxiom::Extensionality);
+    let mut dag = ProofDag::new();
+    let selected_id = dag
+        .apply_canonical_proof_bytes(selected_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let (proof_ids, payloads) = addressed_chain(2);
+    let transition = dag.prepare_proof_transition(proof_ids.clone()).unwrap();
+    let committed_root = dag.proof_set_root();
+    let selected_witness = dag.proof_set_proof(selected_id).to_canonical_bytes();
+    let absent_witness = dag.proof_set_proof(proof_ids[0]).to_canonical_bytes();
+    let assert_unchanged = |dag: &ProofDag| {
+        assert_eq!(dag.len(), 1);
+        assert_eq!(dag.proof_set_root(), committed_root);
+        assert_eq!(
+            dag.proof(selected_id).unwrap().canonical_proof_bytes(),
+            selected_bytes
+        );
+        assert_eq!(
+            dag.proof_set_proof(selected_id).to_canonical_bytes(),
+            selected_witness
+        );
+        assert_eq!(
+            dag.proof_set_proof(proof_ids[0]).to_canonical_bytes(),
+            absent_witness
+        );
+    };
+
+    let wrong_id = ProofId::from_bytes([0x92; 32]);
+
+    let wrong_previous = ProofTransition::new(
+        ProofSetRoot::from_bytes([0x91; 32]),
+        transition.resulting_proof_set_root(),
+        proof_ids.clone(),
+    )
+    .unwrap();
+    assert!(matches!(
+        dag.apply_proof_transition(
+            &wrong_previous,
+            vec![
+                AddressedProofCandidate::new(wrong_id, vec![0]),
+                AddressedProofCandidate::new(proof_ids[1], vec![0]),
+            ],
+        ),
+        Err(ProofTransitionApplyError::PreviousProofSetRootMismatch { .. })
+    ));
+    assert_unchanged(&dag);
+
+    assert_eq!(
+        dag.apply_proof_transition(
+            &transition,
+            vec![AddressedProofCandidate::new(wrong_id, vec![0])],
+        ),
+        Err(ProofTransitionApplyError::CandidateCountMismatch {
+            expected: 2,
+            actual: 1,
+        })
+    );
+    assert_unchanged(&dag);
+
+    assert_eq!(
+        dag.apply_proof_transition(
+            &transition,
+            vec![
+                AddressedProofCandidate::new(wrong_id, vec![0]),
+                AddressedProofCandidate::new(proof_ids[1], vec![0]),
+            ],
+        ),
+        Err(ProofTransitionApplyError::CandidateProofIdMismatch {
+            index: 0,
+            expected: proof_ids[0],
+            actual: wrong_id,
+        })
+    );
+    assert_unchanged(&dag);
+
+    let wrong_result = ProofTransition::new(
+        committed_root,
+        ProofSetRoot::from_bytes([0x93; 32]),
+        proof_ids.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        dag.apply_proof_transition(
+            &wrong_result,
+            vec![
+                AddressedProofCandidate::new(wrong_id, vec![0]),
+                AddressedProofCandidate::new(proof_ids[1], vec![0]),
+            ],
+        ),
+        Err(ProofTransitionApplyError::CandidateProofIdMismatch {
+            index: 0,
+            expected: proof_ids[0],
+            actual: wrong_id,
+        })
+    );
+    assert_unchanged(&dag);
+    assert!(matches!(
+        dag.apply_proof_transition(
+            &wrong_result,
+            vec![
+                AddressedProofCandidate::new(proof_ids[0], vec![0]),
+                AddressedProofCandidate::new(proof_ids[1], vec![0]),
+            ],
+        ),
+        Err(ProofTransitionApplyError::ResultingProofSetRootMismatch { .. })
+    ));
+    assert_unchanged(&dag);
+
+    let root_id = transition.root_proof_id();
+    assert_eq!(
+        dag.apply_proof_transition(&transition, addressed_candidates(&proof_ids, &payloads),)
+            .unwrap()
+            .proof_id(),
+        root_id
+    );
+}
+
+#[test]
+fn transition_correlates_every_candidate_before_reading_any_payload() {
+    let (proof_ids, payloads) = addressed_chain(PROOF_BATCH_MAX_CANDIDATES);
+    let mut dag = ProofDag::new();
+    let transition = dag.prepare_proof_transition(proof_ids.clone()).unwrap();
+    let original_root = dag.proof_set_root();
+    let original_witnesses = proof_ids
+        .iter()
+        .map(|proof_id| dag.proof_set_proof(*proof_id).to_canonical_bytes())
+        .collect::<Vec<_>>();
+
+    let malformed_candidates = || {
+        proof_ids
+            .iter()
+            .copied()
+            .map(|proof_id| AddressedProofCandidate::new(proof_id, vec![0]))
+            .collect::<Vec<_>>()
+    };
+    let mut too_few = malformed_candidates();
+    too_few.pop();
+    assert_eq!(
+        dag.apply_proof_transition(&transition, too_few),
+        Err(ProofTransitionApplyError::CandidateCountMismatch {
+            expected: PROOF_BATCH_MAX_CANDIDATES,
+            actual: PROOF_BATCH_MAX_CANDIDATES - 1,
+        })
+    );
+    let mut too_many = malformed_candidates();
+    too_many.push(AddressedProofCandidate::new(
+        ProofId::from_bytes([0xa5; 32]),
+        vec![0],
+    ));
+    assert_eq!(
+        dag.apply_proof_transition(&transition, too_many),
+        Err(ProofTransitionApplyError::CandidateCountMismatch {
+            expected: PROOF_BATCH_MAX_CANDIDATES,
+            actual: PROOF_BATCH_MAX_CANDIDATES + 1,
+        })
+    );
+    assert!(dag.is_empty());
+    assert_eq!(dag.proof_set_root(), original_root);
+
+    for mismatch_index in 0..proof_ids.len() {
+        let mut candidates = malformed_candidates();
+        let mut wrong_bytes = *proof_ids[mismatch_index].as_bytes();
+        wrong_bytes[0] ^= 1;
+        let wrong_id = ProofId::from_bytes(wrong_bytes);
+        candidates[mismatch_index] = AddressedProofCandidate::new(wrong_id, vec![0]);
+
+        assert_eq!(
+            dag.apply_proof_transition(&transition, candidates),
+            Err(ProofTransitionApplyError::CandidateProofIdMismatch {
+                index: mismatch_index,
+                expected: proof_ids[mismatch_index],
+                actual: wrong_id,
+            })
+        );
+        assert!(dag.is_empty());
+        assert_eq!(dag.proof_set_root(), original_root);
+        for (proof_id, witness) in proof_ids.iter().zip(&original_witnesses) {
+            assert_eq!(
+                dag.proof_set_proof(*proof_id).to_canonical_bytes(),
+                *witness
+            );
+        }
+    }
+
+    let mut permuted = malformed_candidates();
+    permuted.reverse();
+    assert_eq!(
+        dag.apply_proof_transition(&transition, permuted),
+        Err(ProofTransitionApplyError::CandidateProofIdMismatch {
+            index: 0,
+            expected: proof_ids[0],
+            actual: *proof_ids.last().unwrap(),
+        })
+    );
+    assert!(dag.is_empty());
+    assert_eq!(dag.proof_set_root(), original_root);
+
+    let _ = dag
+        .apply_proof_transition(&transition, addressed_candidates(&proof_ids, &payloads))
+        .unwrap();
+}
+
+#[test]
+fn transition_delegates_strict_rooted_batch_failures_without_a_prefix() {
+    let (proof_ids, payloads) = addressed_chain(3);
+    let mut dag = ProofDag::new();
+    let transition = dag.prepare_proof_transition(proof_ids.clone()).unwrap();
+    let empty_root = dag.proof_set_root();
+    let witnesses = proof_ids
+        .iter()
+        .map(|proof_id| dag.proof_set_proof(*proof_id).to_canonical_bytes())
+        .collect::<Vec<_>>();
+    let assert_empty = |dag: &ProofDag| {
+        assert!(dag.is_empty());
+        assert_eq!(dag.proof_set_root(), empty_root);
+        for (proof_id, witness) in proof_ids.iter().zip(&witnesses) {
+            assert!(dag.proof(*proof_id).is_none());
+            assert_eq!(
+                dag.proof_set_proof(*proof_id).to_canonical_bytes(),
+                *witness
+            );
+        }
+    };
+
+    let mut malformed = addressed_candidates(&proof_ids, &payloads);
+    malformed[0] = AddressedProofCandidate::new(proof_ids[0], vec![0]);
+    assert!(matches!(
+        dag.apply_proof_transition(&transition, malformed),
+        Err(ProofTransitionApplyError::Batch {
+            source: ProofBatchError::Candidate { index: 0, .. },
+        })
+    ));
+    assert_empty(&dag);
+
+    let mut swapped = addressed_candidates(&proof_ids, &payloads);
+    swapped[0] = AddressedProofCandidate::new(proof_ids[0], axiom_bytes(ZfcAxiom::Union));
+    assert!(matches!(
+        dag.apply_proof_transition(&transition, swapped),
+        Err(ProofTransitionApplyError::Batch {
+            source: ProofBatchError::Candidate {
+                index: 0,
+                source: LedgerError::ProofIdMismatch { .. },
+                ..
+            },
+        })
+    ));
+    assert_empty(&dag);
+
+    let unrelated_bytes = axiom_bytes(ZfcAxiom::Union);
+    let mut scratch = ProofDag::new();
+    let unrelated_id = scratch
+        .apply_canonical_proof_bytes(unrelated_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let mut unrelated_ids = vec![unrelated_id];
+    unrelated_ids.extend_from_slice(&proof_ids);
+    let unrelated_transition = dag.prepare_proof_transition(unrelated_ids.clone()).unwrap();
+    let mut unrelated_candidates =
+        vec![AddressedProofCandidate::new(unrelated_id, unrelated_bytes)];
+    unrelated_candidates.extend(addressed_candidates(&proof_ids, &payloads));
+    assert_eq!(
+        dag.apply_proof_transition(&unrelated_transition, unrelated_candidates),
+        Err(ProofTransitionApplyError::Batch {
+            source: ProofBatchError::UnreachableCandidate {
+                index: 0,
+                proof_id: unrelated_id,
+            },
+        })
+    );
+    assert_empty(&dag);
+
+    assert_eq!(
+        dag.apply_proof_transition(&transition, addressed_candidates(&proof_ids, &payloads),)
+            .unwrap()
+            .proof_id(),
+        transition.root_proof_id()
+    );
+}
+
+#[test]
+fn transition_preserves_dependency_order_for_rooted_admission() {
+    let (proof_ids, payloads) = addressed_chain(3);
+    let mut reversed_ids = proof_ids.clone();
+    reversed_ids.reverse();
+    let mut reversed_payloads = payloads.clone();
+    reversed_payloads.reverse();
+    let mut dag = ProofDag::new();
+    let reversed = dag.prepare_proof_transition(reversed_ids.clone()).unwrap();
+    let original_root = dag.proof_set_root();
+
+    assert_eq!(
+        dag.apply_proof_transition(
+            &reversed,
+            addressed_candidates(&reversed_ids, &reversed_payloads),
+        ),
+        Err(ProofTransitionApplyError::Batch {
+            source: ProofBatchError::Candidate {
+                index: 0,
+                expected: Some(reversed_ids[0]),
+                source: LedgerError::Check {
+                    source: CheckError::UnknownProofReference {
+                        step: 0,
+                        proof_id: proof_ids[1],
+                    },
+                },
+            },
+        })
+    );
+    assert!(dag.is_empty());
+    assert_eq!(dag.proof_set_root(), original_root);
+
+    let canonical = dag.prepare_proof_transition(proof_ids.clone()).unwrap();
+    let accepted = dag
+        .apply_proof_transition(&canonical, addressed_candidates(&proof_ids, &payloads))
+        .unwrap();
+    assert_eq!(accepted.proof_id(), canonical.root_proof_id());
+}
+
+#[test]
+fn transition_limits_and_existing_selection_are_exact() {
+    let (proof_ids, payloads) = addressed_chain(PROOF_BATCH_MAX_CANDIDATES);
+    let mut dag = ProofDag::new();
+    let transition = dag.prepare_proof_transition(proof_ids.clone()).unwrap();
+    assert_eq!(
+        transition.to_canonical_bytes().len(),
+        PROOF_TRANSITION_MAX_BYTES
+    );
+    let _ = dag
+        .apply_proof_transition(&transition, addressed_candidates(&proof_ids, &payloads))
+        .unwrap();
+    assert_eq!(dag.len(), PROOF_BATCH_MAX_CANDIDATES);
+
+    assert_eq!(
+        dag.prepare_proof_transition(Vec::new()),
+        Err(ProofTransitionError::Empty)
+    );
+    let mut excess = proof_ids.clone();
+    let mut excess_bytes = *proof_ids[0].as_bytes();
+    excess_bytes[0] ^= 1;
+    excess.push(ProofId::from_bytes(excess_bytes));
+    assert_eq!(
+        dag.prepare_proof_transition(excess),
+        Err(ProofTransitionError::TooManyProofs {
+            actual: PROOF_BATCH_MAX_CANDIDATES + 1,
+            maximum: PROOF_BATCH_MAX_CANDIDATES,
+        })
+    );
+    assert_eq!(
+        dag.prepare_proof_transition(vec![proof_ids[0], proof_ids[0]]),
+        Err(ProofTransitionError::DuplicateProofId {
+            first_index: 0,
+            duplicate_index: 1,
+            proof_id: proof_ids[0],
+        })
+    );
+
+    assert_eq!(
+        dag.prepare_proof_transition(vec![proof_ids[0]]),
+        Err(ProofTransitionError::AlreadySelectedProofId {
+            index: 0,
+            proof_id: proof_ids[0],
+        })
+    );
+
+    let wrong_result = ProofTransition::new(
+        dag.proof_set_root(),
+        ProofSetRoot::from_bytes([0x94; 32]),
+        vec![proof_ids[0]],
+    )
+    .unwrap();
+    assert!(matches!(
+        dag.apply_proof_transition(
+            &wrong_result,
+            vec![AddressedProofCandidate::new(
+                proof_ids[0],
+                payloads[0].clone(),
+            )],
+        ),
+        Err(ProofTransitionApplyError::ResultingProofSetRootMismatch { .. })
+    ));
+    assert_eq!(dag.len(), PROOF_BATCH_MAX_CANDIDATES);
+    assert_eq!(dag.proof_set_root(), transition.resulting_proof_set_root());
+
+    let duplicate_transition = ProofTransition::new(
+        dag.proof_set_root(),
+        dag.proof_set_root(),
+        vec![proof_ids[0]],
+    )
+    .unwrap();
+    assert!(matches!(
+        dag.apply_proof_transition(
+            &duplicate_transition,
+            vec![AddressedProofCandidate::new(
+                proof_ids[0],
+                payloads[0].clone(),
+            )],
+        ),
+        Err(ProofTransitionApplyError::Batch {
+            source: ProofBatchError::Candidate {
+                index: 0,
+                source: LedgerError::State {
+                    source: ProofStateError::DuplicateProof { .. },
+                },
+                ..
+            },
+        })
+    ));
 }
