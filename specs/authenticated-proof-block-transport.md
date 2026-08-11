@@ -20,6 +20,13 @@ selection authority, or finality. The transport never prepares or applies a
 block and never mutates a receiving `ProofChainJournal`.
 
 The separate
+[Caller-Selected Proof Block Ancestry Pull](caller-selected-proof-block-ancestry-pull.md)
+sequences at most sixteen requests to one caller-chosen peer while preserving
+this transport's exact request and trust boundaries. It returns only an
+unselected, structurally root-continuous path and adds no wire message or
+selection authority.
+
+The separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
 composes one caller-chosen exact request with existing dependency acquisition
 and journal application. That orchestration adds no wire message or selection
@@ -406,3 +413,5 @@ The separate
 [Authenticated Proof Chain Head Pull](authenticated-proof-chain-head-pull.md)
 observes one untrusted chain-scoped peer head without changing this exact-ID
 block request or granting automatic retrieval, import, or selection authority.
+The separate caller-selected ancestry pull composes this request repeatedly but
+does not change the transport protocol or validate proof payloads.

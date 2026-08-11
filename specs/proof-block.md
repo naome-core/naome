@@ -250,6 +250,13 @@ for one statically authorized peer request. Neither retrieval boundary defines
 proof-payload transport, proof fetching, announcement, gossip,
 erasure coding, availability sampling, source attribution, or timeout policy.
 The separate
+[Caller-Selected Proof Block Ancestry Pull](caller-selected-proof-block-ancestry-pull.md)
+may retrieve at most sixteen exact parent-linked blocks and require declared
+transition roots to be continuous with a captured local selected head. That
+read-only structural check does not validate any proof payload or select a
+block.
+
+The separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
 may compose one exact retrieved direct child with existing proof acquisition
 and strict journal application without changing canonical block bytes.

@@ -14,43 +14,13 @@ use naome_storage::{ProofChainJournal, ProofChainJournalError};
 use super::*;
 use crate::codec::ProofBlockWireResponse;
 use crate::tests::{
-    TestDirectory, apply_fresh_blocks, create_journal, pairing_bytes, test_network_for_peers,
+    TestDirectory, apply_fresh_blocks, assert_snapshot, create_journal, pairing_bytes, snapshot,
+    test_network_for_peers, union_bytes,
 };
 use crate::{
     DependencyAcquisitionError, ExchangeRequestId, Keypair, NetworkEvent, OutboundProofFailure,
     PendingRequest,
 };
-
-struct JournalSnapshot {
-    bytes: Vec<u8>,
-    head: ProofBlockId,
-    root: ProofSetRoot,
-    len: usize,
-}
-
-fn snapshot(directory: &TestDirectory, journal: &ProofChainJournal) -> JournalSnapshot {
-    JournalSnapshot {
-        bytes: directory.journal_bytes(),
-        head: journal.head_block_id().unwrap(),
-        root: journal.proof_set_root().unwrap(),
-        len: journal.len().unwrap(),
-    }
-}
-
-fn assert_snapshot(
-    directory: &TestDirectory,
-    journal: &ProofChainJournal,
-    expected: &JournalSnapshot,
-) {
-    assert_eq!(directory.journal_bytes(), expected.bytes);
-    assert_eq!(journal.head_block_id().unwrap(), expected.head);
-    assert_eq!(journal.proof_set_root().unwrap(), expected.root);
-    assert_eq!(journal.len().unwrap(), expected.len);
-}
-
-fn union_bytes() -> Vec<u8> {
-    vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x02]
-}
 
 fn referenced_generalization_bytes(parent: ProofId) -> Vec<u8> {
     ProofCertificate::new(vec![
@@ -230,6 +200,14 @@ fn already_selected_target_precedes_peer_validation_and_network_work() {
     apply_fresh_blocks(&mut selected, [pairing_bytes()]);
     let first_block_id = selected.head_block_id().unwrap();
     let first_snapshot = snapshot(&directory, &selected);
+
+    assert!(matches!(
+        network.start_proof_block_import(&selected, unknown_peer, virtual_genesis),
+        Err(ProofBlockImportError::TargetAlreadySelected { block_id })
+            if block_id == virtual_genesis
+    ));
+    assert_snapshot(&directory, &selected, &first_snapshot);
+    assert!(network.pending.is_empty());
 
     assert!(matches!(
         network.start_proof_block_import(&selected, unknown_peer, first_block_id),

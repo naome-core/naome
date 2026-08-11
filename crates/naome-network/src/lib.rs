@@ -22,7 +22,8 @@
 //!
 //! The caller owns the Tokio runtime, drives every network event loop, routes
 //! correlated proof events through a bounded dependency acquisition, consumes
-//! exact-block terminals through their generation tickets, and explicitly
+//! exact-block terminals through their generation tickets, may retrieve one
+//! bounded caller-selected and unselected block ancestry, and explicitly
 //! promotes a resulting opaque closure or admits a peer-record batch. The
 //! responder publication is not derived from the address store.
 //! This crate starts no NAOME-owned background task and owns no
@@ -30,6 +31,7 @@
 
 mod acquisition;
 mod address_store;
+mod block_ancestry;
 mod block_import;
 mod block_transport;
 mod bootstrap;
@@ -65,6 +67,7 @@ use libp2p::{
 use naome::proof_exchange::{
     PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse, proof_response,
 };
+use naome_chain::ProofBlockId;
 use naome_ledger::PROOF_BATCH_MAX_CANDIDATES;
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 use session::Behaviour as SessionBehaviour;
@@ -96,6 +99,10 @@ pub use address_store::{
     PEER_RECORD_TTL, PeerAddressStore, PeerAddressStoreError, PeerRecordAdmission,
     PeerRecordBatchAdmission, SignedPeerRecord, SignedPeerRecordError,
 };
+pub use block_ancestry::{
+    MAX_PROOF_BLOCK_ANCESTRY_BLOCKS, ProofBlockAncestryPull, ProofBlockAncestryPullError,
+    ProofBlockAncestryPullProgress, UnselectedProofBlockAncestry,
+};
 pub use block_import::{ProofBlockImport, ProofBlockImportError, ProofBlockImportProgress};
 pub use block_transport::{
     BlockRequestTicket, InboundProofBlockRequest, OutboundProofBlockEvent,
@@ -121,6 +128,17 @@ pub use responder::{
     PeerRecordBootstrapResponderEvent, PeerRecordBootstrapResponderFailure,
     PeerRecordBootstrapResponderListenError,
 };
+
+fn selected_context_contains_block(
+    selected: &ProofChainJournal,
+    current_head: ProofBlockId,
+    virtual_genesis: ProofBlockId,
+    block_id: ProofBlockId,
+) -> Result<bool, ProofChainJournalError> {
+    Ok(block_id == current_head
+        || block_id == virtual_genesis
+        || selected.block(block_id)?.is_some())
+}
 
 /// Maximum number of peers configured in one static transport.
 pub const MAX_STATIC_PEERS: usize = 8;
