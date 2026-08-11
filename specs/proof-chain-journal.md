@@ -56,6 +56,7 @@ open_verified(
     expected_head: ProofBlockId,
 ) -> Result<ProofChainJournal, ProofChainJournalError>
 
+chain_id(&self) -> ProofChainId
 prepare_block(
     &self,
     proof_ids: Vec<ProofId>,
@@ -79,15 +80,20 @@ proof_set_proof(&self, proof_id: ProofId)
     -> Result<ProofSetProof, ProofChainJournalError>
 ```
 
-`prepare_block` is read-only against the exact current state, while
-`apply_block` is the sole mutation.
+`chain_id` returns the immutable context supplied to a successfully synchronized
+creation or verified from the journal prefix during a successful replay. It
+performs no disk read, remains available after later handle poisoning, and does
+not duplicate that context in canonical block bytes or journal entries. It adds
+no file-format or migration change. `prepare_block` is read-only against the
+exact current state, while `apply_block` is the sole mutation.
 
-Every operation other than construction requires a healthy handle. The query
-surface is forwarded through the journal rather than exposing its private
-`ProofChainState`, `ProofDag`, or committed-block index, so poisoning and block
-parentage cannot be bypassed. The journal exposes no chain-ID getter because the
-configured value is consumed as replay context, not retained as mutable
-selected state.
+Every health-sensitive operation other than `chain_id` requires a healthy
+handle. The selected-state query surface is forwarded through the journal
+rather than exposing its private `ProofChainState`, `ProofDag`, or committed-
+block index, so poisoning and block parentage cannot be bypassed. The retained
+chain ID is immutable configuration, not mutable selected state; chain-scoped
+head serving reads the health-sensitive head before using `chain_id` to classify
+the request.
 
 ## Directory and exclusive ownership
 
@@ -252,8 +258,9 @@ application.
 
 Any seek, write, or synchronization error after successful in-memory block
 application makes durability ambiguous. The call returns no record, the handle
-becomes poisoned, and every subsequent read, preparation, or application fails.
-Dropping and reopening the journal is the only recovery path.
+becomes poisoned, and every subsequent selected-state read, preparation, or
+application fails. The immutable `chain_id` context remains readable; dropping
+and reopening the journal is the only selected-state recovery path.
 
 The first synchronization barrier completes before the footer is written, so
 a complete footer cannot be issued before its body has been synchronized. The
@@ -333,10 +340,12 @@ before either `Recovery` of an incomplete tail or `Stabilize` of a complete
 image. Ordinary open performs the applicable `Recovery` or `Stabilize`
 directly.
 
-Every handle method checks `Poisoned` before its own work. Read-only block
-preparation wraps its transition error as `Preparation`. Application wraps an
-ordinary pre-I/O block failure as `BlockAdmission`. Parent mismatch precedes
-block retention and lookup reservation; after a matching parent,
+Every health-sensitive selected-state handle method checks `Poisoned` before
+its own work; the immutable `chain_id` getter is the explicit exception.
+Read-only block preparation wraps its transition error as `Preparation`.
+Application wraps an ordinary pre-I/O block failure as `BlockAdmission`.
+Parent mismatch precedes block retention and lookup reservation; after a
+matching parent,
 `BlockIndexAllocation` precedes transition and candidate work so no lookup
 allocation remains after state mutation. Any append, seek, or synchronization
 failure after in-memory success is `Commit { block_id, proof_count, source }`
@@ -377,9 +386,9 @@ failure then aborts open and discards the private replay state rather than
 returning a partial handle. Live application instead reserves lookup capacity
 and retains the bounded decoded block before chain mutation, but does not expose
 it through the lookup until the complete entry and footer have synchronized. A
-commit error therefore preserves the existing poison boundary: every lookup on
-that handle fails with `Poisoned`, and reopening reconstructs exactly whichever
-old or new committed prefix became durable.
+commit error therefore preserves the existing poison boundary: every selected
+block lookup on that handle fails with `Poisoned`, and reopening reconstructs
+exactly whichever old or new committed prefix became durable.
 
 The lookup changes no journal bytes and trusts no derived disk index. It is
 rebuilt from canonical entries on every open. One block adds at least one new
@@ -396,6 +405,13 @@ The separate
 [Authenticated Proof Block Transport](authenticated-proof-block-transport.md)
 may encode that borrowed value into one bounded response owned by the existing
 static libp2p swarm. The journal is not borrowed across the asynchronous write.
+
+The transport-neutral
+[Proof Chain Head Exchange](proof-chain-head-exchange.md) may read the configured
+chain context and current exact head from a healthy journal. Its authenticated
+binding exposes only an untrusted peer observation; journal poisoning is
+preserved before a context mismatch can become `Unavailable`, and the response
+is not a trusted `open_verified` checkpoint.
 
 ## Incomplete-tail recovery
 
@@ -437,6 +453,11 @@ adds no socket, peer, retry, announcement, synchronization, or selection policy.
 The Authenticated Proof Block Transport binds that helper to one statically
 authorized peer request without adding block discovery, ancestry walking,
 payload acquisition, application, or selection.
+
+The separate Authenticated Proof Chain Head Pull may expose this journal's exact
+head for one matching `ProofChainId`, including the virtual genesis parent when
+empty. It adds no journal mutation or format, and a receiver must not treat the
+observation as a trusted checkpoint or automatic import target.
 
 The separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)

@@ -22,9 +22,13 @@ over a second request-response behaviour. That protocol shares authorization,
 connections, application permits, and per-peer pending limits but does not
 change proof-closure acquisition or promotion.
 The separate
+[Authenticated Proof Chain Head Pull](authenticated-proof-chain-head-pull.md)
+adds a third request-response behaviour on that same swarm. It reports only one
+untrusted, chain-scoped peer observation and never starts retrieval or import.
+The separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
 orchestrates those two existing exchanges for one exact direct-child target;
-it defines no third wire protocol or peer-side selection policy.
+it does not consume the head protocol or grant peer-side selection policy.
 
 This is not a decentralized peer-discovery system or a consensus protocol.
 Static peer identities provide authentication and authorization, not Sybil
@@ -42,6 +46,9 @@ The separate `/naome/proof-block-exchange` behaviour reuses the same
 authenticated managed connection. Its exact framing and generation-safe
 correlation contract are defined only by the
 [Authenticated Proof Block Transport](authenticated-proof-block-transport.md).
+The third `/naome/proof-chain-head-exchange` behaviour reuses that connection
+under the independent framing and correlation contract in the Authenticated
+Proof Chain Head Pull.
 
 Each node has one libp2p identity key. Its `PeerId` is derived by libp2p from
 the public key and is authenticated during the Noise handshake. Construction
@@ -132,11 +139,12 @@ The initial static implementation fixes these limits:
 | Established connections per peer | 1 |
 | Proof request-response streams per connection | 2 |
 | Proof-block request-response streams per connection | 2 |
-| Aggregate proof plus proof-block streams per connection | 4 |
+| Proof-chain-head request-response streams per connection | 2 |
+| Aggregate proof, proof-block, and proof-chain-head streams per connection | 6 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
 | Shared pending or retained application permits | 8 |
-| Pending outbound proof or proof-block requests per peer | 1 |
+| Pending outbound proof, proof-block, or proof-chain-head requests per peer | 1 |
 | TCP listen backlog | 16 |
 | Connection establishment timeout | 10 seconds |
 | Negotiated request/response phase timeout | 30 seconds |
@@ -149,17 +157,18 @@ The initial static implementation fixes these limits:
 | Pre-Noise inbound authentication burst | 8 attempts |
 | Pre-Noise inbound authentication refill | 1 attempt per second, global |
 
-The Yamux cap is intentionally larger than the four aggregate proof and
-proof-block request-response streams so simultaneous bidirectional negotiation
-can complete while arbitrary mux stream growth remains bounded. Each separate
-behaviour retains a two-stream cap. The selected libp2p adapter currently
+The Yamux cap is intentionally larger than the six aggregate proof, proof-block,
+and proof-chain-head request-response streams. Each separate behaviour retains a
+two-stream cap while arbitrary mux stream growth remains bounded. The selected
+libp2p adapter currently
 implements the hard Yamux cap through its compatibility configuration; the WAN
 throughput tradeoff is not yet measured.
 
 One established connection per peer prevents one identity from concentrating
 the node-wide connection budget. The authenticated Yamux connection is
 full-duplex: once the deterministic owner establishes it, both peers can issue
-proof or proof-block requests concurrently over that same connection. There is
+proof, proof-block, or proof-chain-head requests over that same connection.
+There is
 no initial cross-dial race and no request-driven second dial.
 
 The owner dials immediately. After successive terminal dial failures or session
@@ -182,18 +191,21 @@ state. It bounds aggregate admission to authentication work, but it is not
 per-IP fairness, upstream DDoS filtering, or Sybil resistance.
 
 The global outbound permit is acquired before libp2p queues an application-
-level proof or proof-block request. During dependency acquisition it moves with
-a proof response into quarantine, then into the completed closure, and remains
+level proof, proof-block, or proof-chain-head request. During dependency
+acquisition it moves with a proof response into quarantine, then into the
+completed closure, and remains
 held across final synchronous promotion. A successful proof-block response
 instead retains its permit until its opaque outbound event is completed with
-the matching request ticket or dropped. The same eight-permit limit therefore
-bounds pending requests, received block responses, quarantined proof
+the matching request ticket or dropped. A successful proof-chain-head response
+uses the same retained-event boundary. The shared eight-permit limit therefore
+bounds pending requests, received block or head responses, quarantined proof
 candidates, and completed closure candidates for one `StaticProofNetwork`
 instance. At most eight proof payload buffers, each at most 4 MiB, can be
-retained this way; mixing in responses of at most 353 bytes cannot raise that
-32 MiB concurrent payload-only bound. This is not a bound on transient decode
-or checker memory. Request-response stream and connection limits separately
-bound concurrently owned server responses.
+retained this way; mixing in block responses of at most 353 bytes or head
+responses of 32 bytes cannot raise that 32 MiB concurrent payload-only bound.
+This is not a bound on transient decode or checker memory. Request-response
+stream and connection limits separately bound concurrently owned server
+responses.
 
 One acquisition issues at most fifteen requests across all configured peers.
 The bound permits a full eight-candidate closure after up to seven failed

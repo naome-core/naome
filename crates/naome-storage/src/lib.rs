@@ -49,6 +49,7 @@ const ENTRY_MAX_BODY_BYTES: u32 = (BLOCK_LENGTH_BYTES
 #[must_use]
 pub struct ProofChainJournal {
     _lock: File,
+    chain_id: ProofChainId,
     core: JournalCore<File>,
 }
 
@@ -80,6 +81,7 @@ impl ProofChainJournal {
 
         Ok(Self {
             _lock: lock,
+            chain_id,
             core: JournalCore::empty(file, chain_id),
         })
     }
@@ -121,7 +123,17 @@ impl ProofChainJournal {
             .open(journal_path)
             .map_err(|source| ProofChainJournalError::Open { source })?;
         let core = JournalCore::replay(file, expected_chain_id, expected_head)?;
-        Ok(Self { _lock: lock, core })
+        Ok(Self {
+            _lock: lock,
+            chain_id: expected_chain_id,
+            core,
+        })
+    }
+
+    /// Returns the immutable chain context synchronized at creation or
+    /// verified from the persisted prefix during open.
+    pub const fn chain_id(&self) -> ProofChainId {
+        self.chain_id
     }
 
     /// Prepares one exact-parent block without changing memory or disk.

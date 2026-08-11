@@ -24,6 +24,12 @@ reward it. The caller's exact target remains immutable throughout the import,
 and only the journal's normal strict block application may change selected
 state.
 
+The separate
+[Authenticated Proof Chain Head Pull](authenticated-proof-chain-head-pull.md)
+may supply an untrusted candidate identity to caller policy, but it never starts
+this importer or changes the requirement that the caller explicitly select the
+exact target.
+
 ## Public surface
 
 The public Rust surface is equivalent to:
@@ -321,7 +327,7 @@ value.
 
 ## Explicit exclusions
 
-This contract defines no target or head discovery, announcement, subscription,
+This contract defines no target discovery, announcement, subscription,
 gossip, DHT, polling scheduler, height, range, parent query, child query,
 ancestry walk, multi-block synchronization, block retry, block peer fallback,
 hedged request, orphan pool, competing-branch store, replacement-block
@@ -331,4 +337,5 @@ proof of stake, validator set, voting, quorum, consensus, finality, dynamic
 learned-peer authorization, peer scoring, reputation, proof bundle wire format,
 storage migration, compatibility parser, snapshot, pruning, compression,
 erasure coding, data-availability sampling, reward, fee, balance, novelty
-policy, issuance, or settlement.
+policy, issuance, or settlement. The separate authenticated head pull remains
+outside this import contract and adds no automatic composition.

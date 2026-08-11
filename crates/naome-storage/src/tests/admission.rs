@@ -41,6 +41,7 @@ fn create_open_chain_binding_and_same_process_lock_are_strict() {
     let genesis = ProofChainState::new(id).head_block_id();
     let journal = ProofChainJournal::create(&directory.path, id).unwrap();
 
+    assert_eq!(journal.chain_id(), id);
     assert!(journal.is_empty().unwrap());
     assert_eq!(journal.len().unwrap(), 0);
     assert_eq!(journal.head_block_id().unwrap(), genesis);
@@ -70,6 +71,7 @@ fn create_open_chain_binding_and_same_process_lock_are_strict() {
             if expected == other_id && actual == id
     ));
     let reopened = ProofChainJournal::open(&directory.path, id).unwrap();
+    assert_eq!(reopened.chain_id(), id);
     assert_eq!(reopened.head_block_id().unwrap(), genesis);
     assert_eq!(reopened.block(genesis).unwrap(), None);
     drop(reopened);
@@ -110,6 +112,7 @@ fn two_blocks_reopen_exact_head_records_root_and_witnesses() {
     drop(journal);
 
     let reopened = ProofChainJournal::open_verified(&directory.path, id, expected_head).unwrap();
+    assert_eq!(reopened.chain_id(), id);
     assert_eq!(reopened.len().unwrap(), 2);
     assert_eq!(reopened.head_block_id().unwrap(), expected_head);
     assert_eq!(reopened.proof_set_root().unwrap(), expected_root);

@@ -34,6 +34,7 @@ mod block_import;
 mod block_transport;
 mod bootstrap;
 mod codec;
+mod head_transport;
 mod local_issuer;
 mod rate_limit;
 mod record_exchange;
@@ -51,7 +52,11 @@ use std::sync::{
 use std::time::Duration;
 
 use block_transport::PendingProofBlockRequest;
-use codec::{PROOF_BLOCK_PROTOCOL, PROTOCOL, ProofBlockCodec, ProofCodec};
+use codec::{
+    PROOF_BLOCK_PROTOCOL, PROOF_CHAIN_HEAD_PROTOCOL, PROTOCOL, ProofBlockCodec,
+    ProofChainHeadCodec, ProofCodec,
+};
+use head_transport::PendingProofChainHeadRequest;
 use libp2p::futures::StreamExt;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{
@@ -100,6 +105,10 @@ pub use bootstrap::{
     AuthenticatedPeerRecordBatch, PeerRecordBootstrapBuildError, PeerRecordBootstrapClient,
     PeerRecordBootstrapEvent, PeerRecordPullFailure, PeerRecordPullStartError,
 };
+pub use head_transport::{
+    AuthenticatedProofChainHeadResponse, ChainHeadRequestTicket, InboundProofChainHeadRequest,
+    OutboundProofChainHeadEvent, OutboundProofChainHeadFailure, ProofChainHeadRequestEventMismatch,
+};
 pub use libp2p::core::transport::ListenerId;
 pub use libp2p::{Multiaddr, PeerId, identity::Keypair};
 pub use local_issuer::{LocalPeerRecordIssuer, LocalPeerRecordIssuerError};
@@ -117,15 +126,15 @@ pub use responder::{
 pub const MAX_STATIC_PEERS: usize = 8;
 /// Maximum established connections with one authenticated peer.
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
-/// Maximum pending or caller-retained outbound proof and proof-block requests combined.
+/// Maximum pending or caller-retained outbound proof, block, and head requests combined.
 pub const MAX_PENDING_REQUESTS: usize = 8;
 /// Maximum requests issued by one dependency acquisition across all peers.
 pub const MAX_DEPENDENCY_ACQUISITION_REQUESTS: usize =
     PROOF_BATCH_MAX_CANDIDATES + MAX_STATIC_PEERS - 1;
-/// Maximum concurrent streams for each proof or proof-block exchange.
+/// Maximum concurrent streams for each proof, block, or head exchange.
 pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
-/// Maximum concurrent proof plus proof-block streams on one connection.
-pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION * 2;
+/// Maximum concurrent proof, block, and head streams on one connection.
+pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION * 3;
 /// Maximum total Yamux substreams on one connection.
 pub const MAX_YAMUX_STREAMS_PER_CONNECTION: usize = 8;
 /// Configured TCP listen backlog.
@@ -181,6 +190,7 @@ struct Behaviour {
     sessions: SessionBehaviour,
     proof_exchange: request_response::Behaviour<ProofCodec>,
     block_exchange: request_response::Behaviour<ProofBlockCodec>,
+    head_exchange: request_response::Behaviour<ProofChainHeadCodec>,
 }
 
 struct PendingProofRequest {
@@ -194,11 +204,13 @@ struct PendingProofRequest {
 enum ExchangeRequestId {
     Proof(request_response::OutboundRequestId),
     Block(request_response::OutboundRequestId),
+    Head(request_response::OutboundRequestId),
 }
 
 enum PendingRequest {
     Proof(PendingProofRequest),
     Block(PendingProofBlockRequest),
+    Head(PendingProofChainHeadRequest),
 }
 
 impl PendingRequest {
@@ -206,6 +218,7 @@ impl PendingRequest {
         match self {
             Self::Proof(pending) => pending.peer_index,
             Self::Block(pending) => pending.peer_index,
+            Self::Head(pending) => pending.peer_index,
         }
     }
 }
@@ -301,6 +314,14 @@ impl StaticProofNetwork {
                 PROOF_BLOCK_PROTOCOL,
                 request_response::ProtocolSupport::Full,
             )],
+            exchange_config.clone(),
+        );
+        let head_exchange = request_response::Behaviour::with_codec(
+            ProofChainHeadCodec,
+            [(
+                PROOF_CHAIN_HEAD_PROTOCOL,
+                request_response::ProtocolSupport::Full,
+            )],
             exchange_config,
         );
 
@@ -310,6 +331,7 @@ impl StaticProofNetwork {
             sessions,
             proof_exchange,
             block_exchange,
+            head_exchange,
         };
         let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
@@ -409,6 +431,7 @@ impl StaticProofNetwork {
             (&key, &pending),
             (ExchangeRequestId::Proof(_), PendingRequest::Proof(_))
                 | (ExchangeRequestId::Block(_), PendingRequest::Block(_))
+                | (ExchangeRequestId::Head(_), PendingRequest::Head(_))
         ));
         let replaced = self.pending.insert(key, pending);
         debug_assert!(replaced.is_none());
@@ -466,6 +489,11 @@ impl StaticProofNetwork {
                         return event;
                     }
                 }
+                SwarmEvent::Behaviour(BehaviourEvent::HeadExchange(event)) => {
+                    if let Some(event) = self.handle_head_exchange_event(event) {
+                        return event;
+                    }
+                }
                 SwarmEvent::Behaviour(BehaviourEvent::Sessions(event)) => {
                     return NetworkEvent::PeerSession(event);
                 }
@@ -498,7 +526,9 @@ impl StaticProofNetwork {
                 PendingRequest::Proof(pending) if !pending.control.is_cancelled() => {
                     Some(pending.control.deadline)
                 }
-                PendingRequest::Proof(_) | PendingRequest::Block(_) => None,
+                PendingRequest::Proof(_) | PendingRequest::Block(_) | PendingRequest::Head(_) => {
+                    None
+                }
             })
             .min()
     }
@@ -717,6 +747,9 @@ impl StaticProofNetwork {
             PendingRequest::Block(_) => {
                 unreachable!("a proof request key always stores a proof request")
             }
+            PendingRequest::Head(_) => {
+                unreachable!("a proof request key always stores a proof request")
+            }
         }
     }
 
@@ -899,6 +932,8 @@ pub enum NetworkEvent {
     OutboundProof(OutboundProofEvent),
     InboundBlockRequest(InboundProofBlockRequest),
     OutboundBlock(OutboundProofBlockEvent),
+    InboundChainHeadRequest(InboundProofChainHeadRequest),
+    OutboundChainHead(OutboundProofChainHeadEvent),
     ProofCancellationDrained {
         peer_id: PeerId,
         request: ProofRequest,
@@ -910,6 +945,11 @@ pub enum NetworkEvent {
         error: request_response::InboundFailure,
     },
     InboundBlockFailure {
+        peer_id: PeerId,
+        request_id: request_response::InboundRequestId,
+        error: request_response::InboundFailure,
+    },
+    InboundChainHeadFailure {
         peer_id: PeerId,
         request_id: request_response::InboundRequestId,
         error: request_response::InboundFailure,
@@ -1014,7 +1054,7 @@ impl Error for ListenError {
     }
 }
 
-/// Failure to start one outbound proof or proof-block request.
+/// Failure to start one outbound proof, proof-block, or chain-head request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RequestStartError {

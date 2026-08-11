@@ -186,8 +186,8 @@ request:
 
 1. require `peer_id` to be one configured static peer, otherwise
    `UnknownPeer`;
-2. require that peer to have no pending application-level proof or proof-block
-   request, otherwise `AlreadyPending`;
+2. require that peer to have no pending application-level proof, proof-block, or
+   proof-chain-head request, otherwise `AlreadyPending`;
 3. require the managed session and block-exchange behaviour to be connected,
    otherwise `PeerDisconnected`;
 4. acquire one slot from the shared eight-permit application budget, otherwise
@@ -198,11 +198,11 @@ The method never waits for or opens a connection. A peer that supports the
 managed Noise session but not the proof-block protocol can still reject
 negotiation as an ordinary transport failure.
 
-The pending registry is shared at the application level and tags proof and
-proof-block request namespaces explicitly. Behaviour-local libp2p request
-identifiers may have equal numeric representations without aliasing each other.
-The shared per-peer preflight prevents an outbound proof request and outbound
-proof-block request from simultaneously consuming the same peer slot.
+The pending registry is shared at the application level and tags proof,
+proof-block, and proof-chain-head request namespaces explicitly. Behaviour-local
+libp2p request identifiers may have equal numeric representations without
+aliasing each other. The shared per-peer preflight prevents requests from two
+exchange protocols from simultaneously consuming the same peer slot.
 
 A successful proof-block response retains its permit in the opaque outbound
 event until the event is completed with its matching ticket or dropped. A
@@ -343,19 +343,19 @@ This protocol adds these exact bounds to the existing static network:
 | Complete response frame | 2..=355 bytes |
 | Proof-block request-response streams per connection | 2 |
 | Proof request-response streams per connection | 2 |
-| Aggregate proof plus proof-block streams per connection | 4 |
+| Proof-chain-head request-response streams per connection | 2 |
+| Aggregate exchange streams per connection | 6 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
 | Shared pending or retained application permits | 8 |
-| Pending outbound proof or proof-block requests per peer | 1 |
+| Pending outbound proof, proof-block, or proof-chain-head requests per peer | 1 |
 | Protocol negotiation timeout | 10 seconds, pinned libp2p behaviour |
 | Negotiated request-response phase timeout | 30 seconds |
 
-The two request-response behaviours have separate protocol negotiation and
+The three request-response behaviours have separate protocol negotiation and
 stream state but share the existing managed connection, application permits,
-and per-peer pending registry. Their four aggregate application streams remain
-below the hard Yamux limit of eight, leaving bounded capacity for simultaneous
-bidirectional negotiation.
+and per-peer pending registry. Their six aggregate application streams remain
+below the hard Yamux limit of eight.
 
 A block response is much smaller than one maximum proof payload. Because each
 successful block event consumes one of the same eight permits, adding block
@@ -391,8 +391,8 @@ economic identity.
 
 ## Explicit exclusions
 
-This contract defines no block announcement, head discovery, chain-identifier
-discovery, height, range, parent, child, or batch query, ancestry walk,
+This contract defines no block announcement, chain-identifier discovery,
+height, range, parent, child, or batch query, ancestry walk,
 historical membership proof, checkpoint acquisition, negative cache, automatic
 retry, peer fallback, hedged request, public request cancellation, block orphan
 pool, ancestry synchronization, proof-payload bundle, automatic proof
@@ -401,3 +401,8 @@ competing-fork storage, fork choice, rollback, reorganization, proposer,
 signature, proof of work, proof of stake, validator set, voting, quorum,
 consensus, finality, dynamic learned-peer authorization, DHT, gossip, reward,
 fee, balance, novelty policy, issuance, or settlement.
+
+The separate
+[Authenticated Proof Chain Head Pull](authenticated-proof-chain-head-pull.md)
+observes one untrusted chain-scoped peer head without changing this exact-ID
+block request or granting automatic retrieval, import, or selection authority.
