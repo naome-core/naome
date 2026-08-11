@@ -8,15 +8,20 @@ use libp2p::futures::AsyncRead;
 use libp2p::futures::executor::block_on;
 use libp2p::futures::io::Cursor;
 use libp2p::request_response::Codec;
+use naome::block_exchange::{
+    PROOF_BLOCK_REQUEST_BYTES, PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockRequest,
+};
 use naome::proof_exchange::{
     PROOF_REQUEST_BYTES, PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse,
 };
+use naome_chain::ProofBlockId;
 
 use crate::{MAX_PEER_RECORDS_PER_BATCH, MAX_SIGNED_PEER_RECORD_BYTES, PeerRecordBatch};
 
 use super::{
-    PEER_RECORD_PROTOCOL, PROTOCOL, PeerRecordCodec, PeerRecordResponderCodec,
-    PeerRecordResponderRequest, ProofCodec,
+    PEER_RECORD_PROTOCOL, PROOF_BLOCK_PROTOCOL, PROTOCOL, PeerRecordCodec,
+    PeerRecordResponderCodec, PeerRecordResponderRequest, ProofBlockCodec, ProofBlockWireResponse,
+    ProofCodec,
 };
 
 struct PendingReader;
@@ -52,6 +57,10 @@ fn request_bytes() -> [u8; PROOF_REQUEST_BYTES] {
         *byte = u8::try_from(index).unwrap();
     }
     bytes
+}
+
+fn block_request_bytes() -> [u8; PROOF_BLOCK_REQUEST_BYTES] {
+    [0x42; PROOF_BLOCK_REQUEST_BYTES]
 }
 
 #[test]
@@ -190,6 +199,181 @@ fn maximum_response_is_accepted() {
     assert_eq!(decoded.len(), PROOF_RESPONSE_MAX_BYTES);
     assert_eq!(decoded.first(), Some(&0x5a));
     assert_eq!(decoded.last(), Some(&0x5a));
+}
+
+#[test]
+fn proof_block_request_requires_exact_block_id_and_eof() {
+    assert_eq!(PROOF_BLOCK_PROTOCOL.as_ref(), "/naome/proof-block-exchange");
+    let expected = ProofBlockRequest::new(ProofBlockId::from_bytes(block_request_bytes()));
+    let mut codec = ProofBlockCodec;
+
+    let mut exact = Cursor::new(block_request_bytes().to_vec());
+    assert_eq!(
+        block_on(codec.read_request(&PROOF_BLOCK_PROTOCOL, &mut exact)).unwrap(),
+        expected
+    );
+
+    for length in 0..PROOF_BLOCK_REQUEST_BYTES {
+        let mut truncated = Cursor::new(block_request_bytes()[..length].to_vec());
+        assert_eq!(
+            block_on(codec.read_request(&PROOF_BLOCK_PROTOCOL, &mut truncated))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    let mut trailing_bytes = block_request_bytes().to_vec();
+    trailing_bytes.push(0xff);
+    let mut trailing = Cursor::new(trailing_bytes);
+    assert_eq!(
+        block_on(codec.read_request(&PROOF_BLOCK_PROTOCOL, &mut trailing))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+
+    let mut encoded = Cursor::new(Vec::new());
+    block_on(codec.write_request(&PROOF_BLOCK_PROTOCOL, &mut encoded, expected)).unwrap();
+    assert_eq!(encoded.into_inner(), block_request_bytes());
+}
+
+#[test]
+fn proof_block_response_uses_bounded_u16_framing() {
+    let mut codec = ProofBlockCodec;
+
+    let mut unavailable = Cursor::new(0_u16.to_be_bytes().to_vec());
+    let unavailable =
+        block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut unavailable)).unwrap();
+    assert!(unavailable.as_bytes().is_empty());
+    let mut encoded_unavailable = Cursor::new(Vec::new());
+    block_on(codec.write_response(
+        &PROOF_BLOCK_PROTOCOL,
+        &mut encoded_unavailable,
+        ProofBlockWireResponse::new(Vec::new()),
+    ))
+    .unwrap();
+    assert_eq!(encoded_unavailable.into_inner(), [0x00, 0x00]);
+
+    let payload = vec![0x10, 0x20, 0x30];
+    let mut frame = u16::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
+    frame.extend_from_slice(&payload);
+    let mut found = Cursor::new(frame.clone());
+    let found = block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut found)).unwrap();
+    assert_eq!(found.as_bytes(), payload);
+
+    let mut encoded = Cursor::new(Vec::new());
+    block_on(codec.write_response(
+        &PROOF_BLOCK_PROTOCOL,
+        &mut encoded,
+        ProofBlockWireResponse::new(payload),
+    ))
+    .unwrap();
+    assert_eq!(encoded.into_inner(), frame);
+}
+
+#[test]
+fn oversized_proof_block_response_stops_after_u16_prefix() {
+    let mut codec = ProofBlockCodec;
+    let oversized = u16::try_from(PROOF_BLOCK_RESPONSE_MAX_BYTES + 1).unwrap();
+    let mut frame = oversized.to_be_bytes().to_vec();
+    frame.extend_from_slice(&[0xa5; 64]);
+    let mut input = Cursor::new(frame);
+
+    assert_eq!(
+        block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut input))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(input.position(), 2);
+}
+
+#[test]
+fn proof_block_response_rejects_truncation_and_trailing_bytes() {
+    let mut codec = ProofBlockCodec;
+
+    for prefix_length in 0..2 {
+        let mut prefix = Cursor::new(3_u16.to_be_bytes()[..prefix_length].to_vec());
+        assert_eq!(
+            block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut prefix))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    for body_length in 0..PROOF_BLOCK_RESPONSE_MAX_BYTES {
+        let mut truncated = u16::try_from(PROOF_BLOCK_RESPONSE_MAX_BYTES)
+            .unwrap()
+            .to_be_bytes()
+            .to_vec();
+        truncated.resize(2 + body_length, 0xa5);
+        let mut truncated = Cursor::new(truncated);
+        assert_eq!(
+            block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut truncated))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof,
+            "accepted truncated proof-block body length {body_length}"
+        );
+    }
+
+    for mut frame in [0_u16.to_be_bytes().to_vec(), 2_u16.to_be_bytes().to_vec()] {
+        frame.extend_from_slice(&[1, 2, 3]);
+        let mut trailing = Cursor::new(frame);
+        assert_eq!(
+            block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut trailing))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+}
+
+#[test]
+fn maximum_proof_block_response_is_accepted() {
+    let mut codec = ProofBlockCodec;
+    let mut frame = Vec::with_capacity(2 + PROOF_BLOCK_RESPONSE_MAX_BYTES);
+    frame.extend_from_slice(
+        &u16::try_from(PROOF_BLOCK_RESPONSE_MAX_BYTES)
+            .unwrap()
+            .to_be_bytes(),
+    );
+    frame.resize(2 + PROOF_BLOCK_RESPONSE_MAX_BYTES, 0x5a);
+    let mut maximum = Cursor::new(frame);
+
+    let decoded = block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut maximum)).unwrap();
+    assert_eq!(decoded.as_bytes().len(), PROOF_BLOCK_RESPONSE_MAX_BYTES);
+    assert_eq!(decoded.as_bytes().first(), Some(&0x5a));
+    assert_eq!(decoded.as_bytes().last(), Some(&0x5a));
+}
+
+#[test]
+fn canonical_161_byte_block_has_the_normative_found_frame() {
+    let mut block = Vec::with_capacity(161);
+    block.extend_from_slice(&[
+        0xf4, 0x7e, 0xe4, 0xac, 0xce, 0x1f, 0x57, 0x97, 0xff, 0x77, 0x3e, 0x7b, 0x62, 0x0c, 0xfc,
+        0x66, 0xb1, 0x01, 0xdf, 0xad, 0xb0, 0xb8, 0x7c, 0xb4, 0xf8, 0x3e, 0x3b, 0x94, 0x76, 0x5c,
+        0x8b, 0x98,
+    ]);
+    block.extend_from_slice(&[0x11; 32]);
+    block.extend_from_slice(&[0x22; 32]);
+    block.push(0x02);
+    block.extend_from_slice(&[0x33; 32]);
+    block.extend_from_slice(&[0x44; 32]);
+    assert_eq!(block.len(), 161);
+
+    let mut expected = vec![0x00, 0xa1];
+    expected.extend_from_slice(&block);
+    let mut encoded = Cursor::new(Vec::new());
+    block_on(ProofBlockCodec.write_response(
+        &PROOF_BLOCK_PROTOCOL,
+        &mut encoded,
+        ProofBlockWireResponse::new(block),
+    ))
+    .unwrap();
+    assert_eq!(encoded.into_inner(), expected);
 }
 
 #[test]

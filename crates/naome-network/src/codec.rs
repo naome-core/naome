@@ -5,6 +5,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use libp2p::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{StreamProtocol, request_response};
+use naome::block_exchange::{
+    PROOF_BLOCK_REQUEST_BYTES, PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockRequest,
+};
 use naome::proof_exchange::{
     PROOF_REQUEST_BYTES, PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse,
 };
@@ -15,11 +18,16 @@ use crate::record_exchange::{
 };
 
 pub(super) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/proof-exchange");
+pub(super) const PROOF_BLOCK_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/naome/proof-block-exchange");
 pub(super) const PEER_RECORD_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/peer-record-exchange");
 
 #[derive(Clone)]
 pub(super) struct ProofCodec;
+
+#[derive(Clone)]
+pub(super) struct ProofBlockCodec;
 
 #[derive(Clone)]
 pub(super) struct PeerRecordCodec;
@@ -36,6 +44,26 @@ pub(super) enum PeerRecordResponderRequest {
 }
 
 const RESPONDER_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug)]
+pub(super) struct ProofBlockWireResponse {
+    bytes: Vec<u8>,
+}
+
+impl ProofBlockWireResponse {
+    pub(super) fn new(bytes: Vec<u8>) -> Self {
+        debug_assert!(bytes.len() <= PROOF_BLOCK_RESPONSE_MAX_BYTES);
+        Self { bytes }
+    }
+
+    pub(super) fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
 
 #[async_trait]
 impl request_response::Codec for ProofCodec {
@@ -115,6 +143,101 @@ impl request_response::Codec for ProofCodec {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "proof response length does not fit u32",
+            )
+        })?;
+        io.write_all(&length.to_be_bytes()).await?;
+        io.write_all(&bytes).await
+    }
+}
+
+#[async_trait]
+impl request_response::Codec for ProofBlockCodec {
+    type Protocol = StreamProtocol;
+    type Request = ProofBlockRequest;
+    type Response = ProofBlockWireResponse;
+
+    async fn read_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut bytes = [0_u8; PROOF_BLOCK_REQUEST_BYTES];
+        io.read_exact(&mut bytes).await?;
+        require_eof(io, "proof-block request has trailing bytes").await?;
+        ProofBlockRequest::from_wire_bytes(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut length_bytes = [0_u8; size_of::<u16>()];
+        io.read_exact(&mut length_bytes).await?;
+        let length = usize::from(u16::from_be_bytes(length_bytes));
+        if length > PROOF_BLOCK_RESPONSE_MAX_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "proof-block response length {length} exceeds maximum \
+                     {PROOF_BLOCK_RESPONSE_MAX_BYTES}"
+                ),
+            ));
+        }
+
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        bytes.resize(length, 0);
+        io.read_exact(&mut bytes).await?;
+        require_eof(io, "proof-block response has trailing bytes").await?;
+        Ok(ProofBlockWireResponse::new(bytes))
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        request: Self::Request,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        io.write_all(&request.to_wire_bytes()).await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        response: Self::Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        let bytes = response.into_bytes();
+        if bytes.len() > PROOF_BLOCK_RESPONSE_MAX_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "proof-block response length {} exceeds maximum \
+                     {PROOF_BLOCK_RESPONSE_MAX_BYTES}",
+                    bytes.len()
+                ),
+            ));
+        }
+        let length = u16::try_from(bytes.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "proof-block response length does not fit u16",
             )
         })?;
         io.write_all(&length.to_be_bytes()).await?;

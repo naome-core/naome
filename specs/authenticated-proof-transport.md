@@ -16,6 +16,11 @@ requires a caller-supplied `ProofBlock` and the separate
 caller constructs and drives the transport on a Tokio runtime with I/O and time
 drivers enabled; the crate creates no runtime or NAOME-owned background task.
 One caller-driven swarm owns all connection, session, request, and retry state.
+The same swarm carries the separate
+[Authenticated Proof Block Transport](authenticated-proof-block-transport.md)
+over a second request-response behaviour. That protocol shares authorization,
+connections, application permits, and per-peer pending limits but does not
+change proof-closure acquisition or promotion.
 
 This is not a decentralized peer-discovery system or a consensus protocol.
 Static peer identities provide authentication and authorization, not Sybil
@@ -28,6 +33,11 @@ The stack, from outermost connection to application payload, is:
 ```text
 TCP -> Noise -> Yamux -> /naome/proof-exchange -> addressed proof exchange
 ```
+
+The separate `/naome/proof-block-exchange` behaviour reuses the same
+authenticated managed connection. Its exact framing and generation-safe
+correlation contract are defined only by the
+[Authenticated Proof Block Transport](authenticated-proof-block-transport.md).
 
 Each node has one libp2p identity key. Its `PeerId` is derived by libp2p from
 the public key and is authenticated during the Noise handshake. Construction
@@ -116,11 +126,13 @@ The initial static implementation fixes these limits:
 | Pending outbound connection attempts | 8 |
 | Established connections, total | 8 |
 | Established connections per peer | 1 |
-| Request-response streams per connection | 2 |
+| Proof request-response streams per connection | 2 |
+| Proof-block request-response streams per connection | 2 |
+| Aggregate proof plus proof-block streams per connection | 4 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
-| Pending outbound proof requests, global | 8 |
-| Pending outbound proof requests per peer | 1 |
+| Shared pending or retained application permits | 8 |
+| Pending outbound proof or proof-block requests per peer | 1 |
 | TCP listen backlog | 16 |
 | Connection establishment timeout | 10 seconds |
 | Negotiated request/response phase timeout | 30 seconds |
@@ -133,17 +145,18 @@ The initial static implementation fixes these limits:
 | Pre-Noise inbound authentication burst | 8 attempts |
 | Pre-Noise inbound authentication refill | 1 attempt per second, global |
 
-The Yamux cap is intentionally larger than the two proof-exchange streams so
-simultaneous bidirectional negotiation can complete while arbitrary mux stream
-growth remains bounded. The selected libp2p adapter currently implements this
-hard cap through its compatibility configuration; the WAN throughput tradeoff
-is not yet measured.
+The Yamux cap is intentionally larger than the four aggregate proof and
+proof-block request-response streams so simultaneous bidirectional negotiation
+can complete while arbitrary mux stream growth remains bounded. Each separate
+behaviour retains a two-stream cap. The selected libp2p adapter currently
+implements the hard Yamux cap through its compatibility configuration; the WAN
+throughput tradeoff is not yet measured.
 
 One established connection per peer prevents one identity from concentrating
 the node-wide connection budget. The authenticated Yamux connection is
 full-duplex: once the deterministic owner establishes it, both peers can issue
-proof requests concurrently over that same connection. There is no initial
-cross-dial race and no request-driven second dial.
+proof or proof-block requests concurrently over that same connection. There is
+no initial cross-dial race and no request-driven second dial.
 
 The owner dials immediately. After successive terminal dial failures or session
 closures it waits `1, 2, 4, 8, 16, 32, 60, ...` seconds before trying again.
@@ -164,17 +177,19 @@ be admitted in 60 seconds. The bucket retains no per-connection or per-source
 state. It bounds aggregate admission to authentication work, but it is not
 per-IP fairness, upstream DDoS filtering, or Sybil resistance.
 
-The global outbound permit is acquired before libp2p queues a request. During
-dependency acquisition it moves with the response into quarantine, then into
-the completed closure, and remains held across final synchronous promotion. It
-is released only when that candidate is dropped or promotion returns. The same
-eight-permit limit therefore bounds pending requests plus received responses,
-quarantined candidates, and completed closure candidates for one
-`StaticProofNetwork` instance. At most eight proof payload buffers, each at
-most 4 MiB, can be retained this way; this 32 MiB figure is a concurrent
-payload-only bound, not a bound on transient decode or checker memory. The
-request-response stream and connection limits separately bound concurrently
-owned server responses.
+The global outbound permit is acquired before libp2p queues an application-
+level proof or proof-block request. During dependency acquisition it moves with
+a proof response into quarantine, then into the completed closure, and remains
+held across final synchronous promotion. A successful proof-block response
+instead retains its permit until its opaque outbound event is completed with
+the matching request ticket or dropped. The same eight-permit limit therefore
+bounds pending requests, received block responses, quarantined proof
+candidates, and completed closure candidates for one `StaticProofNetwork`
+instance. At most eight proof payload buffers, each at most 4 MiB, can be
+retained this way; mixing in responses of at most 353 bytes cannot raise that
+32 MiB concurrent payload-only bound. This is not a bound on transient decode
+or checker memory. Request-response stream and connection limits separately
+bound concurrently owned server responses.
 
 One acquisition issues at most fifteen requests across all configured peers.
 The bound permits a full eight-candidate closure after up to seven failed
@@ -320,7 +335,7 @@ deadline is likewise reported as the deadline rather than interpreted as
 physical terminal is processed before the logical deadline event is emitted,
 peer-identity mismatch is never replaced by the deadline. If the deadline event
 was emitted first, a later mismatched terminal remains visible in
-`CancellationDrained`. A synchronous decode already in progress cannot be
+`ProofCancellationDrained`. A synchronous decode already in progress cannot be
 interrupted, so the acquisition checks the same deadline again after successful
 structural work and issues neither another request nor a completed closure once
 it has expired.
@@ -331,11 +346,11 @@ permits are released immediately. libp2p exposes no request-cancellation API,
 so the exact in-flight request remains in the pending map and retains one peer
 slot and one global payload permit until libp2p emits its terminal response or
 failure. That terminal is discarded, releases the retained resources, and is
-reported as `CancellationDrained`; it can never advance or complete an
+reported as `ProofCancellationDrained`; it can never advance or complete an
 acquisition. Cancelling does not close the shared full-duplex connection or
 trigger session redial.
 
-`CancellationDrained` is a capacity-release notification, not an
+`ProofCancellationDrained` is a capacity-release notification, not an
 acknowledgement that follows every `DeadlineExceeded`. If logical expiry was
 emitted while libp2p still owned the request, its later physical terminal
 produces the drain notification. If the response or failure had already become

@@ -244,7 +244,10 @@ payloads. The separate
 [Addressed Proof Block Exchange](addressed-proof-block-exchange.md) can retrieve
 one canonical block commitment by an already known `ProofBlockId`; it carries no
 proof payload and establishes no chain membership or selection. This contract
-defines no proof-payload transport, proof fetching, announcement, gossip,
+has a separate concrete
+[Authenticated Proof Block Transport](authenticated-proof-block-transport.md)
+for one statically authorized peer request. Neither retrieval boundary defines
+proof-payload transport, proof fetching, announcement, gossip,
 erasure coding, availability sampling, source attribution, or timeout policy.
 The separate journal stores the exact payloads needed to replay each locally
 committed block, but local retention is not a network availability guarantee.
@@ -291,8 +294,9 @@ stake, validator set, voting, quorum, competing-fork storage, fork choice,
 rollback, reorganization, finality, checkpoint trust, snapshot, pruning,
 proof-payload transport, data-availability protocol, block or proof gossip,
 peer discovery, peer authorization, rewards, fees, balances, novelty policy,
-issuance, or settlement. Exact-ID transport-neutral block retrieval is defined
-only by the separate
-[Addressed Proof Block Exchange](addressed-proof-block-exchange.md), and local
-append persistence is defined only by the separate
+issuance, or settlement. Exact-ID transport-neutral block retrieval and its
+static authenticated network binding are defined only by the separate
+[Addressed Proof Block Exchange](addressed-proof-block-exchange.md) and
+[Authenticated Proof Block Transport](authenticated-proof-block-transport.md),
+while local append persistence is defined only by the separate
 [Proof Chain Journal](proof-chain-journal.md).
