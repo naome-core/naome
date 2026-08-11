@@ -1,66 +1,13 @@
-use std::env;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use naome_chain::{AddressedProofCandidate, ProofChainId, ProofDag};
 use naome_foundation::ZfcAxiom;
-use naome_proof::{CERTIFICATE_MAX_BYTES, ProofCertificate, ProofId, ProofStep};
+use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
 use naome_storage::ProofChainJournal;
 
 use super::{
     PROOF_REQUEST_BYTES, PROOF_RESPONSE_MAX_BYTES, ProofExchangeWireError, ProofRequest,
     ProofResponse, proof_response,
 };
-
-static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-struct TestDirectory {
-    path: PathBuf,
-}
-
-impl TestDirectory {
-    fn new() -> Self {
-        loop {
-            let sequence = TEMP_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = env::temp_dir().join(format!(
-                "naome-proof-exchange-{}-{sequence}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Self { path },
-                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(source) => panic!("temporary test directory failed: {source}"),
-            }
-        }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.path).unwrap();
-    }
-}
-
-fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
-    ProofCertificate::new(steps).unwrap()
-}
-
-fn canonical_bytes(steps: Vec<ProofStep>) -> Vec<u8> {
-    certificate(steps)
-        .into_unchecked_normal_form()
-        .canonical_bytes()
-        .to_vec()
-}
-
-fn axiom_bytes(axiom: ZfcAxiom) -> Vec<u8> {
-    canonical_bytes(vec![ProofStep::ZfcAxiom(axiom)])
-}
+use crate::tests::{TestDirectory, axiom_bytes};
 
 fn response(bytes: Vec<u8>) -> ProofResponse {
     ProofResponse::from_wire_bytes(bytes).unwrap()
@@ -134,7 +81,7 @@ fn response_limit_is_the_certificate_limit_and_precedes_proof_parsing() {
 
 #[test]
 fn serving_borrows_exact_retained_bytes_and_missing_is_only_local() {
-    let directory = TestDirectory::new();
+    let directory = TestDirectory::new("proof-exchange");
     let mut journal =
         ProofChainJournal::create(directory.path(), ProofChainId::from_bytes([0x31; 32])).unwrap();
     let pairing = axiom_bytes(ZfcAxiom::Pairing);

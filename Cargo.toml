@@ -30,11 +30,11 @@ publish = false
 sha2 = { version = "0.11.0", default-features = false }
 
 [dependencies]
+naome-chain = { path = "crates/naome-chain" }
 naome-proof = { path = "crates/naome-proof" }
 naome-storage = { path = "crates/naome-storage" }
 
 [dev-dependencies]
-naome-chain = { path = "crates/naome-chain" }
 naome-foundation = { path = "crates/naome-foundation" }
 
 [workspace.lints.rust]

@@ -9,6 +9,7 @@
 //! The journal is a local recovery mechanism. It defines no competing forks,
 //! reorganization, consensus, finality, networking, or economic state.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -153,6 +154,15 @@ impl ProofChainJournal {
         Ok(self.core.chain.head_block_id())
     }
 
+    /// Returns one committed and replay-checked block by its exact identity.
+    pub fn block(
+        &self,
+        block_id: ProofBlockId,
+    ) -> Result<Option<&ProofBlock>, ProofChainJournalError> {
+        self.core.ensure_healthy()?;
+        Ok(self.core.blocks.get(&block_id))
+    }
+
     /// Returns one committed and replay-checked proof record.
     pub fn proof(
         &self,
@@ -239,6 +249,7 @@ impl JournalIo for File {
 struct JournalCore<F> {
     file: F,
     chain: ProofChainState,
+    blocks: HashMap<ProofBlockId, ProofBlock>,
     committed_end: u64,
     poisoned: bool,
 }
@@ -248,6 +259,7 @@ impl<F: JournalIo> JournalCore<F> {
         Self {
             file,
             chain: ProofChainState::new(chain_id),
+            blocks: HashMap::new(),
             committed_end: JOURNAL_PREFIX_BYTES as u64,
             poisoned: false,
         }
@@ -289,6 +301,7 @@ impl<F: JournalIo> JournalCore<F> {
         }
 
         let mut chain = ProofChainState::new(expected_chain_id);
+        let mut blocks = HashMap::new();
         let mut entry_start = JOURNAL_PREFIX_BYTES as u64;
         let mut entry = 0_u64;
 
@@ -298,6 +311,7 @@ impl<F: JournalIo> JournalCore<F> {
                 return Self::finish_replay(
                     file,
                     chain,
+                    blocks,
                     entry_start,
                     expected_head,
                     Some(entry_start),
@@ -333,6 +347,7 @@ impl<F: JournalIo> JournalCore<F> {
                 return Self::finish_replay(
                     file,
                     chain,
+                    blocks,
                     entry_start,
                     expected_head,
                     Some(entry_start),
@@ -465,17 +480,21 @@ impl<F: JournalIo> JournalCore<F> {
                     source: Box::new(source),
                 }
             })?;
+            reserve_block_index_entry(&mut blocks, entry)?;
+            let replaced = blocks.insert(expected_block_id, block);
+            debug_assert!(replaced.is_none());
 
             entry_start = entry_end;
             entry += 1;
         }
 
-        Self::finish_replay(file, chain, entry_start, expected_head, None)
+        Self::finish_replay(file, chain, blocks, entry_start, expected_head, None)
     }
 
     fn finish_replay(
         mut file: F,
         chain: ProofChainState,
+        blocks: HashMap<ProofBlockId, ProofBlock>,
         committed_end: u64,
         expected_head: Option<ProofBlockId>,
         recovery_offset: Option<u64>,
@@ -497,6 +516,7 @@ impl<F: JournalIo> JournalCore<F> {
         Ok(Self {
             file,
             chain,
+            blocks,
             committed_end,
             poisoned: false,
         })
@@ -508,7 +528,20 @@ impl<F: JournalIo> JournalCore<F> {
         candidates: Vec<AddressedProofCandidate>,
     ) -> Result<&AcceptedProofRecord, ProofChainJournalError> {
         self.ensure_healthy()?;
+        let expected_parent = self.chain.head_block_id();
+        let actual_parent = block.parent_block_id();
+        if actual_parent != expected_parent {
+            return Err(ProofChainJournalError::BlockAdmission {
+                source: ProofBlockApplyError::ParentBlockIdMismatch {
+                    expected: expected_parent,
+                    actual: actual_parent,
+                },
+            });
+        }
         let block_bytes = block.to_canonical_bytes();
+        let indexed_block = block.clone();
+        let entry = u64::try_from(self.blocks.len()).expect("block index length fits u64");
+        reserve_block_index_entry(&mut self.blocks, entry)?;
         let root_proof_id = self
             .chain
             .apply_block(block, candidates)
@@ -516,6 +549,8 @@ impl<F: JournalIo> JournalCore<F> {
             .proof_id();
         let block_id = self.chain.head_block_id();
         self.commit_entry(block_id, &block_bytes, block.transition().proof_ids())?;
+        let replaced = self.blocks.insert(block_id, indexed_block);
+        debug_assert!(replaced.is_none());
         Ok(self
             .chain
             .proof_dag()
@@ -604,6 +639,15 @@ impl<F: JournalIo> JournalCore<F> {
     }
 }
 
+fn reserve_block_index_entry(
+    blocks: &mut HashMap<ProofBlockId, ProofBlock>,
+    entry: u64,
+) -> Result<(), ProofChainJournalError> {
+    blocks
+        .try_reserve(1)
+        .map_err(|_| ProofChainJournalError::BlockIndexAllocation { entry })
+}
+
 fn recover_tail<F: JournalIo>(file: &mut F, offset: u64) -> Result<(), ProofChainJournalError> {
     file.set_len(offset)
         .and_then(|()| file.sync_all())
@@ -677,6 +721,8 @@ pub enum ProofChainJournalError {
         proof: Option<usize>,
         bytes: usize,
     },
+    /// Reserving the selected-block index for one journal entry failed.
+    BlockIndexAllocation { entry: u64 },
     /// The canonical block inside a complete entry is malformed.
     BlockDecode {
         entry: u64,
@@ -787,6 +833,12 @@ impl fmt::Display for ProofChainJournalError {
                     "journal entry {entry} could not allocate {bytes} bytes"
                 ),
             },
+            Self::BlockIndexAllocation { entry } => {
+                write!(
+                    formatter,
+                    "journal entry {entry} could not reserve its block index slot"
+                )
+            }
             Self::BlockDecode {
                 entry,
                 offset,
@@ -865,6 +917,7 @@ impl Error for ProofChainJournalError {
             | Self::InvalidEntryBody { .. }
             | Self::InvalidProofLength { .. }
             | Self::Allocation { .. }
+            | Self::BlockIndexAllocation { .. }
             | Self::BlockIdMismatch { .. }
             | Self::HeadBlockIdMismatch { .. }
             | Self::Poisoned => None,
