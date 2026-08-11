@@ -35,6 +35,7 @@ fn every_incomplete_second_entry_cut_recovers_exact_first_block() {
     let complete = journal_image(id, &entries);
     let first_id = entries[0].2[0];
     let first_head = entries[0].0.id();
+    let second_head = entries[1].0.id();
 
     for cut in first_image.len() + 1..complete.len() {
         let directory = TestDirectory::new();
@@ -43,6 +44,12 @@ fn every_incomplete_second_entry_cut_recovers_exact_first_block() {
         assert_eq!(journal.len().unwrap(), 1, "cut={cut}");
         assert_eq!(journal.head_block_id().unwrap(), first_head, "cut={cut}");
         assert!(journal.proof(first_id).unwrap().is_some(), "cut={cut}");
+        assert_eq!(
+            journal.block(first_head).unwrap(),
+            Some(&entries[0].0),
+            "cut={cut}"
+        );
+        assert_eq!(journal.block(second_head).unwrap(), None, "cut={cut}");
         drop(journal);
         assert_eq!(
             fs::read(directory.journal_path()).unwrap(),

@@ -185,6 +185,7 @@ fn block_rejection_consumes_no_journal_io_or_fault() {
     assert_eq!(core.file.volatile.get_ref(), &before);
     assert_eq!(core.committed_end, JOURNAL_PREFIX_BYTES as u64);
     assert!(core.chain.proof_dag().is_empty());
+    assert!(core.blocks.is_empty());
     assert!(core.ensure_healthy().is_ok());
 
     core.apply_block(&block, addressed_candidates(&payloads, &proof_ids))
@@ -247,6 +248,7 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
             core.ensure_healthy(),
             Err(ProofChainJournalError::Poisoned)
         ));
+        assert!(core.blocks.is_empty(), "fault={fault:?}");
 
         let durable = core.file.durable.clone();
         let replay =
@@ -270,6 +272,11 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
             } else {
                 ProofChainState::new(id).head_block_id()
             },
+            "fault={fault:?}"
+        );
+        assert_eq!(
+            replay.blocks.get(&block.id()),
+            expected_new.then_some(&block),
             "fault={fault:?}"
         );
     }
@@ -305,6 +312,7 @@ fn successful_commit_streams_body_then_two_sync_barriers_then_footer() {
         journal_image(id, &[(block.clone(), payloads, proof_ids)])
     );
     assert_eq!(core.chain.head_block_id(), block.id());
+    assert_eq!(core.blocks.get(&block.id()), Some(&block));
 }
 
 #[test]
@@ -352,6 +360,7 @@ fn complete_bad_footer_is_not_recovered_but_incomplete_footer_is() {
     )
     .unwrap();
     assert!(recovered.chain.proof_dag().is_empty());
+    assert!(recovered.blocks.is_empty());
     assert_eq!(recovered.file.durable, journal_prefix(id));
 
     let mut corrupt = complete.clone();
@@ -374,8 +383,20 @@ fn poisoned_public_handle_hides_all_memory_state_and_keeps_lock() {
         .proof_id();
     let mut journal = ProofChainJournal::create(&directory.path, id).unwrap();
     let block = journal.prepare_block(vec![proof_id]).unwrap();
+    journal
+        .apply_block(
+            &block,
+            vec![AddressedProofCandidate::new(proof_id, payload.clone())],
+        )
+        .unwrap();
+    let block_id = block.id();
+    assert_eq!(journal.block(block_id).unwrap(), Some(&block));
     journal.core.poisoned = true;
 
+    assert!(matches!(
+        journal.block(block_id),
+        Err(ProofChainJournalError::Poisoned)
+    ));
     assert!(matches!(
         journal.head_block_id(),
         Err(ProofChainJournalError::Poisoned)

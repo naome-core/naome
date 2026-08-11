@@ -8,12 +8,14 @@ change before the first stable protocol release.
 
 `ProofChainJournal` is the sole durable owner of that selected state. It keeps
 one [`ProofChainState`](proof-block.md), so the exact block head and the
-privately owned `ProofDag` cannot diverge. Every committed entry contains one
+privately owned `ProofDag` cannot diverge, plus one private exact-ID lookup of
+the decoded blocks on that selected line. Every committed entry contains one
 complete canonical `ProofBlock` and the exact ordered canonical proof payloads
-required by that block's transition. Opening the journal reconstructs both the
-linear head and every proof-state component through strict block replay.
-Persisted bytes never bypass block parentage, transition binding, canonicality,
-mathematical checking, address correlation, or root-closure validation.
+required by that block's transition. Opening the journal reconstructs the
+linear head, every proof-state component, and the block lookup through strict
+block replay. Persisted bytes never bypass block parentage, transition binding,
+canonicality, mathematical checking, address correlation, or root-closure
+validation.
 
 The journal is local recovery state, not evidence that a network selected or
 finalized its blocks. It defines no fork store, fork choice, reorganization,
@@ -66,6 +68,8 @@ apply_block(
 ) -> Result<&AcceptedProofRecord, ProofChainJournalError>
 
 head_block_id(&self) -> Result<ProofBlockId, ProofChainJournalError>
+block(&self, block_id: ProofBlockId)
+    -> Result<Option<&ProofBlock>, ProofChainJournalError>
 proof(&self, proof_id: ProofId)
     -> Result<Option<&AcceptedProofRecord>, ProofChainJournalError>
 len(&self) -> Result<usize, ProofChainJournalError>
@@ -80,9 +84,10 @@ proof_set_proof(&self, proof_id: ProofId)
 
 Every operation other than construction requires a healthy handle. The query
 surface is forwarded through the journal rather than exposing its private
-`ProofChainState` or `ProofDag`, so poisoning and block parentage cannot be
-bypassed. The journal exposes no chain-ID getter because the configured value
-is consumed as replay context, not retained as mutable selected state.
+`ProofChainState`, `ProofDag`, or committed-block index, so poisoning and block
+parentage cannot be bypassed. The journal exposes no chain-ID getter because the
+configured value is consumed as replay context, not retained as mutable
+selected state.
 
 ## Directory and exclusive ownership
 
@@ -212,18 +217,22 @@ already supplied `ProofBlock` and a separate owned ordered sequence of
 Application executes in this order:
 
 1. require a healthy journal handle;
-2. retain the block's bounded canonical bytes;
-3. invoke `ProofChainState::apply_block` exactly once, preserving its parent-
+2. require the supplied parent to equal the exact current head before block
+   retention, index reservation, or candidate work;
+3. retain the block's bounded canonical bytes and decoded value, then reserve
+   one private lookup slot before state mutation;
+4. invoke `ProofChainState::apply_block` exactly once, preserving its own parent-
    first and nested transition error precedence;
-4. after successful in-memory application, use the advanced exact head as the
+5. after successful in-memory application, use the advanced exact head as the
    block ID and locate the retained proof records through the block
    transition's exact ordered `ProofId` values;
-5. append the outer length, canonical block, proof lengths, and retained proof
+6. append the outer length, canonical block, proof lengths, and retained proof
    slices directly;
-6. synchronize the complete length and body;
-7. append the block ID as the commit footer;
-8. synchronize the footer; and
-9. only then acknowledge success and expose the retained root record.
+7. synchronize the complete length and body;
+8. append the block ID as the commit footer;
+9. synchronize the footer;
+10. install the already reserved block lookup entry; and
+11. only then acknowledge success and expose the retained root record.
 
 An ordinary block or transition error occurs before file mutation and leaves
 the handle healthy. Parent mismatch precedes transition or candidate work, and
@@ -266,9 +275,9 @@ and scans entries. For each structurally complete entry it:
 4. validates that many proof lengths and exact body consumption;
 5. compares the stored footer with the decoded block's `ProofBlockId`;
 6. couples each decoded transition `ProofId` to the payload at the same index;
-   and
 7. submits the block and addressed candidates exactly once to the fresh
-   `ProofChainState`.
+   `ProofChainState`; then
+8. reserves and installs the decoded block in the private exact-ID lookup.
 
 Framing validation precedes footer comparison because framing is needed to
 locate bounded fields. Canonical block decoding precedes proof framing because
@@ -311,7 +320,9 @@ For each visible entry, deterministic semantic precedence is:
    `expected` is the decoded block's ID and `actual` is the stored footer, on
    inequality; and
 7. return `Replay` wrapping the first `ProofBlockApplyError` from strict
-   application.
+   application; and
+8. after successful replay application, return `BlockIndexAllocation { entry }`
+   if the private selected-block lookup cannot reserve its entry.
 
 Any field read failure is `Read` at that field's offset. A failed candidate-
 vector or payload-buffer reservation is `Allocation` at the point above; it
@@ -324,11 +335,13 @@ directly.
 
 Every handle method checks `Poisoned` before its own work. Read-only block
 preparation wraps its transition error as `Preparation`. Application wraps an
-ordinary pre-I/O block failure as `BlockAdmission`. Any append, seek, or
-synchronization failure after in-memory success is `Commit { block_id,
-proof_count, source }` and poisons the handle. These variants do not replace
-the nested block, transition, batch, and ledger precedence defined by their
-source contracts.
+ordinary pre-I/O block failure as `BlockAdmission`. Parent mismatch precedes
+block retention and lookup reservation; after a matching parent,
+`BlockIndexAllocation` precedes transition and candidate work so no lookup
+allocation remains after state mutation. Any append, seek, or synchronization
+failure after in-memory success is `Commit { block_id, proof_count, source }`
+and poisons the handle. These variants do not replace the nested block,
+transition, batch, and ledger precedence defined by their source contracts.
 
 ## Verified open
 
@@ -348,6 +361,36 @@ proof-set root would be redundant.
 
 Before the first admitted block, the expected head is the chain identifier's
 virtual genesis parent. That anchor is not a stored or admitted block.
+
+## Committed block lookup
+
+The journal retains one private decoded lookup entry for every strictly replayed
+or successfully committed `ProofBlock`. `block(block_id)` first requires a
+healthy handle, then returns a shared reference only when that exact
+`ProofBlockId` belongs to this journal's committed selected line. An unknown
+identity and the virtual genesis anchor both return `None`; the anchor remains
+chain context rather than an admitted block.
+
+Replay inserts a decoded block only after framing, canonical decoding, footer
+identity, and strict block application have all succeeded. A lookup-reservation
+failure then aborts open and discards the private replay state rather than
+returning a partial handle. Live application instead reserves lookup capacity
+and retains the bounded decoded block before chain mutation, but does not expose
+it through the lookup until the complete entry and footer have synchronized. A
+commit error therefore preserves the existing poison boundary: every lookup on
+that handle fails with `Poisoned`, and reopening reconstructs exactly whichever
+old or new committed prefix became durable.
+
+The lookup changes no journal bytes and trusts no derived disk index. It is
+rebuilt from canonical entries on every open. One block adds at least one new
+selected proof, so the retained block count cannot exceed the retained proof
+count. Lookup must not scan the journal file or complete proof state for each
+request.
+
+The transport-neutral [Addressed Proof Block Exchange](addressed-proof-block-exchange.md)
+may borrow one such committed block to answer an exact-ID request. Local lookup
+does not establish that the block belongs to another chain context, is available
+from any peer, or was selected or finalized by a network.
 
 ## Incomplete-tail recovery
 
@@ -380,7 +423,12 @@ The journal provides deterministic local recovery under this crash and
 torn-append model. Neither a valid file nor a matching expected head proves
 that a network selected or finalized the chain.
 
-## Network acquisition boundary
+## Exchange boundaries
+
+The transport-neutral Addressed Proof Block Exchange may request one exact
+`ProofBlockId`. Its serving helper delegates to `block` and preserves a journal
+error rather than converting poisoned state into `Unavailable`. The exchange
+adds no socket, peer, retry, announcement, synchronization, or selection policy.
 
 An authenticated proof transport may acquire an opaque bounded
 `UnselectedProofClosure`. That closure owns untrusted candidate payloads and
@@ -415,8 +463,9 @@ payload.
 
 This contract defines no legacy parser, storage migration, compatibility alias,
 parallel proof-state journal, automatic block preparation or selection,
-historical random-access index, block serving, snapshot, compaction, pruning,
-garbage collection, generic rollback, competing-fork storage, reorganization,
-multi-writer coordination beyond the exclusive lock, peer provenance, request
-history, networking, block announcement, payload-availability protocol,
-consensus, finality, rewards, fees, balances, or settlement.
+height, range, child, or competing-branch index, raw journal-entry export,
+snapshot, compaction, pruning, garbage collection, generic rollback,
+competing-fork storage, reorganization, multi-writer coordination beyond the
+exclusive lock, peer provenance, request history, network transport, block
+announcement, payload-availability protocol, consensus, finality, rewards,
+fees, balances, or settlement.

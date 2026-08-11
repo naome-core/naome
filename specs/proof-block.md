@@ -226,7 +226,9 @@ ordering. Selecting which eligible child to attempt is a higher-level policy.
 The [Proof Chain Journal](proof-chain-journal.md) replays one such selected line
 through a fresh `ProofChainState`. Its append order is therefore exact block
 ancestry rather than an independent proof-transaction order. It neither stores
-nor chooses competing siblings.
+nor chooses competing siblings. The journal also reconstructs an immutable
+exact-ID lookup of the committed blocks on that selected line; this does not add
+a branch store or selection rule.
 
 ## Payload and availability boundary
 
@@ -238,11 +240,14 @@ without duplicating up to eight independently bounded certificates inside the
 block commitment.
 
 Possessing a block does not establish possession or availability of its proof
-payloads. This contract defines no block-body transport, proof fetching,
-announcement, gossip, erasure coding, availability sampling, source
-attribution, or timeout policy. The separate journal stores the exact payloads
-needed to replay each locally committed block, but local retention is not a
-network availability guarantee.
+payloads. The separate
+[Addressed Proof Block Exchange](addressed-proof-block-exchange.md) can retrieve
+one canonical block commitment by an already known `ProofBlockId`; it carries no
+proof payload and establishes no chain membership or selection. This contract
+defines no proof-payload transport, proof fetching, announcement, gossip,
+erasure coding, availability sampling, source attribution, or timeout policy.
+The separate journal stores the exact payloads needed to replay each locally
+committed block, but local retention is not a network availability guarantee.
 
 ## Resource and performance boundary
 
@@ -284,7 +289,10 @@ This contract defines no chain-identifier discovery or trust policy, admitted
 genesis block, height, timestamp, proposer, signature, proof of work, proof of
 stake, validator set, voting, quorum, competing-fork storage, fork choice,
 rollback, reorganization, finality, checkpoint trust, snapshot, pruning,
-payload transport, data-availability protocol, block or proof gossip, peer
-discovery, peer authorization, rewards, fees, balances, novelty policy,
-issuance, or settlement. Local append persistence is defined only by the
-separate [Proof Chain Journal](proof-chain-journal.md).
+proof-payload transport, data-availability protocol, block or proof gossip,
+peer discovery, peer authorization, rewards, fees, balances, novelty policy,
+issuance, or settlement. Exact-ID transport-neutral block retrieval is defined
+only by the separate
+[Addressed Proof Block Exchange](addressed-proof-block-exchange.md), and local
+append persistence is defined only by the separate
+[Proof Chain Journal](proof-chain-journal.md).

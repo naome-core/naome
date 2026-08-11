@@ -44,6 +44,11 @@ fn create_open_chain_binding_and_same_process_lock_are_strict() {
     assert!(journal.is_empty().unwrap());
     assert_eq!(journal.len().unwrap(), 0);
     assert_eq!(journal.head_block_id().unwrap(), genesis);
+    assert_eq!(journal.block(genesis).unwrap(), None);
+    assert_eq!(
+        journal.block(ProofBlockId::from_bytes([0x55; 32])).unwrap(),
+        None
+    );
     let empty_root = journal.proof_set_root().unwrap();
     let unknown = ProofId::from_bytes([0x55; 32]);
     assert_eq!(
@@ -66,6 +71,7 @@ fn create_open_chain_binding_and_same_process_lock_are_strict() {
     ));
     let reopened = ProofChainJournal::open(&directory.path, id).unwrap();
     assert_eq!(reopened.head_block_id().unwrap(), genesis);
+    assert_eq!(reopened.block(genesis).unwrap(), None);
     drop(reopened);
     assert!(matches!(
         ProofChainJournal::create(&directory.path, id),
@@ -90,12 +96,26 @@ fn two_blocks_reopen_exact_head_records_root_and_witnesses() {
     let expected_head = entries[1].0.id();
     let expected_root = journal.proof_set_root().unwrap();
     assert_eq!(journal.head_block_id().unwrap(), expected_head);
+    for (block, _, _) in &entries {
+        assert_eq!(journal.block(block.id()).unwrap(), Some(block));
+    }
+    let image = fs::read(directory.journal_path()).unwrap();
+    assert_eq!(
+        journal.block(ProofBlockId::from_bytes([0x55; 32])).unwrap(),
+        None
+    );
+    assert_eq!(journal.head_block_id().unwrap(), expected_head);
+    assert_eq!(journal.proof_set_root().unwrap(), expected_root);
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), image);
     drop(journal);
 
     let reopened = ProofChainJournal::open_verified(&directory.path, id, expected_head).unwrap();
     assert_eq!(reopened.len().unwrap(), 2);
     assert_eq!(reopened.head_block_id().unwrap(), expected_head);
     assert_eq!(reopened.proof_set_root().unwrap(), expected_root);
+    for (block, _, _) in &entries {
+        assert_eq!(reopened.block(block.id()).unwrap(), Some(block));
+    }
     for record in expected_records {
         assert_eq!(
             snapshot(reopened.proof(record.proof_id).unwrap().unwrap()),
@@ -195,6 +215,8 @@ fn parent_and_transition_rejections_write_nothing_and_allow_retry() {
         original_head,
         original_root,
     );
+    assert_eq!(journal.block(stale.id()).unwrap(), None);
+    assert_eq!(journal.block(block.id()).unwrap(), None);
 
     let mut wrong_ids = proof_ids.clone();
     wrong_ids[0] = unknown;
@@ -213,6 +235,7 @@ fn parent_and_transition_rejections_write_nothing_and_allow_retry() {
         original_head,
         original_root,
     );
+    assert_eq!(journal.block(block.id()).unwrap(), None);
 
     let root = journal
         .apply_block(&block, addressed_candidates(&payloads, &proof_ids))
@@ -220,6 +243,7 @@ fn parent_and_transition_rejections_write_nothing_and_allow_retry() {
     assert_eq!(root.proof_id(), proof_ids[1]);
     assert_eq!(journal.len().unwrap(), 2);
     assert_eq!(journal.head_block_id().unwrap(), block.id());
+    assert_eq!(journal.block(block.id()).unwrap(), Some(&block));
 }
 
 #[test]
