@@ -126,13 +126,8 @@ impl ProofTransition {
     /// Encodes this commitment in its sole canonical representation.
     #[must_use]
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(PREFIX_BYTES + self.proof_ids.len() * PROOF_ID_BYTES);
-        bytes.extend_from_slice(self.previous_proof_set_root.as_bytes());
-        bytes.extend_from_slice(self.resulting_proof_set_root.as_bytes());
-        bytes.push(self.proof_ids.len() as u8);
-        for proof_id in &self.proof_ids {
-            bytes.extend_from_slice(proof_id.as_bytes());
-        }
+        let mut bytes = Vec::with_capacity(self.canonical_byte_len());
+        self.append_canonical_bytes(&mut bytes);
         bytes
     }
 
@@ -140,13 +135,30 @@ impl ProofTransition {
     pub fn id(&self) -> ProofTransitionId {
         let mut hasher = Sha256::new();
         hasher.update(PROOF_TRANSITION_DOMAIN);
+        self.update_canonical_hasher(&mut hasher);
+        ProofTransitionId(hasher.finalize().into())
+    }
+
+    pub(crate) fn canonical_byte_len(&self) -> usize {
+        PREFIX_BYTES + self.proof_ids.len() * PROOF_ID_BYTES
+    }
+
+    pub(crate) fn append_canonical_bytes(&self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(self.previous_proof_set_root.as_bytes());
+        bytes.extend_from_slice(self.resulting_proof_set_root.as_bytes());
+        bytes.push(self.proof_ids.len() as u8);
+        for proof_id in &self.proof_ids {
+            bytes.extend_from_slice(proof_id.as_bytes());
+        }
+    }
+
+    pub(crate) fn update_canonical_hasher(&self, hasher: &mut Sha256) {
         hasher.update(self.previous_proof_set_root.as_bytes());
         hasher.update(self.resulting_proof_set_root.as_bytes());
         hasher.update([self.proof_ids.len() as u8]);
         for proof_id in &self.proof_ids {
             hasher.update(proof_id.as_bytes());
         }
-        ProofTransitionId(hasher.finalize().into())
     }
 
     /// Returns the selected-state root required before application.

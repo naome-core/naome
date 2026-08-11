@@ -3,13 +3,14 @@
 [![CI](https://github.com/naome-core/naome/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/naome-core/naome/actions/workflows/ci.yml)
 
 NAOME is a protocol for a blockchain of machine-verifiable mathematical proofs.
-This repository currently implements the deterministic proof, selected-state,
-local-persistence, authenticated static-transport, and bounded local
-peer-address-management layers, including a transport-neutral atomic record
-batch, a dedicated outbound-only authenticated bootstrap pull client, and a
-separate bounded inbound-only responder for one immutable operator publication.
-The network layer also provides identity-bound durable sequence issuance for
-standard self-signed peer records. It does not yet define a bundled seed list,
+This repository currently implements deterministic proof checking, selected
+proof state, canonical linear proof blocks with in-memory exact-head admission,
+local proof-DAG persistence, authenticated static transport, and bounded local
+peer-address management. The network layer includes a transport-neutral atomic
+record batch, a dedicated outbound-only authenticated bootstrap pull client, a
+separate bounded inbound-only responder for one immutable operator publication,
+and identity-bound durable sequence issuance for standard self-signed peer
+records. It does not yet define persistent block history, a bundled seed list,
 dynamic learned peer sessions, consensus, finality, fork choice, settlement,
 rewards, or fees.
 
@@ -24,13 +25,13 @@ foundation -> proof -> checker -> ledger -> chain -> storage -> naome -> network
 `A -> B` means that `B` builds on `A`. The layers respectively define the ZFC
 object language and rules, canonical proof certificates and identities,
 deterministic mathematical checking, atomic selected-state transitions, the
-authenticated proof DAG and canonical root-to-root proof-state commitments,
-its crash-consistent local journal, transport-neutral addressed exchange, and
-the concrete bounded libp2p transport. Later crates may also depend directly
-on an earlier crate whose types remain part of their contract. The network
-layer also owns the separate persisted peer-address candidate store and
-bounded peer-record batch wrapper; learned routing candidates do not become
-static proof peers.
+authenticated proof DAG with canonical root-to-root transitions and linear
+proof-block context, the separate crash-consistent local proof-DAG journal,
+transport-neutral addressed exchange, and the concrete bounded libp2p
+transport. Later crates may also depend directly on an earlier crate whose
+types remain part of their contract. The network layer also owns the separate
+persisted peer-address candidate store and bounded peer-record batch wrapper;
+learned routing candidates do not become static proof peers.
 The local peer-record issuer durably advances one caller-owned identity's
 explicit sequence watermark before returning a newly signed record; it never
 persists the private key or publishes by itself.
@@ -47,6 +48,7 @@ authorization.
 - [Ledger State](specs/ledger-state.md)
 - [Authenticated Proof Set](specs/authenticated-proof-set.md)
 - [Proof-State Transition](specs/proof-state-transition.md)
+- [Proof Block](specs/proof-block.md)
 - [Proof DAG Journal](specs/proof-dag-journal.md)
 - [Addressed Proof Exchange](specs/addressed-proof-exchange.md)
 - [Authenticated Proof Transport](specs/authenticated-proof-transport.md)
