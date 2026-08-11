@@ -24,6 +24,9 @@ decoded batch. It retains one shared immutable encoded buffer for its complete
 lifetime. Every successfully served request is queued with those identical
 bytes; serving a request clones only shared ownership of that buffer at the
 application-codec boundary and does not rebuild or copy the publication there.
+An operator may construct one batch entry through the separate
+[local peer-record issuer](local-peer-record-issuance.md), but issuance and
+batch selection both finish before responder construction.
 
 The public surface exposes the local `PeerId`, the immutable published record
 count, one-listener startup, and asynchronous responder events. It exposes no
@@ -201,8 +204,10 @@ It does not define or claim:
 - store export, a store snapshot protocol, publication updates, live reload,
   freshness filtering, record selection, pagination, cursors, deltas, coverage,
   or completeness beyond the exact constructor input;
-- signing peer records, changing signed record content, push, gossip,
-  subscriptions, periodic publication, or background refresh;
+- signing or issuing peer records inside the responder, advancing an issuer
+  watermark, changing signed record content, push, gossip, subscriptions,
+  periodic publication, or background refresh; the separate local issuer may
+  construct a record only before explicit batch and responder construction;
 - dialing, outbound pulls, fallback, retry, managed sessions, learned-candidate
   sessions, conversion to `StaticPeer`, proof authorization, proof transport,
   or proof gossip;

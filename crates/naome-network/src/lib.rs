@@ -16,6 +16,9 @@
 //! [`PeerRecordBootstrapResponder`] serves one operator-supplied immutable
 //! canonical batch to bounded authenticated requesters. Neither swarm installs
 //! the proof protocol or converts a learned candidate into proof authority.
+//! A separate [`LocalPeerRecordIssuer`] persists one identity-bound sequence
+//! watermark before returning each newly signed standard peer record. It never
+//! retains the private key, discovers addresses, or publishes by itself.
 //!
 //! The caller owns the Tokio runtime, drives every network event loop, routes
 //! correlated proof events through a bounded dependency acquisition, and
@@ -28,10 +31,12 @@ mod acquisition;
 mod address_store;
 mod bootstrap;
 mod codec;
+mod local_issuer;
 mod rate_limit;
 mod record_exchange;
 mod responder;
 mod session;
+mod snapshot_io;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -87,6 +92,7 @@ pub use bootstrap::{
 };
 pub use libp2p::core::transport::ListenerId;
 pub use libp2p::{Multiaddr, PeerId, identity::Keypair};
+pub use local_issuer::{LocalPeerRecordIssuer, LocalPeerRecordIssuerError};
 pub use record_exchange::{
     MAX_PEER_RECORDS_PER_BATCH, PEER_RECORD_BATCH_MAX_BYTES, PEER_RECORD_PULL_REQUEST_BYTES,
     PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,

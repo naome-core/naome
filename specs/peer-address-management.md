@@ -16,6 +16,10 @@ The separate
 [authenticated peer-record responder](authenticated-peer-record-responder.md)
 may serve an explicit operator-supplied batch, but it never reads, exports, or
 updates this store.
+The separate [local peer-record issuer](local-peer-record-issuance.md) may
+durably advance one local identity's explicit sequence watermark and construct
+one standard self-signed record before the operator builds that batch. It is
+not part of this learned-record store and does not publish by itself.
 
 V0 deliberately separates five facts:
 
@@ -62,6 +66,24 @@ not derive that publication from this store. To use that responder with the
 strict pull client, its Noise identity and address must still be configured as
 a `BootstrapPeer`. Supplying and updating bootstrap configuration and responder
 publication remains an operator responsibility.
+
+## Local record construction boundary
+
+The separate Local Peer Record Issuance contract is the only NAOME-owned V0
+path that creates a new standard self-signed record. It binds one caller-owned
+libp2p identity to one exclusively locked durable sequence watermark. The
+caller supplies the highest sequence ever issued when creating that state;
+each successful issuance checks `last + 1`, signs the exact bounded globally
+routable IP/TCP address list, commits the next watermark, and only then returns
+the constructed record.
+
+The sequence remains signer-controlled ordering data, not a clock. The issuer
+does not establish receipt freshness or reachability, and its durable state is
+separate from this store's received-record watermark, source provenance,
+seven-day TTL, and diversified candidate selection. Losing or rolling back the
+authoritative issuer state cannot be repaired from this store. Issuing a record
+also does not mutate a responder; the operator must place it into an explicit
+batch and rebuild or restart that immutable service.
 
 ## Signed-record admission
 
@@ -354,15 +376,17 @@ and unauthenticated.
 
 ## Security boundary and exclusions
 
-V0 provides bounded parsing and persistence, standard self-signed address
-authenticity, local receipt freshness, retained sequence watermarks, and
-deterministic source- and prefix-aware candidate selection. It does not define
-or claim:
+V0 provides bounded parsing and persistence, verification of standard
+self-signed address authenticity, local receipt freshness, retained remote
+sequence watermarks, and deterministic source- and prefix-aware candidate
+selection. The separate local issuer defines construction and its own durable
+local sequence watermark. This store does not define or claim:
 
 - store-backed publication, store export, responder updates, address gossip,
   dynamic proof sessions, or automatic mutation of `StaticProofNetwork`; the
-  separate pull client and immutable responder exchange batches but grant no
-  learned identity a session or proof role;
+  separate issuer can construct a local record, while the pull client and
+  immutable responder exchange explicit batches, but none grants a learned
+  identity a session or proof role;
 - DHT, DNS bootstrap, mDNS, rendezvous, NAT traversal, relay, hole punching,
   or external-address verification;
 - peer scoring, reputation, bans, operator identity, source independence,
