@@ -236,23 +236,32 @@ records. The transition compares the projected root with its committed
 resulting root before delegating once to the existing atomic addressed rooted
 batch. That batch remains the sole proof-validation and mutation boundary.
 
-## Journal reconstruction and expected roots
+## Chain-journal reconstruction and expected heads
 
-The Proof DAG Journal stores no Merkle nodes or roots. Strict dependency-first
-transaction replay reconstructs the authenticated set from canonical proof
-payloads. Different physical orders of independent proofs, or different valid
-transaction groupings of dependency-related proofs, produce different journal
-digest chains but the same `ProofSetRoot`.
+The [Proof Chain Journal](proof-chain-journal.md) stores no Merkle nodes. Each
+entry instead stores one canonical exact-parent block and the exact ordered
+canonical proof payloads named by that block's transition. Strict block replay
+reconstructs the authenticated set from those payloads and verifies every
+committed previous and resulting `ProofSetRoot` through `ProofChainState`.
 
-`ProofDagJournal::open_verified` first completes every lock, format, digest,
-strict replay, tail recovery, and stabilization check. It then compares the
-root of the complete replayed state with one caller-supplied expected root. A
-mismatch returns no journal handle.
+Different valid block orderings or groupings of independent proofs may produce
+the same final `ProofSetRoot`, but they produce different block ancestry and
+journal entry sequences. The set root remains insertion-order-independent;
+the block head and physical journal order intentionally are not.
 
-The expected root must come from a separately trusted source. A root value is
-not self-authenticating and does not itself provide consensus selection or
-finality. Exact verification also rejects a valid journal that is either
-behind or ahead of the supplied complete-state root.
+`ProofChainJournal::open_verified` first completes lock, chain-context, format,
+block-ID footer, and strict block-replay checks. It then compares the
+reconstructed exact `ProofBlockId` head with one caller-supplied expected head.
+A mismatch returns no journal handle and performs no incomplete-tail recovery.
+Only a matching head permits tail recovery or stabilization.
+
+The expected head must come from a separately trusted source. Under the block
+hash assumptions it recursively commits every admitted block and every
+transition root; strict replay verifies that the reconstructed set realizes
+those commitments. A separate expected proof-set root would therefore be
+redundant. Neither a head nor a root value is self-authenticating or establishes
+consensus selection or finality. Exact verification rejects a valid journal
+that is behind, ahead of, or on a different ancestry from the supplied head.
 
 Likewise, a root and proof supplied together by one untrusted peer establish no
 trust or freshness. Higher protocols must bind the expected root, queried
@@ -300,5 +309,7 @@ In particular, a membership proof does not insert its terminal `ProofId` into
 another `ProofDag`. A cited proof remains unavailable there until its complete
 canonical certificate bytes have passed normal proof admission.
 
-The order-dependent journal digest remains responsible for local append-chain
-integrity. It must not be replaced by the order-independent proof-set root.
+The order-dependent exact block ancestry and strict journal replay remain
+responsible for local append-entry integrity. The exact block head commits
+ancestry, while this order-independent proof-set root commits selected set
+membership. Neither may be substituted for the other.

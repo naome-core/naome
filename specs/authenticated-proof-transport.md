@@ -10,11 +10,12 @@ The transport connects a fixed set of explicitly configured peers over TCP,
 authenticates both endpoints with Noise identity keys, multiplexes exchanges
 with Yamux, and carries one proof request per request-response substream. It
 provides a caller-driven, bounded path for acquiring one root-reachable proof
-closure without selecting any received bytes, followed by one explicit atomic
-rooted journal transaction. The caller constructs and drives it on a Tokio
-runtime with I/O and time drivers enabled; the crate creates no runtime or
-NAOME-owned background task. One caller-driven swarm owns all connection,
-session, request, and retry state.
+closure without selecting any received bytes. Its sole consuming admission
+requires a caller-supplied `ProofBlock` and the separate
+`ProofChainJournal`; acquisition never prepares or selects that block. The
+caller constructs and drives the transport on a Tokio runtime with I/O and time
+drivers enabled; the crate creates no runtime or NAOME-owned background task.
+One caller-driven swarm owns all connection, session, request, and retry state.
 
 This is not a decentralized peer-discovery system or a consensus protocol.
 Static peer identities provide authentication and authorization, not Sybil
@@ -242,31 +243,49 @@ wrong-address response may therefore reach the completed closure, but it
 cannot reach selected state.
 
 The public `UnselectedProofClosure` is non-cloneable and exposes neither proof
-buffers nor an unbound candidate list. Its sole consuming transition calls:
+buffers nor an unbound candidate list. It owns no block and cannot infer one
+from the journal's current head. Its sole consuming transition requires:
 
 ```text
-ProofDagJournal::apply_rooted_canonical_proof_batch(
-    requested_root,
-    dependency_first_addressed_candidates,
-)
+UnselectedProofClosure::apply_block(
+    self,
+    selected: &mut ProofChainJournal,
+    block: &ProofBlock,
+) -> Result<&AcceptedProofRecord, ProofChainJournalError>
 ```
 
-Promotion first verifies journal health, then preflights batch count, duplicate
-expected addresses, and root-last shape. Each candidate is decoded,
+Internally, promotion correlates the opaque candidates into the block's order
+and calls `selected.apply_block(block, addressed_candidates)` exactly once.
+
+The caller, not the acquisition, chooses the supplied block. Promotion first
+verifies journal health and exact parentage. The block transition then binds
+the exact current root, candidate count and order, expected identities,
+requested root, and projected resulting root. Each candidate is decoded,
 canonicality-checked, mathematically checked against selected state plus earlier
 staged candidates, compared with its requested `ProofId`, and staged in input
-order. Root reachability is checked only after all candidates pass; the staged
-state is then merged and durably committed as one transaction. On a healthy
-handle, any ordinary pre-commit failure changes neither the ledger, proof set,
-root, records, nor journal. No dependency is selected merely because it was
-fetched for a root that later fails.
+order. Root reachability is checked only after all candidates pass. The staged
+chain state is then merged and one journal entry durably commits the exact block
+and its ordered accepted payloads. On a healthy handle, any ordinary pre-commit
+failure changes neither the head, ledger, proof set, root, records, nor journal.
+No dependency is selected merely because it was fetched for a root that later
+fails.
+
+Acquisition never calls `ProofChainJournal::prepare_block`, substitutes the
+current head, constructs an implicit local block, exposes raw candidates, or
+falls back to direct proof-DAG admission. Consequently, successful payload
+retrieval is availability for a possible block, not authority to select that
+block.
 
 Selected state may grow after acquisition and before promotion. Promotion does
-not prune, refetch, reorder, or reinterpret the closure; the atomic batch
-revalidates it against the then-current state and may fail with an existing
-duplicate or derivation collision. The transport never retries with raw
-unaddressed or incremental single-proof admission and does not redefine the
-selected-state first-arrival policy.
+not prune, refetch, or reinterpret the closure. It may correlate opaque
+candidates by immutable requested ID into the supplied transition's exact
+order, so independently ordered candidates need not force one block order; it
+does not change the block or expose or rewrite payload bytes. The caller-
+supplied block and complete addressed closure are revalidated against the
+then-current state; a stale parent, previous root, existing proof, identity
+collision, or other mismatch fails atomically. The transport never retries
+with raw unaddressed or incremental single-proof admission and does not define
+a block-selection policy.
 
 An `Unavailable` response reports only that one peer returned no payload for
 this request. An ordinary correlated transport failure or `Unavailable`
@@ -333,7 +352,7 @@ settlement has a wall-time guarantee.
 
 ## Serving and ownership
 
-The server looks up the requested `ProofId` in a healthy `ProofDagJournal`.
+The server looks up the requested `ProofId` in a healthy `ProofChainJournal`.
 A missing record produces `Unavailable`; a poisoned or unreadable journal
 produces its existing error and no successful response.
 
@@ -364,9 +383,10 @@ failure as an application event. A dropped or closed response channel is a
 transport failure, not `Unavailable`.
 
 Transport framing or authentication failure never reaches closure acquisition.
-Structural acquisition and final journal errors remain distinct. A journal
-`Commit` or `Poisoned` error is not translated into a peer response and requires
-the existing drop-and-reopen recovery procedure.
+Structural acquisition and final block/journal errors remain distinct. A
+`ProofChainJournalError::Commit` or `ProofChainJournalError::Poisoned` error is
+not translated into a peer response and requires the existing drop-and-reopen
+recovery procedure.
 
 ## Security boundary and exclusions
 
@@ -375,8 +395,8 @@ exact framing, per-object length preflight, bounded concurrent connections and
 requests, deterministic connection ownership, bounded managed redial and
 global pre-authentication admission, immutable request/response correlation,
 bounded unselected closure acquisition, one non-resetting acquisition deadline,
-permit-preserving cancellation tombstones, and one explicit expected-identity
-rooted promotion.
+permit-preserving cancellation tombstones, and one explicit caller-supplied-
+block promotion with exact expected-identity correlation.
 
 It does not define or claim:
 
@@ -396,6 +416,8 @@ It does not define or claim:
   worker, wire-level request abort, synchronous proof/checker/journal
   cancellation, or rolling cross-acquisition byte/CPU budgets or per-source
   connection-rate policy;
+- block construction, automatic block preparation, block announcement,
+  competing-block storage, or block-selection policy;
 - Sybil resistance, eclipse resistance from network diversity, fork choice,
   checkpoints, signatures, finality, or consensus;
 - economic transactions, balances, fees, rewards, or settlement; or

@@ -14,7 +14,9 @@ failure. It defines neither sockets nor a complete peer-to-peer network.
 The [authenticated proof transport](authenticated-proof-transport.md) defines
 one concrete static TCP + Noise + Yamux binding for this exchange. This
 transport-neutral contract remains authoritative for request-address binding
-and journal admission.
+and unselected payload handling. Durable selection remains exclusively a
+caller-supplied block operation through the
+[Proof Chain Journal](proof-chain-journal.md).
 
 ## Request
 
@@ -58,12 +60,12 @@ permanent negative cache.
 ## Serving a response
 
 A local responder looks up the exact requested `ProofId` in its healthy
-`ProofDagJournal`:
+`ProofChainJournal`:
 
 - an accepted record yields its borrowed `canonical_proof_bytes` directly;
 - a missing record yields `Unavailable`; and
-- a poisoned or unreadable journal yields its existing `JournalError` rather
-  than a response.
+- a poisoned or unreadable journal yields its existing
+  `ProofChainJournalError` rather than a response.
 
 Serving does not re-encode the proof or duplicate identities. The
 transport-neutral lookup itself borrows the retained bytes without allocating.
@@ -88,28 +90,53 @@ requested root last. Selected state may grow before completion or promotion.
 These candidates remain unselected and have not yet been mathematically
 checked or proven to match their requested addresses.
 
-The opaque completed closure has one consuming promotion operation through
-`ProofDagJournal::apply_rooted_canonical_proof_batch`. The authoritative order
-then remains:
+The opaque completed closure has one consuming admission operation. It requires
+both a caller-supplied `ProofBlock` and the mutable `ProofChainJournal`; the
+closure cannot prepare, construct, or select a block itself. The authoritative
+operation is:
+
+```text
+UnselectedProofClosure::apply_block(
+    self,
+    selected: &mut ProofChainJournal,
+    block: &ProofBlock,
+) -> Result<&AcceptedProofRecord, ProofChainJournalError>
+```
+
+The authoritative order then remains:
 
 1. journal health verification;
-2. batch count, duplicate expected-address, and root-last preflight;
-3. for each candidate in order: proof-certificate decoding, canonicality
+2. exact-current-head comparison for the supplied block before candidate work;
+3. transition current-root, candidate-count, duplicate expected-address,
+   ordered identity, root-last, and projected-resulting-root validation;
+4. for each candidate in order: proof-certificate decoding, canonicality
    verification, deterministic mathematical checking against selected state
    plus earlier staged dependencies, checked `ProofId` comparison with its
    immutable request address, and staged state registration;
-4. requested-root reachability validation over all staged records; and
-5. atomic state merge followed by one durable rooted transaction commit.
+5. requested-root reachability validation over all staged records; and
+6. atomic chain-state merge followed by one durable journal entry containing
+   the exact supplied block and ordered accepted payloads.
+
+The supplied block transition must name exactly the closure's addressed
+candidates in a valid dependency-first, root-last order. Independent candidates
+may appear in a different order than the closure's internal discovery result:
+promotion correlates opaque candidates by their immutable requested IDs into
+the supplied transition's order without changing the block or exposing or
+rewriting payload bytes. A block with a different parent, root commitment,
+count, dependency order, identity set, or resulting root fails atomically.
+Acquisition never substitutes the journal's current head, auto-prepares a
+block, or retries through a direct proof-DAG mutation.
 
 Malformed or noncanonical responses fail during acquisition with a
 `DependencyAcquisitionError` and never reach the journal. For a completed
 closure, invalid, dependency-incomplete, wrong-address, and duplicate
-candidates preserve the existing nested `JournalError` -> `ProofBatchError` ->
-`LedgerError` precedence. Every ordinary pre-commit failure leaves the ledger,
-authenticated proof set, proof-set root, retained records, and journal bytes
-unchanged. A valid proof for a different requested ID therefore cannot become
-locally visible as a side effect of rejecting its closure. Fetched dependencies
-are not admitted incrementally.
+candidates preserve the existing nested `ProofChainJournalError` ->
+`ProofBlockApplyError` -> `ProofTransitionApplyError` -> `ProofBatchError` ->
+`LedgerError` precedence. Every ordinary pre-commit failure leaves the block
+head, ledger, authenticated proof set, proof-set root, retained records, and
+journal bytes unchanged. A valid proof for a different requested ID therefore
+cannot become locally visible as a side effect of rejecting its closure.
+Fetched dependencies are not admitted incrementally.
 
 An empty response may advance the concrete transport to another configured
 peer under its fixed request and deadline bounds. Exhaustion discards the
@@ -146,7 +173,8 @@ This contract does not define:
 - peer discovery, bootstrap seeds, address management, DHTs, gossip, scoring,
   bans, parallel or hedged requests, or peer-reputation policy;
 - batch wire messages, multiplexed correlation IDs, announcements, negative
-  caches, persistent orphan pools, or proof availability claims;
+  caches, persistent orphan pools, automatic block preparation or selection,
+  or proof availability claims;
 - proof-set checkpoint trust, signatures, fork choice, finality, reorgs, or
   consensus;
 - economic transactions, rewards, fees, balances, or settlement; or

@@ -25,7 +25,7 @@
 //! explicitly promotes the resulting opaque closure or admits a peer-record
 //! batch. The responder publication is not derived from the address store.
 //! This crate starts no NAOME-owned background task and owns no
-//! [`ProofDagJournal`].
+//! [`ProofChainJournal`].
 
 mod acquisition;
 mod address_store;
@@ -57,7 +57,7 @@ use naome::proof_exchange::{
     PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse, proof_response,
 };
 use naome_ledger::PROOF_BATCH_MAX_CANDIDATES;
-use naome_storage::{JournalError, ProofDagJournal};
+use naome_storage::{ProofChainJournal, ProofChainJournalError};
 use session::Behaviour as SessionBehaviour;
 use tokio::time::Instant;
 
@@ -613,7 +613,7 @@ impl StaticProofNetwork {
     pub fn respond_from_journal(
         &mut self,
         inbound: InboundProofRequest,
-        journal: &ProofDagJournal,
+        journal: &ProofChainJournal,
     ) -> Result<(), RespondError> {
         let response_bytes =
             proof_response(journal, inbound.request).map_err(RespondError::Journal)?;
@@ -954,7 +954,7 @@ impl PeerSessionEvent {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RespondError {
-    Journal(JournalError),
+    Journal(ProofChainJournalError),
     ChannelClosed,
 }
 

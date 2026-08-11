@@ -16,7 +16,7 @@ use std::error::Error;
 use std::fmt;
 
 use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
-use naome_storage::{JournalError, ProofDagJournal};
+use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 /// Exact byte length of one proof request.
 pub const PROOF_REQUEST_BYTES: usize = 32;
@@ -123,9 +123,9 @@ impl fmt::Debug for ProofResponse {
 /// serving it adds no proof-sized allocation. `None` describes only this local
 /// selected state and must not be promoted to a global absence claim.
 pub fn proof_response(
-    journal: &ProofDagJournal,
+    journal: &ProofChainJournal,
     request: ProofRequest,
-) -> Result<Option<&[u8]>, JournalError> {
+) -> Result<Option<&[u8]>, ProofChainJournalError> {
     Ok(journal
         .proof(request.proof_id())?
         .map(|record| record.canonical_proof_bytes()))

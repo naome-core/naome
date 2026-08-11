@@ -4,15 +4,15 @@
 
 NAOME is a protocol for a blockchain of machine-verifiable mathematical proofs.
 This repository currently implements deterministic proof checking, selected
-proof state, canonical linear proof blocks with in-memory exact-head admission,
-local proof-DAG persistence, authenticated static transport, and bounded local
-peer-address management. The network layer includes a transport-neutral atomic
-record batch, a dedicated outbound-only authenticated bootstrap pull client, a
-separate bounded inbound-only responder for one immutable operator publication,
-and identity-bound durable sequence issuance for standard self-signed peer
-records. It does not yet define persistent block history, a bundled seed list,
-dynamic learned peer sessions, consensus, finality, fork choice, settlement,
-rewards, or fees.
+proof state, canonical linear proof blocks with crash-consistent exact-head
+persistence, authenticated static transport, and bounded local peer-address
+management. The network layer includes a transport-neutral atomic record batch,
+a dedicated outbound-only authenticated bootstrap pull client, a separate
+bounded inbound-only responder for one immutable operator publication, and
+identity-bound durable sequence issuance for standard self-signed peer records.
+It does not yet define competing-fork storage, a bundled seed list, dynamic
+learned peer sessions, consensus, finality, fork choice, settlement, rewards,
+or fees.
 
 ## Architecture
 
@@ -26,12 +26,15 @@ foundation -> proof -> checker -> ledger -> chain -> storage -> naome -> network
 object language and rules, canonical proof certificates and identities,
 deterministic mathematical checking, atomic selected-state transitions, the
 authenticated proof DAG with canonical root-to-root transitions and linear
-proof-block context, the separate crash-consistent local proof-DAG journal,
+proof-block context, the sole crash-consistent local proof-chain journal,
 transport-neutral addressed exchange, and the concrete bounded libp2p
-transport. Later crates may also depend directly on an earlier crate whose
-types remain part of their contract. The network layer also owns the separate
-persisted peer-address candidate store and bounded peer-record batch wrapper;
-learned routing candidates do not become static proof peers.
+transport. The chain journal durably commits each exact-parent block together
+with its transition's ordered proof payloads and strictly reconstructs both the
+head and proof state on open. Later crates may also depend directly on an
+earlier crate whose types remain part of their contract. The network layer also
+owns the separate persisted peer-address candidate store and bounded peer-
+record batch wrapper; learned routing candidates do not become static proof
+peers.
 The local peer-record issuer durably advances one caller-owned identity's
 explicit sequence watermark before returning a newly signed record; it never
 persists the private key or publishes by itself.
@@ -49,7 +52,7 @@ authorization.
 - [Authenticated Proof Set](specs/authenticated-proof-set.md)
 - [Proof-State Transition](specs/proof-state-transition.md)
 - [Proof Block](specs/proof-block.md)
-- [Proof DAG Journal](specs/proof-dag-journal.md)
+- [Proof Chain Journal](specs/proof-chain-journal.md)
 - [Addressed Proof Exchange](specs/addressed-proof-exchange.md)
 - [Authenticated Proof Transport](specs/authenticated-proof-transport.md)
 - [Peer Address Management](specs/peer-address-management.md)

@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use libp2p::request_response::OutboundRequestId;
 use naome::proof_exchange::ProofRequest;
+use naome_chain::{ProofBlock, ProofBlockApplyError};
 use naome_ledger::{AcceptedProofRecord, AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES};
 use naome_proof::{ProofCertificate, ProofCertificateError, ProofId, ProofNormalForm, ProofStep};
-use naome_storage::{JournalError, ProofDagJournal};
+use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 use super::{
     AcquisitionControl, DEPENDENCY_ACQUISITION_TIMEOUT, MAX_DEPENDENCY_ACQUISITION_REQUESTS,
@@ -166,7 +167,7 @@ impl StaticProofNetwork {
     /// [`ProofDependencyAcquisition::on_event`].
     pub fn start_dependency_acquisition(
         &mut self,
-        selected: &ProofDagJournal,
+        selected: &ProofChainJournal,
         peer_id: PeerId,
         requested_root: ProofId,
     ) -> Result<ProofDependencyAcquisition, DependencyAcquisitionError> {
@@ -261,7 +262,7 @@ impl ProofDependencyAcquisition {
     pub fn on_event(
         mut self,
         network: &mut StaticProofNetwork,
-        selected: &ProofDagJournal,
+        selected: &ProofChainJournal,
         event: OutboundProofEvent,
     ) -> Result<DependencyAcquisitionProgress, DependencyAcquisitionError> {
         if !Arc::ptr_eq(
@@ -469,8 +470,8 @@ pub enum DependencyAcquisitionProgress {
 /// A structurally canonical, bounded addressed closure that is not selected.
 ///
 /// This type deliberately exposes neither proof buffers nor addressed
-/// candidates. Consuming atomic admission is the only way to release its
-/// contents to selected state.
+/// candidates. A caller-supplied exact-parent block is the only way to release
+/// its contents to durable selected state.
 #[must_use]
 pub struct UnselectedProofClosure {
     requested_root: ProofId,
@@ -488,26 +489,54 @@ impl UnselectedProofClosure {
         self.candidates.len()
     }
 
-    /// Atomically checks, address-binds, selects, and persists this closure.
+    /// Atomically checks, address-binds, selects, and persists this closure as
+    /// one caller-supplied block.
     ///
-    /// The selected state may have changed since acquisition. The existing
-    /// rooted batch transaction revalidates canonicality, mathematics,
-    /// identities, dependencies, duplicates, and root reachability before any
-    /// mutation or journal write.
-    pub fn apply_to_selected_state(
+    /// Candidate buffers are correlated into the block's exact identity order
+    /// without changing the block. Missing, extra, duplicate, or substituted
+    /// candidates remain authoritative block-application errors. The selected
+    /// state may also have changed since acquisition, so parentage,
+    /// canonicality, mathematics, identities, dependencies, and roots are all
+    /// revalidated before journal I/O.
+    pub fn apply_block<'journal>(
         self,
-        selected: &mut ProofDagJournal,
-    ) -> Result<&AcceptedProofRecord, JournalError> {
+        selected: &'journal mut ProofChainJournal,
+        block: &ProofBlock,
+    ) -> Result<&'journal AcceptedProofRecord, ProofChainJournalError> {
+        let expected_parent = selected.head_block_id()?;
+        let actual_parent = block.parent_block_id();
+        if actual_parent != expected_parent {
+            return Err(ProofChainJournalError::BlockAdmission {
+                source: ProofBlockApplyError::ParentBlockIdMismatch {
+                    expected: expected_parent,
+                    actual: actual_parent,
+                },
+            });
+        }
+
         let Self {
-            requested_root,
             candidates,
+            requested_root: _,
         } = self;
-        let (addressed, permits): (Vec<_>, Vec<_>) = candidates
-            .into_iter()
-            .map(QuarantinedCandidate::into_addressed_and_permit)
-            .unzip();
-        let result = selected.apply_rooted_canonical_proof_batch(requested_root, addressed);
-        drop(permits);
+
+        let mut candidates = candidates;
+        let proof_ids = block.transition().proof_ids();
+        candidates.sort_unstable_by_key(|candidate| {
+            proof_ids
+                .iter()
+                .position(|proof_id| *proof_id == candidate.expected_proof_id)
+                .unwrap_or(proof_ids.len())
+        });
+
+        let mut addressed = Vec::with_capacity(candidates.len());
+        for candidate in &mut candidates {
+            addressed.push(AddressedProofCandidate::new(
+                candidate.expected_proof_id,
+                std::mem::take(&mut candidate.canonical_proof_bytes),
+            ));
+        }
+        let result = selected.apply_block(block, addressed);
+        drop(candidates);
         result
     }
 }
@@ -527,15 +556,6 @@ struct QuarantinedCandidate {
     canonical_proof_bytes: Vec<u8>,
     direct_dependencies: Vec<ProofId>,
     _permit: PendingPermit,
-}
-
-impl QuarantinedCandidate {
-    fn into_addressed_and_permit(self) -> (AddressedProofCandidate, PendingPermit) {
-        (
-            AddressedProofCandidate::new(self.expected_proof_id, self.canonical_proof_bytes),
-            self._permit,
-        )
-    }
 }
 
 fn decode_canonical_candidate(
@@ -605,7 +625,7 @@ enum VisitMark {
 #[non_exhaustive]
 pub enum DependencyAcquisitionError {
     /// The selected journal could not answer a read-only membership query.
-    SelectedState { source: JournalError },
+    SelectedState { source: ProofChainJournalError },
     /// The requested root was already present when acquisition started.
     RootAlreadySelected { proof_id: ProofId },
     /// The next single-flight request could not be started.

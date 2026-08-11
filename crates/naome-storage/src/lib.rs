@@ -1,14 +1,13 @@
-//! Crash-consistent local persistence for the selected NAOME proof DAG.
+//! Crash-consistent local persistence for one selected linear NAOME proof chain.
 //!
-//! [`ProofDagJournal`] stores bounded transactions of canonical proof-
-//! certificate payloads in dependency-first order. Opening a journal
-//! reconstructs every identity, dependency edge, and checked conclusion
-//! through strict rooted [`ProofDag`] replay; persisted bytes never bypass
+//! [`ProofChainJournal`] stores canonical [`ProofBlock`] values together with
+//! the exact canonical proof payloads committed by each block. Opening a
+//! journal reconstructs the block head and complete selected proof DAG through
+//! strict [`ProofChainState`] replay; persisted bytes never bypass block or
 //! proof validation.
 //!
-//! The journal is a local recovery mechanism. Its physical order is neither a
-//! consensus order nor proof-finality evidence, and it defines no networking,
-//! snapshots, compaction, pruning, or economic state.
+//! The journal is a local recovery mechanism. It defines no competing forks,
+//! reorganization, consensus, finality, networking, or economic state.
 
 use std::error::Error;
 use std::fmt;
@@ -17,44 +16,52 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use naome_chain::{
-    AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, ProofBatchError, ProofDag, ProofSetProof,
-    ProofSetRoot,
+    AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, PROOF_BLOCK_MAX_BYTES, ProofBlock,
+    ProofBlockApplyError, ProofBlockDecodeError, ProofBlockId, ProofChainId, ProofChainState,
+    ProofSetProof, ProofSetRoot, ProofTransitionError,
 };
-use naome_ledger::{AcceptedProofRecord, LedgerError};
+use naome_ledger::AcceptedProofRecord;
 use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
-use sha2::{Digest, Sha256};
 
-const LOCK_FILE_NAME: &str = "proof-dag.lock";
-const JOURNAL_FILE_NAME: &str = "proof-dag.journal";
-const JOURNAL_HEADER: &[u8; 36] = b"naome:proof-dag-transaction-journal\0";
-const GENESIS_DOMAIN: &[u8; 44] = b"naome:proof-dag-transaction-journal-genesis\0";
-const TRANSACTION_DOMAIN: &[u8; 28] = b"naome:proof-dag-transaction\0";
-const DIGEST_BYTES: u64 = 32;
-const TRANSACTION_FIXED_BYTES: u64 = 4 + DIGEST_BYTES;
-const TRANSACTION_MIN_BODY_BYTES: u32 = 1 + 4 + 1;
-const TRANSACTION_MAX_BODY_BYTES: u32 =
-    (1 + PROOF_BATCH_MAX_CANDIDATES * (4 + CERTIFICATE_MAX_BYTES)) as u32;
+const LOCK_FILE_NAME: &str = "proof-chain.lock";
+const JOURNAL_FILE_NAME: &str = "proof-chain.journal";
+const JOURNAL_HEADER: &[u8] = b"naome:proof-chain-journal\0";
+const CHAIN_ID_BYTES: usize = 32;
+const BLOCK_LENGTH_BYTES: usize = 2;
+const PROOF_LENGTH_BYTES: usize = 4;
+const BLOCK_ID_BYTES: u64 = 32;
+const ENTRY_FIXED_BYTES: u64 = 4 + BLOCK_ID_BYTES;
+const PROOF_BLOCK_MIN_BYTES: usize = 129;
+const JOURNAL_PREFIX_BYTES: usize = JOURNAL_HEADER.len() + CHAIN_ID_BYTES;
+const ENTRY_MIN_BODY_BYTES: u32 =
+    (BLOCK_LENGTH_BYTES + PROOF_BLOCK_MIN_BYTES + PROOF_LENGTH_BYTES + 1) as u32;
+const ENTRY_MAX_BODY_BYTES: u32 = (BLOCK_LENGTH_BYTES
+    + PROOF_BLOCK_MAX_BYTES
+    + PROOF_BATCH_MAX_CANDIDATES * (PROOF_LENGTH_BYTES + CERTIFICATE_MAX_BYTES))
+    as u32;
 
-/// An exclusively opened, crash-consistent journal for one selected proof DAG.
+/// An exclusively opened, crash-consistent journal for one selected proof chain.
 ///
-/// The handle is neither cloneable nor shareable through an inner mutable
-/// state. A commit I/O error makes it unusable because the in-memory DAG may
-/// then be ahead of durable storage. Dropping and reopening the journal is the
-/// only recovery path.
+/// The handle privately owns both the exact block head and selected proof DAG.
+/// A commit I/O error makes the handle unusable because memory may then be ahead
+/// of durable storage. Dropping and reopening is the only recovery path.
 #[must_use]
-pub struct ProofDagJournal {
+pub struct ProofChainJournal {
     _lock: File,
     core: JournalCore<File>,
 }
 
-impl ProofDagJournal {
-    /// Creates and exclusively opens a new journal in an existing directory.
+impl ProofChainJournal {
+    /// Creates and exclusively opens a new empty journal for `chain_id`.
     ///
-    /// Creation never replaces or reinitializes an existing journal. The new
-    /// file and its header are synchronized before this function succeeds.
+    /// Creation never replaces an existing journal. The prefix containing the
+    /// exact chain context is synchronized before this function succeeds.
     /// Portable parent-directory-entry durability remains the caller's
     /// provisioning responsibility.
-    pub fn create(directory: impl AsRef<Path>) -> Result<Self, JournalError> {
+    pub fn create(
+        directory: impl AsRef<Path>,
+        chain_id: ProofChainId,
+    ) -> Result<Self, ProofChainJournalError> {
         let directory = directory.as_ref();
         let lock = open_and_lock(directory)?;
         let journal_path = directory.join(JOURNAL_FILE_NAME);
@@ -63,134 +70,127 @@ impl ProofDagJournal {
             .write(true)
             .create_new(true)
             .open(journal_path)
-            .map_err(|source| JournalError::Create { source })?;
+            .map_err(|source| ProofChainJournalError::Create { source })?;
 
         file.write_all(JOURNAL_HEADER)
+            .and_then(|()| file.write_all(chain_id.as_bytes()))
             .and_then(|()| file.sync_all())
-            .map_err(|source| JournalError::Create { source })?;
+            .map_err(|source| ProofChainJournalError::Create { source })?;
 
         Ok(Self {
             _lock: lock,
-            core: JournalCore::empty(file),
+            core: JournalCore::empty(file, chain_id),
         })
     }
 
     /// Exclusively opens and strictly replays an existing journal.
     ///
-    /// One incomplete final transaction is treated as an uncommitted append,
-    /// truncated, and synchronized before success. A complete corrupt or
-    /// proof-invalid transaction fails closed and is never skipped or repaired.
-    pub fn open(directory: impl AsRef<Path>) -> Result<Self, JournalError> {
-        let directory = directory.as_ref();
+    /// One incomplete final entry is recovered to the preceding committed
+    /// boundary. A complete corrupt or invalid entry fails closed.
+    pub fn open(
+        directory: impl AsRef<Path>,
+        expected_chain_id: ProofChainId,
+    ) -> Result<Self, ProofChainJournalError> {
+        Self::open_inner(directory.as_ref(), expected_chain_id, None)
+    }
+
+    /// Opens, strictly replays, and verifies the complete block ancestry.
+    ///
+    /// `expected_head` must come from a separately trusted source. If an
+    /// incomplete tail is visible, it is truncated only after the replayed
+    /// committed prefix matches this expected head.
+    pub fn open_verified(
+        directory: impl AsRef<Path>,
+        expected_chain_id: ProofChainId,
+        expected_head: ProofBlockId,
+    ) -> Result<Self, ProofChainJournalError> {
+        Self::open_inner(directory.as_ref(), expected_chain_id, Some(expected_head))
+    }
+
+    fn open_inner(
+        directory: &Path,
+        expected_chain_id: ProofChainId,
+        expected_head: Option<ProofBlockId>,
+    ) -> Result<Self, ProofChainJournalError> {
         let lock = open_and_lock(directory)?;
         let journal_path = directory.join(JOURNAL_FILE_NAME);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(journal_path)
-            .map_err(|source| JournalError::Open { source })?;
-        let core = JournalCore::replay(file)?;
-
+            .map_err(|source| ProofChainJournalError::Open { source })?;
+        let core = JournalCore::replay(file, expected_chain_id, expected_head)?;
         Ok(Self { _lock: lock, core })
     }
 
-    /// Opens, strictly replays, and verifies the complete selected proof set.
-    ///
-    /// The expected root must come from a separately trusted source. Every
-    /// lock, file-format, digest, recovery, and strict replay check completes
-    /// before the final root comparison. This verifies the exact current
-    /// journal state, not an arbitrary historical prefix or subset.
-    pub fn open_verified(
-        directory: impl AsRef<Path>,
-        expected_root: ProofSetRoot,
-    ) -> Result<Self, JournalError> {
-        let journal = Self::open(directory)?;
-        let actual = journal.core.dag.proof_set_root();
-        if actual != expected_root {
-            return Err(JournalError::ProofSetRootMismatch {
-                expected: expected_root,
-                actual,
-            });
-        }
-        Ok(journal)
-    }
-
-    /// Strictly admits and durably commits one canonical proof payload.
-    ///
-    /// Admission errors write nothing and leave the handle healthy. After
-    /// in-memory admission, the transaction body and its commit footer are each
-    /// synchronized in order. Any ambiguous commit I/O error poisons the
-    /// handle and requires drop plus reopen. This entry point is not bound to
-    /// an externally requested address; content-addressed retrieval must use
-    /// [`Self::apply_canonical_proof_bytes_with_expected_id`].
-    pub fn apply_canonical_proof_bytes(
-        &mut self,
-        bytes: Vec<u8>,
-    ) -> Result<&AcceptedProofRecord, JournalError> {
-        self.core.apply_canonical_proof_bytes(bytes)
-    }
-
-    /// Strictly admits and commits canonical proof bytes at an expected address.
-    ///
-    /// A checked identity mismatch is an ordinary admission error: it performs
-    /// no file I/O, leaves the journal healthy, and does not change the retained
-    /// proof DAG.
-    pub fn apply_canonical_proof_bytes_with_expected_id(
-        &mut self,
-        bytes: Vec<u8>,
-        expected_proof_id: ProofId,
-    ) -> Result<&AcceptedProofRecord, JournalError> {
+    /// Prepares one exact-parent block without changing memory or disk.
+    pub fn prepare_block(
+        &self,
+        proof_ids: Vec<ProofId>,
+    ) -> Result<ProofBlock, ProofChainJournalError> {
+        self.core.ensure_healthy()?;
         self.core
-            .apply_canonical_proof_bytes_with_expected_id(bytes, expected_proof_id)
+            .chain
+            .prepare_block(proof_ids)
+            .map_err(|source| ProofChainJournalError::Preparation { source })
     }
 
-    /// Atomically admits and durably commits one addressed dependency closure.
+    /// Atomically validates, selects, and durably commits one exact-parent block.
     ///
-    /// The final candidate must be `requested_root`; every earlier candidate
-    /// must be transitively reachable from it. Admission failures write
-    /// nothing. A successful closure is persisted behind one commit footer, so
-    /// recovery exposes either the previous state or the complete closure.
-    pub fn apply_rooted_canonical_proof_batch(
+    /// Ordinary validation errors perform no file I/O and leave the handle
+    /// healthy. An ambiguous I/O failure after in-memory admission poisons it.
+    pub fn apply_block(
         &mut self,
-        requested_root: ProofId,
+        block: &ProofBlock,
         candidates: Vec<AddressedProofCandidate>,
-    ) -> Result<&AcceptedProofRecord, JournalError> {
-        self.core
-            .apply_rooted_canonical_proof_batch(requested_root, candidates)
+    ) -> Result<&AcceptedProofRecord, ProofChainJournalError> {
+        self.core.apply_block(block, candidates)
     }
 
-    /// Returns one locally committed and replay-checked proof record.
-    pub fn proof(&self, proof_id: ProofId) -> Result<Option<&AcceptedProofRecord>, JournalError> {
+    /// Returns the exact committed head, or the virtual genesis anchor if empty.
+    pub fn head_block_id(&self) -> Result<ProofBlockId, ProofChainJournalError> {
         self.core.ensure_healthy()?;
-        Ok(self.core.dag.proof(proof_id))
+        Ok(self.core.chain.head_block_id())
     }
 
-    /// Returns the number of locally committed proof records.
-    pub fn len(&self) -> Result<usize, JournalError> {
+    /// Returns one committed and replay-checked proof record.
+    pub fn proof(
+        &self,
+        proof_id: ProofId,
+    ) -> Result<Option<&AcceptedProofRecord>, ProofChainJournalError> {
         self.core.ensure_healthy()?;
-        Ok(self.core.dag.len())
+        Ok(self.core.chain.proof_dag().proof(proof_id))
     }
 
-    /// Returns whether the locally committed proof DAG is empty.
-    pub fn is_empty(&self) -> Result<bool, JournalError> {
+    /// Returns the number of committed proof records.
+    pub fn len(&self) -> Result<usize, ProofChainJournalError> {
         self.core.ensure_healthy()?;
-        Ok(self.core.dag.is_empty())
+        Ok(self.core.chain.proof_dag().len())
     }
 
-    /// Returns the authenticated root of the locally committed proof set.
-    pub fn proof_set_root(&self) -> Result<ProofSetRoot, JournalError> {
+    /// Returns whether no proof records have been committed.
+    pub fn is_empty(&self) -> Result<bool, ProofChainJournalError> {
         self.core.ensure_healthy()?;
-        Ok(self.core.dag.proof_set_root())
+        Ok(self.core.chain.proof_dag().is_empty())
     }
 
-    /// Returns a compact proof-set witness from the locally committed state.
-    pub fn proof_set_proof(&self, proof_id: ProofId) -> Result<ProofSetProof, JournalError> {
+    /// Returns the authenticated root of the committed proof set.
+    pub fn proof_set_root(&self) -> Result<ProofSetRoot, ProofChainJournalError> {
         self.core.ensure_healthy()?;
-        Ok(self.core.dag.proof_set_proof(proof_id))
+        Ok(self.core.chain.proof_dag().proof_set_root())
+    }
+
+    /// Returns one proof-set membership or non-membership witness.
+    pub fn proof_set_proof(
+        &self,
+        proof_id: ProofId,
+    ) -> Result<ProofSetProof, ProofChainJournalError> {
+        self.core.ensure_healthy()?;
+        Ok(self.core.chain.proof_dag().proof_set_proof(proof_id))
     }
 }
 
-fn open_and_lock(directory: &Path) -> Result<File, JournalError> {
+fn open_and_lock(directory: &Path) -> Result<File, ProofChainJournalError> {
     let lock_path = directory.join(LOCK_FILE_NAME);
     let lock = OpenOptions::new()
         .read(true)
@@ -198,12 +198,12 @@ fn open_and_lock(directory: &Path) -> Result<File, JournalError> {
         .create(true)
         .truncate(false)
         .open(lock_path)
-        .map_err(|source| JournalError::LockFile { source })?;
+        .map_err(|source| ProofChainJournalError::LockFile { source })?;
 
     match lock.try_lock() {
         Ok(()) => Ok(lock),
-        Err(TryLockError::WouldBlock) => Err(JournalError::Locked),
-        Err(TryLockError::Error(source)) => Err(JournalError::Lock { source }),
+        Err(TryLockError::WouldBlock) => Err(ProofChainJournalError::Locked),
+        Err(TryLockError::Error(source)) => Err(ProofChainJournalError::Lock { source }),
     }
 }
 
@@ -238,131 +238,171 @@ impl JournalIo for File {
 
 struct JournalCore<F> {
     file: F,
-    dag: ProofDag,
+    chain: ProofChainState,
     committed_end: u64,
-    chain_digest: [u8; 32],
     poisoned: bool,
 }
 
 impl<F: JournalIo> JournalCore<F> {
-    fn empty(file: F) -> Self {
+    fn empty(file: F, chain_id: ProofChainId) -> Self {
         Self {
             file,
-            dag: ProofDag::new(),
-            committed_end: JOURNAL_HEADER.len() as u64,
-            chain_digest: genesis_digest(),
+            chain: ProofChainState::new(chain_id),
+            committed_end: JOURNAL_PREFIX_BYTES as u64,
             poisoned: false,
         }
     }
 
-    fn replay(mut file: F) -> Result<Self, JournalError> {
+    fn replay(
+        mut file: F,
+        expected_chain_id: ProofChainId,
+        expected_head: Option<ProofBlockId>,
+    ) -> Result<Self, ProofChainJournalError> {
         let file_len = file
             .seek(SeekFrom::End(0))
-            .map_err(|source| JournalError::Read { offset: 0, source })?;
-        if file_len < JOURNAL_HEADER.len() as u64 {
-            return Err(JournalError::InvalidHeader);
+            .map_err(|source| ProofChainJournalError::Read { offset: 0, source })?;
+        if file_len < JOURNAL_PREFIX_BYTES as u64 {
+            return Err(ProofChainJournalError::InvalidHeader);
         }
 
         file.seek(SeekFrom::Start(0))
-            .map_err(|source| JournalError::Read { offset: 0, source })?;
+            .map_err(|source| ProofChainJournalError::Read { offset: 0, source })?;
         let mut header = [0_u8; JOURNAL_HEADER.len()];
         file.read_exact(&mut header)
-            .map_err(|source| JournalError::Read { offset: 0, source })?;
-        if &header != JOURNAL_HEADER {
-            return Err(JournalError::InvalidHeader);
+            .map_err(|source| ProofChainJournalError::Read { offset: 0, source })?;
+        if header != JOURNAL_HEADER {
+            return Err(ProofChainJournalError::InvalidHeader);
         }
 
-        let mut dag = ProofDag::new();
-        let mut chain_digest = genesis_digest();
-        let mut transaction_start = JOURNAL_HEADER.len() as u64;
-        let mut transaction = 0_u64;
+        let mut stored_chain_id = [0_u8; CHAIN_ID_BYTES];
+        file.read_exact(&mut stored_chain_id)
+            .map_err(|source| ProofChainJournalError::Read {
+                offset: JOURNAL_HEADER.len() as u64,
+                source,
+            })?;
+        let actual_chain_id = ProofChainId::from_bytes(stored_chain_id);
+        if actual_chain_id != expected_chain_id {
+            return Err(ProofChainJournalError::ChainIdMismatch {
+                expected: expected_chain_id,
+                actual: actual_chain_id,
+            });
+        }
 
-        while transaction_start < file_len {
-            let remaining = file_len - transaction_start;
+        let mut chain = ProofChainState::new(expected_chain_id);
+        let mut entry_start = JOURNAL_PREFIX_BYTES as u64;
+        let mut entry = 0_u64;
+
+        while entry_start < file_len {
+            let remaining = file_len - entry_start;
             if remaining < 4 {
-                recover_tail(&mut file, transaction_start)?;
-                return Ok(Self {
+                return Self::finish_replay(
                     file,
-                    dag,
-                    committed_end: transaction_start,
-                    chain_digest,
-                    poisoned: false,
-                });
+                    chain,
+                    entry_start,
+                    expected_head,
+                    Some(entry_start),
+                );
             }
 
             let mut body_length_bytes = [0_u8; 4];
-            file.read_exact(&mut body_length_bytes)
-                .map_err(|source| JournalError::Read {
-                    offset: transaction_start,
+            file.read_exact(&mut body_length_bytes).map_err(|source| {
+                ProofChainJournalError::Read {
+                    offset: entry_start,
                     source,
-                })?;
+                }
+            })?;
             let body_length = u32::from_be_bytes(body_length_bytes);
-            if !(TRANSACTION_MIN_BODY_BYTES..=TRANSACTION_MAX_BODY_BYTES).contains(&body_length) {
-                return Err(JournalError::InvalidTransactionLength {
-                    transaction,
-                    offset: transaction_start,
+            if !(ENTRY_MIN_BODY_BYTES..=ENTRY_MAX_BODY_BYTES).contains(&body_length) {
+                return Err(ProofChainJournalError::InvalidEntryLength {
+                    entry,
+                    offset: entry_start,
                     actual: body_length,
-                    minimum: TRANSACTION_MIN_BODY_BYTES,
-                    maximum: TRANSACTION_MAX_BODY_BYTES,
+                    minimum: ENTRY_MIN_BODY_BYTES,
+                    maximum: ENTRY_MAX_BODY_BYTES,
                 });
             }
 
-            let transaction_length = TRANSACTION_FIXED_BYTES + u64::from(body_length);
-            let transaction_end = transaction_start.checked_add(transaction_length).ok_or(
-                JournalError::TransactionOffsetOverflow {
-                    transaction,
-                    offset: transaction_start,
+            let entry_length = ENTRY_FIXED_BYTES + u64::from(body_length);
+            let entry_end = entry_start.checked_add(entry_length).ok_or(
+                ProofChainJournalError::EntryOffsetOverflow {
+                    entry,
+                    offset: entry_start,
                 },
             )?;
-            if file_len < transaction_end {
-                recover_tail(&mut file, transaction_start)?;
-                return Ok(Self {
+            if file_len < entry_end {
+                return Self::finish_replay(
                     file,
-                    dag,
-                    committed_end: transaction_start,
-                    chain_digest,
-                    poisoned: false,
+                    chain,
+                    entry_start,
+                    expected_head,
+                    Some(entry_start),
+                );
+            }
+
+            let mut body_offset = entry_start + 4;
+            let mut body_remaining = u64::from(body_length);
+            let mut block_length_bytes = [0_u8; BLOCK_LENGTH_BYTES];
+            read_field(&mut file, &mut block_length_bytes, body_offset)?;
+            body_offset += BLOCK_LENGTH_BYTES as u64;
+            body_remaining -= BLOCK_LENGTH_BYTES as u64;
+            let block_length = usize::from(u16::from_be_bytes(block_length_bytes));
+            if !(PROOF_BLOCK_MIN_BYTES..=PROOF_BLOCK_MAX_BYTES).contains(&block_length) {
+                return Err(ProofChainJournalError::InvalidBlockLength {
+                    entry,
+                    offset: body_offset - BLOCK_LENGTH_BYTES as u64,
+                    actual: block_length,
+                    minimum: PROOF_BLOCK_MIN_BYTES,
+                    maximum: PROOF_BLOCK_MAX_BYTES,
+                });
+            }
+            if block_length as u64 > body_remaining {
+                return Err(ProofChainJournalError::InvalidEntryBody {
+                    entry,
+                    offset: entry_start,
                 });
             }
 
-            let mut hasher = transaction_hasher(chain_digest, body_length_bytes);
-            let mut body_offset = transaction_start + 4;
-            let mut proof_count_bytes = [0_u8; 1];
-            read_and_hash(&mut file, &mut proof_count_bytes, body_offset, &mut hasher)?;
-            body_offset += 1;
-            let proof_count = proof_count_bytes[0] as usize;
-            if !(1..=PROOF_BATCH_MAX_CANDIDATES).contains(&proof_count) {
-                return Err(JournalError::InvalidTransactionProofCount {
-                    transaction,
-                    offset: transaction_start + 4,
-                    actual: proof_count_bytes[0],
-                    maximum: PROOF_BATCH_MAX_CANDIDATES as u8,
-                });
-            }
+            let mut block_buffer = [0_u8; PROOF_BLOCK_MAX_BYTES];
+            let block_bytes = &mut block_buffer[..block_length];
+            read_field(&mut file, block_bytes, body_offset)?;
+            body_offset += block_length as u64;
+            body_remaining -= block_length as u64;
+            let block = ProofBlock::from_canonical_bytes(block_bytes).map_err(|source| {
+                ProofChainJournalError::BlockDecode {
+                    entry,
+                    offset: entry_start + 4 + BLOCK_LENGTH_BYTES as u64,
+                    source,
+                }
+            })?;
 
-            let mut body_remaining = u64::from(body_length) - 1;
-            let mut candidates = Vec::with_capacity(proof_count);
+            let proof_count = block.transition().proof_ids().len();
+            let mut candidates = Vec::new();
+            let candidate_bytes = proof_count
+                .checked_mul(std::mem::size_of::<AddressedProofCandidate>())
+                .expect("the bounded candidate vector size fits usize");
+            candidates.try_reserve_exact(proof_count).map_err(|_| {
+                ProofChainJournalError::Allocation {
+                    entry,
+                    proof: None,
+                    bytes: candidate_bytes,
+                }
+            })?;
             for proof in 0..proof_count {
-                if body_remaining < 4 {
-                    return Err(JournalError::InvalidTransactionBody {
-                        transaction,
-                        offset: transaction_start,
+                if body_remaining < PROOF_LENGTH_BYTES as u64 {
+                    return Err(ProofChainJournalError::InvalidEntryBody {
+                        entry,
+                        offset: entry_start,
                     });
                 }
                 let proof_length_offset = body_offset;
-                let mut proof_length_bytes = [0_u8; 4];
-                read_and_hash(
-                    &mut file,
-                    &mut proof_length_bytes,
-                    proof_length_offset,
-                    &mut hasher,
-                )?;
-                body_offset += 4;
-                body_remaining -= 4;
+                let mut proof_length_bytes = [0_u8; PROOF_LENGTH_BYTES];
+                read_field(&mut file, &mut proof_length_bytes, proof_length_offset)?;
+                body_offset += PROOF_LENGTH_BYTES as u64;
+                body_remaining -= PROOF_LENGTH_BYTES as u64;
                 let proof_length = u32::from_be_bytes(proof_length_bytes);
                 if proof_length == 0 || proof_length as usize > CERTIFICATE_MAX_BYTES {
-                    return Err(JournalError::InvalidTransactionProofLength {
-                        transaction,
+                    return Err(ProofChainJournalError::InvalidProofLength {
+                        entry,
                         proof,
                         offset: proof_length_offset,
                         actual: proof_length,
@@ -370,245 +410,220 @@ impl<F: JournalIo> JournalCore<F> {
                     });
                 }
                 if u64::from(proof_length) > body_remaining {
-                    return Err(JournalError::InvalidTransactionBody {
-                        transaction,
-                        offset: transaction_start,
+                    return Err(ProofChainJournalError::InvalidEntryBody {
+                        entry,
+                        offset: entry_start,
                     });
                 }
-                let mut candidate = Vec::new();
-                candidate
+
+                let mut payload = Vec::new();
+                payload
                     .try_reserve_exact(proof_length as usize)
-                    .map_err(|_| JournalError::Allocation {
-                        transaction,
-                        proof,
-                        bytes: proof_length,
+                    .map_err(|_| ProofChainJournalError::Allocation {
+                        entry,
+                        proof: Some(proof),
+                        bytes: proof_length as usize,
                     })?;
-                candidate.resize(proof_length as usize, 0);
-                read_and_hash(&mut file, &mut candidate, body_offset, &mut hasher)?;
+                payload.resize(proof_length as usize, 0);
+                read_field(&mut file, &mut payload, body_offset)?;
                 body_offset += u64::from(proof_length);
                 body_remaining -= u64::from(proof_length);
-                candidates.push(candidate);
+                candidates.push(AddressedProofCandidate::new(
+                    block.transition().proof_ids()[proof],
+                    payload,
+                ));
             }
             if body_remaining != 0 {
-                return Err(JournalError::InvalidTransactionBody {
-                    transaction,
-                    offset: transaction_start,
+                return Err(ProofChainJournalError::InvalidEntryBody {
+                    entry,
+                    offset: entry_start,
                 });
             }
 
-            let mut stored_digest = [0_u8; 32];
-            file.read_exact(&mut stored_digest)
-                .map_err(|source| JournalError::Read {
-                    offset: transaction_end - 32,
+            let mut stored_block_id = [0_u8; 32];
+            file.read_exact(&mut stored_block_id).map_err(|source| {
+                ProofChainJournalError::Read {
+                    offset: entry_end - BLOCK_ID_BYTES,
                     source,
-                })?;
-            let actual_digest: [u8; 32] = hasher.finalize().into();
-            if stored_digest != actual_digest {
-                return Err(JournalError::TransactionDigestMismatch {
-                    transaction,
-                    offset: transaction_start,
+                }
+            })?;
+            let expected_block_id = block.id();
+            let actual_block_id = ProofBlockId::from_bytes(stored_block_id);
+            if actual_block_id != expected_block_id {
+                return Err(ProofChainJournalError::BlockIdMismatch {
+                    entry,
+                    offset: entry_start,
+                    expected: expected_block_id,
+                    actual: actual_block_id,
                 });
             }
 
-            dag.apply_canonical_proof_batch(candidates)
-                .map_err(|source| JournalError::Replay {
-                    transaction,
-                    offset: transaction_start,
+            chain.apply_block(&block, candidates).map_err(|source| {
+                ProofChainJournalError::Replay {
+                    entry,
+                    offset: entry_start,
                     source: Box::new(source),
-                })?;
-            chain_digest = actual_digest;
-            transaction_start = transaction_end;
-            transaction += 1;
+                }
+            })?;
+
+            entry_start = entry_end;
+            entry += 1;
         }
 
-        file.sync_all()
-            .map_err(|source| JournalError::Stabilize { source })?;
+        Self::finish_replay(file, chain, entry_start, expected_head, None)
+    }
+
+    fn finish_replay(
+        mut file: F,
+        chain: ProofChainState,
+        committed_end: u64,
+        expected_head: Option<ProofBlockId>,
+        recovery_offset: Option<u64>,
+    ) -> Result<Self, ProofChainJournalError> {
+        if let Some(expected) = expected_head {
+            let actual = chain.head_block_id();
+            if actual != expected {
+                return Err(ProofChainJournalError::HeadBlockIdMismatch { expected, actual });
+            }
+        }
+
+        if let Some(offset) = recovery_offset {
+            recover_tail(&mut file, offset)?;
+        } else {
+            file.sync_all()
+                .map_err(|source| ProofChainJournalError::Stabilize { source })?;
+        }
+
         Ok(Self {
             file,
-            dag,
-            committed_end: transaction_start,
-            chain_digest,
+            chain,
+            committed_end,
             poisoned: false,
         })
     }
 
-    fn apply_canonical_proof_bytes(
+    fn apply_block(
         &mut self,
-        bytes: Vec<u8>,
-    ) -> Result<&AcceptedProofRecord, JournalError> {
-        self.ensure_healthy()?;
-        let proof_id = self
-            .dag
-            .apply_canonical_proof_bytes(bytes)
-            .map_err(|source| JournalError::Admission { source })?
-            .proof_id();
-        self.commit_transaction(&[proof_id])?;
-        Ok(self
-            .dag
-            .proof(proof_id)
-            .expect("the committed proof remains retained"))
-    }
-
-    fn apply_canonical_proof_bytes_with_expected_id(
-        &mut self,
-        bytes: Vec<u8>,
-        expected_proof_id: ProofId,
-    ) -> Result<&AcceptedProofRecord, JournalError> {
-        self.ensure_healthy()?;
-        let proof_id = self
-            .dag
-            .apply_canonical_proof_bytes_with_expected_id(bytes, expected_proof_id)
-            .map_err(|source| JournalError::Admission { source })?
-            .proof_id();
-        self.commit_transaction(&[proof_id])?;
-        Ok(self
-            .dag
-            .proof(proof_id)
-            .expect("the committed proof remains retained"))
-    }
-
-    fn apply_rooted_canonical_proof_batch(
-        &mut self,
-        requested_root: ProofId,
+        block: &ProofBlock,
         candidates: Vec<AddressedProofCandidate>,
-    ) -> Result<&AcceptedProofRecord, JournalError> {
+    ) -> Result<&AcceptedProofRecord, ProofChainJournalError> {
         self.ensure_healthy()?;
-        if candidates.len() > PROOF_BATCH_MAX_CANDIDATES {
-            return Err(JournalError::BatchAdmission {
-                source: Box::new(ProofBatchError::TooManyCandidates {
-                    actual: candidates.len(),
-                    maximum: PROOF_BATCH_MAX_CANDIDATES,
-                }),
-            });
-        }
-        let proof_ids = candidates
-            .iter()
-            .map(AddressedProofCandidate::expected_proof_id)
-            .collect::<Vec<_>>();
-        self.dag
-            .apply_rooted_canonical_proof_batch(requested_root, candidates)
-            .map_err(|source| JournalError::BatchAdmission {
-                source: Box::new(source),
-            })?;
-        self.commit_transaction(&proof_ids)?;
+        let block_bytes = block.to_canonical_bytes();
+        let root_proof_id = self
+            .chain
+            .apply_block(block, candidates)
+            .map_err(|source| ProofChainJournalError::BlockAdmission { source })?
+            .proof_id();
+        let block_id = self.chain.head_block_id();
+        self.commit_entry(block_id, &block_bytes, block.transition().proof_ids())?;
         Ok(self
-            .dag
-            .proof(requested_root)
-            .expect("the committed rooted proof remains retained"))
+            .chain
+            .proof_dag()
+            .proof(root_proof_id)
+            .expect("the committed block root remains retained"))
     }
 
-    fn commit_transaction(&mut self, proof_ids: &[ProofId]) -> Result<(), JournalError> {
-        let root_proof_id = *proof_ids
-            .last()
-            .expect("only successful nonempty admissions reach persistence");
-        let mut body_length = 1_u32;
+    fn commit_entry(
+        &mut self,
+        block_id: ProofBlockId,
+        block_bytes: &[u8],
+        proof_ids: &[ProofId],
+    ) -> Result<(), ProofChainJournalError> {
+        let mut body_length = BLOCK_LENGTH_BYTES + block_bytes.len();
         for proof_id in proof_ids {
             let proof_length = self
-                .dag
+                .chain
+                .proof_dag()
                 .proof(*proof_id)
-                .expect("every committed transaction proof is retained")
+                .expect("every committed block proof is retained")
                 .canonical_proof_bytes()
                 .len();
             body_length = body_length
-                .checked_add(4)
-                .and_then(|length| length.checked_add(proof_length as u32))
-                .expect("bounded transaction body length fits u32");
+                .checked_add(PROOF_LENGTH_BYTES)
+                .and_then(|length| length.checked_add(proof_length))
+                .expect("bounded proof-chain entry length fits usize");
         }
+        let body_length = u32::try_from(body_length)
+            .expect("bounded proof-chain entry length fits the u32 framing");
+        debug_assert!((ENTRY_MIN_BODY_BYTES..=ENTRY_MAX_BODY_BYTES).contains(&body_length));
         let body_length_bytes = body_length.to_be_bytes();
-        let proof_count = [proof_ids.len() as u8];
-        let mut hasher = transaction_hasher(self.chain_digest, body_length_bytes);
-
-        let commit_result = (|| -> io::Result<[u8; 32]> {
+        let block_length = u16::try_from(block_bytes.len())
+            .expect("a canonical proof block length fits u16")
+            .to_be_bytes();
+        let commit_result = (|| -> io::Result<()> {
             self.file.seek(SeekFrom::Start(self.committed_end))?;
             self.file
                 .append_write_all(AppendPhase::Body, &body_length_bytes)?;
-            write_and_hash(&mut self.file, &proof_count, &mut hasher)?;
+            self.file
+                .append_write_all(AppendPhase::Body, &block_length)?;
+            self.file.append_write_all(AppendPhase::Body, block_bytes)?;
             for proof_id in proof_ids {
                 let payload = self
-                    .dag
+                    .chain
+                    .proof_dag()
                     .proof(*proof_id)
-                    .expect("every committed transaction proof is retained")
+                    .expect("every committed block proof is retained")
                     .canonical_proof_bytes();
                 let proof_length = (payload.len() as u32).to_be_bytes();
-                write_and_hash(&mut self.file, &proof_length, &mut hasher)?;
-                write_and_hash(&mut self.file, payload, &mut hasher)?;
+                self.file
+                    .append_write_all(AppendPhase::Body, &proof_length)?;
+                self.file.append_write_all(AppendPhase::Body, payload)?;
             }
             self.file.append_sync_all(AppendPhase::Body)?;
-            let digest: [u8; 32] = hasher.finalize().into();
-            self.file.append_write_all(AppendPhase::Commit, &digest)?;
+            self.file
+                .append_write_all(AppendPhase::Commit, block_id.as_bytes())?;
             self.file.append_sync_all(AppendPhase::Commit)?;
-            Ok(digest)
+            Ok(())
         })();
 
-        let digest = match commit_result {
-            Ok(digest) => digest,
+        match commit_result {
+            Ok(()) => {}
             Err(source) => {
                 self.poisoned = true;
-                return Err(JournalError::Commit {
-                    root_proof_id,
+                return Err(ProofChainJournalError::Commit {
+                    block_id,
                     proof_count: proof_ids.len(),
                     source,
                 });
             }
-        };
+        }
 
         self.committed_end = self
             .committed_end
-            .checked_add(TRANSACTION_FIXED_BYTES + u64::from(body_length))
-            .expect("journal offsets fit u64");
-        self.chain_digest = digest;
+            .checked_add(ENTRY_FIXED_BYTES + u64::from(body_length))
+            .expect("proof-chain journal offsets fit u64");
         Ok(())
     }
 
-    fn ensure_healthy(&self) -> Result<(), JournalError> {
+    fn ensure_healthy(&self) -> Result<(), ProofChainJournalError> {
         if self.poisoned {
-            Err(JournalError::Poisoned)
+            Err(ProofChainJournalError::Poisoned)
         } else {
             Ok(())
         }
     }
 }
 
-fn recover_tail<F: JournalIo>(file: &mut F, offset: u64) -> Result<(), JournalError> {
+fn recover_tail<F: JournalIo>(file: &mut F, offset: u64) -> Result<(), ProofChainJournalError> {
     file.set_len(offset)
         .and_then(|()| file.sync_all())
-        .map_err(|source| JournalError::Recovery { offset, source })
+        .map_err(|source| ProofChainJournalError::Recovery { offset, source })
 }
 
-fn genesis_digest() -> [u8; 32] {
-    Sha256::digest(GENESIS_DOMAIN).into()
-}
-
-fn transaction_hasher(previous_digest: [u8; 32], body_length: [u8; 4]) -> Sha256 {
-    let mut hasher = Sha256::new();
-    hasher.update(TRANSACTION_DOMAIN);
-    hasher.update(previous_digest);
-    hasher.update(body_length);
-    hasher
-}
-
-fn read_and_hash<F: JournalIo>(
+fn read_field<F: JournalIo>(
     file: &mut F,
     bytes: &mut [u8],
     offset: u64,
-    hasher: &mut Sha256,
-) -> Result<(), JournalError> {
+) -> Result<(), ProofChainJournalError> {
     file.read_exact(bytes)
-        .map_err(|source| JournalError::Read { offset, source })?;
-    hasher.update(bytes);
+        .map_err(|source| ProofChainJournalError::Read { offset, source })?;
     Ok(())
 }
 
-fn write_and_hash<F: JournalIo>(file: &mut F, bytes: &[u8], hasher: &mut Sha256) -> io::Result<()> {
-    file.append_write_all(AppendPhase::Body, bytes)?;
-    hasher.update(bytes);
-    Ok(())
-}
-
-/// A fail-closed local proof-DAG journal error.
+/// A fail-closed proof-chain journal error.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum JournalError {
+pub enum ProofChainJournalError {
     /// The sidecar lock file could not be opened.
     LockFile { source: io::Error },
     /// Another process or handle already owns the journal lock.
@@ -621,149 +636,181 @@ pub enum JournalError {
     Open { source: io::Error },
     /// Existing journal bytes could not be read.
     Read { offset: u64, source: io::Error },
-    /// The journal header is absent, incomplete, or unsupported.
+    /// The journal header or chain identifier is incomplete or unsupported.
     InvalidHeader,
-    /// A complete transaction declares an impossible body length.
-    InvalidTransactionLength {
-        transaction: u64,
+    /// The file is bound to a different proof-chain context.
+    ChainIdMismatch {
+        expected: ProofChainId,
+        actual: ProofChainId,
+    },
+    /// A complete entry declares an impossible body length.
+    InvalidEntryLength {
+        entry: u64,
         offset: u64,
         actual: u32,
         minimum: u32,
         maximum: u32,
     },
-    /// A transaction offset cannot be represented safely.
-    TransactionOffsetOverflow { transaction: u64, offset: u64 },
-    /// A transaction declares an impossible proof count.
-    InvalidTransactionProofCount {
-        transaction: u64,
+    /// An entry boundary cannot be represented safely.
+    EntryOffsetOverflow { entry: u64, offset: u64 },
+    /// A complete entry declares an impossible canonical block length.
+    InvalidBlockLength {
+        entry: u64,
         offset: u64,
-        actual: u8,
-        maximum: u8,
+        actual: usize,
+        minimum: usize,
+        maximum: usize,
     },
-    /// One proof inside a transaction declares an impossible length.
-    InvalidTransactionProofLength {
-        transaction: u64,
+    /// The inner block and proof lengths do not consume the complete body.
+    InvalidEntryBody { entry: u64, offset: u64 },
+    /// One proof payload declares an impossible length.
+    InvalidProofLength {
+        entry: u64,
         proof: usize,
         offset: u64,
         actual: u32,
         maximum: u32,
     },
-    /// The inner proof lengths do not consume the complete transaction body.
-    InvalidTransactionBody { transaction: u64, offset: u64 },
-    /// Allocating one bounded transaction proof failed.
+    /// Allocating one bounded replay field failed.
     Allocation {
-        transaction: u64,
-        proof: usize,
-        bytes: u32,
+        entry: u64,
+        proof: Option<usize>,
+        bytes: usize,
     },
-    /// A complete transaction does not match its chained digest.
-    TransactionDigestMismatch { transaction: u64, offset: u64 },
-    /// Strict rooted replay rejected one complete committed transaction.
-    Replay {
-        transaction: u64,
+    /// The canonical block inside a complete entry is malformed.
+    BlockDecode {
+        entry: u64,
         offset: u64,
-        source: Box<ProofBatchError>,
+        source: ProofBlockDecodeError,
     },
-    /// An incomplete final transaction could not be removed durably.
+    /// The commit footer does not repeat the decoded canonical block identity.
+    BlockIdMismatch {
+        entry: u64,
+        offset: u64,
+        expected: ProofBlockId,
+        actual: ProofBlockId,
+    },
+    /// Strict block replay rejected one complete committed entry.
+    Replay {
+        entry: u64,
+        offset: u64,
+        source: Box<ProofBlockApplyError>,
+    },
+    /// An incomplete final entry could not be removed durably.
     Recovery { offset: u64, source: io::Error },
     /// A fully replayed visible journal image could not be stabilized.
     Stabilize { source: io::Error },
-    /// Strict replay produced a different selected proof set than expected.
-    ProofSetRootMismatch {
-        expected: ProofSetRoot,
-        actual: ProofSetRoot,
+    /// Strict replay produced a different block ancestry than expected.
+    HeadBlockIdMismatch {
+        expected: ProofBlockId,
+        actual: ProofBlockId,
     },
-    /// The candidate proof was rejected before journal mutation.
-    Admission { source: LedgerError },
-    /// The rooted candidate closure was rejected before journal mutation.
-    BatchAdmission { source: Box<ProofBatchError> },
+    /// Read-only block preparation rejected its proof identities.
+    Preparation { source: ProofTransitionError },
+    /// The supplied block failed before journal I/O.
+    BlockAdmission { source: ProofBlockApplyError },
     /// Commit durability is unknown and the handle is now poisoned.
     Commit {
-        root_proof_id: ProofId,
+        block_id: ProofBlockId,
         proof_count: usize,
         source: io::Error,
     },
-    /// The handle may expose in-memory state ahead of durable storage.
+    /// Memory may be ahead of durable storage after an ambiguous commit.
     Poisoned,
 }
 
-impl fmt::Display for JournalError {
+impl fmt::Display for ProofChainJournalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LockFile { source } => write!(formatter, "journal lock file failed: {source}"),
-            Self::Locked => formatter.write_str("proof DAG journal is already exclusively open"),
+            Self::Locked => formatter.write_str("proof chain journal is already exclusively open"),
             Self::Lock { source } => write!(formatter, "journal locking failed: {source}"),
             Self::Create { source } => write!(formatter, "journal creation failed: {source}"),
             Self::Open { source } => write!(formatter, "journal opening failed: {source}"),
             Self::Read { offset, source } => {
                 write!(formatter, "journal read failed at byte {offset}: {source}")
             }
-            Self::InvalidHeader => formatter.write_str("invalid proof DAG journal header"),
-            Self::InvalidTransactionLength {
-                transaction,
+            Self::InvalidHeader => formatter.write_str("invalid proof chain journal header"),
+            Self::ChainIdMismatch { expected, actual } => write!(
+                formatter,
+                "proof chain identifier mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::InvalidEntryLength {
+                entry,
                 offset,
                 actual,
                 minimum,
                 maximum,
             } => write!(
                 formatter,
-                "journal transaction {transaction} at byte {offset} has body length {actual}, expected {minimum}..={maximum}"
+                "journal entry {entry} at byte {offset} has body length {actual}, expected {minimum}..={maximum}"
             ),
-            Self::TransactionOffsetOverflow {
-                transaction,
-                offset,
-            } => write!(
+            Self::EntryOffsetOverflow { entry, offset } => write!(
                 formatter,
-                "journal transaction {transaction} at byte {offset} exceeds the offset range"
+                "journal entry {entry} at byte {offset} exceeds the offset range"
             ),
-            Self::InvalidTransactionProofCount {
-                transaction,
+            Self::InvalidBlockLength {
+                entry,
                 offset,
                 actual,
+                minimum,
                 maximum,
             } => write!(
                 formatter,
-                "journal transaction {transaction} at byte {offset} has proof count {actual}, expected 1..={maximum}"
+                "journal entry {entry} block at byte {offset} has length {actual}, expected {minimum}..={maximum}"
             ),
-            Self::InvalidTransactionProofLength {
-                transaction,
+            Self::InvalidEntryBody { entry, offset } => write!(
+                formatter,
+                "journal entry {entry} at byte {offset} has inconsistent inner lengths"
+            ),
+            Self::InvalidProofLength {
+                entry,
                 proof,
                 offset,
                 actual,
                 maximum,
             } => write!(
                 formatter,
-                "journal transaction {transaction} proof {proof} at byte {offset} has length {actual}, expected 1..={maximum}"
-            ),
-            Self::InvalidTransactionBody {
-                transaction,
-                offset,
-            } => write!(
-                formatter,
-                "journal transaction {transaction} at byte {offset} has inconsistent inner lengths"
+                "journal entry {entry} proof {proof} at byte {offset} has length {actual}, expected 1..={maximum}"
             ),
             Self::Allocation {
-                transaction,
+                entry,
                 proof,
                 bytes,
-            } => write!(
-                formatter,
-                "journal transaction {transaction} proof {proof} could not allocate {bytes} bytes"
-            ),
-            Self::TransactionDigestMismatch {
-                transaction,
-                offset,
-            } => write!(
-                formatter,
-                "journal transaction {transaction} at byte {offset} failed its chained digest"
-            ),
-            Self::Replay {
-                transaction,
+            } => match proof {
+                Some(proof) => write!(
+                    formatter,
+                    "journal entry {entry} proof {proof} could not allocate {bytes} bytes"
+                ),
+                None => write!(
+                    formatter,
+                    "journal entry {entry} could not allocate {bytes} bytes"
+                ),
+            },
+            Self::BlockDecode {
+                entry,
                 offset,
                 source,
             } => write!(
                 formatter,
-                "journal transaction {transaction} at byte {offset} failed strict replay: {source}"
+                "journal entry {entry} block at byte {offset} failed decoding: {source}"
+            ),
+            Self::BlockIdMismatch {
+                entry,
+                offset,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "journal entry {entry} at byte {offset} commits block {actual:?}, expected decoded block {expected:?}"
+            ),
+            Self::Replay {
+                entry,
+                offset,
+                source,
+            } => write!(
+                formatter,
+                "journal entry {entry} at byte {offset} failed strict block replay: {source}"
             ),
             Self::Recovery { offset, source } => write!(
                 formatter,
@@ -772,21 +819,21 @@ impl fmt::Display for JournalError {
             Self::Stabilize { source } => {
                 write!(formatter, "replayed journal stabilization failed: {source}")
             }
-            Self::ProofSetRootMismatch { expected, actual } => write!(
+            Self::HeadBlockIdMismatch { expected, actual } => write!(
                 formatter,
-                "proof-set root mismatch: expected {expected:?}, replayed {actual:?}"
+                "proof-chain head mismatch: expected {expected:?}, replayed {actual:?}"
             ),
-            Self::Admission { source } => write!(formatter, "proof admission failed: {source}"),
-            Self::BatchAdmission { source } => {
-                write!(formatter, "rooted proof-batch admission failed: {source}")
+            Self::Preparation { source } => write!(formatter, "block preparation failed: {source}"),
+            Self::BlockAdmission { source } => {
+                write!(formatter, "block admission failed: {source}")
             }
             Self::Commit {
-                root_proof_id,
+                block_id,
                 proof_count,
                 source,
             } => write!(
                 formatter,
-                "journal commit of {proof_count} proofs rooted at {root_proof_id:?} has unknown durability: {source}"
+                "journal commit of block {block_id:?} with {proof_count} proofs has unknown durability: {source}"
             ),
             Self::Poisoned => formatter
                 .write_str("journal is poisoned after an ambiguous commit; drop and reopen it"),
@@ -794,7 +841,7 @@ impl fmt::Display for JournalError {
     }
 }
 
-impl Error for JournalError {
+impl Error for ProofChainJournalError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::LockFile { source }
@@ -805,18 +852,21 @@ impl Error for JournalError {
             | Self::Recovery { source, .. }
             | Self::Stabilize { source }
             | Self::Commit { source, .. } => Some(source),
-            Self::Replay { source, .. } | Self::BatchAdmission { source } => Some(source.as_ref()),
-            Self::Admission { source } => Some(source),
+            Self::BlockDecode { source, .. } => Some(source),
+            Self::Replay { source, .. } => Some(source.as_ref()),
+            Self::Preparation { source } => Some(source),
+            Self::BlockAdmission { source } => Some(source),
             Self::Locked
             | Self::InvalidHeader
-            | Self::InvalidTransactionLength { .. }
-            | Self::TransactionOffsetOverflow { .. }
-            | Self::InvalidTransactionProofCount { .. }
-            | Self::InvalidTransactionProofLength { .. }
-            | Self::InvalidTransactionBody { .. }
+            | Self::ChainIdMismatch { .. }
+            | Self::InvalidEntryLength { .. }
+            | Self::EntryOffsetOverflow { .. }
+            | Self::InvalidBlockLength { .. }
+            | Self::InvalidEntryBody { .. }
+            | Self::InvalidProofLength { .. }
             | Self::Allocation { .. }
-            | Self::TransactionDigestMismatch { .. }
-            | Self::ProofSetRootMismatch { .. }
+            | Self::BlockIdMismatch { .. }
+            | Self::HeadBlockIdMismatch { .. }
             | Self::Poisoned => None,
         }
     }

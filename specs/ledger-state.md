@@ -79,8 +79,7 @@ A proof transaction admits one bounded dependency closure all-or-none. Two
 strict entry points share the same transition:
 
 - the unaddressed path accepts canonical proof byte buffers, derives every
-  actual `ProofId`, and is reserved for trusted local construction and journal
-  replay; and
+  actual `ProofId`, and is reserved for trusted local construction; and
 - the addressed path accepts one immutable `requested_root` plus
   `AddressedProofCandidate` values that pair each owned canonical byte buffer
   with its immutable expected `ProofId`.
@@ -211,14 +210,17 @@ owns records, so there is no second record map that can diverge.
 Single-proof success inserts one record. Rooted-transaction success inserts all
 records in supplied dependency-first order and returns the final root record.
 The resulting `ProofSetRoot` binds the exact selected `ProofId` set and is
-independent of insertion order or transaction grouping. Journal digest order
-remains a separate local-recovery property.
+independent of insertion order or transaction grouping. The separate chain-
+journal entries commit exact block and payload order as a local-recovery
+property; they are not a replacement for this authenticated set root.
 
 Callers cannot insert unchecked bytes, identities, dependency edges, or
 authenticated-set leaves directly. A successful in-memory transition does not
 establish durability; the separate
-[Proof DAG Journal](proof-dag-journal.md) defines atomic persistent proof
-transactions and crash recovery.
+[Proof Chain Journal](proof-chain-journal.md) atomically persists one caller-
+supplied exact-parent block together with the ordered payloads admitted through
+that block's transition. It is the sole durable selected-state owner and
+reconstructs Ledger State only through strict `ProofChainState` replay.
 
 The separate [Proof-State Transition](proof-state-transition.md) contract binds
 one addressed rooted batch to exact before-and-after `ProofSetRoot` values. Its
@@ -240,8 +242,9 @@ it must not scan or rebuild unrelated selected state.
 
 Canonical payloads move from caller-owned buffers into accepted records.
 Authenticated-set insertion hashes only proof identities. The journal streams
-retained slices into one transaction body and digest rather than constructing a
-second aggregate proof buffer.
+one small canonical block and the retained proof slices into one entry body
+rather than constructing a second aggregate proof buffer or making a redundant
+payload-wide journal-hash pass.
 
 These are implementation obligations, not permission to weaken deterministic
 certificate or checker limits.
@@ -269,4 +272,6 @@ limit, public arbitrary proof resolver, generic rollback, deletion,
 reorganization, snapshot, compaction, pruning, source syntax, networking,
 block format, block parentage, consensus, checkpoint trust, finality, rewards,
 fees, balances, or settlement. The separate [Proof Block](proof-block.md)
-contract adds exact linear parent context without changing these ledger rules.
+contract adds exact linear parent context without changing these ledger rules,
+and the separate [Proof Chain Journal](proof-chain-journal.md) durably replays
+that context without adding another proof-admission path.

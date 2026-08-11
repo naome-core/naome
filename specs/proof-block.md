@@ -3,8 +3,11 @@
 ## Status and scope
 
 This document defines the canonical linear block commitment for selected NAOME
-proof state and its in-memory exact-head application. It is a prerelease
-protocol contract and may change before the first stable protocol release.
+proof state and its exact-head application. It is a prerelease protocol
+contract and may change before the first stable protocol release. The separate
+[Proof Chain Journal](proof-chain-journal.md) is the sole durable selected-state
+owner and persists these blocks without changing their canonical bytes or
+application rules.
 
 A `ProofBlock` binds exactly:
 
@@ -21,6 +24,8 @@ or local application does not establish that any peer, validator, or network
 selected the block. This contract defines no competing-fork storage, fork
 choice, reorganization, voting, finality, proposer, signature, proof of work,
 proof of stake, persistence, networking, discovery, or economy.
+The separate journal provides local crash-consistent persistence; neither this
+block value nor that journal establishes network selection or finality.
 
 ## Chain context and virtual genesis
 
@@ -218,6 +223,11 @@ choice rule. The state does not retain competing branches, choose among valid
 siblings, roll back proofs, reorganize history, or establish network-wide
 ordering. Selecting which eligible child to attempt is a higher-level policy.
 
+The [Proof Chain Journal](proof-chain-journal.md) replays one such selected line
+through a fresh `ProofChainState`. Its append order is therefore exact block
+ancestry rather than an independent proof-transaction order. It neither stores
+nor chooses competing siblings.
+
 ## Payload and availability boundary
 
 Canonical block bytes contain the transition commitment but not proof
@@ -230,7 +240,9 @@ block commitment.
 Possessing a block does not establish possession or availability of its proof
 payloads. This contract defines no block-body transport, proof fetching,
 announcement, gossip, erasure coding, availability sampling, source
-attribution, or timeout policy.
+attribution, or timeout policy. The separate journal stores the exact payloads
+needed to replay each locally committed block, but local retention is not a
+network availability guarantee.
 
 ## Resource and performance boundary
 
@@ -271,7 +283,8 @@ novelty, or assigns economic value.
 This contract defines no chain-identifier discovery or trust policy, admitted
 genesis block, height, timestamp, proposer, signature, proof of work, proof of
 stake, validator set, voting, quorum, competing-fork storage, fork choice,
-rollback, reorganization, finality, checkpoint trust, persistent block journal,
-snapshot, pruning, payload transport, data-availability protocol, block or
-proof gossip, peer discovery, peer authorization, rewards, fees, balances,
-novelty policy, issuance, or settlement.
+rollback, reorganization, finality, checkpoint trust, snapshot, pruning,
+payload transport, data-availability protocol, block or proof gossip, peer
+discovery, peer authorization, rewards, fees, balances, novelty policy,
+issuance, or settlement. Local append persistence is defined only by the
+separate [Proof Chain Journal](proof-chain-journal.md).
