@@ -30,6 +30,7 @@
 
 mod acquisition;
 mod address_store;
+mod block_import;
 mod block_transport;
 mod bootstrap;
 mod codec;
@@ -90,6 +91,7 @@ pub use address_store::{
     PEER_RECORD_TTL, PeerAddressStore, PeerAddressStoreError, PeerRecordAdmission,
     PeerRecordBatchAdmission, SignedPeerRecord, SignedPeerRecordError,
 };
+pub use block_import::{ProofBlockImport, ProofBlockImportError, ProofBlockImportProgress};
 pub use block_transport::{
     BlockRequestTicket, InboundProofBlockRequest, OutboundProofBlockEvent,
     OutboundProofBlockFailure, ProofBlockRequestEventMismatch,

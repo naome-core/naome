@@ -37,6 +37,10 @@ pub struct BlockRequestTicket {
 }
 
 impl BlockRequestTicket {
+    pub(super) fn belongs_to_network(&self, network: &StaticProofNetwork) -> bool {
+        Arc::ptr_eq(&self.network_budget, &network.pending_budget)
+    }
+
     /// Returns the authenticated peer expected for this request generation.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id

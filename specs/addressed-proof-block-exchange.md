@@ -22,6 +22,11 @@ A found response is useful only as content addressed by an already known block
 identity. The exchange does not discover that identity, determine whether the
 block belongs to the caller's configured chain, acquire its proof payloads, or
 authorize selection. Those facts remain separate from content retrieval.
+The separate
+[Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
+may compose one exact response with existing proof acquisition and journal
+application, but it does not change this exchange or let a peer choose the
+requested identity.
 
 ## Public surface
 

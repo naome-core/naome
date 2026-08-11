@@ -249,6 +249,10 @@ has a separate concrete
 for one statically authorized peer request. Neither retrieval boundary defines
 proof-payload transport, proof fetching, announcement, gossip,
 erasure coding, availability sampling, source attribution, or timeout policy.
+The separate
+[Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
+may compose one exact retrieved direct child with existing proof acquisition
+and strict journal application without changing canonical block bytes.
 The separate journal stores the exact payloads needed to replay each locally
 committed block, but local retention is not a network availability guarantee.
 

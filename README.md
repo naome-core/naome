@@ -7,7 +7,8 @@ This repository currently implements deterministic proof checking, selected
 proof state, canonical linear proof blocks with crash-consistent exact-head
 persistence and exact-ID historical lookup, transport-neutral addressed proof
 and block exchange, authenticated static proof and exact-ID block transport,
-and bounded local peer-address management. The network layer includes a
+caller-selected direct-child block import, and bounded local peer-address
+management. The network layer includes a
 transport-neutral atomic record batch, a dedicated outbound-only authenticated
 bootstrap pull client, a separate bounded inbound-only responder for one
 immutable operator publication, and identity-bound durable sequence issuance
@@ -30,7 +31,8 @@ deterministic mathematical checking, atomic selected-state transitions, the
 authenticated proof DAG with canonical root-to-root transitions and linear
 proof-block context, the sole crash-consistent local proof-chain journal,
 transport-neutral addressed proof and block exchange, and the concrete bounded
-libp2p proof and exact-ID block transport. The chain journal durably commits
+libp2p proof and exact-ID block transport with caller-selected direct-child
+import. The chain journal durably commits
 each exact-parent block together with its transition's ordered proof payloads,
 strictly reconstructs the head and proof state on open, and retains decoded
 committed blocks for exact-ID lookup. Later crates may also depend directly on
@@ -58,6 +60,7 @@ authorization.
 - [Proof Chain Journal](specs/proof-chain-journal.md)
 - [Addressed Proof Block Exchange](specs/addressed-proof-block-exchange.md)
 - [Authenticated Proof Block Transport](specs/authenticated-proof-block-transport.md)
+- [Caller-Selected Proof Block Import](specs/caller-selected-proof-block-import.md)
 - [Addressed Proof Exchange](specs/addressed-proof-exchange.md)
 - [Authenticated Proof Transport](specs/authenticated-proof-transport.md)
 - [Peer Address Management](specs/peer-address-management.md)

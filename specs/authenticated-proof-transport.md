@@ -21,6 +21,10 @@ The same swarm carries the separate
 over a second request-response behaviour. That protocol shares authorization,
 connections, application permits, and per-peer pending limits but does not
 change proof-closure acquisition or promotion.
+The separate
+[Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
+orchestrates those two existing exchanges for one exact direct-child target;
+it defines no third wire protocol or peer-side selection policy.
 
 This is not a decentralized peer-discovery system or a consensus protocol.
 Static peer identities provide authentication and authorization, not Sybil
@@ -290,6 +294,12 @@ current head, constructs an implicit local block, exposes raw candidates, or
 falls back to direct proof-DAG admission. Consequently, successful payload
 retrieval is availability for a possible block, not authority to select that
 block.
+
+The caller-selected import may run journal preparation before starting this
+acquisition and may later consume its completed closure through the existing
+`apply_block` operation. Those caller-side orchestration checks do not alter
+the acquisition's response handling, quarantine, retry, deadline, or promotion
+contract.
 
 Selected state may grow after acquisition and before promotion. Promotion does
 not prune, refetch, or reinterpret the closure. It may correlate opaque

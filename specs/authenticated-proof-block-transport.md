@@ -19,6 +19,12 @@ retrieved block has no repeated `ProofChainId`, proof payloads, trusted ancestry
 selection authority, or finality. The transport never prepares or applies a
 block and never mutates a receiving `ProofChainJournal`.
 
+The separate
+[Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
+composes one caller-chosen exact request with existing dependency acquisition
+and journal application. That orchestration adds no wire message or selection
+authority to this transport.
+
 ## Stack and authorization
 
 The stack is:
