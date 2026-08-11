@@ -220,6 +220,22 @@ topology, root, and all existing proofs unchanged.
 The structure is append-only. Deletion, undo, and state merging require future
 consensus and persistence contracts and are not inferred here.
 
+## Read-only transition projection
+
+The [Proof-State Transition](proof-state-transition.md) preflight projects the
+root that would result from adding its exact ordered list of one to eight
+unique `ProofId` values. Projection has the same key-set semantics as normal
+authenticated-set insertion but does not mutate the selected set, retained
+records, topology, root, or existing witnesses. It is bounded by those eight
+keys and their Patricia paths and must not clone, scan, or rebuild the complete
+set.
+
+Projection accepts identities, not proofs. It does not decode certificates,
+check mathematics, establish dependency order, enforce root closure, or admit
+records. The transition compares the projected root with its committed
+resulting root before delegating once to the existing atomic addressed rooted
+batch. That batch remains the sole proof-validation and mutation boundary.
+
 ## Journal reconstruction and expected roots
 
 The Proof DAG Journal stores no Merkle nodes or roots. Strict dependency-first
