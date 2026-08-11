@@ -385,7 +385,10 @@ It does not define or claim:
   address gossip, or NAT traversal; the separate bounded
   [peer-address manager](peer-address-management.md) and transport-neutral
   [peer-record exchange](peer-record-exchange.md) feed a dedicated outbound
-  [bootstrap client](authenticated-peer-record-pull.md), not these static proof
+  [bootstrap client](authenticated-peer-record-pull.md), while a separate
+  inbound-only [bootstrap responder](authenticated-peer-record-responder.md)
+  serves one immutable operator publication; both record boundaries use
+  dedicated swarms without the proof protocol and are not these static proof
   sessions;
 - peer scoring, bans, retrying one peer for the same proof address, parallel or
   hedged requests, announcements, or proof gossip;
@@ -400,10 +403,10 @@ It does not define or claim:
   pruning, or proof availability guarantees; the separate peer-record batch
   does not carry proofs.
 
-The next focused network slice may add a bounded operator-run peer-record
-responder and publication policy. A later redesign from symmetric static proof
-sessions to bounded dynamic learned-candidate sessions must preserve explicit
-proof authorization and must not turn signed address claims or local diversity
-policy into a claim of Sybil or eclipse resistance. A consensus-selected
-checkpoint and linear settlement/economy remain later layers and must not be
-inferred from authenticated transport peers.
+A later redesign from symmetric static proof sessions to bounded dynamic
+learned-candidate sessions must preserve explicit proof authorization and must
+not turn signed address claims, responder authentication, or local diversity
+policy into a claim of proof authority, Sybil resistance, or eclipse
+resistance. A consensus-selected checkpoint and linear settlement/economy
+remain later layers and must not be inferred from authenticated transport
+peers.

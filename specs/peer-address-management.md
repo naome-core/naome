@@ -12,6 +12,10 @@ submit up to 32 ordered records through one atomic store transition without
 making those records proof-authorized peers. The separate
 [authenticated peer-record pull](authenticated-peer-record-pull.md) may obtain
 one such batch from an operator-configured bootstrap.
+The separate
+[authenticated peer-record responder](authenticated-peer-record-responder.md)
+may serve an explicit operator-supplied batch, but it never reads, exports, or
+updates this store.
 
 V0 deliberately separates five facts:
 
@@ -46,13 +50,18 @@ V0 store entry. The source is diversity provenance, not endorsement of the
 record subject. Bootstrap peers do not become proof peers, and a connection to
 one does not authorize proof requests or responses.
 
-V0 defines no bundled default list, DNS resolution, remote list update,
-listener, or responder. The transport-neutral batch bytes are defined in
-[Peer Record Exchange V0](peer-record-exchange.md), and their dedicated
+V0 defines no bundled default list, DNS resolution, or remote list update. The
+transport-neutral batch bytes are defined in
+[Peer Record Exchange V0](peer-record-exchange.md), their dedicated
 outbound-only authenticated binding is defined in
-[Authenticated Peer Record Pull](authenticated-peer-record-pull.md).
-Supplying and updating bootstrap configuration remains an operator
-responsibility.
+[Authenticated Peer Record Pull](authenticated-peer-record-pull.md), and the
+separate inbound-only
+[Authenticated Peer Record Responder](authenticated-peer-record-responder.md)
+serves one immutable batch chosen directly by its operator. The responder does
+not derive that publication from this store. To use that responder with the
+strict pull client, its Noise identity and address must still be configured as
+a `BootstrapPeer`. Supplying and updating bootstrap configuration and responder
+publication remains an operator responsibility.
 
 ## Signed-record admission
 
@@ -160,6 +169,13 @@ insertion or replacement produces exactly one atomic snapshot commit, never
 one commit per record. Strictly newer replacements retain their originally
 recorded bootstrap source. The detailed framing, ordering, error, and atomicity
 rules are normative in [Peer Record Exchange](peer-record-exchange.md).
+
+A responder publication carries neither a receipt timestamp nor a freshness or
+coverage assertion. The pull caller supplies one local receipt time only when
+admitting the decoded batch. Replaying an equal or older publication to the
+same store is stale and cannot refresh an existing record's TTL. First receipt
+by another store may establish local freshness there, but it does not establish
+when the subject signed the record or when the responder selected it.
 
 ## Reachability boundary
 
@@ -343,9 +359,10 @@ authenticity, local receipt freshness, retained sequence watermarks, and
 deterministic source- and prefix-aware candidate selection. It does not define
 or claim:
 
-- a bootstrap responder, address gossip, dynamic proof sessions, or automatic
-  mutation of `StaticProofNetwork`; the separate outbound-only pull client
-  supplies batches but grants no learned identity a session or proof role;
+- store-backed publication, store export, responder updates, address gossip,
+  dynamic proof sessions, or automatic mutation of `StaticProofNetwork`; the
+  separate pull client and immutable responder exchange batches but grant no
+  learned identity a session or proof role;
 - DHT, DNS bootstrap, mDNS, rendezvous, NAT traversal, relay, hole punching,
   or external-address verification;
 - peer scoring, reputation, bans, operator identity, source independence,
@@ -356,8 +373,6 @@ or claim:
   protection from non-cooperating writers or filesystem attackers, or an
   online key-management policy.
 
-The next focused network slice may define a bounded operator-run responder and
-record-publication policy. Dynamic learned-candidate sessions, their expiry and
-rate policy, and any proof-exchange authorization remain later separate
-contracts. Only an explicit authorization policy may decide which identities
-participate in proof exchange.
+Dynamic learned-candidate sessions, their expiry and rate policy, and any
+proof-exchange authorization remain later separate contracts. Only an explicit
+authorization policy may decide which identities participate in proof exchange.

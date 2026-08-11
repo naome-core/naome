@@ -7,6 +7,8 @@ This document defines the prerelease V0 outbound client binding for
 canonical bounded record batch from an operator-configured `BootstrapPeer`
 over TCP, Noise, Yamux, and libp2p request-response, then explicitly admit that
 batch into the [peer-address store](peer-address-management.md).
+A compatible inbound service is defined separately by the
+[Authenticated Peer Record Responder](authenticated-peer-record-responder.md).
 
 The client is a dedicated network boundary. It is not a behavior inside
 `StaticProofNetwork`, exposes no listener or response API, advertises no
@@ -124,6 +126,9 @@ The fixed phase limits are:
 There is no application-level keepalive. After all streams and handler work
 finish, the explicit ten-second idle timeout closes an unused connection. A
 manual follow-up before that closure may reuse the authenticated connection.
+The compatible responder likewise permits sequential requests on one healthy
+connection while its idle and global valid-request limits allow them. The
+client does not assume that reuse will succeed and never retries automatically.
 For a cold pull that is continuously polled, the phase ceilings expose up to
 ten seconds of connection establishment, then ten seconds of outbound
 substream protocol negotiation, then thirty seconds of negotiated exchange.
@@ -179,8 +184,10 @@ or eclipse resistance.
 
 This contract does not define or claim:
 
-- a production bootstrap responder, record publication or serving selection,
-  pagination, cursor, completeness commitment, or bundled seed list;
+- record publication or serving selection, store export, pagination, cursor,
+  completeness commitment, freshness assertion, or bundled seed list; the
+  separate responder serves one immutable operator-supplied batch, whose
+  selection the client does not treat as authoritative;
 - an inbound record service, push, gossip, subscriptions, periodic pulling,
   automatic retry, multi-bootstrap fallback, scoring, reputation, or bans;
 - dynamic sessions to learned candidates, conversion to `StaticPeer`, proof
@@ -189,7 +196,5 @@ This contract does not define or claim:
 - consensus, fork choice, finality, mining, validator roles, checkpoints,
   transactions, rewards, fees, or settlement.
 
-The next focused network slice may define a bounded operator-run responder,
-including publication, freshness, pagination or coverage, unknown-client
-admission, and inbound rate policy. Dynamic learned-candidate sessions and any
-proof authorization remain later separate contracts.
+Dynamic learned-candidate sessions and any proof authorization remain later
+separate contracts.

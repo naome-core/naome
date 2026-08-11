@@ -12,20 +12,25 @@
 //!
 //! A separate outbound-only [`PeerRecordBootstrapClient`] authenticates exact
 //! operator-configured bootstrap endpoints and returns source-bound record
-//! batches for explicit atomic admission. It exposes no listener, installs no
-//! proof protocol, and never converts a learned candidate into proof authority.
+//! batches for explicit atomic admission. A separate inbound-only
+//! [`PeerRecordBootstrapResponder`] serves one operator-supplied immutable
+//! canonical batch to bounded authenticated requesters. Neither swarm installs
+//! the proof protocol or converts a learned candidate into proof authority.
 //!
-//! The caller owns the Tokio runtime, drives network event loops, routes
+//! The caller owns the Tokio runtime, drives every network event loop, routes
 //! correlated proof events through a bounded dependency acquisition, and
 //! explicitly promotes the resulting opaque closure or admits a peer-record
-//! batch. This crate starts no NAOME-owned background task and owns no
+//! batch. The responder publication is not derived from the address store.
+//! This crate starts no NAOME-owned background task and owns no
 //! [`ProofDagJournal`].
 
 mod acquisition;
 mod address_store;
 mod bootstrap;
 mod codec;
+mod rate_limit;
 mod record_exchange;
+mod responder;
 mod session;
 
 use std::collections::HashMap;
@@ -52,6 +57,8 @@ use session::Behaviour as SessionBehaviour;
 use tokio::time::Instant;
 
 const MANAGED_SESSION_IDLE_TIMEOUT: Duration = Duration::MAX;
+const PEER_RECORD_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_PEER_RECORD_STREAMS_PER_CONNECTION: usize = 1;
 const DIAL_RETRY_DELAYS: [Duration; 7] = [
     Duration::from_secs(1),
     Duration::from_secs(2),
@@ -83,6 +90,11 @@ pub use libp2p::{Multiaddr, PeerId, identity::Keypair};
 pub use record_exchange::{
     MAX_PEER_RECORDS_PER_BATCH, PEER_RECORD_BATCH_MAX_BYTES, PEER_RECORD_PULL_REQUEST_BYTES,
     PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
+};
+pub use responder::{
+    PeerRecordBootstrapResponder, PeerRecordBootstrapResponderBuildError,
+    PeerRecordBootstrapResponderEvent, PeerRecordBootstrapResponderFailure,
+    PeerRecordBootstrapResponderListenError,
 };
 
 /// Maximum number of peers configured in one static transport.
