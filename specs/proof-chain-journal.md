@@ -438,6 +438,12 @@ The Authenticated Proof Block Transport binds that helper to one statically
 authorized peer request without adding block discovery, ancestry walking,
 payload acquisition, application, or selection.
 
+The separate
+[Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
+may retrieve one exact caller-chosen direct child, acquire its existing bounded
+proof closure, and invoke the same journal application path. It adds no journal
+method or persistence format and cannot bypass exact-parent application.
+
 An authenticated proof transport may acquire an opaque bounded
 `UnselectedProofClosure`. That closure owns untrusted candidate payloads and
 their immutable requested addresses, but it owns no block and has no authority

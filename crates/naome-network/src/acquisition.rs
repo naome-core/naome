@@ -218,6 +218,13 @@ impl StaticProofNetwork {
 }
 
 impl ProofDependencyAcquisition {
+    pub(super) fn belongs_to_network(&self, network: &StaticProofNetwork) -> bool {
+        Arc::ptr_eq(
+            &self.cancellation.control().network_budget,
+            &network.pending_budget,
+        )
+    }
+
     /// Returns the peer serving the currently pending request.
     pub const fn pending_peer_id(&self) -> PeerId {
         self.peer_id
@@ -265,10 +272,8 @@ impl ProofDependencyAcquisition {
         selected: &ProofChainJournal,
         event: OutboundProofEvent,
     ) -> Result<DependencyAcquisitionProgress, DependencyAcquisitionError> {
-        if !Arc::ptr_eq(
-            &self.cancellation.control().network_budget,
-            &network.pending_budget,
-        ) || !Arc::ptr_eq(&event.control.network_budget, &network.pending_budget)
+        if !self.belongs_to_network(network)
+            || !Arc::ptr_eq(&event.control.network_budget, &network.pending_budget)
         {
             return Err(DependencyAcquisitionError::NetworkInstanceMismatch);
         }
