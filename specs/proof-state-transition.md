@@ -14,11 +14,14 @@ A `ProofTransition` binds:
 - the exact ordered `ProofId` values of one dependency-closed rooted proof
   transaction.
 
-The transition is consensus-neutral. It is not a block, header, vote,
+The transition is consensus-neutral. It is not by itself a block, header, vote,
 checkpoint, receipt, or claim that any peer has selected or stored the
-committed state. This contract defines no parent block, height, timestamp,
-chain identifier, proposer, signature, proof of work, fork choice, finality,
-network message, persistence format, reward, fee, balance, or settlement.
+committed state. The separate [Proof Block](proof-block.md) contract binds one
+complete transition to exact linear parent context without changing this
+transition's bytes or admission rules. This contract itself defines no parent
+block, height, timestamp, chain identifier, proposer, signature, proof of work,
+fork choice, finality, network message, persistence format, reward, fee,
+balance, or settlement.
 
 ## Canonical value
 
@@ -210,9 +213,11 @@ transition may validly apply to another DAG that has the declared previous
 root.
 
 Roots and transition identities contain no chain position, time, network,
-authority, or nonce. A higher protocol that needs those properties must bind
-the transition identity into its own authenticated context without changing
-this transition's canonical bytes or mathematical admission rules.
+authority, or nonce. The separate [Proof Block](proof-block.md) contract binds
+the complete canonical transition to one exact parent and configured linear
+chain context without changing this transition's canonical bytes or
+mathematical admission rules. That parent binding still establishes no time,
+authority, consensus selection, or finality.
 
 ## Resource boundary
 
@@ -244,9 +249,11 @@ establish no provenance, freshness, availability, or consensus authority.
 
 ## Explicit exclusions
 
-This contract defines no block or header format, block parent, height,
-timestamp, chain identifier, proposer identity, signature, proof of work,
-validator set, voting, fork choice, reorganization, rollback, finality,
+This transition contract defines no block or header format, block parent,
+height, timestamp, chain identifier, proposer identity, signature, proof of
+work, validator set, voting, fork choice, reorganization, rollback, finality,
 checkpoint trust, data-availability protocol, proof fetching, network message,
 peer discovery, source attribution, persistent journal entry, snapshot,
-reward, fee, balance, novelty policy, or settlement.
+reward, fee, balance, novelty policy, or settlement. Exact linear parent
+binding is defined only by the separate [Proof Block](proof-block.md)
+contract.

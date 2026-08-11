@@ -6,12 +6,14 @@
 //! canonicality, mathematical checking, and identity validation to
 //! [`LedgerState`] before retaining the resulting record.
 //! [`ProofTransition`] additionally binds one bounded dependency-first rooted
-//! batch to exact before-and-after [`ProofSetRoot`] values without claiming
-//! consensus inclusion or linear history.
+//! batch to exact before-and-after [`ProofSetRoot`] values. [`ProofBlock`] and
+//! [`ProofChainState`] place those transitions in one canonical exact-parent
+//! execution history without claiming consensus inclusion or finality.
 //!
-//! This crate defines neither a linear proof parent nor consensus, finality,
-//! persistence, economy, or peer-to-peer synchronization.
+//! This crate defines no consensus selection, fork choice, reorganization,
+//! finality, persistence, economy, or peer-to-peer synchronization.
 
+mod block;
 mod proof_set;
 mod transition;
 
@@ -23,6 +25,10 @@ use naome_proof::ProofId;
 
 pub use naome_ledger::{AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, ProofBatchError};
 
+pub use block::{
+    PROOF_BLOCK_MAX_BYTES, ProofBlock, ProofBlockApplyError, ProofBlockDecodeError, ProofBlockId,
+    ProofChainId, ProofChainState,
+};
 pub use proof_set::{
     PROOF_SET_PROOF_MAX_BYTES, ProofSetMembership, ProofSetProof, ProofSetProofError, ProofSetRoot,
 };

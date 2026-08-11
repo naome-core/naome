@@ -4,8 +4,10 @@ use naome_ledger::{AddressedProofCandidate, LedgerError, ProofBatchError};
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
 
 use super::{
-    PROOF_BATCH_MAX_CANDIDATES, PROOF_TRANSITION_MAX_BYTES, ProofDag, ProofSetMembership,
-    ProofSetProof, ProofSetRoot, ProofTransition, ProofTransitionApplyError, ProofTransitionError,
+    PROOF_BATCH_MAX_CANDIDATES, PROOF_BLOCK_MAX_BYTES, PROOF_TRANSITION_MAX_BYTES, ProofBlock,
+    ProofBlockApplyError, ProofBlockId, ProofChainId, ProofChainState, ProofDag,
+    ProofSetMembership, ProofSetProof, ProofSetRoot, ProofTransition, ProofTransitionApplyError,
+    ProofTransitionError,
 };
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
@@ -129,6 +131,17 @@ fn addressed_candidates(
         .zip(payloads)
         .map(|(proof_id, bytes)| AddressedProofCandidate::new(proof_id, bytes.clone()))
         .collect()
+}
+
+fn proof_id_for(bytes: &[u8]) -> ProofId {
+    ProofDag::new()
+        .apply_canonical_proof_bytes(bytes.to_vec())
+        .unwrap()
+        .proof_id()
+}
+
+fn proof_chain(byte: u8) -> ProofChainState {
+    ProofChainState::new(ProofChainId::from_bytes([byte; 32]))
 }
 
 #[test]
@@ -1106,4 +1119,355 @@ fn transition_limits_and_existing_selection_are_exact() {
             },
         })
     ));
+}
+
+#[test]
+fn block_preparation_binds_the_current_head_without_mutating_chain_state() {
+    let chain = proof_chain(0x11);
+    let initial_head = chain.head_block_id();
+    let initial_root = chain.proof_dag().proof_set_root();
+    let (proof_ids, _) = addressed_chain(3);
+    let initial_witness = chain
+        .proof_dag()
+        .proof_set_proof(proof_ids[0])
+        .to_canonical_bytes();
+
+    let block = chain.prepare_block(proof_ids.clone()).unwrap();
+
+    assert_eq!(block.parent_block_id(), initial_head);
+    assert_eq!(block.transition().proof_ids(), proof_ids);
+    assert_eq!(block.transition().previous_proof_set_root(), initial_root);
+    assert_ne!(block.transition().resulting_proof_set_root(), initial_root);
+    assert_eq!(chain.head_block_id(), initial_head);
+    assert!(chain.proof_dag().is_empty());
+    assert_eq!(chain.proof_dag().proof_set_root(), initial_root);
+    assert_eq!(
+        chain
+            .proof_dag()
+            .proof_set_proof(proof_ids[0])
+            .to_canonical_bytes(),
+        initial_witness
+    );
+}
+
+#[test]
+fn two_blocks_apply_in_order_and_the_second_resolves_the_first() {
+    let root_bytes = axiom_bytes(ZfcAxiom::Pairing);
+    let mut scratch = ProofDag::new();
+    let root_id = scratch
+        .apply_canonical_proof_bytes(root_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let child_bytes = referenced_generalization(root_id, FreeVariable::new(0));
+    let child_id = scratch
+        .apply_canonical_proof_bytes(child_bytes.clone())
+        .unwrap()
+        .proof_id();
+
+    let mut chain = proof_chain(0x12);
+    let first = chain.prepare_block(vec![root_id]).unwrap();
+    let first_id = first.id();
+    assert_eq!(
+        chain
+            .apply_block(
+                &first,
+                vec![AddressedProofCandidate::new(root_id, root_bytes)],
+            )
+            .unwrap()
+            .proof_id(),
+        root_id
+    );
+    assert_eq!(chain.head_block_id(), first_id);
+    assert_eq!(
+        chain.proof_dag().proof_set_root(),
+        first.transition().resulting_proof_set_root()
+    );
+
+    let second = chain.prepare_block(vec![child_id]).unwrap();
+    assert_eq!(second.parent_block_id(), first_id);
+    assert_eq!(
+        chain
+            .apply_block(
+                &second,
+                vec![AddressedProofCandidate::new(child_id, child_bytes)],
+            )
+            .unwrap()
+            .proof_id(),
+        child_id
+    );
+    assert_eq!(chain.head_block_id(), second.id());
+    assert_eq!(chain.proof_dag().len(), 2);
+    assert_eq!(
+        chain
+            .proof_dag()
+            .proof(child_id)
+            .unwrap()
+            .direct_dependencies(),
+        [root_id]
+    );
+    assert_eq!(
+        chain.proof_dag().proof_set_root(),
+        second.transition().resulting_proof_set_root()
+    );
+}
+
+#[test]
+fn replay_sibling_and_foreign_chain_fail_at_the_parent_before_payload_work() {
+    let pairing_bytes = axiom_bytes(ZfcAxiom::Pairing);
+    let pairing_id = proof_id_for(&pairing_bytes);
+    let union_bytes = axiom_bytes(ZfcAxiom::Union);
+    let union_id = proof_id_for(&union_bytes);
+    let mut chain = proof_chain(0x13);
+    let replay = chain.prepare_block(vec![pairing_id]).unwrap();
+    let sibling = chain.prepare_block(vec![union_id]).unwrap();
+    let genesis = chain.head_block_id();
+
+    let _ = chain
+        .apply_block(
+            &replay,
+            vec![AddressedProofCandidate::new(pairing_id, pairing_bytes)],
+        )
+        .unwrap();
+    let selected_head = chain.head_block_id();
+    let selected_root = chain.proof_dag().proof_set_root();
+    let selected_witness = chain
+        .proof_dag()
+        .proof_set_proof(pairing_id)
+        .to_canonical_bytes();
+
+    for stale in [&replay, &sibling] {
+        assert_eq!(
+            chain.apply_block(stale, Vec::new()),
+            Err(ProofBlockApplyError::ParentBlockIdMismatch {
+                expected: selected_head,
+                actual: genesis,
+            })
+        );
+        assert_eq!(chain.head_block_id(), selected_head);
+        assert_eq!(chain.proof_dag().len(), 1);
+        assert_eq!(chain.proof_dag().proof_set_root(), selected_root);
+        assert_eq!(
+            chain
+                .proof_dag()
+                .proof_set_proof(pairing_id)
+                .to_canonical_bytes(),
+            selected_witness
+        );
+    }
+
+    let mut foreign = proof_chain(0x14);
+    let foreign_head = foreign.head_block_id();
+    let foreign_root = foreign.proof_dag().proof_set_root();
+    assert_eq!(
+        foreign.apply_block(
+            &sibling,
+            vec![AddressedProofCandidate::new(union_id, union_bytes)],
+        ),
+        Err(ProofBlockApplyError::ParentBlockIdMismatch {
+            expected: foreign_head,
+            actual: genesis,
+        })
+    );
+    assert_eq!(foreign.head_block_id(), foreign_head);
+    assert!(foreign.proof_dag().is_empty());
+    assert_eq!(foreign.proof_dag().proof_set_root(), foreign_root);
+}
+
+#[test]
+fn parent_mismatch_precedes_a_stale_transition_and_malformed_candidates() {
+    let mut chain = proof_chain(0x15);
+    let expected_parent = chain.head_block_id();
+    let actual_parent = ProofBlockId::from_bytes([0xa1; 32]);
+    let proof_id = ProofId::from_bytes([0xa2; 32]);
+    let stale = ProofTransition::new(
+        ProofSetRoot::from_bytes([0xa3; 32]),
+        ProofSetRoot::from_bytes([0xa4; 32]),
+        vec![proof_id],
+    )
+    .unwrap();
+    let block = ProofBlock::new(actual_parent, stale);
+    let initial_root = chain.proof_dag().proof_set_root();
+
+    assert_eq!(
+        chain.apply_block(
+            &block,
+            vec![AddressedProofCandidate::new(proof_id, vec![0])],
+        ),
+        Err(ProofBlockApplyError::ParentBlockIdMismatch {
+            expected: expected_parent,
+            actual: actual_parent,
+        })
+    );
+    assert_eq!(chain.head_block_id(), expected_parent);
+    assert!(chain.proof_dag().is_empty());
+    assert_eq!(chain.proof_dag().proof_set_root(), initial_root);
+}
+
+#[test]
+fn nested_batch_failure_preserves_head_dag_and_witnesses_then_retry() {
+    let selected_bytes = axiom_bytes(ZfcAxiom::Extensionality);
+    let selected_id = proof_id_for(&selected_bytes);
+    let mut chain = proof_chain(0x16);
+    let selected_block = chain.prepare_block(vec![selected_id]).unwrap();
+    let _ = chain
+        .apply_block(
+            &selected_block,
+            vec![AddressedProofCandidate::new(
+                selected_id,
+                selected_bytes.clone(),
+            )],
+        )
+        .unwrap();
+
+    let (proof_ids, payloads) = addressed_chain(2);
+    let block = chain.prepare_block(proof_ids.clone()).unwrap();
+    let committed_head = chain.head_block_id();
+    let committed_root = chain.proof_dag().proof_set_root();
+    let selected_witness = chain
+        .proof_dag()
+        .proof_set_proof(selected_id)
+        .to_canonical_bytes();
+    let absent_witness = chain
+        .proof_dag()
+        .proof_set_proof(proof_ids[0])
+        .to_canonical_bytes();
+    let assert_unchanged = |chain: &ProofChainState| {
+        assert_eq!(chain.head_block_id(), committed_head);
+        assert_eq!(chain.proof_dag().len(), 1);
+        assert_eq!(chain.proof_dag().proof_set_root(), committed_root);
+        assert_eq!(
+            chain
+                .proof_dag()
+                .proof(selected_id)
+                .unwrap()
+                .canonical_proof_bytes(),
+            selected_bytes
+        );
+        assert_eq!(
+            chain
+                .proof_dag()
+                .proof_set_proof(selected_id)
+                .to_canonical_bytes(),
+            selected_witness
+        );
+        assert_eq!(
+            chain
+                .proof_dag()
+                .proof_set_proof(proof_ids[0])
+                .to_canonical_bytes(),
+            absent_witness
+        );
+    };
+
+    let mut malformed = addressed_candidates(&proof_ids, &payloads);
+    malformed[0] = AddressedProofCandidate::new(proof_ids[0], vec![0]);
+    assert!(matches!(
+        chain.apply_block(&block, malformed),
+        Err(ProofBlockApplyError::Transition {
+            source: ProofTransitionApplyError::Batch {
+                source: ProofBatchError::Candidate { index: 0, .. },
+            },
+        })
+    ));
+    assert_unchanged(&chain);
+
+    assert_eq!(
+        chain
+            .apply_block(&block, addressed_candidates(&proof_ids, &payloads))
+            .unwrap()
+            .proof_id(),
+        block.transition().root_proof_id()
+    );
+    assert_eq!(chain.head_block_id(), block.id());
+    assert_eq!(chain.proof_dag().len(), 3);
+    assert_eq!(
+        chain.proof_dag().proof_set_root(),
+        block.transition().resulting_proof_set_root()
+    );
+}
+
+#[test]
+fn maximum_eight_proof_block_applies_one_complete_rooted_transaction() {
+    let (proof_ids, payloads) = addressed_chain(PROOF_BATCH_MAX_CANDIDATES);
+    let mut chain = proof_chain(0x17);
+    let block = chain.prepare_block(proof_ids.clone()).unwrap();
+    assert_eq!(block.to_canonical_bytes().len(), PROOF_BLOCK_MAX_BYTES);
+
+    assert_eq!(
+        chain
+            .apply_block(&block, addressed_candidates(&proof_ids, &payloads))
+            .unwrap()
+            .proof_id(),
+        *proof_ids.last().unwrap()
+    );
+    assert_eq!(chain.head_block_id(), block.id());
+    assert_eq!(chain.proof_dag().len(), PROOF_BATCH_MAX_CANDIDATES);
+    assert_eq!(
+        chain.proof_dag().proof_set_root(),
+        block.transition().resulting_proof_set_root()
+    );
+    for proof_id in proof_ids {
+        assert_eq!(
+            chain
+                .proof_dag()
+                .proof_set_proof(proof_id)
+                .verify(chain.proof_dag().proof_set_root(), proof_id),
+            Ok(ProofSetMembership::Present)
+        );
+    }
+}
+
+#[test]
+fn equal_final_proof_sets_from_different_histories_have_distinct_heads() {
+    let pairing_bytes = axiom_bytes(ZfcAxiom::Pairing);
+    let pairing_id = proof_id_for(&pairing_bytes);
+    let union_bytes = axiom_bytes(ZfcAxiom::Union);
+    let union_id = proof_id_for(&union_bytes);
+    let chain_id = ProofChainId::from_bytes([0x18; 32]);
+    let mut first = ProofChainState::new(chain_id);
+    let mut second = ProofChainState::new(chain_id);
+    assert_eq!(first.head_block_id(), second.head_block_id());
+
+    let first_pairing = first.prepare_block(vec![pairing_id]).unwrap();
+    let _ = first
+        .apply_block(
+            &first_pairing,
+            vec![AddressedProofCandidate::new(
+                pairing_id,
+                pairing_bytes.clone(),
+            )],
+        )
+        .unwrap();
+    let first_union = first.prepare_block(vec![union_id]).unwrap();
+    let _ = first
+        .apply_block(
+            &first_union,
+            vec![AddressedProofCandidate::new(union_id, union_bytes.clone())],
+        )
+        .unwrap();
+
+    let second_union = second.prepare_block(vec![union_id]).unwrap();
+    let _ = second
+        .apply_block(
+            &second_union,
+            vec![AddressedProofCandidate::new(union_id, union_bytes)],
+        )
+        .unwrap();
+    let second_pairing = second.prepare_block(vec![pairing_id]).unwrap();
+    let _ = second
+        .apply_block(
+            &second_pairing,
+            vec![AddressedProofCandidate::new(pairing_id, pairing_bytes)],
+        )
+        .unwrap();
+
+    assert_eq!(first.proof_dag().len(), 2);
+    assert_eq!(second.proof_dag().len(), 2);
+    assert_eq!(
+        first.proof_dag().proof_set_root(),
+        second.proof_dag().proof_set_root()
+    );
+    assert_ne!(first.head_block_id(), second.head_block_id());
+    assert_ne!(first_pairing.id(), second_union.id());
+    assert_ne!(first_union.id(), second_pairing.id());
 }

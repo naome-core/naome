@@ -255,9 +255,11 @@ statement novelty, consensus inclusion, finality, rewards, or economic
 settlement.
 
 The mathematical graph is fixed by exact checked `ProofReference` edges and has
-no implicit linear parent. A future block or checkpoint protocol may commit a
-canonical proof-state transition, but parentage and selection policy remain
-separate from Ledger State and from the consensus-neutral transition contract.
+no implicit linear parent. The separate [Proof Block](proof-block.md) contract
+commits one canonical proof-state transition to an exact linear parent and
+applies it through a privately owned `ProofDag`. Block parentage remains
+separate from Ledger State, while selection, consensus, and finality remain
+outside both contracts.
 
 ## Explicit exclusions
 
@@ -265,5 +267,6 @@ This contract defines no automatic dependency fetching, quarantine, retry,
 batch network message, unordered topological sort, partial success, dynamic
 limit, public arbitrary proof resolver, generic rollback, deletion,
 reorganization, snapshot, compaction, pruning, source syntax, networking,
-block format, consensus, checkpoint trust, finality, rewards, fees, balances,
-or settlement.
+block format, block parentage, consensus, checkpoint trust, finality, rewards,
+fees, balances, or settlement. The separate [Proof Block](proof-block.md)
+contract adds exact linear parent context without changing these ledger rules.
