@@ -10,15 +10,13 @@ use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 use naome_ledger::ProofBatchError;
 
 use super::*;
-use crate::tests::{TestDirectory, apply_fresh_blocks, create_journal};
+use crate::tests::{
+    TestDirectory, apply_fresh_blocks, create_journal, pairing_bytes, test_network_for_peers,
+};
 use crate::{CancellationDrainOutcome, NetworkEvent, PendingBudget, StaticPeer};
 
 fn proof_id(byte: u8) -> ProofId {
     ProofId::from_bytes([byte; 32])
-}
-
-fn pairing_bytes() -> Vec<u8> {
-    vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x01]
 }
 
 fn canonical_bytes(steps: Vec<ProofStep>) -> Vec<u8> {
@@ -140,29 +138,6 @@ fn test_network_for_peer(remote_peer_id: PeerId) -> StaticProofNetwork {
     test_network_for_peers(&[remote_peer_id])
 }
 
-fn test_network_for_peers(remote_peer_ids: &[PeerId]) -> StaticProofNetwork {
-    let local = crate::Keypair::generate_ed25519();
-    assert!(!remote_peer_ids.contains(&local.public().to_peer_id()));
-    let peers = remote_peer_ids
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(index, peer_id)| {
-            let address = format!("/ip4/127.0.0.1/tcp/{}", 9 + index).parse().unwrap();
-            StaticPeer::new(peer_id, address)
-        })
-        .collect::<Vec<_>>();
-    let mut network = StaticProofNetwork::new(local, peers).unwrap();
-    for &peer_id in remote_peer_ids {
-        network
-            .swarm
-            .behaviour_mut()
-            .sessions
-            .mark_connected_for_test(peer_id);
-    }
-    network
-}
-
 fn response_for(
     network: &mut StaticProofNetwork,
     acquisition: &ProofDependencyAcquisition,
@@ -170,12 +145,17 @@ fn response_for(
 ) -> OutboundProofEvent {
     let request_id = acquisition.pending_request_id;
     let pending = network
-        .pending
-        .remove(&request_id)
+        .remove_pending_proof(request_id)
         .expect("the acquisition request is pending");
+    let peer_id = network
+        .swarm
+        .behaviour()
+        .sessions
+        .peer_id_at(pending.peer_index)
+        .expect("a pending peer index remains configured");
     OutboundProofEvent {
         request_id,
-        peer_id: pending.peer_id,
+        peer_id,
         request: pending.request,
         control: Arc::clone(&pending.control),
         outcome: OutboundProofOutcome::Response {
@@ -192,7 +172,7 @@ fn transport_response(
     bytes: Vec<u8>,
 ) -> NetworkEvent {
     network
-        .handle_exchange_event(request_response::Event::Message {
+        .handle_proof_exchange_event(request_response::Event::Message {
             peer: peer_id,
             connection_id: ConnectionId::new_unchecked(700),
             message: request_response::Message::Response {
@@ -210,7 +190,7 @@ fn transport_failure(
     error: request_response::OutboundFailure,
 ) -> NetworkEvent {
     network
-        .handle_exchange_event(request_response::Event::OutboundFailure {
+        .handle_proof_exchange_event(request_response::Event::OutboundFailure {
             peer: peer_id,
             connection_id: ConnectionId::new_unchecked(701),
             request_id,
@@ -1125,7 +1105,7 @@ fn unexpected_generation_precedes_payload_interpretation() {
         Err(DependencyAcquisitionError::UnexpectedEvent)
     ));
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
-    drop(network.pending.remove(&current_request_id));
+    drop(network.remove_pending_proof(current_request_id));
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert!(selected.is_empty().unwrap());
 }
@@ -1176,7 +1156,7 @@ fn response_must_come_from_the_originating_network_instance() {
     ));
     assert_eq!(other.pending_budget.active.load(Ordering::Relaxed), 0);
     assert_eq!(origin.pending_budget.active.load(Ordering::Relaxed), 1);
-    drop(origin.pending.remove(&origin_request_id));
+    drop(origin.remove_pending_proof(origin_request_id));
     assert_eq!(origin.pending_budget.active.load(Ordering::Relaxed), 0);
     drop(other_acquisition);
 }
@@ -1282,8 +1262,14 @@ fn cancellation_releases_quarantine_but_retains_the_wire_permit_until_drain() {
 
     acquisition.cancel();
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
-    assert!(network.pending.contains_key(&request_id));
-    assert!(network.pending[&request_id].control.is_cancelled());
+    assert!(network.pending_proof(request_id).is_some());
+    assert!(
+        network
+            .pending_proof(request_id)
+            .unwrap()
+            .control
+            .is_cancelled()
+    );
     assert!(matches!(
         network.request_proof(peer_id, ProofRequest::new(proof_id(0x91))),
         Err(RequestStartError::AlreadyPending(actual)) if actual == peer_id
@@ -1292,7 +1278,7 @@ fn cancellation_releases_quarantine_but_retains_the_wire_permit_until_drain() {
     let event = transport_response(&mut network, request_id, peer_id, parent_bytes);
     assert!(matches!(
         event,
-        NetworkEvent::CancellationDrained {
+        NetworkEvent::ProofCancellationDrained {
             peer_id: actual,
             outcome: CancellationDrainOutcome::ResponseDiscarded,
             ..
@@ -1321,7 +1307,7 @@ fn cancelled_transport_failure_settles_once_with_its_typed_cause() {
     );
     assert!(matches!(
         event,
-        NetworkEvent::CancellationDrained {
+        NetworkEvent::ProofCancellationDrained {
             outcome: CancellationDrainOutcome::Failure(source),
             ..
         } if matches!(
@@ -1332,7 +1318,7 @@ fn cancelled_transport_failure_settles_once_with_its_typed_cause() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert!(
         network
-            .handle_exchange_event(request_response::Event::OutboundFailure {
+            .handle_proof_exchange_event(request_response::Event::OutboundFailure {
                 peer: peer_id,
                 connection_id: ConnectionId::new_unchecked(702),
                 request_id,
@@ -1362,7 +1348,7 @@ async fn session_disconnect_does_not_settle_a_cancelled_request() {
             peer_id: disconnected,
         }) if disconnected == peer_id
     ));
-    assert!(network.pending.contains_key(&request_id));
+    assert!(network.pending_proof(request_id).is_some());
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
     assert!(matches!(
         network.request_proof(peer_id, ProofRequest::new(proof_id(0x9c))),
@@ -1376,7 +1362,7 @@ async fn session_disconnect_does_not_settle_a_cancelled_request() {
             peer_id,
             request_response::OutboundFailure::ConnectionClosed,
         ),
-        NetworkEvent::CancellationDrained {
+        NetworkEvent::ProofCancellationDrained {
             outcome: CancellationDrainOutcome::Failure(source),
             ..
         } if matches!(
@@ -1427,7 +1413,7 @@ fn cancelled_requests_retain_the_complete_global_budget_until_exact_drain() {
     for (index, (&peer_id, &request_id)) in peer_ids.iter().zip(&request_ids).enumerate() {
         assert!(matches!(
             transport_response(&mut network, request_id, peer_id, pairing_bytes()),
-            NetworkEvent::CancellationDrained {
+            NetworkEvent::ProofCancellationDrained {
                 outcome: CancellationDrainOutcome::ResponseDiscarded,
                 ..
             }
@@ -1456,7 +1442,13 @@ async fn next_event_expires_once_at_the_absolute_deadline_and_drains_later() {
     assert!(event.is_deadline_exceeded());
     assert!(acquisition.accepts_event(&event));
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
-    assert!(network.pending[&request_id].control.is_cancelled());
+    assert!(
+        network
+            .pending_proof(request_id)
+            .unwrap()
+            .control
+            .is_cancelled()
+    );
     assert!(
         network
             .take_due_acquisition_deadline(tokio::time::Instant::now())
@@ -1473,7 +1465,7 @@ async fn next_event_expires_once_at_the_absolute_deadline_and_drains_later() {
     let event = transport_response(&mut network, request_id, peer_id, pairing_bytes());
     assert!(matches!(
         event,
-        NetworkEvent::CancellationDrained {
+        NetworkEvent::ProofCancellationDrained {
             outcome: CancellationDrainOutcome::ResponseDiscarded,
             ..
         }
@@ -1621,7 +1613,10 @@ fn every_dependency_request_inherits_one_control_and_deadline() {
     ));
     assert_eq!(acquisition.cancellation.control().deadline, deadline);
     assert!(Arc::ptr_eq(
-        &network.pending[&acquisition.pending_request_id].control,
+        &network
+            .pending_proof(acquisition.pending_request_id)
+            .unwrap()
+            .control,
         &first_control
     ));
 }
@@ -1667,7 +1662,7 @@ fn pre_deadline_failure_and_cancelled_peer_mismatch_are_typed() {
     let event = transport_response(&mut network, request_id, actual, pairing_bytes());
     assert!(matches!(
         event,
-        NetworkEvent::CancellationDrained {
+        NetworkEvent::ProofCancellationDrained {
             outcome: CancellationDrainOutcome::Failure(source),
             ..
         } if matches!(
@@ -1729,7 +1724,7 @@ async fn a_deadline_emitted_first_preserves_later_peer_mismatch_on_drain() {
     let actual = crate::Keypair::generate_ed25519().public().to_peer_id();
     assert!(matches!(
         transport_response(&mut network, request_id, actual, pairing_bytes()),
-        NetworkEvent::CancellationDrained {
+        NetworkEvent::ProofCancellationDrained {
             outcome: CancellationDrainOutcome::Failure(source),
             ..
         } if matches!(
@@ -1758,12 +1753,18 @@ fn dropping_an_acquisition_tombstones_its_current_generation() {
     let request_id = acquisition.pending_request_id;
     drop(acquisition);
 
-    assert!(network.pending[&request_id].control.is_cancelled());
+    assert!(
+        network
+            .pending_proof(request_id)
+            .unwrap()
+            .control
+            .is_cancelled()
+    );
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
     let event = transport_response(&mut network, request_id, peer_id, pairing_bytes());
     assert!(matches!(
         event,
-        NetworkEvent::CancellationDrained {
+        NetworkEvent::ProofCancellationDrained {
             outcome: CancellationDrainOutcome::ResponseDiscarded,
             ..
         }
@@ -1797,7 +1798,7 @@ fn stale_failure_cannot_consume_a_new_same_address_generation() {
         Err(DependencyAcquisitionError::UnexpectedEvent)
     ));
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
-    drop(network.pending.remove(&current_request_id));
+    drop(network.remove_pending_proof(current_request_id));
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
 }
 

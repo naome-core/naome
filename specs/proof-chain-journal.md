@@ -392,6 +392,11 @@ may borrow one such committed block to answer an exact-ID request. Local lookup
 does not establish that the block belongs to another chain context, is available
 from any peer, or was selected or finalized by a network.
 
+The separate
+[Authenticated Proof Block Transport](authenticated-proof-block-transport.md)
+may encode that borrowed value into one bounded response owned by the existing
+static libp2p swarm. The journal is not borrowed across the asynchronous write.
+
 ## Incomplete-tail recovery
 
 If EOF occurs after the last committed entry but before a complete next entry
@@ -429,6 +434,9 @@ The transport-neutral Addressed Proof Block Exchange may request one exact
 `ProofBlockId`. Its serving helper delegates to `block` and preserves a journal
 error rather than converting poisoned state into `Unavailable`. The exchange
 adds no socket, peer, retry, announcement, synchronization, or selection policy.
+The Authenticated Proof Block Transport binds that helper to one statically
+authorized peer request without adding block discovery, ancestry walking,
+payload acquisition, application, or selection.
 
 An authenticated proof transport may acquire an opaque bounded
 `UnselectedProofClosure`. That closure owns untrusted candidate payloads and

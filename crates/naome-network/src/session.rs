@@ -59,8 +59,15 @@ impl Behaviour {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn connection_status(&self, peer_id: &PeerId) -> Option<bool> {
         self.peer(peer_id)
+            .map(|peer| matches!(peer.link, Link::Connected { .. }))
+    }
+
+    pub(super) fn connection_status_at(&self, index: usize) -> Option<bool> {
+        self.peers
+            .get(index)
             .map(|peer| matches!(peer.link, Link::Connected { .. }))
     }
 

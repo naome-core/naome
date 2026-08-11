@@ -2,13 +2,13 @@
 //!
 //! TCP carries mutually authenticated Noise sessions, Yamux provides one
 //! substream per exchange, and the retained libp2p request handle plus
-//! authenticated peer bind each received response to the immutable
-//! [`ProofRequest`] that caused it. Static authorization is not Sybil
+//! authenticated peer bind each received response to the immutable proof or
+//! proof-block request that caused it. Static authorization is not Sybil
 //! resistance, discovery, consensus, or proof selection.
 //!
 //! The endpoint with the lexicographically lower raw binary `PeerId` in each
-//! configured pair owns dialing; proof requests reuse that managed full-duplex
-//! session and never open connections.
+//! configured pair owns dialing; proof and exact-block requests reuse that
+//! managed full-duplex session and never open connections.
 //!
 //! A separate outbound-only [`PeerRecordBootstrapClient`] authenticates exact
 //! operator-configured bootstrap endpoints and returns source-bound record
@@ -21,14 +21,16 @@
 //! retains the private key, discovers addresses, or publishes by itself.
 //!
 //! The caller owns the Tokio runtime, drives every network event loop, routes
-//! correlated proof events through a bounded dependency acquisition, and
-//! explicitly promotes the resulting opaque closure or admits a peer-record
-//! batch. The responder publication is not derived from the address store.
+//! correlated proof events through a bounded dependency acquisition, consumes
+//! exact-block terminals through their generation tickets, and explicitly
+//! promotes a resulting opaque closure or admits a peer-record batch. The
+//! responder publication is not derived from the address store.
 //! This crate starts no NAOME-owned background task and owns no
 //! [`ProofChainJournal`].
 
 mod acquisition;
 mod address_store;
+mod block_transport;
 mod bootstrap;
 mod codec;
 mod local_issuer;
@@ -47,7 +49,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use codec::{PROTOCOL, ProofCodec};
+use block_transport::PendingProofBlockRequest;
+use codec::{PROOF_BLOCK_PROTOCOL, PROTOCOL, ProofBlockCodec, ProofCodec};
 use libp2p::futures::StreamExt;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{
@@ -64,6 +67,7 @@ use tokio::time::Instant;
 const MANAGED_SESSION_IDLE_TIMEOUT: Duration = Duration::MAX;
 const PEER_RECORD_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PEER_RECORD_STREAMS_PER_CONNECTION: usize = 1;
+const MAX_NEGOTIATING_INBOUND_STREAMS_PER_CONNECTION: usize = 2;
 const DIAL_RETRY_DELAYS: [Duration; 7] = [
     Duration::from_secs(1),
     Duration::from_secs(2),
@@ -86,6 +90,10 @@ pub use address_store::{
     PEER_RECORD_TTL, PeerAddressStore, PeerAddressStoreError, PeerRecordAdmission,
     PeerRecordBatchAdmission, SignedPeerRecord, SignedPeerRecordError,
 };
+pub use block_transport::{
+    BlockRequestTicket, InboundProofBlockRequest, OutboundProofBlockEvent,
+    OutboundProofBlockFailure, ProofBlockRequestEventMismatch,
+};
 pub use bootstrap::{
     AuthenticatedPeerRecordBatch, PeerRecordBootstrapBuildError, PeerRecordBootstrapClient,
     PeerRecordBootstrapEvent, PeerRecordPullFailure, PeerRecordPullStartError,
@@ -107,13 +115,15 @@ pub use responder::{
 pub const MAX_STATIC_PEERS: usize = 8;
 /// Maximum established connections with one authenticated peer.
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
-/// Maximum number of pending outbound proof requests.
+/// Maximum pending or caller-retained outbound proof and proof-block requests combined.
 pub const MAX_PENDING_REQUESTS: usize = 8;
 /// Maximum requests issued by one dependency acquisition across all peers.
 pub const MAX_DEPENDENCY_ACQUISITION_REQUESTS: usize =
     PROOF_BATCH_MAX_CANDIDATES + MAX_STATIC_PEERS - 1;
-/// Maximum concurrent request-response streams on one connection.
-pub const MAX_STREAMS_PER_CONNECTION: usize = 2;
+/// Maximum concurrent streams for each proof or proof-block exchange.
+pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
+/// Maximum concurrent proof plus proof-block streams on one connection.
+pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION * 2;
 /// Maximum total Yamux substreams on one connection.
 pub const MAX_YAMUX_STREAMS_PER_CONNECTION: usize = 8;
 /// Configured TCP listen backlog.
@@ -167,14 +177,35 @@ struct Behaviour {
     limits: connection_limits::Behaviour,
     allowed: allow_block_list::Behaviour<allow_block_list::AllowedPeers>,
     sessions: SessionBehaviour,
-    exchange: request_response::Behaviour<ProofCodec>,
+    proof_exchange: request_response::Behaviour<ProofCodec>,
+    block_exchange: request_response::Behaviour<ProofBlockCodec>,
 }
 
-struct PendingRequest {
-    peer_id: PeerId,
+struct PendingProofRequest {
+    peer_index: usize,
     request: ProofRequest,
     control: Arc<AcquisitionControl>,
     _permit: PendingPermit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ExchangeRequestId {
+    Proof(request_response::OutboundRequestId),
+    Block(request_response::OutboundRequestId),
+}
+
+enum PendingRequest {
+    Proof(PendingProofRequest),
+    Block(PendingProofBlockRequest),
+}
+
+impl PendingRequest {
+    fn peer_index(&self) -> usize {
+        match self {
+            Self::Proof(pending) => pending.peer_index,
+            Self::Block(pending) => pending.peer_index,
+        }
+    }
 }
 
 struct AcquisitionControl {
@@ -204,7 +235,7 @@ impl AcquisitionControl {
 /// Authenticated proof transport over a fixed set of authorized peers.
 pub struct StaticProofNetwork {
     swarm: Swarm<Behaviour>,
-    pending: HashMap<request_response::OutboundRequestId, PendingRequest>,
+    pending: HashMap<ExchangeRequestId, PendingRequest>,
     pending_budget: Arc<PendingBudget>,
 }
 
@@ -256,10 +287,18 @@ impl StaticProofNetwork {
 
         let exchange_config = request_response::Config::default()
             .with_request_timeout(REQUEST_TIMEOUT)
-            .with_max_concurrent_streams(MAX_STREAMS_PER_CONNECTION);
-        let exchange = request_response::Behaviour::with_codec(
+            .with_max_concurrent_streams(MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION);
+        let proof_exchange = request_response::Behaviour::with_codec(
             ProofCodec,
             [(PROTOCOL, request_response::ProtocolSupport::Full)],
+            exchange_config.clone(),
+        );
+        let block_exchange = request_response::Behaviour::with_codec(
+            ProofBlockCodec,
+            [(
+                PROOF_BLOCK_PROTOCOL,
+                request_response::ProtocolSupport::Full,
+            )],
             exchange_config,
         );
 
@@ -267,7 +306,8 @@ impl StaticProofNetwork {
             limits,
             allowed,
             sessions,
-            exchange,
+            proof_exchange,
+            block_exchange,
         };
         let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
@@ -282,7 +322,9 @@ impl StaticProofNetwork {
             .with_swarm_config(|config| {
                 config
                     .with_idle_connection_timeout(MANAGED_SESSION_IDLE_TIMEOUT)
-                    .with_max_negotiating_inbound_streams(MAX_STREAMS_PER_CONNECTION)
+                    .with_max_negotiating_inbound_streams(
+                        MAX_NEGOTIATING_INBOUND_STREAMS_PER_CONNECTION,
+                    )
             })
             .with_connection_timeout(CONNECTION_TIMEOUT)
             .build();
@@ -310,45 +352,72 @@ impl StaticProofNetwork {
         request: ProofRequest,
         control: &Arc<AcquisitionControl>,
     ) -> Result<request_response::OutboundRequestId, RequestStartError> {
-        let Some(session_connected) = self.swarm.behaviour().sessions.connection_status(&peer_id)
-        else {
+        let transport_connected = self.swarm.behaviour().proof_exchange.is_connected(&peer_id);
+        let (peer_index, permit) = self.acquire_request_permit(peer_id, transport_connected)?;
+        let request_id = self
+            .swarm
+            .behaviour_mut()
+            .proof_exchange
+            .send_request(&peer_id, request);
+        self.insert_pending(
+            ExchangeRequestId::Proof(request_id),
+            PendingRequest::Proof(PendingProofRequest {
+                peer_index,
+                request,
+                control: Arc::clone(control),
+                _permit: permit,
+            }),
+        );
+        Ok(request_id)
+    }
+
+    fn acquire_request_permit(
+        &self,
+        peer_id: PeerId,
+        transport_connected: bool,
+    ) -> Result<(usize, PendingPermit), RequestStartError> {
+        let sessions = &self.swarm.behaviour().sessions;
+        let Some(peer_index) = sessions.peer_index(&peer_id) else {
             return Err(RequestStartError::UnknownPeer(peer_id));
         };
         if self
             .pending
             .values()
-            .any(|pending| pending.peer_id == peer_id)
+            .any(|pending| pending.peer_index() == peer_index)
         {
             return Err(RequestStartError::AlreadyPending(peer_id));
         }
-        let transport_connected = self.swarm.behaviour().exchange.is_connected(&peer_id);
+        let session_connected = sessions
+            .connection_status_at(peer_index)
+            .expect("a configured peer index remains valid");
         #[cfg(test)]
-        let transport_connected =
-            transport_connected || self.swarm.behaviour().sessions.is_test_connected(&peer_id);
+        let transport_connected = transport_connected || sessions.is_test_connected(&peer_id);
         if !session_connected || !transport_connected {
             return Err(RequestStartError::PeerDisconnected(peer_id));
         }
-        let permit = PendingBudget::try_acquire(&self.pending_budget).ok_or(
-            RequestStartError::GlobalLimit {
+        PendingBudget::try_acquire(&self.pending_budget)
+            .map(|permit| (peer_index, permit))
+            .ok_or(RequestStartError::GlobalLimit {
                 maximum: MAX_PENDING_REQUESTS,
-            },
-        )?;
-        let request_id = self
-            .swarm
-            .behaviour_mut()
-            .exchange
-            .send_request(&peer_id, request);
-        let replaced = self.pending.insert(
-            request_id,
-            PendingRequest {
-                peer_id,
-                request,
-                control: Arc::clone(control),
-                _permit: permit,
-            },
-        );
+            })
+    }
+
+    fn insert_pending(&mut self, key: ExchangeRequestId, pending: PendingRequest) {
+        debug_assert!(matches!(
+            (&key, &pending),
+            (ExchangeRequestId::Proof(_), PendingRequest::Proof(_))
+                | (ExchangeRequestId::Block(_), PendingRequest::Block(_))
+        ));
+        let replaced = self.pending.insert(key, pending);
         debug_assert!(replaced.is_none());
-        Ok(request_id)
+    }
+
+    fn pending_peer_id(&self, peer_index: usize) -> PeerId {
+        self.swarm
+            .behaviour()
+            .sessions
+            .peer_id_at(peer_index)
+            .expect("a pending peer index remains configured")
     }
 
     #[cfg(test)]
@@ -385,8 +454,13 @@ impl StaticProofNetwork {
             };
 
             match swarm_event {
-                SwarmEvent::Behaviour(BehaviourEvent::Exchange(event)) => {
-                    if let Some(event) = self.handle_exchange_event(event) {
+                SwarmEvent::Behaviour(BehaviourEvent::ProofExchange(event)) => {
+                    if let Some(event) = self.handle_proof_exchange_event(event) {
+                        return event;
+                    }
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::BlockExchange(event)) => {
+                    if let Some(event) = self.handle_block_exchange_event(event) {
                         return event;
                     }
                 }
@@ -418,8 +492,12 @@ impl StaticProofNetwork {
     fn next_acquisition_deadline(&self) -> Option<Instant> {
         self.pending
             .values()
-            .filter(|pending| !pending.control.is_cancelled())
-            .map(|pending| pending.control.deadline)
+            .filter_map(|pending| match pending {
+                PendingRequest::Proof(pending) if !pending.control.is_cancelled() => {
+                    Some(pending.control.deadline)
+                }
+                PendingRequest::Proof(_) | PendingRequest::Block(_) => None,
+            })
             .min()
     }
 
@@ -427,28 +505,37 @@ impl StaticProofNetwork {
         let request_id = self
             .pending
             .iter()
-            .filter(|(_, pending)| {
-                !pending.control.is_cancelled() && now >= pending.control.deadline
+            .filter_map(|(key, pending)| match (key, pending) {
+                (ExchangeRequestId::Proof(request_id), PendingRequest::Proof(pending))
+                    if !pending.control.is_cancelled() && now >= pending.control.deadline =>
+                {
+                    Some((*request_id, pending.control.deadline))
+                }
+                _ => None,
             })
-            .min_by_key(|(request_id, pending)| (pending.control.deadline, **request_id))
-            .map(|(request_id, _)| *request_id)?;
-        let pending = self
+            .min_by_key(|(request_id, deadline)| (*deadline, *request_id))?
+            .0;
+        let PendingRequest::Proof(pending) = self
             .pending
-            .get(&request_id)
-            .expect("the due request remains pending");
+            .get(&ExchangeRequestId::Proof(request_id))
+            .expect("the due proof request remains pending")
+        else {
+            unreachable!("a proof request key always stores a proof request")
+        };
         if !pending.control.cancel() {
             return None;
         }
+        let peer_id = self.pending_peer_id(pending.peer_index);
         Some(NetworkEvent::OutboundProof(OutboundProofEvent {
             request_id,
-            peer_id: pending.peer_id,
+            peer_id,
             request: pending.request,
             control: Arc::clone(&pending.control),
             outcome: OutboundProofOutcome::DeadlineExceeded,
         }))
     }
 
-    fn handle_exchange_event(
+    fn handle_proof_exchange_event(
         &mut self,
         event: request_response::Event<ProofRequest, ProofResponse>,
     ) -> Option<NetworkEvent> {
@@ -458,7 +545,7 @@ impl StaticProofNetwork {
                     request_id,
                     request,
                     channel,
-                } => Some(NetworkEvent::InboundRequest(InboundProofRequest {
+                } => Some(NetworkEvent::InboundProofRequest(InboundProofRequest {
                     peer_id: peer,
                     request_id,
                     request,
@@ -468,16 +555,16 @@ impl StaticProofNetwork {
                     request_id,
                     response,
                 } => {
-                    let pending = self.pending.remove(&request_id)?;
-                    if pending.peer_id != peer {
-                        let expected = pending.peer_id;
+                    let pending = self.remove_pending_proof(request_id)?;
+                    let expected = self.pending_peer_id(pending.peer_index);
+                    if expected != peer {
                         return Some(Self::finish_peer_mismatch(
                             request_id, pending, expected, peer,
                         ));
                     }
                     if pending.control.is_cancelled() {
-                        return Some(NetworkEvent::CancellationDrained {
-                            peer_id: pending.peer_id,
+                        return Some(NetworkEvent::ProofCancellationDrained {
+                            peer_id: expected,
                             request: pending.request,
                             outcome: CancellationDrainOutcome::ResponseDiscarded,
                         });
@@ -486,14 +573,14 @@ impl StaticProofNetwork {
                         return Some(if pending.control.cancel() {
                             NetworkEvent::OutboundProof(OutboundProofEvent {
                                 request_id,
-                                peer_id: pending.peer_id,
+                                peer_id: expected,
                                 request: pending.request,
                                 control: pending.control,
                                 outcome: OutboundProofOutcome::DeadlineExceeded,
                             })
                         } else {
-                            NetworkEvent::CancellationDrained {
-                                peer_id: pending.peer_id,
+                            NetworkEvent::ProofCancellationDrained {
+                                peer_id: expected,
                                 request: pending.request,
                                 outcome: CancellationDrainOutcome::ResponseDiscarded,
                             }
@@ -501,7 +588,7 @@ impl StaticProofNetwork {
                     }
                     Some(NetworkEvent::OutboundProof(OutboundProofEvent {
                         request_id,
-                        peer_id: peer,
+                        peer_id: expected,
                         request: pending.request,
                         control: pending.control,
                         outcome: OutboundProofOutcome::Response {
@@ -517,9 +604,9 @@ impl StaticProofNetwork {
                 error,
                 ..
             } => {
-                let pending = self.pending.remove(&request_id)?;
-                if pending.peer_id != peer {
-                    let expected = pending.peer_id;
+                let pending = self.remove_pending_proof(request_id)?;
+                let expected = self.pending_peer_id(pending.peer_index);
+                if expected != peer {
                     return Some(Self::finish_peer_mismatch(
                         request_id, pending, expected, peer,
                     ));
@@ -527,6 +614,7 @@ impl StaticProofNetwork {
                 Some(Self::finish_failed_request(
                     request_id,
                     pending,
+                    expected,
                     Box::new(OutboundProofFailure::Transport(error)),
                 ))
             }
@@ -535,7 +623,7 @@ impl StaticProofNetwork {
                 request_id,
                 error,
                 ..
-            } => Some(NetworkEvent::InboundFailure {
+            } => Some(NetworkEvent::InboundProofFailure {
                 peer_id: peer,
                 request_id,
                 error,
@@ -546,21 +634,21 @@ impl StaticProofNetwork {
 
     fn finish_peer_mismatch(
         request_id: request_response::OutboundRequestId,
-        pending: PendingRequest,
+        pending: PendingProofRequest,
         expected: PeerId,
         actual: PeerId,
     ) -> NetworkEvent {
         let error = Box::new(OutboundProofFailure::PeerMismatch { expected, actual });
         if pending.control.is_cancelled() {
-            return NetworkEvent::CancellationDrained {
-                peer_id: pending.peer_id,
+            return NetworkEvent::ProofCancellationDrained {
+                peer_id: expected,
                 request: pending.request,
                 outcome: CancellationDrainOutcome::Failure(error),
             };
         }
         NetworkEvent::OutboundProof(OutboundProofEvent {
             request_id,
-            peer_id: pending.peer_id,
+            peer_id: expected,
             request: pending.request,
             control: pending.control,
             outcome: OutboundProofOutcome::Failure(error),
@@ -569,12 +657,13 @@ impl StaticProofNetwork {
 
     fn finish_failed_request(
         request_id: request_response::OutboundRequestId,
-        pending: PendingRequest,
+        pending: PendingProofRequest,
+        peer_id: PeerId,
         error: Box<OutboundProofFailure>,
     ) -> NetworkEvent {
         if pending.control.is_cancelled() {
-            return NetworkEvent::CancellationDrained {
-                peer_id: pending.peer_id,
+            return NetworkEvent::ProofCancellationDrained {
+                peer_id,
                 request: pending.request,
                 outcome: CancellationDrainOutcome::Failure(error),
             };
@@ -583,14 +672,14 @@ impl StaticProofNetwork {
             return if pending.control.cancel() {
                 NetworkEvent::OutboundProof(OutboundProofEvent {
                     request_id,
-                    peer_id: pending.peer_id,
+                    peer_id,
                     request: pending.request,
                     control: pending.control,
                     outcome: OutboundProofOutcome::DeadlineExceeded,
                 })
             } else {
-                NetworkEvent::CancellationDrained {
-                    peer_id: pending.peer_id,
+                NetworkEvent::ProofCancellationDrained {
+                    peer_id,
                     request: pending.request,
                     outcome: CancellationDrainOutcome::Failure(error),
                 }
@@ -598,11 +687,35 @@ impl StaticProofNetwork {
         }
         NetworkEvent::OutboundProof(OutboundProofEvent {
             request_id,
-            peer_id: pending.peer_id,
+            peer_id,
             request: pending.request,
             control: pending.control,
             outcome: OutboundProofOutcome::Failure(error),
         })
+    }
+
+    fn remove_pending_proof(
+        &mut self,
+        request_id: request_response::OutboundRequestId,
+    ) -> Option<PendingProofRequest> {
+        let pending = self.pending.remove(&ExchangeRequestId::Proof(request_id))?;
+        let PendingRequest::Proof(pending) = pending else {
+            unreachable!("a proof request key always stores a proof request")
+        };
+        Some(pending)
+    }
+
+    #[cfg(test)]
+    fn pending_proof(
+        &self,
+        request_id: request_response::OutboundRequestId,
+    ) -> Option<&PendingProofRequest> {
+        match self.pending.get(&ExchangeRequestId::Proof(request_id))? {
+            PendingRequest::Proof(pending) => Some(pending),
+            PendingRequest::Block(_) => {
+                unreachable!("a proof request key always stores a proof request")
+            }
+        }
     }
 
     /// Serves one authenticated request from the healthy local journal.
@@ -610,7 +723,7 @@ impl StaticProofNetwork {
     /// One bounded proof-sized copy is required because rust-libp2p owns the
     /// response until its asynchronous stream write completes. The journal is
     /// not borrowed across that write.
-    pub fn respond_from_journal(
+    pub fn respond_proof_from_journal(
         &mut self,
         inbound: InboundProofRequest,
         journal: &ProofChainJournal,
@@ -626,7 +739,7 @@ impl StaticProofNetwork {
             .expect("retained canonical proof obeys the certificate limit");
         self.swarm
             .behaviour_mut()
-            .exchange
+            .proof_exchange
             .send_response(inbound.channel, response)
             .map_err(|_| RespondError::ChannelClosed)
     }
@@ -780,14 +893,21 @@ pub enum NetworkEvent {
     Listening {
         address: Multiaddr,
     },
-    InboundRequest(InboundProofRequest),
+    InboundProofRequest(InboundProofRequest),
     OutboundProof(OutboundProofEvent),
-    CancellationDrained {
+    InboundBlockRequest(InboundProofBlockRequest),
+    OutboundBlock(OutboundProofBlockEvent),
+    ProofCancellationDrained {
         peer_id: PeerId,
         request: ProofRequest,
         outcome: CancellationDrainOutcome,
     },
-    InboundFailure {
+    InboundProofFailure {
+        peer_id: PeerId,
+        request_id: request_response::InboundRequestId,
+        error: request_response::InboundFailure,
+    },
+    InboundBlockFailure {
         peer_id: PeerId,
         request_id: request_response::InboundRequestId,
         error: request_response::InboundFailure,
@@ -892,7 +1012,7 @@ impl Error for ListenError {
     }
 }
 
-/// Failure to start one outbound proof request.
+/// Failure to start one outbound proof or proof-block request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RequestStartError {
@@ -911,7 +1031,7 @@ impl fmt::Display for RequestStartError {
             Self::AlreadyPending(peer_id) => {
                 write!(
                     formatter,
-                    "peer {peer_id} already has a pending proof request"
+                    "peer {peer_id} already has a pending outbound exchange request"
                 )
             }
             Self::PeerDisconnected(peer_id) => {
@@ -920,7 +1040,7 @@ impl fmt::Display for RequestStartError {
             Self::GlobalLimit { maximum } => {
                 write!(
                     formatter,
-                    "pending proof requests reached maximum {maximum}"
+                    "shared pending or retained outbound request limit reached maximum {maximum}"
                 )
             }
         }
@@ -961,8 +1081,10 @@ pub enum RespondError {
 impl fmt::Display for RespondError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Journal(source) => write!(formatter, "cannot read proof journal: {source}"),
-            Self::ChannelClosed => write!(formatter, "proof response channel is closed"),
+            Self::Journal(source) => {
+                write!(formatter, "cannot read proof-chain journal: {source}")
+            }
+            Self::ChannelClosed => write!(formatter, "response channel is closed"),
         }
     }
 }

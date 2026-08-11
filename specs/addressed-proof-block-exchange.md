@@ -12,6 +12,12 @@ boundary and distinguishes successful message completion from transport
 failure. It defines no socket, stream framing, peer identity, authentication,
 authorization, retry, announcement, or complete peer-to-peer network.
 
+The separate
+[Authenticated Proof Block Transport](authenticated-proof-block-transport.md)
+binds this exact object exchange to statically authorized Noise peers over the
+existing managed Yamux sessions. That binding does not change these canonical
+request, response, or validation rules.
+
 A found response is useful only as content addressed by an already known block
 identity. The exchange does not discover that identity, determine whether the
 block belongs to the caller's configured chain, acquire its proof payloads, or
@@ -155,6 +161,11 @@ The helper performs no journal scan, block clone, canonical re-encoding, proof
 lookup, or state mutation. The journal reconstructs its private committed-block
 lookup only through strict entry replay and exposes no uncommitted or competing
 block through this path.
+
+The concrete authenticated transport may encode the borrowed result once into
+an owned response buffer because libp2p owns it across the asynchronous write.
+That transport-specific ownership does not change the zero-allocation local
+lookup contract.
 
 Serving a block from one local selected journal establishes only that this
 healthy handle committed and replayed that exact block. The block remains

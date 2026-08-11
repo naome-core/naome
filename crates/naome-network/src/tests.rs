@@ -60,8 +60,30 @@ impl Drop for TestDirectory {
     }
 }
 
-fn pairing_bytes() -> Vec<u8> {
+pub(crate) fn pairing_bytes() -> Vec<u8> {
     vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x01]
+}
+
+pub(crate) fn test_network_for_peers(peer_ids: &[super::PeerId]) -> StaticProofNetwork {
+    let local = super::Keypair::generate_ed25519();
+    assert!(!peer_ids.contains(&local.public().to_peer_id()));
+    let peers = peer_ids
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, peer_id)| {
+            StaticPeer::new(peer_id, address(u16::try_from(9 + index).unwrap()))
+        })
+        .collect::<Vec<_>>();
+    let mut network = StaticProofNetwork::new(local, peers).unwrap();
+    for &peer_id in peer_ids {
+        network
+            .swarm
+            .behaviour_mut()
+            .sessions
+            .mark_connected_for_test(peer_id);
+    }
+    network
 }
 
 pub(crate) fn create_journal(
@@ -219,7 +241,7 @@ async fn await_session(
     .expect("managed peer session did not establish");
 }
 
-async fn connected_pair() -> (StaticProofNetwork, StaticProofNetwork, PeerId, PeerId) {
+pub(crate) async fn connected_pair() -> (StaticProofNetwork, StaticProofNetwork, PeerId, PeerId) {
     let (owner_identity, passive_identity) = ordered_identities();
     let owner_peer_id = owner_identity.public().to_peer_id();
     let passive_peer_id = passive_identity.public().to_peer_id();
@@ -267,10 +289,12 @@ async fn receive_once(
                     }
                 },
                 event = server.next_event() => match event {
-                    NetworkEvent::InboundRequest(inbound) => {
-                        server.respond_from_journal(inbound, server_journal).unwrap();
+                    NetworkEvent::InboundProofRequest(inbound) => {
+                        server
+                            .respond_proof_from_journal(inbound, server_journal)
+                            .unwrap();
                     }
-                    NetworkEvent::InboundFailure { error, .. } => {
+                    NetworkEvent::InboundProofFailure { error, .. } => {
                         panic!("inbound proof exchange failed: {error}")
                     }
                     _ => {}
@@ -448,13 +472,17 @@ async fn dependency_acquisition_falls_back_to_another_authenticated_peer() {
                     }
                 },
                 event = preferred.next_event() => {
-                    if let NetworkEvent::InboundRequest(inbound) = event {
-                        preferred.respond_from_journal(inbound, &preferred_journal).unwrap();
+                    if let NetworkEvent::InboundProofRequest(inbound) = event {
+                        preferred
+                            .respond_proof_from_journal(inbound, &preferred_journal)
+                            .unwrap();
                     }
                 },
                 event = fallback.next_event() => {
-                    if let NetworkEvent::InboundRequest(inbound) = event {
-                        fallback.respond_from_journal(inbound, &fallback_journal).unwrap();
+                    if let NetworkEvent::InboundProofRequest(inbound) = event {
+                        fallback
+                            .respond_proof_from_journal(inbound, &fallback_journal)
+                            .unwrap();
                     }
                 },
             }
@@ -538,7 +566,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
         !owner
             .swarm
             .behaviour()
-            .exchange
+            .proof_exchange
             .is_connected(&passive_peer_id)
     );
 
@@ -566,7 +594,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
         !owner
             .swarm
             .behaviour()
-            .exchange
+            .proof_exchange
             .is_connected(&passive_peer_id)
     );
     assert!(
@@ -601,7 +629,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
         !passive
             .swarm
             .behaviour()
-            .exchange
+            .proof_exchange
             .is_connected(&owner_peer_id)
     );
     assert!(
@@ -878,8 +906,10 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
         while response_a.is_none() || response_b.is_none() {
             tokio::select! {
                 event = network_a.next_event() => match event {
-                    NetworkEvent::InboundRequest(inbound) => {
-                        network_a.respond_from_journal(inbound, &journal_a).unwrap();
+                    NetworkEvent::InboundProofRequest(inbound) => {
+                        network_a
+                            .respond_proof_from_journal(inbound, &journal_a)
+                            .unwrap();
                     }
                     NetworkEvent::OutboundProof(event) => {
                         if let Some(error) = event.failure() {
@@ -891,8 +921,10 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
                     _ => {}
                 },
                 event = network_b.next_event() => match event {
-                    NetworkEvent::InboundRequest(inbound) => {
-                        network_b.respond_from_journal(inbound, &journal_b).unwrap();
+                    NetworkEvent::InboundProofRequest(inbound) => {
+                        network_b
+                            .respond_proof_from_journal(inbound, &journal_b)
+                            .unwrap();
                     }
                     NetworkEvent::OutboundProof(event) => {
                         if let Some(error) = event.failure() {
@@ -943,7 +975,7 @@ async fn a_closed_response_channel_is_never_reported_as_unavailable() {
                     }
                 },
                 event = server.next_event() => {
-                    if let NetworkEvent::InboundRequest(inbound) = event {
+                    if let NetworkEvent::InboundProofRequest(inbound) = event {
                         drop(inbound);
                     }
                 },
@@ -1009,7 +1041,7 @@ async fn unlisted_authenticated_peer_cannot_deliver_a_request() {
                     }
                 },
                 event = server.next_event() => {
-                    if let NetworkEvent::InboundRequest(inbound) = event {
+                    if let NetworkEvent::InboundProofRequest(inbound) = event {
                         panic!("unlisted peer {} delivered request", inbound.peer_id());
                     }
                 },
@@ -1069,7 +1101,7 @@ async fn expected_peer_id_mismatch_never_delivers_a_request() {
                     }
                 },
                 event = server.next_event() => {
-                    if let NetworkEvent::InboundRequest(_) = event {
+                    if let NetworkEvent::InboundProofRequest(_) = event {
                         panic!("request reached a peer with the wrong authenticated identity");
                     }
                 },
@@ -1125,7 +1157,7 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
                     }
                 }
                 event = wrong_server.next_event() => {
-                    if let NetworkEvent::InboundRequest(_) = event {
+                    if let NetworkEvent::InboundProofRequest(_) = event {
                         panic!("request reached a peer with the wrong authenticated identity");
                     }
                 }
