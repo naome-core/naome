@@ -1,8 +1,8 @@
 use std::collections::TryReserveError;
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -10,21 +10,29 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use libp2p::core::multiaddr::Protocol;
 use libp2p::core::peer_record::{FromEnvelopeError, PeerRecord};
 use libp2p::core::signed_envelope::{DecodingError as EnvelopeDecodingError, SignedEnvelope};
-use libp2p::{Multiaddr, PeerId};
+use libp2p::{
+    Multiaddr, PeerId,
+    identity::{Keypair, SigningError},
+};
 use sha2::{Digest, Sha256};
 
 use crate::record_exchange::{MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch};
+use crate::snapshot_io::{
+    BoundedReadError, ExclusiveLockError, open_exclusive, read_bounded, replace_synced,
+};
 
 const STORE_HEADER: &[u8] = b"naome:peer-address-store-v0\0";
 const STORE_CHECKSUM_DOMAIN: &[u8] = b"naome:peer-address-store-checksum-v0\0";
 const BOOTSTRAP_DIGEST_DOMAIN: &[u8] = b"naome:peer-address-bootstrap-config-v0\0";
 const CANDIDATE_ORDER_DOMAIN: &[u8] = b"naome:peer-address-rank-v0\0";
+const STANDARD_PEER_RECORD_DOMAIN: &str = "libp2p-peer-record";
+const STANDARD_PEER_RECORD_PAYLOAD_TYPE: &[u8] = &[0x03, 0x01];
 const STORE_FILE_NAME: &str = "peer-address-store.bin";
 const LOCK_FILE_NAME: &str = "peer-address-store.lock";
 const TEMP_FILE_NAME: &str = "peer-address-store.tmp";
 const CHECKSUM_BYTES: usize = 32;
 const SALT_BYTES: usize = 32;
-const MAX_PEER_ID_BYTES: usize = 44;
+pub(crate) const MAX_PEER_ID_BYTES: usize = 44;
 const MIN_STORED_RECORD_BYTES: usize = 1 + 1 + 8 + 2 + 1;
 const SECONDS_PER_DAY: u64 = 86_400;
 
@@ -142,6 +150,10 @@ impl SignedPeerRecord {
 
         let envelope = SignedEnvelope::from_protobuf_encoding(bytes)
             .map_err(|source| SignedPeerRecordError::Envelope(Box::new(source)))?;
+        Self::from_signed_envelope(envelope)
+    }
+
+    fn from_signed_envelope(envelope: SignedEnvelope) -> Result<Self, SignedPeerRecordError> {
         let peer_record = PeerRecord::from_signed_envelope_interop(envelope)
             .map_err(|source| SignedPeerRecordError::PeerRecord(Box::new(source)))?;
         let peer_id_length = peer_record.peer_id().as_ref().encoded_len();
@@ -162,32 +174,51 @@ impl SignedPeerRecord {
             });
         }
 
-        if addresses.is_empty() || addresses.len() > MAX_ADDRESSES_PER_PEER_RECORD {
-            return Err(SignedPeerRecordError::AddressCount {
-                actual: addresses.len(),
-                maximum: MAX_ADDRESSES_PER_PEER_RECORD,
-            });
-        }
+        validate_peer_record_addresses(&addresses)?;
 
-        for (index, address) in addresses.iter().enumerate() {
-            if address.len() > MAX_PEER_ADDRESS_BYTES {
-                return Err(SignedPeerRecordError::AddressTooLong {
-                    index,
-                    actual: address.len(),
-                    maximum: MAX_PEER_ADDRESS_BYTES,
-                });
-            }
-            endpoint_group(address, true).map_err(|_| {
-                SignedPeerRecordError::UnsupportedAddress {
-                    index,
-                    address: Box::new(address.clone()),
-                }
-            })?;
-            if addresses[..index].contains(address) {
-                return Err(SignedPeerRecordError::DuplicateAddress { index });
-            }
-        }
+        Ok(Self {
+            peer_id,
+            sequence,
+            addresses,
+            envelope_bytes,
+        })
+    }
 
+    pub(crate) fn sign_with_sequence(
+        identity: &Keypair,
+        sequence: u64,
+        addresses: Vec<Multiaddr>,
+    ) -> Result<Self, SignedPeerRecordConstructionError> {
+        let peer_id = identity.public().to_peer_id();
+        let peer_id_length = peer_id.as_ref().encoded_len();
+        if peer_id_length > MAX_PEER_ID_BYTES {
+            return Err(SignedPeerRecordConstructionError::InvalidRecord(
+                SignedPeerRecordError::PeerIdTooLong {
+                    actual: peer_id_length,
+                    maximum: MAX_PEER_ID_BYTES,
+                },
+            ));
+        }
+        validate_peer_record_addresses(&addresses)
+            .map_err(SignedPeerRecordConstructionError::InvalidRecord)?;
+
+        let payload = encode_peer_record_payload(peer_id, sequence, &addresses)?;
+        let envelope_bytes = SignedEnvelope::new(
+            identity,
+            String::from(STANDARD_PEER_RECORD_DOMAIN),
+            STANDARD_PEER_RECORD_PAYLOAD_TYPE.to_vec(),
+            payload,
+        )
+        .map_err(SignedPeerRecordConstructionError::Signing)?
+        .into_protobuf_encoding();
+        if envelope_bytes.len() > MAX_SIGNED_PEER_RECORD_BYTES {
+            return Err(SignedPeerRecordConstructionError::InvalidRecord(
+                SignedPeerRecordError::NormalizedTooLong {
+                    actual: envelope_bytes.len(),
+                    maximum: MAX_SIGNED_PEER_RECORD_BYTES,
+                },
+            ));
+        }
         Ok(Self {
             peer_id,
             sequence,
@@ -317,6 +348,12 @@ impl Error for SignedPeerRecordError {
             _ => None,
         }
     }
+}
+
+pub(crate) enum SignedPeerRecordConstructionError {
+    InvalidRecord(SignedPeerRecordError),
+    Signing(SigningError),
+    Allocation(TryReserveError),
 }
 
 /// One untrusted, locally diversified future dial input.
@@ -461,36 +498,15 @@ impl PeerAddressStore {
         let lock = open_lock(&directory)?;
         let bootstrap_digest = bootstrap_digest(&bootstraps);
         let snapshot_path = directory.join(STORE_FILE_NAME);
-        let file = File::open(&snapshot_path)
-            .map_err(|source| PeerAddressStoreError::OpenSnapshot { source })?;
-        let length = usize::try_from(
-            file.metadata()
-                .map_err(PeerAddressStoreError::ReadSnapshot)?
-                .len(),
-        )
-        .map_err(|_| PeerAddressStoreError::SnapshotTooLong {
-            actual: usize::MAX,
-            maximum: MAX_STORE_BYTES,
-        })?;
-        if length > MAX_STORE_BYTES {
-            return Err(PeerAddressStoreError::SnapshotTooLong {
-                actual: length,
-                maximum: MAX_STORE_BYTES,
-            });
-        }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length)
-            .map_err(PeerAddressStoreError::Allocation)?;
-        file.take(u64::try_from(MAX_STORE_BYTES + 1).expect("the snapshot cap fits in u64"))
-            .read_to_end(&mut bytes)
-            .map_err(PeerAddressStoreError::ReadSnapshot)?;
-        if bytes.len() > MAX_STORE_BYTES {
-            return Err(PeerAddressStoreError::SnapshotTooLong {
-                actual: bytes.len(),
-                maximum: MAX_STORE_BYTES,
-            });
-        }
+        let bytes =
+            read_bounded(&snapshot_path, MAX_STORE_BYTES).map_err(|source| match source {
+                BoundedReadError::Open(source) => PeerAddressStoreError::OpenSnapshot { source },
+                BoundedReadError::Read(source) => PeerAddressStoreError::ReadSnapshot(source),
+                BoundedReadError::TooLong { actual, maximum } => {
+                    PeerAddressStoreError::SnapshotTooLong { actual, maximum }
+                }
+                BoundedReadError::Allocation(source) => PeerAddressStoreError::Allocation(source),
+            })?;
         let (ordering_salt, records) =
             decode_snapshot(&bytes, local_peer_id, &bootstraps, bootstrap_digest)?;
         Ok(Self {
@@ -1392,6 +1408,91 @@ fn validate_projected_capacity(
     Ok(())
 }
 
+pub(crate) fn validate_peer_record_addresses(
+    addresses: &[Multiaddr],
+) -> Result<(), SignedPeerRecordError> {
+    if addresses.is_empty() || addresses.len() > MAX_ADDRESSES_PER_PEER_RECORD {
+        return Err(SignedPeerRecordError::AddressCount {
+            actual: addresses.len(),
+            maximum: MAX_ADDRESSES_PER_PEER_RECORD,
+        });
+    }
+
+    for (index, address) in addresses.iter().enumerate() {
+        if address.len() > MAX_PEER_ADDRESS_BYTES {
+            return Err(SignedPeerRecordError::AddressTooLong {
+                index,
+                actual: address.len(),
+                maximum: MAX_PEER_ADDRESS_BYTES,
+            });
+        }
+        endpoint_group(address, true).map_err(|_| SignedPeerRecordError::UnsupportedAddress {
+            index,
+            address: Box::new(address.clone()),
+        })?;
+        if addresses[..index].contains(address) {
+            return Err(SignedPeerRecordError::DuplicateAddress { index });
+        }
+    }
+    Ok(())
+}
+
+fn encode_peer_record_payload(
+    peer_id: PeerId,
+    sequence: u64,
+    addresses: &[Multiaddr],
+) -> Result<Vec<u8>, SignedPeerRecordConstructionError> {
+    let (peer_id_bytes, peer_id_length) = encode_peer_id(peer_id);
+    let peer_id_field = 1 + varint_length(peer_id_length as u64) + peer_id_length;
+    let sequence_field = usize::from(sequence != 0) * (1 + varint_length(sequence));
+    let address_fields = addresses.iter().map(|address| {
+        let inner = 1 + varint_length(address.len() as u64) + address.len();
+        1 + varint_length(inner as u64) + inner
+    });
+    let capacity = address_fields.fold(peer_id_field + sequence_field, usize::saturating_add);
+
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(capacity)
+        .map_err(SignedPeerRecordConstructionError::Allocation)?;
+    push_bytes_field(&mut payload, 0x0a, &peer_id_bytes[..peer_id_length]);
+    if sequence != 0 {
+        payload.push(0x10);
+        push_varint(&mut payload, sequence);
+    }
+    for address in addresses {
+        let inner_length = 1 + varint_length(address.len() as u64) + address.len();
+        payload.push(0x1a);
+        push_varint(&mut payload, inner_length as u64);
+        push_bytes_field(&mut payload, 0x0a, address.as_ref());
+    }
+    debug_assert_eq!(payload.len(), capacity);
+    Ok(payload)
+}
+
+fn push_bytes_field(bytes: &mut Vec<u8>, tag: u8, value: &[u8]) {
+    bytes.push(tag);
+    push_varint(bytes, value.len() as u64);
+    bytes.extend_from_slice(value);
+}
+
+fn push_varint(bytes: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        bytes.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    bytes.push(value as u8);
+}
+
+const fn varint_length(mut value: u64) -> usize {
+    let mut length = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        length += 1;
+    }
+    length
+}
+
 fn validate_endpoint(
     address: &Multiaddr,
     require_global: bool,
@@ -1577,7 +1678,7 @@ fn stored_record_encoded_length(record: &StoredRecord) -> usize {
     1 + record.source_peer_id.as_ref().encoded_len() + 8 + 2 + record.record.envelope_bytes.len()
 }
 
-fn encode_peer_id(peer_id: PeerId) -> ([u8; MAX_PEER_ID_BYTES], usize) {
+pub(crate) fn encode_peer_id(peer_id: PeerId) -> ([u8; MAX_PEER_ID_BYTES], usize) {
     let length = peer_id.as_ref().encoded_len();
     assert!(
         length <= MAX_PEER_ID_BYTES,
@@ -1609,44 +1710,15 @@ pub(crate) fn compare_peer_id_bytes(left: &PeerId, right: &PeerId) -> std::cmp::
 }
 
 fn open_lock(directory: &Path) -> Result<File, PeerAddressStoreError> {
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(directory.join(LOCK_FILE_NAME))
-        .map_err(PeerAddressStoreError::OpenLock)?;
-    match lock.try_lock() {
-        Ok(()) => Ok(lock),
-        Err(TryLockError::WouldBlock) => Err(PeerAddressStoreError::Locked),
-        Err(TryLockError::Error(source)) => Err(PeerAddressStoreError::OpenLock(source)),
+    match open_exclusive(directory, LOCK_FILE_NAME) {
+        Ok(lock) => Ok(lock),
+        Err(ExclusiveLockError::Locked) => Err(PeerAddressStoreError::Locked),
+        Err(ExclusiveLockError::Io(source)) => Err(PeerAddressStoreError::OpenLock(source)),
     }
 }
 
 fn commit_snapshot(directory: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temp_path = directory.join(TEMP_FILE_NAME);
-    let mut temp = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temp_path)?;
-    temp.write_all(bytes)?;
-    temp.sync_all()?;
-    fs::rename(temp_path, directory.join(STORE_FILE_NAME))?;
-    sync_directory(directory)
-}
-
-#[cfg(unix)]
-fn sync_directory(directory: &Path) -> io::Result<()> {
-    File::open(directory)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_directory: &Path) -> io::Result<()> {
-    // std exposes no safe portable parent-directory synchronization contract
-    // on every non-Unix target. The file contents are synchronized before
-    // atomic rename.
-    Ok(())
+    replace_synced(directory, TEMP_FILE_NAME, STORE_FILE_NAME, bytes)
 }
 
 fn decode_snapshot(
