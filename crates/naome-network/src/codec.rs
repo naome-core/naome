@@ -8,6 +8,10 @@ use libp2p::{StreamProtocol, request_response};
 use naome::block_exchange::{
     PROOF_BLOCK_REQUEST_BYTES, PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockRequest,
 };
+use naome::chain_head_exchange::{
+    PROOF_CHAIN_HEAD_REQUEST_BYTES, PROOF_CHAIN_HEAD_RESPONSE_BYTES,
+    ProofChainHeadExchangeWireError, ProofChainHeadRequest, ProofChainHeadResponse,
+};
 use naome::proof_exchange::{
     PROOF_REQUEST_BYTES, PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse,
 };
@@ -20,6 +24,8 @@ use crate::record_exchange::{
 pub(super) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/proof-exchange");
 pub(super) const PROOF_BLOCK_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/proof-block-exchange");
+pub(super) const PROOF_CHAIN_HEAD_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/naome/proof-chain-head-exchange");
 pub(super) const PEER_RECORD_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/peer-record-exchange");
 
@@ -28,6 +34,9 @@ pub(super) struct ProofCodec;
 
 #[derive(Clone)]
 pub(super) struct ProofBlockCodec;
+
+#[derive(Clone)]
+pub(super) struct ProofChainHeadCodec;
 
 #[derive(Clone)]
 pub(super) struct PeerRecordCodec;
@@ -242,6 +251,85 @@ impl request_response::Codec for ProofBlockCodec {
         })?;
         io.write_all(&length.to_be_bytes()).await?;
         io.write_all(&bytes).await
+    }
+}
+
+#[async_trait]
+impl request_response::Codec for ProofChainHeadCodec {
+    type Protocol = StreamProtocol;
+    type Request = ProofChainHeadRequest;
+    type Response = ProofChainHeadResponse;
+
+    async fn read_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut bytes = [0_u8; PROOF_CHAIN_HEAD_REQUEST_BYTES];
+        io.read_exact(&mut bytes).await?;
+        require_eof(io, "proof-chain-head request has trailing bytes").await?;
+        ProofChainHeadRequest::from_wire_bytes(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut length = [0_u8; 1];
+        io.read_exact(&mut length).await?;
+        let length = usize::from(length[0]);
+        if length != 0 && length != PROOF_CHAIN_HEAD_RESPONSE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                ProofChainHeadExchangeWireError::InvalidResponseLength { actual: length },
+            ));
+        }
+        let mut bytes = [0_u8; PROOF_CHAIN_HEAD_RESPONSE_BYTES];
+        io.read_exact(&mut bytes[..length]).await?;
+        require_eof(io, "proof-chain-head response has trailing bytes").await?;
+        ProofChainHeadResponse::from_wire_bytes(&bytes[..length])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        request: Self::Request,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        io.write_all(&request.to_wire_bytes()).await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        response: Self::Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        match response.to_wire_bytes() {
+            Some(bytes) => {
+                let mut frame = [0_u8; 1 + PROOF_CHAIN_HEAD_RESPONSE_BYTES];
+                frame[0] = u8::try_from(PROOF_CHAIN_HEAD_RESPONSE_BYTES)
+                    .expect("the chain-head response length fits u8");
+                frame[1..].copy_from_slice(&bytes);
+                io.write_all(&frame).await
+            }
+            None => io.write_all(&[0]).await,
+        }
     }
 }
 

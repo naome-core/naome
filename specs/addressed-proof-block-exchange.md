@@ -219,3 +219,7 @@ acquisition, block preparation, block application, competing-fork storage, fork
 choice, rollback, reorganization, checkpoint trust, proposer, signature, proof
 of work, proof of stake, validator set, voting, quorum, consensus, finality,
 reward, fee, balance, novelty policy, issuance, or settlement.
+
+The separate [Proof Chain Head Exchange](proof-chain-head-exchange.md) may
+observe one untrusted chain-scoped candidate identity. It does not change this
+exact-ID retrieval contract or automatically request or import that candidate.

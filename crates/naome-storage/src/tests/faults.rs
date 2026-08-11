@@ -373,7 +373,7 @@ fn complete_bad_footer_is_not_recovered_but_incomplete_footer_is() {
 }
 
 #[test]
-fn poisoned_public_handle_hides_all_memory_state_and_keeps_lock() {
+fn poisoned_public_handle_exposes_only_chain_context_and_keeps_lock() {
     let directory = TestDirectory::new();
     let id = chain_id(CHAIN_BYTE);
     let payload = axiom_bytes(ZfcAxiom::Pairing);
@@ -393,6 +393,7 @@ fn poisoned_public_handle_hides_all_memory_state_and_keeps_lock() {
     assert_eq!(journal.block(block_id).unwrap(), Some(&block));
     journal.core.poisoned = true;
 
+    assert_eq!(journal.chain_id(), id);
     assert!(matches!(
         journal.block(block_id),
         Err(ProofChainJournalError::Poisoned)
