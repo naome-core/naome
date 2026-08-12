@@ -16,7 +16,7 @@ use naome_chain::{PROOF_BLOCK_MAX_BYTES, ProofBlock, ProofBlockDecodeError, Proo
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 /// Exact byte length of one proof-block request.
-pub const PROOF_BLOCK_REQUEST_BYTES: usize = 32;
+pub const PROOF_BLOCK_REQUEST_BYTES: usize = ProofBlockId::BYTE_LENGTH;
 
 /// Maximum byte length of one proof-block response message.
 pub const PROOF_BLOCK_RESPONSE_MAX_BYTES: usize = PROOF_BLOCK_MAX_BYTES;

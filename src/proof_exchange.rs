@@ -19,7 +19,7 @@ use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 /// Exact byte length of one proof request.
-pub const PROOF_REQUEST_BYTES: usize = 32;
+pub const PROOF_REQUEST_BYTES: usize = ProofId::BYTE_LENGTH;
 
 /// Maximum byte length of one proof response message.
 pub const PROOF_RESPONSE_MAX_BYTES: usize = CERTIFICATE_MAX_BYTES;

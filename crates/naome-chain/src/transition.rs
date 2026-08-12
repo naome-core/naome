@@ -8,9 +8,9 @@ use sha2::{Digest, Sha256};
 use crate::ProofSetRoot;
 
 const PROOF_TRANSITION_DOMAIN: &[u8] = b"naome:proof-transition\0";
-const ROOT_BYTES: usize = 32;
+const ROOT_BYTES: usize = ProofSetRoot::BYTE_LENGTH;
 const COUNT_BYTES: usize = 1;
-const PROOF_ID_BYTES: usize = 32;
+const PROOF_ID_BYTES: usize = ProofId::BYTE_LENGTH;
 const PREFIX_BYTES: usize = ROOT_BYTES + ROOT_BYTES + COUNT_BYTES;
 
 /// Maximum length of one canonical proof-state transition commitment.
@@ -26,6 +26,9 @@ pub const PROOF_TRANSITION_MAX_BYTES: usize =
 pub struct ProofTransitionId([u8; 32]);
 
 impl ProofTransitionId {
+    /// Exact width of one proof-state-transition identity.
+    pub const BYTE_LENGTH: usize = 32;
+
     /// Constructs a transition address from raw digest bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)

@@ -19,4 +19,4 @@ pub use logic::{Logic, LogicError};
 pub use zfc::{Replacement, SchemaError, Separation, ZfcAxiom};
 
 /// The immutable protocol identifier for Foundation.
-pub const FOUNDATION_ID: &str = "naome:zfc";
+pub const FOUNDATION_ID: &str = "naome:zfc:v0";

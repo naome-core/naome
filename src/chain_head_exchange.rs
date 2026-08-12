@@ -15,10 +15,10 @@ use naome_chain::{ProofBlockId, ProofChainId};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 /// Exact byte length of one proof-chain-head request.
-pub const PROOF_CHAIN_HEAD_REQUEST_BYTES: usize = 32;
+pub const PROOF_CHAIN_HEAD_REQUEST_BYTES: usize = ProofChainId::BYTE_LENGTH;
 
 /// Exact byte length of one found proof-chain-head response.
-pub const PROOF_CHAIN_HEAD_RESPONSE_BYTES: usize = 32;
+pub const PROOF_CHAIN_HEAD_RESPONSE_BYTES: usize = ProofBlockId::BYTE_LENGTH;
 
 /// A request for one peer-local head in an exact proof-chain context.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

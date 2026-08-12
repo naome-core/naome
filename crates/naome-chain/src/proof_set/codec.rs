@@ -1,12 +1,14 @@
 use naome_proof::ProofId;
 
-use super::{KEY_BITS, ProofPathStep, ProofSetProof, ProofSetProofError, ProofTerminal};
+use super::{
+    KEY_BITS, ProofPathStep, ProofSetProof, ProofSetProofError, ProofSetRoot, ProofTerminal,
+};
 
 const EMPTY_TERMINAL_TAG: u8 = 0x00;
 const MEMBER_TERMINAL_TAG: u8 = 0x01;
 const NON_MEMBER_TERMINAL_TAG: u8 = 0x02;
-const PROOF_ID_BYTES: usize = 32;
-const PATH_STEP_BYTES: usize = 1 + 32;
+const PROOF_ID_BYTES: usize = ProofId::BYTE_LENGTH;
+const PATH_STEP_BYTES: usize = 1 + ProofSetRoot::BYTE_LENGTH;
 const TERMINAL_TAG_BYTES: usize = 1;
 const NON_MEMBER_PREFIX_BYTES: usize = TERMINAL_TAG_BYTES + PROOF_ID_BYTES;
 
@@ -80,7 +82,7 @@ impl ProofSetProof {
                 let proof_id = ProofId::from_bytes(
                     proof_id
                         .try_into()
-                        .expect("the checked terminal slice has exactly 32 bytes"),
+                        .expect("the checked terminal slice has exactly one proof identity"),
                 );
                 (ProofTerminal::NonMember(proof_id), path)
             }
@@ -97,7 +99,7 @@ impl ProofSetProof {
                 bit: encoded_step[0],
                 sibling: encoded_step[1..]
                     .try_into()
-                    .expect("a proof-set path step has exactly 32 sibling bytes"),
+                    .expect("a proof-set path step has exactly one sibling root"),
             });
         }
 

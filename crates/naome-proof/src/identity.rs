@@ -7,6 +7,9 @@
 pub struct StatementId([u8; 32]);
 
 impl StatementId {
+    /// Exact width of one statement identity.
+    pub const BYTE_LENGTH: usize = 32;
+
     /// Constructs an identity from its raw digest bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
@@ -29,6 +32,9 @@ impl StatementId {
 pub struct DerivationId([u8; 32]);
 
 impl DerivationId {
+    /// Exact width of one derivation identity.
+    pub const BYTE_LENGTH: usize = 32;
+
     /// Constructs an identity from its raw digest bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
@@ -51,6 +57,9 @@ impl DerivationId {
 pub struct ProofId([u8; 32]);
 
 impl ProofId {
+    /// Exact width of one proof identity.
+    pub const BYTE_LENGTH: usize = 32;
+
     /// Constructs an identity from its raw digest bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)

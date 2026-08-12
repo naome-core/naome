@@ -28,6 +28,9 @@ const EMPTY_DIGEST: [u8; 32] = [
 pub struct ProofSetRoot([u8; 32]);
 
 impl ProofSetRoot {
+    /// Exact width of one authenticated proof-set root.
+    pub const BYTE_LENGTH: usize = 32;
+
     /// Constructs a root address from raw digest bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
