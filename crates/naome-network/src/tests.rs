@@ -193,7 +193,7 @@ fn request(bytes: [u8; 32]) -> ProofRequest {
     ProofRequest::from_wire_bytes(&bytes).unwrap()
 }
 
-fn address(port: u16) -> super::Multiaddr {
+pub(crate) fn address(port: u16) -> super::Multiaddr {
     format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()
 }
 
@@ -211,7 +211,7 @@ fn ordered_identities() -> (super::Keypair, super::Keypair) {
     }
 }
 
-async fn listening_address(network: &mut StaticProofNetwork) -> super::Multiaddr {
+pub(crate) async fn listening_address(network: &mut StaticProofNetwork) -> super::Multiaddr {
     network.listen_on(address(0)).unwrap();
     timeout(Duration::from_secs(10), async {
         loop {

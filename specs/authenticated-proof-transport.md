@@ -36,6 +36,13 @@ atomically starts that unchanged single-peer operation for at most eight
 explicit static peers and preserves one source-bound outcome per peer. It adds
 no fifth behaviour and gives receipt counts no quorum or selection meaning.
 The separate
+[Journal-Backed Static Proof Node Service](journal-backed-static-proof-node-service.md)
+composes caller-driven event polling with the three existing journal response
+helpers. It automatically serves proof, block, and head-pull requests from one
+borrowed journal while forwarding every other event unchanged. It does not
+acknowledge head announcements, mutate selected state, or add a protocol or
+background task.
+The separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
 orchestrates those two existing exchanges for one exact direct-child target;
 it does not consume the head protocol or grant peer-side selection policy.

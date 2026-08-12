@@ -8,7 +8,8 @@ proof state, canonical linear proof blocks with crash-consistent exact-head
 persistence and exact-ID historical lookup, transport-neutral addressed proof
 and block exchange, chain-scoped head exchange, authenticated static proof,
 exact-ID block and head-pull transport, authenticated single-peer selected-head
-announcement, bounded caller-selected head broadcast, bounded
+announcement, bounded caller-selected head broadcast, a caller-driven journal-
+backed service for inbound proof, block, and head pulls, bounded
 caller-selected proof-block ancestry retrieval,
 caller-selected direct-child and bounded ancestry import, and bounded local
 peer-address management. The network layer includes a
@@ -38,7 +39,9 @@ transport-neutral addressed proof, block, and chain-scoped head exchange, and
 the concrete bounded libp2p proof, exact-ID block, authenticated head-pull, and
 receipt-bearing selected-head announcement transport with caller-selected
 bounded broadcast and ancestry retrieval, and direct-child or retained-ancestry
-import. A pulled or announced head remains an untrusted peer
+import. The journal-backed service answers only the three existing read-only
+request families and forwards announcements and all other events unchanged. A
+pulled or announced head remains an untrusted peer
 observation and is never used automatically as an ancestry target or imported
 automatically. A completed
 ancestry remains unselected and establishes only exact parent and
@@ -81,6 +84,8 @@ authorization.
 - [Caller-Selected Proof Block Import](specs/caller-selected-proof-block-import.md)
 - [Addressed Proof Exchange](specs/addressed-proof-exchange.md)
 - [Authenticated Proof Transport](specs/authenticated-proof-transport.md)
+- [Journal-Backed Static Proof Node
+  Service](specs/journal-backed-static-proof-node-service.md)
 - [Peer Address Management](specs/peer-address-management.md)
 - [Local Peer Record Issuance](specs/local-peer-record-issuance.md)
 - [Peer Record Exchange](specs/peer-record-exchange.md)
