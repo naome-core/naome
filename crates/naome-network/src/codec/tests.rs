@@ -91,7 +91,7 @@ const CHAIN_HEAD_FOUND_RESPONSE_GOLDEN: [u8; 1 + PROOF_CHAIN_HEAD_RESPONSE_BYTES
 
 #[test]
 fn request_requires_exact_proof_id_and_eof() {
-    assert_eq!(PROTOCOL.as_ref(), "/naome/proof-exchange/v0");
+    assert_eq!(PROTOCOL.as_ref(), "/naome/proof-exchange");
     let expected = ProofRequest::from_wire_bytes(&request_bytes()).unwrap();
     let mut codec = ProofCodec;
 
@@ -229,10 +229,7 @@ fn maximum_response_is_accepted() {
 
 #[test]
 fn proof_block_request_requires_exact_block_id_and_eof() {
-    assert_eq!(
-        PROOF_BLOCK_PROTOCOL.as_ref(),
-        "/naome/proof-block-exchange/v0"
-    );
+    assert_eq!(PROOF_BLOCK_PROTOCOL.as_ref(), "/naome/proof-block-exchange");
     let expected = ProofBlockRequest::new(ProofBlockId::from_bytes(block_request_bytes()));
     let mut codec = ProofBlockCodec;
 
@@ -382,7 +379,7 @@ fn maximum_proof_block_response_is_accepted() {
 fn proof_chain_head_request_requires_exact_chain_id_and_eof() {
     assert_eq!(
         PROOF_CHAIN_HEAD_PROTOCOL.as_ref(),
-        "/naome/proof-chain-head-exchange/v0"
+        "/naome/proof-chain-head-exchange"
     );
     let expected = ProofChainHeadRequest::new(ProofChainId::from_bytes(chain_head_request_bytes()));
     let mut codec = ProofChainHeadCodec;
@@ -521,7 +518,7 @@ fn proof_chain_head_response_rejects_every_noncanonical_frame() {
 fn proof_chain_head_announcement_has_exact_request_and_receipt_frames() {
     assert_eq!(
         PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL.as_ref(),
-        "/naome/proof-chain-head-announcement/v0"
+        "/naome/proof-chain-head-announcement"
     );
     let expected = ProofChainHeadAnnouncement::new(
         ProofChainId::from_bytes([0x11; 32]),
@@ -660,10 +657,7 @@ fn canonical_161_byte_block_has_the_normative_found_frame() {
 
 #[test]
 fn peer_record_request_and_empty_response_have_exact_framing() {
-    assert_eq!(
-        PEER_RECORD_PROTOCOL.as_ref(),
-        "/naome/peer-record-exchange/v0"
-    );
+    assert_eq!(PEER_RECORD_PROTOCOL.as_ref(), "/naome/peer-record-exchange");
     let mut codec = PeerRecordCodec;
 
     let mut request = Cursor::new(Vec::new());

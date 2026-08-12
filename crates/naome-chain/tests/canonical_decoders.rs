@@ -35,7 +35,7 @@ fn canonical_decoders_round_trip_deterministic_malformed_inputs() {
         }
     }
 
-    let mut state = 0x6e61_6f6d_653a_7630_u64;
+    let mut state = 0x006e_616f_6d65_u64;
     for case in 0..RANDOM_CASES {
         let length = case * RANDOM_MAX_BYTES / (RANDOM_CASES - 1);
         let mut bytes = vec![0; length];

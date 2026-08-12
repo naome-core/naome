@@ -19,8 +19,8 @@ use crate::snapshot_io::{
     BoundedReadError, ExclusiveLockError, open_exclusive, read_bounded, replace_synced,
 };
 
-const SNAPSHOT_HEADER: &[u8] = b"naome:local-peer-record-issuer-v0\0";
-const SNAPSHOT_CHECKSUM_DOMAIN: &[u8] = b"naome:local-peer-record-issuer-checksum-v0\0";
+const SNAPSHOT_HEADER: &[u8] = b"naome:local-peer-record-issuer\0";
+const SNAPSHOT_CHECKSUM_DOMAIN: &[u8] = b"naome:local-peer-record-issuer-checksum\0";
 const SNAPSHOT_FILE_NAME: &str = "local-peer-record-issuer.bin";
 const LOCK_FILE_NAME: &str = "local-peer-record-issuer.lock";
 const TEMP_FILE_NAME: &str = "local-peer-record-issuer.tmp";

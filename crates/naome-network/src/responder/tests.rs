@@ -531,7 +531,7 @@ fn response_budget_has_exact_burst_and_lazy_refill() {
 }
 
 #[test]
-fn responder_limits_match_the_v0_contract() {
+fn responder_limits_match_the_protocol_contract() {
     assert_eq!(MAX_RESPONDER_CONNECTIONS, 8);
     assert_eq!(INBOUND_AUTH_BURST, 8);
     assert_eq!(INBOUND_AUTH_REFILL_INTERVAL, Duration::from_secs(1));

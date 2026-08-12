@@ -297,14 +297,14 @@ certificate is:
 
 ```text
 00000001
-30 9c89078653ef5a9b69e3fe184488f956494b003d55fb748c633c245b17f2db9d
+30 c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73
 ```
 
 Its conclusion retains the golden `StatementId`, while the citation proof has:
 
 ```text
-DerivationId = 39339d32198b684fbe3a971140116019613521f0ac148e27304102809d12ad1f
-ProofId      = bd0d09fdf7a46aeeebedbfb4f72009af1a6ef29962dea4e63e778807e44483b8
+DerivationId = 59219d63c7c2353dcb6ffd1e604153143380ae6602e04215703bc0ea043243fb
+ProofId      = bfd427b447e1514686cfa31b0b5aa1dd5036464cd8c5d73d0c3112cb46b0519b
 ```
 
 Registering this alias beside the cited proof fails as a duplicate derivation.
@@ -320,14 +320,14 @@ Successful checking produces three distinct 32-byte identities:
   boundaries and cited `ProofId` values.
 
 All use SHA-256 as specified by FIPS 180-4 and bind the exact UTF-8 Foundation
-identifier `naome:zfc:v0`. This identifier is a protocol namespace, not a hash
+identifier `naome:zfc`. This identifier is a protocol namespace, not a hash
 of Foundation source. Exact domain and Foundation bytes are:
 
 ```text
 statement_domain = 6e616f6d653a73746174656d656e7400
 proof_domain     = 6e616f6d653a70726f6f6600
 derivation_node_domain = 6e616f6d653a64657269766174696f6e2d6e6f646500
-foundation       = 6e616f6d653a7a66633a7630
+foundation       = 6e616f6d653a7a6663
 ```
 
 Variable fields have four-byte big-endian lengths. The fixed 32-byte
@@ -402,9 +402,9 @@ For `E1(x); Generalization(0,x)`, normalization maps `x` to free-variable `0`:
 statement_bytes   = 040001000000000100000000
 normal_proof_bytes = 000000020600000000210000000000000000
 
-StatementId  = 3b467db77c7024ad0809e67f89a8870a288110b51f253f3942f3860982b72d52
-DerivationId = 39339d32198b684fbe3a971140116019613521f0ac148e27304102809d12ad1f
-ProofId      = 9c89078653ef5a9b69e3fe184488f956494b003d55fb748c633c245b17f2db9d
+StatementId  = f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19
+DerivationId = 59219d63c7c2353dcb6ffd1e604153143380ae6602e04215703bc0ea043243fb
+ProofId      = c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73
 ```
 
 #### Certificate golden vector

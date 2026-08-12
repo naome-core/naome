@@ -2,7 +2,7 @@
 
 ## Normative scope
 
-This document defines the V0 transport-neutral proof, proof-block, and
+This document defines the transport-neutral proof, proof-block, and
 proof-chain-head exchanges; their authenticated static-peer bindings; the
 proof-chain-head announcement; and the caller-driven journal serving adapter.
 Rustdoc owns exact Rust signatures and field inventories. This specification
@@ -47,10 +47,10 @@ The address is routing information, not identity. Learned peer records and
 The four exact stream protocol identifiers are:
 
 ~~~text
-/naome/proof-exchange/v0
-/naome/proof-block-exchange/v0
-/naome/proof-chain-head-exchange/v0
-/naome/proof-chain-head-announcement/v0
+/naome/proof-exchange
+/naome/proof-block-exchange
+/naome/proof-chain-head-exchange
+/naome/proof-chain-head-announcement
 ~~~
 
 Each protocol has an independent framing and tagged pending namespace.
@@ -197,7 +197,7 @@ request.
 
 ### Proof stream
 
-`/naome/proof-exchange/v0` carries:
+`/naome/proof-exchange` carries:
 
 ~~~text
 request:
@@ -216,7 +216,7 @@ canonical proof bytes or `ProofId`.
 
 ### Block stream
 
-`/naome/proof-block-exchange/v0` carries:
+`/naome/proof-block-exchange` carries:
 
 ~~~text
 request:
@@ -249,7 +249,7 @@ The exact unavailable frame is `0000`.
 
 ### Head-pull stream
 
-`/naome/proof-chain-head-exchange/v0` carries:
+`/naome/proof-chain-head-exchange` carries:
 
 ~~~text
 request:
@@ -276,7 +276,7 @@ or 33 bytes.
 
 ### Head-announcement stream
 
-`/naome/proof-chain-head-announcement/v0` carries:
+`/naome/proof-chain-head-announcement` carries:
 
 ~~~text
 request:

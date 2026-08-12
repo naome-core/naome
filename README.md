@@ -37,23 +37,6 @@ The following boundaries are invariant:
   selection authority; and
 - learned address records never authorize proof sessions.
 
-## Delivery gates
-
-1. Proof truth and identity.
-2. Local selected state and deterministic replay.
-3. Bounded caller-driven transport and import.
-4. Global chain identity, genesis, competing-history, selection, and
-   reorganization contract.
-5. Fork-aware storage and reorganization.
-6. Automatic synchronization.
-7. Checkpoints and finality.
-8. Settlement and economic policy.
-
-The implementation currently reaches gate 3. Each subsequent gate requires a
-normative contract and deterministic validation before implementation. Human
-authoring syntax, parsing, conservative definitions, and theorem libraries are
-a parallel product track; no source syntax is stable yet.
-
 ## Protocol contracts
 
 - [Foundation](specs/foundation.md) defines the mathematical language, axioms,
@@ -71,12 +54,11 @@ a parallel product track; no source syntax is stable yet.
 
 Specifications are normative for mathematical, protocol, wire, and storage
 semantics. Rustdoc owns the Rust API surface; the crates are executable
-reference implementations. This README and its delivery sequence are
-non-normative.
+reference implementations. This README is non-normative.
 
-The repository is prerelease. An incompatible V0 change replaces its
-identifier, protocol, or local format cleanly; it does not add a legacy parser
-unless a stable compatibility commitment exists.
+The repository is prerelease. An incompatible change replaces its identifier,
+protocol, or local format cleanly; it does not add a compatibility parser unless
+a stable compatibility commitment exists.
 
 ## Local validation
 

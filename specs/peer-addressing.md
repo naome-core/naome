@@ -2,7 +2,7 @@
 
 ## Authority model
 
-This document defines V0 bootstrap configuration, standard signed peer records,
+This document defines bootstrap configuration, standard signed peer records,
 their bounded durable store and local issuer, the canonical record-batch format,
 and its authenticated pull and response bindings.
 
@@ -13,7 +13,7 @@ The following facts remain separate:
 | `BootstrapPeer` | An operator chose one expected `PeerId` and initial address | General trust, proof authorization, or availability |
 | Standard signed peer record | The identity-key holder signed its own address claim | Honest operation, unique control, freshness, or reachability |
 | Local receipt time | This store accepted this exact record recently enough for local policy | Signing time or network-wide freshness |
-| Observed authenticated reachability | One exact endpoint was reachable at one instant | V0 persists no such observation |
+| Observed authenticated reachability | One exact endpoint was reachable at one instant | The protocol persists no such observation |
 | `StaticPeer` | The operator authorized one identity for proof transport | Sybil or eclipse resistance |
 
 Source and subject are also distinct. The `source` is the configured bootstrap
@@ -34,10 +34,10 @@ most 256 bytes, exactly:
 
 No suffix is permitted. Operator-controlled bootstrap addresses may be private,
 loopback, or otherwise local. The outbound handshake must nevertheless
-authenticate the configured `PeerId` at the configured address. V0 supplies no
-default bootstrap list, DNS resolution, remote-list update, learned-address
-substitution, or fallback address. Only a configured bootstrap identity may be
-the source of a stored V0 record.
+authenticate the configured `PeerId` at the configured address. This contract
+supplies no default bootstrap list, DNS resolution, remote-list update,
+learned-address substitution, or fallback address. Only a configured bootstrap
+identity may be the source of a stored record.
 
 ## Standard signed peer records
 
@@ -177,7 +177,7 @@ system and persists it. Selection considers only fresh records at UTC day
 
 ```text
 SHA256(
-    "naome:peer-address-rank-v0\0"
+    "naome:peer-address-rank\0"
     || ordering_salt[32]
     || utc_day_u64_be[8]
     || subject_peer_id_length_u8 || subject_peer_id
@@ -197,8 +197,9 @@ One store holds an exclusive cooperative sidecar lock for the lifetime of its
 snapshot directory handle. A mutation is fully constructed and validated,
 written to a same-directory temporary, synchronized, and atomically renamed
 over the snapshot. Unix implementations also synchronize the parent directory
-before acknowledging success. V0 makes no sudden-power-loss guarantee for the
-renamed directory entry on platforms without a safe parent-directory sync.
+before acknowledging success. The store makes no sudden-power-loss guarantee
+for the renamed directory entry on platforms without a safe parent-directory
+sync.
 
 Any commit I/O error poisons all later reads, selection, and mutation. A
 temporary file is never authoritative. Drop and strict reopen is the only
@@ -219,16 +220,16 @@ Its digest is exactly:
 
 ```text
 SHA256(
-    "naome:peer-address-bootstrap-config-v0\0"
+    "naome:peer-address-bootstrap-config\0"
     || canonical_bootstrap_configuration
 )
 ```
 
-The V0 snapshot uses unsigned big-endian integers, subject entries sorted by
+The snapshot uses unsigned big-endian integers, subject entries sorted by
 raw `PeerId` bytes, and no padding:
 
 ```text
-header                        "naome:peer-address-store-v0\0"
+header                        "naome:peer-address-store\0"
 local_peer_id_length          u8
 local_peer_id                 local_peer_id_length bytes
 bootstrap_configuration       bootstrap configuration digest [32]
@@ -248,10 +249,10 @@ entry:
 Every peer-ID length is `1..=44` and must contain one canonical libp2p
 `PeerId`. Variable lengths are validated against their bound and remaining
 bytes with checked arithmetic before read or allocation. With 256 maximal
-entries, the complete image is at most `1_062_827` bytes:
+entries, the complete image is at most `1_062_824` bytes:
 
 ```text
-28 + (1 + 44) + 32 + 32 + 2
+25 + (1 + 44) + 32 + 32 + 2
    + 256 * ((1 + 44) + 8 + (2 + 4096))
    + 32
 ```
@@ -260,7 +261,7 @@ The checksum is exactly:
 
 ```text
 SHA256(
-    "naome:peer-address-store-checksum-v0\0"
+    "naome:peer-address-store-checksum\0"
     || every snapshot byte before snapshot_checksum
 )
 ```
@@ -350,18 +351,18 @@ beyond the maximum, and validates the complete image. The exact unsigned
 big-endian, unpadded encoding is:
 
 ```text
-header                       "naome:local-peer-record-issuer-v0\0" [34]
+header                       "naome:local-peer-record-issuer\0" [31]
 peer_id_length               u8, 1..=44
 peer_id                      peer_id_length bytes
 last_issued_sequence         u64 big endian
 snapshot_checksum            32 bytes
 ```
 
-Its maximum is exactly 119 bytes: `34 + 1 + 44 + 8 + 32`. Its checksum is:
+Its maximum is exactly 116 bytes: `31 + 1 + 44 + 8 + 32`. Its checksum is:
 
 ```text
 SHA256(
-    "naome:local-peer-record-issuer-checksum-v0\0"
+    "naome:local-peer-record-issuer-checksum\0"
     || every snapshot byte before snapshot_checksum
 )
 ```
@@ -420,7 +421,7 @@ this exchange, not complete or network-wide absence.
 ### Direction, correlation, and ownership
 
 One dedicated `PeerRecordBootstrapClient` has zero to eight configured sources
-and supports only outbound `/naome/peer-record-exchange/v0`. It has no listener,
+and supports only outbound `/naome/peer-record-exchange`. It has no listener,
 inbound stream capacity, responder API, or proof protocol. A cold request dials
 the exact configured address and Noise identity; a different identity is a
 terminal transport failure. A healthy authenticated connection may be reused.
@@ -472,7 +473,7 @@ read a store, issue records, apply TTL, preserve upstream provenance, or infer
 freshness or completeness. An empty configured batch is valid, but no rejection
 or failure is encoded as an empty response.
 
-The responder supports only inbound `/naome/peer-record-exchange/v0`, one
+The responder supports only inbound `/naome/peer-record-exchange`, one
 listener, and any successfully Noise-authenticated requester. It has no dial
 API, outbound protocol, or proof protocol. The responder's Noise `PeerId`
 becomes the pull result's source; it is never substituted by a signed subject
@@ -538,16 +539,16 @@ and transport overhead are outside these byte counts.
 
 The pre-authentication bucket bounds handshake admissions, not raw TCP attempts
 rejected earlier or unsuccessful protocol negotiations. Connection, stream,
-backlog, and timeout slots can still be exhausted; V0 makes no volumetric
-availability or fairness guarantee. Listener and timeout progress require
-continued polling.
+backlog, and timeout slots can still be exhausted; the responder makes no
+volumetric availability or fairness guarantee. Listener and timeout progress
+require continued polling.
 
 ## Resulting trust boundary
 
-V0 provides bounded canonical self-signed address claims, authenticated
-bootstrap provenance, local receipt freshness, retained sequence watermarks,
-atomic snapshot transitions, deterministic local candidate diversification,
-commit-before-return local issuance, and bounded directional exchange. It does
-not provide reachability, key custody, rollback protection, live publication,
-automatic discovery, proof authorization, operator independence, reputation,
-Sybil or eclipse resistance, consensus, or finality.
+This contract provides bounded canonical self-signed address claims,
+authenticated bootstrap provenance, local receipt freshness, retained sequence
+watermarks, atomic snapshot transitions, deterministic local candidate
+diversification, commit-before-return local issuance, and bounded directional
+exchange. It does not provide reachability, key custody, rollback protection,
+live publication, automatic discovery, proof authorization, operator
+independence, reputation, Sybil or eclipse resistance, consensus, or finality.

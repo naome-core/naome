@@ -24,10 +24,10 @@ use crate::snapshot_io::{
     BoundedReadError, ExclusiveLockError, open_exclusive, read_bounded, replace_synced,
 };
 
-const STORE_HEADER: &[u8] = b"naome:peer-address-store-v0\0";
-const STORE_CHECKSUM_DOMAIN: &[u8] = b"naome:peer-address-store-checksum-v0\0";
-const BOOTSTRAP_DIGEST_DOMAIN: &[u8] = b"naome:peer-address-bootstrap-config-v0\0";
-const CANDIDATE_ORDER_DOMAIN: &[u8] = b"naome:peer-address-rank-v0\0";
+const STORE_HEADER: &[u8] = b"naome:peer-address-store\0";
+const STORE_CHECKSUM_DOMAIN: &[u8] = b"naome:peer-address-store-checksum\0";
+const BOOTSTRAP_DIGEST_DOMAIN: &[u8] = b"naome:peer-address-bootstrap-config\0";
+const CANDIDATE_ORDER_DOMAIN: &[u8] = b"naome:peer-address-rank\0";
 const STORE_FILE_NAME: &str = "peer-address-store.bin";
 const LOCK_FILE_NAME: &str = "peer-address-store.lock";
 const TEMP_FILE_NAME: &str = "peer-address-store.tmp";

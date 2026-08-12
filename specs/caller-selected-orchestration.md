@@ -112,7 +112,7 @@ for a completed peer is not accepted.
 
 ### Broadcast limits and cancellation
 
-Every request uses `/naome/proof-chain-head-announcement/v0`. Its body is 64
+Every request uses `/naome/proof-chain-head-announcement`. Its body is 64
 bytes and a successful receipt is exactly one byte, `0x01`.
 
 | Resource | Bound |
@@ -162,7 +162,7 @@ Journal failure is `SelectedState` and precedes network work. Request start
 retains `UnknownPeer`, `AlreadyPending`, `PeerDisconnected`, then `GlobalLimit`
 precedence inside `RequestStart`. Absence from the selected index does not imply
 validity, availability, direct parentage, or network selection. The block
-request uses `/naome/proof-block-exchange/v0`, one per-peer slot, one private
+request uses `/naome/proof-block-exchange`, one per-peer slot, one private
 generation, and the shared eight-permit budget; the importer does not retry the
 block from another peer.
 

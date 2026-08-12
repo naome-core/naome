@@ -5,12 +5,15 @@
 This document normatively defines the mathematical boundary identified as:
 
 ```text
-naome:zfc:v0
+naome:zfc
 ```
 
 A statement accepted under this identifier is derivable relative to Foundation. The identifier does not assert that ZFC is consistent or that every mathematical truth is decidable.
 
-Foundation is immutable. Any change to primitive syntax, logical axioms, inference rules, set-theory axioms, or schema side conditions requires a new foundation identifier.
+The identifier names the current prerelease Foundation contract. An incompatible
+change to primitive syntax, logical axioms, inference rules, set-theory axioms,
+or schema side conditions replaces this contract and invalidates identities
+derived from it; no compatibility alias is retained without a stable commitment.
 
 ## Object language
 
@@ -220,7 +223,7 @@ definition extension must be eliminable and conservative:
 - function definitions reference a proof of total unique existence; and
 - recursive definitions reference the required recursion theorem.
 
-No defined symbol or definition construct is valid under `naome:zfc:v0`.
+No defined symbol or definition construct is valid under `naome:zfc`.
 
 ## Verification boundary
 
