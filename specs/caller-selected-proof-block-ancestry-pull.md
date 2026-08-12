@@ -373,3 +373,9 @@ trust, proposer, signature, proof of work, proof of stake, validator set,
 voting, quorum, consensus, finality, dynamic learned-peer authorization, peer
 scoring, reputation, data-availability guarantee, erasure coding, reward, fee,
 balance, novelty policy, issuance, or settlement.
+
+The separate
+[Caller-Selected Proof Block Ancestry Import](caller-selected-proof-block-ancestry-import.md)
+may consume one completed opaque ancestry and import it strictly forward with
+explicit per-block durable-prefix semantics. It does not change this pull's
+read-only result or caller-owned target-selection boundary.

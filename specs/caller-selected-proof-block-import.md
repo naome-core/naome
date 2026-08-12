@@ -36,6 +36,12 @@ may retrieve a bounded unselected path to the current local head, but it never
 starts this importer, acquires proof payloads, or changes this contract's
 single-direct-child mutation boundary.
 
+The separate
+[Caller-Selected Proof Block Ancestry Import](caller-selected-proof-block-ancestry-import.md)
+consumes that opaque path and reuses this direct-child proof phase once per
+retained block. It adds explicit committed-prefix orchestration without
+changing this contract's one-block validation or durability semantics.
+
 ## Public surface
 
 The public Rust surface is equivalent to:

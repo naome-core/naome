@@ -293,6 +293,32 @@ pub struct UnselectedProofBlockAncestry {
 }
 
 impl UnselectedProofBlockAncestry {
+    #[cfg(test)]
+    pub(super) fn from_parts_for_test(
+        peer_id: PeerId,
+        anchor_block_id: ProofBlockId,
+        target_block_id: ProofBlockId,
+        blocks: Vec<ProofBlock>,
+    ) -> Self {
+        assert!(!blocks.is_empty());
+        assert!(blocks.len() <= MAX_PROOF_BLOCK_ANCESTRY_BLOCKS);
+        assert_eq!(blocks.first().unwrap().parent_block_id(), anchor_block_id);
+        assert_eq!(blocks.last().unwrap().id(), target_block_id);
+        for adjacent in blocks.windows(2) {
+            assert_eq!(adjacent[1].parent_block_id(), adjacent[0].id());
+            assert_eq!(
+                adjacent[1].transition().previous_proof_set_root(),
+                adjacent[0].transition().resulting_proof_set_root()
+            );
+        }
+        Self {
+            peer_id,
+            anchor_block_id,
+            target_block_id,
+            blocks,
+        }
+    }
+
     /// Returns the authenticated peer that supplied the complete path.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
@@ -316,6 +342,15 @@ impl UnselectedProofBlockAncestry {
     /// Consumes this path and returns its forward-ordered blocks.
     pub fn into_blocks(self) -> Vec<ProofBlock> {
         self.blocks
+    }
+
+    pub(super) fn into_parts(self) -> (PeerId, ProofBlockId, ProofBlockId, Vec<ProofBlock>) {
+        (
+            self.peer_id,
+            self.anchor_block_id,
+            self.target_block_id,
+            self.blocks,
+        )
     }
 }
 
