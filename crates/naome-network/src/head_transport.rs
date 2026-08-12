@@ -295,6 +295,17 @@ impl StaticProofNetwork {
     ) -> Result<ChainHeadRequestTicket, RequestStartError> {
         let transport_connected = self.swarm.behaviour().head_exchange.is_connected(&peer_id);
         let (peer_index, permit) = self.acquire_request_permit(peer_id, transport_connected)?;
+        Ok(self.enqueue_chain_head_request(peer_index, peer_id, request, permit))
+    }
+
+    pub(super) fn enqueue_chain_head_request(
+        &mut self,
+        peer_index: usize,
+        peer_id: PeerId,
+        request: ProofChainHeadRequest,
+        permit: PendingPermit,
+    ) -> ChainHeadRequestTicket {
+        debug_assert_eq!(self.pending_peer_id(peer_index), peer_id);
         let request_id = self
             .swarm
             .behaviour_mut()
@@ -314,7 +325,7 @@ impl StaticProofNetwork {
                 _permit: permit,
             }),
         );
-        Ok(ticket)
+        ticket
     }
 
     pub(super) fn handle_head_exchange_event(

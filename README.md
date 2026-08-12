@@ -7,9 +7,10 @@ Deterministic checking decides mathematical validity. Blockchain consensus will
 govern ordering, inclusion, and provenance; it must not redefine proof truth.
 
 The repository implements deterministic proof identity and checking, one
-crash-consistent selected proof chain, and bounded caller-driven exchange with
-statically authorized peers. Peer-reported heads and fetched ancestry are
-untrusted inputs until explicit local validation and selection.
+crash-consistent selected proof chain, and bounded caller-driven exchange and
+multi-peer head surveys with statically authorized peers. Peer-reported heads
+and fetched ancestry are untrusted inputs until explicit local validation and
+selection.
 
 Each local chain begins from a canonical definition that binds its deployment,
 the current Foundation identity, and the empty authenticated proof state before
@@ -52,7 +53,7 @@ The following boundaries are invariant:
 - [Proof Network Transport](specs/proof-network-transport.md) defines proof,
   block, and head messages plus authenticated transport and serving limits.
 - [Caller-Selected Orchestration](specs/caller-selected-orchestration.md)
-  defines explicit pull, import, ancestry, and broadcast workflows.
+  defines explicit head-survey, broadcast, pull, import, and ancestry workflows.
 - [Peer Addressing](specs/peer-addressing.md) defines signed peer records,
   address storage, issuance, and authenticated exchange.
 
