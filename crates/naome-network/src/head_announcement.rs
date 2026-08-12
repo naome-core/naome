@@ -332,6 +332,16 @@ impl StaticProofNetwork {
         let (peer_index, permit) = self
             .acquire_request_permit(peer_id, transport_connected)
             .map_err(HeadAnnouncementStartError::RequestStart)?;
+        Ok(self.enqueue_head_announcement(peer_index, peer_id, announcement, permit))
+    }
+
+    pub(super) fn enqueue_head_announcement(
+        &mut self,
+        peer_index: usize,
+        peer_id: PeerId,
+        announcement: ProofChainHeadAnnouncement,
+        permit: PendingPermit,
+    ) -> HeadAnnouncementTicket {
         let request_id = self
             .swarm
             .behaviour_mut()
@@ -351,7 +361,7 @@ impl StaticProofNetwork {
                 _permit: permit,
             }),
         );
-        Ok(ticket)
+        ticket
     }
 
     pub(super) fn handle_head_announcement_event(

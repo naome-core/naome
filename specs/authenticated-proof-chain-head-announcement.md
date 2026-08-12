@@ -300,6 +300,12 @@ The announced head must not be passed to
 Noise authenticated the sender or the receiver returned a receipt. Establishing
 checkpoint authority is a separate consensus or operator-trust contract.
 
+The separate
+[Caller-Selected Proof Chain Head Broadcast](caller-selected-proof-chain-head-broadcast.md)
+composes this exact single-peer operation across at most eight explicit peers.
+It does not change this message, receipt, authentication, correlation, or
+terminal contract.
+
 ## Resource bounds
 
 The announcement adds these exact bounds to the static network:
@@ -353,9 +359,10 @@ authority.
 
 ## Explicit exclusions
 
-This contract defines no automatic journal emission, commit hook, broadcast,
-multi-peer send, head survey, scheduler, polling, retry, fallback, hedging,
-rebroadcast, subscription, gossip, DHT, dynamic learned-peer authorization,
+This single-peer contract defines no automatic journal emission, commit hook,
+automatic or all-configured-peer broadcast, head survey, scheduler, polling,
+retry, fallback, hedging, rebroadcast, subscription, gossip, DHT, dynamic
+learned-peer authorization,
 deduplication, cache, persistence, monotonic sequence, timestamp, height,
 freshness, ordering between announcements, comparison with the receiver's head,
 majority, quorum, vote, peer scoring, reputation, rolling rate limit, block or

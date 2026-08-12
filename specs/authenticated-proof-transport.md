@@ -31,6 +31,11 @@ adds a fourth behaviour for one caller-triggered, receipt-bearing push of a
 healthy journal's exact chain and head. Receipt never starts retrieval, import,
 or synchronization.
 The separate
+[Caller-Selected Proof Chain Head Broadcast](caller-selected-proof-chain-head-broadcast.md)
+atomically starts that unchanged single-peer operation for at most eight
+explicit static peers and preserves one source-bound outcome per peer. It adds
+no fifth behaviour and gives receipt counts no quorum or selection meaning.
+The separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
 orchestrates those two existing exchanges for one exact direct-child target;
 it does not consume the head protocol or grant peer-side selection policy.
@@ -453,6 +458,9 @@ permit-preserving cancellation tombstones, and one explicit caller-supplied-
 block promotion with exact expected-identity correlation. The separate head-
 announcement contract additionally guarantees one fixed, caller-triggered,
 receipt-bearing observation with its own generation correlation.
+The caller-selected broadcast contract composes at most eight such operations
+under the same shared permit bound without changing their wire or trust
+semantics.
 
 It does not define or claim:
 
@@ -468,8 +476,8 @@ It does not define or claim:
   sessions;
 - peer scoring, bans, retrying one peer for the same proof address, parallel or
   hedged requests, proof or block announcements, automatic head broadcast, or
-  proof gossip; the separate head announcement remains single-peer and
-  caller-triggered;
+  proof gossip; the separate head announcement remains a single-peer primitive,
+  and its bounded broadcast composition remains caller-triggered;
 - parallel dependency fetching, a persistent orphan/cache store, admission
   worker, wire-level request abort, synchronous proof/checker/journal
   cancellation, or rolling cross-acquisition byte/CPU budgets or per-source
