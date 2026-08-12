@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use super::{
     AuthenticatedProofSet, ProofPathStep, ProofSetMembership, ProofSetProofError, ProofSetRoot,
-    ProofSetValue, empty_digest, first_differing_bit, key_bit,
+    ProofSetValue, first_differing_bit, key_bit,
 };
 use naome_proof::ProofId;
 
@@ -48,7 +48,7 @@ fn reference_root(keys: &[ProofId]) -> ProofSetRoot {
 
 fn reference_subtree(keys: &[ProofId]) -> ProofSetRoot {
     match keys {
-        [] => ProofSetRoot(empty_digest()),
+        [] => ProofSetRoot::empty(),
         [key] => ProofSetRoot(super::leaf_digest(*key)),
         _ => {
             let bit = first_differing_bit(keys[0], keys[keys.len() - 1]);
@@ -86,7 +86,10 @@ fn empty_leaf_and_branch_roots_have_stable_goldens() {
         hex(root_for(&[]).as_bytes()),
         "e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca"
     );
-    assert_eq!(empty_digest(), super::tagged_digest(0x00, &[]));
+    assert_eq!(
+        ProofSetRoot::empty().as_bytes(),
+        &super::tagged_digest(0x00, &[])
+    );
     assert_eq!(
         hex(root_for(&[zero]).as_bytes()),
         "6035299a52844d846d83ca0395e1a7df37e62b7de9adc638ea2cbaf97d799a04"
@@ -151,7 +154,7 @@ fn membership_and_nonmembership_proofs_verify_exclusively() {
     assert_eq!(
         AuthenticatedProofSet::<ProofId>::new()
             .proof(absent)
-            .verify(ProofSetRoot(empty_digest()), absent),
+            .verify(ProofSetRoot::empty(), absent),
         Ok(ProofSetMembership::Absent)
     );
 }
@@ -395,7 +398,7 @@ fn malformed_or_mutated_proofs_fail_closed() {
     ));
 
     let mut empty_sibling = proof.clone();
-    empty_sibling.path[0].sibling = empty_digest();
+    empty_sibling.path[0].sibling = *ProofSetRoot::empty().as_bytes();
     assert!(matches!(
         empty_sibling.verify(root, query),
         Err(ProofSetProofError::EmptySibling { .. })

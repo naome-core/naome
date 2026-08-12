@@ -11,7 +11,7 @@ use super::*;
 use crate::codec::ProofBlockWireResponse;
 use crate::tests::{
     TestDirectory, apply_fresh_blocks, assert_snapshot, create_journal, pairing_bytes, snapshot,
-    test_network_for_peers, union_bytes,
+    test_chain_definition, test_network_for_peers, union_bytes,
 };
 use crate::{ExchangeRequestId, Keypair, NetworkEvent, PendingRequest, RequestStartError};
 
@@ -221,10 +221,12 @@ fn direct_and_multi_block_paths_are_forward_ordered_and_never_select() {
         assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
         assert_snapshot(&directory, &selected, &before);
 
-        let chain_id = selected.chain_id();
         drop(selected);
-        let reopened =
-            ProofChainJournal::open_recovering_unverified(directory.path(), chain_id).unwrap();
+        let reopened = ProofChainJournal::open_recovering_unverified(
+            directory.path(),
+            test_chain_definition(),
+        )
+        .unwrap();
         assert_eq!(reopened.head_block_id().unwrap(), before.head);
         assert_eq!(directory.journal_bytes(), before.bytes);
     }

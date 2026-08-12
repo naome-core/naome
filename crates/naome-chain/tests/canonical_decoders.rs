@@ -1,5 +1,6 @@
 use naome_chain::{
-    ProofBlock, ProofBlockId, ProofDag, ProofSetProof, ProofSetRoot, ProofTransition,
+    ProofBlock, ProofBlockId, ProofChainDefinition, ProofDag, ProofSetProof, ProofSetRoot,
+    ProofTransition,
 };
 use naome_foundation::{Formula, FreeVariable};
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
@@ -47,7 +48,7 @@ fn canonical_decoders_round_trip_deterministic_malformed_inputs() {
     }
 }
 
-fn canonical_seeds() -> [Vec<u8>; 5] {
+fn canonical_seeds() -> [Vec<u8>; 6] {
     let formula = Formula::equal(FreeVariable::new(0), FreeVariable::new(1));
     let certificate = ProofCertificate::new(vec![ProofStep::EqualityReflexivity {
         variable: FreeVariable::new(1),
@@ -61,6 +62,7 @@ fn canonical_seeds() -> [Vec<u8>; 5] {
     .unwrap();
     let block = ProofBlock::new(ProofBlockId::from_bytes([0x44; 32]), transition.clone());
     let proof_set = ProofDag::new().proof_set_proof(ProofId::from_bytes([0x55; 32]));
+    let definition = ProofChainDefinition::new([0x66; 32]);
 
     [
         formula.encode_canonical().unwrap(),
@@ -68,6 +70,7 @@ fn canonical_seeds() -> [Vec<u8>; 5] {
         transition.to_canonical_bytes(),
         block.to_canonical_bytes(),
         proof_set.to_canonical_bytes(),
+        definition.to_canonical_bytes().to_vec(),
     ]
 }
 
@@ -86,6 +89,9 @@ fn assert_accepted_values_reencode_exactly(bytes: &[u8]) {
     }
     if let Ok(proof) = ProofSetProof::from_canonical_bytes(bytes) {
         assert_eq!(proof.to_canonical_bytes(), bytes);
+    }
+    if let Ok(definition) = ProofChainDefinition::from_canonical_bytes(bytes) {
+        assert_eq!(definition.to_canonical_bytes().as_slice(), bytes);
     }
 }
 

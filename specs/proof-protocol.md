@@ -911,11 +911,12 @@ retain the independent certificate and admission limits above.
 ## Proof block and linear chain state
 
 A `ProofBlock` binds one parent `ProofBlockId` and one complete canonical
-`ProofTransition`. A configured `ProofChainId` derives the virtual genesis
-parent for an initially empty chain state. Every admitted block must extend the
-exact current head and apply its transition atomically to the privately owned
-selected proof DAG. The [Proof Chain Journal](proof-chain-journal.md) persists
-this selected line without changing block bytes or application rules.
+`ProofTransition`. A canonical `ProofChainDefinition` derives one
+`ProofChainId`, which derives the virtual genesis parent for an initially empty
+chain state. Every admitted block must extend the exact current head and apply
+its transition atomically to the privately owned selected proof DAG. The
+[Proof Chain Journal](proof-chain-journal.md) persists this selected line
+without changing block bytes or application rules.
 
 Its canonical value is exactly:
 
@@ -924,11 +925,75 @@ parent_block_id: ProofBlockId
 transition:      ProofTransition
 ```
 
-### Chain context and virtual genesis
+### Chain definition, identity, and virtual genesis
 
-A `ProofChainId` is exactly 32 caller-configured bytes. It provides context and
-domain separation, not operator authentication, network selection, canonical
-genesis configuration, block authorization, or consensus membership.
+A `ProofChainDefinition` fixes the executable context of one proof-chain
+deployment. The caller controls only one opaque 32-byte deployment
+discriminator. The definition also binds the exact current Foundation identity
+and the authenticated root of the empty proof set; callers cannot inject either
+fixed field through the trusted construction path.
+
+Its sole canonical representation is exactly 73 bytes:
+
+```text
+deployment_discriminator[32]
+foundation_id[9]              = "naome:zfc"
+genesis_proof_set_root[32]    = e9a980287e770ac389d3735ff064e744
+                                7f11c9640efdb90b91781766497f16ca
+```
+
+All fields have fixed width, so the representation contains no version, tag,
+length, padding, or checksum. Decoding executes:
+
+1. require exactly 73 bytes, otherwise `InvalidLength`;
+2. require the exact compiled Foundation bytes, otherwise
+   `FoundationIdMismatch`; and
+3. require the exact executable empty `ProofSetRoot`, otherwise
+   `GenesisProofSetRootMismatch`.
+
+Length validation precedes all fixed-field inspection. Decoding allocates no
+memory, returns no partial definition, and re-encoding every accepted input
+reproduces its bytes exactly. The empty root is the same value returned by the
+authenticated proof-set implementation, not an independent genesis constant.
+
+`ProofChainId` is the SHA-256 content identity of the complete canonical
+definition:
+
+```text
+ProofChainId = SHA256(
+    "naome:proof-chain-definition\0"
+    || canonical_proof_chain_definition[73]
+)
+```
+
+Exact definition-domain bytes are:
+
+```text
+6e616f6d653a70726f6f662d636861696e2d646566696e6974696f6e00
+```
+
+For a deployment discriminator containing 32 bytes of `11`, the canonical
+definition and derived chain ID are:
+
+```text
+definition = 1111111111111111111111111111111111111111111111111111111111111111
+             6e616f6d653a7a6663
+             e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca
+
+ProofChainId = 7174cae86b0cd18e2364805d1bb8da7a34262f3efa6f5e2b723ec6612a9ec15e
+```
+
+Changing the deployment discriminator, Foundation identity, or genesis root
+changes the chain identity under collision resistance. The discriminator
+separates intentional deployments that otherwise share the same executable
+genesis semantics. It is not a secret, signature, operator identity, consensus
+parameter, or authorization token.
+
+A `ProofChainId` remains an exact 32-byte address on journal and network
+boundaries. Constructing that address from raw bytes supports strict message
+and file decoding; it does not establish that the bytes derive from a supported
+definition. Trusted chain-state and journal construction accept the complete
+definition and derive its ID instead of accepting an arbitrary address.
 
 An empty chain derives its initial head as:
 
@@ -945,10 +1010,10 @@ Exact genesis-domain bytes are:
 6e616f6d653a70726f6f662d636861696e2d67656e6573697300
 ```
 
-For a chain ID containing 32 bytes of `11`, the virtual genesis parent is:
+For the `11` discriminator definition above, the virtual genesis parent is:
 
 ```text
-f47ee4acce1f5797ff773e7b620cfc66b101dfadb0b87cb4f83e3b94765c8b98
+71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
 ```
 
 This anchor is not an admitted block and has no transition, payload, height, or
@@ -956,10 +1021,10 @@ stored record. The first block names it as parent; every later block names the
 exact identity of its admitted predecessor.
 
 `ProofChainId` is not repeated in blocks, so standalone block bytes are not
-self-labeling. Context comes from configured chain ID plus unbroken ancestry to
-its virtual genesis. Reusing one ancestry under another chain ID fails at the
-first exact-head comparison unless the virtual genesis or later block identity
-collides.
+self-labeling. Context comes from a supported definition, its derived chain ID,
+and unbroken ancestry to its virtual genesis. Reusing one ancestry under another
+definition fails at the first exact-head comparison unless the chain identity,
+virtual genesis, or later block identity collides.
 
 ### Block encoding and identity
 
@@ -1004,11 +1069,12 @@ Exact block-domain bytes are:
 6e616f6d653a70726f6f662d626c6f636b00
 ```
 
-For the `11` chain's virtual genesis and the transition golden above—roots
-`11` and `22`, count `02`, IDs `33` and `44`—the 161-byte block ID is:
+For the `11` discriminator definition's virtual genesis and the transition
+golden above—roots `11` and `22`, count `02`, IDs `33` and `44`—the 161-byte
+block ID is:
 
 ```text
-9b1dbade5300bbb36e1b126226dc940395d7ccd742a2bd7a8d6f7cbb9543237f
+474983a016ebf466488b634485b9e6e93f1629bf3d0afa5afa5618f2e04a70f4
 ```
 
 Changing parent or any transition byte changes the identity under collision
@@ -1018,9 +1084,10 @@ does not establish ancestry availability, validity, selection, or finality.
 
 ### Preparation and exact-head application
 
-A chain state begins with an empty private proof DAG and its configured virtual
-genesis as current head. It accepts neither an arbitrary pre-populated DAG nor a
-caller-selected initial head.
+A chain state begins from one supported definition with an empty private proof
+DAG and its derived virtual genesis as current head. It accepts neither a raw
+caller-selected chain ID, an arbitrary pre-populated DAG, nor a caller-selected
+initial head.
 
 Local preparation takes one ordered list of `1..=8` proof IDs, prepares a
 transition using the read-only projection rules, and constructs a block whose
@@ -1075,18 +1142,20 @@ must not clone, scan, or rebuild the complete selected set or check a candidate
 more than once. Candidate bytes and mathematical work retain their independent
 limits.
 
-Virtual genesis, block identity, ancestry, transition identities, and roots
-assume SHA-256 collision and second-preimage resistance. Distinct domains
-separate genesis anchors, blocks, transitions, proof identities, and
-authenticated-set nodes. Exact parent matching prevents local replay and sibling
-application after head advance; roots bind selected proof state before and after
-the block; addressed admission prevents substitution, permutation, invalid-proof
-admission, and unrelated-proof smuggling.
+Chain-definition identity, virtual genesis, block identity, ancestry, transition
+identities, and roots assume SHA-256 collision and second-preimage resistance.
+Distinct domains separate definitions, genesis anchors, blocks, transitions,
+proof identities, and authenticated-set nodes. Exact parent matching prevents
+local replay and sibling application after head advance; roots bind selected
+proof state before and after the block; addressed admission prevents
+substitution, permutation, invalid-proof admission, and unrelated-proof
+smuggling.
 
-The chain identifier is neither secret nor an authentication key. A remote party
-can calculate the same virtual genesis. A valid certificate, identity, set root,
-transition, ancestry, block, or successful local application establishes no
-proposer identity, data availability, consensus, finality, novelty, reward, fee,
-or economic value. Source syntax, networking, durable recovery, competing-
-history selection, reorganization, consensus, finality, and economy remain
-separate contracts.
+The definition and chain identifier are neither secret nor authentication keys.
+A remote party can calculate the same identity and virtual genesis. A valid
+definition, certificate, identity, set root, transition, ancestry, block, or
+successful local application establishes no proposer identity, data
+availability, consensus, finality, novelty, reward, fee, or economic value.
+Source syntax, network selection, durable recovery, competing-history
+selection, reorganization, consensus, finality, and economy remain separate
+contracts.

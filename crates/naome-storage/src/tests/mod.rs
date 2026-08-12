@@ -11,8 +11,8 @@ use super::{
 };
 use naome_chain::{
     AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, ProofBlock, ProofBlockApplyError,
-    ProofBlockId, ProofChainId, ProofChainState, ProofDag, ProofSetMembership, ProofSetRoot,
-    ProofTransitionApplyError,
+    ProofBlockId, ProofChainDefinition, ProofChainId, ProofChainState, ProofDag,
+    ProofSetMembership, ProofSetRoot, ProofTransitionApplyError,
 };
 use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 use naome_ledger::{AcceptedProofRecord, LedgerError, ProofBatchError};
@@ -64,8 +64,8 @@ impl Drop for TestDirectory {
     }
 }
 
-fn chain_id(byte: u8) -> ProofChainId {
-    ProofChainId::from_bytes([byte; 32])
+fn chain_definition(byte: u8) -> ProofChainDefinition {
+    ProofChainDefinition::new([byte; 32])
 }
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
@@ -151,14 +151,18 @@ fn prepared_block(state: &ProofChainState, proof_ids: &[ProofId]) -> ProofBlock 
     state.prepare_block(proof_ids.to_vec()).unwrap()
 }
 
-fn one_block(id: ProofChainId, _payloads: &[Vec<u8>], proof_ids: &[ProofId]) -> ProofBlock {
-    let state = ProofChainState::new(id);
+fn one_block(
+    definition: ProofChainDefinition,
+    _payloads: &[Vec<u8>],
+    proof_ids: &[ProofId],
+) -> ProofBlock {
+    let state = ProofChainState::new(definition);
     prepared_block(&state, proof_ids)
 }
 
-fn two_block_chain(id: ProofChainId) -> [JournalEntryFixture; 2] {
+fn two_block_chain(definition: ProofChainDefinition) -> [JournalEntryFixture; 2] {
     let (payloads, proof_ids) = dependency_chain_with_len(2);
-    let mut state = ProofChainState::new(id);
+    let mut state = ProofChainState::new(definition);
     let first_payloads = vec![payloads[0].clone()];
     let first_ids = vec![proof_ids[0]];
     let first = prepared_block(&state, &first_ids);

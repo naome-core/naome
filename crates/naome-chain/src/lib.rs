@@ -27,7 +27,7 @@ pub use naome_ledger::{AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, Proo
 
 pub use block::{
     PROOF_BLOCK_MAX_BYTES, ProofBlock, ProofBlockApplyError, ProofBlockDecodeError, ProofBlockId,
-    ProofChainId, ProofChainState,
+    ProofChainDefinition, ProofChainDefinitionDecodeError, ProofChainId, ProofChainState,
 };
 pub use proof_set::{
     PROOF_SET_PROOF_MAX_BYTES, ProofSetMembership, ProofSetProof, ProofSetProofError, ProofSetRoot,

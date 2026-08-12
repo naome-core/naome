@@ -16,6 +16,11 @@ only an incomplete append tail; verified open additionally requires a
 separately trusted exact head. Block preparation is read-only and block
 application is the sole durable mutation.
 
+Definition-derived chain identity changes the stored identifier and virtual
+genesis relative to journals created from arbitrary caller-supplied identifiers.
+Those prerelease journals must be recreated; open never guesses a discriminator,
+rewrites the prefix, or translates their entries.
+
 Every selected-state operation requires a healthy handle. The immutable
 `chain_id` getter alone remains available after poisoning; it performs no disk
 I/O and the ID is not repeated in block or entry bytes. Private chain, proof,
@@ -40,8 +45,9 @@ held for the complete handle lifetime, including while the handle is poisoned.
 
 `create` uses exclusive file creation and never replaces or reinitializes an
 existing journal. `open_recovering_unverified` and `open_verified` require an
-existing recognized journal. The caller supplies the expected `ProofChainId` to
-all three operations. If initial header writing or synchronization fails,
+existing recognized journal. The caller supplies the complete supported
+`ProofChainDefinition` to all three operations; they derive its `ProofChainId`
+once before header work. If initial header writing or synchronization fails,
 `create` may leave a partial or durability-ambiguous final-path file and returns
 no handle. A later `create` will not replace it; prerelease recovery requires
 explicit operator inspection and recreation. The implementation must not delete
@@ -53,7 +59,7 @@ Every journal starts with the following exact bytes:
 
 ```text
 magic[26]       = "naome:proof-chain-journal\0"
-proof_chain_id  = 32 caller-configured bytes
+proof_chain_id  = 32 definition-derived bytes
 ```
 
 The magic in hexadecimal is:
@@ -64,14 +70,17 @@ The magic in hexadecimal is:
 
 The complete fixed prefix is therefore 58 bytes. Any missing or different
 magic byte is an unsupported or corrupt journal. Opening reads the complete
-stored chain identifier and compares it with the caller-supplied expected
-identifier before entry scanning or tail recovery. A mismatch returns no
-journal handle and does not modify the file.
+stored chain identifier and compares it with the identifier derived from the
+caller-supplied definition before entry scanning or tail recovery. A mismatch
+returns no journal handle and does not modify the file.
 
 Persisting the chain identifier binds the local replay context and virtual
-genesis parent. It does not put the identifier into canonical block bytes,
-authenticate an operator, select a network, authorize a block, or establish
-consensus.
+genesis parent while retaining the 58-byte prefix and avoiding redundant
+Foundation and root bytes in the journal. It does not put the identifier into
+canonical block bytes, authenticate an operator, select a network, authorize a
+block, or establish consensus. The definition itself is not persisted; the
+[Proof Protocol](proof-protocol.md) owns its canonical representation and
+identity.
 
 ## Entry encoding
 
@@ -200,9 +209,10 @@ Directory provisioning durability remains the caller's responsibility.
 
 ## Open and deterministic replay
 
-After acquiring the lock and validating the complete prefix and expected chain
-identifier, opening initializes an empty `ProofChainState` from that identifier
-and scans entries. For each structurally complete entry it:
+After acquiring the lock and validating the complete prefix against the chain
+identity derived once from the supplied definition, opening initializes an
+empty `ProofChainState` with that identity and scans entries. For each
+structurally complete entry it:
 
 1. validates the outer length and complete entry boundary;
 2. validates the two-byte block length and reads the bounded block bytes;
@@ -284,7 +294,7 @@ transition, batch, and ledger precedence defined by their source contracts.
 
 ## Verified open
 
-`open_verified` accepts the same expected `ProofChainId` plus one
+`open_verified` accepts the same `ProofChainDefinition` plus one
 caller-supplied expected `ProofBlockId`. It completes lock acquisition, prefix
 and chain-context validation, entry framing, block-ID footer checks, and strict
 replay before comparing the reconstructed exact head with the expected head. A
@@ -298,8 +308,8 @@ every transition's before-and-after `ProofSetRoot`. Strict replay verifies that
 the retained proof state realizes those commitments, so a second expected
 proof-set root would be redundant.
 
-Before the first admitted block, the expected head is the chain identifier's
-virtual genesis parent. That anchor is not a stored or admitted block.
+Before the first admitted block, the expected head is the supplied definition's
+derived virtual genesis parent. That anchor is not a stored or admitted block.
 
 ## Committed block lookup
 

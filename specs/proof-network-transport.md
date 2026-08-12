@@ -129,16 +129,17 @@ An empty response becomes `Unavailable` before found-response checks. Every
 nonempty malformed or sub-129-byte response is a decode error. A canonical
 block for another request is an identity mismatch.
 
-For the canonical 161-byte block golden, the request is:
+For the canonical 161-byte block golden from the `11` discriminator definition,
+the request is:
 
 ~~~text
-9b1dbade5300bbb36e1b126226dc940395d7ccd742a2bd7a8d6f7cbb9543237f
+474983a016ebf466488b634485b9e6e93f1629bf3d0afa5afa5618f2e04a70f4
 ~~~
 
 The transport-neutral found response is the direct concatenation of:
 
 ~~~text
-f47ee4acce1f5797ff773e7b620cfc66b101dfadb0b87cb4f83e3b94765c8b98
+71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
 1111111111111111111111111111111111111111111111111111111111111111
 2222222222222222222222222222222222222222222222222222222222222222
 02
@@ -172,16 +173,17 @@ response of any other length is `InvalidResponseLength { actual }` and never
 `Unavailable`. The immutable request remains coupled to the response because
 the response does not repeat its chain context.
 
-For a chain ID containing 32 bytes of `11`, the request is:
+For the canonical chain ID derived from the `11` discriminator definition, the
+request is:
 
 ~~~text
-1111111111111111111111111111111111111111111111111111111111111111
+7174cae86b0cd18e2364805d1bb8da7a34262f3efa6f5e2b723ec6612a9ec15e
 ~~~
 
 A matching empty journal reports the domain-separated virtual genesis parent:
 
 ~~~text
-f47ee4acce1f5797ff773e7b620cfc66b101dfadb0b87cb4f83e3b94765c8b98
+71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
 ~~~
 
 A healthy journal under a different chain ID reports zero-byte `Unavailable`.
@@ -237,7 +239,7 @@ not part of block bytes or `ProofBlockId`. The complete response frame is
 The framed golden is the two-byte length `00a1` followed directly by:
 
 ~~~text
-f47ee4acce1f5797ff773e7b620cfc66b101dfadb0b87cb4f83e3b94765c8b98
+71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
 1111111111111111111111111111111111111111111111111111111111111111
 2222222222222222222222222222222222222222222222222222222222222222
 02
@@ -268,7 +270,7 @@ For the chain golden above, a matching empty journal returns byte `20` followed
 by:
 
 ~~~text
-f47ee4acce1f5797ff773e7b620cfc66b101dfadb0b87cb4f83e3b94765c8b98
+71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
 ~~~
 
 The exact mismatched-chain unavailable frame is `00`. Complete frames are one

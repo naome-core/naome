@@ -10,7 +10,9 @@ use std::time::Duration;
 use libp2p::core::{Endpoint, transport::PortUse};
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, ToSwarm};
 use naome::proof_exchange::ProofRequest;
-use naome_chain::{AddressedProofCandidate, ProofBlockId, ProofChainId, ProofDag, ProofSetRoot};
+use naome_chain::{
+    AddressedProofCandidate, ProofBlockId, ProofChainDefinition, ProofDag, ProofSetRoot,
+};
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofStep};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
@@ -116,11 +118,11 @@ pub(crate) fn test_network_for_peers(peer_ids: &[super::PeerId]) -> StaticProofN
 pub(crate) fn create_journal(
     directory: impl AsRef<Path>,
 ) -> Result<ProofChainJournal, ProofChainJournalError> {
-    ProofChainJournal::create(directory, test_chain_id())
+    ProofChainJournal::create(directory, test_chain_definition())
 }
 
-fn test_chain_id() -> ProofChainId {
-    ProofChainId::from_bytes([0x41; 32])
+pub(crate) fn test_chain_definition() -> ProofChainDefinition {
+    ProofChainDefinition::new([0x41; 32])
 }
 
 pub(crate) fn apply_fresh_blocks(
@@ -389,9 +391,12 @@ async fn dependency_acquisition_is_unselected_until_one_explicit_atomic_promotio
 
     let selected_head = client_journal.head_block_id().unwrap();
     drop(client_journal);
-    let reopened =
-        ProofChainJournal::open_verified(client_directory.path(), test_chain_id(), selected_head)
-            .unwrap();
+    let reopened = ProofChainJournal::open_verified(
+        client_directory.path(),
+        test_chain_definition(),
+        selected_head,
+    )
+    .unwrap();
     assert_eq!(reopened.len().unwrap(), 2);
 }
 

@@ -18,8 +18,8 @@ use std::path::Path;
 
 use naome_chain::{
     AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, PROOF_BLOCK_MAX_BYTES, ProofBlock,
-    ProofBlockApplyError, ProofBlockDecodeError, ProofBlockId, ProofChainId, ProofChainState,
-    ProofSetProof, ProofSetRoot, ProofTransitionError,
+    ProofBlockApplyError, ProofBlockDecodeError, ProofBlockId, ProofChainDefinition, ProofChainId,
+    ProofChainState, ProofSetProof, ProofSetRoot, ProofTransitionError,
 };
 use naome_ledger::AcceptedProofRecord;
 use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
@@ -49,12 +49,11 @@ const ENTRY_MAX_BODY_BYTES: u32 = (BLOCK_LENGTH_BYTES
 #[must_use]
 pub struct ProofChainJournal {
     _lock: File,
-    chain_id: ProofChainId,
     core: JournalCore<File>,
 }
 
 impl ProofChainJournal {
-    /// Creates and exclusively opens a new empty journal for `chain_id`.
+    /// Creates and exclusively opens a new empty journal for `definition`.
     ///
     /// Creation never replaces an existing journal. The prefix containing the
     /// exact chain context is synchronized before this function succeeds.
@@ -62,7 +61,7 @@ impl ProofChainJournal {
     /// provisioning responsibility.
     pub fn create(
         directory: impl AsRef<Path>,
-        chain_id: ProofChainId,
+        definition: ProofChainDefinition,
     ) -> Result<Self, ProofChainJournalError> {
         let directory = directory.as_ref();
         let lock = open_and_lock(directory)?;
@@ -74,15 +73,15 @@ impl ProofChainJournal {
             .open(journal_path)
             .map_err(|source| ProofChainJournalError::Create { source })?;
 
+        let chain = ProofChainState::new(definition);
         file.write_all(JOURNAL_HEADER)
-            .and_then(|()| file.write_all(chain_id.as_bytes()))
+            .and_then(|()| file.write_all(chain.chain_id().as_bytes()))
             .and_then(|()| file.sync_all())
             .map_err(|source| ProofChainJournalError::Create { source })?;
 
         Ok(Self {
             _lock: lock,
-            chain_id,
-            core: JournalCore::empty(file, chain_id),
+            core: JournalCore::empty(file, chain),
         })
     }
 
@@ -92,9 +91,9 @@ impl ProofChainJournal {
     /// boundary. A complete corrupt or invalid entry fails closed.
     pub fn open_recovering_unverified(
         directory: impl AsRef<Path>,
-        expected_chain_id: ProofChainId,
+        expected_definition: ProofChainDefinition,
     ) -> Result<Self, ProofChainJournalError> {
-        Self::open_inner(directory.as_ref(), expected_chain_id, None)
+        Self::open_inner(directory.as_ref(), expected_definition, None)
     }
 
     /// Opens, strictly replays, and verifies the complete block ancestry.
@@ -104,15 +103,15 @@ impl ProofChainJournal {
     /// committed prefix matches this expected head.
     pub fn open_verified(
         directory: impl AsRef<Path>,
-        expected_chain_id: ProofChainId,
+        expected_definition: ProofChainDefinition,
         expected_head: ProofBlockId,
     ) -> Result<Self, ProofChainJournalError> {
-        Self::open_inner(directory.as_ref(), expected_chain_id, Some(expected_head))
+        Self::open_inner(directory.as_ref(), expected_definition, Some(expected_head))
     }
 
     fn open_inner(
         directory: &Path,
-        expected_chain_id: ProofChainId,
+        expected_definition: ProofChainDefinition,
         expected_head: Option<ProofBlockId>,
     ) -> Result<Self, ProofChainJournalError> {
         let lock = open_and_lock(directory)?;
@@ -122,18 +121,14 @@ impl ProofChainJournal {
             .write(true)
             .open(journal_path)
             .map_err(|source| ProofChainJournalError::Open { source })?;
-        let core = JournalCore::replay(file, expected_chain_id, expected_head)?;
-        Ok(Self {
-            _lock: lock,
-            chain_id: expected_chain_id,
-            core,
-        })
+        let core = JournalCore::replay(file, expected_definition, expected_head)?;
+        Ok(Self { _lock: lock, core })
     }
 
     /// Returns the immutable chain context synchronized at creation or
     /// verified from the persisted prefix during open.
     pub const fn chain_id(&self) -> ProofChainId {
-        self.chain_id
+        self.core.chain.chain_id()
     }
 
     /// Prepares one exact-parent block without changing memory or disk.
@@ -267,10 +262,10 @@ struct JournalCore<F> {
 }
 
 impl<F: JournalIo> JournalCore<F> {
-    fn empty(file: F, chain_id: ProofChainId) -> Self {
+    fn empty(file: F, chain: ProofChainState) -> Self {
         Self {
             file,
-            chain: ProofChainState::new(chain_id),
+            chain,
             blocks: HashMap::new(),
             committed_end: JOURNAL_PREFIX_BYTES as u64,
             poisoned: false,
@@ -279,9 +274,11 @@ impl<F: JournalIo> JournalCore<F> {
 
     fn replay(
         mut file: F,
-        expected_chain_id: ProofChainId,
+        expected_definition: ProofChainDefinition,
         expected_head: Option<ProofBlockId>,
     ) -> Result<Self, ProofChainJournalError> {
+        let chain = ProofChainState::new(expected_definition);
+        let expected_chain_id = chain.chain_id();
         let file_len = file
             .seek(SeekFrom::End(0))
             .map_err(|source| ProofChainJournalError::Read { offset: 0, source })?;
@@ -312,7 +309,7 @@ impl<F: JournalIo> JournalCore<F> {
             });
         }
 
-        let mut chain = ProofChainState::new(expected_chain_id);
+        let mut chain = chain;
         let mut blocks = HashMap::new();
         let mut entry_start = JOURNAL_PREFIX_BYTES as u64;
         let mut entry = 0_u64;
