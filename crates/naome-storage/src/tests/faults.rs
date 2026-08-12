@@ -154,9 +154,10 @@ impl JournalIo for ScriptedIo {
 
 #[test]
 fn block_rejection_consumes_no_journal_io_or_fault() {
-    let id = chain_id(CHAIN_BYTE);
+    let definition = chain_definition(CHAIN_BYTE);
+    let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let state = ProofChainState::new(id);
+    let state = ProofChainState::new(definition);
     let block = prepared_block(&state, &proof_ids);
     let stale = ProofBlock::new(
         ProofBlockId::from_bytes([0xaa; 32]),
@@ -165,7 +166,7 @@ fn block_rejection_consumes_no_journal_io_or_fault() {
     let fault = Fault::SyncBefore {
         phase: AppendPhase::Body,
     };
-    let mut core = JournalCore::empty(ScriptedIo::new(id, Some(fault.clone())), id);
+    let mut core = JournalCore::empty(ScriptedIo::new(id, Some(fault.clone())), state);
     let before = core.file.volatile.get_ref().clone();
 
     assert!(matches!(
@@ -199,9 +200,10 @@ fn block_rejection_consumes_no_journal_io_or_fault() {
 
 #[test]
 fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() {
-    let id = chain_id(CHAIN_BYTE);
+    let definition = chain_definition(CHAIN_BYTE);
+    let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let block = one_block(id, &payloads, &proof_ids);
+    let block = one_block(definition, &payloads, &proof_ids);
     let block_bytes = block.to_canonical_bytes();
     let body_write_bytes = 4 + 2 + block_bytes.len() + 4 + payloads[0].len();
     let mut faults = vec![Fault::Seek];
@@ -231,7 +233,10 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
     ]);
 
     for fault in faults {
-        let mut core = JournalCore::empty(ScriptedIo::new(id, Some(fault.clone())), id);
+        let mut core = JournalCore::empty(
+            ScriptedIo::new(id, Some(fault.clone())),
+            ProofChainState::new(definition),
+        );
         assert!(
             matches!(
                 core.apply_block(&block, addressed_candidates(&payloads, &proof_ids)),
@@ -251,9 +256,12 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
         assert!(core.blocks.is_empty(), "fault={fault:?}");
 
         let durable = core.file.durable.clone();
-        let replay =
-            JournalCore::replay(ScriptedIo::from_images(durable.clone(), durable), id, None)
-                .unwrap();
+        let replay = JournalCore::replay(
+            ScriptedIo::from_images(durable.clone(), durable),
+            definition,
+            None,
+        )
+        .unwrap();
         let expected_new = matches!(
             fault,
             Fault::SyncAfter {
@@ -270,7 +278,7 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
             if expected_new {
                 block.id()
             } else {
-                ProofChainState::new(id).head_block_id()
+                ProofChainState::new(definition).head_block_id()
             },
             "fault={fault:?}"
         );
@@ -284,11 +292,12 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
 
 #[test]
 fn successful_commit_streams_body_then_two_sync_barriers_then_footer() {
-    let id = chain_id(CHAIN_BYTE);
+    let definition = chain_definition(CHAIN_BYTE);
+    let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(2);
-    let block = one_block(id, &payloads, &proof_ids);
+    let block = one_block(definition, &payloads, &proof_ids);
     let block_len = block.to_canonical_bytes().len();
-    let mut core = JournalCore::empty(ScriptedIo::new(id, None), id);
+    let mut core = JournalCore::empty(ScriptedIo::new(id, None), ProofChainState::new(definition));
 
     core.apply_block(&block, addressed_candidates(&payloads, &proof_ids))
         .unwrap();
@@ -317,15 +326,16 @@ fn successful_commit_streams_body_then_two_sync_barriers_then_footer() {
 
 #[test]
 fn replay_recovery_and_stabilization_fail_without_returning_a_handle() {
-    let id = chain_id(CHAIN_BYTE);
+    let definition = chain_definition(CHAIN_BYTE);
+    let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let block = one_block(id, &payloads, &proof_ids);
+    let block = one_block(definition, &payloads, &proof_ids);
     let complete = journal_image(id, &[(block, payloads, proof_ids)]);
 
     let mut stabilization = ScriptedIo::from_images(complete.clone(), complete.clone());
     stabilization.plain_sync_failure = true;
     assert!(matches!(
-        JournalCore::replay(stabilization, id, None),
+        JournalCore::replay(stabilization, definition, None),
         Err(ProofChainJournalError::Stabilize { .. })
     ));
 
@@ -333,29 +343,30 @@ fn replay_recovery_and_stabilization_fail_without_returning_a_handle() {
     let mut truncation = ScriptedIo::from_images(incomplete.clone(), incomplete.clone());
     truncation.set_len_failure = true;
     assert!(matches!(
-        JournalCore::replay(truncation, id, None),
+        JournalCore::replay(truncation, definition, None),
         Err(ProofChainJournalError::Recovery { .. })
     ));
 
     let mut recovery_sync = ScriptedIo::from_images(incomplete.clone(), incomplete);
     recovery_sync.plain_sync_failure = true;
     assert!(matches!(
-        JournalCore::replay(recovery_sync, id, None),
+        JournalCore::replay(recovery_sync, definition, None),
         Err(ProofChainJournalError::Recovery { .. })
     ));
 }
 
 #[test]
 fn complete_bad_footer_is_not_recovered_but_incomplete_footer_is() {
-    let id = chain_id(CHAIN_BYTE);
+    let definition = chain_definition(CHAIN_BYTE);
+    let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let block = one_block(id, &payloads, &proof_ids);
+    let block = one_block(definition, &payloads, &proof_ids);
     let complete = journal_image(id, &[(block, payloads, proof_ids)]);
 
     let incomplete = complete[..complete.len() - 1].to_vec();
     let recovered = JournalCore::replay(
         ScriptedIo::from_images(incomplete.clone(), incomplete),
-        id,
+        definition,
         None,
     )
     .unwrap();
@@ -367,7 +378,11 @@ fn complete_bad_footer_is_not_recovered_but_incomplete_footer_is() {
     let last = corrupt.len() - 1;
     corrupt[last] ^= 1;
     assert!(matches!(
-        JournalCore::replay(ScriptedIo::from_images(corrupt.clone(), corrupt), id, None,),
+        JournalCore::replay(
+            ScriptedIo::from_images(corrupt.clone(), corrupt),
+            definition,
+            None,
+        ),
         Err(ProofChainJournalError::BlockIdMismatch { entry: 0, .. })
     ));
 }
@@ -375,13 +390,14 @@ fn complete_bad_footer_is_not_recovered_but_incomplete_footer_is() {
 #[test]
 fn poisoned_public_handle_exposes_only_chain_context_and_keeps_lock() {
     let directory = TestDirectory::new();
-    let id = chain_id(CHAIN_BYTE);
+    let definition = chain_definition(CHAIN_BYTE);
+    let id = definition.id();
     let payload = axiom_bytes(ZfcAxiom::Pairing);
     let proof_id = ProofDag::new()
         .apply_canonical_proof_bytes(payload.clone())
         .unwrap()
         .proof_id();
-    let mut journal = ProofChainJournal::create(&directory.path, id).unwrap();
+    let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
     let block = journal.prepare_block(vec![proof_id]).unwrap();
     journal
         .apply_block(
@@ -434,7 +450,7 @@ fn poisoned_public_handle_exposes_only_chain_context_and_keeps_lock() {
         Err(ProofChainJournalError::Poisoned)
     ));
     assert!(matches!(
-        ProofChainJournal::open_recovering_unverified(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, definition),
         Err(ProofChainJournalError::Locked)
     ));
 }

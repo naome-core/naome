@@ -6,7 +6,7 @@ use super::{
 };
 use crate::proof_set::{
     AuthenticatedProofSet, ProofSetMembership, ProofSetProof, ProofSetProofError, ProofSetRoot,
-    ProofSetValue, empty_digest,
+    ProofSetValue,
 };
 use naome_proof::ProofId;
 
@@ -284,7 +284,7 @@ fn decoding_preflights_framing_and_path_shape() {
     }
 
     let mut empty_sibling = vec![MEMBER_TERMINAL_TAG, 7];
-    empty_sibling.extend_from_slice(&empty_digest());
+    empty_sibling.extend_from_slice(ProofSetRoot::empty().as_bytes());
     assert_eq!(
         ProofSetProof::from_canonical_bytes(&empty_sibling),
         Err(ProofSetProofError::EmptySibling { bit: 7 })

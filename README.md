@@ -11,6 +11,10 @@ crash-consistent selected proof chain, and bounded caller-driven exchange with
 statically authorized peers. Peer-reported heads and fetched ancestry are
 untrusted inputs until explicit local validation and selection.
 
+Each local chain begins from a canonical definition that binds its deployment,
+the current Foundation identity, and the empty authenticated proof state before
+deriving the chain address and virtual genesis.
+
 ## Architecture
 
 Crates build in this direction:

@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 
 use naome::block_exchange::ProofBlockRequest;
-use naome_chain::{ProofBlock, ProofBlockId, ProofChainState, ProofSetRoot};
+use naome_chain::{ProofBlock, ProofBlockId, ProofSetRoot};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 use super::{
@@ -48,7 +48,7 @@ impl StaticProofNetwork {
         let anchor_block_id = selected
             .head_block_id()
             .map_err(ProofBlockAncestryPullError::selected_state)?;
-        let virtual_genesis_block_id = ProofChainState::new(selected.chain_id()).head_block_id();
+        let virtual_genesis_block_id = selected.chain_id().virtual_genesis_block_id();
         if selected_context_contains_block(
             selected,
             anchor_block_id,

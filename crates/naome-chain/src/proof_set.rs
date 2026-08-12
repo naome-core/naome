@@ -40,6 +40,10 @@ impl ProofSetRoot {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    pub(crate) const fn empty() -> Self {
+        Self(EMPTY_DIGEST)
+    }
 }
 
 /// The authenticated result of querying one [`ProofId`].
@@ -81,7 +85,7 @@ impl ProofSetProof {
         proof_id: ProofId,
     ) -> Result<ProofSetMembership, ProofSetProofError> {
         self.validate_shape()?;
-        let empty = empty_digest();
+        let empty = *ProofSetRoot::empty().as_bytes();
         let (membership, mut digest) = match self.terminal {
             ProofTerminal::Empty => (ProofSetMembership::Absent, empty),
             ProofTerminal::Member => (ProofSetMembership::Present, leaf_digest(proof_id)),
@@ -284,10 +288,9 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
     }
 
     pub(crate) fn root(&self) -> ProofSetRoot {
-        ProofSetRoot(
-            self.root
-                .map_or_else(empty_digest, |root| self.node_digest(root)),
-        )
+        self.root.map_or_else(ProofSetRoot::empty, |root| {
+            ProofSetRoot(self.node_digest(root))
+        })
     }
 
     pub(crate) fn projected_root(
@@ -315,11 +318,9 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
                 first_existing = Some((index, proof_id));
             }
         }
-        let root = ProofSetRoot(
-            projection
-                .root
-                .map_or_else(empty_digest, |root| projection.node_digest(root)),
-        );
+        let root = projection.root.map_or_else(ProofSetRoot::empty, |root| {
+            ProofSetRoot(projection.node_digest(root))
+        });
         (root, first_existing)
     }
 
@@ -670,10 +671,6 @@ fn first_differing_bit(left: ProofId, right: ProofId) -> u8 {
         }
     }
     unreachable!("callers compare ProofIds before finding their differing bit")
-}
-
-fn empty_digest() -> [u8; 32] {
-    EMPTY_DIGEST
 }
 
 fn leaf_digest(proof_id: ProofId) -> [u8; 32] {

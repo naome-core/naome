@@ -1,26 +1,150 @@
 use std::error::Error;
 use std::fmt;
 
+use naome_foundation::FOUNDATION_ID;
 use naome_ledger::{AcceptedProofRecord, AddressedProofCandidate};
 use naome_proof::ProofId;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    PROOF_TRANSITION_MAX_BYTES, ProofDag, ProofTransition, ProofTransitionApplyError,
+    PROOF_TRANSITION_MAX_BYTES, ProofDag, ProofSetRoot, ProofTransition, ProofTransitionApplyError,
     ProofTransitionError,
 };
 
 const PROOF_CHAIN_GENESIS_DOMAIN: &[u8] = b"naome:proof-chain-genesis\0";
+const PROOF_CHAIN_DEFINITION_DOMAIN: &[u8] = b"naome:proof-chain-definition\0";
 const PROOF_BLOCK_DOMAIN: &[u8] = b"naome:proof-block\0";
 const BLOCK_ID_BYTES: usize = ProofBlockId::BYTE_LENGTH;
+const DEPLOYMENT_DISCRIMINATOR_BYTES: usize = 32;
+const FOUNDATION_ID_BYTES: usize = FOUNDATION_ID.len();
+const GENESIS_PROOF_SET_ROOT_BYTES: usize = ProofSetRoot::BYTE_LENGTH;
 
 /// Maximum length of one canonical linear proof block.
 pub const PROOF_BLOCK_MAX_BYTES: usize = BLOCK_ID_BYTES + PROOF_TRANSITION_MAX_BYTES;
 
-/// An externally configured identifier for one linear proof-chain context.
+/// The canonical executable context from which one proof chain is derived.
 ///
-/// The identifier derives the virtual genesis parent. It is context, not an
-/// address of canonical content, an authorization token, or consensus proof.
+/// The caller supplies only a deployment discriminator. Canonical bytes also
+/// bind the exact compiled Foundation identity and empty authenticated proof-
+/// set root, so unsupported genesis semantics cannot be injected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[must_use]
+pub struct ProofChainDefinition {
+    deployment_discriminator: [u8; DEPLOYMENT_DISCRIMINATOR_BYTES],
+}
+
+impl ProofChainDefinition {
+    /// Exact byte length of one canonical proof-chain definition.
+    pub const BYTE_LENGTH: usize =
+        DEPLOYMENT_DISCRIMINATOR_BYTES + FOUNDATION_ID_BYTES + GENESIS_PROOF_SET_ROOT_BYTES;
+
+    /// Constructs the current executable definition for one deployment.
+    pub const fn new(deployment_discriminator: [u8; DEPLOYMENT_DISCRIMINATOR_BYTES]) -> Self {
+        Self {
+            deployment_discriminator,
+        }
+    }
+
+    /// Returns the caller-selected deployment discriminator.
+    pub const fn deployment_discriminator(&self) -> &[u8; DEPLOYMENT_DISCRIMINATOR_BYTES] {
+        &self.deployment_discriminator
+    }
+
+    /// Decodes one complete canonical proof-chain definition.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ProofChainDefinitionDecodeError> {
+        let bytes = <&[u8; Self::BYTE_LENGTH]>::try_from(bytes).map_err(|_| {
+            ProofChainDefinitionDecodeError::InvalidLength {
+                actual: bytes.len(),
+                expected: Self::BYTE_LENGTH,
+            }
+        })?;
+        let foundation_start = DEPLOYMENT_DISCRIMINATOR_BYTES;
+        let genesis_root_start = foundation_start + FOUNDATION_ID_BYTES;
+        if bytes[foundation_start..genesis_root_start] != *FOUNDATION_ID.as_bytes() {
+            return Err(ProofChainDefinitionDecodeError::FoundationIdMismatch);
+        }
+        let actual_root = ProofSetRoot::from_bytes(
+            bytes[genesis_root_start..]
+                .try_into()
+                .expect("the fixed definition suffix is one proof-set root"),
+        );
+        let expected_root = ProofSetRoot::empty();
+        if actual_root != expected_root {
+            return Err(
+                ProofChainDefinitionDecodeError::GenesisProofSetRootMismatch {
+                    expected: expected_root,
+                    actual: actual_root,
+                },
+            );
+        }
+        Ok(Self::new(
+            bytes[..DEPLOYMENT_DISCRIMINATOR_BYTES]
+                .try_into()
+                .expect("the fixed definition prefix is one deployment discriminator"),
+        ))
+    }
+
+    /// Encodes this definition in its sole canonical representation.
+    #[must_use]
+    pub fn to_canonical_bytes(self) -> [u8; Self::BYTE_LENGTH] {
+        let mut bytes = [0_u8; Self::BYTE_LENGTH];
+        let foundation_start = DEPLOYMENT_DISCRIMINATOR_BYTES;
+        let genesis_root_start = foundation_start + FOUNDATION_ID_BYTES;
+        bytes[..foundation_start].copy_from_slice(&self.deployment_discriminator);
+        bytes[foundation_start..genesis_root_start].copy_from_slice(FOUNDATION_ID.as_bytes());
+        bytes[genesis_root_start..].copy_from_slice(ProofSetRoot::empty().as_bytes());
+        bytes
+    }
+
+    /// Returns the content-derived identity of this complete definition.
+    pub fn id(self) -> ProofChainId {
+        let mut hasher = Sha256::new();
+        hasher.update(PROOF_CHAIN_DEFINITION_DOMAIN);
+        hasher.update(self.to_canonical_bytes());
+        ProofChainId(hasher.finalize().into())
+    }
+}
+
+/// A malformed or unsupported canonical proof-chain definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProofChainDefinitionDecodeError {
+    /// The input is not exactly one complete canonical definition.
+    InvalidLength { actual: usize, expected: usize },
+    /// The definition names a Foundation other than the executable contract.
+    FoundationIdMismatch,
+    /// The definition does not start from the executable empty proof set.
+    GenesisProofSetRootMismatch {
+        expected: ProofSetRoot,
+        actual: ProofSetRoot,
+    },
+}
+
+impl fmt::Display for ProofChainDefinitionDecodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLength { actual, expected } => write!(
+                formatter,
+                "canonical proof-chain definition length {actual} does not equal {expected} bytes"
+            ),
+            Self::FoundationIdMismatch => {
+                formatter.write_str("proof-chain definition Foundation identity is unsupported")
+            }
+            Self::GenesisProofSetRootMismatch { expected, actual } => write!(
+                formatter,
+                "proof-chain definition genesis proof-set root mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+        }
+    }
+}
+
+impl Error for ProofChainDefinitionDecodeError {}
+
+/// The content-derived address of one canonical [`ProofChainDefinition`].
+///
+/// [`Self::from_bytes`] constructs an observed or persisted address only. It
+/// does not establish that the bytes came from a supported definition, and
+/// trusted chain state cannot be constructed from this value alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
 pub struct ProofChainId([u8; 32]);
@@ -29,7 +153,7 @@ impl ProofChainId {
     /// Exact width of one proof-chain identity.
     pub const BYTE_LENGTH: usize = 32;
 
-    /// Constructs a chain-context identifier from raw bytes.
+    /// Constructs an unvalidated chain-definition address from raw bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -39,7 +163,12 @@ impl ProofChainId {
         &self.0
     }
 
-    fn genesis_parent_block_id(self) -> ProofBlockId {
+    /// Derives the virtual genesis parent for this observed chain identity.
+    ///
+    /// This calculation does not establish that the identity came from a
+    /// supported [`ProofChainDefinition`]. Trusted state construction accepts
+    /// the definition itself.
+    pub fn virtual_genesis_block_id(self) -> ProofBlockId {
         let mut hasher = Sha256::new();
         hasher.update(PROOF_CHAIN_GENESIS_DOMAIN);
         hasher.update(self.as_bytes());
@@ -189,20 +318,28 @@ impl Error for ProofBlockDecodeError {
 ///
 /// The selected [`ProofDag`] is privately owned so its authenticated state and
 /// the linear block head cannot diverge. The initial head is a virtual genesis
-/// parent derived from [`ProofChainId`], not an admitted block.
+/// parent derived from [`ProofChainDefinition`], not an admitted block.
 #[must_use]
 pub struct ProofChainState {
+    chain_id: ProofChainId,
     head_block_id: ProofBlockId,
     proof_dag: ProofDag,
 }
 
 impl ProofChainState {
     /// Constructs an empty chain at its domain-separated virtual genesis head.
-    pub fn new(chain_id: ProofChainId) -> Self {
+    pub fn new(definition: ProofChainDefinition) -> Self {
+        let chain_id = definition.id();
         Self {
-            head_block_id: chain_id.genesis_parent_block_id(),
+            chain_id,
+            head_block_id: chain_id.virtual_genesis_block_id(),
             proof_dag: ProofDag::new(),
         }
+    }
+
+    /// Returns the definition-derived chain identity.
+    pub const fn chain_id(&self) -> ProofChainId {
+        self.chain_id
     }
 
     /// Returns the exact head expected as the next block's parent.

@@ -5,7 +5,7 @@ use naome_proof::{ProofCertificate, ProofId, ProofStep};
 
 use super::{
     PROOF_BATCH_MAX_CANDIDATES, PROOF_BLOCK_MAX_BYTES, PROOF_TRANSITION_MAX_BYTES, ProofBlock,
-    ProofBlockApplyError, ProofBlockId, ProofChainId, ProofChainState, ProofDag,
+    ProofBlockApplyError, ProofBlockId, ProofChainDefinition, ProofChainState, ProofDag,
     ProofSetMembership, ProofSetProof, ProofSetRoot, ProofTransition, ProofTransitionApplyError,
     ProofTransitionError,
 };
@@ -141,7 +141,7 @@ fn proof_id_for(bytes: &[u8]) -> ProofId {
 }
 
 fn proof_chain(byte: u8) -> ProofChainState {
-    ProofChainState::new(ProofChainId::from_bytes([byte; 32]))
+    ProofChainState::new(ProofChainDefinition::new([byte; 32]))
 }
 
 #[test]
@@ -1423,9 +1423,9 @@ fn equal_final_proof_sets_from_different_histories_have_distinct_heads() {
     let pairing_id = proof_id_for(&pairing_bytes);
     let union_bytes = axiom_bytes(ZfcAxiom::Union);
     let union_id = proof_id_for(&union_bytes);
-    let chain_id = ProofChainId::from_bytes([0x18; 32]);
-    let mut first = ProofChainState::new(chain_id);
-    let mut second = ProofChainState::new(chain_id);
+    let definition = ProofChainDefinition::new([0x18; 32]);
+    let mut first = ProofChainState::new(definition);
+    let mut second = ProofChainState::new(definition);
     assert_eq!(first.head_block_id(), second.head_block_id());
 
     let first_pairing = first.prepare_block(vec![pairing_id]).unwrap();

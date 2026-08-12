@@ -4,8 +4,7 @@ use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
 use naome::proof_exchange::{ProofRequest, ProofResponse};
 use naome_chain::{
-    ProofBlock, ProofBlockId, ProofChainId, ProofDag, ProofSetRoot, ProofTransition,
-    ProofTransitionError,
+    ProofBlock, ProofBlockId, ProofDag, ProofSetRoot, ProofTransition, ProofTransitionError,
 };
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
@@ -15,7 +14,7 @@ use super::*;
 use crate::codec::ProofBlockWireResponse;
 use crate::tests::{
     TestDirectory, apply_fresh_blocks, assert_snapshot, create_journal, pairing_bytes, snapshot,
-    test_network_for_peers, union_bytes,
+    test_chain_definition, test_network_for_peers, union_bytes,
 };
 use crate::{
     DependencyAcquisitionError, ExchangeRequestId, Keypair, NetworkEvent, OutboundProofFailure,
@@ -522,12 +521,9 @@ fn referenced_direct_child_import_is_unselected_until_one_atomic_commit() {
     assert_ne!(directory.journal_bytes(), before.bytes);
 
     drop(selected);
-    let reopened = ProofChainJournal::open_verified(
-        directory.path(),
-        ProofChainId::from_bytes([0x41; 32]),
-        block_id,
-    )
-    .unwrap();
+    let reopened =
+        ProofChainJournal::open_verified(directory.path(), test_chain_definition(), block_id)
+            .unwrap();
     assert_eq!(reopened.len().unwrap(), 2);
     assert!(reopened.proof(root_id).unwrap().is_some());
 }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use naome_chain::ProofChainId;
+use naome_chain::ProofChainDefinition;
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 const LOCK_PROBE_ENV: &str = "NAOME_PROOF_CHAIN_JOURNAL_LOCK_PROBE";
@@ -39,8 +39,8 @@ impl Drop for TestDirectory {
     }
 }
 
-fn chain_id() -> ProofChainId {
-    ProofChainId::from_bytes([CHAIN_ID_BYTE; 32])
+fn chain_definition() -> ProofChainDefinition {
+    ProofChainDefinition::new([CHAIN_ID_BYTE; 32])
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn exclusive_lock_child_probe() {
         return;
     };
     assert!(matches!(
-        ProofChainJournal::open_recovering_unverified(PathBuf::from(path), chain_id()),
+        ProofChainJournal::open_recovering_unverified(PathBuf::from(path), chain_definition()),
         Err(ProofChainJournalError::Locked)
     ));
     println!("NAOME_PROOF_CHAIN_JOURNAL_LOCK_PROBE_OK");
@@ -58,7 +58,7 @@ fn exclusive_lock_child_probe() {
 #[test]
 fn exclusive_lock_is_enforced_across_processes() {
     let directory = TestDirectory::new();
-    let journal = ProofChainJournal::create(&directory.path, chain_id()).unwrap();
+    let journal = ProofChainJournal::create(&directory.path, chain_definition()).unwrap();
     let output = Command::new(env::current_exe().unwrap())
         .arg("--exact")
         .arg("exclusive_lock_child_probe")
@@ -79,5 +79,7 @@ fn exclusive_lock_is_enforced_across_processes() {
         String::from_utf8_lossy(&output.stderr)
     );
     drop(journal);
-    assert!(ProofChainJournal::open_recovering_unverified(&directory.path, chain_id()).is_ok());
+    assert!(
+        ProofChainJournal::open_recovering_unverified(&directory.path, chain_definition()).is_ok()
+    );
 }

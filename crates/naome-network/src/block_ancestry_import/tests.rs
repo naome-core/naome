@@ -6,8 +6,7 @@ use libp2p::swarm::ConnectionId;
 use naome::block_exchange::ProofBlockRequest;
 use naome::proof_exchange::{ProofRequest, ProofResponse};
 use naome_chain::{
-    ProofBlock, ProofBlockApplyError, ProofChainId, ProofChainState, ProofDag,
-    ProofTransitionApplyError,
+    ProofBlock, ProofBlockApplyError, ProofChainState, ProofDag, ProofTransitionApplyError,
 };
 use naome_ledger::{LedgerError, ProofBatchError};
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
@@ -15,7 +14,9 @@ use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 use super::*;
 use crate::codec::ProofBlockWireResponse;
-use crate::tests::{TestDirectory, create_journal, pairing_bytes, test_network_for_peers};
+use crate::tests::{
+    TestDirectory, create_journal, pairing_bytes, test_chain_definition, test_network_for_peers,
+};
 use crate::{
     ExchangeRequestId, Keypair, MAX_PROOF_BLOCK_ANCESTRY_BLOCKS, NetworkEvent, PendingRequest,
     ProofBlockAncestryPullProgress, ProofBlockImportError,
@@ -49,11 +50,8 @@ fn proof_id(bytes: &[u8]) -> ProofId {
         .proof_id()
 }
 
-fn valid_extension(
-    selected: &ProofChainJournal,
-    count: usize,
-) -> (Vec<ProofBlock>, HashMap<ProofId, Vec<u8>>) {
-    let mut state = ProofChainState::new(selected.chain_id());
+fn valid_extension(count: usize) -> (Vec<ProofBlock>, HashMap<ProofId, Vec<u8>>) {
+    let mut state = ProofChainState::new(test_chain_definition());
     let mut blocks = Vec::with_capacity(count);
     let mut payloads = HashMap::with_capacity(count);
     for index in 0..count {
@@ -227,7 +225,7 @@ fn one_three_and_sixteen_block_paths_commit_forward_without_block_refetch() {
         let mut selected = create_journal(directory.path()).unwrap();
         let anchor = selected.head_block_id().unwrap();
         let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-        let (blocks, payloads) = valid_extension(&selected, count);
+        let (blocks, payloads) = valid_extension(count);
         let target = blocks.last().unwrap().id();
         let expected_ids = blocks.iter().map(ProofBlock::id).collect::<Vec<_>>();
         let mut network = test_network_for_peers(&[peer_id]);
@@ -249,12 +247,9 @@ fn one_three_and_sixteen_block_paths_commit_forward_without_block_refetch() {
             assert!(selected.block(block_id).unwrap().is_some());
         }
         drop(selected);
-        let reopened = ProofChainJournal::open_verified(
-            directory.path(),
-            ProofChainId::from_bytes([0x41; 32]),
-            target,
-        )
-        .unwrap();
+        let reopened =
+            ProofChainJournal::open_verified(directory.path(), test_chain_definition(), target)
+                .unwrap();
         assert_eq!(reopened.len().unwrap(), count);
     }
 }
@@ -264,7 +259,7 @@ fn invalid_second_payload_reports_prefix_and_fresh_pull_retries_from_that_head()
     let directory = TestDirectory::new("ancestry-import-prefix");
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let (blocks, payloads) = valid_extension(&selected, 3);
+    let (blocks, payloads) = valid_extension(3);
     let ids = blocks.iter().map(ProofBlock::id).collect::<Vec<_>>();
     let target = ids[2];
     let mut network = test_network_for_peers(&[peer_id]);
@@ -342,7 +337,7 @@ fn start_rejects_head_drift_before_proof_traffic_with_zero_prefix() {
     let directory = TestDirectory::new("ancestry-import-start-drift");
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let (blocks, _) = valid_extension(&selected, 1);
+    let (blocks, _) = valid_extension(1);
     let target = blocks[0].id();
     let ancestry = ancestry(&selected, peer_id, blocks);
     let anchor = ancestry.anchor_block_id();
@@ -371,7 +366,7 @@ fn cancellation_before_first_acknowledgement_drains_only_the_active_proof_reques
     let selected = create_journal(directory.path()).unwrap();
     let anchor = selected.head_block_id().unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let (blocks, payloads) = valid_extension(&selected, 3);
+    let (blocks, payloads) = valid_extension(3);
     let mut network = test_network_for_peers(&[peer_id]);
     let import = network
         .start_proof_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
@@ -397,7 +392,7 @@ fn foreign_driver_is_rejected_without_selecting_the_current_block() {
     let mut selected = create_journal(directory.path()).unwrap();
     let anchor = selected.head_block_id().unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let (blocks, payloads) = valid_extension(&selected, 1);
+    let (blocks, payloads) = valid_extension(1);
     let mut origin = test_network_for_peers(&[peer_id]);
     let mut wrong_driver = test_network_for_peers(&[peer_id]);
     let import = origin
@@ -431,7 +426,7 @@ fn selected_head_drift_during_proof_acquisition_rejects_the_current_block() {
     let directory = TestDirectory::new("ancestry-import-midflight-drift");
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let (blocks, payloads) = valid_extension(&selected, 1);
+    let (blocks, payloads) = valid_extension(1);
     let target = blocks[0].id();
     let mut network = test_network_for_peers(&[peer_id]);
     let import = network
@@ -464,7 +459,7 @@ fn peer_mismatch_precedes_selected_head_drift() {
     let mut selected = create_journal(directory.path()).unwrap();
     let expected_peer = Keypair::generate_ed25519().public().to_peer_id();
     let actual_peer = Keypair::generate_ed25519().public().to_peer_id();
-    let (blocks, _) = valid_extension(&selected, 1);
+    let (blocks, _) = valid_extension(1);
     let target = blocks[0].id();
     let mut network = test_network_for_peers(&[expected_peer, actual_peer]);
     let import = network
@@ -507,7 +502,7 @@ fn cancellation_after_one_acknowledgement_retains_only_that_prefix() {
     let directory = TestDirectory::new("ancestry-import-prefix-cancel");
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let (blocks, payloads) = valid_extension(&selected, 3);
+    let (blocks, payloads) = valid_extension(3);
     let ids = blocks.iter().map(ProofBlock::id).collect::<Vec<_>>();
     let mut network = test_network_for_peers(&[peer_id]);
     let import = network
@@ -551,7 +546,7 @@ fn disconnected_source_prevents_next_block_start_after_acknowledged_prefix() {
     let directory = TestDirectory::new("ancestry-import-next-start-failure");
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let (blocks, payloads) = valid_extension(&selected, 2);
+    let (blocks, payloads) = valid_extension(2);
     let ids = blocks.iter().map(ProofBlock::id).collect::<Vec<_>>();
     let next_root = blocks[1].transition().root_proof_id();
     let target = ids[1];
