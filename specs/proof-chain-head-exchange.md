@@ -20,6 +20,10 @@ The separate
 [Authenticated Proof Chain Head Pull](authenticated-proof-chain-head-pull.md)
 binds this exchange to a statically authorized Noise peer over an existing
 managed Yamux session. The separate
+[Authenticated Proof Chain Head Announcement](authenticated-proof-chain-head-announcement.md)
+carries a sender's exact chain context and current head in one fixed
+receipt-bearing message; it does not reuse or change this pull request or
+response. The separate
 [Addressed Proof Block Exchange](addressed-proof-block-exchange.md) retrieves an
 already known block by exact identity, and the separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md) may
@@ -206,3 +210,7 @@ competing-fork storage, fork choice, rollback, reorganization, checkpoint trust,
 proposer, signature, proof of work, proof of stake, validator set, voting,
 quorum, consensus, finality, reward, fee, balance, novelty policy, issuance, or
 settlement.
+
+The separate authenticated head-announcement contract adds one explicit push
+message without changing this pull exchange or granting either observation
+selection authority.

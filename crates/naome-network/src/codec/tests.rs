@@ -11,6 +11,9 @@ use libp2p::request_response::Codec;
 use naome::block_exchange::{
     PROOF_BLOCK_REQUEST_BYTES, PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockRequest,
 };
+use naome::chain_head_announcement::{
+    PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES, ProofChainHeadAnnouncement,
+};
 use naome::chain_head_exchange::{
     PROOF_CHAIN_HEAD_REQUEST_BYTES, PROOF_CHAIN_HEAD_RESPONSE_BYTES, ProofChainHeadRequest,
     ProofChainHeadResponse,
@@ -23,9 +26,11 @@ use naome_chain::{ProofBlockId, ProofChainId};
 use crate::{MAX_PEER_RECORDS_PER_BATCH, MAX_SIGNED_PEER_RECORD_BYTES, PeerRecordBatch};
 
 use super::{
-    PEER_RECORD_PROTOCOL, PROOF_BLOCK_PROTOCOL, PROOF_CHAIN_HEAD_PROTOCOL, PROTOCOL,
-    PeerRecordCodec, PeerRecordResponderCodec, PeerRecordResponderRequest, ProofBlockCodec,
-    ProofBlockWireResponse, ProofChainHeadCodec, ProofCodec,
+    PEER_RECORD_PROTOCOL, PROOF_BLOCK_PROTOCOL, PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+    PROOF_CHAIN_HEAD_PROTOCOL, PROTOCOL, PeerRecordCodec, PeerRecordResponderCodec,
+    PeerRecordResponderRequest, ProofBlockCodec, ProofBlockWireResponse,
+    ProofChainHeadAnnouncementCodec, ProofChainHeadAnnouncementReceipt, ProofChainHeadCodec,
+    ProofCodec,
 };
 
 struct PendingReader;
@@ -69,6 +74,13 @@ fn block_request_bytes() -> [u8; PROOF_BLOCK_REQUEST_BYTES] {
 
 fn chain_head_request_bytes() -> [u8; PROOF_CHAIN_HEAD_REQUEST_BYTES] {
     [0x11; PROOF_CHAIN_HEAD_REQUEST_BYTES]
+}
+
+fn chain_head_announcement_bytes() -> [u8; PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES] {
+    let mut bytes = [0_u8; PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES];
+    bytes[..32].fill(0x11);
+    bytes[32..].fill(0x22);
+    bytes
 }
 
 const CHAIN_HEAD_FOUND_RESPONSE_GOLDEN: [u8; 1 + PROOF_CHAIN_HEAD_RESPONSE_BYTES] = [
@@ -498,6 +510,120 @@ fn proof_chain_head_response_rejects_every_noncanonical_frame() {
         block_on(codec.read_response(&PROOF_CHAIN_HEAD_PROTOCOL, &mut found_trailing))
             .unwrap_err()
             .kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn proof_chain_head_announcement_has_exact_request_and_receipt_frames() {
+    assert_eq!(
+        PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL.as_ref(),
+        "/naome/proof-chain-head-announcement"
+    );
+    let expected = ProofChainHeadAnnouncement::new(
+        ProofChainId::from_bytes([0x11; 32]),
+        ProofBlockId::from_bytes([0x22; 32]),
+    );
+    let mut codec = ProofChainHeadAnnouncementCodec;
+
+    let mut exact = Cursor::new(chain_head_announcement_bytes().to_vec());
+    assert_eq!(
+        block_on(codec.read_request(&PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut exact)).unwrap(),
+        expected
+    );
+
+    let mut encoded_request = Cursor::new(Vec::new());
+    block_on(codec.write_request(
+        &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+        &mut encoded_request,
+        expected,
+    ))
+    .unwrap();
+    assert_eq!(
+        encoded_request.into_inner(),
+        chain_head_announcement_bytes()
+    );
+
+    let mut receipt = Cursor::new(vec![0x01]);
+    assert_eq!(
+        block_on(codec.read_response(&PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut receipt,))
+            .unwrap(),
+        ProofChainHeadAnnouncementReceipt
+    );
+
+    let mut encoded_receipt = Cursor::new(Vec::new());
+    block_on(codec.write_response(
+        &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+        &mut encoded_receipt,
+        ProofChainHeadAnnouncementReceipt,
+    ))
+    .unwrap();
+    assert_eq!(encoded_receipt.into_inner(), [0x01]);
+}
+
+#[test]
+fn proof_chain_head_announcement_rejects_every_noncanonical_frame() {
+    let mut codec = ProofChainHeadAnnouncementCodec;
+    let bytes = chain_head_announcement_bytes();
+
+    for length in 0..PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES {
+        let mut truncated = Cursor::new(bytes[..length].to_vec());
+        assert_eq!(
+            block_on(codec.read_request(&PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut truncated,))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof,
+            "accepted truncated announcement length {length}"
+        );
+    }
+
+    let mut trailing_request = bytes.to_vec();
+    trailing_request.push(0xff);
+    let mut trailing_request = Cursor::new(trailing_request);
+    assert_eq!(
+        block_on(codec.read_request(
+            &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+            &mut trailing_request,
+        ))
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::InvalidData
+    );
+
+    let mut missing_receipt = Cursor::new(Vec::<u8>::new());
+    assert_eq!(
+        block_on(codec.read_response(
+            &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+            &mut missing_receipt,
+        ))
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+
+    for receipt in 0_u8..=u8::MAX {
+        if receipt == 0x01 {
+            continue;
+        }
+        let mut invalid = Cursor::new(vec![receipt, 0xff]);
+        assert_eq!(
+            block_on(codec.read_response(&PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut invalid,))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData,
+            "accepted receipt byte {receipt:#04x}"
+        );
+        assert_eq!(invalid.position(), 1, "read past invalid receipt byte");
+    }
+
+    let mut trailing_receipt = Cursor::new(vec![0x01, 0xff]);
+    assert_eq!(
+        block_on(codec.read_response(
+            &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+            &mut trailing_receipt,
+        ))
+        .unwrap_err()
+        .kind(),
         io::ErrorKind::InvalidData
     );
 }
