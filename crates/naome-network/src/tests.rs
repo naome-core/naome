@@ -8,17 +8,17 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use libp2p::core::{Endpoint, transport::PortUse};
-use libp2p::futures::StreamExt;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, ToSwarm};
 use naome::proof_exchange::ProofRequest;
 use naome_chain::{AddressedProofCandidate, ProofBlockId, ProofChainId, ProofDag, ProofSetRoot};
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofStep};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 use super::{
-    BuildError, DependencyAcquisitionProgress, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS,
+    BuildError, DependencyAcquisitionProgress, INBOUND_APPLICATION_REQUEST_BURST,
+    INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS,
     NetworkEvent, OutboundProofEvent, PeerId, PeerSessionEvent, PendingBudget, RequestStartError,
     StaticPeer, StaticProofNetwork,
 };
@@ -712,6 +712,34 @@ async fn connection_limit_rejection_does_not_consume_pre_authentication_budget()
 }
 
 #[tokio::test]
+async fn inbound_application_request_budget_has_exact_burst_and_lazy_refill() {
+    let mut network = StaticProofNetwork::new(super::Keypair::generate_ed25519(), []).unwrap();
+    assert_eq!(
+        network.inbound_application_request_budget.tokens(),
+        INBOUND_APPLICATION_REQUEST_BURST
+    );
+
+    let start = Instant::now();
+    network.inbound_application_request_budget = super::rate_limit::TokenBucket::new(
+        INBOUND_APPLICATION_REQUEST_BURST,
+        INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL,
+        start,
+    );
+    let budget = &mut network.inbound_application_request_budget;
+    for _ in 0..INBOUND_APPLICATION_REQUEST_BURST {
+        assert!(budget.try_take(start));
+    }
+    assert!(!budget.try_take(start));
+    assert!(
+        !budget.try_take(
+            start + INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL - Duration::from_nanos(1)
+        )
+    );
+    assert!(budget.try_take(start + INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL));
+    assert!(!budget.try_take(start + INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL));
+}
+
+#[tokio::test]
 async fn outbound_requests_are_authorized_and_bounded() {
     let local = super::Keypair::generate_ed25519();
     let remote = super::Keypair::generate_ed25519();
@@ -792,12 +820,6 @@ async fn a_disconnected_passive_peer_request_cannot_trigger_a_dial() {
     );
     assert!(network.pending.is_empty());
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
-    assert!(
-        timeout(Duration::from_millis(50), network.swarm.select_next_some())
-            .await
-            .is_err(),
-        "a disconnected proof request unexpectedly caused network activity"
-    );
     assert_eq!(
         network
             .swarm
@@ -805,6 +827,13 @@ async fn a_disconnected_passive_peer_request_cannot_trigger_a_dial() {
             .sessions
             .connection_status(&remote_peer_id),
         Some(false)
+    );
+    assert!(
+        !network
+            .swarm
+            .behaviour()
+            .proof_exchange
+            .is_connected(&remote_peer_id)
     );
 }
 

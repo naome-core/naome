@@ -27,10 +27,10 @@ use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
 const LOCK_FILE_NAME: &str = "proof-chain.lock";
 const JOURNAL_FILE_NAME: &str = "proof-chain.journal";
 const JOURNAL_HEADER: &[u8] = b"naome:proof-chain-journal\0";
-const CHAIN_ID_BYTES: usize = 32;
+const CHAIN_ID_BYTES: usize = ProofChainId::BYTE_LENGTH;
 const BLOCK_LENGTH_BYTES: usize = 2;
 const PROOF_LENGTH_BYTES: usize = 4;
-const BLOCK_ID_BYTES: u64 = 32;
+const BLOCK_ID_BYTES: u64 = ProofBlockId::BYTE_LENGTH as u64;
 const ENTRY_FIXED_BYTES: u64 = 4 + BLOCK_ID_BYTES;
 const PROOF_BLOCK_MIN_BYTES: usize = 129;
 const JOURNAL_PREFIX_BYTES: usize = JOURNAL_HEADER.len() + CHAIN_ID_BYTES;
@@ -90,7 +90,7 @@ impl ProofChainJournal {
     ///
     /// One incomplete final entry is recovered to the preceding committed
     /// boundary. A complete corrupt or invalid entry fails closed.
-    pub fn open(
+    pub fn open_recovering_unverified(
         directory: impl AsRef<Path>,
         expected_chain_id: ProofChainId,
     ) -> Result<Self, ProofChainJournalError> {

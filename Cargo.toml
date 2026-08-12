@@ -2,7 +2,7 @@
 name = "naome"
 version.workspace = true
 edition.workspace = true
-description = "A decentralized protocol for formally verified mathematical knowledge."
+description = "Protocol and Rust reference implementation for machine-verifiable mathematical proofs."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
@@ -32,7 +32,6 @@ sha2 = { version = "0.11.0", default-features = false }
 [dependencies]
 naome-chain = { path = "crates/naome-chain" }
 naome-proof = { path = "crates/naome-proof" }
-naome-storage = { path = "crates/naome-storage" }
 
 [dev-dependencies]
 naome-foundation = { path = "crates/naome-foundation" }

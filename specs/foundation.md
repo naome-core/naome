@@ -1,11 +1,11 @@
 # NAOME ZFC Foundation
 
-## Status and identity
+## Identity
 
 This document normatively defines the mathematical boundary identified as:
 
 ```text
-naome:zfc
+naome:zfc:v0
 ```
 
 A statement accepted under this identifier is derivable relative to Foundation. The identifier does not assert that ZFC is consistent or that every mathematical truth is decidable.
@@ -33,7 +33,7 @@ The quantifier binds De Bruijn index zero in its body. Entering another quantifi
 
 Free-variable identifiers and De Bruijn indices range over the natural numbers, including zero. The abstract language therefore has a countably infinite variable supply. Every individual formula is a finite tree and contains only finitely many identifiers and indices.
 
-An implementation may impose finite representation and resource limits. If an identifier, index, binder depth, or formula size cannot be represented or processed, it must fail without admitting a formula. It must not truncate, wrap, saturate, alias, or otherwise map the input to a different abstract formula. Such a failure does not make the abstract formula invalid. Deterministic limits for encoded proof certificates belong to the later protocol layer and do not change Foundation derivability.
+An implementation may impose finite representation and resource limits. If an identifier, index, binder depth, or formula size cannot be represented or processed, it must fail without admitting a formula. It must not truncate, wrap, saturate, alias, or otherwise map the input to a different abstract formula. Such a failure does not make the abstract formula invalid. Deterministic limits for encoded proof certificates belong to the proof-certificate protocol layer and do not change Foundation derivability.
 
 The following are eliminable abbreviations, not primitive nodes:
 
@@ -212,17 +212,22 @@ The input, output, uniqueness witness, source, result, and parameter variables m
 
 ## Definition boundary
 
-Foundation contains no definition rule and no defined mathematical symbol. A later definition contract must ensure that definitions are eliminable and conservative:
+Foundation contains no definition rule or defined mathematical symbol. Any
+definition extension must be eliminable and conservative:
 
 - relation definitions expand to existing formulas;
 - constant definitions reference a proof of unique existence;
 - function definitions reference a proof of total unique existence; and
 - recursive definitions reference the required recursion theorem.
 
-Until that contract exists, no defined symbol or definition construct is valid under Foundation.
+No defined symbol or definition construct is valid under `naome:zfc:v0`.
 
 ## Verification boundary
 
-This specification is the sole normative definition of the abstract Foundation data and axiom boundary. The `naome-foundation` crate is its executable Rust reference implementation and must conform to it. Neither verifies complete proofs. The separate [Proof Certificate](proof-certificate.md) contract chooses encoding and local-reference details, but it must preserve an empty local-hypothesis context, only the primitive rules declared here, and an explicitly closed final theorem. The separate checker must return deterministic results.
+This specification is the sole normative definition of the abstract Foundation
+boundary. The `naome-foundation` crate is its executable Rust reference. Neither
+checks complete proofs. [Proof Protocol](proof-protocol.md) defines certificate
+encoding and local references while preserving an empty hypothesis context,
+only the rules above, and a closed final theorem. Checking is deterministic.
 
 Canonical serialization, content hashing, proof certificates, definitions, parsers, theorem libraries, storage, networking, and economic consensus are outside Foundation.

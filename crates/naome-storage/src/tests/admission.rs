@@ -16,7 +16,7 @@ fn journal_prefix_and_entry_encoding_are_exact() {
     assert_eq!(
         expected,
         hex_bytes(
-            "6e616f6d653a70726f6f662d636861696e2d6a6f75726e616c0011111111111111111111111111111111111111111111111111111111111111110000008d0081f47ee4acce1f5797ff773e7b620cfc66b101dfadb0b87cb4f83e3b94765c8b98e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca8cf486cdd001c39de9da117a0fe882d1cba7e785645af4016bdf2f29726f195a015285fedf4eee3753a08eabac642e5eab8b6ef99e6357b592a5c34760a4aa04b700000006000000011001f5347dca996ef4b07ec2934064ee4fce6f9d740758fb2213ba7c131f547ea0bd"
+            "6e616f6d653a70726f6f662d636861696e2d6a6f75726e616c0011111111111111111111111111111111111111111111111111111111111111110000008d0081f47ee4acce1f5797ff773e7b620cfc66b101dfadb0b87cb4f83e3b94765c8b98e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca8e123b6a0ac16560501790191733c63965c398c75c9cda5bbad2ee39098f6e2a01b0bea550994eb0b5d84d6b6b3153c4c9114be5edc579d19c188e4d73b6fc1819000000060000000110012a833eef39c67b6585b0b33ef7e2f777b0b36c1b6979d0ec58c307fec47dcc74"
         )
     );
 
@@ -60,17 +60,17 @@ fn create_open_chain_binding_and_same_process_lock_are_strict() {
         Ok(ProofSetMembership::Absent)
     );
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::Locked)
     ));
     drop(journal);
 
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, other_id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, other_id),
         Err(ProofChainJournalError::ChainIdMismatch { expected, actual })
             if expected == other_id && actual == id
     ));
-    let reopened = ProofChainJournal::open(&directory.path, id).unwrap();
+    let reopened = ProofChainJournal::open_recovering_unverified(&directory.path, id).unwrap();
     assert_eq!(reopened.chain_id(), id);
     assert_eq!(reopened.head_block_id().unwrap(), genesis);
     assert_eq!(reopened.block(genesis).unwrap(), None);
@@ -152,7 +152,7 @@ fn maximum_eight_proof_block_is_one_entry_and_replays() {
     let expected_root = journal.proof_set_root().unwrap();
     drop(journal);
 
-    let reopened = ProofChainJournal::open(&directory.path, id).unwrap();
+    let reopened = ProofChainJournal::open_recovering_unverified(&directory.path, id).unwrap();
     assert_eq!(reopened.len().unwrap(), PROOF_BATCH_MAX_CANDIDATES);
     assert_eq!(reopened.proof_set_root().unwrap(), expected_root);
     assert_eq!(reopened.head_block_id().unwrap(), block.id());
@@ -263,10 +263,10 @@ fn verified_open_binds_history_even_when_proof_set_root_matches() {
         commit_separate_blocks(&second_directory, id, &reversed_payloads, &reversed_ids);
     assert_ne!(first_head, second_head);
 
-    let first = ProofChainJournal::open(&first_directory.path, id).unwrap();
+    let first = ProofChainJournal::open_recovering_unverified(&first_directory.path, id).unwrap();
     let first_root = first.proof_set_root().unwrap();
     drop(first);
-    let second = ProofChainJournal::open(&second_directory.path, id).unwrap();
+    let second = ProofChainJournal::open_recovering_unverified(&second_directory.path, id).unwrap();
     assert_eq!(second.proof_set_root().unwrap(), first_root);
     drop(second);
 
@@ -327,7 +327,7 @@ fn formula_budget_rejection_is_atomic_and_complete_replay_fails_closed() {
     let invalid_image = journal_image(id, &[(invalid_block, vec![over_budget], vec![over_id])]);
     replay_directory.write_image(&invalid_image);
     assert!(matches!(
-        ProofChainJournal::open(&replay_directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&replay_directory.path, id),
         Err(ProofChainJournalError::Replay { entry: 0, source, .. })
             if matches!(
                 source.as_ref(),

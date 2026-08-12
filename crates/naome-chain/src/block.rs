@@ -12,7 +12,7 @@ use crate::{
 
 const PROOF_CHAIN_GENESIS_DOMAIN: &[u8] = b"naome:proof-chain-genesis\0";
 const PROOF_BLOCK_DOMAIN: &[u8] = b"naome:proof-block\0";
-const BLOCK_ID_BYTES: usize = 32;
+const BLOCK_ID_BYTES: usize = ProofBlockId::BYTE_LENGTH;
 
 /// Maximum length of one canonical linear proof block.
 pub const PROOF_BLOCK_MAX_BYTES: usize = BLOCK_ID_BYTES + PROOF_TRANSITION_MAX_BYTES;
@@ -26,6 +26,9 @@ pub const PROOF_BLOCK_MAX_BYTES: usize = BLOCK_ID_BYTES + PROOF_TRANSITION_MAX_B
 pub struct ProofChainId([u8; 32]);
 
 impl ProofChainId {
+    /// Exact width of one proof-chain identity.
+    pub const BYTE_LENGTH: usize = 32;
+
     /// Constructs a chain-context identifier from raw bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
@@ -55,6 +58,9 @@ impl ProofChainId {
 pub struct ProofBlockId([u8; 32]);
 
 impl ProofBlockId {
+    /// Exact width of one proof-block identity.
+    pub const BYTE_LENGTH: usize = 32;
+
     /// Constructs a block address from raw digest bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)

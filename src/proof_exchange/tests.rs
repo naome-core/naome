@@ -1,13 +1,11 @@
-use naome_chain::{AddressedProofCandidate, ProofChainId, ProofDag};
 use naome_foundation::ZfcAxiom;
 use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
-use naome_storage::ProofChainJournal;
 
 use super::{
     PROOF_REQUEST_BYTES, PROOF_RESPONSE_MAX_BYTES, ProofExchangeWireError, ProofRequest,
-    ProofResponse, proof_response,
+    ProofResponse,
 };
-use crate::tests::{TestDirectory, axiom_bytes};
+use crate::tests::axiom_bytes;
 
 fn response(bytes: Vec<u8>) -> ProofResponse {
     ProofResponse::from_wire_bytes(bytes).unwrap()
@@ -76,39 +74,5 @@ fn response_limit_is_the_certificate_limit_and_precedes_proof_parsing() {
             actual: PROOF_RESPONSE_MAX_BYTES + 1,
             maximum: PROOF_RESPONSE_MAX_BYTES,
         }
-    );
-}
-
-#[test]
-fn serving_borrows_exact_retained_bytes_and_missing_is_only_local() {
-    let directory = TestDirectory::new("proof-exchange");
-    let mut journal =
-        ProofChainJournal::create(directory.path(), ProofChainId::from_bytes([0x31; 32])).unwrap();
-    let pairing = axiom_bytes(ZfcAxiom::Pairing);
-    let mut identity = ProofDag::new();
-    let pairing_id = identity
-        .apply_canonical_proof_bytes(pairing.clone())
-        .unwrap();
-    let pairing_id = pairing_id.proof_id();
-    let block = journal.prepare_block(vec![pairing_id]).unwrap();
-    let record = journal
-        .apply_block(
-            &block,
-            vec![AddressedProofCandidate::new(pairing_id, pairing.clone())],
-        )
-        .unwrap();
-    let retained_pointer = record.canonical_proof_bytes().as_ptr();
-
-    let served = proof_response(&journal, ProofRequest::new(pairing_id))
-        .unwrap()
-        .unwrap();
-    assert_eq!(served, pairing);
-    assert_eq!(served.as_ptr(), retained_pointer);
-
-    let unknown = ProofId::from_bytes([0xa5; 32]);
-    assert!(
-        proof_response(&journal, ProofRequest::new(unknown))
-            .unwrap()
-            .is_none()
     );
 }

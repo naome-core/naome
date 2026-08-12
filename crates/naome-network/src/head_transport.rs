@@ -5,9 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use libp2p::request_response;
-use naome::chain_head_exchange::{
-    ProofChainHeadRequest, ProofChainHeadResponse, proof_chain_head_response,
-};
+use naome::chain_head_exchange::{ProofChainHeadRequest, ProofChainHeadResponse};
 use naome_chain::ProofBlockId;
 use naome_storage::ProofChainJournal;
 
@@ -447,11 +445,20 @@ impl StaticProofNetwork {
         inbound: InboundProofChainHeadRequest,
         journal: &ProofChainJournal,
     ) -> Result<(), RespondError> {
-        let response =
-            proof_chain_head_response(journal, inbound.request).map_err(RespondError::Journal)?;
+        let head_block_id = journal.head_block_id().map_err(RespondError::Journal)?;
+        let head_bytes = (journal.chain_id() == inbound.request.chain_id())
+            .then_some(head_block_id)
+            .map(|block_id| *block_id.as_bytes());
         if !inbound.channel.is_open() {
             return Err(RespondError::ChannelClosed);
         }
+        self.take_inbound_application_request()?;
+        let response = ProofChainHeadResponse::from_wire_bytes(
+            head_bytes
+                .as_ref()
+                .map_or(&[][..], <[u8; ProofBlockId::BYTE_LENGTH]>::as_slice),
+        )
+        .expect("a journal head is an exact proof-block identity");
         self.swarm
             .behaviour_mut()
             .head_exchange

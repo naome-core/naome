@@ -95,6 +95,12 @@ fn decoder_enforces_certificate_byte_and_step_limits_before_payload_work() {
         })
     );
 
+    let maximum_step_count = u32::try_from(CERTIFICATE_MAX_STEPS).unwrap();
+    assert_eq!(
+        ProofCertificate::from_canonical_bytes(&maximum_step_count.to_be_bytes()),
+        Err(ProofCertificateError::UnexpectedEnd)
+    );
+
     let excessive_step_count = u32::try_from(CERTIFICATE_MAX_STEPS + 1).unwrap();
     let encoded = excessive_step_count.to_be_bytes();
     assert_eq!(

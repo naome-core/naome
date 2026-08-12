@@ -1,17 +1,13 @@
 use naome_chain::{
-    AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, PROOF_BLOCK_MAX_BYTES, ProofBlock,
-    ProofBlockDecodeError, ProofBlockId, ProofChainId, ProofDag, ProofSetRoot, ProofTransition,
-    ProofTransitionError,
+    PROOF_BATCH_MAX_CANDIDATES, PROOF_BLOCK_MAX_BYTES, ProofBlock, ProofBlockDecodeError,
+    ProofBlockId, ProofSetRoot, ProofTransition, ProofTransitionError,
 };
-use naome_foundation::ZfcAxiom;
 use naome_proof::ProofId;
-use naome_storage::ProofChainJournal;
 
 use super::{
     PROOF_BLOCK_REQUEST_BYTES, PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockExchangeWireError,
-    ProofBlockRequest, ProofBlockResponse, proof_block_response,
+    ProofBlockRequest, ProofBlockResponse,
 };
-use crate::tests::{TestDirectory, axiom_bytes};
 
 fn proof_id(byte: u8) -> ProofId {
     ProofId::from_bytes([byte; 32])
@@ -181,50 +177,4 @@ fn every_maximum_block_byte_is_decode_or_request_identity_bearing() {
             "mutated response byte {index} bypassed exact request binding"
         );
     }
-}
-
-#[test]
-fn serving_exposes_only_committed_selected_blocks_and_survives_replay() {
-    let directory = TestDirectory::new("proof-block-exchange");
-    let chain_id = ProofChainId::from_bytes([0x31; 32]);
-    let mut journal = ProofChainJournal::create(directory.path(), chain_id).unwrap();
-    let virtual_genesis = journal.head_block_id().unwrap();
-    assert!(
-        proof_block_response(&journal, ProofBlockRequest::new(virtual_genesis))
-            .unwrap()
-            .is_none()
-    );
-
-    let payload = axiom_bytes(ZfcAxiom::Pairing);
-    let proof_id = ProofDag::new()
-        .apply_canonical_proof_bytes(payload.clone())
-        .unwrap()
-        .proof_id();
-    let block = journal.prepare_block(vec![proof_id]).unwrap();
-    journal
-        .apply_block(
-            &block,
-            vec![AddressedProofCandidate::new(proof_id, payload)],
-        )
-        .unwrap();
-
-    assert_eq!(
-        proof_block_response(&journal, ProofBlockRequest::new(block.id())).unwrap(),
-        Some(&block)
-    );
-    assert!(
-        proof_block_response(
-            &journal,
-            ProofBlockRequest::new(ProofBlockId::from_bytes([0xa5; 32])),
-        )
-        .unwrap()
-        .is_none()
-    );
-
-    drop(journal);
-    let reopened = ProofChainJournal::open(directory.path(), chain_id).unwrap();
-    assert_eq!(
-        proof_block_response(&reopened, ProofBlockRequest::new(block.id())).unwrap(),
-        Some(&block)
-    );
 }

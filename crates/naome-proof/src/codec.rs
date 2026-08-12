@@ -240,9 +240,9 @@ fn decode_step(
         PROOF_REFERENCE => Ok(ProofStep::ProofReference {
             proof_id: ProofId::from_bytes(
                 cursor
-                    .take(32)?
+                    .take(ProofId::BYTE_LENGTH)?
                     .try_into()
-                    .expect("the checked slice has exactly 32 bytes"),
+                    .expect("the checked slice has exactly one ProofId"),
             ),
         }),
         MODUS_PONENS => Ok(ProofStep::ModusPonens {

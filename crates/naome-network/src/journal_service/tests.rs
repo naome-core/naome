@@ -4,7 +4,7 @@ use naome::block_exchange::ProofBlockRequest;
 use naome::chain_head_exchange::ProofChainHeadRequest;
 use naome::proof_exchange::ProofRequest;
 use naome_chain::{ProofBlockId, ProofChainId};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 use super::*;
 use crate::tests::{
@@ -157,6 +157,165 @@ async fn closed_response_channel_is_observable_with_exact_request_metadata() {
         }
         event => panic!("closed response channel produced the wrong service event: {event:?}"),
     }
+    assert_eq!(
+        service.inbound_application_request_budget.tokens(),
+        crate::INBOUND_APPLICATION_REQUEST_BURST,
+        "a closed response channel must not consume an application token"
+    );
+    assert_snapshot(&directory, &journal, &before);
+}
+
+#[tokio::test]
+async fn exhausted_application_budget_rejects_found_proof_before_serving() {
+    let (mut client, mut service, client_peer_id, service_peer_id) = connected_pair().await;
+    let directory = TestDirectory::new("journal-service-rate-limit");
+    let mut journal = create_journal(directory.path()).unwrap();
+    let proof_id = apply_fresh_blocks(&mut journal, [pairing_bytes()])[0];
+    let before = snapshot(&directory, &journal);
+    let request = ProofRequest::new(proof_id);
+    client.request_proof(service_peer_id, request).unwrap();
+
+    let inbound = timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => {
+                    if let NetworkEvent::OutboundProof(event) = event {
+                        panic!("proof request became terminal before rate rejection: {event:?}")
+                    }
+                }
+                event = service.next_event() => {
+                    if let NetworkEvent::InboundProofRequest(inbound) = event {
+                        break inbound;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("service did not receive the proof request");
+    service
+        .inbound_application_request_budget
+        .exhaust(Instant::now() + Duration::from_secs(60));
+
+    match service.handle_journal_service_event(NetworkEvent::InboundProofRequest(inbound), &journal)
+    {
+        JournalServiceEvent::ServeFailed {
+            request:
+                JournalServiceRequest::Proof {
+                    peer_id,
+                    request: actual,
+                },
+            error: RespondError::RateLimited,
+        } => {
+            assert_eq!(peer_id, client_peer_id);
+            assert_eq!(actual, request);
+        }
+        event => panic!("exhausted application budget produced the wrong event: {event:?}"),
+    }
+    assert_eq!(service.inbound_application_request_budget.tokens(), 0);
+    assert_snapshot(&directory, &journal, &before);
+}
+
+#[tokio::test]
+async fn exhausted_application_budget_rejects_found_block_before_serving() {
+    let (mut client, mut service, client_peer_id, service_peer_id) = connected_pair().await;
+    let directory = TestDirectory::new("journal-service-block-rate-limit");
+    let mut journal = create_journal(directory.path()).unwrap();
+    apply_fresh_blocks(&mut journal, [pairing_bytes()]);
+    let before = snapshot(&directory, &journal);
+    let request = ProofBlockRequest::new(journal.head_block_id().unwrap());
+    let _ticket = client.request_block(service_peer_id, request).unwrap();
+
+    let inbound = timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => {
+                    if let NetworkEvent::OutboundBlock(event) = event {
+                        panic!("block request became terminal before rate rejection: {event:?}")
+                    }
+                }
+                event = service.next_event() => {
+                    if let NetworkEvent::InboundBlockRequest(inbound) = event {
+                        break inbound;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("service did not receive the block request");
+    service
+        .inbound_application_request_budget
+        .exhaust(Instant::now() + Duration::from_secs(60));
+
+    match service.handle_journal_service_event(NetworkEvent::InboundBlockRequest(inbound), &journal)
+    {
+        JournalServiceEvent::ServeFailed {
+            request:
+                JournalServiceRequest::Block {
+                    peer_id,
+                    request: actual,
+                },
+            error: RespondError::RateLimited,
+        } => {
+            assert_eq!(peer_id, client_peer_id);
+            assert_eq!(actual, request);
+        }
+        event => panic!("exhausted application budget produced the wrong event: {event:?}"),
+    }
+    assert_eq!(service.inbound_application_request_budget.tokens(), 0);
+    assert_snapshot(&directory, &journal, &before);
+}
+
+#[tokio::test]
+async fn exhausted_application_budget_rejects_matching_chain_head_before_serving() {
+    let (mut client, mut service, client_peer_id, service_peer_id) = connected_pair().await;
+    let directory = TestDirectory::new("journal-service-head-rate-limit");
+    let mut journal = create_journal(directory.path()).unwrap();
+    apply_fresh_blocks(&mut journal, [pairing_bytes()]);
+    let before = snapshot(&directory, &journal);
+    let request = ProofChainHeadRequest::new(journal.chain_id());
+    let _ticket = client.request_chain_head(service_peer_id, request).unwrap();
+
+    let inbound = timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => {
+                    if let NetworkEvent::OutboundChainHead(event) = event {
+                        panic!("chain-head request became terminal before rate rejection: {event:?}")
+                    }
+                }
+                event = service.next_event() => {
+                    if let NetworkEvent::InboundChainHeadRequest(inbound) = event {
+                        break inbound;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("service did not receive the chain-head request");
+    service
+        .inbound_application_request_budget
+        .exhaust(Instant::now() + Duration::from_secs(60));
+
+    match service
+        .handle_journal_service_event(NetworkEvent::InboundChainHeadRequest(inbound), &journal)
+    {
+        JournalServiceEvent::ServeFailed {
+            request:
+                JournalServiceRequest::ChainHead {
+                    peer_id,
+                    request: actual,
+                },
+            error: RespondError::RateLimited,
+        } => {
+            assert_eq!(peer_id, client_peer_id);
+            assert_eq!(actual, request);
+        }
+        event => panic!("exhausted application budget produced the wrong event: {event:?}"),
+    }
+    assert_eq!(service.inbound_application_request_budget.tokens(), 0);
     assert_snapshot(&directory, &journal, &before);
 }
 

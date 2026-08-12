@@ -223,7 +223,8 @@ fn direct_and_multi_block_paths_are_forward_ordered_and_never_select() {
 
         let chain_id = selected.chain_id();
         drop(selected);
-        let reopened = ProofChainJournal::open(directory.path(), chain_id).unwrap();
+        let reopened =
+            ProofChainJournal::open_recovering_unverified(directory.path(), chain_id).unwrap();
         assert_eq!(reopened.head_block_id().unwrap(), before.head);
         assert_eq!(directory.journal_bytes(), before.bytes);
     }

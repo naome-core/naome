@@ -377,12 +377,20 @@ async fn exhausted_response_budget_fails_instead_of_returning_empty() {
     })
     .await
     .expect("rate-rejected pull did not terminate on both peers");
-    assert!(
-        timeout(Duration::from_millis(100), responder.next_event())
-            .await
-            .is_err(),
-        "rate rejection emitted a second public responder terminal"
-    );
+    timeout(Duration::from_secs(10), async {
+        while !responder.suppressed_terminals.is_empty() {
+            if let libp2p::swarm::SwarmEvent::Behaviour(BehaviourEvent::Exchange(event)) =
+                responder.swarm.select_next_some().await
+            {
+                assert!(
+                    responder.handle_exchange_event(event).is_none(),
+                    "rate rejection emitted a second public responder terminal"
+                );
+            }
+        }
+    })
+    .await
+    .expect("rate-rejected terminal suppression did not drain");
     assert!(responder.suppressed_terminals.is_empty());
 }
 

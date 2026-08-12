@@ -3,97 +3,80 @@
 [![CI](https://github.com/naome-core/naome/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/naome-core/naome/actions/workflows/ci.yml)
 
 NAOME is a protocol for a blockchain of machine-verifiable mathematical proofs.
-This repository currently implements deterministic proof checking, selected
-proof state, canonical linear proof blocks with crash-consistent exact-head
-persistence and exact-ID historical lookup, transport-neutral addressed proof
-and block exchange, chain-scoped head exchange, authenticated static proof,
-exact-ID block and head-pull transport, authenticated single-peer selected-head
-announcement, bounded caller-selected head broadcast, a caller-driven journal-
-backed service for inbound proof, block, and head pulls, bounded
-caller-selected proof-block ancestry retrieval,
-caller-selected direct-child and bounded ancestry import, and bounded local
-peer-address management. The network layer includes a
-transport-neutral atomic record batch, a dedicated outbound-only authenticated
-bootstrap pull client, a separate bounded inbound-only responder for one
-immutable operator publication, and identity-bound durable sequence issuance
-for standard self-signed peer records. It does not yet define automatic head
-broadcast, automatic or unbounded ancestry synchronization,
-automatic head import, competing-fork storage, a bundled seed list,
-dynamic learned peer sessions, consensus, finality, fork choice, settlement,
-rewards, or fees.
+Deterministic checking decides mathematical validity. Blockchain consensus will
+govern ordering, inclusion, and provenance; it must not redefine proof truth.
+
+The repository implements deterministic proof identity and checking, one
+crash-consistent selected proof chain, and bounded caller-driven exchange with
+statically authorized peers. Peer-reported heads and fetched ancestry are
+untrusted inputs until explicit local validation and selection.
 
 ## Architecture
 
-The crate dependency direction is:
+Crates build in this direction:
 
 ```text
-foundation -> proof -> checker -> ledger -> chain -> storage -> naome -> network
+foundation -> proof -> checker -> ledger -> chain
+                                            |-> storage -> network
+                                            `-> naome   -> network
 ```
 
-`A -> B` means that `B` builds on `A`. The layers respectively define the ZFC
-object language and rules, canonical proof certificates and identities,
-deterministic mathematical checking, atomic selected-state transitions, the
-authenticated proof DAG with canonical root-to-root transitions and linear
-proof-block context, the sole crash-consistent local proof-chain journal,
-transport-neutral addressed proof, block, and chain-scoped head exchange, and
-the concrete bounded libp2p proof, exact-ID block, authenticated head-pull, and
-receipt-bearing selected-head announcement transport with caller-selected
-bounded broadcast and ancestry retrieval, and direct-child or retained-ancestry
-import. The journal-backed service answers only the three existing read-only
-request families and forwards announcements and all other events unchanged. A
-pulled or announced head remains an untrusted peer
-observation and is never used automatically as an ancestry target or imported
-automatically. A completed
-ancestry remains unselected and establishes only exact parent and
-transition-root continuity. The chain journal durably commits
-each exact-parent block together with its transition's ordered proof payloads,
-strictly reconstructs the head and proof state on open, and retains decoded
-committed blocks for exact-ID lookup. Later crates may also depend directly on
-an earlier crate whose types remain part of their contract. The network layer
-also owns the separate persisted peer-address candidate store and bounded peer-
-record batch wrapper; learned routing candidates do not become static proof
-peers.
-The local peer-record issuer durably advances one caller-owned identity's
-explicit sequence watermark before returning a newly signed record; it never
-persists the private key or publishes by itself.
-The bootstrap client and responder run in separate dedicated swarms that cannot
-negotiate the proof protocol. The responder serves only its explicit immutable
-operator-supplied batch and never exports the local peer-address store;
-authenticated record provenance therefore remains routing input, not proof
-authorization.
+`A -> B` means that `B` builds on `A`. The layers own, respectively: Foundation
+syntax and rules; canonical proofs and identities; deterministic checking;
+atomic ledger transitions; authenticated proof state, transitions, and blocks;
+the selected-chain journal; transport-neutral messages; and bounded libp2p
+transport, orchestration, and peer-address management. A crate may also
+depend directly on an earlier contract it uses.
+
+The following boundaries are invariant:
+
+- external proof admission is decode, canonicality, checking, expected-address
+  comparison, then registration;
+- the journal is the sole durable selected-state owner;
+- peer heads, blocks, ancestry, records, and receipts confer no consensus or
+  selection authority; and
+- learned address records never authorize proof sessions.
+
+## Delivery gates
+
+1. Proof truth and identity.
+2. Local selected state and deterministic replay.
+3. Bounded caller-driven transport and import.
+4. Global chain identity, genesis, competing-history, selection, and
+   reorganization contract.
+5. Fork-aware storage and reorganization.
+6. Automatic synchronization.
+7. Checkpoints and finality.
+8. Settlement and economic policy.
+
+The implementation currently reaches gate 3. Each subsequent gate requires a
+normative contract and deterministic validation before implementation. Human
+authoring syntax, parsing, conservative definitions, and theorem libraries are
+a parallel product track; no source syntax is stable yet.
 
 ## Protocol contracts
 
-- [ZFC Foundation](specs/foundation.md)
-- [Proof Certificate](specs/proof-certificate.md)
-- [Ledger State](specs/ledger-state.md)
-- [Authenticated Proof Set](specs/authenticated-proof-set.md)
-- [Proof-State Transition](specs/proof-state-transition.md)
-- [Proof Block](specs/proof-block.md)
-- [Proof Chain Journal](specs/proof-chain-journal.md)
-- [Proof Chain Head Exchange](specs/proof-chain-head-exchange.md)
-- [Authenticated Proof Chain Head Pull](specs/authenticated-proof-chain-head-pull.md)
-- [Authenticated Proof Chain Head
-  Announcement](specs/authenticated-proof-chain-head-announcement.md)
-- [Caller-Selected Proof Chain Head
-  Broadcast](specs/caller-selected-proof-chain-head-broadcast.md)
-- [Addressed Proof Block Exchange](specs/addressed-proof-block-exchange.md)
-- [Authenticated Proof Block Transport](specs/authenticated-proof-block-transport.md)
-- [Caller-Selected Proof Block Ancestry Pull](specs/caller-selected-proof-block-ancestry-pull.md)
-- [Caller-Selected Proof Block Ancestry Import](specs/caller-selected-proof-block-ancestry-import.md)
-- [Caller-Selected Proof Block Import](specs/caller-selected-proof-block-import.md)
-- [Addressed Proof Exchange](specs/addressed-proof-exchange.md)
-- [Authenticated Proof Transport](specs/authenticated-proof-transport.md)
-- [Journal-Backed Static Proof Node
-  Service](specs/journal-backed-static-proof-node-service.md)
-- [Peer Address Management](specs/peer-address-management.md)
-- [Local Peer Record Issuance](specs/local-peer-record-issuance.md)
-- [Peer Record Exchange](specs/peer-record-exchange.md)
-- [Authenticated Peer Record Pull](specs/authenticated-peer-record-pull.md)
-- [Authenticated Peer Record Responder](specs/authenticated-peer-record-responder.md)
+- [Foundation](specs/foundation.md) defines the mathematical language, axioms,
+  schemas, and inference rules.
+- [Proof Protocol](specs/proof-protocol.md) defines canonical proofs,
+  identities, selected proof state, transitions, and blocks.
+- [Proof Chain Journal](specs/proof-chain-journal.md) defines durable selected
+  state, replay, recovery, and corruption handling.
+- [Proof Network Transport](specs/proof-network-transport.md) defines proof,
+  block, and head messages plus authenticated transport and serving limits.
+- [Caller-Selected Orchestration](specs/caller-selected-orchestration.md)
+  defines explicit pull, import, ancestry, and broadcast workflows.
+- [Peer Addressing](specs/peer-addressing.md) defines signed peer records,
+  address storage, issuance, and authenticated exchange.
 
-The specifications are normative. The Rust crates are executable reference
-implementations of their stated boundaries.
+Specifications are normative for mathematical, protocol, wire, and storage
+semantics. Rustdoc owns the Rust API surface; the crates are executable
+reference implementations. This README and its delivery sequence are
+non-normative.
+
+The repository is prerelease. An incompatible V0 change replaces its
+identifier, protocol, or local format cleanly; it does not add a legacy parser
+unless a stable compatibility commitment exists.
 
 ## Local validation
 

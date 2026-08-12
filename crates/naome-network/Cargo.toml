@@ -2,7 +2,7 @@
 name = "naome-network"
 version.workspace = true
 edition.workspace = true
-description = "Authenticated proof transport and bounded peer-address storage for NAOME."
+description = "Bounded authenticated proof-chain transport and peer-address management for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

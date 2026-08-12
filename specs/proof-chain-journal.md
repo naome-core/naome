@@ -1,99 +1,29 @@
 # NAOME Proof Chain Journal
 
-## Status and scope
+## Scope, ownership, and compatibility
 
-This document defines the crash-consistent local append journal for one
-selected linear NAOME proof chain. It is a prerelease storage contract and may
-change before the first stable protocol release.
+This document defines the V0 crash-consistent append journal for one selected
+linear proof chain. `ProofChainJournal` is the sole durable owner of that state:
+each entry contains one complete canonical `ProofBlock` and the exact ordered
+canonical proof payloads required by its transition. Strict replay reconstructs
+the exact head, proof DAG, authenticated proof set, and private committed-block
+lookup without bypassing parentage, transition binding, canonicality,
+mathematical checking, address correlation, or root closure.
 
-`ProofChainJournal` is the sole durable owner of that selected state. It keeps
-one [`ProofChainState`](proof-block.md), so the exact block head and the
-privately owned `ProofDag` cannot diverge, plus one private exact-ID lookup of
-the decoded blocks on that selected line. Every committed entry contains one
-complete canonical `ProofBlock` and the exact ordered canonical proof payloads
-required by that block's transition. Opening the journal reconstructs the
-linear head, every proof-state component, and the block lookup through strict
-block replay. Persisted bytes never bypass block parentage, transition binding,
-canonicality, mathematical checking, address correlation, or root-closure
-validation.
+The format has no compatibility alias, legacy parser, or migration. An
+incompatible prerelease directory must be recreated. Unverified open may recover
+only an incomplete append tail; verified open additionally requires a
+separately trusted exact head. Block preparation is read-only and block
+application is the sole durable mutation.
 
-The journal is local recovery state, not evidence that a network selected or
-finalized its blocks. It defines no fork store, fork choice, reorganization,
-consensus, networking, discovery, or economy.
+Every selected-state operation requires a healthy handle. The immutable
+`chain_id` getter alone remains available after poisoning; it performs no disk
+I/O and the ID is not repeated in block or entry bytes. Private chain, proof,
+and block-index state is exposed only through health-sensitive queries.
 
-## Replacement boundary
-
-This contract replaces the former proof-DAG transaction journal. There is no
-parallel selected-state journal, compatibility alias, alternate parser, or
-migration path. The earlier journal explicitly treated its transaction order
-and grouping as non-block recovery data, so assigning canonical block ancestry
-to those entries after the fact would invent protocol history.
-
-Implementations remove direct durable proof-admission entry points. Durable
-mutation accepts only a caller-supplied `ProofBlock` with its separately
-supplied addressed candidates. Existing prerelease journal directories must be
-recreated; an old file is not reinterpreted or upgraded.
-
-## Public surface
-
-`ProofChainJournal` exposes only the following Rust-equivalent surface and the
-typed `ProofChainJournalError` family:
-
-```text
-create(
-    directory: impl AsRef<Path>,
-    chain_id: ProofChainId,
-) -> Result<ProofChainJournal, ProofChainJournalError>
-
-open(
-    directory: impl AsRef<Path>,
-    expected_chain_id: ProofChainId,
-) -> Result<ProofChainJournal, ProofChainJournalError>
-
-open_verified(
-    directory: impl AsRef<Path>,
-    expected_chain_id: ProofChainId,
-    expected_head: ProofBlockId,
-) -> Result<ProofChainJournal, ProofChainJournalError>
-
-chain_id(&self) -> ProofChainId
-prepare_block(
-    &self,
-    proof_ids: Vec<ProofId>,
-) -> Result<ProofBlock, ProofChainJournalError>
-
-apply_block(
-    &mut self,
-    block: &ProofBlock,
-    candidates: Vec<AddressedProofCandidate>,
-) -> Result<&AcceptedProofRecord, ProofChainJournalError>
-
-head_block_id(&self) -> Result<ProofBlockId, ProofChainJournalError>
-block(&self, block_id: ProofBlockId)
-    -> Result<Option<&ProofBlock>, ProofChainJournalError>
-proof(&self, proof_id: ProofId)
-    -> Result<Option<&AcceptedProofRecord>, ProofChainJournalError>
-len(&self) -> Result<usize, ProofChainJournalError>
-is_empty(&self) -> Result<bool, ProofChainJournalError>
-proof_set_root(&self) -> Result<ProofSetRoot, ProofChainJournalError>
-proof_set_proof(&self, proof_id: ProofId)
-    -> Result<ProofSetProof, ProofChainJournalError>
-```
-
-`chain_id` returns the immutable context supplied to a successfully synchronized
-creation or verified from the journal prefix during a successful replay. It
-performs no disk read, remains available after later handle poisoning, and does
-not duplicate that context in canonical block bytes or journal entries. It adds
-no file-format or migration change. `prepare_block` is read-only against the
-exact current state, while `apply_block` is the sole mutation.
-
-Every health-sensitive operation other than `chain_id` requires a healthy
-handle. The selected-state query surface is forwarded through the journal
-rather than exposing its private `ProofChainState`, `ProofDag`, or committed-
-block index, so poisoning and block parentage cannot be bypassed. The retained
-chain ID is immutable configuration, not mutable selected state; chain-scoped
-head serving reads the health-sensitive head before using `chain_id` to classify
-the request.
+The journal is local recovery state. A valid file is not evidence of network
+selection, checkpoint authority, finality, or consensus. It defines no
+competing-history store, reorganization, snapshot, pruning, or network policy.
 
 ## Directory and exclusive ownership
 
@@ -109,9 +39,13 @@ handle fails rather than observing or mutating selected state. The lock remains
 held for the complete handle lifetime, including while the handle is poisoned.
 
 `create` uses exclusive file creation and never replaces or reinitializes an
-existing journal. `open` requires an existing journal and never initializes an
-empty, partial, old, or unrecognized file. The caller supplies the expected
-`ProofChainId` to both operations.
+existing journal. `open_recovering_unverified` and `open_verified` require an
+existing recognized journal. The caller supplies the expected `ProofChainId` to
+all three operations. If initial header writing or synchronization fails,
+`create` may leave a partial or durability-ambiguous final-path file and returns
+no handle. A later `create` will not replace it; prerelease recovery requires
+explicit operator inspection and recreation. The implementation must not delete
+the file automatically after an ambiguous synchronization failure.
 
 ## File prefix and chain context
 
@@ -129,7 +63,7 @@ The magic in hexadecimal is:
 ```
 
 The complete fixed prefix is therefore 58 bytes. Any missing or different
-magic byte is an unsupported or corrupt journal. `open` reads the complete
+magic byte is an unsupported or corrupt journal. Opening reads the complete
 stored chain identifier and compares it with the caller-supplied expected
 identifier before entry scanning or tail recovery. A mismatch returns no
 journal handle and does not modify the file.
@@ -214,11 +148,9 @@ it is not misclassified as a footer mismatch.
 
 ## Block application and durable commit
 
-`ProofChainJournal::prepare_block` is a read-only convenience over its healthy
-private chain state. It does not check payloads, mutate state, write an entry,
-or choose among competing blocks. Durable application always accepts an
-already supplied `ProofBlock` and a separate owned ordered sequence of
-`AddressedProofCandidate` values.
+Block preparation is read-only: it does not check payloads, mutate state, write
+an entry, or choose among competing blocks. Durable application accepts an
+already supplied block and its ordered addressed proof candidates.
 
 Application executes in this order:
 
@@ -247,12 +179,9 @@ candidate count and ordered identity correlation, resulting-root projection,
 strict decoding, canonicality, mathematical checking, dependency resolution,
 and root closure. The journal does not duplicate or weaken those checks.
 
-The journal writes the small canonical block and retained canonical proof
-slices directly. It neither concatenates the complete entry, clones any proof-
-sized payload, nor rehashes the complete payload set for storage framing.
-Candidate buffers move into accepted records on success. Replay allocates each
-individually bounded payload and holds at most eight candidates before block
-application.
+The journal streams the block and retained proof slices without an aggregate
+entry buffer. Replay holds at most eight individually bounded candidates before
+block application.
 
 ## Commit failure and poisoning
 
@@ -272,7 +201,7 @@ Directory provisioning durability remains the caller's responsibility.
 ## Open and deterministic replay
 
 After acquiring the lock and validating the complete prefix and expected chain
-identifier, `open` initializes an empty `ProofChainState` from that identifier
+identifier, opening initializes an empty `ProofChainState` from that identifier
 and scans entries. For each structurally complete entry it:
 
 1. validates the outer length and complete entry boundary;
@@ -296,7 +225,8 @@ or commits a partial block.
 The first complete framing, block-decode, block-ID, or block-application error
 fails closed and returns no handle. A complete invalid entry is never skipped,
 truncated, or repaired. Before exposing a completely replayed visible image,
-`open` calls `sync_all`; failure to stabilize returns no handle.
+`open_recovering_unverified` calls `sync_all`; failure to stabilize returns no
+handle.
 
 ## Error and validation precedence
 
@@ -337,7 +267,7 @@ does not reorder the surrounding structural checks.
 
 Verified opening reports `HeadBlockIdMismatch` after strict prefix replay but
 before either `Recovery` of an incomplete tail or `Stabilize` of a complete
-image. Ordinary open performs the applicable `Recovery` or `Stabilize`
+image. Unverified recovery performs the applicable `Recovery` or `Stabilize`
 directly.
 
 Every health-sensitive selected-state handle method checks `Poisoned` before
@@ -360,7 +290,7 @@ and chain-context validation, entry framing, block-ID footer checks, and strict
 replay before comparing the reconstructed exact head with the expected head. A
 mismatch returns no journal handle and, in particular, does not truncate an
 otherwise recoverable incomplete tail. Only after a matching head does verified
-open recover such a tail or stabilize an already complete visible image.
+opening recover such a tail or stabilize an already complete visible image.
 
 The expected head must come from a separately trusted source. Under the block
 hash assumptions, it recursively commits the complete admitted ancestry and
@@ -373,50 +303,30 @@ virtual genesis parent. That anchor is not a stored or admitted block.
 
 ## Committed block lookup
 
-The journal retains one private decoded lookup entry for every strictly replayed
-or successfully committed `ProofBlock`. `block(block_id)` first requires a
-healthy handle, then returns a shared reference only when that exact
-`ProofBlockId` belongs to this journal's committed selected line. An unknown
-identity and the virtual genesis anchor both return `None`; the anchor remains
-chain context rather than an admitted block.
+The journal retains one decoded lookup entry for every strictly replayed or
+successfully committed block. Exact-ID lookup first requires health, returns
+only blocks on this selected line, and treats an unknown ID or virtual genesis
+anchor as absent.
 
-Replay inserts a decoded block only after framing, canonical decoding, footer
-identity, and strict block application have all succeeded. A lookup-reservation
-failure then aborts open and discards the private replay state rather than
-returning a partial handle. Live application instead reserves lookup capacity
-and retains the bounded decoded block before chain mutation, but does not expose
-it through the lookup until the complete entry and footer have synchronized. A
-commit error therefore preserves the existing poison boundary: every selected
-block lookup on that handle fails with `Poisoned`, and reopening reconstructs
-exactly whichever old or new committed prefix became durable.
+Replay installs a lookup entry only after framing, canonical decoding, footer
+identity, and strict block application; reservation failure aborts opening
+without a partial handle. Live application reserves capacity and retains the
+bounded block before chain mutation, but exposes it only after body and footer
+synchronization. Commit failure poisons all selected-state lookups, and reopen
+reconstructs whichever old or new committed prefix became durable.
 
-The lookup changes no journal bytes and trusts no derived disk index. It is
-rebuilt from canonical entries on every open. One block adds at least one new
-selected proof, so the retained block count cannot exceed the retained proof
-count. Lookup must not scan the journal file or complete proof state for each
-request.
-
-The transport-neutral [Addressed Proof Block Exchange](addressed-proof-block-exchange.md)
-may borrow one such committed block to answer an exact-ID request. Local lookup
-does not establish that the block belongs to another chain context, is available
-from any peer, or was selected or finalized by a network.
-
-The separate
-[Authenticated Proof Block Transport](authenticated-proof-block-transport.md)
-may encode that borrowed value into one bounded response owned by the existing
-static libp2p swarm. The journal is not borrowed across the asynchronous write.
-
-The transport-neutral
-[Proof Chain Head Exchange](proof-chain-head-exchange.md) may read the configured
-chain context and current exact head from a healthy journal. Its authenticated
-binding exposes only an untrusted peer observation; journal poisoning is
-preserved before a context mismatch can become `Unavailable`, and the response
-is not a trusted `open_verified` checkpoint.
+The lookup changes no bytes, trusts no disk index, is rebuilt on every open, and
+does not scan the file or proof state per query. Each block adds at least one
+proof, so retained blocks cannot outnumber retained proofs. The
+[Proof Network Transport](proof-network-transport.md) may borrow an exact block
+or read the chain-scoped head, but it cannot retain the borrow across an
+asynchronous write or turn the result into checkpoint or selection authority.
 
 ## Incomplete-tail recovery
 
 If EOF occurs after the last committed entry but before a complete next entry
-footer, the suffix is an uncommitted append tail. `open` truncates the file to
+footer, the suffix is an uncommitted append tail.
+`open_recovering_unverified` truncates the file to
 the preceding committed boundary, synchronizes the truncation, and only then
 returns the recovered prefix. A truncation or synchronization error fails
 recovery.
@@ -436,87 +346,18 @@ valid entry boundary from a crash that left precisely that prefix. Accordingly:
 - a complete invalid entry fails closed;
 - an in-range damaged outer length can make a suffix appear incomplete and may
   cause truncation to the preceding committed boundary; and
-- `open` cannot detect replacement or truncation to an independently valid
-  prefix, while `open_verified` detects it only when supplied the expected head
-  from a separately trusted checkpoint or finalized source.
+- `open_recovering_unverified` cannot detect replacement or truncation to an
+  independently valid prefix, while `open_verified` detects it only when
+  supplied the expected head from a separately trusted source.
 
 The journal provides deterministic local recovery under this crash and
 torn-append model. Neither a valid file nor a matching expected head proves
 that a network selected or finalized the chain.
 
-## Exchange boundaries
+## Network boundary
 
-The transport-neutral Addressed Proof Block Exchange may request one exact
-`ProofBlockId`. Its serving helper delegates to `block` and preserves a journal
-error rather than converting poisoned state into `Unavailable`. The exchange
-adds no socket, peer, retry, announcement, synchronization, or selection policy.
-The Authenticated Proof Block Transport binds that helper to one statically
-authorized peer request without adding block discovery, ancestry walking,
-payload acquisition, application, or selection.
-
-The separate Authenticated Proof Chain Head Pull may expose this journal's exact
-head for one matching `ProofChainId`, including the virtual genesis parent when
-empty. It adds no journal mutation or format, and a receiver must not treat the
-observation as a trusted checkpoint or automatic import target.
-
-The separate
-[Authenticated Proof Chain Head Announcement](authenticated-proof-chain-head-announcement.md)
-may snapshot this healthy journal's exact current head and immutable chain
-context into one caller-triggered outbound message. It retains no journal
-borrow, writes no journal byte, and its peer receipt is neither a durable commit
-receipt nor checkpoint authority.
-
-The separate
-[Caller-Selected Proof Block Ancestry Pull](caller-selected-proof-block-ancestry-pull.md)
-captures the healthy current head and proof-set root, then uses exact committed
-block lookup to reject a backward path that reaches indexed selected history
-and a direct virtual-genesis comparison to reject that anchor before the
-captured head. These reads add no journal method,
-scan, write, format, selection rule, or competing-branch store. A returned path
-remains unselected and may become stale immediately after completion.
-
-The separate
-[Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
-may retrieve one exact caller-chosen direct child, acquire its existing bounded
-proof closure, and invoke the same journal application path. It adds no journal
-method or persistence format and cannot bypass exact-parent application.
-
-An authenticated proof transport may acquire an opaque bounded
-`UnselectedProofClosure`. That closure owns untrusted candidate payloads and
-their immutable requested addresses, but it owns no block and has no authority
-to construct or select one. Its sole consuming admission operation requires a
-caller-supplied `ProofBlock` and the mutable `ProofChainJournal`:
-
-```text
-UnselectedProofClosure::apply_block(
-    self,
-    selected: &mut ProofChainJournal,
-    block: &ProofBlock,
-) -> Result<&AcceptedProofRecord, ProofChainJournalError>
-```
-
-The supplied block determines parentage, exact transition order, and committed
-roots. The journal then performs the same strict application and durable entry
-commit described above. Acquisition never auto-prepares a block, chooses the
-current head's next child, exposes raw candidate buffers, or falls back to a
-direct proof-DAG mutation. A stale, mismatched, or otherwise invalid supplied
-block fails atomically.
-
-Payload permits remain held through synchronous block application and journal
-commit, then release whether admission succeeds or fails. Moving the closure's
-owned payloads into addressed candidates introduces no deliberate proof-sized
-copy. The closure may correlate those opaque candidates by immutable requested
-ID into the supplied transition's order, including a different valid order for
-independent proofs; it neither changes the block nor exposes or rewrites a
-payload.
-
-## Explicit exclusions
-
-This contract defines no legacy parser, storage migration, compatibility alias,
-parallel proof-state journal, automatic block preparation or selection,
-height, range, child, or competing-branch index, raw journal-entry export,
-snapshot, compaction, pruning, garbage collection, generic rollback,
-competing-fork storage, reorganization, multi-writer coordination beyond the
-exclusive lock, peer provenance, request history, network transport, block
-announcement, payload-availability protocol, consensus, finality, rewards,
-fees, balances, or settlement.
+Network serving may read healthy exact proofs, committed blocks, and the
+chain-scoped head. It never converts a journal error to `Unavailable`, bypasses
+block application, or establishes a trusted checkpoint. Response ownership,
+correlation, authentication, and permits belong to the
+[Proof Network Transport](proof-network-transport.md).

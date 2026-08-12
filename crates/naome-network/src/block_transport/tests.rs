@@ -483,15 +483,6 @@ fn successful_block_event_holds_the_shared_global_permit_until_completion() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
 }
 
-#[test]
-fn poisoned_journal_lookup_never_becomes_unavailable() {
-    let result = checked_block_lookup(Err(ProofChainJournalError::Poisoned));
-    assert!(matches!(
-        result,
-        Err(RespondError::Journal(ProofChainJournalError::Poisoned))
-    ));
-}
-
 async fn receive_block(
     client: &mut StaticProofNetwork,
     server: &mut StaticProofNetwork,

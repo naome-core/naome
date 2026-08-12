@@ -13,10 +13,9 @@ use std::error::Error;
 use std::fmt;
 
 use naome_chain::{PROOF_BLOCK_MAX_BYTES, ProofBlock, ProofBlockDecodeError, ProofBlockId};
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 /// Exact byte length of one proof-block request.
-pub const PROOF_BLOCK_REQUEST_BYTES: usize = 32;
+pub const PROOF_BLOCK_REQUEST_BYTES: usize = ProofBlockId::BYTE_LENGTH;
 
 /// Maximum byte length of one proof-block response message.
 pub const PROOF_BLOCK_RESPONSE_MAX_BYTES: usize = PROOF_BLOCK_MAX_BYTES;
@@ -121,18 +120,6 @@ impl ProofBlockResponse {
             .as_ref()
             .map_or_else(Vec::new, ProofBlock::to_canonical_bytes)
     }
-}
-
-/// Returns one locally committed selected block for `request`, when present.
-///
-/// The returned value is borrowed directly from the healthy journal. `None`
-/// describes only this local selected history. Journal poisoning and every
-/// other storage error are preserved rather than converted to `Unavailable`.
-pub fn proof_block_response(
-    journal: &ProofChainJournal,
-    request: ProofBlockRequest,
-) -> Result<Option<&ProofBlock>, ProofChainJournalError> {
-    journal.block(request.block_id())
 }
 
 /// A fail-closed proof-block exchange message error.

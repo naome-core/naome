@@ -12,13 +12,12 @@ use std::error::Error;
 use std::fmt;
 
 use naome_chain::{ProofBlockId, ProofChainId};
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 /// Exact byte length of one proof-chain-head request.
-pub const PROOF_CHAIN_HEAD_REQUEST_BYTES: usize = 32;
+pub const PROOF_CHAIN_HEAD_REQUEST_BYTES: usize = ProofChainId::BYTE_LENGTH;
 
 /// Exact byte length of one found proof-chain-head response.
-pub const PROOF_CHAIN_HEAD_RESPONSE_BYTES: usize = 32;
+pub const PROOF_CHAIN_HEAD_RESPONSE_BYTES: usize = ProofBlockId::BYTE_LENGTH;
 
 /// A request for one peer-local head in an exact proof-chain context.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -112,21 +111,6 @@ impl ProofChainHeadResponse {
             None => None,
         }
     }
-}
-
-/// Returns the healthy journal's peer-local head for `request`, when served.
-///
-/// Journal health is checked before chain-context equality, so a poisoned or
-/// otherwise failing journal is never converted into `Unavailable`. A matching
-/// empty journal returns its virtual-genesis head as an ordinary found value.
-pub fn proof_chain_head_response(
-    journal: &ProofChainJournal,
-    request: ProofChainHeadRequest,
-) -> Result<ProofChainHeadResponse, ProofChainJournalError> {
-    let head_block_id = journal.head_block_id()?;
-    Ok(ProofChainHeadResponse {
-        head_block_id: (journal.chain_id() == request.chain_id()).then_some(head_block_id),
-    })
 }
 
 /// A fail-closed proof-chain-head exchange message error.

@@ -2,7 +2,7 @@
 name = "naome-foundation"
 version.workspace = true
 edition.workspace = true
-description = "The Rust reference implementation of NAOME Foundation."
+description = "ZFC object language and inference rules for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

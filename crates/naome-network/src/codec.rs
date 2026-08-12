@@ -24,15 +24,15 @@ use crate::record_exchange::{
     MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
 };
 
-pub(super) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/proof-exchange");
+pub(super) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/proof-exchange/v0");
 pub(super) const PROOF_BLOCK_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/proof-block-exchange");
+    StreamProtocol::new("/naome/proof-block-exchange/v0");
 pub(super) const PROOF_CHAIN_HEAD_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/proof-chain-head-exchange");
+    StreamProtocol::new("/naome/proof-chain-head-exchange/v0");
 pub(super) const PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/proof-chain-head-announcement");
+    StreamProtocol::new("/naome/proof-chain-head-announcement/v0");
 pub(super) const PEER_RECORD_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/peer-record-exchange");
+    StreamProtocol::new("/naome/peer-record-exchange/v0");
 
 #[derive(Clone)]
 pub(super) struct ProofCodec;
