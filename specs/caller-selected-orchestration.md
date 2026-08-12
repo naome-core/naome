@@ -2,10 +2,11 @@
 
 ## Authority and scope
 
-This document defines four bounded workflows over a caller-driven
-[`StaticProofNetwork`](proof-network-transport.md) and one selected
-[`ProofChainJournal`](proof-chain-journal.md):
+This document defines five bounded workflows over a caller-driven
+[`StaticProofNetwork`](proof-network-transport.md) and, where stated, one
+selected [`ProofChainJournal`](proof-chain-journal.md):
 
+- survey one exact chain context across explicit peers;
 - broadcast one journal-head snapshot to explicit peers;
 - import one exact direct-child block;
 - retrieve one exact parent-linked ancestry; and
@@ -18,15 +19,127 @@ no proposer, checkpoint, selection, consensus, finality, or economic authority.
 Only strict journal application changes selected state.
 
 These workflows add no wire protocol, connection, authorization, storage
-format, runtime, or background task. The proof, block, and announcement
-transports retain their own framing, authentication, timeouts, and resource
-limits.
+format, runtime, or background task. The proof, block, head-pull, and
+announcement transports retain their own framing, authentication, timeouts,
+and resource limits.
 
 Every in-progress workflow is non-cloneable. Its `accepts_event` predicate is
 the routing guard: an event advances a workflow only when its exchange kind,
 private request generation, expected authenticated peer, immutable request, and
 network-instance identity match the exact pending ticket. An unrelated event
 must be routed elsewhere before `on_event` consumes it.
+
+## Head survey
+
+### Caller-selected all-or-none start
+
+A survey sends one immutable `ProofChainHeadRequest` to `1..=8` explicit,
+unique, statically authorized peers. The request carries the exact
+caller-selected `ProofChainId`; every peer receives that same request. The
+workflow does not read a journal, compare a report with local selected state,
+or derive a request from local state.
+
+`start_chain_head_survey` performs every fallible preflight before queueing the
+first request, in this order:
+
+1. reject an empty peer set as `EmptyPeerSet`;
+2. reject more than `MAX_STATIC_PEERS` entries as
+   `TooManyPeers { actual, maximum }`;
+3. reject the first repeated identity in caller order as
+   `DuplicatePeer(peer_id)`;
+4. preflight every peer in caller order for static authorization, absence of
+   any pending outbound application request for that peer, managed-session
+   connectivity, and head-pull-behaviour connectivity;
+5. atomically reserve one shared application permit per peer, or return
+   `InsufficientCapacity { requested, available, maximum }`; and
+6. queue every request and install its tagged pending entry.
+
+Shape checks perform no network work. The first failing peer yields
+`RequestStart(UnknownPeer)`, `RequestStart(AlreadyPending)`, or
+`RequestStart(PeerDisconnected)` under the existing request-start precedence.
+Capacity shortage is reported only as `InsufficientCapacity`; it never
+partially acquires permits and never becomes `RequestStartError::GlobalLimit`.
+
+Before step 6, a failure leaves zero new requests, pending entries, or permits.
+After atomic reservation, queueing is infallible under the existing libp2p
+interface. A successful start therefore queues exactly the full
+caller-selected set. All-or-none applies to start, not delivery: later
+connectivity, negotiation, timeout, response, or transport failures are
+independent per-peer results and do not cancel other peers.
+
+The start error family is:
+
+```text
+EmptyPeerSet
+TooManyPeers { actual, maximum }
+DuplicatePeer(PeerId)
+RequestStart(RequestStartError)
+InsufficientCapacity { requested, available, maximum }
+```
+
+`RequestStart` preserves its typed cause. `available` is the permit count at
+the atomic reservation attempt; `maximum` is `MAX_PENDING_REQUESTS`.
+
+### Terminals, observations, and result order
+
+The workflow retains one common request, one exact `ChainHeadRequestTicket` for
+each pending peer, and one result slot for each completed peer. `peer_count`
+never changes. `pending_peer_count` decreases once for each accepted terminal
+and reaches zero only at completion.
+
+An accepted found response becomes `Ok(Some(ProofBlockId))`; an accepted
+unavailable response becomes `Ok(None)`. An accepted transport or peer-mismatch
+failure becomes that peer's typed failure. Exact ticket correlation precedes
+outcome extraction, and peer mismatch is decided before response or transport
+interpretation. A failure is result data, not a workflow-wide error.
+`AwaitingResponses` retains all remaining tickets; only the final accepted
+terminal yields `Complete`.
+
+The completed result stores the common `ProofChainHeadRequest` once and one
+ordered row of `(PeerId, found-or-unavailable-or-failure)` per selected peer.
+Rows retain caller input order regardless of terminal arrival order. Exact
+ticket completion already binds every outcome to the common request, so rows do
+not duplicate the request or authenticated response wrapper.
+
+Every successful row is only a source-bound report from its authenticated
+peer. `None` does not prove global unavailability. `Some(ProofBlockId)` does not
+prove freshness, ancestry, retrievability, mathematical validity, selection,
+finality, or authority. The survey neither groups equal heads nor computes a
+majority, quorum, score, checkpoint, fork choice, retrieval target, import
+target, consensus result, or economic result. Any later retrieval or import
+requires a new caller decision.
+
+An unrelated event passed to `on_event` returns
+`ProofChainHeadSurveyEventMismatch` with the unchanged survey and complete
+event; it does not inspect or discard the unrelated outcome. A second terminal
+for a completed peer is not accepted.
+
+### Survey limits and cancellation
+
+Every request uses `/naome/proof-chain-head-exchange`. Its body is 32 bytes; a
+response frame is one byte for unavailable or 33 bytes for a found head.
+
+| Resource | Bound |
+| --- | ---: |
+| Peers | `1..=8`, unique |
+| Requests and shared permits | `1..=8` |
+| Aggregate request bodies | `32..=256` bytes |
+| Aggregate successfully received response frames | `0..=264` bytes |
+| Head-pull requests per selected peer | 1 |
+| Head-pull streams opened per selected connection | 1 |
+| Shared network application permits | 8 |
+| Pending outbound application requests per peer | 1 |
+
+Each physical request retains the existing protocol-negotiation and 30-second
+negotiated request-response timeouts. The survey adds no aggregate deadline or
+retry. Progress requires the caller to keep polling the network.
+
+`cancel` and drop end only the logical survey. Physical requests retain their
+peer slots and permits until their terminals arrive. Those later
+`OutboundChainHead` events no longer belong to the workflow; the caller must
+handle or drop them. A completed result owns no ticket, permit, request
+identifier, network token, response channel, journal reference, or transport
+response wrapper.
 
 ## Head broadcast
 

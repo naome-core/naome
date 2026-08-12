@@ -25,11 +25,11 @@
 //! The caller owns the Tokio runtime, drives every network event loop, routes
 //! correlated proof events through a bounded dependency acquisition, consumes
 //! exact-block terminals through their generation tickets, may pull, explicitly
-//! announce, or broadcast one source-bound untrusted chain head to a bounded
-//! caller-selected peer set, may retrieve one bounded caller-selected and
-//! unselected block ancestry, imports either one exact child or one consumed
-//! ancestry, and explicitly promotes a resulting opaque closure or admits a
-//! peer-record batch. The
+//! announce, broadcast, or survey source-bound untrusted chain heads across a
+//! bounded caller-selected peer set, may retrieve one bounded caller-selected
+//! and unselected block ancestry, imports either one exact child or one
+//! consumed ancestry, and explicitly promotes a resulting opaque closure or
+//! admits a peer-record batch. The
 //! responder publication is not derived from the address store.
 //! [`StaticProofNetwork::next_journal_service_event`] serves authenticated
 //! proof, block, and head pulls from one borrowed journal while returning
@@ -48,6 +48,7 @@ mod bootstrap;
 mod codec;
 mod head_announcement;
 mod head_broadcast;
+mod head_survey;
 mod head_transport;
 mod journal_service;
 mod local_issuer;
@@ -138,6 +139,10 @@ pub use head_broadcast::{
     ProofChainHeadBroadcast, ProofChainHeadBroadcastEventMismatch,
     ProofChainHeadBroadcastPeerResult, ProofChainHeadBroadcastProgress,
     ProofChainHeadBroadcastStartError,
+};
+pub use head_survey::{
+    CompletedProofChainHeadSurvey, ProofChainHeadSurvey, ProofChainHeadSurveyEventMismatch,
+    ProofChainHeadSurveyPeerResult, ProofChainHeadSurveyProgress, ProofChainHeadSurveyStartError,
 };
 pub use head_transport::{
     AuthenticatedProofChainHeadResponse, ChainHeadRequestTicket, InboundProofChainHeadRequest,
