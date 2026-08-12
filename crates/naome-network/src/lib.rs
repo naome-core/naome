@@ -78,9 +78,7 @@ use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{
     Swarm, SwarmBuilder, allow_block_list, connection_limits, noise, request_response, tcp, yamux,
 };
-use naome::proof_exchange::{
-    PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse, proof_response,
-};
+use naome::proof_exchange::{PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse};
 use naome_chain::ProofBlockId;
 use naome_ledger::PROOF_BATCH_MAX_CANDIDATES;
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
@@ -206,6 +204,10 @@ pub const STABLE_SESSION_DURATION: Duration = Duration::from_secs(60);
 pub const INBOUND_AUTH_BURST: u32 = 8;
 /// Sustained pre-authentication inbound connection refill interval.
 pub const INBOUND_AUTH_REFILL_INTERVAL: Duration = Duration::from_secs(1);
+/// Maximum burst of admitted journal-response attempts per network instance.
+pub const INBOUND_APPLICATION_REQUEST_BURST: u32 = 8;
+/// Sustained refill interval for journal-backed authenticated-peer responses.
+pub const INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// One manually authorized peer and its complete dial address.
 ///
@@ -307,6 +309,7 @@ pub struct StaticProofNetwork {
     swarm: Swarm<Behaviour>,
     pending: HashMap<ExchangeRequestId, PendingRequest>,
     pending_budget: Arc<PendingBudget>,
+    inbound_application_request_budget: rate_limit::TokenBucket,
 }
 
 impl StaticProofNetwork {
@@ -424,6 +427,11 @@ impl StaticProofNetwork {
             swarm,
             pending: HashMap::new(),
             pending_budget: Arc::new(PendingBudget::default()),
+            inbound_application_request_budget: rate_limit::TokenBucket::new(
+                INBOUND_APPLICATION_REQUEST_BURST,
+                INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL,
+                Instant::now(),
+            ),
         })
     }
 
@@ -852,11 +860,14 @@ impl StaticProofNetwork {
         inbound: InboundProofRequest,
         journal: &ProofChainJournal,
     ) -> Result<(), RespondError> {
-        let response_bytes =
-            proof_response(journal, inbound.request).map_err(RespondError::Journal)?;
+        let response_bytes = journal
+            .proof(inbound.request.proof_id())
+            .map_err(RespondError::Journal)?
+            .map(|record| record.canonical_proof_bytes());
         if !inbound.channel.is_open() {
             return Err(RespondError::ChannelClosed);
         }
+        self.take_inbound_application_request()?;
         let bytes = response_bytes.map_or_else(Vec::new, <[u8]>::to_vec);
         debug_assert!(bytes.len() <= PROOF_RESPONSE_MAX_BYTES);
         let response = ProofResponse::from_wire_bytes(bytes)
@@ -866,6 +877,13 @@ impl StaticProofNetwork {
             .proof_exchange
             .send_response(inbound.channel, response)
             .map_err(|_| RespondError::ChannelClosed)
+    }
+
+    fn take_inbound_application_request(&mut self) -> Result<(), RespondError> {
+        self.inbound_application_request_budget
+            .try_take(Instant::now())
+            .then_some(())
+            .ok_or(RespondError::RateLimited)
     }
 }
 
@@ -1234,6 +1252,7 @@ impl PeerSessionEvent {
 pub enum RespondError {
     Journal(ProofChainJournalError),
     ChannelClosed,
+    RateLimited,
 }
 
 impl fmt::Display for RespondError {
@@ -1243,6 +1262,9 @@ impl fmt::Display for RespondError {
                 write!(formatter, "cannot read proof-chain journal: {source}")
             }
             Self::ChannelClosed => write!(formatter, "response channel is closed"),
+            Self::RateLimited => {
+                formatter.write_str("inbound application request budget is exhausted")
+            }
         }
     }
 }
@@ -1251,7 +1273,7 @@ impl Error for RespondError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Journal(source) => Some(source),
-            Self::ChannelClosed => None,
+            Self::ChannelClosed | Self::RateLimited => None,
         }
     }
 }

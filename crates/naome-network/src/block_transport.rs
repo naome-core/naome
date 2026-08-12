@@ -5,11 +5,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use libp2p::request_response;
-use naome::block_exchange::{
-    ProofBlockExchangeWireError, ProofBlockRequest, ProofBlockResponse, proof_block_response,
-};
+use naome::block_exchange::{ProofBlockExchangeWireError, ProofBlockRequest, ProofBlockResponse};
 use naome_chain::ProofBlock;
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
+use naome_storage::ProofChainJournal;
 
 use super::codec::ProofBlockWireResponse;
 use super::{
@@ -204,12 +202,6 @@ enum OutboundProofBlockOutcome {
         _permit: PendingPermit,
     },
     Failure(Box<OutboundProofBlockFailure>),
-}
-
-fn checked_block_lookup(
-    lookup: Result<Option<&ProofBlock>, ProofChainJournalError>,
-) -> Result<Option<&ProofBlock>, RespondError> {
-    lookup.map_err(RespondError::Journal)
 }
 
 /// A typed terminal failure for one exact outbound proof-block request.
@@ -423,10 +415,13 @@ impl StaticProofNetwork {
         inbound: InboundProofBlockRequest,
         journal: &ProofChainJournal,
     ) -> Result<(), RespondError> {
-        let block = checked_block_lookup(proof_block_response(journal, inbound.request))?;
+        let block = journal
+            .block(inbound.request.block_id())
+            .map_err(RespondError::Journal)?;
         if !inbound.channel.is_open() {
             return Err(RespondError::ChannelClosed);
         }
+        self.take_inbound_application_request()?;
         let bytes = block.map_or_else(Vec::new, ProofBlock::to_canonical_bytes);
         let response = ProofBlockWireResponse::new(bytes);
         self.swarm

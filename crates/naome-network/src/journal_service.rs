@@ -35,7 +35,7 @@ pub enum JournalServiceRequest {
 pub enum JournalServiceEvent {
     /// The response was accepted by libp2p for asynchronous writing.
     Served(JournalServiceRequest),
-    /// The local journal read or response-channel transfer failed.
+    /// The journal read, response budget, or response-channel transfer failed.
     ServeFailed {
         request: JournalServiceRequest,
         error: RespondError,

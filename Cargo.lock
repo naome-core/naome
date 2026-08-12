@@ -1723,7 +1723,6 @@ dependencies = [
  "naome-chain",
  "naome-foundation",
  "naome-proof",
- "naome-storage",
 ]
 
 [[package]]
