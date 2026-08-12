@@ -89,9 +89,6 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features --locked --no-fail-fast
 
-      - name: Build release profile
-        run: cargo build --workspace --release --all-targets --all-features --locked
-
       - name: Run release-profile tests
         run: cargo test --workspace --release --all-targets --all-features --locked --no-fail-fast
 
