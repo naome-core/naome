@@ -218,7 +218,7 @@ fn bootstrap_configuration_is_exact_bounded_and_canonical() {
             ..
         })
     ));
-    assert_eq!(MAX_STORE_BYTES, 1_062_827);
+    assert_eq!(MAX_STORE_BYTES, 1_062_824);
 }
 
 #[test]
@@ -328,7 +328,7 @@ fn signed_records_require_standard_signatures_and_global_exact_endpoints() {
 }
 
 #[test]
-fn global_address_predicates_lock_the_v0_boundaries() {
+fn global_address_predicates_lock_the_protocol_boundaries() {
     for address in ["8.8.8.8", "11.0.0.1", "192.88.99.1", "223.255.255.254"] {
         assert!(is_global_ipv4(address.parse().unwrap()), "{address}");
     }
@@ -1525,7 +1525,7 @@ fn digest_preimages_have_stable_goldens() {
     .unwrap();
     assert_eq!(
         hex(&bootstrap_digest(&bootstraps)),
-        "71526f94b5abc335350b74500890b44dda917bea2dea4c07fe53afcdd555e2d0"
+        "12db3d9fa493bd453d510e1c4cc434989ca7d04b1c93222c4467f22b7ce77ac1"
     );
 
     let salt = std::array::from_fn(|index| index as u8);
@@ -1537,7 +1537,7 @@ fn digest_preimages_have_stable_goldens() {
             &"/ip4/8.8.8.8/tcp/4001".parse().unwrap(),
             deterministic_key(220).public().to_peer_id()
         )),
-        "ad726f13d2f42fc0543be639bb11f357de1a6d7dd1e717befe07cc7a0c6575e9"
+        "68dd55e065e1df195c6e601e6ab45a04698fa0ef77f8e7ba06f434db1fae384f"
     );
 }
 
@@ -1567,7 +1567,7 @@ fn one_entry_snapshot_has_a_stable_complete_golden() {
         .unwrap();
     assert_eq!(
         hex(&store.encode_snapshot(&[]).unwrap()),
-        "6e616f6d653a706565722d616464726573732d73746f72652d76300026002408011220c91cb3ce2b84e4ba85f562ece41edfe4e27afc52d88d507f66a18638df823e9f86776c57419f43682c59f2d0dcf037803733fecf552aa4a2822035d0d2da6fea000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0001260024080112204dd9b6496a27571acb089a5e3482dfc86acdeddc4d1f28e15a9b04f026d7f226000000000001e24000a40a240801122099a7a471e0ad5d0eb66af0e10ab93292b943eb805de97911637db4be0c072e42120203011a360a2600240801122099a7a471e0ad5d0eb66af0e10ab93292b943eb805de97911637db4be0c072e4210091a0a0a08046f020304060fa12a4034b5287dce85c393caf8669500437d0504ed26de32d415de64b60fffe0cf1254c6ed2d5fc117e17685cd9d90b50f9ce079843ab4474b4c208cc5fd05025ba402b488267bb44977848979a805664f49e12c1b3372f2c860c022f1b6fff2868803"
+        "6e616f6d653a706565722d616464726573732d73746f72650026002408011220c91cb3ce2b84e4ba85f562ece41edfe4e27afc52d88d507f66a18638df823e9f16ad50f78bf9649113fd91c8b67f55cf9faffbbcff7e2f5f84e722e79e7820ea000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0001260024080112204dd9b6496a27571acb089a5e3482dfc86acdeddc4d1f28e15a9b04f026d7f226000000000001e24000a40a240801122099a7a471e0ad5d0eb66af0e10ab93292b943eb805de97911637db4be0c072e42120203011a360a2600240801122099a7a471e0ad5d0eb66af0e10ab93292b943eb805de97911637db4be0c072e4210091a0a0a08046f020304060fa12a4034b5287dce85c393caf8669500437d0504ed26de32d415de64b60fffe0cf1254c6ed2d5fc117e17685cd9d90b50f9ce079843ab4474b4c208cc5fd05025ba402d19dd12e8c01a550d6f3c324c8205367f36e382e75bad9cc722fb99ca6d44139"
     );
 }
 

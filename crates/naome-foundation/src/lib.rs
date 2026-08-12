@@ -1,4 +1,4 @@
-//! Rust reference implementation of NAOME's immutable Foundation contract.
+//! Rust reference implementation of NAOME's current Foundation contract.
 //!
 //! Foundation defines a valid-by-construction formula language, executable
 //! logical axiom constructors and primitive inference rules, seven
@@ -18,5 +18,5 @@ pub use formula::{
 pub use logic::{Logic, LogicError};
 pub use zfc::{Replacement, SchemaError, Separation, ZfcAxiom};
 
-/// The immutable protocol identifier for Foundation.
-pub const FOUNDATION_ID: &str = "naome:zfc:v0";
+/// The protocol namespace for the current prerelease Foundation contract.
+pub const FOUNDATION_ID: &str = "naome:zfc";

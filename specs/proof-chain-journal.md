@@ -2,7 +2,7 @@
 
 ## Scope, ownership, and compatibility
 
-This document defines the V0 crash-consistent append journal for one selected
+This document defines the crash-consistent append journal for one selected
 linear proof chain. `ProofChainJournal` is the sole durable owner of that state:
 each entry contains one complete canonical `ProofBlock` and the exact ordered
 canonical proof payloads required by its transition. Strict replay reconstructs
