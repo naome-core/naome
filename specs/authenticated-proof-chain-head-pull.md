@@ -18,6 +18,13 @@ be stale, ahead, on another history, misconfigured, or dishonest. A found head
 is never imported automatically and is never a trusted expected head for
 `ProofChainJournal::open_verified`.
 
+The separate
+[Authenticated Proof Chain Head Announcement](authenticated-proof-chain-head-announcement.md)
+lets a caller explicitly send its healthy journal's exact current head to one
+static peer and receive a fixed receipt. It does not change this pull protocol,
+make either observation fresh, or compose either direction with retrieval or
+import.
+
 ## Stack and authorization
 
 The stack is:
@@ -165,19 +172,19 @@ The exact mismatched-chain unavailable frame is `00`.
 `request_chain_head` executes these preflights before queuing libp2p work:
 
 1. require the peer to be statically authorized, otherwise `UnknownPeer`;
-2. require that peer to have no pending outbound proof, block, or head request,
-   otherwise `AlreadyPending`;
+2. require that peer to have no pending outbound proof, block, head-pull, or
+   head-announcement request, otherwise `AlreadyPending`;
 3. require both the managed session and head-exchange behaviour to be connected,
    otherwise `PeerDisconnected`;
 4. acquire one slot from the shared eight-permit application budget, otherwise
    `GlobalLimit`; and
 5. queue the immutable request and install its chain-head-tagged pending entry.
 
-Proof, block, and head behaviours may produce numerically equal private libp2p
-request identifiers. The shared pending map tags all three namespaces, so one
-protocol terminal cannot remove another protocol's entry. The shared per-peer
-gate prevents simultaneous outbound exchange requests of any of the three kinds
-to the same peer.
+Proof, block, head-pull, and head-announcement behaviours may produce
+numerically equal private libp2p request identifiers. The shared pending map
+tags all four namespaces, so one protocol terminal cannot remove another
+protocol's entry. The shared per-peer gate prevents simultaneous outbound
+exchange requests of any of the four kinds to the same peer.
 
 A successful response retains its permit in the opaque outbound event until the
 event is completed by its ticket or dropped. A terminal failure releases its
@@ -275,20 +282,22 @@ This protocol changes the bounded static network totals as follows:
 | Streams per proof exchange per connection | 2 |
 | Streams per proof-block exchange per connection | 2 |
 | Streams per proof-chain-head exchange per connection | 2 |
-| Aggregate exchange streams per connection | 6 |
+| Streams per proof-chain-head announcement per connection | 1 |
+| Aggregate exchange streams per connection | 7 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
 | Shared pending or retained application permits | 8 |
-| Pending outbound proof, block, or head requests per peer | 1 |
+| Pending outbound proof, block, head, or announcement requests per peer | 1 |
 | Protocol negotiation timeout | 10 seconds, pinned libp2p behaviour |
 | Negotiated request-response phase timeout | 30 seconds |
 
-The third behaviour adds separate protocol negotiation and bounded stream state
-but reuses the same TCP, Noise, and Yamux connection. Six aggregate exchange
-streams remain below the Yamux limit of eight. The existing two-stream inbound
-negotiation cap remains unchanged.
+The pull behaviour has separate protocol negotiation and bounded stream state
+but reuses the same TCP, Noise, and Yamux connection. With the additive
+announcement behaviour, seven aggregate exchange streams remain below the
+Yamux limit of eight. The existing two-stream inbound negotiation cap remains
+unchanged.
 
-The application-level pending count remains eight across all three protocols,
+The application-level pending count remains eight across all four protocols,
 and each peer still occupies at most one outbound application request. A head
 response retains at most one 32-byte digest plus fixed ticket/event metadata. It
 does not increase the maximum retained proof-payload bound and adds no journal
@@ -326,3 +335,6 @@ automatic proof acquisition, automatic import, selected-state mutation, trusted
 authority, proposer, signature, proof of work, proof of stake, validator set,
 voting, quorum, consensus, finality, reward, fee, balance, novelty policy,
 issuance, or settlement.
+
+The separate announcement contract adds one caller-triggered, single-peer push
+without changing this pull's framing, ticket, response, or authority boundary.

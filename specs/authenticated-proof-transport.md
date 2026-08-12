@@ -26,6 +26,11 @@ The separate
 adds a third request-response behaviour on that same swarm. It reports only one
 untrusted, chain-scoped peer observation and never starts retrieval or import.
 The separate
+[Authenticated Proof Chain Head Announcement](authenticated-proof-chain-head-announcement.md)
+adds a fourth behaviour for one caller-triggered, receipt-bearing push of a
+healthy journal's exact chain and head. Receipt never starts retrieval, import,
+or synchronization.
+The separate
 [Caller-Selected Proof Block Import](caller-selected-proof-block-import.md)
 orchestrates those two existing exchanges for one exact direct-child target;
 it does not consume the head protocol or grant peer-side selection policy.
@@ -53,6 +58,9 @@ correlation contract are defined only by the
 The third `/naome/proof-chain-head-exchange` behaviour reuses that connection
 under the independent framing and correlation contract in the Authenticated
 Proof Chain Head Pull.
+The fourth `/naome/proof-chain-head-announcement` behaviour reuses the same
+connection with one fixed 64-byte announcement and one fixed-byte receipt under
+its independent contract.
 
 Each node has one libp2p identity key. Its `PeerId` is derived by libp2p from
 the public key and is authenticated during the Noise handshake. Construction
@@ -144,11 +152,12 @@ The initial static implementation fixes these limits:
 | Proof request-response streams per connection | 2 |
 | Proof-block request-response streams per connection | 2 |
 | Proof-chain-head request-response streams per connection | 2 |
-| Aggregate proof, proof-block, and proof-chain-head streams per connection | 6 |
+| Proof-chain-head announcement streams per connection | 1 |
+| Aggregate application-exchange streams per connection | 7 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
 | Shared pending or retained application permits | 8 |
-| Pending outbound proof, proof-block, or proof-chain-head requests per peer | 1 |
+| Pending outbound proof, proof-block, proof-chain-head, or announcement requests per peer | 1 |
 | TCP listen backlog | 16 |
 | Connection establishment timeout | 10 seconds |
 | Negotiated request/response phase timeout | 30 seconds |
@@ -161,9 +170,10 @@ The initial static implementation fixes these limits:
 | Pre-Noise inbound authentication burst | 8 attempts |
 | Pre-Noise inbound authentication refill | 1 attempt per second, global |
 
-The Yamux cap is intentionally larger than the six aggregate proof, proof-block,
-and proof-chain-head request-response streams. Each separate behaviour retains a
-two-stream cap while arbitrary mux stream growth remains bounded. The selected
+The Yamux cap is intentionally larger than the seven aggregate proof,
+proof-block, proof-chain-head, and announcement request-response streams. The
+first three behaviours retain a two-stream cap and announcement retains a
+one-stream cap while arbitrary mux stream growth remains bounded. The selected
 libp2p adapter currently
 implements the hard Yamux cap through its compatibility configuration; the WAN
 throughput tradeoff is not yet measured.
@@ -171,7 +181,8 @@ throughput tradeoff is not yet measured.
 One established connection per peer prevents one identity from concentrating
 the node-wide connection budget. The authenticated Yamux connection is
 full-duplex: once the deterministic owner establishes it, both peers can issue
-proof, proof-block, or proof-chain-head requests over that same connection.
+proof, proof-block, proof-chain-head, or announcement requests over that same
+connection.
 There is
 no initial cross-dial race and no request-driven second dial.
 
@@ -195,18 +206,20 @@ state. It bounds aggregate admission to authentication work, but it is not
 per-IP fairness, upstream DDoS filtering, or Sybil resistance.
 
 The global outbound permit is acquired before libp2p queues an application-
-level proof, proof-block, or proof-chain-head request. During dependency
-acquisition it moves with a proof response into quarantine, then into the
-completed closure, and remains
-held across final synchronous promotion. A successful proof-block response
+level proof, proof-block, proof-chain-head, or head-announcement request. During
+dependency acquisition it moves with a proof response into quarantine, then
+into the completed closure, and remains held across final synchronous
+promotion. A successful proof-block response
 instead retains its permit until its opaque outbound event is completed with
 the matching request ticket or dropped. A successful proof-chain-head response
-uses the same retained-event boundary. The shared eight-permit limit therefore
-bounds pending requests, received block or head responses, quarantined proof
+uses the same retained-event boundary, as does a successful announcement
+receipt. The shared eight-permit limit therefore bounds pending requests,
+received block or head responses, announcement receipts, quarantined proof
 candidates, and completed closure candidates for one `StaticProofNetwork`
 instance. At most eight proof payload buffers, each at most 4 MiB, can be
-retained this way; mixing in block responses of at most 353 bytes or head
-responses of 32 bytes cannot raise that 32 MiB concurrent payload-only bound.
+retained this way; mixing in block responses of at most 353 bytes, head
+responses of 32 bytes, or fixed announcement receipts cannot raise that 32 MiB
+concurrent payload-only bound.
 This is not a bound on transient decode or checker memory. Request-response
 stream and connection limits separately bound concurrently owned server
 responses.
@@ -437,7 +450,9 @@ requests, deterministic connection ownership, bounded managed redial and
 global pre-authentication admission, immutable request/response correlation,
 bounded unselected closure acquisition, one non-resetting acquisition deadline,
 permit-preserving cancellation tombstones, and one explicit caller-supplied-
-block promotion with exact expected-identity correlation.
+block promotion with exact expected-identity correlation. The separate head-
+announcement contract additionally guarantees one fixed, caller-triggered,
+receipt-bearing observation with its own generation correlation.
 
 It does not define or claim:
 
@@ -452,7 +467,9 @@ It does not define or claim:
   dedicated swarms without the proof protocol and are not these static proof
   sessions;
 - peer scoring, bans, retrying one peer for the same proof address, parallel or
-  hedged requests, announcements, or proof gossip;
+  hedged requests, proof or block announcements, automatic head broadcast, or
+  proof gossip; the separate head announcement remains single-peer and
+  caller-triggered;
 - parallel dependency fetching, a persistent orphan/cache store, admission
   worker, wire-level request abort, synchronous proof/checker/journal
   cancellation, or rolling cross-acquisition byte/CPU budgets or per-source

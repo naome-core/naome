@@ -8,6 +8,9 @@ use libp2p::{StreamProtocol, request_response};
 use naome::block_exchange::{
     PROOF_BLOCK_REQUEST_BYTES, PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockRequest,
 };
+use naome::chain_head_announcement::{
+    PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES, ProofChainHeadAnnouncement,
+};
 use naome::chain_head_exchange::{
     PROOF_CHAIN_HEAD_REQUEST_BYTES, PROOF_CHAIN_HEAD_RESPONSE_BYTES,
     ProofChainHeadExchangeWireError, ProofChainHeadRequest, ProofChainHeadResponse,
@@ -26,6 +29,8 @@ pub(super) const PROOF_BLOCK_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/proof-block-exchange");
 pub(super) const PROOF_CHAIN_HEAD_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/proof-chain-head-exchange");
+pub(super) const PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/naome/proof-chain-head-announcement");
 pub(super) const PEER_RECORD_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/peer-record-exchange");
 
@@ -37,6 +42,14 @@ pub(super) struct ProofBlockCodec;
 
 #[derive(Clone)]
 pub(super) struct ProofChainHeadCodec;
+
+#[derive(Clone)]
+pub(super) struct ProofChainHeadAnnouncementCodec;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ProofChainHeadAnnouncementReceipt;
+
+const PROOF_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT: u8 = 0x01;
 
 #[derive(Clone)]
 pub(super) struct PeerRecordCodec;
@@ -330,6 +343,76 @@ impl request_response::Codec for ProofChainHeadCodec {
             }
             None => io.write_all(&[0]).await,
         }
+    }
+}
+
+#[async_trait]
+impl request_response::Codec for ProofChainHeadAnnouncementCodec {
+    type Protocol = StreamProtocol;
+    type Request = ProofChainHeadAnnouncement;
+    type Response = ProofChainHeadAnnouncementReceipt;
+
+    async fn read_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut bytes = [0_u8; PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES];
+        io.read_exact(&mut bytes).await?;
+        require_eof(io, "proof-chain-head announcement has trailing bytes").await?;
+        ProofChainHeadAnnouncement::from_wire_bytes(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut receipt = [0_u8; 1];
+        io.read_exact(&mut receipt).await?;
+        if receipt[0] != PROOF_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "proof-chain-head announcement receipt is not 0x01",
+            ));
+        }
+        require_eof(
+            io,
+            "proof-chain-head announcement receipt has trailing bytes",
+        )
+        .await?;
+        Ok(ProofChainHeadAnnouncementReceipt)
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        announcement: Self::Request,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        io.write_all(&announcement.to_wire_bytes()).await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        _receipt: Self::Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        io.write_all(&[PROOF_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT]).await
     }
 }
 

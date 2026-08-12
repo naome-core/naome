@@ -193,8 +193,9 @@ request:
 
 1. require `peer_id` to be one configured static peer, otherwise
    `UnknownPeer`;
-2. require that peer to have no pending application-level proof, proof-block, or
-   proof-chain-head request, otherwise `AlreadyPending`;
+2. require that peer to have no pending application-level proof, proof-block,
+   proof-chain-head-pull, or proof-chain-head-announcement request, otherwise
+   `AlreadyPending`;
 3. require the managed session and block-exchange behaviour to be connected,
    otherwise `PeerDisconnected`;
 4. acquire one slot from the shared eight-permit application budget, otherwise
@@ -205,18 +206,20 @@ The method never waits for or opens a connection. A peer that supports the
 managed Noise session but not the proof-block protocol can still reject
 negotiation as an ordinary transport failure.
 
-The pending registry is shared at the application level and tags proof,
-proof-block, and proof-chain-head request namespaces explicitly. Behaviour-local
-libp2p request identifiers may have equal numeric representations without
-aliasing each other. The shared per-peer preflight prevents requests from two
-exchange protocols from simultaneously consuming the same peer slot.
+The pending registry is shared at the application level and explicitly tags
+proof, proof-block, proof-chain-head-pull, and proof-chain-head-announcement
+request namespaces. Behaviour-local libp2p request identifiers may have equal
+numeric representations without aliasing each other. The shared per-peer
+preflight prevents requests from different exchange protocols from
+simultaneously consuming the same peer slot.
 
 A successful proof-block response retains its permit in the opaque outbound
 event until the event is completed with its matching ticket or dropped. A
 terminal failure discards any bounded response state and releases its permit
 before the failure event is emitted. This preserves the same global bound
 across pending proof requests, quarantined proof candidates, completed proof
-closures, pending block requests, and unconsumed successful block events.
+closures, pending block, head-pull, and head-announcement requests, and
+unconsumed successful block, head-pull, and head-announcement events.
 
 ## Generation-safe request ticket
 
@@ -351,18 +354,19 @@ This protocol adds these exact bounds to the existing static network:
 | Proof-block request-response streams per connection | 2 |
 | Proof request-response streams per connection | 2 |
 | Proof-chain-head request-response streams per connection | 2 |
-| Aggregate exchange streams per connection | 6 |
+| Proof-chain-head announcement streams per connection | 1 |
+| Aggregate exchange streams per connection | 7 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
 | Shared pending or retained application permits | 8 |
-| Pending outbound proof, proof-block, or proof-chain-head requests per peer | 1 |
+| Pending outbound proof, proof-block, proof-chain-head, or announcement requests per peer | 1 |
 | Protocol negotiation timeout | 10 seconds, pinned libp2p behaviour |
 | Negotiated request-response phase timeout | 30 seconds |
 
-The three request-response behaviours have separate protocol negotiation and
+The four request-response behaviours have separate protocol negotiation and
 stream state but share the existing managed connection, application permits,
-and per-peer pending registry. Their six aggregate application streams remain
-below the hard Yamux limit of eight.
+and per-peer pending registry. Their seven aggregate application streams
+remain below the hard Yamux limit of eight.
 
 A block response is much smaller than one maximum proof payload. Because each
 successful block event consumes one of the same eight permits, adding block
@@ -413,5 +417,9 @@ The separate
 [Authenticated Proof Chain Head Pull](authenticated-proof-chain-head-pull.md)
 observes one untrusted chain-scoped peer head without changing this exact-ID
 block request or granting automatic retrieval, import, or selection authority.
+The separate
+[Authenticated Proof Chain Head Announcement](authenticated-proof-chain-head-announcement.md)
+pushes the sender's untrusted chain-scoped head to one static peer without
+changing this exact-ID retrieval protocol or starting a block request.
 The separate caller-selected ancestry pull composes this request repeatedly but
 does not change the transport protocol or validate proof payloads.

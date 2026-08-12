@@ -16,7 +16,8 @@ use crate::tests::{
     test_network_for_peers,
 };
 use crate::{
-    ExchangeRequestId, Keypair, MAX_EXCHANGE_STREAMS_PER_CONNECTION, MAX_PENDING_REQUESTS,
+    ExchangeRequestId, Keypair, MAX_EXCHANGE_STREAMS_PER_CONNECTION,
+    MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION, MAX_PENDING_REQUESTS,
     MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION, MAX_YAMUX_STREAMS_PER_CONNECTION, NetworkEvent,
     PendingBudget, RequestStartError,
 };
@@ -76,9 +77,10 @@ fn head_failure_event(
 }
 
 #[test]
-fn three_exchange_stream_budgets_fit_below_the_yamux_cap() {
+fn four_exchange_stream_budgets_fit_below_the_yamux_cap() {
     assert_eq!(MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION, 2);
-    assert_eq!(MAX_EXCHANGE_STREAMS_PER_CONNECTION, 6);
+    assert_eq!(MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION, 1);
+    assert_eq!(MAX_EXCHANGE_STREAMS_PER_CONNECTION, 7);
     assert_eq!(MAX_YAMUX_STREAMS_PER_CONNECTION, 8);
 }
 
@@ -100,7 +102,9 @@ fn tagged_request_ids_isolate_head_block_and_proof_namespaces() {
         .keys()
         .find_map(|request_id| match request_id {
             ExchangeRequestId::Block(request_id) => Some(*request_id),
-            ExchangeRequestId::Proof(_) | ExchangeRequestId::Head(_) => None,
+            ExchangeRequestId::Proof(_)
+            | ExchangeRequestId::Head(_)
+            | ExchangeRequestId::Announcement(_) => None,
         })
         .unwrap();
     let request = ProofChainHeadRequest::new(chain_id(0x33));

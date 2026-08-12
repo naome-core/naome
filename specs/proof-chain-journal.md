@@ -460,6 +460,13 @@ empty. It adds no journal mutation or format, and a receiver must not treat the
 observation as a trusted checkpoint or automatic import target.
 
 The separate
+[Authenticated Proof Chain Head Announcement](authenticated-proof-chain-head-announcement.md)
+may snapshot this healthy journal's exact current head and immutable chain
+context into one caller-triggered outbound message. It retains no journal
+borrow, writes no journal byte, and its peer receipt is neither a durable commit
+receipt nor checkpoint authority.
+
+The separate
 [Caller-Selected Proof Block Ancestry Pull](caller-selected-proof-block-ancestry-pull.md)
 captures the healthy current head and proof-set root, then uses exact committed
 block lookup to reject a backward path that reaches indexed selected history
