@@ -60,17 +60,17 @@ fn create_open_chain_binding_and_same_process_lock_are_strict() {
         Ok(ProofSetMembership::Absent)
     );
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::Locked)
     ));
     drop(journal);
 
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, other_id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, other_id),
         Err(ProofChainJournalError::ChainIdMismatch { expected, actual })
             if expected == other_id && actual == id
     ));
-    let reopened = ProofChainJournal::open(&directory.path, id).unwrap();
+    let reopened = ProofChainJournal::open_recovering_unverified(&directory.path, id).unwrap();
     assert_eq!(reopened.chain_id(), id);
     assert_eq!(reopened.head_block_id().unwrap(), genesis);
     assert_eq!(reopened.block(genesis).unwrap(), None);
@@ -152,7 +152,7 @@ fn maximum_eight_proof_block_is_one_entry_and_replays() {
     let expected_root = journal.proof_set_root().unwrap();
     drop(journal);
 
-    let reopened = ProofChainJournal::open(&directory.path, id).unwrap();
+    let reopened = ProofChainJournal::open_recovering_unverified(&directory.path, id).unwrap();
     assert_eq!(reopened.len().unwrap(), PROOF_BATCH_MAX_CANDIDATES);
     assert_eq!(reopened.proof_set_root().unwrap(), expected_root);
     assert_eq!(reopened.head_block_id().unwrap(), block.id());
@@ -263,10 +263,10 @@ fn verified_open_binds_history_even_when_proof_set_root_matches() {
         commit_separate_blocks(&second_directory, id, &reversed_payloads, &reversed_ids);
     assert_ne!(first_head, second_head);
 
-    let first = ProofChainJournal::open(&first_directory.path, id).unwrap();
+    let first = ProofChainJournal::open_recovering_unverified(&first_directory.path, id).unwrap();
     let first_root = first.proof_set_root().unwrap();
     drop(first);
-    let second = ProofChainJournal::open(&second_directory.path, id).unwrap();
+    let second = ProofChainJournal::open_recovering_unverified(&second_directory.path, id).unwrap();
     assert_eq!(second.proof_set_root().unwrap(), first_root);
     drop(second);
 
@@ -327,7 +327,7 @@ fn formula_budget_rejection_is_atomic_and_complete_replay_fails_closed() {
     let invalid_image = journal_image(id, &[(invalid_block, vec![over_budget], vec![over_id])]);
     replay_directory.write_image(&invalid_image);
     assert!(matches!(
-        ProofChainJournal::open(&replay_directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&replay_directory.path, id),
         Err(ProofChainJournalError::Replay { entry: 0, source, .. })
             if matches!(
                 source.as_ref(),

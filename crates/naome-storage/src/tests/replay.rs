@@ -11,7 +11,7 @@ fn every_incomplete_first_entry_cut_recovers_to_empty_prefix() {
     for cut in JOURNAL_PREFIX_BYTES + 1..complete.len() {
         let directory = TestDirectory::new();
         directory.write_image(&complete[..cut]);
-        let journal = ProofChainJournal::open(&directory.path, id).unwrap();
+        let journal = ProofChainJournal::open_recovering_unverified(&directory.path, id).unwrap();
         assert!(journal.is_empty().unwrap(), "cut={cut}");
         assert_eq!(
             journal.head_block_id().unwrap(),
@@ -40,7 +40,7 @@ fn every_incomplete_second_entry_cut_recovers_exact_first_block() {
     for cut in first_image.len() + 1..complete.len() {
         let directory = TestDirectory::new();
         directory.write_image(&complete[..cut]);
-        let journal = ProofChainJournal::open(&directory.path, id).unwrap();
+        let journal = ProofChainJournal::open_recovering_unverified(&directory.path, id).unwrap();
         assert_eq!(journal.len().unwrap(), 1, "cut={cut}");
         assert_eq!(journal.head_block_id().unwrap(), first_head, "cut={cut}");
         assert!(journal.proof(first_id).unwrap().is_some(), "cut={cut}");
@@ -71,7 +71,7 @@ fn complete_payload_and_footer_corruption_fail_without_recovery() {
     corrupt_payload[payload_offset] ^= 0x01;
     directory.write_image(&corrupt_payload);
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::Replay { entry: 0, .. })
     ));
     assert_eq!(fs::read(directory.journal_path()).unwrap(), corrupt_payload);
@@ -83,7 +83,7 @@ fn complete_payload_and_footer_corruption_fail_without_recovery() {
         directory.write_image(&corrupt);
         assert!(
             matches!(
-                ProofChainJournal::open(&directory.path, id),
+                ProofChainJournal::open_recovering_unverified(&directory.path, id),
                 Err(ProofChainJournalError::BlockIdMismatch { entry: 0, .. })
             ),
             "offset={offset}"
@@ -100,7 +100,7 @@ fn prefix_and_chain_context_are_never_recovered_as_a_tail() {
         let directory = TestDirectory::new();
         directory.write_image(&prefix[..cut]);
         assert!(matches!(
-            ProofChainJournal::open(&directory.path, id),
+            ProofChainJournal::open_recovering_unverified(&directory.path, id),
             Err(ProofChainJournalError::InvalidHeader)
         ));
         assert_eq!(fs::read(directory.journal_path()).unwrap(), &prefix[..cut]);
@@ -111,7 +111,7 @@ fn prefix_and_chain_context_are_never_recovered_as_a_tail() {
     wrong_magic[0] ^= 1;
     directory.write_image(&wrong_magic);
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::InvalidHeader)
     ));
     assert_eq!(fs::read(directory.journal_path()).unwrap(), wrong_magic);
@@ -119,7 +119,7 @@ fn prefix_and_chain_context_are_never_recovered_as_a_tail() {
     let directory = TestDirectory::new();
     directory.write_image(&prefix);
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, chain_id(0x22)),
+        ProofChainJournal::open_recovering_unverified(&directory.path, chain_id(0x22)),
         Err(ProofChainJournalError::ChainIdMismatch { expected, actual })
             if expected == chain_id(0x22) && actual == id
     ));
@@ -135,7 +135,7 @@ fn complete_framing_errors_fail_closed() {
     invalid_outer.extend_from_slice(&(ENTRY_MIN_BODY_BYTES - 1).to_be_bytes());
     directory.write_image(&invalid_outer);
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::InvalidEntryLength { entry: 0, actual, .. })
             if actual == ENTRY_MIN_BODY_BYTES - 1
     ));
@@ -148,7 +148,7 @@ fn complete_framing_errors_fail_closed() {
     invalid_block.extend_from_slice(&invalid_block_entry);
     directory.write_image(&invalid_block);
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::InvalidBlockLength {
             entry: 0,
             actual: 0,
@@ -170,7 +170,7 @@ fn complete_framing_errors_fail_closed() {
     zero_proof.extend_from_slice(&zero_proof_entry);
     directory.write_image(&zero_proof);
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::InvalidProofLength {
             entry: 0,
             proof: 0,
@@ -191,7 +191,7 @@ fn complete_framing_errors_fail_closed() {
     trailing.extend_from_slice(&trailing_entry);
     directory.write_image(&trailing);
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::InvalidEntryBody { entry: 0, .. })
     ));
 }
@@ -213,7 +213,7 @@ fn block_id_valid_parent_payload_and_entry_order_attacks_fail_replay() {
     let swapped_image = journal_image(id, &[(valid.clone(), swapped, proof_ids.clone())]);
     directory.write_image(&swapped_image);
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::Replay { entry: 0, source, .. })
             if matches!(
                 source.as_ref(),
@@ -247,7 +247,7 @@ fn verified_open_rejects_rollback_and_does_not_truncate_untrusted_tail() {
     let directory = TestDirectory::new();
 
     directory.write_image(&first_image);
-    assert!(ProofChainJournal::open(&directory.path, id).is_ok());
+    assert!(ProofChainJournal::open_recovering_unverified(&directory.path, id).is_ok());
     assert!(matches!(
         ProofChainJournal::open_verified(&directory.path, id, full_head),
         Err(ProofChainJournalError::HeadBlockIdMismatch { expected, actual })
@@ -265,7 +265,7 @@ fn verified_open_rejects_rollback_and_does_not_truncate_untrusted_tail() {
     ));
     assert_eq!(fs::read(directory.journal_path()).unwrap(), incomplete);
 
-    let recovered = ProofChainJournal::open(&directory.path, id).unwrap();
+    let recovered = ProofChainJournal::open_recovering_unverified(&directory.path, id).unwrap();
     assert_eq!(recovered.head_block_id().unwrap(), first_head);
     drop(recovered);
     assert_eq!(fs::read(directory.journal_path()).unwrap(), first_image);
@@ -276,7 +276,7 @@ fn assert_replay_parent_failure(id: ProofChainId, entries: Vec<JournalEntryFixtu
     let image = journal_image(id, &entries);
     directory.write_image(&image);
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::Replay { source, .. })
             if matches!(
                 source.as_ref(),

@@ -434,7 +434,7 @@ fn poisoned_public_handle_exposes_only_chain_context_and_keeps_lock() {
         Err(ProofChainJournalError::Poisoned)
     ));
     assert!(matches!(
-        ProofChainJournal::open(&directory.path, id),
+        ProofChainJournal::open_recovering_unverified(&directory.path, id),
         Err(ProofChainJournalError::Locked)
     ));
 }

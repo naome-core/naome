@@ -90,7 +90,7 @@ impl ProofChainJournal {
     ///
     /// One incomplete final entry is recovered to the preceding committed
     /// boundary. A complete corrupt or invalid entry fails closed.
-    pub fn open(
+    pub fn open_recovering_unverified(
         directory: impl AsRef<Path>,
         expected_chain_id: ProofChainId,
     ) -> Result<Self, ProofChainJournalError> {

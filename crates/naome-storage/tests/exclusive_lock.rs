@@ -49,7 +49,7 @@ fn exclusive_lock_child_probe() {
         return;
     };
     assert!(matches!(
-        ProofChainJournal::open(PathBuf::from(path), chain_id()),
+        ProofChainJournal::open_recovering_unverified(PathBuf::from(path), chain_id()),
         Err(ProofChainJournalError::Locked)
     ));
     println!("NAOME_PROOF_CHAIN_JOURNAL_LOCK_PROBE_OK");
@@ -79,5 +79,5 @@ fn exclusive_lock_is_enforced_across_processes() {
         String::from_utf8_lossy(&output.stderr)
     );
     drop(journal);
-    assert!(ProofChainJournal::open(&directory.path, chain_id()).is_ok());
+    assert!(ProofChainJournal::open_recovering_unverified(&directory.path, chain_id()).is_ok());
 }
