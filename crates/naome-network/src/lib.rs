@@ -23,8 +23,9 @@
 //! The caller owns the Tokio runtime, drives every network event loop, routes
 //! correlated proof events through a bounded dependency acquisition, consumes
 //! exact-block terminals through their generation tickets, may retrieve one
-//! bounded caller-selected and unselected block ancestry, and explicitly
-//! promotes a resulting opaque closure or admits a peer-record batch. The
+//! bounded caller-selected and unselected block ancestry, imports either one
+//! exact child or one consumed ancestry, and explicitly promotes a resulting
+//! opaque closure or admits a peer-record batch. The
 //! responder publication is not derived from the address store.
 //! This crate starts no NAOME-owned background task and owns no
 //! [`ProofChainJournal`].
@@ -32,6 +33,7 @@
 mod acquisition;
 mod address_store;
 mod block_ancestry;
+mod block_ancestry_import;
 mod block_import;
 mod block_transport;
 mod bootstrap;
@@ -102,6 +104,9 @@ pub use address_store::{
 pub use block_ancestry::{
     MAX_PROOF_BLOCK_ANCESTRY_BLOCKS, ProofBlockAncestryPull, ProofBlockAncestryPullError,
     ProofBlockAncestryPullProgress, UnselectedProofBlockAncestry,
+};
+pub use block_ancestry_import::{
+    ProofBlockAncestryImport, ProofBlockAncestryImportError, ProofBlockAncestryImportProgress,
 };
 pub use block_import::{ProofBlockImport, ProofBlockImportError, ProofBlockImportProgress};
 pub use block_transport::{

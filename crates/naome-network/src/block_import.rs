@@ -159,18 +159,8 @@ impl ProofBlockImport {
                             block_id: target_block_id,
                         })?;
 
-                Self::preflight_block(selected, &block)?;
-                let root_proof_id = block.transition().root_proof_id();
-                let acquisition = network
-                    .start_dependency_acquisition(selected, peer_id, root_proof_id)
-                    .map_err(|source| ProofBlockImportError::ProofAcquisition {
-                        block_id: target_block_id,
-                        source: Box::new(source),
-                    })?;
-                Ok(Some(ProofBlockImport {
-                    target_block_id,
-                    phase: ProofBlockImportPhase::Proofs { block, acquisition },
-                }))
+                Self::start_from_retained_block(network, selected, peer_id, target_block_id, block)
+                    .map(Some)
             }
             ProofBlockImportPhase::Proofs { block, acquisition } => {
                 let NetworkEvent::OutboundProof(event) = event else {
@@ -208,6 +198,28 @@ impl ProofBlockImport {
                 }
             }
         }
+    }
+
+    pub(super) fn start_from_retained_block(
+        network: &mut StaticProofNetwork,
+        selected: &ProofChainJournal,
+        peer_id: PeerId,
+        target_block_id: ProofBlockId,
+        block: ProofBlock,
+    ) -> Result<Self, ProofBlockImportError> {
+        debug_assert_eq!(block.id(), target_block_id);
+        Self::preflight_block(selected, &block)?;
+        let root_proof_id = block.transition().root_proof_id();
+        let acquisition = network
+            .start_dependency_acquisition(selected, peer_id, root_proof_id)
+            .map_err(|source| ProofBlockImportError::ProofAcquisition {
+                block_id: target_block_id,
+                source: Box::new(source),
+            })?;
+        Ok(Self {
+            target_block_id,
+            phase: ProofBlockImportPhase::Proofs { block, acquisition },
+        })
     }
 
     fn preflight_block(
