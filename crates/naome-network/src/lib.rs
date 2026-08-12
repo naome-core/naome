@@ -31,6 +31,10 @@
 //! ancestry, and explicitly promotes a resulting opaque closure or admits a
 //! peer-record batch. The
 //! responder publication is not derived from the address store.
+//! [`StaticProofNetwork::next_journal_service_event`] serves authenticated
+//! proof, block, and head pulls from one borrowed journal while returning
+//! announcements and every other event unchanged; it starts no background
+//! task.
 //! This crate starts no NAOME-owned background task and owns no
 //! [`ProofChainJournal`].
 
@@ -45,6 +49,7 @@ mod codec;
 mod head_announcement;
 mod head_broadcast;
 mod head_transport;
+mod journal_service;
 mod local_issuer;
 mod rate_limit;
 mod record_exchange;
@@ -140,6 +145,7 @@ pub use head_transport::{
     AuthenticatedProofChainHeadResponse, ChainHeadRequestTicket, InboundProofChainHeadRequest,
     OutboundProofChainHeadEvent, OutboundProofChainHeadFailure, ProofChainHeadRequestEventMismatch,
 };
+pub use journal_service::{JournalServiceEvent, JournalServiceRequest};
 pub use libp2p::core::transport::ListenerId;
 pub use libp2p::{Multiaddr, PeerId, identity::Keypair};
 pub use local_issuer::{LocalPeerRecordIssuer, LocalPeerRecordIssuerError};
