@@ -24,11 +24,12 @@
 //!
 //! The caller owns the Tokio runtime, drives every network event loop, routes
 //! correlated proof events through a bounded dependency acquisition, consumes
-//! exact-block terminals through their generation tickets, may pull or
-//! explicitly announce one source-bound untrusted chain head, may retrieve one
-//! bounded caller-selected and unselected block ancestry, imports either one
-//! exact child or one consumed ancestry, and explicitly promotes a resulting
-//! opaque closure or admits a peer-record batch. The
+//! exact-block terminals through their generation tickets, may pull, explicitly
+//! announce, or broadcast one source-bound untrusted chain head to a bounded
+//! caller-selected peer set, may retrieve one bounded caller-selected and
+//! unselected block ancestry, imports either one exact child or one consumed
+//! ancestry, and explicitly promotes a resulting opaque closure or admits a
+//! peer-record batch. The
 //! responder publication is not derived from the address store.
 //! This crate starts no NAOME-owned background task and owns no
 //! [`ProofChainJournal`].
@@ -42,6 +43,7 @@ mod block_transport;
 mod bootstrap;
 mod codec;
 mod head_announcement;
+mod head_broadcast;
 mod head_transport;
 mod local_issuer;
 mod rate_limit;
@@ -127,6 +129,12 @@ pub use head_announcement::{
     HeadAnnouncementStartError, HeadAnnouncementTicket, InboundProofChainHeadAnnouncement,
     OutboundProofChainHeadAnnouncementEvent, OutboundProofChainHeadAnnouncementFailure,
     ProofChainHeadAnnouncementEventMismatch,
+};
+pub use head_broadcast::{
+    CompletedProofChainHeadBroadcast, MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS,
+    ProofChainHeadBroadcast, ProofChainHeadBroadcastEventMismatch,
+    ProofChainHeadBroadcastPeerResult, ProofChainHeadBroadcastProgress,
+    ProofChainHeadBroadcastStartError,
 };
 pub use head_transport::{
     AuthenticatedProofChainHeadResponse, ChainHeadRequestTicket, InboundProofChainHeadRequest,
@@ -453,6 +461,19 @@ impl StaticProofNetwork {
         peer_id: PeerId,
         transport_connected: bool,
     ) -> Result<(usize, PendingPermit), RequestStartError> {
+        let peer_index = self.preflight_request(peer_id, transport_connected)?;
+        PendingBudget::try_acquire(&self.pending_budget)
+            .map(|permit| (peer_index, permit))
+            .ok_or(RequestStartError::GlobalLimit {
+                maximum: MAX_PENDING_REQUESTS,
+            })
+    }
+
+    fn preflight_request(
+        &self,
+        peer_id: PeerId,
+        transport_connected: bool,
+    ) -> Result<usize, RequestStartError> {
         let sessions = &self.swarm.behaviour().sessions;
         let Some(peer_index) = sessions.peer_index(&peer_id) else {
             return Err(RequestStartError::UnknownPeer(peer_id));
@@ -472,11 +493,7 @@ impl StaticProofNetwork {
         if !session_connected || !transport_connected {
             return Err(RequestStartError::PeerDisconnected(peer_id));
         }
-        PendingBudget::try_acquire(&self.pending_budget)
-            .map(|permit| (peer_index, permit))
-            .ok_or(RequestStartError::GlobalLimit {
-                maximum: MAX_PENDING_REQUESTS,
-            })
+        Ok(peer_index)
     }
 
     fn insert_pending(&mut self, key: ExchangeRequestId, pending: PendingRequest) {
@@ -1055,6 +1072,26 @@ impl PendingBudget {
         Some(PendingPermit {
             budget: Arc::clone(budget),
         })
+    }
+
+    fn try_acquire_many(
+        budget: &Arc<Self>,
+        count: usize,
+    ) -> Result<[Option<PendingPermit>; MAX_PENDING_REQUESTS], usize> {
+        debug_assert!((1..=MAX_PENDING_REQUESTS).contains(&count));
+        budget
+            .active
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                active
+                    .checked_add(count)
+                    .filter(|projected| *projected <= MAX_PENDING_REQUESTS)
+            })
+            .map_err(|active| MAX_PENDING_REQUESTS.saturating_sub(active))?;
+        Ok(std::array::from_fn(|index| {
+            (index < count).then(|| PendingPermit {
+                budget: Arc::clone(budget),
+            })
+        }))
     }
 }
 
