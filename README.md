@@ -7,10 +7,12 @@ Deterministic checking decides mathematical validity. Blockchain consensus will
 govern ordering, inclusion, and provenance; it must not redefine proof truth.
 
 The repository implements deterministic proof identity and checking, one
-crash-consistent selected proof chain, and bounded caller-driven exchange,
-multi-peer head surveys, and caller-selected proof-chain catch-up among
-statically authorized peers. Peer-reported heads and fetched ancestry are
-untrusted inputs until explicit local validation and selection.
+crash-consistent selected proof chain, a separate durable archive of canonical
+payloads admitted from accepted proof records, and bounded caller-driven
+exchange, multi-peer head surveys, and caller-selected proof-chain catch-up
+among statically authorized peers. Archived payloads, peer-reported heads, and
+fetched ancestry remain inputs that require explicit target-context validation
+before selection.
 
 Each local chain begins from a canonical definition that binds its deployment,
 the current Foundation identity, and the empty authenticated proof state before
@@ -29,15 +31,18 @@ foundation -> proof -> checker -> ledger -> chain
 `A -> B` means that `B` builds on `A`. The layers own, respectively: Foundation
 syntax and rules; canonical proofs and identities; deterministic checking;
 atomic ledger transitions; authenticated proof state, transitions, and blocks;
-the selected-chain journal; transport-neutral messages; and bounded libp2p
-transport, orchestration, and peer-address management. A crate may also
-depend directly on an earlier contract it uses.
+the selected-chain journal and Foundation-scoped canonical-payload archive;
+transport-neutral messages; and bounded libp2p transport, orchestration, and
+peer-address management. A crate may also depend directly on an earlier
+contract it uses.
 
 The following boundaries are invariant:
 
 - external proof admission is decode, canonicality, checking, expected-address
   comparison, then registration;
 - the journal is the sole durable selected-state owner;
+- the payload archive preserves accepted canonical bytes but confers no reusable
+  checking or selection authority;
 - peer heads, blocks, ancestry, records, and receipts confer no consensus or
   selection authority; and
 - learned address records never authorize proof sessions.
@@ -50,6 +55,9 @@ The following boundaries are invariant:
   identities, selected proof state, transitions, and blocks.
 - [Proof Chain Journal](specs/proof-chain-journal.md) defines durable selected
   state, replay, recovery, and corruption handling.
+- [Canonical Proof Payload Store](specs/canonical-proof-payload-store.md)
+  defines the separate Foundation-scoped payload archive, integrity checks,
+  recovery, and revalidation boundary.
 - [Proof Network Transport](specs/proof-network-transport.md) defines proof,
   block, and head messages plus authenticated transport and serving limits.
 - [Caller-Selected Orchestration](specs/caller-selected-orchestration.md)

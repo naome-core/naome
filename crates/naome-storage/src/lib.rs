@@ -1,4 +1,4 @@
-//! Crash-consistent local persistence for one selected linear NAOME proof chain.
+//! Crash-consistent local persistence for NAOME proof-chain state and payloads.
 //!
 //! [`ProofChainJournal`] stores canonical [`ProofBlock`] values together with
 //! the exact canonical proof payloads committed by each block. Opening a
@@ -6,8 +6,20 @@
 //! strict [`ProofChainState`] replay; persisted bytes never bypass block or
 //! proof validation.
 //!
-//! The journal is a local recovery mechanism. It defines no competing forks,
-//! reorganization, consensus, finality, networking, or economic state.
+//! [`CanonicalProofPayloadStore`] separately archives exact payload bytes from
+//! accepted proof records without making them selected or reusable as checked
+//! records. Consumers must validate loaded bytes again in their target proof
+//! context.
+//!
+//! These stores define no competing forks, reorganization, consensus,
+//! finality, networking, or economic state.
+
+mod payload_store;
+
+pub use payload_store::{
+    CanonicalProofPayload, CanonicalProofPayloadStore, CanonicalProofPayloadStoreError,
+    ProofPayloadInsertOutcome, ProofPayloadStoreLimits, ProofPayloadStoreLimitsError,
+};
 
 use std::collections::HashMap;
 use std::error::Error;
