@@ -6,9 +6,13 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use naome_chain::ProofChainDefinition;
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
+use naome_storage::{
+    CanonicalProofPayloadStore, CanonicalProofPayloadStoreError, ProofChainJournal,
+    ProofChainJournalError, ProofPayloadStoreLimits,
+};
 
 const LOCK_PROBE_ENV: &str = "NAOME_PROOF_CHAIN_JOURNAL_LOCK_PROBE";
+const PAYLOAD_LOCK_PROBE_ENV: &str = "NAOME_PROOF_PAYLOAD_STORE_LOCK_PROBE";
 const CHAIN_ID_BYTE: u8 = 0x11;
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -41,6 +45,10 @@ impl Drop for TestDirectory {
 
 fn chain_definition() -> ProofChainDefinition {
     ProofChainDefinition::new([CHAIN_ID_BYTE; 32])
+}
+
+fn payload_limits() -> ProofPayloadStoreLimits {
+    ProofPayloadStoreLimits::new(1, 1).unwrap()
 }
 
 #[test]
@@ -82,4 +90,43 @@ fn exclusive_lock_is_enforced_across_processes() {
     assert!(
         ProofChainJournal::open_recovering_unverified(&directory.path, chain_definition()).is_ok()
     );
+}
+
+#[test]
+fn payload_store_lock_child_probe() {
+    let Some(path) = env::var_os(PAYLOAD_LOCK_PROBE_ENV) else {
+        return;
+    };
+    assert!(matches!(
+        CanonicalProofPayloadStore::open(PathBuf::from(path), payload_limits()),
+        Err(CanonicalProofPayloadStoreError::Locked)
+    ));
+    println!("NAOME_PROOF_PAYLOAD_STORE_LOCK_PROBE_OK");
+}
+
+#[test]
+fn payload_store_lock_is_enforced_across_processes() {
+    let directory = TestDirectory::new();
+    let store = CanonicalProofPayloadStore::create(&directory.path, payload_limits()).unwrap();
+    let output = Command::new(env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("payload_store_lock_child_probe")
+        .arg("--nocapture")
+        .env(PAYLOAD_LOCK_PROBE_ENV, &directory.path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "child stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("NAOME_PROOF_PAYLOAD_STORE_LOCK_PROBE_OK"),
+        "child lock probe did not execute: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    drop(store);
+    assert!(CanonicalProofPayloadStore::open(&directory.path, payload_limits()).is_ok());
 }

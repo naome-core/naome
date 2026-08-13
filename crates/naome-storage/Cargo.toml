@@ -2,19 +2,20 @@
 name = "naome-storage"
 version.workspace = true
 edition.workspace = true
-description = "Crash-consistent local storage for one selected NAOME proof chain."
+description = "Crash-consistent local storage for NAOME proof chains and canonical proof payloads."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
 [dependencies]
 naome-chain = { path = "../naome-chain" }
+naome-foundation = { path = "../naome-foundation" }
 naome-ledger = { path = "../naome-ledger" }
 naome-proof = { path = "../naome-proof" }
+sha2.workspace = true
 
 [dev-dependencies]
 naome-checker = { path = "../naome-checker" }
-naome-foundation = { path = "../naome-foundation" }
 
 [lints]
 workspace = true
