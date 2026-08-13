@@ -106,6 +106,22 @@ impl ProofState {
         Ok(result)
     }
 
+    /// Runs one synchronous checked-proof transaction without committing it.
+    ///
+    /// Registrations made through `operation` resolve earlier registrations in
+    /// the same transaction exactly as in [`Self::apply_batch`], but the staged
+    /// state is discarded on both success and failure.
+    pub fn validate_batch<E>(
+        &self,
+        operation: impl FnOnce(&mut ProofStateBatch<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut staged = Self::new();
+        operation(&mut ProofStateBatch {
+            base: self,
+            staged: &mut staged,
+        })
+    }
+
     fn resolve(&self, proof_id: ProofId) -> Option<ResolvedProof<'_>> {
         let derivation_id = *self.proofs.get(&proof_id)?;
         let statement_id = self
@@ -126,9 +142,10 @@ impl ProofState {
 
 /// A non-escapable checked-proof transaction over one immutable base state.
 ///
-/// Values of this type are created only by [`ProofState::apply_batch`]. The
-/// transaction has no independent commit operation: returning success from
-/// the enclosing callback commits it, while returning an error drops it.
+/// Values of this type are created only by [`ProofState::apply_batch`] and
+/// [`ProofState::validate_batch`]. The transaction has no independent commit
+/// operation: its enclosing method alone decides whether successful staged
+/// registrations are committed or discarded.
 pub struct ProofStateBatch<'a> {
     base: &'a ProofState,
     staged: &'a mut ProofState,

@@ -896,6 +896,19 @@ Reapplying a successful transition to the same state fails at current-root
 comparison before candidate work. This is state-relative, not global, replay
 protection: another DAG with the declared previous root may apply it.
 
+Read-only transition validation executes the same current-root, candidate-count,
+ordered-correlation, projected-root, and addressed rooted-batch checks against
+the selected state. It uses the same staged proof transaction as application but
+discards every checked registration and record on both success and failure.
+Validation and application therefore preserve the same preflight, batch,
+candidate, and ledger error precedence, while validation returns no record or
+transferable validation artifact.
+
+Successful validation means only that the complete transition was executable
+against that exact selected proof state during the call. It does not reserve the
+transition or make later application infallible. Application always repeats the
+complete validation because the selected state may have changed.
+
 A transition contains no chain position, time, network, authority, or nonce.
 Its identity and roots assume SHA-256 collision and second-preimage resistance.
 The previous root prevents application to a different selected key set; ordered
@@ -1082,7 +1095,7 @@ resistance. Parent recursively commits claimed ancestry; only successful exact-
 head application establishes it for the local selected chain. Identity alone
 does not establish ancestry availability, validity, selection, or finality.
 
-### Preparation and exact-head application
+### Preparation, validation, and exact-head application
 
 A chain state begins from one supported definition with an empty private proof
 DAG and its derived virtual genesis as current head. It accepts neither a raw
@@ -1094,6 +1107,14 @@ transition using the read-only projection rules, and constructs a block whose
 parent is the exact current head. It performs no checking, admission, head
 advance, or other mutation. Multiple siblings may be prepared from one head;
 the linear state can admit at most one before its head changes.
+
+Read-only block validation takes one block and a separate ordered addressed-
+candidate list. It first requires the block parent to equal the exact current
+head, then invokes read-only transition validation with the supplied candidates.
+It returns success without retaining proof records, advancing the head, or
+creating a validation object. Multiple siblings can therefore validate against
+one unchanged head. If one is later applied, every sibling with the old parent
+becomes stale and fails before proof work.
 
 Application takes one block and a separate ordered addressed-candidate list and
 executes:
@@ -1110,6 +1131,11 @@ Transition application alone owns current-root binding, candidate count and
 order, projected post-root, certificate decode and canonicality, checking,
 dependency resolution, root closure, and proof-state mutation. The block layer
 must not duplicate, weaken, reorder, retry, or partially apply those checks.
+
+Block validation delegates the same checks to the corresponding read-only
+transition path. Durable or in-memory application never consumes validation
+success as authority and always rechecks the block and proof closure against its
+then-current state.
 
 Parent mismatch precedes every transition or candidate error. Transition errors
 retain their internal precedence and source. No fallible operation occurs after
@@ -1129,18 +1155,19 @@ branch store or selection rule.
 ### Payload, resource, and trust boundaries
 
 Block bytes contain transition commitments but no certificate payloads.
-Application receives addressed candidates separately and correlates them through
-the exact ordered transition IDs. Possessing or retrieving a block does not
-establish possession or availability of its proofs, and neither retrieval nor
-local journal retention establishes network selection.
+Validation and application receive addressed candidates separately and
+correlate them through the exact ordered transition IDs. Possessing or retrieving
+a block does not establish possession or availability of its proofs, and neither
+retrieval, local journal retention, nor successful read-only validation
+establishes network selection.
 
 A block adds exactly 32 parent bytes to a 97-to-321-byte transition and is at
 most 353 bytes. Decoding retains at most eight proof identities. Identity hashing
-can process parent and transition directly without a second block buffer. Exact-
-head validation and advancement are constant-size; preparation and application
-must not clone, scan, or rebuild the complete selected set or check a candidate
-more than once. Candidate bytes and mathematical work retain their independent
-limits.
+can process parent and transition directly without a second block buffer. The
+parent comparison and head assignment are constant-size; preparation,
+validation, and application must not clone, scan, or rebuild the complete
+selected set or check a candidate more than once per call. Candidate bytes and
+mathematical work retain their independent limits.
 
 Chain-definition identity, virtual genesis, block identity, ancestry, transition
 identities, and roots assume SHA-256 collision and second-preimage resistance.

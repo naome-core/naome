@@ -4,9 +4,10 @@
 //! admit a bounded dependency-first closure. The authoring path normalizes an
 //! owned certificate; strict byte paths reject any submission that is not
 //! already its canonical root-proof normal form. Addressed paths additionally
-//! bind checked bytes to expected [`ProofId`] values. Every path registers only
-//! after all applicable admission checks succeed. Blocks, persistence, undo,
-//! rewards, networking, and source parsing remain outside this crate.
+//! bind checked bytes to expected [`ProofId`] values. Applying registers only
+//! after all applicable admission checks succeed; read-only validation runs the
+//! same checks in discarded staged state. Blocks, persistence, undo, rewards,
+//! networking, and source parsing remain outside this crate.
 
 use std::error::Error;
 use std::fmt;
@@ -228,15 +229,27 @@ impl LedgerState {
         requested_root: ProofId,
         candidates: Vec<AddressedProofCandidate>,
     ) -> Result<Box<[AcceptedProofRecord]>, ProofBatchError> {
-        preflight_batch_size(candidates.len())?;
-        let candidates = candidates
-            .into_iter()
-            .map(|candidate| BatchCandidate {
-                expected_proof_id: Some(candidate.expected_proof_id),
-                canonical_proof_bytes: candidate.canonical_proof_bytes,
-            })
-            .collect();
-        self.apply_canonical_proof_batch_inner(Some(requested_root), candidates)
+        self.apply_canonical_proof_batch_inner(
+            Some(requested_root),
+            addressed_batch_candidates(candidates)?,
+        )
+    }
+
+    /// Strictly validates one addressed dependency closure without retaining it.
+    ///
+    /// Validation uses the same shape, decode, canonicality, mathematical,
+    /// address, dependency, registration-conflict, and root-closure checks as
+    /// [`Self::apply_rooted_canonical_proof_batch`]. The complete staged
+    /// transaction is discarded even on success.
+    pub fn validate_rooted_canonical_proof_batch(
+        &self,
+        requested_root: ProofId,
+        candidates: Vec<AddressedProofCandidate>,
+    ) -> Result<(), ProofBatchError> {
+        let candidates = addressed_batch_candidates(candidates)?;
+        self.proof_state.validate_batch(|batch| {
+            execute_canonical_proof_batch(batch, Some(requested_root), candidates).map(drop)
+        })
     }
 
     fn apply_canonical_proof_batch_inner(
@@ -244,54 +257,8 @@ impl LedgerState {
         requested_root: Option<ProofId>,
         candidates: Vec<BatchCandidate>,
     ) -> Result<Box<[AcceptedProofRecord]>, ProofBatchError> {
-        preflight_batch_addresses(requested_root, &candidates)?;
-
-        self.proof_state.apply_batch(|batch| {
-            let mut records = Vec::with_capacity(candidates.len());
-            for (index, candidate) in candidates.into_iter().enumerate() {
-                let expected = candidate.expected_proof_id;
-                let normal_form = decode_canonical_normal_form(candidate.canonical_proof_bytes)
-                    .map_err(|source| ProofBatchError::Candidate {
-                        index,
-                        expected,
-                        source,
-                    })?;
-                let checked = batch.check_normal_form(normal_form).map_err(|source| {
-                    ProofBatchError::Candidate {
-                        index,
-                        expected,
-                        source: LedgerError::Check { source },
-                    }
-                })?;
-                if let Some(expected) = expected
-                    && checked.proof_id() != expected
-                {
-                    return Err(ProofBatchError::Candidate {
-                        index,
-                        expected: Some(expected),
-                        source: LedgerError::ProofIdMismatch {
-                            expected,
-                            actual: checked.proof_id(),
-                        },
-                    });
-                }
-                let metadata = RecordMetadata::from_checked(&checked);
-                let canonical_proof_bytes =
-                    batch
-                        .register(checked)
-                        .map_err(|source| ProofBatchError::Candidate {
-                            index,
-                            expected,
-                            source: LedgerError::State { source },
-                        })?;
-                records.push(metadata.into_record(canonical_proof_bytes));
-            }
-
-            if let Some((index, proof_id)) = first_unreachable_candidate(&records) {
-                return Err(ProofBatchError::UnreachableCandidate { index, proof_id });
-            }
-            Ok(records.into_boxed_slice())
-        })
+        self.proof_state
+            .apply_batch(|batch| execute_canonical_proof_batch(batch, requested_root, candidates))
     }
 
     fn apply_canonical_proof_bytes_inner(
@@ -329,6 +296,74 @@ impl LedgerState {
 struct BatchCandidate {
     expected_proof_id: Option<ProofId>,
     canonical_proof_bytes: Vec<u8>,
+}
+
+fn addressed_batch_candidates(
+    candidates: Vec<AddressedProofCandidate>,
+) -> Result<Vec<BatchCandidate>, ProofBatchError> {
+    preflight_batch_size(candidates.len())?;
+    Ok(candidates
+        .into_iter()
+        .map(|candidate| BatchCandidate {
+            expected_proof_id: Some(candidate.expected_proof_id),
+            canonical_proof_bytes: candidate.canonical_proof_bytes,
+        })
+        .collect())
+}
+
+fn execute_canonical_proof_batch(
+    batch: &mut naome_checker::ProofStateBatch<'_>,
+    requested_root: Option<ProofId>,
+    candidates: Vec<BatchCandidate>,
+) -> Result<Box<[AcceptedProofRecord]>, ProofBatchError> {
+    preflight_batch_addresses(requested_root, &candidates)?;
+    let mut records = Vec::with_capacity(candidates.len());
+    for (index, candidate) in candidates.into_iter().enumerate() {
+        let expected = candidate.expected_proof_id;
+        let normal_form =
+            decode_canonical_normal_form(candidate.canonical_proof_bytes).map_err(|source| {
+                ProofBatchError::Candidate {
+                    index,
+                    expected,
+                    source,
+                }
+            })?;
+        let checked =
+            batch
+                .check_normal_form(normal_form)
+                .map_err(|source| ProofBatchError::Candidate {
+                    index,
+                    expected,
+                    source: LedgerError::Check { source },
+                })?;
+        if let Some(expected) = expected
+            && checked.proof_id() != expected
+        {
+            return Err(ProofBatchError::Candidate {
+                index,
+                expected: Some(expected),
+                source: LedgerError::ProofIdMismatch {
+                    expected,
+                    actual: checked.proof_id(),
+                },
+            });
+        }
+        let metadata = RecordMetadata::from_checked(&checked);
+        let canonical_proof_bytes =
+            batch
+                .register(checked)
+                .map_err(|source| ProofBatchError::Candidate {
+                    index,
+                    expected,
+                    source: LedgerError::State { source },
+                })?;
+        records.push(metadata.into_record(canonical_proof_bytes));
+    }
+
+    if let Some((index, proof_id)) = first_unreachable_candidate(&records) {
+        return Err(ProofBatchError::UnreachableCandidate { index, proof_id });
+    }
+    Ok(records.into_boxed_slice())
 }
 
 fn preflight_batch_size(actual: usize) -> Result<(), ProofBatchError> {

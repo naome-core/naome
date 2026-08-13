@@ -155,6 +155,26 @@ only corruption that preserves framing and the block footer instead fails at
 strict block replay, such as proof decoding or expected-identity correlation;
 it is not misclassified as a footer mismatch.
 
+## Read-only block validation
+
+`validate_block` accepts one already supplied block and its ordered addressed
+proof candidates. It first requires a healthy journal handle, then delegates
+exact-parent and complete transition validation to
+`ProofChainState::validate_block`. It performs no journal write, block-index
+reservation, selected-state mutation, proof retention, or head advance.
+
+An ordinary validation failure is reported as `BlockAdmission` with the exact
+nested block, transition, batch, and ledger error precedence. Success returns no
+record, durable receipt, or transferable validation object. It establishes only
+that this direct child and proof closure were executable against the journal's
+selected state during the call; it grants no selection, proposal, vote,
+certificate, or finality authority.
+
+Validation does not reserve the parent or candidate. Multiple siblings may
+validate against one unchanged head, and durable application of one makes the
+others stale. Every application repeats full block and proof validation against
+the then-current selected state.
+
 ## Block application and durable commit
 
 Block preparation is read-only: it does not check payloads, mutate state, write
@@ -283,9 +303,10 @@ directly.
 Every health-sensitive selected-state handle method checks `Poisoned` before
 its own work; the immutable `chain_id` getter is the explicit exception.
 Read-only block preparation wraps its transition error as `Preparation`.
-Application wraps an ordinary pre-I/O block failure as `BlockAdmission`.
-Parent mismatch precedes block retention and lookup reservation; after a
-matching parent,
+Read-only validation and application wrap an ordinary block failure as
+`BlockAdmission`. Validation performs no lookup reservation or file I/O.
+For application, parent mismatch precedes block retention and lookup reservation;
+after a matching parent,
 `BlockIndexAllocation` precedes transition and candidate work so no lookup
 allocation remains after state mutation. Any append, seek, or synchronization
 failure after in-memory success is `Commit { block_id, proof_count, source }`

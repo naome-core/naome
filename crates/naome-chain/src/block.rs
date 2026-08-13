@@ -377,12 +377,7 @@ impl ProofChainState {
         block: &ProofBlock,
         candidates: Vec<AddressedProofCandidate>,
     ) -> Result<&AcceptedProofRecord, ProofBlockApplyError> {
-        if block.parent_block_id() != self.head_block_id {
-            return Err(ProofBlockApplyError::ParentBlockIdMismatch {
-                expected: self.head_block_id,
-                actual: block.parent_block_id(),
-            });
-        }
+        self.ensure_parent(block)?;
 
         let next_head = block.id();
         let record = self
@@ -391,6 +386,33 @@ impl ProofChainState {
             .map_err(|source| ProofBlockApplyError::Transition { source })?;
         self.head_block_id = next_head;
         Ok(record)
+    }
+
+    /// Validates one exact-head block without changing selected state.
+    ///
+    /// Success is relative only to the current head and proof state: it does
+    /// not reserve, select, or authorize the block. A later application fully
+    /// revalidates it and may reject it after state changes.
+    pub fn validate_block(
+        &self,
+        block: &ProofBlock,
+        candidates: Vec<AddressedProofCandidate>,
+    ) -> Result<(), ProofBlockApplyError> {
+        self.ensure_parent(block)?;
+        self.proof_dag
+            .validate_proof_transition(block.transition(), candidates)
+            .map_err(|source| ProofBlockApplyError::Transition { source })
+    }
+
+    fn ensure_parent(&self, block: &ProofBlock) -> Result<(), ProofBlockApplyError> {
+        let actual = block.parent_block_id();
+        if actual != self.head_block_id {
+            return Err(ProofBlockApplyError::ParentBlockIdMismatch {
+                expected: self.head_block_id,
+                actual,
+            });
+        }
+        Ok(())
     }
 }
 

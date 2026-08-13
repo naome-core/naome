@@ -224,6 +224,41 @@ fn batch_resolves_staged_dependencies_and_commits_only_on_success() {
 }
 
 #[test]
+fn validation_batch_resolves_staged_dependencies_without_committing() {
+    let root = axiom(ZfcAxiom::Pairing);
+    let root_id = root.proof_id();
+    let state = ProofState::new();
+
+    state
+        .validate_batch(|batch| {
+            batch.register(root).unwrap();
+            let child = batch
+                .check_normal_form(referenced_generalization(root_id, FreeVariable::new(0)))
+                .unwrap();
+            batch.register(child).unwrap();
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+
+    assert!(!state.contains_proof(root_id));
+    assert!(state.proofs.is_empty());
+    assert!(state.derivations.is_empty());
+    assert!(state.statements.is_empty());
+
+    state
+        .validate_batch(|batch| {
+            batch.register(axiom(ZfcAxiom::Pairing)).unwrap();
+            let child = batch
+                .check_normal_form(referenced_generalization(root_id, FreeVariable::new(0)))
+                .unwrap();
+            batch.register(child).unwrap();
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    assert!(state.proofs.is_empty());
+}
+
+#[test]
 fn batch_error_discards_staged_dependencies_and_collisions() {
     let selected = axiom(ZfcAxiom::Union);
     let selected_id = selected.proof_id();

@@ -144,6 +144,169 @@ fn proof_chain(byte: u8) -> ProofChainState {
     ProofChainState::new(ProofChainDefinition::new([byte; 32]))
 }
 
+fn assert_transition_error_parity(
+    dag: &mut ProofDag,
+    transition: &ProofTransition,
+    candidates: impl Fn() -> Vec<AddressedProofCandidate>,
+) -> ProofTransitionApplyError {
+    let validation = dag.validate_proof_transition(transition, candidates());
+    let application = dag
+        .apply_proof_transition(transition, candidates())
+        .map(|_| ());
+    assert_eq!(validation, application);
+    validation.unwrap_err()
+}
+
+#[test]
+fn direct_child_validation_is_repeatable_non_mutating_and_becomes_stale() {
+    let pairing = axiom_bytes(ZfcAxiom::Pairing);
+    let union = axiom_bytes(ZfcAxiom::Union);
+    let pairing_id = proof_id_for(&pairing);
+    let union_id = proof_id_for(&union);
+    let candidate =
+        |proof_id, bytes: &Vec<u8>| vec![AddressedProofCandidate::new(proof_id, bytes.clone())];
+    let mut selected = proof_chain(0x61);
+    let anchor = selected.head_block_id();
+    let empty_root = selected.proof_dag().proof_set_root();
+    let pairing_witness = selected.proof_dag().proof_set_proof(pairing_id);
+    let pairing_block = selected.prepare_block(vec![pairing_id]).unwrap();
+    let union_block = selected.prepare_block(vec![union_id]).unwrap();
+
+    assert_eq!(
+        selected.validate_block(&pairing_block, candidate(pairing_id, &pairing)),
+        Ok(())
+    );
+    assert_eq!(
+        selected.validate_block(&pairing_block, candidate(pairing_id, &pairing)),
+        Ok(())
+    );
+    assert_eq!(
+        selected.validate_block(&union_block, candidate(union_id, &union)),
+        Ok(())
+    );
+    assert_eq!(selected.head_block_id(), anchor);
+    assert_eq!(selected.proof_dag().proof_set_root(), empty_root);
+    assert_eq!(selected.proof_dag().len(), 0);
+    assert_eq!(
+        selected.proof_dag().proof_set_proof(pairing_id),
+        pairing_witness
+    );
+    assert!(selected.proof_dag().proof(pairing_id).is_none());
+    assert!(selected.proof_dag().proof(union_id).is_none());
+
+    selected
+        .apply_block(&pairing_block, candidate(pairing_id, &pairing))
+        .unwrap();
+    let stale = ProofBlockApplyError::ParentBlockIdMismatch {
+        expected: pairing_block.id(),
+        actual: anchor,
+    };
+    assert_eq!(
+        selected.validate_block(&union_block, candidate(union_id, &union)),
+        Err(stale)
+    );
+}
+
+#[test]
+fn direct_child_validation_preserves_application_errors_and_maximum_block() {
+    let (proof_ids, payloads) = addressed_chain(PROOF_BATCH_MAX_CANDIDATES);
+    let state = proof_chain(0x62);
+    let block = state.prepare_block(proof_ids.clone()).unwrap();
+    assert_eq!(block.to_canonical_bytes().len(), PROOF_BLOCK_MAX_BYTES);
+    assert_eq!(
+        state.validate_block(&block, addressed_candidates(&proof_ids, &payloads)),
+        Ok(())
+    );
+    assert_eq!(state.proof_dag().len(), 0);
+    assert_eq!(state.head_block_id(), block.parent_block_id());
+
+    let malformed = vec![AddressedProofCandidate::new(proof_ids[0], vec![0])];
+    let one_id_block = state.prepare_block(vec![proof_ids[0]]).unwrap();
+    let validation_error = state.validate_block(&one_id_block, malformed).unwrap_err();
+    let mut application_state = proof_chain(0x62);
+    let application_error = application_state
+        .apply_block(
+            &one_id_block,
+            vec![AddressedProofCandidate::new(proof_ids[0], vec![0])],
+        )
+        .unwrap_err();
+    assert_eq!(validation_error, application_error);
+
+    let foreign_parent = ProofBlock::new(
+        ProofBlockId::from_bytes([0x99; 32]),
+        block.transition().clone(),
+    );
+    assert!(matches!(
+        state.validate_block(
+            &foreign_parent,
+            vec![AddressedProofCandidate::new(proof_ids[0], vec![0])]
+        ),
+        Err(ProofBlockApplyError::ParentBlockIdMismatch { .. })
+    ));
+}
+
+#[test]
+fn transition_validation_preserves_every_preflight_error_precedence() {
+    let (proof_ids, _) = addressed_chain(2);
+    let mut dag = ProofDag::new();
+    let transition = dag.prepare_proof_transition(proof_ids.clone()).unwrap();
+    let malformed = || {
+        proof_ids
+            .iter()
+            .copied()
+            .map(|proof_id| AddressedProofCandidate::new(proof_id, vec![0]))
+            .collect::<Vec<_>>()
+    };
+
+    let wrong_previous = ProofTransition::new(
+        ProofSetRoot::from_bytes([0x91; 32]),
+        transition.resulting_proof_set_root(),
+        proof_ids.clone(),
+    )
+    .unwrap();
+    assert!(matches!(
+        assert_transition_error_parity(&mut dag, &wrong_previous, malformed),
+        ProofTransitionApplyError::PreviousProofSetRootMismatch { .. }
+    ));
+
+    assert_eq!(
+        assert_transition_error_parity(&mut dag, &transition, || {
+            vec![AddressedProofCandidate::new(proof_ids[0], vec![0])]
+        }),
+        ProofTransitionApplyError::CandidateCountMismatch {
+            expected: 2,
+            actual: 1,
+        }
+    );
+
+    let wrong_id = ProofId::from_bytes([0x92; 32]);
+    assert_eq!(
+        assert_transition_error_parity(&mut dag, &transition, || {
+            vec![
+                AddressedProofCandidate::new(wrong_id, vec![0]),
+                AddressedProofCandidate::new(proof_ids[1], vec![0]),
+            ]
+        }),
+        ProofTransitionApplyError::CandidateProofIdMismatch {
+            index: 0,
+            expected: proof_ids[0],
+            actual: wrong_id,
+        }
+    );
+
+    let wrong_result = ProofTransition::new(
+        transition.previous_proof_set_root(),
+        ProofSetRoot::from_bytes([0x93; 32]),
+        proof_ids.clone(),
+    )
+    .unwrap();
+    assert!(matches!(
+        assert_transition_error_parity(&mut dag, &wrong_result, malformed),
+        ProofTransitionApplyError::ResultingProofSetRootMismatch { .. }
+    ));
+    assert!(dag.is_empty());
+}
+
 #[test]
 fn independent_nodes_have_no_implicit_linear_order() {
     let pairing = axiom_bytes(ZfcAxiom::Pairing);

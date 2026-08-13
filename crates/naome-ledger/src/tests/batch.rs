@@ -178,6 +178,20 @@ fn rooted_batch_rejects_smuggling_and_wrong_root_then_retries_cleanly() {
 
     let mut ledger = LedgerState::new();
     assert_eq!(
+        ledger.validate_rooted_canonical_proof_batch(
+            root_id,
+            vec![
+                AddressedProofCandidate::new(unrelated_id, unrelated_bytes.clone()),
+                AddressedProofCandidate::new(parent_id, parent_bytes.clone()),
+                AddressedProofCandidate::new(root_id, root_bytes.clone()),
+            ],
+        ),
+        Err(ProofBatchError::UnreachableCandidate {
+            index: 0,
+            proof_id: unrelated_id,
+        })
+    );
+    assert_eq!(
         ledger.apply_rooted_canonical_proof_batch(
             root_id,
             vec![
@@ -263,6 +277,60 @@ fn rooted_batch_allows_selected_external_dependencies() {
 }
 
 #[test]
+fn rooted_batch_validation_matches_application_without_registration() {
+    let (parent_bytes, parent_id) = axiom_candidate(ZfcAxiom::Pairing);
+    let root_bytes = referenced_generalization_bytes(parent_id, FreeVariable::new(3));
+    let mut control = LedgerState::new();
+    let _ = control
+        .apply_canonical_proof_bytes(parent_bytes.clone())
+        .unwrap();
+    let root_id = control
+        .apply_canonical_proof_bytes(root_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let candidates = || {
+        vec![
+            AddressedProofCandidate::new(parent_id, parent_bytes.clone()),
+            AddressedProofCandidate::new(root_id, root_bytes.clone()),
+        ]
+    };
+
+    let ledger = LedgerState::new();
+    assert_eq!(
+        ledger.validate_rooted_canonical_proof_batch(root_id, candidates()),
+        Ok(())
+    );
+    assert_eq!(
+        ledger.validate_rooted_canonical_proof_batch(root_id, candidates()),
+        Ok(())
+    );
+    assert!(!ledger.contains_proof(parent_id));
+    assert!(!ledger.contains_proof(root_id));
+
+    let mut applied = LedgerState::new();
+    let records = applied
+        .apply_rooted_canonical_proof_batch(root_id, candidates())
+        .unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(applied.contains_proof(parent_id));
+    assert!(applied.contains_proof(root_id));
+
+    let malformed = || {
+        vec![
+            AddressedProofCandidate::new(parent_id, parent_bytes.clone()),
+            AddressedProofCandidate::new(root_id, vec![0]),
+        ]
+    };
+    let validation_error = LedgerState::new()
+        .validate_rooted_canonical_proof_batch(root_id, malformed())
+        .unwrap_err();
+    let application_error = LedgerState::new()
+        .apply_rooted_canonical_proof_batch(root_id, malformed())
+        .unwrap_err();
+    assert_eq!(validation_error, application_error);
+}
+
+#[test]
 fn duplicate_derivation_rejects_the_complete_rooted_batch() {
     let direct = identity(FreeVariable::new(0));
     let direct_checked = normalize_and_check(direct.clone()).unwrap();
@@ -286,6 +354,25 @@ fn duplicate_derivation_rejects_the_complete_rooted_batch() {
     );
 
     let mut ledger = LedgerState::new();
+    let duplicate_error = ProofBatchError::Candidate {
+        index: 1,
+        expected: Some(alias_id),
+        source: LedgerError::State {
+            source: ProofStateError::DuplicateDerivation {
+                derivation_id: direct_checked.derivation_id(),
+            },
+        },
+    };
+    assert_eq!(
+        ledger.validate_rooted_canonical_proof_batch(
+            alias_id,
+            vec![
+                AddressedProofCandidate::new(direct_id, direct_bytes.clone()),
+                AddressedProofCandidate::new(alias_id, alias_bytes.clone()),
+            ],
+        ),
+        Err(duplicate_error)
+    );
     assert_eq!(
         ledger.apply_rooted_canonical_proof_batch(
             alias_id,
