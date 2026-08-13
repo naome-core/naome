@@ -9,8 +9,8 @@ use naome_foundation::{
     FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, Formula, FormulaCodecError, FreeVariable,
 };
 use naome_proof::{
-    CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_STEPS, DerivationId, ProofCertificate,
-    ProofCertificateError, ProofId, ProofStep, StatementId,
+    CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS, DerivationId,
+    ProofCertificate, ProofCertificateError, ProofId, ProofStep, StatementId,
 };
 
 /// Maximum UTF-8 bytes accepted in one `.nao` source value.
@@ -152,12 +152,19 @@ impl Error for CompileError {
     }
 }
 
+#[derive(Clone, Copy)]
+enum FormulaContext {
+    Statement,
+    Certificate,
+}
+
 struct Parser<'source> {
     source: &'source str,
     offset: usize,
     variables: HashMap<&'source str, FreeVariable>,
     steps: HashMap<&'source str, u32>,
     statement_nodes: usize,
+    certificate_formula_nodes: usize,
 }
 
 impl<'source> Parser<'source> {
@@ -168,6 +175,7 @@ impl<'source> Parser<'source> {
             variables: HashMap::new(),
             steps: HashMap::new(),
             statement_nodes: 0,
+            certificate_formula_nodes: 0,
         }
     }
 
@@ -185,10 +193,7 @@ impl<'source> Parser<'source> {
         self.name()?;
         self.punctuation('{')?;
         self.keyword("statement")?;
-        let statement = self.formula(1)?;
-        statement
-            .encode_canonical()
-            .map_err(|source| CompileError::Statement { source })?;
+        let statement = self.formula(1, FormulaContext::Statement)?;
         self.punctuation(';')?;
         self.keyword("proof")?;
         self.punctuation('{')?;
@@ -196,6 +201,14 @@ impl<'source> Parser<'source> {
         let mut proof_steps = Vec::new();
         let mut last_step_name = None;
         while self.peek_word("step") {
+            if proof_steps.len() == CERTIFICATE_MAX_STEPS {
+                return Err(CompileError::Certificate {
+                    source: ProofCertificateError::TooManySteps {
+                        actual: CERTIFICATE_MAX_STEPS + 1,
+                        maximum: CERTIFICATE_MAX_STEPS,
+                    },
+                });
+            }
             self.keyword("step")?;
             let name_offset = self.next_offset();
             let name = self.name()?;
@@ -208,14 +221,6 @@ impl<'source> Parser<'source> {
             self.punctuation('=')?;
             let step = self.proof_step()?;
             self.punctuation(';')?;
-            if proof_steps.len() == CERTIFICATE_MAX_STEPS {
-                return Err(CompileError::Certificate {
-                    source: ProofCertificateError::TooManySteps {
-                        actual: CERTIFICATE_MAX_STEPS + 1,
-                        maximum: CERTIFICATE_MAX_STEPS,
-                    },
-                });
-            }
             let position = u32::try_from(proof_steps.len())
                 .expect("the certificate step limit fits one local step index");
             self.steps.insert(name, position);
@@ -260,19 +265,38 @@ impl<'source> Parser<'source> {
         let rule_offset = self.next_offset();
         let rule = self.name()?;
         let step = match rule {
+            "simplification" => {
+                let antecedent = self.formula(1, FormulaContext::Certificate)?;
+                let consequent = self.formula(1, FormulaContext::Certificate)?;
+                ProofStep::Simplification {
+                    antecedent,
+                    consequent,
+                }
+            }
+            "frege" => {
+                let first = self.formula(1, FormulaContext::Certificate)?;
+                let second = self.formula(1, FormulaContext::Certificate)?;
+                let third = self.formula(1, FormulaContext::Certificate)?;
+                ProofStep::Frege {
+                    first,
+                    second,
+                    third,
+                }
+            }
+            "modus-ponens" => {
+                let premise = self.earlier_step()?;
+                let implication = self.earlier_step()?;
+                ProofStep::ModusPonens {
+                    premise,
+                    implication,
+                }
+            }
             "equality-reflexivity" => {
                 let variable = self.variable()?;
                 ProofStep::EqualityReflexivity { variable }
             }
             "generalization" => {
-                let premise_offset = self.next_offset();
-                let premise_name = self.name()?;
-                let Some(&premise) = self.steps.get(premise_name) else {
-                    return Err(CompileError::UnknownStep {
-                        offset: premise_offset,
-                        name: premise_name.to_owned(),
-                    });
-                };
+                let premise = self.earlier_step()?;
                 let variable = self.variable()?;
                 ProofStep::Generalization { premise, variable }
             }
@@ -287,16 +311,21 @@ impl<'source> Parser<'source> {
         Ok(step)
     }
 
-    fn formula(&mut self, depth: u32) -> Result<Formula, CompileError> {
+    fn earlier_step(&mut self) -> Result<u32, CompileError> {
+        let offset = self.next_offset();
+        let name = self.name()?;
+        self.steps
+            .get(name)
+            .copied()
+            .ok_or_else(|| CompileError::UnknownStep {
+                offset,
+                name: name.to_owned(),
+            })
+    }
+
+    fn formula(&mut self, depth: u32, context: FormulaContext) -> Result<Formula, CompileError> {
         let formula_offset = self.next_offset();
-        if self.statement_nodes == FORMULA_MAX_NODES {
-            return Err(CompileError::Statement {
-                source: FormulaCodecError::NodeLimitExceeded {
-                    maximum: FORMULA_MAX_NODES,
-                },
-            });
-        }
-        self.statement_nodes += 1;
+        self.charge_formula_node(context)?;
         if depth > FORMULA_MAX_DEPTH {
             return Err(CompileError::FormulaDepthLimitExceeded {
                 offset: formula_offset,
@@ -309,15 +338,15 @@ impl<'source> Parser<'source> {
         let formula = match operator {
             "equal" => Formula::equal(self.variable()?, self.variable()?),
             "member" => Formula::member(self.variable()?, self.variable()?),
-            "not" => Formula::negate(self.formula(depth + 1)?),
+            "not" => Formula::negate(self.formula(depth + 1, context)?),
             "implies" => {
-                let antecedent = self.formula(depth + 1)?;
-                let consequent = self.formula(depth + 1)?;
+                let antecedent = self.formula(depth + 1, context)?;
+                let consequent = self.formula(depth + 1, context)?;
                 Formula::implies(antecedent, consequent)
             }
             "forall" => {
                 let variable = self.variable()?;
-                let body = self.formula(depth + 1)?;
+                let body = self.formula(depth + 1, context)?;
                 Formula::for_all(variable, body)
             }
             _ => {
@@ -329,6 +358,32 @@ impl<'source> Parser<'source> {
         };
         self.punctuation(')')?;
         Ok(formula)
+    }
+
+    fn charge_formula_node(&mut self, context: FormulaContext) -> Result<(), CompileError> {
+        match context {
+            FormulaContext::Statement => {
+                if self.statement_nodes == FORMULA_MAX_NODES {
+                    return Err(CompileError::Statement {
+                        source: FormulaCodecError::NodeLimitExceeded {
+                            maximum: FORMULA_MAX_NODES,
+                        },
+                    });
+                }
+                self.statement_nodes += 1;
+            }
+            FormulaContext::Certificate => {
+                if self.certificate_formula_nodes == CERTIFICATE_MAX_FORMULA_NODES {
+                    return Err(CompileError::Certificate {
+                        source: ProofCertificateError::FormulaNodeLimitExceeded {
+                            maximum: CERTIFICATE_MAX_FORMULA_NODES,
+                        },
+                    });
+                }
+                self.certificate_formula_nodes += 1;
+            }
+        }
+        Ok(())
     }
 
     fn variable(&mut self) -> Result<FreeVariable, CompileError> {

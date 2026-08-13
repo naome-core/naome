@@ -40,7 +40,10 @@ formula     := "(" "equal" name name ")"
 step        := "step" name "=" proof-expression ";"
 
 proof-expression
-            := "(" "equality-reflexivity" name ")"
+            := "(" "simplification" formula formula ")"
+             | "(" "frege" formula formula formula ")"
+             | "(" "modus-ponens" name name ")"
+             | "(" "equality-reflexivity" name ")"
              | "(" "generalization" name name ")"
 
 result      := "result" name ";"
@@ -58,28 +61,36 @@ Foundation string. No string escape or other comment form exists.
 
 Keywords and rule names are case-sensitive. The complete input must match the
 grammar; trailing tokens are rejected. The theorem name is presentation data.
-Formula syntax alone does not make a statement derivable: this first compiler's
-two proof expressions can establish only what E1 and explicit generalization
-derive.
+Formula syntax alone does not make a statement derivable. Proof expressions
+instantiate L1, L2, or E1, or apply explicit modus ponens or generalization;
+the checker still determines whether those steps derive the declared statement.
 
 ## Names and proof construction
 
 Variable names identify presentation variables throughout the theorem. The
 compiler assigns internal free-variable identifiers deterministically and
-`forall x A` binds occurrences of `x` in `A`. A `generalization premise x` step
-applies Foundation generalization to the earlier step named by `premise` and
-binds the same presentation variable.
+`forall x A` binds occurrences of `x` in `A`. Formula operands of
+`simplification` and `frege` instantiate the corresponding Foundation schema in
+source order. A `modus-ponens premise implication` step derives the consequent
+of the earlier implication step when its antecedent equals the earlier premise
+step. A `generalization premise x` step applies Foundation generalization to the
+earlier step named by `premise` and binds the same presentation variable.
 
-Step names must be unique. A generalization premise must name a previously
-declared step, so source dependencies are finite and backward-only. `result`
-must name the final declared step. At least one step is required.
+Step names must be unique. Both modus-ponens operands and a generalization
+premise must name previously declared steps, so source dependencies are finite
+and backward-only. Modus-ponens operand order is significant: the first name is
+the premise and the second is the implication. `result` must name the final
+declared step. At least one step is required.
 Earlier steps may be unreachable from that result; the Proof Protocol's normal
 form removes them before checking and identity derivation.
 
-The two proof expressions lower exactly as follows:
+The five proof expressions lower exactly as follows:
 
 | Source | Proof certificate step |
 | --- | --- |
+| `(simplification A B)` | Foundation L1 instantiated as `A -> (B -> A)` |
+| `(frege A B C)` | Foundation L2 instantiated as `(A -> (B -> C)) -> ((A -> B) -> (A -> C))` |
+| `(modus-ponens premise implication)` | modus ponens with the two earlier steps in premise-then-implication order |
 | `(equality-reflexivity x)` | Foundation E1 for `x` |
 | `(generalization premise x)` | generalization of the earlier `premise` step over `x` |
 
@@ -96,7 +107,8 @@ Compilation proceeds in this order:
 3. parse the declared statement and require it to satisfy the canonical
    Foundation formula limits;
 4. parse the proof in source order, resolving variables and backward-only step
-   names while lowering it;
+   names, enforcing the cumulative certificate formula-node budget, and
+   lowering each expression;
 5. require one final result, both closing braces, and end of source;
 6. construct one structurally valid `ProofCertificate`;
 7. normalize and check that certificate through the dependency-free checker;
@@ -151,6 +163,9 @@ and rejected before parsing when it exceeds that inclusive limit. Names
 and token count have no separate arbitrary cap; their total representation is
 already bounded by source bytes, while the number that can reach a compiled
 proof is bounded by the existing formula-node and certificate-step limits.
+Every formula occurrence in a `simplification` or `frege` expression is charged
+independently against `CERTIFICATE_MAX_FORMULA_NODES`, including textually equal
+operands. The declared statement has its separate standalone formula budget.
 The CLI reads at most the limit plus one byte before decoding UTF-8. Its
 over-limit diagnostic therefore states only that the limit was exceeded; it
 does not misreport that bounded observation as the complete file length.
@@ -174,10 +189,11 @@ The exact inherited executable limits are:
 
 `CompileError` reports the first failure reached in source order. The complete
 source-length check precedes parsing. Within parsing, syntax, Foundation, name,
-dependency, and formula-depth checks occur when their token is reached; an
+dependency, formula-depth, and cumulative certificate formula-node checks occur
+when their token is reached; an
 earlier Foundation mismatch therefore precedes errors in the theorem body, for
-example. The declared statement's canonical formula validation occurs when
-that formula has parsed, before the rest of the theorem. The first step beyond
+example. The declared statement's formula-limit checks complete when that
+formula has parsed, before the rest of the theorem. The first step beyond
 `CERTIFICATE_MAX_STEPS` returns that certificate-limit error immediately,
 before later result or EOF tokens. Otherwise complete parsing, including the
 final-result and EOF requirements, precedes certificate construction.
@@ -193,7 +209,7 @@ Offsets below are zero-based UTF-8 byte offsets into the original source:
 | `Syntax { offset, expected }` | A lexical or grammar boundary failed. |
 | `FoundationMismatch { offset }` | The quoted Foundation identifier is not `naome:zfc`. |
 | `DuplicateStep { offset, name }` | A step name repeats an earlier step name. |
-| `UnknownStep { offset, name }` | A generalization premise is unknown or not earlier. |
+| `UnknownStep { offset, name }` | A modus-ponens operand or generalization premise is unknown or not earlier. |
 | `ResultNotFinal { offset }` | `result` does not name the final declared step. |
 | `FormulaDepthLimitExceeded { offset, maximum }` | Source formula nesting exceeds `FORMULA_MAX_DEPTH` (`256`). |
 | `Statement { source }` | The declared statement violates a canonical Foundation formula limit. |
@@ -204,30 +220,51 @@ Offsets below are zero-based UTF-8 byte offsets into the original source:
 ## Example
 
 ```nao
-# Every source name in this file is presentation-only.
+# A complete Hilbert derivation of forall x, (x = x) -> (x = x).
 foundation "naome:zfc";
 
-theorem equality_is_reflexive {
-  statement (forall x (equal x x));
+theorem implication_identity {
+  statement (forall x (implies (equal x x) (equal x x)));
 
   proof {
-    step reflexive = (equality-reflexivity x);
-    step universally_reflexive = (generalization reflexive x);
-    result universally_reflexive;
+    step keep_left =
+      (simplification (equal x x) (equal x x));
+
+    step keep_implication =
+      (simplification
+        (equal x x)
+        (implies (equal x x) (equal x x)));
+
+    step distribute =
+      (frege
+        (equal x x)
+        (implies (equal x x) (equal x x))
+        (equal x x));
+
+    step lifted_identity =
+      (modus-ponens keep_implication distribute);
+    step identity =
+      (modus-ponens keep_left lifted_identity);
+    step universally_identity =
+      (generalization identity x);
+
+    result universally_identity;
   }
 }
 ```
 
-The example checks `forall x (equal x x)` and compiles to the canonical proof
-bytes and identity vector already defined by the Proof Protocol's normal-form
-golden vector.
+The example uses L1 twice and L2 once, then applies modus ponens twice before
+closing the result by generalization. It checks
+`forall x ((x = x) -> (x = x))`. The same source is runnable as
+`examples/implication-identity.nao`; `examples/self-equality.nao` remains the
+smaller E1-and-generalization example.
 
 ## Non-goals
 
 This authoring contract defines no:
 
-- additional formulas, logical or ZFC axiom-step syntax, schema syntax, or
-  derived connectives;
+- additional formulas, other logical or ZFC axiom-step syntax, schema syntax,
+  or derived connectives;
 - proof references, imports, multiple theorems, theorem libraries, definitions,
   constants, functions, namespaces, modules, macros, or compatibility aliases;
 - ledger registration, block construction, chain or candidate-store mutation,
