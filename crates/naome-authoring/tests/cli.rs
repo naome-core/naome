@@ -55,7 +55,7 @@ const REPLACEMENT_PROOF_BYTES: &str =
 static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-fn compile_command_emits_every_exact_checked_identity_vector() {
+fn compile_command_emits_exact_identities_from_primitive_and_derived_sources() {
     for (file, statement_id, derivation_id, proof_id, proof_bytes) in [
         (
             "self-equality.nao",

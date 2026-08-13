@@ -5,11 +5,7 @@ theorem same_members_are_equal {
   statement
     (forall x (forall y
       (implies
-        (forall z
-          (not
-            (implies
-              (implies (member z x) (member z y))
-              (not (implies (member z y) (member z x))))))
+        (forall z (iff (member z x) (member z y)))
         (equal x y))));
 
   proof {
