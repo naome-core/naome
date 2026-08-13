@@ -7,7 +7,7 @@ use std::fmt;
 use naome_checker::{CheckError, normalize_and_check};
 use naome_foundation::{
     FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, Formula, FormulaCodecError, FreeVariable,
-    ZfcAxiom,
+    Replacement, Separation, ZfcAxiom,
 };
 use naome_proof::{
     CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS, DerivationId,
@@ -335,6 +335,22 @@ impl<'source> Parser<'source> {
                 ProofStep::EqualitySubstitution { from, to, body }
             }
             "zfc-axiom" => ProofStep::ZfcAxiom(self.zfc_axiom()?),
+            "separation" => ProofStep::Separation(Separation {
+                predicate: self.formula(1, FormulaContext::Certificate)?,
+                element: self.variable()?,
+                source: self.variable()?,
+                result: self.variable()?,
+                parameters: self.schema_parameters()?,
+            }),
+            "replacement" => ProofStep::Replacement(Replacement {
+                predicate: self.formula(1, FormulaContext::Certificate)?,
+                input: self.variable()?,
+                output: self.variable()?,
+                uniqueness_witness: self.variable()?,
+                source: self.variable()?,
+                result: self.variable()?,
+                parameters: self.schema_parameters()?,
+            }),
             "generalization" => {
                 let premise = self.earlier_step()?;
                 let variable = self.variable()?;
@@ -369,6 +385,20 @@ impl<'source> Parser<'source> {
                 offset,
                 expected: "a fixed ZFC axiom",
             }),
+        }
+    }
+
+    fn schema_parameters(&mut self) -> Result<Vec<FreeVariable>, CompileError> {
+        self.punctuation('(')?;
+        self.keyword("parameters")?;
+        let mut parameters = Vec::new();
+        loop {
+            self.skip_trivia();
+            if self.byte() == Some(b')') {
+                self.offset += 1;
+                return Ok(parameters);
+            }
+            parameters.push(self.variable()?);
         }
     }
 
