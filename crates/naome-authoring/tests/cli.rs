@@ -14,6 +14,13 @@ const IMPLICATION_DERIVATION_ID: &str =
 const IMPLICATION_PROOF_ID: &str =
     "dad1eccea41c54d5618a35bff0bc3b8fb52e0489017fd9a444cdae14355b6285";
 const IMPLICATION_PROOF_BYTES: &str = "00000006000000000b00000000000000000000000000000b0000000000000000000000000000000b0000000000000000000000000000170300000000000000000000000000000000000000000000010000000b00000000000000000000000000001703000000000000000000000000000000000000000000000000000b0000000000000000000000200000000100000002200000000000000003210000000400000000";
+const QUANTIFIER_STATEMENT_ID: &str =
+    "f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19";
+const QUANTIFIER_DERIVATION_ID: &str =
+    "a85928e52c4c2833d30640cb2eaba82602ccbc39b6afea340b5b0b8d06061972";
+const QUANTIFIER_PROOF_ID: &str =
+    "6e35a728527633573509b24fa20cb2359a14c1f93e9f6b6f1500f8650f731720";
+const QUANTIFIER_PROOF_BYTES: &str = "0000000506000000002100000000000000000500000000000000010000000b0000000000000000000000200000000100000002210000000300000001";
 
 static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -52,6 +59,26 @@ fn compile_command_emits_the_exact_implication_identity_vector() {
         String::from_utf8(output.stdout).unwrap(),
         format!(
             "statement_id {IMPLICATION_STATEMENT_ID}\nderivation_id {IMPLICATION_DERIVATION_ID}\nproof_id {IMPLICATION_PROOF_ID}\ncanonical_proof {IMPLICATION_PROOF_BYTES}\n"
+        )
+    );
+}
+
+#[test]
+fn compile_command_emits_the_exact_quantifier_identity_vector() {
+    let example =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/quantifier-instantiation.nao");
+    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+        .args(["proof", "compile"])
+        .arg(example)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "statement_id {QUANTIFIER_STATEMENT_ID}\nderivation_id {QUANTIFIER_DERIVATION_ID}\nproof_id {QUANTIFIER_PROOF_ID}\ncanonical_proof {QUANTIFIER_PROOF_BYTES}\n"
         )
     );
 }
