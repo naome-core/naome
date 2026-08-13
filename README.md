@@ -17,11 +17,12 @@ validation before selection. One exact direct-child block and its addressed
 proof closure can be validated against current selected state without changing
 that state; durable application repeats the complete validation.
 
-A prerelease `.nao` compiler provides the smallest complete source-authoring
-path from one named closed theorem to checked canonical proof bytes and IDs:
+A prerelease `.nao` compiler provides a bounded, complete source-authoring path
+from one named closed theorem, including chained L1/L2 implication proofs, to
+checked canonical proof bytes and IDs:
 
 ```sh
-cargo run -p naome-authoring --bin naome -- proof compile examples/self-equality.nao
+cargo run -p naome-authoring --bin naome -- proof compile examples/implication-identity.nao
 ```
 
 Each local chain begins from a canonical definition that binds its deployment,
