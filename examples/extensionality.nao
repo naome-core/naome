@@ -1,0 +1,19 @@
+# Extensionality: sets with exactly the same members are equal.
+foundation "naome:zfc";
+
+theorem same_members_are_equal {
+  statement
+    (forall x (forall y
+      (implies
+        (forall z
+          (not
+            (implies
+              (implies (member z x) (member z y))
+              (not (implies (member z y) (member z x))))))
+        (equal x y))));
+
+  proof {
+    step axiom = (zfc-axiom extensionality);
+    result axiom;
+  }
+}

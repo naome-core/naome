@@ -53,7 +53,12 @@ proof-expression
              | "(" "modus-ponens" name name ")"
              | "(" "equality-reflexivity" name ")"
              | "(" "equality-substitution" name name formula ")"
+             | "(" "zfc-axiom" zfc-axiom-name ")"
              | "(" "generalization" name name ")"
+
+zfc-axiom-name
+            := "extensionality" | "pairing" | "union" | "power-set"
+             | "infinity" | "foundation" | "choice"
 
 result      := "result" name ";"
 
@@ -71,9 +76,9 @@ Foundation string. No string escape or other comment form exists.
 Keywords and rule names are case-sensitive. The complete input must match the
 grammar; trailing tokens are rejected. The theorem name is presentation data.
 Formula syntax alone does not make a statement derivable. Proof expressions
-instantiate L1-L3, Q1-Q3, or E1-E2, or apply explicit modus ponens or
-generalization; the checker still determines whether those steps derive the
-declared statement.
+instantiate L1-L3, Q1-Q3, or E1-E2, select one of the seven fixed ZFC axioms,
+or apply explicit modus ponens or generalization; the checker still determines
+whether those steps derive the declared statement.
 
 ## Names and proof construction
 
@@ -104,7 +109,11 @@ free `y` into the conclusion. Q2 has no source binder operand:
 `vacuous-universal A` constructs a fresh nameless binder internally, so its
 freshness side condition cannot depend on a presentation name.
 
-The ten proof expressions lower exactly as follows:
+`zfc-axiom` takes one fixed, case-sensitive selector. It allocates no source
+variable and carries no source formula: the checker reconstructs the axiom's
+normative primitive Foundation formula from the existing protocol step.
+
+The eleven proof-expression forms lower exactly as follows:
 
 | Source | Proof certificate step |
 | --- | --- |
@@ -117,6 +126,7 @@ The ten proof expressions lower exactly as follows:
 | `(modus-ponens premise implication)` | modus ponens with the two earlier steps in premise-then-implication order |
 | `(equality-reflexivity x)` | Foundation E1 for `x` |
 | `(equality-substitution from to A)` | Foundation E2 instantiated as `from = to -> (A -> A[from := to])` with capture-free substitution |
+| `(zfc-axiom name)` | the fixed ZFC axiom selected by `extensionality`, `pairing`, `union`, `power-set`, `infinity`, `foundation`, or `choice` |
 | `(generalization premise x)` | generalization of the earlier `premise` step over `x` |
 
 No source construct adds an implicit proof step. Q2's nameless binder is the
@@ -194,16 +204,21 @@ independently against `CERTIFICATE_MAX_FORMULA_NODES`, including textually equal
 operands. This covers both operands of `simplification`,
 `classical-contraposition`, and `universal-distribution`, all three operands of
 `frege`, and the single operand of `vacuous-universal`,
-`universal-instantiation`, and `equality-substitution`. The declared statement
-has its separate standalone formula budget.
+`universal-instantiation`, and `equality-substitution`. A `zfc-axiom`
+expression contributes one certificate step but zero encoded certificate
+formula nodes. Its complete canonical step encoding is the fixed-ZFC step tag
+plus one axiom tag. The declared statement has its separate standalone formula
+budget.
 The CLI reads at most the limit plus one byte before decoding UTF-8. Its
 over-limit diagnostic therefore states only that the limit was exceeded; it
 does not misreport that bounded observation as the complete file length.
 
 The resulting certificate remains subject to the Proof Protocol's byte, step,
-formula-node, formula-depth, and formula-byte limits, and checking remains
-subject to the checker's deterministic formula-work budget. Limits fail closed:
-compilation never truncates, wraps, aliases, or silently omits source.
+formula-node, formula-depth, and formula-byte limits. The checker reconstructs
+a selected fixed axiom, validates that result against the canonical per-formula
+limits, and charges its canonical bytes to the deterministic formula-work
+budget. Limits fail closed: compilation never truncates, wraps, aliases, or
+silently omits source.
 
 The exact inherited executable limits are:
 
@@ -225,12 +240,15 @@ errors in the theorem body, for example. Proof-expression operands are parsed
 left to right in grammar order. The declared statement's formula-limit
 checks complete when that formula has parsed, before the rest of the theorem.
 The first step beyond `CERTIFICATE_MAX_STEPS` returns that certificate-limit
-error immediately,
-before later result or EOF tokens. Otherwise complete parsing, including the
-final-result and EOF requirements, precedes certificate construction.
-Certificate errors precede checker errors; checked-proof failure precedes
-declared-statement mismatch. Every failure returns no `CompiledProof` and has
-no external side effect.
+error immediately, before parsing its proof expression or any later result or
+EOF token. Otherwise an unsupported `zfc-axiom` selector returns `Syntax` at the
+selector's first byte with `expected` equal to `"a fixed ZFC axiom"`. Complete
+parsing, including the final-result and EOF requirements, precedes certificate
+construction. Certificate errors precede checker errors; checked-proof failure
+precedes declared-statement mismatch. Thus a valid fixed-axiom selector paired
+with a different declared statement returns `StatementMismatch` only after the
+axiom has checked. Every failure returns no `CompiledProof` and has no external
+side effect.
 
 Offsets below are zero-based UTF-8 byte offsets into the original source:
 
@@ -251,37 +269,39 @@ Offsets below are zero-based UTF-8 byte offsets into the original source:
 ## Example
 
 ```nao
-# Equality substitution followed by explicit closure of every free variable.
+# Extensionality: sets with exactly the same members are equal.
 foundation "naome:zfc";
 
-theorem equality_preserves_membership {
+theorem same_members_are_equal {
   statement
-    (forall x (forall y (forall set
-      (implies (equal x y)
-        (implies (member x set) (member y set))))));
+    (forall x (forall y
+      (implies
+        (forall z
+          (not
+            (implies
+              (implies (member z x) (member z y))
+              (not (implies (member z y) (member z x))))))
+        (equal x y))));
 
   proof {
-    step substitute =
-      (equality-substitution x y (member x set));
-    step for_set = (generalization substitute set);
-    step for_y = (generalization for_set y);
-    step for_x = (generalization for_y x);
-
-    result for_x;
+    step axiom = (zfc-axiom extensionality);
+    result axiom;
   }
 }
 ```
 
-The example proves `forall x forall y forall set, x = y -> (x in set -> y in
-set)` directly through E2 and explicit generalization. It is runnable as
-`examples/equality-substitution.nao`. The existing implication, quantifier, and
-minimal self-equality examples remain available separately.
+The declared statement writes membership biconditional in the primitive
+`not`/`implies` grammar; the proof selects the exactly matching fixed axiom. It
+is runnable as `examples/extensionality.nao`. The implication, quantifier,
+equality-substitution, and minimal self-equality examples remain available
+separately.
 
 ## Non-goals
 
 This authoring contract defines no:
 
-- additional formulas, ZFC axiom-step or schema syntax, or derived connectives;
+- additional formulas, Separation or Replacement schema syntax, or derived
+  connectives;
 - proof references, imports, multiple theorems, theorem libraries, definitions,
   constants, functions, namespaces, modules, macros, or compatibility aliases;
 - ledger registration, block construction, chain or candidate-store mutation,
