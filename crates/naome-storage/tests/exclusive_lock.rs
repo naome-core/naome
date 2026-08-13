@@ -7,12 +7,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use naome_chain::ProofChainDefinition;
 use naome_storage::{
-    CanonicalProofPayloadStore, CanonicalProofPayloadStoreError, ProofChainJournal,
+    CanonicalProofPayloadStore, CanonicalProofPayloadStoreError, ProofBlockCandidateStore,
+    ProofBlockCandidateStoreError, ProofBlockCandidateStoreLimits, ProofChainJournal,
     ProofChainJournalError, ProofPayloadStoreLimits,
 };
 
 const LOCK_PROBE_ENV: &str = "NAOME_PROOF_CHAIN_JOURNAL_LOCK_PROBE";
 const PAYLOAD_LOCK_PROBE_ENV: &str = "NAOME_PROOF_PAYLOAD_STORE_LOCK_PROBE";
+const CANDIDATE_LOCK_PROBE_ENV: &str = "NAOME_PROOF_BLOCK_CANDIDATE_STORE_LOCK_PROBE";
 const CHAIN_ID_BYTE: u8 = 0x11;
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -49,6 +51,10 @@ fn chain_definition() -> ProofChainDefinition {
 
 fn payload_limits() -> ProofPayloadStoreLimits {
     ProofPayloadStoreLimits::new(1, 1).unwrap()
+}
+
+fn candidate_limits() -> ProofBlockCandidateStoreLimits {
+    ProofBlockCandidateStoreLimits::new(1, 1).unwrap()
 }
 
 #[test]
@@ -129,4 +135,49 @@ fn payload_store_lock_is_enforced_across_processes() {
     );
     drop(store);
     assert!(CanonicalProofPayloadStore::open(&directory.path, payload_limits()).is_ok());
+}
+
+#[test]
+fn candidate_store_lock_child_probe() {
+    let Some(path) = env::var_os(CANDIDATE_LOCK_PROBE_ENV) else {
+        return;
+    };
+    assert!(matches!(
+        ProofBlockCandidateStore::open(PathBuf::from(path), chain_definition(), candidate_limits(),),
+        Err(ProofBlockCandidateStoreError::Locked)
+    ));
+    println!("NAOME_PROOF_BLOCK_CANDIDATE_STORE_LOCK_PROBE_OK");
+}
+
+#[test]
+fn candidate_store_lock_is_enforced_across_processes() {
+    let directory = TestDirectory::new();
+    let store =
+        ProofBlockCandidateStore::create(&directory.path, chain_definition(), candidate_limits())
+            .unwrap();
+    let output = Command::new(env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("candidate_store_lock_child_probe")
+        .arg("--nocapture")
+        .env(CANDIDATE_LOCK_PROBE_ENV, &directory.path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "child stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("NAOME_PROOF_BLOCK_CANDIDATE_STORE_LOCK_PROBE_OK"),
+        "child lock probe did not execute: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    drop(store);
+    assert!(
+        ProofBlockCandidateStore::open(&directory.path, chain_definition(), candidate_limits(),)
+            .is_ok()
+    );
 }

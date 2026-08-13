@@ -1,155 +1,8 @@
 use super::*;
+use crate::fault_io::{Fault, ScriptedIo, Trace, all_append_faults};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Fault {
-    Seek,
-    Write { phase: AppendPhase, after: usize },
-    SyncBefore { phase: AppendPhase },
-    SyncAfter { phase: AppendPhase },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Trace {
-    Write(AppendPhase, usize),
-    Sync(AppendPhase),
-}
-
-struct ScriptedIo {
-    volatile: Cursor<Vec<u8>>,
-    durable: Vec<u8>,
-    fault: Option<Fault>,
-    set_len_failure: bool,
-    plain_sync_failure: bool,
-    body_written: usize,
-    commit_written: usize,
-    trace: Vec<Trace>,
-}
-
-impl ScriptedIo {
-    fn new(id: ProofChainId, fault: Option<Fault>) -> Self {
-        let prefix = journal_prefix(id);
-        Self {
-            volatile: Cursor::new(prefix.clone()),
-            durable: prefix,
-            fault,
-            set_len_failure: false,
-            plain_sync_failure: false,
-            body_written: 0,
-            commit_written: 0,
-            trace: Vec::new(),
-        }
-    }
-
-    fn from_images(visible: Vec<u8>, durable: Vec<u8>) -> Self {
-        Self {
-            volatile: Cursor::new(visible),
-            durable,
-            fault: None,
-            set_len_failure: false,
-            plain_sync_failure: false,
-            body_written: 0,
-            commit_written: 0,
-            trace: Vec::new(),
-        }
-    }
-
-    fn phase_written(&mut self, phase: AppendPhase) -> &mut usize {
-        match phase {
-            AppendPhase::Body => &mut self.body_written,
-            AppendPhase::Commit => &mut self.commit_written,
-        }
-    }
-}
-
-impl Read for ScriptedIo {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.volatile.read(buffer)
-    }
-}
-
-impl Write for ScriptedIo {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.volatile.write(buffer)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Seek for ScriptedIo {
-    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
-        if self.fault == Some(Fault::Seek) {
-            self.fault = None;
-            return Err(io::Error::other("injected append seek failure"));
-        }
-        self.volatile.seek(position)
-    }
-}
-
-impl JournalIo for ScriptedIo {
-    fn set_len(&mut self, size: u64) -> io::Result<()> {
-        if self.set_len_failure {
-            self.set_len_failure = false;
-            return Err(io::Error::other("injected recovery truncation failure"));
-        }
-        self.volatile.get_mut().truncate(size as usize);
-        if self.volatile.position() > size {
-            self.volatile.set_position(size);
-        }
-        Ok(())
-    }
-
-    fn sync_all(&mut self) -> io::Result<()> {
-        if self.plain_sync_failure {
-            self.plain_sync_failure = false;
-            return Err(io::Error::other("injected plain sync failure"));
-        }
-        self.durable = self.volatile.get_ref().clone();
-        Ok(())
-    }
-
-    fn append_write_all(&mut self, phase: AppendPhase, bytes: &[u8]) -> io::Result<()> {
-        self.trace.push(Trace::Write(phase, bytes.len()));
-        if let Some(Fault::Write {
-            phase: fault_phase,
-            after,
-        }) = self.fault.clone()
-            && fault_phase == phase
-        {
-            let written_before = *self.phase_written(phase);
-            if after <= written_before + bytes.len() {
-                let allowed = after.saturating_sub(written_before);
-                self.volatile.write_all(&bytes[..allowed])?;
-                *self.phase_written(phase) += allowed;
-                self.fault = None;
-                return Err(io::Error::other("injected append write failure"));
-            }
-        }
-
-        self.volatile.write_all(bytes)?;
-        *self.phase_written(phase) += bytes.len();
-        Ok(())
-    }
-
-    fn append_sync_all(&mut self, phase: AppendPhase) -> io::Result<()> {
-        self.trace.push(Trace::Sync(phase));
-        match self.fault.clone() {
-            Some(Fault::SyncBefore { phase: fault_phase }) if fault_phase == phase => {
-                self.fault = None;
-                Err(io::Error::other("injected pre-sync failure"))
-            }
-            Some(Fault::SyncAfter { phase: fault_phase }) if fault_phase == phase => {
-                self.durable = self.volatile.get_ref().clone();
-                self.fault = None;
-                Err(io::Error::other("injected post-sync failure"))
-            }
-            _ => {
-                self.durable = self.volatile.get_ref().clone();
-                Ok(())
-            }
-        }
-    }
+fn scripted_io(id: ProofChainId, fault: Option<Fault>) -> ScriptedIo {
+    ScriptedIo::new(journal_prefix(id), fault)
 }
 
 #[test]
@@ -166,7 +19,7 @@ fn block_rejection_consumes_no_journal_io_or_fault() {
     let fault = Fault::SyncBefore {
         phase: AppendPhase::Body,
     };
-    let mut core = JournalCore::empty(ScriptedIo::new(id, Some(fault.clone())), state);
+    let mut core = JournalCore::empty(scripted_io(id, Some(fault.clone())), state);
     let before = core.file.volatile.get_ref().clone();
 
     assert!(matches!(
@@ -182,7 +35,7 @@ fn block_rejection_consumes_no_journal_io_or_fault() {
         })
     ));
     assert!(core.file.trace.is_empty());
-    assert_eq!(core.file.fault, Some(fault));
+    assert_eq!(core.file.fault(), Some(&fault));
     assert_eq!(core.file.volatile.get_ref(), &before);
     assert_eq!(core.committed_end, JOURNAL_PREFIX_BYTES as u64);
     assert!(core.chain.proof_dag().is_empty());
@@ -191,7 +44,7 @@ fn block_rejection_consumes_no_journal_io_or_fault() {
 
     core.apply_block(&block, addressed_candidates(&payloads, &proof_ids))
         .unwrap_err();
-    assert!(core.file.fault.is_none());
+    assert!(core.file.fault().is_none());
     assert!(matches!(
         core.ensure_healthy(),
         Err(ProofChainJournalError::Poisoned)
@@ -206,35 +59,11 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
     let block = one_block(definition, &payloads, &proof_ids);
     let block_bytes = block.to_canonical_bytes();
     let body_write_bytes = 4 + 2 + block_bytes.len() + 4 + payloads[0].len();
-    let mut faults = vec![Fault::Seek];
-    faults.extend((0..=body_write_bytes).map(|after| Fault::Write {
-        phase: AppendPhase::Body,
-        after,
-    }));
-    faults.extend([
-        Fault::SyncBefore {
-            phase: AppendPhase::Body,
-        },
-        Fault::SyncAfter {
-            phase: AppendPhase::Body,
-        },
-    ]);
-    faults.extend((0..=32).map(|after| Fault::Write {
-        phase: AppendPhase::Commit,
-        after,
-    }));
-    faults.extend([
-        Fault::SyncBefore {
-            phase: AppendPhase::Commit,
-        },
-        Fault::SyncAfter {
-            phase: AppendPhase::Commit,
-        },
-    ]);
+    let faults = all_append_faults(body_write_bytes, 32);
 
     for fault in faults {
         let mut core = JournalCore::empty(
-            ScriptedIo::new(id, Some(fault.clone())),
+            scripted_io(id, Some(fault.clone())),
             ProofChainState::new(definition),
         );
         assert!(
@@ -248,7 +77,7 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
             ),
             "fault={fault:?}"
         );
-        assert!(core.file.fault.is_none(), "fault={fault:?}");
+        assert!(core.file.fault().is_none(), "fault={fault:?}");
         assert!(matches!(
             core.ensure_healthy(),
             Err(ProofChainJournalError::Poisoned)
@@ -297,7 +126,7 @@ fn successful_commit_streams_body_then_two_sync_barriers_then_footer() {
     let (payloads, proof_ids) = dependency_chain_with_len(2);
     let block = one_block(definition, &payloads, &proof_ids);
     let block_len = block.to_canonical_bytes().len();
-    let mut core = JournalCore::empty(ScriptedIo::new(id, None), ProofChainState::new(definition));
+    let mut core = JournalCore::empty(scripted_io(id, None), ProofChainState::new(definition));
 
     core.apply_block(&block, addressed_candidates(&payloads, &proof_ids))
         .unwrap();
