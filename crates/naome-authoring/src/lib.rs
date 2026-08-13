@@ -7,6 +7,7 @@ use std::fmt;
 use naome_checker::{CheckError, normalize_and_check};
 use naome_foundation::{
     FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, Formula, FormulaCodecError, FreeVariable,
+    ZfcAxiom,
 };
 use naome_proof::{
     CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS, DerivationId,
@@ -333,6 +334,7 @@ impl<'source> Parser<'source> {
                 let body = self.formula(1, FormulaContext::Certificate)?;
                 ProofStep::EqualitySubstitution { from, to, body }
             }
+            "zfc-axiom" => ProofStep::ZfcAxiom(self.zfc_axiom()?),
             "generalization" => {
                 let premise = self.earlier_step()?;
                 let variable = self.variable()?;
@@ -347,6 +349,27 @@ impl<'source> Parser<'source> {
         };
         self.punctuation(')')?;
         Ok(step)
+    }
+
+    fn zfc_axiom(&mut self) -> Result<ZfcAxiom, CompileError> {
+        let offset = self.next_offset();
+        let name = self.name().map_err(|_| CompileError::Syntax {
+            offset,
+            expected: "a fixed ZFC axiom",
+        })?;
+        match name {
+            "extensionality" => Ok(ZfcAxiom::Extensionality),
+            "pairing" => Ok(ZfcAxiom::Pairing),
+            "union" => Ok(ZfcAxiom::Union),
+            "power-set" => Ok(ZfcAxiom::PowerSet),
+            "infinity" => Ok(ZfcAxiom::Infinity),
+            "foundation" => Ok(ZfcAxiom::Foundation),
+            "choice" => Ok(ZfcAxiom::Choice),
+            _ => Err(CompileError::Syntax {
+                offset,
+                expected: "a fixed ZFC axiom",
+            }),
+        }
     }
 
     fn earlier_step(&mut self) -> Result<u32, CompileError> {

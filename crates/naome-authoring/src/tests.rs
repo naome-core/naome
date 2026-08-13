@@ -27,6 +27,8 @@ const QUANTIFIER_SOURCE: &str = include_str!("../../../examples/quantifier-insta
 const EQUALITY_SUBSTITUTION_SOURCE: &str =
     include_str!("../../../examples/equality-substitution.nao");
 
+const EXTENSIONALITY_SOURCE: &str = include_str!("../../../examples/extensionality.nao");
+
 const IMPLICATION_PROOF_HEX: &str = "00000006000000000b00000000000000000000000000000b0000000000000000000000000000000b0000000000000000000000000000170300000000000000000000000000000000000000000000010000000b00000000000000000000000000001703000000000000000000000000000000000000000000000000000b0000000000000000000000200000000100000002200000000000000003210000000400000000";
 
 const QUANTIFIER_PROOF_HEX: &str = "0000000506000000002100000000000000000500000000000000010000000b0000000000000000000000200000000100000002210000000300000001";
@@ -35,6 +37,126 @@ const CLASSICAL_CONTRAPOSITION_PROOF_HEX: &str =
     "00000001020000000c0400010000000001000000000000000c040101000000000100000000";
 
 const EQUALITY_SUBSTITUTION_PROOF_HEX: &str = "000000040700000000000000010000000b0100000000000000000002210000000000000002210000000100000001210000000200000000";
+
+const EXTENSIONALITY_PROOF_HEX: &str = "000000011000";
+
+#[test]
+fn extensionality_lowers_to_the_exact_checked_identity_vector() {
+    let proof = compile(EXTENSIONALITY_SOURCE).unwrap();
+    assert_eq!(
+        proof.statement_id(),
+        StatementId::from_bytes(hex32(
+            "d5badb94fde79367c1ee93516c9260d031335c23502e3fcf36513ac768cc9db9"
+        ))
+    );
+    assert_eq!(
+        proof.derivation_id(),
+        DerivationId::from_bytes(hex32(
+            "5507c036519883b871a080036e5e9a5332784501f1982e17e4f9a363b7369b9c"
+        ))
+    );
+    assert_eq!(
+        proof.proof_id(),
+        ProofId::from_bytes(hex32(
+            "7db633cf3f2a73749e143c3f26a0083b17c39e8a24c8940f64471cf6b49d515d"
+        ))
+    );
+    assert_eq!(
+        proof.canonical_proof_bytes(),
+        hex_bytes(EXTENSIONALITY_PROOF_HEX)
+    );
+
+    let decoded = ProofCertificate::from_canonical_bytes(proof.canonical_proof_bytes()).unwrap();
+    assert_eq!(
+        decoded.steps(),
+        &[ProofStep::ZfcAxiom(ZfcAxiom::Extensionality)]
+    );
+}
+
+#[test]
+fn every_fixed_zfc_axiom_selector_maps_to_its_exact_variant() {
+    for (selector, expected) in [
+        ("extensionality", ZfcAxiom::Extensionality),
+        ("pairing", ZfcAxiom::Pairing),
+        ("union", ZfcAxiom::Union),
+        ("power-set", ZfcAxiom::PowerSet),
+        ("infinity", ZfcAxiom::Infinity),
+        ("foundation", ZfcAxiom::Foundation),
+        ("choice", ZfcAxiom::Choice),
+    ] {
+        let mut parser = Parser::new(selector);
+        assert_eq!(parser.zfc_axiom(), Ok(expected));
+        assert_eq!(parser.end(), Ok(()));
+    }
+}
+
+#[test]
+fn fixed_zfc_axiom_selector_is_exact_case_sensitive_syntax() {
+    for selector in [
+        "unknown",
+        "Extensionality",
+        "power_set",
+        "extensionality-extra",
+        "zfc-1",
+        "0",
+        "",
+    ] {
+        let source = EXTENSIONALITY_SOURCE.replace(
+            "(zfc-axiom extensionality)",
+            &format!("(zfc-axiom {selector})"),
+        );
+        let offset = source
+            .find("(zfc-axiom ")
+            .expect("the mutated source contains the rule")
+            + "(zfc-axiom ".len();
+        assert_eq!(
+            compile(&source),
+            Err(CompileError::Syntax {
+                offset,
+                expected: "a fixed ZFC axiom",
+            }),
+            "accepted or misreported selector {selector:?}"
+        );
+    }
+
+    let extra_operand = EXTENSIONALITY_SOURCE.replace(
+        "(zfc-axiom extensionality)",
+        "(zfc-axiom extensionality pairing)",
+    );
+    let pairing_offset = extra_operand
+        .find("extensionality pairing")
+        .expect("the mutated source contains the extra operand")
+        + "extensionality ".len();
+    assert_eq!(
+        compile(&extra_operand),
+        Err(CompileError::Syntax {
+            offset: pairing_offset,
+            expected: "`)`",
+        })
+    );
+}
+
+#[test]
+fn changing_the_fixed_axiom_changes_the_checked_statement() {
+    let pairing =
+        EXTENSIONALITY_SOURCE.replace("(zfc-axiom extensionality)", "(zfc-axiom pairing)");
+    assert_eq!(compile(&pairing), Err(CompileError::StatementMismatch));
+}
+
+#[test]
+fn fixed_zfc_axiom_presentation_is_identity_neutral() {
+    let renamed = r#"# all names and layout are presentation-only
+      foundation "naome:zfc"; theorem renamed { statement
+      (forall first (forall second (implies (forall witness (not (implies
+        (implies (member witness first) (member witness second))
+        (not (implies (member witness second) (member witness first))))))
+        (equal first second)))); proof {
+      step result_step = (zfc-axiom extensionality); result result_step; } }"#;
+    assert_eq!(
+        compile(EXTENSIONALITY_SOURCE).unwrap(),
+        compile(renamed).unwrap()
+    );
+}
 
 #[test]
 fn example_compiles_to_the_existing_checked_identity_vector() {
@@ -582,6 +704,7 @@ fn proof_formula_limits_are_enforced_during_parsing() {
          step budget = (classical-contraposition {balanced} {balanced});
          step edge_a = (equality-substitution x x (equal x x));
          step edge_b = (equality-substitution x x (equal x x));
+         step ignored_axiom = (zfc-axiom extensionality);
          step reflexive = (equality-reflexivity x);
          step closed = (generalization reflexive x); result closed; }} }}"
     );
