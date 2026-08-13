@@ -1,0 +1,19 @@
+# Equality substitution followed by explicit closure of every free variable.
+foundation "naome:zfc";
+
+theorem equality_preserves_membership {
+  statement
+    (forall x (forall y (forall set
+      (implies (equal x y)
+        (implies (member x set) (member y set))))));
+
+  proof {
+    step substitute =
+      (equality-substitution x y (member x set));
+    step for_set = (generalization substitute set);
+    step for_y = (generalization for_set y);
+    step for_x = (generalization for_y x);
+
+    result for_x;
+  }
+}

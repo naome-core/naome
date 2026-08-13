@@ -283,6 +283,14 @@ impl<'source> Parser<'source> {
                     third,
                 }
             }
+            "classical-contraposition" => {
+                let antecedent = self.formula(1, FormulaContext::Certificate)?;
+                let consequent = self.formula(1, FormulaContext::Certificate)?;
+                ProofStep::ClassicalContraposition {
+                    antecedent,
+                    consequent,
+                }
+            }
             "universal-distribution" => {
                 let variable = self.variable()?;
                 let antecedent = self.formula(1, FormulaContext::Certificate)?;
@@ -318,6 +326,12 @@ impl<'source> Parser<'source> {
             "equality-reflexivity" => {
                 let variable = self.variable()?;
                 ProofStep::EqualityReflexivity { variable }
+            }
+            "equality-substitution" => {
+                let from = self.variable()?;
+                let to = self.variable()?;
+                let body = self.formula(1, FormulaContext::Certificate)?;
+                ProofStep::EqualitySubstitution { from, to, body }
             }
             "generalization" => {
                 let premise = self.earlier_step()?;

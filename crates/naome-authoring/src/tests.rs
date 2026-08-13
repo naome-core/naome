@@ -24,9 +24,17 @@ const IMPLICATION_SOURCE: &str = include_str!("../../../examples/implication-ide
 
 const QUANTIFIER_SOURCE: &str = include_str!("../../../examples/quantifier-instantiation.nao");
 
+const EQUALITY_SUBSTITUTION_SOURCE: &str =
+    include_str!("../../../examples/equality-substitution.nao");
+
 const IMPLICATION_PROOF_HEX: &str = "00000006000000000b00000000000000000000000000000b0000000000000000000000000000000b0000000000000000000000000000170300000000000000000000000000000000000000000000010000000b00000000000000000000000000001703000000000000000000000000000000000000000000000000000b0000000000000000000000200000000100000002200000000000000003210000000400000000";
 
 const QUANTIFIER_PROOF_HEX: &str = "0000000506000000002100000000000000000500000000000000010000000b0000000000000000000000200000000100000002210000000300000001";
+
+const CLASSICAL_CONTRAPOSITION_PROOF_HEX: &str =
+    "00000001020000000c0400010000000001000000000000000c040101000000000100000000";
+
+const EQUALITY_SUBSTITUTION_PROOF_HEX: &str = "000000040700000000000000010000000b0100000000000000000002210000000000000002210000000100000001210000000200000000";
 
 #[test]
 fn example_compiles_to_the_existing_checked_identity_vector() {
@@ -280,6 +288,163 @@ fn quantifier_presentation_renaming_preserves_identity() {
 }
 
 #[test]
+fn equality_substitution_example_lowers_to_the_exact_checked_identity_vector() {
+    let proof = compile(EQUALITY_SUBSTITUTION_SOURCE).unwrap();
+    assert_eq!(
+        proof.statement_id(),
+        StatementId::from_bytes(hex32(
+            "0d6570e2a5031b6a1b3664fb990c1cdf4ff4079364ad9dd08e4f9123662c5772"
+        ))
+    );
+    assert_eq!(
+        proof.derivation_id(),
+        DerivationId::from_bytes(hex32(
+            "107a35fa6ec1677c01560c743c627a5d231315d605fa50083e18dd529a8861b5"
+        ))
+    );
+    assert_eq!(
+        proof.proof_id(),
+        ProofId::from_bytes(hex32(
+            "e89dcbf998af185fd368a2531e2f0ee4953cc2232ec93da38ed3e89e21cede71"
+        ))
+    );
+    assert_eq!(
+        proof.canonical_proof_bytes(),
+        hex_bytes(EQUALITY_SUBSTITUTION_PROOF_HEX)
+    );
+
+    let x = FreeVariable::new(0);
+    let y = FreeVariable::new(1);
+    let set = FreeVariable::new(2);
+    let decoded = ProofCertificate::from_canonical_bytes(proof.canonical_proof_bytes()).unwrap();
+    assert_eq!(
+        decoded.steps(),
+        &[
+            ProofStep::EqualitySubstitution {
+                from: x,
+                to: y,
+                body: Formula::member(x, set),
+            },
+            ProofStep::Generalization {
+                premise: 0,
+                variable: set,
+            },
+            ProofStep::Generalization {
+                premise: 1,
+                variable: y,
+            },
+            ProofStep::Generalization {
+                premise: 2,
+                variable: x,
+            },
+        ]
+    );
+}
+
+#[test]
+fn classical_contraposition_preserves_closed_formula_operand_order() {
+    const A: &str = "(forall x (equal x x))";
+    const B: &str = "(forall y (member y y))";
+    let source = format!(
+        "foundation \"naome:zfc\"; theorem t {{ statement
+         (implies (implies (not {B}) (not {A})) (implies {A} {B})); proof {{
+         step result = (classical-contraposition {A} {B}); result result; }} }}"
+    );
+    let proof = compile(&source).unwrap();
+    assert_eq!(
+        proof.statement_id(),
+        StatementId::from_bytes(hex32(
+            "76605b895a10af62541fd18263816c5fff90e1334b7bb51d37dd46684a34fcba"
+        ))
+    );
+    assert_eq!(
+        proof.derivation_id(),
+        DerivationId::from_bytes(hex32(
+            "9306675268fe2542590ad0eab3971e8a3b8bac1419fa84bb9a2e44015f09143c"
+        ))
+    );
+    assert_eq!(
+        proof.proof_id(),
+        ProofId::from_bytes(hex32(
+            "3aece3d5182e832c33038fb9b123707ed6676379146e1cc6b880a20bc735ccb4"
+        ))
+    );
+    assert_eq!(
+        proof.canonical_proof_bytes(),
+        hex_bytes(CLASSICAL_CONTRAPOSITION_PROOF_HEX)
+    );
+    let x = FreeVariable::new(0);
+    let y = FreeVariable::new(1);
+    let a = Formula::for_all(x, Formula::equal(x, x));
+    let b = Formula::for_all(y, Formula::member(y, y));
+    let decoded = ProofCertificate::from_canonical_bytes(proof.canonical_proof_bytes()).unwrap();
+    assert_eq!(
+        decoded.steps(),
+        &[ProofStep::ClassicalContraposition {
+            antecedent: a,
+            consequent: b,
+        }]
+    );
+
+    let swapped = source.replace(
+        &format!("(classical-contraposition {A} {B})"),
+        &format!("(classical-contraposition {B} {A})"),
+    );
+    assert_eq!(compile(&swapped), Err(CompileError::StatementMismatch));
+}
+
+#[test]
+fn equality_substitution_preserves_roles_and_cannot_capture_under_a_binder() {
+    let source = r#"foundation "naome:zfc"; theorem t {
+      statement (forall x (forall y
+        (implies (equal x y)
+          (implies (forall bound (member x bound))
+            (forall bound (member y bound))))));
+      proof {
+        step substitute =
+          (equality-substitution x y (forall y (member x y)));
+        step for_y = (generalization substitute y);
+        step for_x = (generalization for_y x);
+        result for_x;
+      } }"#;
+    let proof = compile(source).unwrap();
+    let x = FreeVariable::new(0);
+    let y = FreeVariable::new(1);
+    let decoded = ProofCertificate::from_canonical_bytes(proof.canonical_proof_bytes()).unwrap();
+    assert_eq!(
+        decoded.steps()[0],
+        ProofStep::EqualitySubstitution {
+            from: x,
+            to: y,
+            body: Formula::for_all(y, Formula::member(x, y)),
+        }
+    );
+
+    for mutated in [
+        source.replace("equality-substitution x y", "equality-substitution y x"),
+        source.replace("(forall y (member x y)));", "(forall y (member y y)));"),
+    ] {
+        assert_eq!(compile(&mutated), Err(CompileError::StatementMismatch));
+    }
+}
+
+#[test]
+fn equality_substitution_presentation_renaming_preserves_identity() {
+    let renamed = EQUALITY_SUBSTITUTION_SOURCE
+        .replace("substitute", "a")
+        .replace("for_set", "b")
+        .replace("for_y", "c")
+        .replace("for_x", "d")
+        .replace(" x", " source")
+        .replace(" y", " target")
+        .replace(" set", " collection");
+    assert_eq!(
+        compile(EQUALITY_SUBSTITUTION_SOURCE).unwrap(),
+        compile(&renamed).unwrap()
+    );
+}
+
+#[test]
 fn modus_ponens_preserves_operand_roles_and_rejects_every_non_earlier_name() {
     let swapped = IMPLICATION_SOURCE.replace(
         "(modus-ponens keep_implication distribute)",
@@ -414,8 +579,9 @@ fn proof_formula_limits_are_enforced_during_parsing() {
     }
     let at_limit = format!(
         "foundation \"naome:zfc\"; theorem t {{ statement (forall x (equal x x)); proof {{
-         step budget = (simplification {balanced} {balanced});
-         step edge = (simplification (equal x x) (equal x x));
+         step budget = (classical-contraposition {balanced} {balanced});
+         step edge_a = (equality-substitution x x (equal x x));
+         step edge_b = (equality-substitution x x (equal x x));
          step reflexive = (equality-reflexivity x);
          step closed = (generalization reflexive x); result closed; }} }}"
     );
@@ -423,7 +589,7 @@ fn proof_formula_limits_are_enforced_during_parsing() {
 
     let over_limit = at_limit.replace(
         "step reflexive =",
-        "step excess = (simplification (equal x x) (equal x x)); step reflexive =",
+        "step excess = (equality-substitution x x (equal x x)); step reflexive =",
     );
     assert!(matches!(
         compile(&over_limit),
