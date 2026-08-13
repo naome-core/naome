@@ -9,6 +9,10 @@ lowers names to a `ProofCertificate`, derives its canonical proof normal form,
 checks that proof through `naome-checker`, and requires its checked conclusion
 to equal the source statement.
 
+Every source proof expression lowers to an existing Proof Protocol step. The
+authoring grammar adds no canonical encoding, checker rule, or public compiler
+API.
+
 Source text is not a canonical protocol object. Its theorem, step, and variable
 names, comments, and whitespace are absent from canonical proof bytes and all
 content identities. The checked canonical proof remains governed by the
@@ -42,11 +46,13 @@ step        := "step" name "=" proof-expression ";"
 proof-expression
             := "(" "simplification" formula formula ")"
              | "(" "frege" formula formula formula ")"
+             | "(" "classical-contraposition" formula formula ")"
              | "(" "universal-distribution" name formula formula ")"
              | "(" "vacuous-universal" formula ")"
              | "(" "universal-instantiation" name name formula ")"
              | "(" "modus-ponens" name name ")"
              | "(" "equality-reflexivity" name ")"
+             | "(" "equality-substitution" name name formula ")"
              | "(" "generalization" name name ")"
 
 result      := "result" name ";"
@@ -65,7 +71,7 @@ Foundation string. No string escape or other comment form exists.
 Keywords and rule names are case-sensitive. The complete input must match the
 grammar; trailing tokens are rejected. The theorem name is presentation data.
 Formula syntax alone does not make a statement derivable. Proof expressions
-instantiate L1, L2, Q1, Q2, Q3, or E1, or apply explicit modus ponens or
+instantiate L1-L3, Q1-Q3, or E1-E2, or apply explicit modus ponens or
 generalization; the checker still determines whether those steps derive the
 declared statement.
 
@@ -74,8 +80,10 @@ declared statement.
 Variable names identify presentation variables throughout the theorem. The
 compiler assigns internal free-variable identifiers deterministically and
 `forall x A` binds occurrences of `x` in `A`. Formula operands of
-`simplification` and `frege` instantiate the corresponding Foundation schema in
-source order. A `modus-ponens premise implication` step derives the consequent
+`simplification`, `frege`, and `classical-contraposition` instantiate the
+corresponding Foundation schema in source order. An `equality-substitution from
+to A` step constructs `from = to -> (A -> A[from := to])` using capture-free
+substitution. A `modus-ponens premise implication` step derives the consequent
 of the earlier implication step when its antecedent equals the earlier premise
 step. A `generalization premise x` step applies Foundation generalization to the
 earlier step named by `premise` and binds the same presentation variable.
@@ -96,17 +104,19 @@ free `y` into the conclusion. Q2 has no source binder operand:
 `vacuous-universal A` constructs a fresh nameless binder internally, so its
 freshness side condition cannot depend on a presentation name.
 
-The eight proof expressions lower exactly as follows:
+The ten proof expressions lower exactly as follows:
 
 | Source | Proof certificate step |
 | --- | --- |
 | `(simplification A B)` | Foundation L1 instantiated as `A -> (B -> A)` |
 | `(frege A B C)` | Foundation L2 instantiated as `(A -> (B -> C)) -> ((A -> B) -> (A -> C))` |
+| `(classical-contraposition A B)` | Foundation L3 instantiated as `(not B -> not A) -> (A -> B)` |
 | `(universal-distribution x A B)` | Foundation Q1 instantiated as `forall x (A -> B) -> (forall x A -> forall x B)` |
 | `(vacuous-universal A)` | Foundation Q2 instantiated as `A -> forall _ A` with a fresh nameless binder |
 | `(universal-instantiation x y A)` | Foundation Q3 instantiated as `forall x A -> A[x := y]` with capture-free substitution |
 | `(modus-ponens premise implication)` | modus ponens with the two earlier steps in premise-then-implication order |
 | `(equality-reflexivity x)` | Foundation E1 for `x` |
+| `(equality-substitution from to A)` | Foundation E2 instantiated as `from = to -> (A -> A[from := to])` with capture-free substitution |
 | `(generalization premise x)` | generalization of the earlier `premise` step over `x` |
 
 No source construct adds an implicit proof step. Q2's nameless binder is the
@@ -181,10 +191,11 @@ already bounded by source bytes, while the number that can reach a compiled
 proof is bounded by the existing formula-node and certificate-step limits.
 Every formula occurrence in a formula-bearing proof expression is charged
 independently against `CERTIFICATE_MAX_FORMULA_NODES`, including textually equal
-operands. This covers both operands of `simplification` and
-`universal-distribution`, all three operands of `frege`, and the single operand
-of `vacuous-universal` and `universal-instantiation`. The declared statement has
-its separate standalone formula budget.
+operands. This covers both operands of `simplification`,
+`classical-contraposition`, and `universal-distribution`, all three operands of
+`frege`, and the single operand of `vacuous-universal`,
+`universal-instantiation`, and `equality-substitution`. The declared statement
+has its separate standalone formula budget.
 The CLI reads at most the limit plus one byte before decoding UTF-8. Its
 over-limit diagnostic therefore states only that the limit was exceeded; it
 does not misreport that bounded observation as the complete file length.
@@ -210,8 +221,8 @@ The exact inherited executable limits are:
 source-length check precedes parsing. Within parsing, syntax, Foundation, name,
 dependency, formula-depth, and cumulative certificate formula-node checks occur
 when their token is reached; an earlier Foundation mismatch therefore precedes
-errors in the theorem body, for example. Quantifier-expression operands are
-parsed left to right in grammar order. The declared statement's formula-limit
+errors in the theorem body, for example. Proof-expression operands are parsed
+left to right in grammar order. The declared statement's formula-limit
 checks complete when that formula has parsed, before the rest of the theorem.
 The first step beyond `CERTIFICATE_MAX_STEPS` returns that certificate-limit
 error immediately,
@@ -240,37 +251,37 @@ Offsets below are zero-based UTF-8 byte offsets into the original source:
 ## Example
 
 ```nao
-# Derive forall y, y = y by instantiating an earlier universal theorem.
+# Equality substitution followed by explicit closure of every free variable.
 foundation "naome:zfc";
 
-theorem universal_equality_is_usable {
-  statement (forall y (equal y y));
+theorem equality_preserves_membership {
+  statement
+    (forall x (forall y (forall set
+      (implies (equal x y)
+        (implies (member x set) (member y set))))));
 
   proof {
-    step reflexive_at_x = (equality-reflexivity x);
-    step universal_at_x = (generalization reflexive_at_x x);
-    step instantiate_at_y =
-      (universal-instantiation x y (equal x x));
-    step reflexive_at_y =
-      (modus-ponens universal_at_x instantiate_at_y);
-    step universal_at_y = (generalization reflexive_at_y y);
+    step substitute =
+      (equality-substitution x y (member x set));
+    step for_set = (generalization substitute set);
+    step for_y = (generalization for_set y);
+    step for_x = (generalization for_y x);
 
-    result universal_at_y;
+    result for_x;
   }
 }
 ```
 
-The example proves `forall y (y = y)` through E1, generalization, Q3, modus
-ponens, and a final generalization. It is runnable as
-`examples/quantifier-instantiation.nao`. The existing implication and minimal
-self-equality examples remain available separately.
+The example proves `forall x forall y forall set, x = y -> (x in set -> y in
+set)` directly through E2 and explicit generalization. It is runnable as
+`examples/equality-substitution.nao`. The existing implication, quantifier, and
+minimal self-equality examples remain available separately.
 
 ## Non-goals
 
 This authoring contract defines no:
 
-- additional formulas, L3, E2, ZFC axiom-step or schema syntax, or derived
-  connectives;
+- additional formulas, ZFC axiom-step or schema syntax, or derived connectives;
 - proof references, imports, multiple theorems, theorem libraries, definitions,
   constants, functions, namespaces, modules, macros, or compatibility aliases;
 - ledger registration, block construction, chain or candidate-store mutation,

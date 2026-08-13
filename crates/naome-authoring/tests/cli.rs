@@ -21,66 +21,67 @@ const QUANTIFIER_DERIVATION_ID: &str =
 const QUANTIFIER_PROOF_ID: &str =
     "6e35a728527633573509b24fa20cb2359a14c1f93e9f6b6f1500f8650f731720";
 const QUANTIFIER_PROOF_BYTES: &str = "0000000506000000002100000000000000000500000000000000010000000b0000000000000000000000200000000100000002210000000300000001";
+const SUBSTITUTION_STATEMENT_ID: &str =
+    "0d6570e2a5031b6a1b3664fb990c1cdf4ff4079364ad9dd08e4f9123662c5772";
+const SUBSTITUTION_DERIVATION_ID: &str =
+    "107a35fa6ec1677c01560c743c627a5d231315d605fa50083e18dd529a8861b5";
+const SUBSTITUTION_PROOF_ID: &str =
+    "e89dcbf998af185fd368a2531e2f0ee4953cc2232ec93da38ed3e89e21cede71";
+const SUBSTITUTION_PROOF_BYTES: &str = "000000040700000000000000010000000b0100000000000000000002210000000000000002210000000100000001210000000200000000";
 
 static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-fn compile_command_emits_the_exact_checked_identity_vector() {
-    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/self-equality.nao");
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .args(["proof", "compile"])
-        .arg(example)
-        .output()
-        .unwrap();
+fn compile_command_emits_every_exact_checked_identity_vector() {
+    for (file, statement_id, derivation_id, proof_id, proof_bytes) in [
+        (
+            "self-equality.nao",
+            STATEMENT_ID,
+            DERIVATION_ID,
+            PROOF_ID,
+            PROOF_BYTES,
+        ),
+        (
+            "implication-identity.nao",
+            IMPLICATION_STATEMENT_ID,
+            IMPLICATION_DERIVATION_ID,
+            IMPLICATION_PROOF_ID,
+            IMPLICATION_PROOF_BYTES,
+        ),
+        (
+            "quantifier-instantiation.nao",
+            QUANTIFIER_STATEMENT_ID,
+            QUANTIFIER_DERIVATION_ID,
+            QUANTIFIER_PROOF_ID,
+            QUANTIFIER_PROOF_BYTES,
+        ),
+        (
+            "equality-substitution.nao",
+            SUBSTITUTION_STATEMENT_ID,
+            SUBSTITUTION_DERIVATION_ID,
+            SUBSTITUTION_PROOF_ID,
+            SUBSTITUTION_PROOF_BYTES,
+        ),
+    ] {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples")
+            .join(file);
+        let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+            .args(["proof", "compile"])
+            .arg(example)
+            .output()
+            .unwrap();
 
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!(
-            "statement_id {STATEMENT_ID}\nderivation_id {DERIVATION_ID}\nproof_id {PROOF_ID}\ncanonical_proof {PROOF_BYTES}\n"
-        )
-    );
-}
-
-#[test]
-fn compile_command_emits_the_exact_implication_identity_vector() {
-    let example =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/implication-identity.nao");
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .args(["proof", "compile"])
-        .arg(example)
-        .output()
-        .unwrap();
-
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!(
-            "statement_id {IMPLICATION_STATEMENT_ID}\nderivation_id {IMPLICATION_DERIVATION_ID}\nproof_id {IMPLICATION_PROOF_ID}\ncanonical_proof {IMPLICATION_PROOF_BYTES}\n"
-        )
-    );
-}
-
-#[test]
-fn compile_command_emits_the_exact_quantifier_identity_vector() {
-    let example =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/quantifier-instantiation.nao");
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .args(["proof", "compile"])
-        .arg(example)
-        .output()
-        .unwrap();
-
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!(
-            "statement_id {QUANTIFIER_STATEMENT_ID}\nderivation_id {QUANTIFIER_DERIVATION_ID}\nproof_id {QUANTIFIER_PROOF_ID}\ncanonical_proof {QUANTIFIER_PROOF_BYTES}\n"
-        )
-    );
+        assert!(output.status.success(), "{file}: {output:?}");
+        assert!(output.stderr.is_empty(), "{file}: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "statement_id {statement_id}\nderivation_id {derivation_id}\nproof_id {proof_id}\ncanonical_proof {proof_bytes}\n"
+            ),
+            "{file}"
+        );
+    }
 }
 
 #[test]

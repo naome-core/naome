@@ -18,11 +18,11 @@ proof closure can be validated against current selected state without changing
 that state; durable application repeats the complete validation.
 
 A prerelease `.nao` compiler provides a bounded, complete source-authoring path
-from one named closed theorem, including chained implication and Q1-Q3
-quantifier proofs, to checked canonical proof bytes and IDs:
+from one named closed theorem, including every primitive logical and equality
+axiom schema plus explicit inference, to checked canonical proof bytes and IDs:
 
 ```sh
-cargo run -p naome-authoring --bin naome -- proof compile examples/quantifier-instantiation.nao
+cargo run -p naome-authoring --bin naome -- proof compile examples/equality-substitution.nao
 ```
 
 Each local chain begins from a canonical definition that binds its deployment,
