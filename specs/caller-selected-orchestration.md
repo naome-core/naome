@@ -2,15 +2,16 @@
 
 ## Authority and scope
 
-This document defines five bounded workflows over a caller-driven
+This document defines six bounded workflows over a caller-driven
 [`StaticProofNetwork`](proof-network-transport.md) and, where stated, one
 selected [`ProofChainJournal`](proof-chain-journal.md):
 
 - survey one exact chain context across explicit peers;
 - broadcast one journal-head snapshot to explicit peers;
 - import one exact direct-child block;
-- retrieve one exact parent-linked ancestry; and
-- import a retrieved ancestry in forward order.
+- retrieve one exact parent-linked ancestry;
+- import a retrieved ancestry in forward order; or
+- compose retrieval and import into one caller-selected catch-up.
 
 The caller chooses every peer, recipient, and target. A peer-reported head is
 an untrusted observation and never becomes a retrieval or import target without
@@ -605,6 +606,80 @@ Cancellation never rolls back acknowledged blocks, applies a partial closure,
 starts a later block, or refetches ancestry. Passing an unrelated event to
 `on_event` consumes both values and returns current prefix metadata with nested
 `UnexpectedEvent`; it does not reroute the event.
+
+## Composed catch-up
+
+`start_proof_block_catch_up` composes one ancestry pull and its consumed
+ancestry import for the exact peer and target chosen by the caller. It delegates
+first to `start_proof_block_ancestry_pull`, then consumes a completed ancestry
+directly into `start_proof_block_ancestry_import`. The ancestry is never exposed
+or reconstructed between phases. Catch-up adds no validation, mutation,
+request, retry, or authority beyond the two contracts above.
+
+`ProofBlockCatchUp` has exactly one active phase. During pull,
+`committed_block_count` is zero and `last_acknowledged_head_block_id` is the
+captured anchor. During import, both accessors delegate to the ancestry
+importer's acknowledged-prefix state. `pending_block_id` is the exact block
+being fetched during pull and the retained block whose proof closure is being
+acquired during import. `pending_peer_id` is the one ancestry source during
+pull; during import it is the current proof peer and may change only through
+the existing bounded proof fallback. The anchor and caller target remain
+immutable across both phases.
+
+Each event is delegated unchanged to the active workflow. All correlation,
+selected-state, validation, commit, and failure precedence remains exactly as
+specified above; catch-up adds no cross-phase reclassification. The terminal
+block response is fully interpreted before import starts, and a successful
+handoff returns import progress without another block request. Pull and import
+progress remain in their respective phases.
+`ProofBlockCatchUpProgress = None` only after the exact target is durably
+acknowledged.
+
+The only catch-up error classes and their typed sources are:
+
+| Class | Source |
+| --- | --- |
+| `AncestryPull` | `ProofBlockAncestryPullError` |
+| `AncestryImport` | `ProofBlockAncestryImportError` |
+
+Both preserve their typed source. `AncestryPull` carries no committed-prefix
+metadata: pull is read-only, and catch-up has acknowledged zero blocks.
+`AncestryImport` preserves the nested exact target, failed block, committed
+count, last acknowledged head, and direct-import failure. The failing block,
+including one with an ambiguous commit, is not added to that count. Earlier
+acknowledged blocks remain durable; an ambiguous current commit poisons the
+journal and requires reopen.
+
+Catch-up has the combined sequential envelope of its two phases:
+
+| Resource | Bound |
+| --- | ---: |
+| Block requests per complete catch-up | `1..=16` |
+| Proof requests per complete catch-up | `1..=240` |
+| Block plus proof requests per complete catch-up | at most 256 |
+| Retained decoded blocks at once | `0..=16` |
+| Proof candidates retained at once | at most 8 |
+| Canonical proof payloads retained at once | at most 33,554,432 bytes |
+| Simultaneous active work | one block request or one proof acquisition |
+| Durable entries on success | `1..=16` |
+| Synchronization barriers per block / complete catch-up | 2 / `2..=32` |
+
+Block retrieval retains its existing protocol-negotiation and 30-second
+request-response timeouts. Each block import receives its own existing
+non-resetting 120-second dependency deadline. Catch-up adds no aggregate
+deadline; all progress requires continued caller polling.
+
+Cancel or drop delegates to the active phase. During pull it releases retained
+blocks while the physical block request drains. During import it preserves the
+acknowledged prefix, releases unprocessed blocks and quarantined payloads, and
+retains the active proof request's existing drain semantics. Cancellation does
+not advance phases, retry, select another target, or roll back a commit.
+
+Catch-up performs no head query or survey, automatic target choice, automatic
+retry or resume, multi-peer block fallback, ancestry-wide atomic rollback,
+competing-history storage, reorganization, fork choice, consensus, finality,
+or economic policy. It adds no protocol, storage format, connection,
+authorization, runtime, or background task.
 
 ## Trust boundary
 

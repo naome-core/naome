@@ -28,8 +28,10 @@
 //! announce, broadcast, or survey source-bound untrusted chain heads across a
 //! bounded caller-selected peer set, may retrieve one bounded caller-selected
 //! and unselected block ancestry, imports either one exact child or one
-//! consumed ancestry, and explicitly promotes a resulting opaque closure or
-//! admits a peer-record batch. The
+//! consumed ancestry, or composes retrieval and import into one exact-target
+//! catch-up. Every import target remains a separate caller decision. The caller
+//! also explicitly promotes a resulting opaque closure or admits a peer-record
+//! batch. The
 //! responder publication is not derived from the address store.
 //! [`StaticProofNetwork::next_journal_service_event`] serves authenticated
 //! proof, block, and head pulls from one borrowed journal while returning
@@ -42,6 +44,7 @@ mod acquisition;
 mod address_store;
 mod block_ancestry;
 mod block_ancestry_import;
+mod block_catch_up;
 mod block_import;
 mod block_transport;
 mod bootstrap;
@@ -119,6 +122,7 @@ pub use block_ancestry::{
 pub use block_ancestry_import::{
     ProofBlockAncestryImport, ProofBlockAncestryImportError, ProofBlockAncestryImportProgress,
 };
+pub use block_catch_up::{ProofBlockCatchUp, ProofBlockCatchUpError, ProofBlockCatchUpProgress};
 pub use block_import::{ProofBlockImport, ProofBlockImportError, ProofBlockImportProgress};
 pub use block_transport::{
     BlockRequestTicket, InboundProofBlockRequest, OutboundProofBlockEvent,
