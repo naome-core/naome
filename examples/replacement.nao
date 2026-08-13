@@ -8,42 +8,21 @@ theorem identity_image_exists {
         (forall input
           (implies
             (member input source)
-            (not
-              (forall output
-                (not
-                  (not
-                    (implies
-                      (equal input output)
-                      (not
-                        (forall witness
-                          (implies
-                            (equal input witness)
-                            (equal witness output)))))))))))
-        (not
-          (forall result
-            (not
-              (forall output
-                (not
+            (exists output
+              (and
+                (equal input output)
+                (forall witness
                   (implies
-                    (implies
-                      (member output result)
-                      (not
-                        (forall input
-                          (not
-                            (not
-                              (implies
-                                (member input source)
-                                (not (equal input output))))))))
-                    (not
-                      (implies
-                        (not
-                          (forall input
-                            (not
-                              (not
-                                (implies
-                                  (member input source)
-                                  (not (equal input output)))))))
-                        (member output result)))))))))));
+                    (equal input witness)
+                    (equal witness output)))))))
+        (exists result
+          (forall output
+            (iff
+              (member output result)
+              (exists input
+                (and
+                  (member input source)
+                  (equal input output))))))));
 
   proof {
     step image =

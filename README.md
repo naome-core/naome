@@ -19,7 +19,10 @@ that state; durable application repeats the complete validation.
 
 A prerelease `.nao` compiler provides a bounded, complete source-authoring path
 from one named closed theorem through every Foundation axiom, schema, and
-explicit inference rule to checked canonical proof bytes and IDs:
+explicit inference rule to checked canonical proof bytes and IDs. One prefix
+spelling per derived form limits generator choice, while
+`and`/`or`/`iff`/`exists`/`not-equal` reduce nesting before being expanded to the
+same primitive Foundation formulas:
 
 ```sh
 cargo run -p naome-authoring --bin naome -- proof compile examples/separation.nao

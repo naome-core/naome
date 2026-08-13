@@ -4,14 +4,15 @@
 
 This document defines the prerelease `.nao` source accepted by
 `naome_authoring::compile` and the `naome proof compile` command. The source is
-a human presentation of one assumption-free Foundation proof. Compilation
-lowers names to a `ProofCertificate`, derives its canonical proof normal form,
-checks that proof through `naome-checker`, and requires its checked conclusion
-to equal the source statement.
+a non-authoritative presentation of one assumption-free Foundation proof.
+Compilation lowers names to a `ProofCertificate`, derives its canonical proof
+normal form, checks that proof through `naome-checker`, and requires its checked
+conclusion to equal the source statement.
 
-Every source proof expression lowers to an existing Proof Protocol step. The
-authoring grammar adds no canonical encoding, checker rule, or public compiler
-API.
+Every source formula lowers to the existing primitive Foundation formula
+language, and every proof expression lowers to an existing Proof Protocol step.
+The authoring grammar adds no canonical encoding, checker rule, or public
+compiler API.
 
 Source text is not a canonical protocol object. Its theorem, step, and variable
 names, comments, and whitespace are absent from canonical proof bytes and all
@@ -40,6 +41,11 @@ formula     := "(" "equal" name name ")"
              | "(" "not" formula ")"
              | "(" "implies" formula formula ")"
              | "(" "forall" name formula ")"
+             | "(" "and" formula formula ")"
+             | "(" "or" formula formula ")"
+             | "(" "iff" formula formula ")"
+             | "(" "exists" name formula ")"
+             | "(" "not-equal" name name ")"
 
 step        := "step" name "=" proof-expression ";"
 
@@ -82,10 +88,13 @@ Foundation string. No string escape or other comment form exists.
 
 Keywords and rule names are case-sensitive. The complete input must match the
 grammar; trailing tokens are rejected. The theorem name is presentation data.
-Formula syntax alone does not make a statement derivable. Proof expressions
-instantiate L1-L3, Q1-Q3, E1-E2, Separation, or Replacement; select one of the
-seven fixed ZFC axioms; or apply explicit modus ponens or generalization. The
-checker still determines whether those steps derive the declared statement.
+`and`, `or`, `iff`, `exists`, and `not-equal` are the Foundation's exact
+eliminable abbreviations, not additional primitive formulas. No alternate
+spelling exists. Formula syntax alone does not make a statement derivable.
+Proof expressions instantiate L1-L3, Q1-Q3, E1-E2, Separation, or Replacement;
+select one of the seven fixed ZFC axioms; or apply explicit modus ponens or
+generalization. The checker still determines whether those steps derive the
+declared statement.
 
 ## Names and proof construction
 
@@ -99,6 +108,22 @@ substitution. A `modus-ponens premise implication` step derives the consequent
 of the earlier implication step when its antecedent equals the earlier premise
 step. A `generalization premise x` step applies Foundation generalization to the
 earlier step named by `premise` and binds the same presentation variable.
+
+Derived formula forms recursively lower before certificate construction:
+
+| Source | Primitive Foundation formula |
+| --- | --- |
+| `(and A B)` | `(not (implies A (not B)))` |
+| `(or A B)` | `(implies (not A) B)` |
+| `(iff A B)` | `(and (implies A B) (implies B A))` |
+| `(exists x A)` | `(not (forall x (not A)))` |
+| `(not-equal x y)` | `(not (equal x y))` |
+
+These are one-way source expansions. They create no proof step, new primitive
+node, alternate canonical formula, or independent identity. In particular,
+`iff` duplicates both operands exactly as its Foundation definition requires,
+and `exists` binds the named variable capture-freely through the same locally
+nameless representation as `forall`.
 
 Step names must be unique. Both modus-ponens operands and a generalization
 premise must name previously declared steps, so source dependencies are finite
@@ -163,8 +188,8 @@ Compilation proceeds in this order:
    `AUTHORING_SOURCE_MAX_BYTES` (`4_194_304` bytes);
 2. parse the Foundation declaration and require the exact identifier
    `naome:zfc`;
-3. parse the declared statement and require it to satisfy the canonical
-   Foundation formula limits;
+3. parse and recursively expand the declared statement, then require the
+   resulting primitive formula to satisfy the canonical Foundation limits;
 4. parse the proof in source order, resolving variables and backward-only step
    names, enforcing the cumulative certificate formula-node budget, and
    lowering each expression;
@@ -184,6 +209,8 @@ Normalization removes presentation-only proof structure and canonicalizes
 free-variable identifiers according to the Proof Protocol. Systematically
 renaming theorem, step, or variable names, or changing only comments and
 whitespace, therefore preserves the canonical proof bytes and all three IDs.
+Replacing a derived formula with its exact primitive expansion also preserves
+the canonical proof bytes and identities.
 
 ## Public API and command
 
@@ -223,6 +250,21 @@ and token count have no separate arbitrary cap; their total representation is
 already bounded by source bytes, while the number that can reach a compiled
 proof is bounded by the existing formula, schema-depth, step, and
 certificate-byte limits.
+Formula node and depth limits apply to the recursively expanded primitive
+formula, not to the shorter source spelling. If `A` and `B` expand to `nA` and
+`nB` primitive nodes with root-to-leaf depths `dA` and `dB`, respectively, the
+derived roots have these exact costs:
+
+| Source | Primitive nodes | Primitive depth |
+| --- | ---: | ---: |
+| `(and A B)` | `3 + nA + nB` | `max(dA + 2, dB + 3)` |
+| `(or A B)` | `2 + nA + nB` | `max(dA + 2, dB + 1)` |
+| `(iff A B)` | `5 + 2*nA + 2*nB` | `max(dA, dB) + 4` |
+| `(exists x A)` | `3 + nA` | `dA + 3` |
+| `(not-equal x y)` | `2` | `2` |
+
+`iff` therefore charges both copied occurrences of each operand; source sugar
+cannot bypass a formula or certificate budget.
 Every formula occurrence in a formula-bearing proof expression is charged
 independently against `CERTIFICATE_MAX_FORMULA_NODES`, including textually equal
 operands. This covers both operands of `simplification`,
@@ -267,8 +309,14 @@ source-length check precedes parsing. Within parsing, syntax, Foundation, name,
 dependency, formula-depth, and cumulative certificate formula-node checks occur
 when their token is reached; an earlier Foundation mismatch therefore precedes
 errors in the theorem body, for example. Proof-expression operands are parsed
-left to right in grammar order. The declared statement's formula-limit
-checks complete when that formula has parsed, before the rest of the theorem.
+left to right in grammar order. A derived formula similarly parses its operands
+left to right under the existing syntax and resource checks. Only after its
+operands succeed does the compiler charge and depth-check the additional
+primitive expansion at the derived operator's offset, before constructing or
+cloning that expansion. Malformed operands and operand-local limit failures
+therefore precede an expansion-only node or depth failure. The declared
+statement's formula-limit checks complete when that formula has parsed, before
+the rest of the theorem.
 The first step beyond `CERTIFICATE_MAX_STEPS` returns that certificate-limit
 error immediately, before parsing its proof expression or any later result or
 EOF token. Otherwise an unsupported `zfc-axiom` selector returns `Syntax` at the
@@ -300,7 +348,7 @@ Offsets below are zero-based UTF-8 byte offsets into the original source:
 | `DuplicateStep { offset, name }` | A step name repeats an earlier step name. |
 | `UnknownStep { offset, name }` | A modus-ponens operand or generalization premise is unknown or not earlier. |
 | `ResultNotFinal { offset }` | `result` does not name the final declared step. |
-| `FormulaDepthLimitExceeded { offset, maximum }` | Source formula nesting exceeds `FORMULA_MAX_DEPTH` (`256`). |
+| `FormulaDepthLimitExceeded { offset, maximum }` | The recursively expanded primitive formula exceeds `FORMULA_MAX_DEPTH` (`256`). |
 | `Statement { source }` | The declared statement violates a canonical Foundation formula limit. |
 | `Certificate { source }` | Lowered proof structure violates the Proof Protocol. |
 | `Check { source }` | The normalized proof fails deterministic checking. |
@@ -316,11 +364,7 @@ theorem same_members_are_equal {
   statement
     (forall x (forall y
       (implies
-        (forall z
-          (not
-            (implies
-              (implies (member z x) (member z y))
-              (not (implies (member z y) (member z x))))))
+        (forall z (iff (member z x) (member z y)))
         (equal x y))));
 
   proof {
@@ -330,23 +374,24 @@ theorem same_members_are_equal {
 }
 ```
 
-The declared statement writes membership biconditional in the primitive
-`not`/`implies` grammar; the proof selects the exactly matching fixed axiom. It
-is runnable as `examples/extensionality.nao`. `examples/separation.nao`
-constructs an intersection using one explicit parameter, while
-`examples/replacement.nao` instantiates Replacement for the identity relation
-using the mandatory empty parameter list. The implication, quantifier,
-equality-substitution, and minimal self-equality examples remain available
-separately.
+The declared statement uses authoring-only `iff`; its recursive primitive
+expansion exactly matches the fixed axiom selected by the proof. It is runnable
+as `examples/extensionality.nao`. `examples/separation.nao` uses `exists`,
+`iff`, and `and` to state an intersection with one explicit parameter, while
+`examples/replacement.nao` uses the same derived forms to state the identity
+image instance with the mandatory empty parameter list. The implication,
+quantifier, equality-substitution, and minimal self-equality examples remain
+available separately.
 
 ## Non-goals
 
 This authoring contract defines no:
 
-- additional formulas, derived connectives, implicit schema parameters, or
-  alternate schema spellings;
+- additional primitive formulas, other connective aliases, implicit schema
+  parameters, or alternate schema spellings;
 - proof references, imports, multiple theorems, theorem libraries, definitions,
-  constants, functions, namespaces, modules, macros, or compatibility aliases;
+  constants, functions, namespaces, modules, macros, a canonical-source or
+  formatting command, or compatibility aliases;
 - ledger registration, block construction, chain or candidate-store mutation,
   payload archival, networking, dependency acquisition, or peer policy; or
 - fork choice, consensus, finality, validator policy, fees, rewards, staking,

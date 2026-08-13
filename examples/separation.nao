@@ -4,23 +4,13 @@ foundation "naome:zfc";
 theorem intersection_exists {
   statement
     (forall filter (forall source
-      (not (forall result
-        (not (forall element
-          (not
-            (implies
-              (implies
-                (member element result)
-                (not
-                  (implies
-                    (member element source)
-                    (not (member element filter)))))
-              (not
-                (implies
-                  (not
-                    (implies
-                      (member element source)
-                      (not (member element filter))))
-                  (member element result)))))))))));
+      (exists result
+        (forall element
+          (iff
+            (member element result)
+            (and
+              (member element source)
+              (member element filter)))))));
 
   proof {
     step intersection =

@@ -52,6 +52,223 @@ const REPLACEMENT_PROOF_HEX: &str =
     "00000001120000000b0000000000000000000001000000000000000100000002000000030000000400000000";
 
 #[test]
+fn every_derived_formula_lowers_to_the_existing_primitive_structure() {
+    let pairs = [
+        (
+            "(and (equal x x) (member y z))",
+            "(not (implies (equal x x) (not (member y z))))",
+        ),
+        (
+            "(or (equal x x) (member y z))",
+            "(implies (not (equal x x)) (member y z))",
+        ),
+        (
+            "(iff (equal x x) (member y z))",
+            "(not (implies (implies (equal x x) (member y z)) (not (implies (member y z) (equal x x)))))",
+        ),
+        (
+            "(exists x (member x set))",
+            "(not (forall x (not (member x set))))",
+        ),
+        ("(not-equal x y)", "(not (equal x y))"),
+    ];
+
+    for (derived, primitive) in pairs {
+        let derived = parse_formula(derived, FormulaContext::Statement).unwrap();
+        let primitive = parse_formula(primitive, FormulaContext::Statement).unwrap();
+        assert_eq!(derived.formula, primitive.formula);
+        assert_eq!(derived.expanded_nodes, primitive.expanded_nodes);
+        assert_eq!(derived.expanded_depth, primitive.expanded_depth);
+    }
+}
+
+#[test]
+fn derived_and_primitive_sources_have_exactly_the_same_checked_artifact() {
+    const A: &str = "(forall x (not-equal x x))";
+    const B: &str = "(exists y (and (equal y y) (or (member y y) (iff (equal y y) (member y y)))))";
+    const PRIMITIVE_A: &str = "(forall x (not (equal x x)))";
+    const PRIMITIVE_B: &str = "(not (forall y (not (not (implies (equal y y) (not (implies (not (member y y)) (not (implies (implies (equal y y) (member y y)) (not (implies (member y y) (equal y y))))))))))))";
+    let source = |a: &str, b: &str| {
+        format!(
+            "foundation \"naome:zfc\"; theorem t {{ statement (implies {a} (implies {b} {a})); proof {{ step result = (simplification {a} {b}); result result; }} }}"
+        )
+    };
+    assert_eq!(
+        parse_formula(A, FormulaContext::Statement).unwrap().formula,
+        parse_formula(PRIMITIVE_A, FormulaContext::Statement)
+            .unwrap()
+            .formula
+    );
+    assert_eq!(
+        parse_formula(B, FormulaContext::Statement).unwrap().formula,
+        parse_formula(PRIMITIVE_B, FormulaContext::Statement)
+            .unwrap()
+            .formula
+    );
+    assert_eq!(
+        compile(&source(A, B)).unwrap(),
+        compile(&source(PRIMITIVE_A, PRIMITIVE_B)).unwrap()
+    );
+}
+
+#[test]
+fn derived_binary_operands_retain_source_order_and_exists_binds_capture_free() {
+    let left = parse_formula(
+        "(and (equal left left) (member right set))",
+        FormulaContext::Certificate,
+    )
+    .unwrap();
+    let swapped = parse_formula(
+        "(and (member right set) (equal left left))",
+        FormulaContext::Certificate,
+    )
+    .unwrap();
+    assert_ne!(left.formula, swapped.formula);
+
+    let exists = parse_formula(
+        "(exists x (and (member x set) (forall x (member x x))))",
+        FormulaContext::Certificate,
+    )
+    .unwrap();
+    let x = FreeVariable::new(0);
+    let set = FreeVariable::new(1);
+    assert_eq!(
+        exists.formula,
+        Formula::exists(
+            x,
+            Formula::conjunction(
+                Formula::member(x, set),
+                Formula::for_all(x, Formula::member(x, x)),
+            ),
+        )
+    );
+}
+
+#[test]
+fn malformed_derived_formulas_fail_in_left_to_right_operand_order() {
+    for (source, expected) in [
+        ("(and broken (equal x x))", "`(`"),
+        ("(and (equal x x) broken)", "`(`"),
+        ("(or (equal x x))", "`(`"),
+        ("(iff (equal x x) (equal y y) extra)", "`)`"),
+        ("(exists 1bad (equal x x))", "a name"),
+        ("(not-equal x)", "a name"),
+    ] {
+        assert!(matches!(
+            parse_formula(source, FormulaContext::Statement),
+            Err(CompileError::Syntax { expected: actual, .. }) if actual == expected
+        ));
+    }
+
+    let mut prefix = String::new();
+    for _ in 0..FORMULA_MAX_DEPTH - 1 {
+        prefix.push_str("(not ");
+    }
+    let malformed = format!(
+        "{prefix}(exists 1bad (equal x x)){}",
+        ")".repeat(FORMULA_MAX_DEPTH as usize - 1)
+    );
+    assert!(matches!(
+        parse_formula(&malformed, FormulaContext::Statement),
+        Err(CompileError::Syntax {
+            expected: "a name",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn derived_formula_expansion_charges_exact_statement_and_certificate_node_limits() {
+    const IFF: &str = "(iff (equal x x) (equal y y))";
+    let expanded_nodes = 9;
+    for (context, maximum) in [
+        (FormulaContext::Statement, FORMULA_MAX_NODES),
+        (FormulaContext::Certificate, CERTIFICATE_MAX_FORMULA_NODES),
+    ] {
+        let mut parser = Parser::new(IFF);
+        match context {
+            FormulaContext::Statement => parser.statement_nodes = maximum - expanded_nodes,
+            FormulaContext::Certificate => {
+                parser.certificate_formula_nodes = maximum - expanded_nodes
+            }
+        }
+        let parsed = parser.parsed_formula(1, context).unwrap();
+        assert_eq!(parsed.expanded_nodes, expanded_nodes);
+        assert_eq!(
+            match context {
+                FormulaContext::Statement => parser.statement_nodes,
+                FormulaContext::Certificate => parser.certificate_formula_nodes,
+            },
+            maximum
+        );
+
+        let mut parser = Parser::new(IFF);
+        match context {
+            FormulaContext::Statement => parser.statement_nodes = maximum - expanded_nodes + 1,
+            FormulaContext::Certificate => {
+                parser.certificate_formula_nodes = maximum - expanded_nodes + 1
+            }
+        }
+        assert!(match (context, parser.parsed_formula(1, context)) {
+            (
+                FormulaContext::Statement,
+                Err(CompileError::Statement {
+                    source: FormulaCodecError::NodeLimitExceeded { maximum },
+                }),
+            ) => maximum == FORMULA_MAX_NODES,
+            (
+                FormulaContext::Certificate,
+                Err(CompileError::Certificate {
+                    source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
+                }),
+            ) => maximum == CERTIFICATE_MAX_FORMULA_NODES,
+            _ => false,
+        });
+    }
+}
+
+#[test]
+fn derived_formula_expanded_depth_has_an_exact_boundary() {
+    let wrapped = |wrappers: u32, body: &str| {
+        format!(
+            "{}{}{}",
+            "(not ".repeat(wrappers as usize),
+            body,
+            ")".repeat(wrappers as usize)
+        )
+    };
+    let iff = "(iff (equal x x) (equal y y))";
+    let exists = "(exists x (equal x x))";
+
+    assert!(
+        parse_formula(
+            &wrapped(FORMULA_MAX_DEPTH - 5, iff),
+            FormulaContext::Statement
+        )
+        .is_ok()
+    );
+    assert!(
+        parse_formula(
+            &wrapped(FORMULA_MAX_DEPTH - 4, exists),
+            FormulaContext::Statement
+        )
+        .is_ok()
+    );
+    for (wrappers, body, operator) in [
+        (FORMULA_MAX_DEPTH - 4, iff, "iff"),
+        (FORMULA_MAX_DEPTH - 3, exists, "exists"),
+    ] {
+        let source = wrapped(wrappers, body);
+        let expected_offset = source.find(operator).unwrap();
+        assert!(matches!(
+            parse_formula(&source, FormulaContext::Statement),
+            Err(CompileError::FormulaDepthLimitExceeded { offset, maximum })
+                if offset == expected_offset && maximum == FORMULA_MAX_DEPTH
+        ));
+    }
+}
+
+#[test]
 fn extensionality_lowers_to_the_exact_checked_identity_vector() {
     let proof = compile(EXTENSIONALITY_SOURCE).unwrap();
     assert_eq!(
@@ -1352,6 +1569,13 @@ fn consuming_bytes_returns_the_exact_owned_output() {
             .as_ref(),
         NORMAL_PROOF
     );
+}
+
+fn parse_formula(source: &str, context: FormulaContext) -> Result<ParsedFormula, CompileError> {
+    let mut parser = Parser::new(source);
+    let formula = parser.parsed_formula(1, context)?;
+    parser.end()?;
+    Ok(formula)
 }
 
 fn parse_step(source: &str) -> Result<ProofStep, CompileError> {
