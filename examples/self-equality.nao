@@ -1,0 +1,12 @@
+# Every source name in this file is presentation-only.
+foundation "naome:zfc";
+
+theorem equality_is_reflexive {
+  statement (forall x (equal x x));
+
+  proof {
+    step reflexive = (equality-reflexivity x);
+    step universally_reflexive = (generalization reflexive x);
+    result universally_reflexive;
+  }
+}

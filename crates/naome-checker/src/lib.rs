@@ -63,6 +63,11 @@ impl CheckedProof {
         &self.normal_form
     }
 
+    /// Consumes this checked proof and returns its canonical normal form.
+    pub fn into_normal_form(self) -> ProofNormalForm {
+        self.normal_form
+    }
+
     /// Returns the closed conclusion reconstructed by Checker.
     pub const fn conclusion(&self) -> &Formula {
         &self.conclusion

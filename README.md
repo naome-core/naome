@@ -17,6 +17,13 @@ validation before selection. One exact direct-child block and its addressed
 proof closure can be validated against current selected state without changing
 that state; durable application repeats the complete validation.
 
+A prerelease `.nao` compiler provides the smallest complete source-authoring
+path from one named closed theorem to checked canonical proof bytes and IDs:
+
+```sh
+cargo run -p naome-authoring --bin naome -- proof compile examples/self-equality.nao
+```
+
 Each local chain begins from a canonical definition that binds its deployment,
 the current Foundation identity, and the empty authenticated proof state before
 deriving the chain address and virtual genesis.
@@ -27,8 +34,9 @@ Crates build in this direction:
 
 ```text
 foundation -> proof -> checker -> ledger -> chain
-                                            |-> storage -> network
-                                            `-> naome   -> network
+                         |                  |-> storage -> network
+                         |                  `-> naome   -> network
+                         `-> authoring
 ```
 
 `A -> B` means that `B` builds on `A`. The layers own, respectively: Foundation
@@ -36,8 +44,9 @@ syntax and rules; canonical proofs and identities; deterministic checking;
 atomic ledger transitions; authenticated proof state, transitions, and blocks;
 the selected-chain journal, chain-scoped structural-candidate store, and
 Foundation-scoped canonical-payload archive; transport-neutral messages; and
-bounded libp2p transport, orchestration, and peer-address management. A crate
-may also depend directly on an earlier contract it uses.
+bounded libp2p transport, orchestration, and peer-address management. The
+authoring layer owns prerelease source lowering into checked canonical proofs.
+A crate may also depend directly on an earlier contract it uses.
 
 The following boundaries are invariant:
 
@@ -58,6 +67,8 @@ The following boundaries are invariant:
 
 - [Foundation](specs/foundation.md) defines the mathematical language, axioms,
   schemas, and inference rules.
+- [Proof Authoring](specs/proof-authoring.md) defines the deliberately small,
+  prerelease `.nao` source compiler and its non-authoritative output boundary.
 - [Proof Protocol](specs/proof-protocol.md) defines canonical proofs,
   identities, selected proof state, transitions, and blocks.
 - [Proof Chain Journal](specs/proof-chain-journal.md) defines durable selected
@@ -75,8 +86,8 @@ The following boundaries are invariant:
 - [Peer Addressing](specs/peer-addressing.md) defines signed peer records,
   address storage, issuance, and authenticated exchange.
 
-Specifications are normative for mathematical, protocol, wire, and storage
-semantics. Rustdoc owns the Rust API surface; the crates are executable
+Specifications are normative for mathematical, authoring, protocol, wire, and
+storage semantics. Rustdoc owns the Rust API surface; the crates are executable
 reference implementations. This README is non-normative.
 
 The repository is prerelease. An incompatible change replaces its identifier,
