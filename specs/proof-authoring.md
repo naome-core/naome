@@ -54,7 +54,14 @@ proof-expression
              | "(" "equality-reflexivity" name ")"
              | "(" "equality-substitution" name name formula ")"
              | "(" "zfc-axiom" zfc-axiom-name ")"
+             | "(" "separation" formula name name name
+                   schema-parameters ")"
+             | "(" "replacement" formula name name name name name
+                   schema-parameters ")"
              | "(" "generalization" name name ")"
+
+schema-parameters
+            := "(" "parameters" name* ")"
 
 zfc-axiom-name
             := "extensionality" | "pairing" | "union" | "power-set"
@@ -76,9 +83,9 @@ Foundation string. No string escape or other comment form exists.
 Keywords and rule names are case-sensitive. The complete input must match the
 grammar; trailing tokens are rejected. The theorem name is presentation data.
 Formula syntax alone does not make a statement derivable. Proof expressions
-instantiate L1-L3, Q1-Q3, or E1-E2, select one of the seven fixed ZFC axioms,
-or apply explicit modus ponens or generalization; the checker still determines
-whether those steps derive the declared statement.
+instantiate L1-L3, Q1-Q3, E1-E2, Separation, or Replacement; select one of the
+seven fixed ZFC axioms; or apply explicit modus ponens or generalization. The
+checker still determines whether those steps derive the declared statement.
 
 ## Names and proof construction
 
@@ -113,7 +120,21 @@ freshness side condition cannot depend on a presentation name.
 variable and carries no source formula: the checker reconstructs the axiom's
 normative primitive Foundation formula from the existing protocol step.
 
-The eleven proof-expression forms lower exactly as follows:
+`separation P element source result (parameters p q)` and `replacement P
+input output witness source result (parameters p q)` preserve exactly that
+predicate, role order, and parameter order in the existing Proof Protocol
+steps. The `(parameters ...)` list is mandatory and may be empty; the compiler
+does not infer parameters from `P`. Its order is the schema's universal
+quantifier order, so reordering it is not presentation-only renaming.
+
+For Separation, every role and parameter must be distinct; every free variable
+of `P` must be `element`, `source`, or a declared parameter; and `result` must
+not occur free in `P`. For Replacement, every role and parameter must be
+distinct; every free variable of `P` must be `input`, `output`, `source`, or a
+declared parameter; and neither `witness` nor `result` may occur free in `P`.
+These are checker-enforced Foundation side conditions, not parser authority.
+
+The thirteen proof-expression forms lower exactly as follows:
 
 | Source | Proof certificate step |
 | --- | --- |
@@ -127,6 +148,8 @@ The eleven proof-expression forms lower exactly as follows:
 | `(equality-reflexivity x)` | Foundation E1 for `x` |
 | `(equality-substitution from to A)` | Foundation E2 instantiated as `from = to -> (A -> A[from := to])` with capture-free substitution |
 | `(zfc-axiom name)` | the fixed ZFC axiom selected by `extensionality`, `pairing`, `union`, `power-set`, `infinity`, `foundation`, or `choice` |
+| `(separation P element source result (parameters p q))` | Separation with predicate `P`, the three roles in source order, and parameters in quantifier order |
+| `(replacement P input output witness source result (parameters p q))` | Replacement with predicate `P`, the five roles in source order, and parameters in quantifier order |
 | `(generalization premise x)` | generalization of the earlier `premise` step over `x` |
 
 No source construct adds an implicit proof step. Q2's nameless binder is the
@@ -198,26 +221,33 @@ I/O failure while writing successful output may leave a partial byte stream.
 and rejected before parsing when it exceeds that inclusive limit. Names
 and token count have no separate arbitrary cap; their total representation is
 already bounded by source bytes, while the number that can reach a compiled
-proof is bounded by the existing formula-node and certificate-step limits.
+proof is bounded by the existing formula, schema-depth, step, and
+certificate-byte limits.
 Every formula occurrence in a formula-bearing proof expression is charged
 independently against `CERTIFICATE_MAX_FORMULA_NODES`, including textually equal
 operands. This covers both operands of `simplification`,
 `classical-contraposition`, and `universal-distribution`, all three operands of
 `frege`, and the single operand of `vacuous-universal`,
-`universal-instantiation`, and `equality-substitution`. A `zfc-axiom`
-expression contributes one certificate step but zero encoded certificate
-formula nodes. Its complete canonical step encoding is the fixed-ZFC step tag
-plus one axiom tag. The declared statement has its separate standalone formula
-budget.
+`universal-instantiation`, `equality-substitution`, `separation`, or
+`replacement`. A schema predicate is encoded and charged once even though
+schema expansion can reuse it; the reconstructed result is separately governed
+by the checker formula and work limits. A `zfc-axiom` expression contributes
+one certificate step but zero encoded certificate formula nodes. Its complete
+canonical step encoding is the fixed-ZFC step tag plus one axiom tag. The
+declared statement has its separate standalone formula budget.
 The CLI reads at most the limit plus one byte before decoding UTF-8. Its
 over-limit diagnostic therefore states only that the limit was exceeded; it
 does not misreport that bounded observation as the complete file length.
 
 The resulting certificate remains subject to the Proof Protocol's byte, step,
 formula-node, formula-depth, and formula-byte limits. The checker reconstructs
-a selected fixed axiom, validates that result against the canonical per-formula
-limits, and charges its canonical bytes to the deterministic formula-work
-budget. Limits fail closed: compilation never truncates, wraps, aliases, or
+fixed axioms and valid schemas, validates each result against the canonical
+per-formula limits, and charges its canonical bytes to the deterministic
+formula-work budget. Once certificate construction succeeds, a schema with at
+least `256` parameters fails the derived-formula depth preflight before
+side-condition validation. A larger parameter list can instead exceed the
+certificate byte limit first, because certificate construction precedes
+checking. Limits fail closed: compilation never truncates, wraps, aliases, or
 silently omits source.
 
 The exact inherited executable limits are:
@@ -242,13 +272,23 @@ checks complete when that formula has parsed, before the rest of the theorem.
 The first step beyond `CERTIFICATE_MAX_STEPS` returns that certificate-limit
 error immediately, before parsing its proof expression or any later result or
 EOF token. Otherwise an unsupported `zfc-axiom` selector returns `Syntax` at the
-selector's first byte with `expected` equal to `"a fixed ZFC axiom"`. Complete
-parsing, including the final-result and EOF requirements, precedes certificate
-construction. Certificate errors precede checker errors; checked-proof failure
-precedes declared-statement mismatch. Thus a valid fixed-axiom selector paired
-with a different declared statement returns `StatementMismatch` only after the
-axiom has checked. Every failure returns no `CompiledProof` and has no external
-side effect.
+selector's first byte with `expected` equal to `"a fixed ZFC axiom"`. A schema
+parses its predicate, role names, and mandatory parameter list from left to
+right; missing or malformed syntax therefore precedes mathematical schema
+errors. Complete parsing, including the final-result and EOF requirements,
+precedes certificate construction. Certificate errors precede checker errors;
+checked-proof failure precedes declared-statement mismatch.
+
+Normalization removes unreachable steps before checker execution and assigns
+canonical variable identifiers. For each remaining schema step, the checker
+applies the parameter-count depth preflight, then checks role collisions in
+role order; for each parameter in list order, a role collision before a
+duplicate; and, for each free predicate variable in normalized identifier
+order, forbidden-role status before undeclared status. Only then does it expand
+and resource-check the schema formula. Thus a valid schema paired with a
+different declared statement returns `StatementMismatch` only after the schema
+has checked. Every failure returns no `CompiledProof` and has no external side
+effect.
 
 Offsets below are zero-based UTF-8 byte offsets into the original source:
 
@@ -292,7 +332,10 @@ theorem same_members_are_equal {
 
 The declared statement writes membership biconditional in the primitive
 `not`/`implies` grammar; the proof selects the exactly matching fixed axiom. It
-is runnable as `examples/extensionality.nao`. The implication, quantifier,
+is runnable as `examples/extensionality.nao`. `examples/separation.nao`
+constructs an intersection using one explicit parameter, while
+`examples/replacement.nao` instantiates Replacement for the identity relation
+using the mandatory empty parameter list. The implication, quantifier,
 equality-substitution, and minimal self-equality examples remain available
 separately.
 
@@ -300,8 +343,8 @@ separately.
 
 This authoring contract defines no:
 
-- additional formulas, Separation or Replacement schema syntax, or derived
-  connectives;
+- additional formulas, derived connectives, implicit schema parameters, or
+  alternate schema spellings;
 - proof references, imports, multiple theorems, theorem libraries, definitions,
   constants, functions, namespaces, modules, macros, or compatibility aliases;
 - ledger registration, block construction, chain or candidate-store mutation,

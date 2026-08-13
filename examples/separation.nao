@@ -1,0 +1,34 @@
+# Separation constructs the intersection selected by an explicit parameter.
+foundation "naome:zfc";
+
+theorem intersection_exists {
+  statement
+    (forall filter (forall source
+      (not (forall result
+        (not (forall element
+          (not
+            (implies
+              (implies
+                (member element result)
+                (not
+                  (implies
+                    (member element source)
+                    (not (member element filter)))))
+              (not
+                (implies
+                  (not
+                    (implies
+                      (member element source)
+                      (not (member element filter))))
+                  (member element result)))))))))));
+
+  proof {
+    step intersection =
+      (separation
+        (member element filter)
+        element source result
+        (parameters filter));
+
+    result intersection;
+  }
+}

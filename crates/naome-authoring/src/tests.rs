@@ -1,3 +1,4 @@
+use naome_foundation::{Replacement, SchemaError, Separation};
 use naome_proof::{DerivationId, ProofCertificate, ProofId, StatementId};
 
 use super::*;
@@ -29,6 +30,10 @@ const EQUALITY_SUBSTITUTION_SOURCE: &str =
 
 const EXTENSIONALITY_SOURCE: &str = include_str!("../../../examples/extensionality.nao");
 
+const SEPARATION_SOURCE: &str = include_str!("../../../examples/separation.nao");
+
+const REPLACEMENT_SOURCE: &str = include_str!("../../../examples/replacement.nao");
+
 const IMPLICATION_PROOF_HEX: &str = "00000006000000000b00000000000000000000000000000b0000000000000000000000000000000b0000000000000000000000000000170300000000000000000000000000000000000000000000010000000b00000000000000000000000000001703000000000000000000000000000000000000000000000000000b0000000000000000000000200000000100000002200000000000000003210000000400000000";
 
 const QUANTIFIER_PROOF_HEX: &str = "0000000506000000002100000000000000000500000000000000010000000b0000000000000000000000200000000100000002210000000300000001";
@@ -39,6 +44,12 @@ const CLASSICAL_CONTRAPOSITION_PROOF_HEX: &str =
 const EQUALITY_SUBSTITUTION_PROOF_HEX: &str = "000000040700000000000000010000000b0100000000000000000002210000000000000002210000000100000001210000000200000000";
 
 const EXTENSIONALITY_PROOF_HEX: &str = "000000011000";
+
+const SEPARATION_PROOF_HEX: &str =
+    "00000001110000000b01000000000000000000010000000000000002000000030000000100000001";
+
+const REPLACEMENT_PROOF_HEX: &str =
+    "00000001120000000b0000000000000000000001000000000000000100000002000000030000000400000000";
 
 #[test]
 fn extensionality_lowers_to_the_exact_checked_identity_vector() {
@@ -156,6 +167,383 @@ fn fixed_zfc_axiom_presentation_is_identity_neutral() {
         compile(EXTENSIONALITY_SOURCE).unwrap(),
         compile(renamed).unwrap()
     );
+}
+
+#[test]
+fn separation_lowers_to_the_exact_checked_identity_vector() {
+    let proof = compile(SEPARATION_SOURCE).unwrap();
+    assert_eq!(
+        proof.statement_id(),
+        StatementId::from_bytes(hex32(
+            "cdc8f561c1e6d36cb437da9cfce5f97ab9079f5985f769c02c67ab2ff803f9a3"
+        ))
+    );
+    assert_eq!(
+        proof.derivation_id(),
+        DerivationId::from_bytes(hex32(
+            "073ae5f13c159cda79b6fe31ed033eb8bb1b79ffcd21fa617adc5aea139408a6"
+        ))
+    );
+    assert_eq!(
+        proof.proof_id(),
+        ProofId::from_bytes(hex32(
+            "426fcca7bbf116adebfa819e0eaf7c465c0215d3b367d5446c3882b1f1a7697c"
+        ))
+    );
+    assert_eq!(
+        proof.canonical_proof_bytes(),
+        hex_bytes(SEPARATION_PROOF_HEX)
+    );
+
+    let element = FreeVariable::new(0);
+    let parameter = FreeVariable::new(1);
+    let source = FreeVariable::new(2);
+    let result = FreeVariable::new(3);
+    let decoded = ProofCertificate::from_canonical_bytes(proof.canonical_proof_bytes()).unwrap();
+    assert_eq!(
+        decoded.steps(),
+        &[ProofStep::Separation(Separation {
+            predicate: Formula::member(element, parameter),
+            element,
+            source,
+            result,
+            parameters: vec![parameter],
+        })]
+    );
+}
+
+#[test]
+fn replacement_lowers_to_the_exact_checked_identity_vector() {
+    let proof = compile(REPLACEMENT_SOURCE).unwrap();
+    assert_eq!(
+        proof.statement_id(),
+        StatementId::from_bytes(hex32(
+            "4d12c8f960638ff317e561e8861808875f18dfd22910c38712e05112e26724f5"
+        ))
+    );
+    assert_eq!(
+        proof.derivation_id(),
+        DerivationId::from_bytes(hex32(
+            "72d5c8f81af4a2bcbe1eb7ed9fc1963ecbc1fedf91edf20d85f55c84051c93ec"
+        ))
+    );
+    assert_eq!(
+        proof.proof_id(),
+        ProofId::from_bytes(hex32(
+            "7c5a06a3e764c6b6e372334645050bd314f8a7e64c96633e3d3aff90ca2bd156"
+        ))
+    );
+    assert_eq!(
+        proof.canonical_proof_bytes(),
+        hex_bytes(REPLACEMENT_PROOF_HEX)
+    );
+
+    let input = FreeVariable::new(0);
+    let output = FreeVariable::new(1);
+    let uniqueness_witness = FreeVariable::new(2);
+    let source = FreeVariable::new(3);
+    let result = FreeVariable::new(4);
+    let decoded = ProofCertificate::from_canonical_bytes(proof.canonical_proof_bytes()).unwrap();
+    assert_eq!(
+        decoded.steps(),
+        &[ProofStep::Replacement(Replacement {
+            predicate: Formula::equal(input, output),
+            input,
+            output,
+            uniqueness_witness,
+            source,
+            result,
+            parameters: Vec::new(),
+        })]
+    );
+}
+
+#[test]
+fn schema_presentation_renaming_preserves_every_identity() {
+    let renamed_separation = SEPARATION_SOURCE
+        .replace("intersection", "selection")
+        .replace("filter", "criterion")
+        .replace("source", "domain")
+        .replace("element", "candidate");
+    assert_eq!(
+        compile(SEPARATION_SOURCE).unwrap(),
+        compile(&renamed_separation).unwrap()
+    );
+
+    let renamed_replacement = REPLACEMENT_SOURCE
+        .replace("image", "mapping")
+        .replace("input", "argument")
+        .replace("output", "value")
+        .replace("witness", "alternate")
+        .replace("source", "domain");
+    assert_eq!(
+        compile(REPLACEMENT_SOURCE).unwrap(),
+        compile(&renamed_replacement).unwrap()
+    );
+}
+
+#[test]
+fn schema_source_order_maps_exactly_and_parameter_order_is_semantic() {
+    let separation = parse_step(
+        "(separation (implies (member element source) (equal first second)) element source result (parameters first second))",
+    )
+    .unwrap();
+    assert_eq!(
+        separation,
+        ProofStep::Separation(Separation {
+            predicate: Formula::implies(
+                Formula::member(FreeVariable::new(0), FreeVariable::new(1)),
+                Formula::equal(FreeVariable::new(2), FreeVariable::new(3)),
+            ),
+            element: FreeVariable::new(0),
+            source: FreeVariable::new(1),
+            result: FreeVariable::new(4),
+            parameters: vec![FreeVariable::new(2), FreeVariable::new(3)],
+        })
+    );
+
+    let replacement = parse_step(
+        "(replacement (implies (equal input output) (member input parameter)) input output witness source result (parameters parameter unused))",
+    )
+    .unwrap();
+    assert_eq!(
+        replacement,
+        ProofStep::Replacement(Replacement {
+            predicate: Formula::implies(
+                Formula::equal(FreeVariable::new(0), FreeVariable::new(1)),
+                Formula::member(FreeVariable::new(0), FreeVariable::new(2)),
+            ),
+            input: FreeVariable::new(0),
+            output: FreeVariable::new(1),
+            uniqueness_witness: FreeVariable::new(3),
+            source: FreeVariable::new(4),
+            result: FreeVariable::new(5),
+            parameters: vec![FreeVariable::new(2), FreeVariable::new(6)],
+        })
+    );
+
+    let first_then_second = parse_step(
+        "(separation (equal first second) element source result (parameters first second))",
+    )
+    .unwrap();
+    let second_then_first = parse_step(
+        "(separation (equal first second) element source result (parameters second first))",
+    )
+    .unwrap();
+    let checked = |step| {
+        normalize_and_check(ProofCertificate::new(vec![step]).unwrap())
+            .unwrap()
+            .statement_id()
+    };
+    assert_ne!(checked(first_then_second), checked(second_then_first));
+}
+
+#[test]
+fn schema_parameter_list_is_mandatory_exact_and_arity_delimited() {
+    for (source, expected) in [
+        (
+            "(separation (equal element element) element source result)",
+            "`(`",
+        ),
+        (
+            "(separation (equal element element) element source (parameters))",
+            "a name",
+        ),
+        (
+            "(separation (equal element element) element source result (parameter))",
+            "parameters",
+        ),
+        (
+            "(replacement (equal input output) input output witness source result extra (parameters))",
+            "`(`",
+        ),
+        (
+            "(replacement (equal input output) input output witness source result (parameters) extra)",
+            "`)`",
+        ),
+    ] {
+        assert!(
+            matches!(
+                parse_step(source),
+                Err(CompileError::Syntax { expected: actual, .. }) if actual == expected
+            ),
+            "accepted or misreported {source:?}"
+        );
+    }
+
+    assert!(matches!(
+        parse_step("(separation (equal element element) element source result (parameters"),
+        Err(CompileError::Syntax {
+            expected: "a name",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn every_schema_side_condition_remains_checker_owned() {
+    for (step, expected) in [
+        (
+            "(separation (equal shared shared) shared shared result (parameters))",
+            SchemaError::RoleVariableCollision(FreeVariable::new(0)),
+        ),
+        (
+            "(separation (equal element element) element source result (parameters source))",
+            SchemaError::ParameterCollidesWithRole(FreeVariable::new(1)),
+        ),
+        (
+            "(separation (equal element element) element source result (parameters parameter parameter))",
+            SchemaError::DuplicateParameter(FreeVariable::new(3)),
+        ),
+        (
+            "(separation (equal result result) element source result (parameters))",
+            SchemaError::ForbiddenPredicateVariable(FreeVariable::new(0)),
+        ),
+        (
+            "(separation (equal undeclared undeclared) element source result (parameters))",
+            SchemaError::UndeclaredPredicateVariable(FreeVariable::new(0)),
+        ),
+        (
+            "(replacement (equal witness output) input output witness source result (parameters))",
+            SchemaError::ForbiddenPredicateVariable(FreeVariable::new(0)),
+        ),
+    ] {
+        assert_eq!(
+            compile_schema_step(step),
+            Err(CompileError::Check {
+                source: CheckError::Schema {
+                    step: 0,
+                    source: expected,
+                },
+            }),
+            "schema authority changed for {step:?}"
+        );
+    }
+}
+
+#[test]
+fn schema_error_precedence_follows_foundation_validation_order() {
+    for (step, expected) in [
+        (
+            "(separation (equal result result) shared shared result (parameters shared shared))",
+            SchemaError::RoleVariableCollision(FreeVariable::new(1)),
+        ),
+        (
+            "(separation (equal result result) element source result (parameters source source))",
+            SchemaError::ParameterCollidesWithRole(FreeVariable::new(2)),
+        ),
+        (
+            "(separation (equal result result) element source result (parameters parameter parameter))",
+            SchemaError::DuplicateParameter(FreeVariable::new(3)),
+        ),
+        (
+            "(separation (implies (equal result result) (equal undeclared undeclared)) element source result (parameters))",
+            SchemaError::ForbiddenPredicateVariable(FreeVariable::new(0)),
+        ),
+        (
+            "(separation (implies (equal undeclared undeclared) (equal result result)) element source result (parameters))",
+            SchemaError::UndeclaredPredicateVariable(FreeVariable::new(0)),
+        ),
+    ] {
+        assert_eq!(
+            compile_schema_step(step),
+            Err(CompileError::Check {
+                source: CheckError::Schema {
+                    step: 0,
+                    source: expected,
+                },
+            })
+        );
+    }
+}
+
+#[test]
+fn bound_occurrences_of_fresh_role_names_are_not_free_schema_uses() {
+    for step in [
+        "(separation (forall result (equal result result)) element source result (parameters))",
+        "(replacement (forall witness (forall result (equal witness result))) input output witness source result (parameters))",
+    ] {
+        assert_eq!(
+            compile_schema_step(step),
+            Err(CompileError::StatementMismatch)
+        );
+    }
+}
+
+#[test]
+fn normalization_removes_an_unreachable_invalid_schema() {
+    let with_invalid_schema = SOURCE.replace(
+        "step reflexive =",
+        "step invalid = (separation (equal result result) element source result (parameters));\n    step reflexive =",
+    );
+    assert_eq!(
+        compile(&with_invalid_schema).unwrap(),
+        compile(SOURCE).unwrap()
+    );
+}
+
+#[test]
+fn schema_parameter_depth_preflight_precedes_side_conditions_at_its_boundary() {
+    let parameters = (0..FORMULA_MAX_DEPTH)
+        .map(|index| format!("p{index}"))
+        .collect::<Vec<_>>();
+    let step = |parameters: &[String]| {
+        format!(
+            "(separation (equal result result) element source result (parameters {}))",
+            parameters.join(" ")
+        )
+    };
+
+    assert_eq!(
+        compile_schema_step(&step(&parameters[..parameters.len() - 1])),
+        Err(CompileError::Check {
+            source: CheckError::Schema {
+                step: 0,
+                source: SchemaError::ForbiddenPredicateVariable(FreeVariable::new(0)),
+            },
+        })
+    );
+    assert_eq!(
+        compile_schema_step(&step(&parameters)),
+        Err(CompileError::Check {
+            source: CheckError::DerivedFormula {
+                step: 0,
+                source: FormulaCodecError::DepthLimitExceeded {
+                    maximum: FORMULA_MAX_DEPTH,
+                },
+            },
+        })
+    );
+}
+
+#[test]
+fn schema_parameter_names_add_bytes_but_no_formula_nodes() {
+    const WITHOUT: &str = "(separation (equal element element) element source result (parameters))";
+    const WITH: &str =
+        "(separation (equal element element) element source result (parameters first second))";
+    let without_parameters = parse_step(WITHOUT).unwrap();
+    let with_parameters = parse_step(WITH).unwrap();
+    let with_trivia = parse_step(
+        "(separation (equal element element) element source result
+         (parameters first second # the close may follow trivia
+         ))",
+    )
+    .unwrap();
+    assert_eq!(with_trivia, with_parameters);
+
+    let encoded_without = ProofCertificate::new(vec![without_parameters])
+        .unwrap()
+        .to_canonical_bytes();
+    let encoded_with = ProofCertificate::new(vec![with_parameters])
+        .unwrap()
+        .to_canonical_bytes();
+    assert_eq!(encoded_with.len() - encoded_without.len(), 8);
+
+    for source in [WITHOUT, WITH] {
+        let mut parser = Parser::new(source);
+        parser.proof_step().unwrap();
+        assert_eq!(parser.certificate_formula_nodes, 1);
+    }
 }
 
 #[test]
@@ -701,8 +1089,9 @@ fn proof_formula_limits_are_enforced_during_parsing() {
     }
     let at_limit = format!(
         "foundation \"naome:zfc\"; theorem t {{ statement (forall x (equal x x)); proof {{
-         step budget = (classical-contraposition {balanced} {balanced});
-         step edge_a = (equality-substitution x x (equal x x));
+         step separation = (separation {balanced} element source result (parameters));
+         step replacement = (replacement {balanced} input output witness domain image (parameters));
+         step edge_a = (separation (equal x x) element source result (parameters));
          step edge_b = (equality-substitution x x (equal x x));
          step ignored_axiom = (zfc-axiom extensionality);
          step reflexive = (equality-reflexivity x);
@@ -712,7 +1101,7 @@ fn proof_formula_limits_are_enforced_during_parsing() {
 
     let over_limit = at_limit.replace(
         "step reflexive =",
-        "step excess = (equality-substitution x x (equal x x)); step reflexive =",
+        "step excess = (separation (equal x x) malformed",
     );
     assert!(matches!(
         compile(&over_limit),
@@ -728,7 +1117,7 @@ fn proof_formula_limits_are_enforced_during_parsing() {
         too_deep = format!("(not {too_deep})");
     }
     let source = format!(
-        "foundation \"naome:zfc\"; theorem t {{ statement (forall x (equal x x)); proof {{ step excessive = (simplification {too_deep} (equal x x)); result excessive; }} }}"
+        "foundation \"naome:zfc\"; theorem t {{ statement (forall x (equal x x)); proof {{ step excessive = (separation {too_deep}; result excessive; }} }}"
     );
     assert!(matches!(
         compile(&source),
@@ -963,6 +1352,19 @@ fn consuming_bytes_returns_the_exact_owned_output() {
             .as_ref(),
         NORMAL_PROOF
     );
+}
+
+fn parse_step(source: &str) -> Result<ProofStep, CompileError> {
+    let mut parser = Parser::new(source);
+    let step = parser.proof_step()?;
+    parser.end()?;
+    Ok(step)
+}
+
+fn compile_schema_step(step: &str) -> Result<CompiledProof, CompileError> {
+    compile(&format!(
+        "foundation \"naome:zfc\"; theorem schema {{ statement (forall closed (equal closed closed)); proof {{ step schema = {step}; result schema; }} }}"
+    ))
 }
 
 fn hex32(hex: &str) -> [u8; 32] {

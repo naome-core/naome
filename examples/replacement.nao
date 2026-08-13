@@ -1,0 +1,57 @@
+# Replacement instantiated for the identity relation.
+foundation "naome:zfc";
+
+theorem identity_image_exists {
+  statement
+    (forall source
+      (implies
+        (forall input
+          (implies
+            (member input source)
+            (not
+              (forall output
+                (not
+                  (not
+                    (implies
+                      (equal input output)
+                      (not
+                        (forall witness
+                          (implies
+                            (equal input witness)
+                            (equal witness output)))))))))))
+        (not
+          (forall result
+            (not
+              (forall output
+                (not
+                  (implies
+                    (implies
+                      (member output result)
+                      (not
+                        (forall input
+                          (not
+                            (not
+                              (implies
+                                (member input source)
+                                (not (equal input output))))))))
+                    (not
+                      (implies
+                        (not
+                          (forall input
+                            (not
+                              (not
+                                (implies
+                                  (member input source)
+                                  (not (equal input output)))))))
+                        (member output result)))))))))));
+
+  proof {
+    step image =
+      (replacement
+        (equal input output)
+        input output witness source result
+        (parameters));
+
+    result image;
+  }
+}
