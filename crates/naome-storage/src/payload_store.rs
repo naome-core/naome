@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, SeekFrom, Write};
 use std::path::Path;
 
 use naome_foundation::FOUNDATION_ID;
 use naome_ledger::AcceptedProofRecord;
 use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
 use sha2::{Digest, Sha256};
+
+use crate::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
 const LOCK_FILE_NAME: &str = "proof-payload-store.lock";
 const STORE_FILE_NAME: &str = "proof-payload-store.log";
@@ -261,49 +263,13 @@ impl CanonicalProofPayloadStore {
 }
 
 fn open_and_lock(directory: &Path) -> Result<File, CanonicalProofPayloadStoreError> {
-    let lock_path = directory.join(LOCK_FILE_NAME);
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)
-        .map_err(|source| CanonicalProofPayloadStoreError::LockFile { source })?;
-
-    match lock.try_lock() {
-        Ok(()) => Ok(lock),
-        Err(TryLockError::WouldBlock) => Err(CanonicalProofPayloadStoreError::Locked),
-        Err(TryLockError::Error(source)) => Err(CanonicalProofPayloadStoreError::Lock { source }),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AppendPhase {
-    Body,
-    Commit,
-}
-
-trait PayloadStoreIo: Read + Write + Seek {
-    fn set_len(&mut self, size: u64) -> io::Result<()>;
-    fn sync_all(&mut self) -> io::Result<()>;
-
-    fn append_write_all(&mut self, _phase: AppendPhase, bytes: &[u8]) -> io::Result<()> {
-        self.write_all(bytes)
-    }
-
-    fn append_sync_all(&mut self, _phase: AppendPhase) -> io::Result<()> {
-        self.sync_all()
-    }
-}
-
-impl PayloadStoreIo for File {
-    fn set_len(&mut self, size: u64) -> io::Result<()> {
-        File::set_len(self, size)
-    }
-
-    fn sync_all(&mut self) -> io::Result<()> {
-        File::sync_all(self)
-    }
+    open_exclusive_lock(directory, LOCK_FILE_NAME).map_err(|error| match error {
+        ExclusiveLockError::LockFile(source) => {
+            CanonicalProofPayloadStoreError::LockFile { source }
+        }
+        ExclusiveLockError::Locked => CanonicalProofPayloadStoreError::Locked,
+        ExclusiveLockError::Lock(source) => CanonicalProofPayloadStoreError::Lock { source },
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,7 +287,7 @@ struct ProofPayloadStoreCore<F> {
     poisoned: bool,
 }
 
-impl<F: PayloadStoreIo> ProofPayloadStoreCore<F> {
+impl<F: StoreIo> ProofPayloadStoreCore<F> {
     fn empty(file: F, limits: ProofPayloadStoreLimits) -> Self {
         Self {
             file,
@@ -678,7 +644,7 @@ fn reserve_index_entry(
         .map_err(|_| CanonicalProofPayloadStoreError::IndexAllocation { entry })
 }
 
-fn recover_tail<F: PayloadStoreIo>(
+fn recover_tail<F: StoreIo>(
     file: &mut F,
     offset: u64,
 ) -> Result<(), CanonicalProofPayloadStoreError> {
@@ -687,7 +653,7 @@ fn recover_tail<F: PayloadStoreIo>(
         .map_err(|source| CanonicalProofPayloadStoreError::Recovery { offset, source })
 }
 
-fn read_field<F: PayloadStoreIo>(
+fn read_field<F: StoreIo>(
     file: &mut F,
     bytes: &mut [u8],
     offset: u64,
@@ -702,7 +668,7 @@ enum StoredReadError {
     Changed,
 }
 
-fn read_stored_header<F: PayloadStoreIo>(
+fn read_stored_header<F: StoreIo>(
     file: &mut F,
     location: PayloadLocation,
     expected_proof_id: ProofId,
@@ -735,7 +701,7 @@ fn read_stored_header<F: PayloadStoreIo>(
     Ok(entry_hasher(payload_length_bytes, expected_proof_id))
 }
 
-fn verify_stored_footer<F: PayloadStoreIo>(
+fn verify_stored_footer<F: StoreIo>(
     file: &mut F,
     location: PayloadLocation,
     hasher: Sha256,
@@ -757,7 +723,7 @@ fn verify_stored_footer<F: PayloadStoreIo>(
     Ok(())
 }
 
-fn stored_payload_matches<F: PayloadStoreIo>(
+fn stored_payload_matches<F: StoreIo>(
     file: &mut F,
     location: PayloadLocation,
     expected_proof_id: ProofId,
@@ -792,7 +758,7 @@ fn stored_payload_matches<F: PayloadStoreIo>(
     Ok(matches)
 }
 
-fn read_stored_payload<F: PayloadStoreIo>(
+fn read_stored_payload<F: StoreIo>(
     file: &mut F,
     location: PayloadLocation,
     expected_proof_id: ProofId,

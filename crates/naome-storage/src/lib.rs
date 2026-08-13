@@ -11,10 +11,20 @@
 //! records. Consumers must validate loaded bytes again in their target proof
 //! context.
 //!
-//! These stores define no competing forks, reorganization, consensus,
-//! finality, networking, or economic state.
+//! [`ProofBlockCandidateStore`] retains chain-scoped structural blocks,
+//! including siblings and blocks with unavailable parents, without validating
+//! or selecting a candidate history. These stores define no reorganization,
+//! fork choice, consensus, finality, networking, or economic state.
 
+mod block_candidate_store;
+#[cfg(test)]
+mod fault_io;
 mod payload_store;
+
+pub use block_candidate_store::{
+    ProofBlockCandidateInsertOutcome, ProofBlockCandidateStore, ProofBlockCandidateStoreError,
+    ProofBlockCandidateStoreLimits, ProofBlockCandidateStoreLimitsError,
+};
 
 pub use payload_store::{
     CanonicalProofPayload, CanonicalProofPayloadStore, CanonicalProofPayloadStoreError,
@@ -220,19 +230,33 @@ impl ProofChainJournal {
 }
 
 fn open_and_lock(directory: &Path) -> Result<File, ProofChainJournalError> {
-    let lock_path = directory.join(LOCK_FILE_NAME);
+    open_exclusive_lock(directory, LOCK_FILE_NAME).map_err(|error| match error {
+        ExclusiveLockError::LockFile(source) => ProofChainJournalError::LockFile { source },
+        ExclusiveLockError::Locked => ProofChainJournalError::Locked,
+        ExclusiveLockError::Lock(source) => ProofChainJournalError::Lock { source },
+    })
+}
+
+enum ExclusiveLockError {
+    LockFile(io::Error),
+    Locked,
+    Lock(io::Error),
+}
+
+fn open_exclusive_lock(directory: &Path, file_name: &str) -> Result<File, ExclusiveLockError> {
+    let lock_path = directory.join(file_name);
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(lock_path)
-        .map_err(|source| ProofChainJournalError::LockFile { source })?;
+        .map_err(ExclusiveLockError::LockFile)?;
 
     match lock.try_lock() {
         Ok(()) => Ok(lock),
-        Err(TryLockError::WouldBlock) => Err(ProofChainJournalError::Locked),
-        Err(TryLockError::Error(source)) => Err(ProofChainJournalError::Lock { source }),
+        Err(TryLockError::WouldBlock) => Err(ExclusiveLockError::Locked),
+        Err(TryLockError::Error(source)) => Err(ExclusiveLockError::Lock(source)),
     }
 }
 
@@ -242,7 +266,7 @@ enum AppendPhase {
     Commit,
 }
 
-trait JournalIo: Read + Write + Seek {
+trait StoreIo: Read + Write + Seek {
     fn set_len(&mut self, size: u64) -> io::Result<()>;
     fn sync_all(&mut self) -> io::Result<()>;
 
@@ -255,7 +279,7 @@ trait JournalIo: Read + Write + Seek {
     }
 }
 
-impl JournalIo for File {
+impl StoreIo for File {
     fn set_len(&mut self, size: u64) -> io::Result<()> {
         File::set_len(self, size)
     }
@@ -273,7 +297,7 @@ struct JournalCore<F> {
     poisoned: bool,
 }
 
-impl<F: JournalIo> JournalCore<F> {
+impl<F: StoreIo> JournalCore<F> {
     fn empty(file: F, chain: ProofChainState) -> Self {
         Self {
             file,
@@ -669,13 +693,13 @@ fn reserve_block_index_entry(
         .map_err(|_| ProofChainJournalError::BlockIndexAllocation { entry })
 }
 
-fn recover_tail<F: JournalIo>(file: &mut F, offset: u64) -> Result<(), ProofChainJournalError> {
+fn recover_tail<F: StoreIo>(file: &mut F, offset: u64) -> Result<(), ProofChainJournalError> {
     file.set_len(offset)
         .and_then(|()| file.sync_all())
         .map_err(|source| ProofChainJournalError::Recovery { offset, source })
 }
 
-fn read_field<F: JournalIo>(
+fn read_field<F: StoreIo>(
     file: &mut F,
     bytes: &mut [u8],
     offset: u64,

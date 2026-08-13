@@ -1,13 +1,13 @@
 use std::env;
 use std::fs;
-use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
     AppendPhase, BLOCK_LENGTH_BYTES, ENTRY_FIXED_BYTES, ENTRY_MAX_BODY_BYTES, ENTRY_MIN_BODY_BYTES,
-    JOURNAL_FILE_NAME, JOURNAL_HEADER, JOURNAL_PREFIX_BYTES, JournalCore, JournalIo,
-    PROOF_BLOCK_MIN_BYTES, ProofChainJournal, ProofChainJournalError,
+    JOURNAL_FILE_NAME, JOURNAL_HEADER, JOURNAL_PREFIX_BYTES, JournalCore, PROOF_BLOCK_MIN_BYTES,
+    ProofChainJournal, ProofChainJournalError,
 };
 use naome_chain::{
     AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, ProofBlock, ProofBlockApplyError,
