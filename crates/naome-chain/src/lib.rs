@@ -8,7 +8,9 @@
 //! [`ProofTransition`] additionally binds one bounded dependency-first rooted
 //! batch to exact before-and-after [`ProofSetRoot`] values. [`ProofBlock`] and
 //! [`ProofChainState`] place those transitions in one canonical exact-parent
-//! execution history without claiming consensus inclusion or finality.
+//! execution history without claiming consensus inclusion or finality. The
+//! same checks may run in discarded staged state before later application
+//! revalidates and selects one direct child.
 //!
 //! This crate defines no consensus selection, fork choice, reorganization,
 //! finality, persistence, economy, or peer-to-peer synchronization.
@@ -176,6 +178,16 @@ impl ProofDag {
             .expect("the rooted batch inserted its requested root"))
     }
 
+    /// Validates one addressed dependency closure without retaining it.
+    fn validate_rooted_canonical_proof_batch(
+        &self,
+        requested_root: ProofId,
+        candidates: Vec<AddressedProofCandidate>,
+    ) -> Result<(), ProofBatchError> {
+        self.ledger
+            .validate_rooted_canonical_proof_batch(requested_root, candidates)
+    }
+
     /// Atomically applies one canonical proof-state transition.
     ///
     /// State binding, exact candidate correlation, and read-only resulting-root
@@ -187,6 +199,27 @@ impl ProofDag {
         transition: &ProofTransition,
         candidates: Vec<AddressedProofCandidate>,
     ) -> Result<&AcceptedProofRecord, ProofTransitionApplyError> {
+        self.preflight_proof_transition(transition, &candidates)?;
+        self.apply_rooted_canonical_proof_batch(transition.root_proof_id(), candidates)
+            .map_err(|source| ProofTransitionApplyError::Batch { source })
+    }
+
+    /// Validates one canonical proof-state transition without retaining it.
+    pub(crate) fn validate_proof_transition(
+        &self,
+        transition: &ProofTransition,
+        candidates: Vec<AddressedProofCandidate>,
+    ) -> Result<(), ProofTransitionApplyError> {
+        self.preflight_proof_transition(transition, &candidates)?;
+        self.validate_rooted_canonical_proof_batch(transition.root_proof_id(), candidates)
+            .map_err(|source| ProofTransitionApplyError::Batch { source })
+    }
+
+    fn preflight_proof_transition(
+        &self,
+        transition: &ProofTransition,
+        candidates: &[AddressedProofCandidate],
+    ) -> Result<(), ProofTransitionApplyError> {
         let actual_previous_root = self.proof_set_root();
         if actual_previous_root != transition.previous_proof_set_root() {
             return Err(ProofTransitionApplyError::PreviousProofSetRootMismatch {
@@ -205,7 +238,7 @@ impl ProofDag {
             .proof_ids()
             .iter()
             .copied()
-            .zip(&candidates)
+            .zip(candidates)
             .enumerate()
         {
             let actual = candidate.expected_proof_id();
@@ -225,9 +258,7 @@ impl ProofDag {
                 actual: projected_root,
             });
         }
-
-        self.apply_rooted_canonical_proof_batch(transition.root_proof_id(), candidates)
-            .map_err(|source| ProofTransitionApplyError::Batch { source })
+        Ok(())
     }
 
     fn retain_record(&mut self, record: AcceptedProofRecord) -> &AcceptedProofRecord {

@@ -4,7 +4,8 @@
 //! the exact canonical proof payloads committed by each block. Opening a
 //! journal reconstructs the block head and complete selected proof DAG through
 //! strict [`ProofChainState`] replay; persisted bytes never bypass block or
-//! proof validation.
+//! proof validation. One exact-parent block may also be validated read-only;
+//! durable application always revalidates before selection and commit.
 //!
 //! [`CanonicalProofPayloadStore`] separately archives exact payload bytes from
 //! accepted proof records without making them selected or reusable as checked
@@ -175,6 +176,23 @@ impl ProofChainJournal {
         candidates: Vec<AddressedProofCandidate>,
     ) -> Result<&AcceptedProofRecord, ProofChainJournalError> {
         self.core.apply_block(block, candidates)
+    }
+
+    /// Validates one exact-parent block without changing memory or disk.
+    ///
+    /// Success is relative only to the journal's current selected state. It
+    /// reserves no block, confers no selection authority, and every later
+    /// application fully revalidates against the then-current state.
+    pub fn validate_block(
+        &self,
+        block: &ProofBlock,
+        candidates: Vec<AddressedProofCandidate>,
+    ) -> Result<(), ProofChainJournalError> {
+        self.core.ensure_healthy()?;
+        self.core
+            .chain
+            .validate_block(block, candidates)
+            .map_err(|source| ProofChainJournalError::BlockAdmission { source })
     }
 
     /// Returns the exact committed head, or the virtual genesis anchor if empty.

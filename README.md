@@ -13,7 +13,9 @@ admitted from accepted proof records, and bounded caller-driven exchange,
 multi-peer head surveys, and caller-selected proof-chain catch-up among
 statically authorized peers. Stored candidates, archived payloads, peer-reported
 heads, and fetched ancestry remain inputs that require explicit target-context
-validation before selection.
+validation before selection. One exact direct-child block and its addressed
+proof closure can be validated against current selected state without changing
+that state; durable application repeats the complete validation.
 
 Each local chain begins from a canonical definition that binds its deployment,
 the current Foundation identity, and the empty authenticated proof state before
@@ -46,6 +48,8 @@ The following boundaries are invariant:
   no ancestry, proof-validity, execution, or selection authority;
 - the payload archive preserves accepted canonical bytes but confers no reusable
   checking or selection authority;
+- successful read-only block validation is local and state-relative; it creates
+  no durable, transferable, selection, or consensus authority;
 - peer heads, blocks, ancestry, records, and receipts confer no consensus or
   selection authority; and
 - learned address records never authorize proof sessions.

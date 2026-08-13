@@ -22,6 +22,7 @@ use naome_proof::{
 };
 
 mod admission;
+mod candidate_validation;
 mod faults;
 mod replay;
 
