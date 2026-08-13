@@ -42,6 +42,9 @@ step        := "step" name "=" proof-expression ";"
 proof-expression
             := "(" "simplification" formula formula ")"
              | "(" "frege" formula formula formula ")"
+             | "(" "universal-distribution" name formula formula ")"
+             | "(" "vacuous-universal" formula ")"
+             | "(" "universal-instantiation" name name formula ")"
              | "(" "modus-ponens" name name ")"
              | "(" "equality-reflexivity" name ")"
              | "(" "generalization" name name ")"
@@ -62,8 +65,9 @@ Foundation string. No string escape or other comment form exists.
 Keywords and rule names are case-sensitive. The complete input must match the
 grammar; trailing tokens are rejected. The theorem name is presentation data.
 Formula syntax alone does not make a statement derivable. Proof expressions
-instantiate L1, L2, or E1, or apply explicit modus ponens or generalization;
-the checker still determines whether those steps derive the declared statement.
+instantiate L1, L2, Q1, Q2, Q3, or E1, or apply explicit modus ponens or
+generalization; the checker still determines whether those steps derive the
+declared statement.
 
 ## Names and proof construction
 
@@ -84,17 +88,29 @@ declared step. At least one step is required.
 Earlier steps may be unreachable from that result; the Proof Protocol's normal
 form removes them before checking and identity derivation.
 
-The five proof expressions lower exactly as follows:
+Quantifier expressions refer to presentation variables, not binders already
+present in their formula operands. `universal-distribution x A B` instantiates
+Q1 with `x`, `A`, and `B`. `universal-instantiation x y A` instantiates Q3 by
+binding the free occurrences of `x` in `A`, then capture-freely substituting
+free `y` into the conclusion. Q2 has no source binder operand:
+`vacuous-universal A` constructs a fresh nameless binder internally, so its
+freshness side condition cannot depend on a presentation name.
+
+The eight proof expressions lower exactly as follows:
 
 | Source | Proof certificate step |
 | --- | --- |
 | `(simplification A B)` | Foundation L1 instantiated as `A -> (B -> A)` |
 | `(frege A B C)` | Foundation L2 instantiated as `(A -> (B -> C)) -> ((A -> B) -> (A -> C))` |
+| `(universal-distribution x A B)` | Foundation Q1 instantiated as `forall x (A -> B) -> (forall x A -> forall x B)` |
+| `(vacuous-universal A)` | Foundation Q2 instantiated as `A -> forall _ A` with a fresh nameless binder |
+| `(universal-instantiation x y A)` | Foundation Q3 instantiated as `forall x A -> A[x := y]` with capture-free substitution |
 | `(modus-ponens premise implication)` | modus ponens with the two earlier steps in premise-then-implication order |
 | `(equality-reflexivity x)` | Foundation E1 for `x` |
 | `(generalization premise x)` | generalization of the earlier `premise` step over `x` |
 
-No source construct adds an implicit proof step or universal quantifier.
+No source construct adds an implicit proof step. Q2's nameless binder is the
+only universal quantifier introduced without a presentation-variable operand.
 
 ## Compilation
 
@@ -163,9 +179,12 @@ and rejected before parsing when it exceeds that inclusive limit. Names
 and token count have no separate arbitrary cap; their total representation is
 already bounded by source bytes, while the number that can reach a compiled
 proof is bounded by the existing formula-node and certificate-step limits.
-Every formula occurrence in a `simplification` or `frege` expression is charged
+Every formula occurrence in a formula-bearing proof expression is charged
 independently against `CERTIFICATE_MAX_FORMULA_NODES`, including textually equal
-operands. The declared statement has its separate standalone formula budget.
+operands. This covers both operands of `simplification` and
+`universal-distribution`, all three operands of `frege`, and the single operand
+of `vacuous-universal` and `universal-instantiation`. The declared statement has
+its separate standalone formula budget.
 The CLI reads at most the limit plus one byte before decoding UTF-8. Its
 over-limit diagnostic therefore states only that the limit was exceeded; it
 does not misreport that bounded observation as the complete file length.
@@ -190,11 +209,12 @@ The exact inherited executable limits are:
 `CompileError` reports the first failure reached in source order. The complete
 source-length check precedes parsing. Within parsing, syntax, Foundation, name,
 dependency, formula-depth, and cumulative certificate formula-node checks occur
-when their token is reached; an
-earlier Foundation mismatch therefore precedes errors in the theorem body, for
-example. The declared statement's formula-limit checks complete when that
-formula has parsed, before the rest of the theorem. The first step beyond
-`CERTIFICATE_MAX_STEPS` returns that certificate-limit error immediately,
+when their token is reached; an earlier Foundation mismatch therefore precedes
+errors in the theorem body, for example. Quantifier-expression operands are
+parsed left to right in grammar order. The declared statement's formula-limit
+checks complete when that formula has parsed, before the rest of the theorem.
+The first step beyond `CERTIFICATE_MAX_STEPS` returns that certificate-limit
+error immediately,
 before later result or EOF tokens. Otherwise complete parsing, including the
 final-result and EOF requirements, precedes certificate construction.
 Certificate errors precede checker errors; checked-proof failure precedes
@@ -220,51 +240,37 @@ Offsets below are zero-based UTF-8 byte offsets into the original source:
 ## Example
 
 ```nao
-# A complete Hilbert derivation of forall x, (x = x) -> (x = x).
+# Derive forall y, y = y by instantiating an earlier universal theorem.
 foundation "naome:zfc";
 
-theorem implication_identity {
-  statement (forall x (implies (equal x x) (equal x x)));
+theorem universal_equality_is_usable {
+  statement (forall y (equal y y));
 
   proof {
-    step keep_left =
-      (simplification (equal x x) (equal x x));
+    step reflexive_at_x = (equality-reflexivity x);
+    step universal_at_x = (generalization reflexive_at_x x);
+    step instantiate_at_y =
+      (universal-instantiation x y (equal x x));
+    step reflexive_at_y =
+      (modus-ponens universal_at_x instantiate_at_y);
+    step universal_at_y = (generalization reflexive_at_y y);
 
-    step keep_implication =
-      (simplification
-        (equal x x)
-        (implies (equal x x) (equal x x)));
-
-    step distribute =
-      (frege
-        (equal x x)
-        (implies (equal x x) (equal x x))
-        (equal x x));
-
-    step lifted_identity =
-      (modus-ponens keep_implication distribute);
-    step identity =
-      (modus-ponens keep_left lifted_identity);
-    step universally_identity =
-      (generalization identity x);
-
-    result universally_identity;
+    result universal_at_y;
   }
 }
 ```
 
-The example uses L1 twice and L2 once, then applies modus ponens twice before
-closing the result by generalization. It checks
-`forall x ((x = x) -> (x = x))`. The same source is runnable as
-`examples/implication-identity.nao`; `examples/self-equality.nao` remains the
-smaller E1-and-generalization example.
+The example proves `forall y (y = y)` through E1, generalization, Q3, modus
+ponens, and a final generalization. It is runnable as
+`examples/quantifier-instantiation.nao`. The existing implication and minimal
+self-equality examples remain available separately.
 
 ## Non-goals
 
 This authoring contract defines no:
 
-- additional formulas, other logical or ZFC axiom-step syntax, schema syntax,
-  or derived connectives;
+- additional formulas, L3, E2, ZFC axiom-step or schema syntax, or derived
+  connectives;
 - proof references, imports, multiple theorems, theorem libraries, definitions,
   constants, functions, namespaces, modules, macros, or compatibility aliases;
 - ledger registration, block construction, chain or candidate-store mutation,

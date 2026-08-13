@@ -283,6 +283,30 @@ impl<'source> Parser<'source> {
                     third,
                 }
             }
+            "universal-distribution" => {
+                let variable = self.variable()?;
+                let antecedent = self.formula(1, FormulaContext::Certificate)?;
+                let consequent = self.formula(1, FormulaContext::Certificate)?;
+                ProofStep::UniversalDistribution {
+                    variable,
+                    antecedent,
+                    consequent,
+                }
+            }
+            "vacuous-universal" => {
+                let formula = self.formula(1, FormulaContext::Certificate)?;
+                ProofStep::VacuousUniversal { formula }
+            }
+            "universal-instantiation" => {
+                let variable = self.variable()?;
+                let replacement = self.variable()?;
+                let body = self.formula(1, FormulaContext::Certificate)?;
+                ProofStep::UniversalInstantiation {
+                    variable,
+                    replacement,
+                    body,
+                }
+            }
             "modus-ponens" => {
                 let premise = self.earlier_step()?;
                 let implication = self.earlier_step()?;

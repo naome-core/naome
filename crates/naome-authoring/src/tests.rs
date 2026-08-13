@@ -22,7 +22,11 @@ const NORMAL_PROOF: &[u8] = &[
 
 const IMPLICATION_SOURCE: &str = include_str!("../../../examples/implication-identity.nao");
 
+const QUANTIFIER_SOURCE: &str = include_str!("../../../examples/quantifier-instantiation.nao");
+
 const IMPLICATION_PROOF_HEX: &str = "00000006000000000b00000000000000000000000000000b0000000000000000000000000000000b0000000000000000000000000000170300000000000000000000000000000000000000000000010000000b00000000000000000000000000001703000000000000000000000000000000000000000000000000000b0000000000000000000000200000000100000002200000000000000003210000000400000000";
+
+const QUANTIFIER_PROOF_HEX: &str = "0000000506000000002100000000000000000500000000000000010000000b0000000000000000000000200000000100000002210000000300000001";
 
 #[test]
 fn example_compiles_to_the_existing_checked_identity_vector() {
@@ -141,6 +145,137 @@ fn implication_proof_presentation_is_identity_neutral() {
     assert_eq!(
         compile(IMPLICATION_SOURCE).unwrap(),
         compile(renamed).unwrap()
+    );
+}
+
+#[test]
+fn quantifier_example_lowers_to_the_exact_checked_identity_vector() {
+    let proof = compile(QUANTIFIER_SOURCE).unwrap();
+    assert_eq!(
+        proof.statement_id(),
+        StatementId::from_bytes(hex32(
+            "f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19"
+        ))
+    );
+    assert_eq!(
+        proof.derivation_id(),
+        DerivationId::from_bytes(hex32(
+            "a85928e52c4c2833d30640cb2eaba82602ccbc39b6afea340b5b0b8d06061972"
+        ))
+    );
+    assert_eq!(
+        proof.proof_id(),
+        ProofId::from_bytes(hex32(
+            "6e35a728527633573509b24fa20cb2359a14c1f93e9f6b6f1500f8650f731720"
+        ))
+    );
+    assert_eq!(
+        proof.canonical_proof_bytes(),
+        hex_bytes(QUANTIFIER_PROOF_HEX)
+    );
+
+    let x = FreeVariable::new(0);
+    let y = FreeVariable::new(1);
+    let decoded = ProofCertificate::from_canonical_bytes(proof.canonical_proof_bytes()).unwrap();
+    assert_eq!(
+        decoded.steps(),
+        &[
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
+                premise: 0,
+                variable: x,
+            },
+            ProofStep::UniversalInstantiation {
+                variable: x,
+                replacement: y,
+                body: Formula::equal(x, x),
+            },
+            ProofStep::ModusPonens {
+                premise: 1,
+                implication: 2,
+            },
+            ProofStep::Generalization {
+                premise: 3,
+                variable: y,
+            },
+        ]
+    );
+}
+
+#[test]
+fn quantifier_steps_preserve_source_operands_and_nameless_q2() {
+    let q1 = r#"foundation "naome:zfc"; theorem q1 {
+      statement (forall close (implies
+        (forall x (implies (equal x x) (member x x)))
+        (implies (forall x (equal x x)) (forall x (member x x)))));
+      proof {
+        step rule = (universal-distribution x (equal x x) (member x x));
+        step closed = (generalization rule close); result closed;
+      } }"#;
+    let proof = compile(q1).unwrap();
+    let decoded = ProofCertificate::from_canonical_bytes(proof.canonical_proof_bytes()).unwrap();
+    let x = FreeVariable::new(0);
+    assert_eq!(
+        decoded.steps()[0],
+        ProofStep::UniversalDistribution {
+            variable: x,
+            antecedent: Formula::equal(x, x),
+            consequent: Formula::member(x, x),
+        }
+    );
+    assert_eq!(
+        compile(&q1.replace(
+            "(universal-distribution x (equal x x) (member x x))",
+            "(universal-distribution x (member x x) (equal x x))"
+        )),
+        Err(CompileError::StatementMismatch)
+    );
+
+    let q2 = r#"foundation "naome:zfc"; theorem q2 {
+      statement (implies (forall x (equal x x)) (forall unused (forall x (equal x x))));
+      proof { step rule = (vacuous-universal (forall x (equal x x))); result rule; } }"#;
+    let proof = compile(q2).unwrap();
+    let decoded = ProofCertificate::from_canonical_bytes(proof.canonical_proof_bytes()).unwrap();
+    assert_eq!(
+        decoded.steps(),
+        &[ProofStep::VacuousUniversal {
+            formula: Formula::for_all(x, Formula::equal(x, x)),
+        }]
+    );
+    assert_eq!(
+        compile(q2).unwrap(),
+        compile(&q2.replace("unused", "presentation_only")).unwrap()
+    );
+
+    let swapped_q3 = QUANTIFIER_SOURCE.replace(
+        "(universal-instantiation x y (equal x x))",
+        "(universal-instantiation y x (equal x x))",
+    );
+    assert!(matches!(
+        compile(&swapped_q3),
+        Err(CompileError::Check {
+            source: CheckError::Logic {
+                source: naome_foundation::LogicError::ModusPonensMismatch,
+                ..
+            }
+        })
+    ));
+}
+
+#[test]
+fn quantifier_presentation_renaming_preserves_identity() {
+    let renamed = QUANTIFIER_SOURCE
+        .replace("universal_equality_is_usable", "renamed")
+        .replace("reflexive_at_x", "a")
+        .replace("universal_at_x", "b")
+        .replace("instantiate_at_y", "c")
+        .replace("reflexive_at_y", "d")
+        .replace("universal_at_y", "e")
+        .replace(" x", " source")
+        .replace(" y", " target");
+    assert_eq!(
+        compile(QUANTIFIER_SOURCE).unwrap(),
+        compile(&renamed).unwrap()
     );
 }
 
