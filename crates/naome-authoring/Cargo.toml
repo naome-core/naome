@@ -1,0 +1,21 @@
+[package]
+name = "naome-authoring"
+version.workspace = true
+edition.workspace = true
+description = "Prerelease source authoring for canonical NAOME proofs."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "naome"
+path = "src/bin/naome.rs"
+doc = false
+
+[dependencies]
+naome-checker = { path = "../naome-checker" }
+naome-foundation = { path = "../naome-foundation" }
+naome-proof = { path = "../naome-proof" }
+
+[lints]
+workspace = true

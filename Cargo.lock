@@ -1726,6 +1726,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-authoring"
+version = "0.1.0"
+dependencies = [
+ "naome-checker",
+ "naome-foundation",
+ "naome-proof",
+]
+
+[[package]]
 name = "naome-chain"
 version = "0.1.0"
 dependencies = [
