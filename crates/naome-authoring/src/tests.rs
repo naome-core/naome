@@ -69,11 +69,24 @@ fn parse_step(source: &str) -> Result<ProofStep, CompileError> {
 fn parse_step_with_names(source: &str, names: &[&'static str]) -> Result<ProofStep, CompileError> {
     let mut parser = Parser::new(source);
     for (index, name) in names.iter().copied().enumerate() {
-        parser.steps.insert(name, u32::try_from(index).unwrap());
+        parser.steps.insert(
+            name,
+            StepBinding {
+                position: u32::try_from(index).unwrap(),
+                span: SourceSpan::point(0),
+            },
+        );
     }
     let step = parser.proof_step()?;
     parser.end()?;
     Ok(step)
+}
+
+fn assert_check_error(result: Result<CompiledProof, CompileError>, expected: CheckError) {
+    match result {
+        Err(CompileError::Check { source, .. }) => assert_eq!(source.as_ref(), &expected),
+        other => panic!("expected checker error {expected:?}, got {other:?}"),
+    }
 }
 
 fn compile_schema_step(step: &str) -> Result<CompiledProof, CompileError> {
@@ -503,7 +516,10 @@ proof:
             "equality_substitution(x, y, forall(y, member(y, y)))",
         ),
     ] {
-        assert_eq!(compile(&mutated), Err(CompileError::StatementMismatch));
+        assert!(matches!(
+            compile(&mutated),
+            Err(CompileError::StatementMismatch { .. })
+        ));
     }
 }
 
@@ -668,14 +684,12 @@ fn reachable_schema_errors_remain_checker_owned_and_unreachable_ones_are_pruned(
     const INVALID: &str =
         "invalid = separation(equal(result, result), element, source, result, parameters=[])";
     let reachable = complete_source("forall(x, equal(x, x))", INVALID, "invalid");
-    assert_eq!(
+    assert_check_error(
         compile(&reachable),
-        Err(CompileError::Check {
-            source: CheckError::Schema {
-                step: 0,
-                source: SchemaError::ForbiddenPredicateVariable(FreeVariable::new(0)),
-            },
-        })
+        CheckError::Schema {
+            step: 0,
+            source: SchemaError::ForbiddenPredicateVariable(FreeVariable::new(0)),
+        },
     );
 
     let unreachable = SOURCE.replace(
@@ -709,15 +723,12 @@ fn combined_schema_errors_follow_foundation_precedence_after_lowering() {
             SchemaError::UndeclaredPredicateVariable(FreeVariable::new(0)),
         ),
     ] {
-        assert_eq!(
+        assert_check_error(
             compile_schema_step(step),
-            Err(CompileError::Check {
-                source: CheckError::Schema {
-                    step: 0,
-                    source: expected,
-                },
-            }),
-            "schema precedence changed for {step:?}"
+            CheckError::Schema {
+                step: 0,
+                source: expected,
+            },
         );
     }
 }
@@ -807,7 +818,7 @@ fn duplicate_unknown_forward_and_nonfinal_steps_fail_at_their_source_offsets() {
     let nonfinal = SOURCE.replace("return p1", "return p0");
     assert!(matches!(
         compile(&nonfinal),
-        Err(CompileError::ResultNotFinal { .. })
+        Err(CompileError::ReturnNotFinal { .. })
     ));
 }
 
@@ -825,20 +836,21 @@ fn complete_parsing_precedes_checking_and_statement_comparison() {
     let open = complete_source("equal(x, x)", "p0 = equality_reflexivity(x)", "p0");
     assert!(matches!(
         compile(&open),
-        Err(CompileError::Check {
-            source: CheckError::OpenConclusion { .. }
-        })
+        Err(CompileError::Check { source, .. })
+            if matches!(source.as_ref(), CheckError::OpenConclusion { .. })
     ));
 
     let mismatch = SOURCE.replace("forall(x, equal(x, x))", "forall(x, member(x, x))");
-    assert_eq!(compile(&mismatch), Err(CompileError::StatementMismatch));
+    assert!(matches!(
+        compile(&mismatch),
+        Err(CompileError::StatementMismatch { .. })
+    ));
 
     let invalid_mp = IMPLICATION_SOURCE.replace("modus_ponens(p1, p2)", "modus_ponens(p2, p1)");
     assert!(matches!(
         compile(&invalid_mp),
-        Err(CompileError::Check {
-            source: CheckError::Logic { .. }
-        })
+        Err(CompileError::Check { source, .. })
+            if matches!(source.as_ref(), CheckError::Logic { .. })
     ));
 }
 
@@ -874,27 +886,25 @@ fn citation_lowers_to_the_exact_checked_identity_without_mutating_state() {
 #[test]
 fn citation_requires_the_exact_proof_id_in_the_supplied_state() {
     let reference = proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX);
-    let expected = || CompileError::Check {
-        source: CheckError::UnknownProofReference {
-            step: 0,
-            proof_id: ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX)),
-        },
+    let expected = || CheckError::UnknownProofReference {
+        step: 0,
+        proof_id: ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX)),
     };
-    assert_eq!(compile(&reference), Err(expected()));
-    assert_eq!(
+    assert_check_error(compile(&reference), expected());
+    assert_check_error(
         compile_with_proof_state(&reference, &ProofState::new()),
-        Err(expected())
+        expected(),
     );
 
     let (wrong_statement_state, _) = checked_state(EXTENSIONALITY_SOURCE);
-    assert_eq!(
+    assert_check_error(
         compile_with_proof_state(&reference, &wrong_statement_state),
-        Err(expected())
+        expected(),
     );
     let (same_statement_state, _) = checked_state(QUANTIFIER_SOURCE);
-    assert_eq!(
+    assert_check_error(
         compile_with_proof_state(&reference, &same_statement_state),
-        Err(expected())
+        expected(),
     );
     let (exact_state, _) = checked_state(SOURCE);
     assert!(compile_with_proof_state(&reference, &exact_state).is_ok());
@@ -919,14 +929,12 @@ fn citation_is_identity_neutral_only_for_presentation_changes() {
         SELF_EQUALITY_DERIVATION_ID_HEX,
     ] {
         let alias_id = ProofId::from_bytes(hex32(alias));
-        assert_eq!(
+        assert_check_error(
             compile_with_proof_state(&proof_reference_source(alias), &state),
-            Err(CompileError::Check {
-                source: CheckError::UnknownProofReference {
-                    step: 0,
-                    proof_id: alias_id,
-                },
-            })
+            CheckError::UnknownProofReference {
+                step: 0,
+                proof_id: alias_id,
+            },
         );
     }
 
@@ -1075,12 +1083,14 @@ fn derived_formula_node_and_depth_limits_apply_to_expanded_primitives() {
                 FormulaContext::Statement,
                 Err(CompileError::Statement {
                     source: FormulaCodecError::NodeLimitExceeded { maximum },
+                    ..
                 }),
             ) => maximum == FORMULA_MAX_NODES,
             (
                 FormulaContext::Certificate,
                 Err(CompileError::Certificate {
                     source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
+                    ..
                 }),
             ) => maximum == CERTIFICATE_MAX_FORMULA_NODES,
             _ => false,
@@ -1139,6 +1149,7 @@ fn certificate_formula_node_budget_accumulates_across_steps() {
         over_limit.proof_step(),
         Err(CompileError::Certificate {
             source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
+            ..
         }) if maximum == CERTIFICATE_MAX_FORMULA_NODES
     ));
 }
@@ -1162,15 +1173,16 @@ fn source_and_step_limits_fail_before_unbounded_growth_or_later_syntax() {
         write!(&mut source, "p{index} = generalization(p{}, x) ", index - 1).unwrap();
     }
     source.push_str("excess = unsupported(");
-    assert_eq!(
+    assert!(matches!(
         compile(&source),
         Err(CompileError::Certificate {
             source: ProofCertificateError::TooManySteps {
-                actual: CERTIFICATE_MAX_STEPS + 1,
-                maximum: CERTIFICATE_MAX_STEPS,
+                actual,
+                maximum,
             },
-        })
-    );
+            ..
+        }) if actual == CERTIFICATE_MAX_STEPS + 1 && maximum == CERTIFICATE_MAX_STEPS
+    ));
 }
 
 #[test]
@@ -1185,6 +1197,161 @@ fn every_truncation_of_the_complete_source_fails_without_output() {
             );
         }
     }
+}
+
+#[test]
+fn diagnostic_codes_and_source_positions_are_stable() {
+    let proof_id = ProofId::from_bytes([0; ProofId::BYTE_LENGTH]);
+    let errors = [
+        CompileError::SourceTooLong {
+            actual: 2,
+            maximum: 1,
+        },
+        CompileError::Syntax {
+            offset: 0,
+            expected: "syntax",
+        },
+        CompileError::FoundationMismatch { offset: 0 },
+        CompileError::DuplicateStep {
+            offset: 0,
+            name: "step".to_owned(),
+        },
+        CompileError::UnknownStep {
+            offset: 0,
+            name: "step".to_owned(),
+        },
+        CompileError::ReturnNotFinal { offset: 0 },
+        CompileError::FormulaDepthLimitExceeded {
+            offset: 0,
+            maximum: FORMULA_MAX_DEPTH,
+        },
+        CompileError::Statement {
+            offset: 0,
+            source: FormulaCodecError::NodeLimitExceeded {
+                maximum: FORMULA_MAX_NODES,
+            },
+        },
+        CompileError::Certificate {
+            offset: 0,
+            source: ProofCertificateError::EmptyCertificate,
+        },
+        CompileError::Check {
+            span: SourceSpan::point(0),
+            source: Box::new(CheckError::UnknownProofReference { step: 0, proof_id }),
+        },
+        CompileError::StatementMismatch {
+            span: SourceSpan::point(0),
+        },
+    ];
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.diagnostic_code().as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "NAO0001", "NAO0002", "NAO0003", "NAO0004", "NAO0005", "NAO0006", "NAO0007", "NAO0008",
+            "NAO0009", "NAO0010", "NAO0011",
+        ]
+    );
+    assert_eq!(errors[0].source_offset(), None);
+    assert_eq!(errors[1].source_offset(), Some(0));
+
+    let source = "αβx\r\nq\rr\tz\n";
+    assert_eq!(
+        source_position(source, 4),
+        Some(SourcePosition { line: 1, column: 3 })
+    );
+    assert_eq!(
+        source_position(source, source.find('q').unwrap()),
+        Some(SourcePosition { line: 2, column: 1 })
+    );
+    assert_eq!(
+        source_position(source, source.find('r').unwrap()),
+        Some(SourcePosition { line: 3, column: 1 })
+    );
+    assert_eq!(
+        source_position(source, source.find('z').unwrap()),
+        Some(SourcePosition { line: 3, column: 3 })
+    );
+    assert_eq!(
+        source_position(source, source.len()),
+        Some(SourcePosition { line: 4, column: 1 })
+    );
+}
+
+#[test]
+fn diagnostics_use_exact_token_statement_and_eof_spans() {
+    let wrong_foundation = SOURCE.replace("naome:zfc", "wrong");
+    let error = compile(&wrong_foundation).unwrap_err();
+    let diagnostic = error.diagnostic(&wrong_foundation);
+    let span = diagnostic.primary_span().unwrap();
+    assert_eq!(&wrong_foundation[span.start()..span.end()], "\"wrong\"");
+    assert_eq!(diagnostic.code(), DiagnosticCode::FoundationMismatch);
+
+    let mismatch = SOURCE.replace("forall(x, equal(x, x))", "forall(x, member(x, x))");
+    let error = compile(&mismatch).unwrap_err();
+    let diagnostic = error.diagnostic(&mismatch);
+    let span = diagnostic.primary_span().unwrap();
+    assert_eq!(
+        &mismatch[span.start()..span.end()],
+        "forall(x, member(x, x))"
+    );
+    assert_eq!(diagnostic.code(), DiagnosticCode::StatementMismatch);
+
+    let truncated = SOURCE.trim_end().strip_suffix("p1").unwrap();
+    let error = compile(truncated).unwrap_err();
+    let diagnostic = error.diagnostic(truncated);
+    assert_eq!(diagnostic.code(), DiagnosticCode::Syntax);
+    assert_eq!(
+        diagnostic.primary_span(),
+        Some(SourceSpan::point(truncated.len()))
+    );
+}
+
+#[test]
+fn checker_diagnostics_map_normalized_steps_back_to_source_assignments() {
+    const ZERO_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    const ONE_ID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+    let unreachable = format!(
+        "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  dead = cite(\"{ONE_ID}\")\n  broken = cite(\"{ZERO_ID}\")\n  root = generalization(broken, x)\n  return root"
+    );
+    assert_check_diagnostic_origin(
+        &unreachable,
+        "broken",
+        &format!("broken = cite(\"{ZERO_ID}\")"),
+    );
+
+    let reordered = "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  a0 = equality_reflexivity(x)\n  a1 = simplification(equal(x, x), equal(x, x))\n  broken_result = modus_ponens(a1, a0)\n  b0 = equality_reflexivity(y)\n  root = modus_ponens(b0, broken_result)\n  return root";
+    assert_check_diagnostic_origin(
+        reordered,
+        "broken_result",
+        "broken_result = modus_ponens(a1, a0)",
+    );
+
+    let interned = format!(
+        "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  p0 = cite(\"{ZERO_ID}\")\n  p1 = cite(\"{ZERO_ID}\")\n  root = modus_ponens(p1, p0)\n  return root"
+    );
+    assert_check_diagnostic_origin(&interned, "p0", &format!("p0 = cite(\"{ZERO_ID}\")"));
+}
+
+fn assert_check_diagnostic_origin(source: &str, step_name: &str, assignment: &str) {
+    let error = compile(source).unwrap_err();
+    let CompileError::Check { span, .. } = &error else {
+        panic!("expected checker error, got {error:?}");
+    };
+    assert_eq!(&source[span.start()..span.end()], assignment);
+    assert!(source[span.start()..span.end()].starts_with(step_name));
+
+    let diagnostic = error.diagnostic(source);
+    assert_eq!(diagnostic.code(), DiagnosticCode::Check);
+    assert!(
+        diagnostic
+            .message()
+            .contains(&format!("step {step_name:?}"))
+    );
+    assert!(!diagnostic.message().contains("proof step"));
+    assert_eq!(diagnostic.primary_span(), Some(*span));
 }
 
 #[test]

@@ -7,7 +7,10 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use naome_authoring::{AUTHORING_SOURCE_MAX_BYTES, CompileError, CompiledProof, compile};
+use naome_authoring::{
+    AUTHORING_SOURCE_MAX_BYTES, CompileDiagnostic, CompileError, CompiledProof, DiagnosticCode,
+    compile,
+};
 
 const USAGE: &str = "usage: naome proof <proof.nao>";
 
@@ -34,9 +37,10 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
 
     let path = PathBuf::from(path);
     let source = read_source(&path)?;
-    let proof = compile(&source).map_err(|source| CliError::Compile {
+    let proof = compile(&source).map_err(|error| CliError::Compile {
         path: path.clone(),
-        source,
+        diagnostic: error.diagnostic(&source),
+        source: Box::new(error),
     })?;
     write_compiled(output, &proof).map_err(|source| CliError::Output { source })
 }
@@ -85,10 +89,22 @@ fn write_hex_line(output: &mut impl Write, label: &str, bytes: &[u8]) -> io::Res
 #[derive(Debug)]
 enum CliError {
     Usage,
-    Read { path: PathBuf, source: io::Error },
-    SourceTooLong { path: PathBuf, maximum: usize },
-    Compile { path: PathBuf, source: CompileError },
-    Output { source: io::Error },
+    Read {
+        path: PathBuf,
+        source: io::Error,
+    },
+    SourceTooLong {
+        path: PathBuf,
+        maximum: usize,
+    },
+    Compile {
+        path: PathBuf,
+        diagnostic: CompileDiagnostic,
+        source: Box<CompileError>,
+    },
+    Output {
+        source: io::Error,
+    },
 }
 
 impl CliError {
@@ -112,11 +128,30 @@ impl fmt::Display for CliError {
             }
             Self::SourceTooLong { path, maximum } => write!(
                 formatter,
-                "{}: source exceeds the {maximum}-byte limit",
-                display_path(path)
+                "{}: error[{}]: source exceeds the {maximum}-byte limit",
+                display_path(path),
+                DiagnosticCode::SourceTooLong,
             ),
-            Self::Compile { path, source } => {
-                write!(formatter, "{}: {source}", display_path(path))
+            Self::Compile {
+                path, diagnostic, ..
+            } => {
+                let path = display_path(path);
+                match diagnostic.primary_position() {
+                    Some(position) => write!(
+                        formatter,
+                        "{path}:{}:{}: error[{}]: {}",
+                        position.line(),
+                        position.column(),
+                        diagnostic.code(),
+                        diagnostic.message(),
+                    ),
+                    None => write!(
+                        formatter,
+                        "{path}: error[{}]: {}",
+                        diagnostic.code(),
+                        diagnostic.message(),
+                    ),
+                }
             }
             Self::Output { source } => write!(formatter, "failed to write output: {source}"),
         }
@@ -127,14 +162,25 @@ impl Error for CliError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Read { source, .. } | Self::Output { source } => Some(source),
-            Self::Compile { source, .. } => Some(source),
+            Self::Compile { source, .. } => Some(source.as_ref()),
             Self::Usage | Self::SourceTooLong { .. } => None,
         }
     }
 }
 
 fn display_path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    let path = path.to_string_lossy();
+    let mut displayed = String::with_capacity(path.len());
+    for character in path.chars() {
+        if character.is_control() {
+            displayed.extend(character.escape_debug());
+        } else if matches!(character, '\u{2028}' | '\u{2029}') {
+            displayed.extend(character.escape_unicode());
+        } else {
+            displayed.push(character);
+        }
+    }
+    displayed
 }
 
 #[cfg(test)]

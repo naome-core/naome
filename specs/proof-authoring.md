@@ -282,7 +282,10 @@ source value against an empty checked-proof state. `CompiledProof` exposes
 `derivation_id`, and `proof_id`; `into_canonical_proof_bytes` consumes it and
 returns the owned canonical bytes. It is not an accepted ledger record, carries
 no selected proof state, and conveys no authority from the state used during
-compilation.
+compilation. `CompileError` exposes its stable `DiagnosticCode`, optional source
+offset, and a structured `CompileDiagnostic` derived from the exact source that
+failed. Diagnostic metadata is authoring information, never canonical proof
+content or protocol state.
 
 `compile_against_selected_chain(&str, &ProofChainJournal) ->
 Result<CompiledProof, SelectedChainCompileError>` is the protocol-facing
@@ -328,6 +331,13 @@ Usage errors exit with status `2`. File, compilation, and output errors exit
 with status `1`; success exits with status `0`. File and compilation failures
 occur before identity output begins. As with any streamed command output, an
 I/O failure while writing successful output may leave a partial byte stream.
+One located compilation failure is written to standard error as
+`naome: <path>:<line>:<column>: error[NAOxxxx]: <message>`; the bounded reader's
+unlocated over-limit failure omits line and column. Each diagnostic is exactly
+one line with no color, source echo, or caret, so an arbitrarily long source
+line is never copied into error output. Path control characters, carriage
+return, line feed, and the Unicode line and paragraph separators are escaped;
+other printable Unicode and path separators are preserved.
 
 ## Resource and error contract
 
@@ -435,8 +445,15 @@ schema errors. Complete parsing, including the final `return` and EOF
 requirements, precedes certificate construction. Certificate errors precede
 checker errors; checked-proof failure precedes declared-statement mismatch.
 
-Normalization removes unreachable steps before checker execution and assigns
-canonical variable identifiers. For each remaining schema step, the checker
+Normalization removes unreachable steps, interns exact proof nodes, emits
+dependency-first order, and assigns canonical variable identifiers. A traced
+normalization sidecar maps each normalized step back to its source step solely
+to map an authoring check failure, and is dropped after checking. If exact
+reachable source steps intern into one normalized node, the lowest source
+position is retained. The sidecar is absent from canonical bytes, identities,
+checker semantics, selected state, and every successful `CompiledProof`.
+
+For each remaining schema step, the checker
 applies the parameter-count depth preflight, then checks role collisions in
 role order; for each parameter in list order, a role collision before a
 duplicate; and, for each free predicate variable in normalized identifier
@@ -446,21 +463,41 @@ different declared statement returns `StatementMismatch` only after the schema
 has checked. Every failure returns no `CompiledProof` and has no external side
 effect.
 
-Offsets below are zero-based UTF-8 byte offsets into the original source:
+Offsets and `SourceSpan` bounds are zero-based UTF-8 byte offsets into the exact
+original source. A span is half-open: its start is inclusive and its end is
+exclusive. An EOF failure has an empty span at `source.len()`. Positions are
+one-based; LF, CRLF, and bare CR each form one line boundary, while columns
+count Unicode scalar values rather than bytes, grapheme clusters, or display
+cells. A tab therefore advances one column.
 
-| Variant | Meaning |
-| --- | --- |
-| `SourceTooLong { actual, maximum }` | The complete source exceeds `AUTHORING_SOURCE_MAX_BYTES`. |
-| `Syntax { offset, expected }` | A lexical or grammar boundary failed. |
-| `FoundationMismatch { offset }` | The quoted Foundation identifier is not `naome:zfc`. |
-| `DuplicateStep { offset, name }` | A step name repeats an earlier step name. |
-| `UnknownStep { offset, name }` | A `modus_ponens` operand or generalization premise is unknown or not earlier. |
-| `ResultNotFinal { offset }` | `return` does not name the final declared step. |
-| `FormulaDepthLimitExceeded { offset, maximum }` | The recursively expanded primitive formula exceeds `FORMULA_MAX_DEPTH` (`256`). |
-| `Statement { source }` | The declared statement violates a canonical Foundation formula limit. |
-| `Certificate { source }` | Lowered proof structure violates the Proof Protocol. |
-| `Check { source }` | The normalized proof fails deterministic checking. |
-| `StatementMismatch` | The checked conclusion differs structurally from the declared statement. |
+A source-derived name in a structured message is debug-escaped and bounded to
+its first `64` Unicode scalar values. A longer name appends ASCII `...` inside
+the existing quotes. This display bound never shortens the primary
+`SourceSpan`, which continues to address the complete source token for machine
+repair.
+
+| Code | Variant | Primary diagnostic span |
+| --- | --- | --- |
+| `NAO0001` | `SourceTooLong { actual, maximum }` | None; the failure is global. |
+| `NAO0002` | `Syntax { offset, expected }` | The token beginning at `offset`, or an empty EOF span. |
+| `NAO0003` | `FoundationMismatch { offset }` | The complete quoted Foundation identifier. |
+| `NAO0004` | `DuplicateStep { offset, name }` | The duplicate step name. |
+| `NAO0005` | `UnknownStep { offset, name }` | The unknown or forward step name. |
+| `NAO0006` | `ReturnNotFinal { offset }` | The step name following `return`. |
+| `NAO0007` | `FormulaDepthLimitExceeded { offset, maximum }` | The formula operator at the failing depth. |
+| `NAO0008` | `Statement { offset, source }` | The statement token that exceeds its formula budget. |
+| `NAO0009` | `Certificate { offset, source }` | The offending proof token, or `proof` for a whole-certificate failure. |
+| `NAO0010` | `Check { span, source }` | The complete originating source-step assignment after traced normalization. |
+| `NAO0011` | `StatementMismatch { span }` | The complete declared statement formula. |
+
+`diagnostic_code` returns the code without needing the source, while
+`diagnostic(&source)` returns its source-oriented message, optional primary
+span, and optional start position. `SourceTooLong` intentionally has no span or
+position. All other current variants are source-local when the exact failing
+source is supplied. Checker messages name the originating source step, not its
+temporary normalized numeric position. Diagnostics do not recover from an
+error, collect multiple failures, persist a source map, or change which error
+wins.
 
 ## Example
 

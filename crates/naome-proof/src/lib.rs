@@ -104,6 +104,57 @@ impl ProofCertificate {
             canonical_bytes: OnceLock::new(),
         }
     }
+
+    /// Consumes this certificate and derives its unchecked normal form with
+    /// source-step origins for authoring diagnostics.
+    ///
+    /// The returned origins resolve a normalized step to its zero-based
+    /// position in this certificate. Unreachable steps are absent. When
+    /// multiple reachable source steps intern into one exact normalized node,
+    /// lookup retains the lowest source position. Mathematical validity
+    /// remains unchecked.
+    pub fn into_unchecked_normal_form_with_step_origins(
+        self,
+    ) -> (ProofNormalForm, ProofStepOrigins) {
+        let (certificate, source_to_normalized) = normal_form::normalize_with_step_origins(self);
+        (
+            ProofNormalForm {
+                certificate,
+                canonical_bytes: OnceLock::new(),
+            },
+            ProofStepOrigins {
+                source_to_normalized,
+            },
+        )
+    }
+}
+
+/// Source-step provenance for one unchecked proof normal form.
+///
+/// This opaque mapping is retained only for authoring diagnostics. It is not
+/// part of canonical proof content or mathematical validity.
+#[must_use]
+pub struct ProofStepOrigins {
+    source_to_normalized: Vec<u32>,
+}
+
+impl ProofStepOrigins {
+    /// Returns the lowest reachable source step interned into `normalized`.
+    ///
+    /// Returns `None` when `normalized` is not a step in the associated normal
+    /// form. The returned position is zero-based in the original certificate.
+    pub fn source_step(&self, normalized: u32) -> Option<u32> {
+        if normalized == normal_form::UNNORMALIZED_STEP {
+            return None;
+        }
+        self.source_to_normalized
+            .iter()
+            .position(|candidate| *candidate == normalized)
+            .map(|source| {
+                u32::try_from(source)
+                    .expect("the certificate step limit makes every source index representable")
+            })
+    }
 }
 
 /// A deterministic, root-reachable projection of one proof certificate.
