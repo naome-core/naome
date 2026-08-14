@@ -55,7 +55,7 @@ const REPLACEMENT_PROOF_BYTES: &str =
 static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-fn compile_command_emits_exact_identities_from_primitive_and_derived_sources() {
+fn proof_command_emits_exact_identities_from_primitive_and_derived_sources() {
     for (file, statement_id, derivation_id, proof_id, proof_bytes) in [
         (
             "self-equality.nao",
@@ -111,7 +111,7 @@ fn compile_command_emits_exact_identities_from_primitive_and_derived_sources() {
             .join("../../examples")
             .join(file);
         let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-            .args(["proof", "compile"])
+            .arg("proof")
             .arg(example)
             .output()
             .unwrap();
@@ -132,7 +132,7 @@ fn compile_command_emits_exact_identities_from_primitive_and_derived_sources() {
 fn compile_failure_is_nonzero_and_emits_no_partial_identity_output() {
     let source = TemporarySource::new("foundation \"wrong\";");
     let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .args(["proof", "compile"])
+        .arg("proof")
         .arg(&source.path)
         .output()
         .unwrap();
@@ -157,7 +157,7 @@ fn invalid_modus_ponens_is_nonzero_and_emits_no_partial_identity_output() {
         ),
     );
     let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .args(["proof", "compile"])
+        .arg("proof")
         .arg(&source.path)
         .output()
         .unwrap();
@@ -170,12 +170,12 @@ fn invalid_modus_ponens_is_nonzero_and_emits_no_partial_identity_output() {
 }
 
 #[test]
-fn compile_command_has_no_hidden_proof_reference_state() {
+fn proof_command_has_no_hidden_proof_reference_state() {
     let source = TemporarySource::new(&format!(
         "foundation \"naome:zfc\"; theorem cited {{ statement (forall x (equal x x)); proof {{ step known = (proof-reference {PROOF_ID}); result known; }} }}"
     ));
     let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .args(["proof", "compile"])
+        .arg("proof")
         .arg(&source.path)
         .output()
         .unwrap();
@@ -187,24 +187,72 @@ fn compile_command_has_no_hidden_proof_reference_state() {
     assert!(stderr.contains("references an unknown proof"));
 }
 
+#[test]
+fn proof_path_is_opaque_even_when_it_matches_a_command_word() {
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/self-equality.nao"),
+    )
+    .unwrap();
+    let source = TemporarySource::named("compile", &source);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+        .args(["proof", "compile"])
+        .current_dir(&source.directory)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "statement_id {STATEMENT_ID}\nderivation_id {DERIVATION_ID}\nproof_id {PROOF_ID}\ncanonical_proof {PROOF_BYTES}\n"
+        )
+    );
+}
+
+#[test]
+fn legacy_compile_command_is_rejected_without_a_compatibility_alias() {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/self-equality.nao");
+    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+        .args(["proof", "compile"])
+        .arg(example)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "naome: usage: naome proof <proof.nao>\n"
+    );
+}
+
 struct TemporarySource {
+    directory: PathBuf,
     path: PathBuf,
 }
 
 impl TemporarySource {
     fn new(source: &str) -> Self {
+        Self::named("proof.nao", source)
+    }
+
+    fn named(file_name: &str, source: &str) -> Self {
         let sequence = NEXT_TEMPORARY_FILE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "naome-authoring-cli-{}-{sequence}.nao",
+        let directory = std::env::temp_dir().join(format!(
+            "naome-authoring-cli-{}-{sequence}",
             std::process::id()
         ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join(file_name);
         fs::write(&path, source).unwrap();
-        Self { path }
+        Self { directory, path }
     }
 }
 
 impl Drop for TemporarySource {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_dir_all(&self.directory);
     }
 }

@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use naome_authoring::{AUTHORING_SOURCE_MAX_BYTES, CompileError, CompiledProof, compile};
 
-const USAGE: &str = "usage: naome proof compile <proof.nao>";
+const USAGE: &str = "usage: naome proof <proof.nao>";
 
 fn main() -> ExitCode {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
@@ -25,10 +25,10 @@ fn main() -> ExitCode {
 }
 
 fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> {
-    let [proof, compile_command, path] = arguments else {
+    let [proof, path] = arguments else {
         return Err(CliError::Usage);
     };
-    if proof != OsStr::new("proof") || compile_command != OsStr::new("compile") {
+    if proof != OsStr::new("proof") {
         return Err(CliError::Usage);
     }
 
@@ -143,12 +143,17 @@ mod tests {
 
     #[test]
     fn usage_is_exact_and_distinct_from_compilation_failure() {
-        let mut output = Vec::new();
-        let error = run(&[], &mut output).unwrap_err();
-        assert!(matches!(error, CliError::Usage));
-        assert_eq!(error.exit_code(), 2);
-        assert_eq!(error.to_string(), USAGE);
-        assert!(output.is_empty());
+        for arguments in [
+            Vec::new(),
+            vec![OsString::from("compile"), OsString::from("proof.nao")],
+        ] {
+            let mut output = Vec::new();
+            let error = run(&arguments, &mut output).unwrap_err();
+            assert!(matches!(error, CliError::Usage));
+            assert_eq!(error.exit_code(), 2);
+            assert_eq!(error.to_string(), USAGE);
+            assert!(output.is_empty());
+        }
     }
 
     #[test]
@@ -167,11 +172,7 @@ mod tests {
 
         let path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/self-equality.nao");
-        let arguments = [
-            OsString::from("proof"),
-            OsString::from("compile"),
-            path.into_os_string(),
-        ];
+        let arguments = [OsString::from("proof"), path.into_os_string()];
         let error = run(&arguments, &mut FailingWriter).unwrap_err();
         assert!(matches!(error, CliError::Output { .. }));
         assert_eq!(error.exit_code(), 1);

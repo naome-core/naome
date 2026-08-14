@@ -25,7 +25,7 @@ spelling per derived form limits generator choice, while
 same primitive Foundation formulas:
 
 ```sh
-cargo run -p naome-authoring --bin naome -- proof compile examples/separation.nao
+cargo run -p naome-authoring --bin naome -- proof examples/separation.nao
 ```
 
 Agent-authored proofs may cite an exact selected `ProofId` with

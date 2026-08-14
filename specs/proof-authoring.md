@@ -4,7 +4,7 @@
 
 This document defines the prerelease `.nao` source accepted by
 `naome_authoring::compile`,
-`naome_authoring::compile_against_selected_chain`, and the `naome proof compile`
+`naome_authoring::compile_against_selected_chain`, and the `naome proof`
 command. The source is a non-authoritative presentation of one assumption-free
 Foundation proof.
 Compilation lowers names to a `ProofCertificate`, derives its canonical proof
@@ -283,11 +283,15 @@ a supported dependency source, and no compatibility alias is retained.
 The command:
 
 ```sh
-naome proof compile proof.nao
+naome proof proof.nao
 ```
 
-reads one UTF-8 file and, on success, writes exactly four space-separated lines
-of lowercase hexadecimal data:
+The path is the second and final argument and is treated as an opaque path;
+`compile` is a valid filename in that position. The prerelease
+`naome proof compile proof.nao` spelling is rejected as a usage error rather
+than retained as a compatibility alias. The command reads one UTF-8 file and,
+on success, writes exactly four space-separated lines of lowercase hexadecimal
+data:
 
 ```text
 statement_id <32-byte StatementId>
@@ -485,7 +489,7 @@ theorem reflexivity_for_every_y {
 
 The reference step reuses the selected checked conclusion `forall x, x = x`;
 the local generalization derives `forall y, forall x, x = x`. The same source
-fails through `naome proof compile`, with an empty selected journal, or while
+fails through `naome proof`, with an empty selected journal, or while
 the proof exists only in a candidate store or payload archive.
 
 ## Non-goals
