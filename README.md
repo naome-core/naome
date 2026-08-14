@@ -16,7 +16,18 @@ definitions may use only dependencies selected by earlier blocks in the same
 chain ancestry. Local files, archives, candidates, network responses, the same
 block, and forward references never authorize resolution.
 
-The implementation currently provides:
+## Why NAOME
+
+Mathematical results are easy to publish but difficult to verify, identify, and
+reuse across independent systems. NAOME makes each checked theorem or
+conservative definition a content-addressed artifact with deterministic
+validation and explicit ancestry. It is intended for formal-mathematics tools,
+researchers, and protocol builders that need independently reproducible results
+rather than trust in a publisher or validator majority.
+
+## Current status
+
+The prerelease reference implementation provides:
 
 - canonical proof, definition, and tagged-artifact codecs and identities;
 - deterministic proof checking and bounded conservative definition expansion;
@@ -29,6 +40,11 @@ The implementation currently provides:
 
 Consensus, fork choice, finality, reorganization, incentives, and recursive
 definitions are not implemented.
+
+The `single-artifact-v0` chain, journal, archive, and network formats replace
+their proof-only predecessors cleanly. Old local data must be recreated;
+existing primitive proof bytes and `ProofId`, `DerivationId`, and `StatementId`
+values remain unchanged.
 
 ## Authoring
 
@@ -47,43 +63,25 @@ definition self_equal = relation(value):
     equal(value, value)
 ```
 
-Selected definitions receive source-only names, while the blockchain identity
-remains the exact 64-character lowercase hex address:
+The end-to-end model is deliberately small:
 
-```python
-foundation = "naome:zfc"
+1. Author one proof or definition in prerelease, source-first `.nao`.
+2. Lower it to canonical bytes and check it deterministically against the
+   Foundation and already selected dependencies.
+3. Derive its typed content identity and admit exactly that artifact in one
+   selected block.
+4. Replay the selected chain to reconstruct the same checked artifact state.
+5. Later definitions use its exact `DefinitionId`; later proofs cite its exact
+   `ProofId` or use selected definitions by exact ID.
 
-definitions:
-    self_equal = "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018"
-
-statement = forall(
-    x,
-    implies(equal(x, x), implies(self_equal(x), self_equal(x))),
-)
-
-proof:
-    p0 = equality_substitution(x, x, self_equal(x))
-    p1 = generalization(p0, x)
-    return p1
-```
-
-Proof citations use `cite("<ProofId>")`. Definition aliases and citations are
-accepted only by the selected-state compiler adapter borrowing immutable
-`ArtifactState` from a healthy `ArtifactChainJournal`. Compilation never
-fetches, selects, registers, or mutates an artifact. The standalone CLI uses an
-empty state, so it accepts dependency-free artifacts and rejects reachable
-selected dependencies.
-
-Successful proof output contains `statement_id`, `derivation_id`, `proof_id`,
-the block-addressable `artifact_id`, and canonical proof bytes. Successful
-definition output contains `definition_id`, `artifact_id`, and canonical
-definition bytes. Diagnostics are bounded and carry stable codes plus UTF-8
-source positions when available.
-
-The `.nao` language is prerelease and source-first. Human names, formula aliases,
-derived connectives, and term-shaped constant/function calls are presentation
-syntax; canonical external bytes and content identities remain the protocol
-boundary.
+Compilation never fetches, selects, registers, or mutates artifacts. The
+standalone CLI therefore accepts dependency-free sources; selected dependencies
+require the immutable selected-state compiler adapter. See the compact
+[definition-and-citation proof](examples/definitions-long-proof.nao), the real
+[identity-function definition](examples/identity-function.nao), and the
+[empty-set definition](examples/empty-set.nao) backed by its independently
+checked existence-and-uniqueness proof. Exact source grammar, output fields, and
+diagnostics are specified in [Proof Authoring](specs/proof-authoring.md).
 
 ## Architecture
 
@@ -144,12 +142,6 @@ Invariant boundaries are:
 Specifications are normative for mathematical, source, codec, storage, and wire
 semantics. Rustdoc owns exact Rust APIs; crates are executable references. This
 README is non-normative.
-
-The repository is prerelease. The `single-artifact-v0` chain, journal, archive,
-and network formats replace their proof-only predecessors cleanly. There is no
-legacy decoder or local migration; old local data must be recreated. Existing
-primitive proof bytes and `ProofId`, `DerivationId`, and `StatementId` values
-remain unchanged.
 
 ## Local validation
 
