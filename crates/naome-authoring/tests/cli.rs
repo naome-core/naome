@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use naome_authoring::{AUTHORING_SOURCE_MAX_BYTES, compile};
+
 const STATEMENT_ID: &str = "f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19";
 const DERIVATION_ID: &str = "59219d63c7c2353dcb6ffd1e604153143380ae6602e04215703bc0ea043243fb";
 const PROOF_ID: &str = "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73";
@@ -131,17 +133,17 @@ fn proof_command_emits_exact_identities_from_primitive_and_derived_sources() {
 #[test]
 fn compile_failure_is_nonzero_and_emits_no_partial_identity_output() {
     let source = TemporarySource::new("foundation = \"wrong\"");
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .arg("proof")
-        .arg(&source.path)
-        .output()
-        .unwrap();
+    let output = run_proof(&source.path);
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.starts_with("naome: "));
-    assert!(stderr.contains("Foundation"));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "naome: {}:1:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
+            source.path.display(),
+        )
+    );
 }
 
 #[test]
@@ -153,17 +155,17 @@ fn invalid_modus_ponens_is_nonzero_and_emits_no_partial_identity_output() {
         .unwrap()
         .replace("modus_ponens(p1, p2)", "modus_ponens(p2, p1)"),
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .arg("proof")
-        .arg(&source.path)
-        .output()
-        .unwrap();
+    let output = run_proof(&source.path);
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.starts_with("naome: "));
-    assert!(stderr.contains("modus ponens"));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "naome: {}:17:5: error[NAO0010]: step \"p3\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise\n",
+            source.path.display(),
+        )
+    );
 }
 
 #[test]
@@ -171,17 +173,22 @@ fn proof_command_has_no_hidden_citation_state() {
     let source = TemporarySource::new(&format!(
         "foundation = \"naome:zfc\" statement = forall(x, equal(x, x)) proof: p0 = cite(\"{PROOF_ID}\") return p0"
     ));
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .arg("proof")
-        .arg(&source.path)
-        .output()
-        .unwrap();
+    let output = run_proof(&source.path);
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.starts_with("naome: "));
-    assert!(stderr.contains("references an unknown proof"));
+    let column = fs::read_to_string(&source.path)
+        .unwrap()
+        .find("p0 =")
+        .unwrap()
+        + 1;
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "naome: {}:1:{column}: error[NAO0010]: step \"p0\" references an unknown proof\n",
+            source.path.display(),
+        )
+    );
 }
 
 #[test]
@@ -189,17 +196,137 @@ fn legacy_source_syntax_is_rejected_without_a_compatibility_parser() {
     let source = TemporarySource::new(
         "foundation \"naome:zfc\"; theorem old { statement (forall x (equal x x)); proof { step p0 = (equality-reflexivity x); result p0; } }",
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-        .arg("proof")
-        .arg(&source.path)
-        .output()
-        .unwrap();
+    let output = run_proof(&source.path);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "naome: {}:1:12: error[NAO0002]: expected `=`\n",
+            source.path.display(),
+        )
+    );
+}
+
+#[test]
+fn diagnostics_treat_lf_crlf_and_bare_cr_as_one_line_boundary() {
+    for line_break in ["\n", "\r\n", "\r"] {
+        let source = TemporarySource::new(&format!("{line_break}foundation = \"wrong\""));
+        let output = run_proof(&source.path);
+
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!(
+                "naome: {}:2:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
+                source.path.display(),
+            )
+        );
+    }
+}
+
+#[test]
+fn eof_diagnostic_uses_the_next_line_and_an_empty_source_span() {
+    let source = TemporarySource::new("foundation = \"naome:zfc\"\n");
+    let output = run_proof(&source.path);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "naome: {}:2:1: error[NAO0002]: expected a name\n",
+            source.path.display(),
+        )
+    );
+}
+
+#[test]
+fn checker_diagnostic_retains_the_source_step_after_dependency_reordering() {
+    let source = TemporarySource::new(
+        "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  a0 = equality_reflexivity(x)\n  a1 = simplification(equal(x, x), equal(x, x))\n  broken_result = modus_ponens(a1, a0)\n  b0 = equality_reflexivity(y)\n  root = modus_ponens(b0, broken_result)\n  return root",
+    );
+    let output = run_proof(&source.path);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "naome: {}:6:3: error[NAO0010]: step \"broken_result\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise\n",
+            source.path.display(),
+        )
+    );
+}
+
+#[test]
+fn source_too_long_is_global_and_has_no_invented_position() {
+    let source = TemporarySource::new(&" ".repeat(AUTHORING_SOURCE_MAX_BYTES + 1));
+    let output = run_proof(&source.path);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "naome: {}: error[NAO0001]: source exceeds the {AUTHORING_SOURCE_MAX_BYTES}-byte limit\n",
+            source.path.display(),
+        )
+    );
+}
+
+#[test]
+fn long_step_name_is_bounded_in_stderr_but_complete_in_its_source_span() {
+    let long_name = "x".repeat(8 * 1024);
+    let source_text = format!(
+        "foundation = \"naome:zfc\"\nstatement = forall(x, equal(x, x))\nproof:\n  p0 = equality_reflexivity(x)\n  p1 = generalization({long_name}, x)\n  return p1"
+    );
+    let error = compile(&source_text).unwrap_err();
+    let span = error.diagnostic(&source_text).primary_span().unwrap();
+    assert_eq!(&source_text[span.start()..span.end()], long_name);
+
+    let source = TemporarySource::new(&source_text);
+    let output = run_proof(&source.path);
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.starts_with("naome: "));
-    assert!(stderr.contains("`=`"));
+    let prefix = format!(
+        "naome: {}:5:23: error[NAO0005]: unknown or forward step \"",
+        source.path.display(),
+    );
+    assert!(stderr.starts_with(&prefix));
+    assert!(stderr.ends_with(&format!("{}...\"\n", "x".repeat(64))));
+    assert_eq!(stderr.len(), prefix.len() + 64 + "...\"\n".len());
+    assert!(!stderr.contains(&long_name));
+    assert_eq!(stderr.bytes().filter(|byte| *byte == b'\n').count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn diagnostic_escapes_path_controls_instead_of_injecting_lines() {
+    let source = TemporarySource::named(
+        "proof\\literal\ninjected\r\u{2028}\u{2029}.nao",
+        "foundation = \"wrong\"",
+    );
+    let output = run_proof(&source.path);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr,
+        format!(
+            "naome: {}/proof\\literal\\ninjected\\r\\u{{2028}}\\u{{2029}}.nao:1:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
+            source.directory.display(),
+        )
+    );
+    assert_eq!(stderr.bytes().filter(|byte| *byte == b'\n').count(), 1);
+    assert!(!stderr.trim_end_matches('\n').contains('\r'));
+    assert!(!stderr.contains('\u{2028}'));
+    assert!(!stderr.contains('\u{2029}'));
 }
 
 #[test]
@@ -246,6 +373,14 @@ fn legacy_compile_command_is_rejected_without_a_compatibility_alias() {
 struct TemporarySource {
     directory: PathBuf,
     path: PathBuf,
+}
+
+fn run_proof(path: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_naome"))
+        .arg("proof")
+        .arg(path)
+        .output()
+        .unwrap()
 }
 
 impl TemporarySource {

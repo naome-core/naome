@@ -523,6 +523,20 @@ pub enum CheckError {
     OpenConclusion { step: u32 },
 }
 
+impl CheckError {
+    /// Returns the zero-based normal-form step that caused this failure.
+    pub const fn step(&self) -> u32 {
+        match self {
+            Self::UnknownProofReference { step, .. }
+            | Self::Logic { step, .. }
+            | Self::Schema { step, .. }
+            | Self::DerivedFormula { step, .. }
+            | Self::FormulaWorkLimitExceeded { step, .. }
+            | Self::OpenConclusion { step } => *step,
+        }
+    }
+}
+
 impl fmt::Display for CheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

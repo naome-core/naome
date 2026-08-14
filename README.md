@@ -39,6 +39,12 @@ fetch, select, register, or mutate proofs; the CLI deliberately uses an empty
 state and rejects reachable references. The normative authoring specification
 includes the full source form and selected-state boundary.
 
+Compilation failures expose stable `NAO0001`-`NAO0011` classes; source-local
+failures also carry UTF-8 spans and one-based line and column positions for
+deterministic agent repair.
+The CLI renders one compact diagnostic line and never echoes an unbounded
+source line; successful identity and canonical-proof output is unchanged.
+
 Each local chain begins from a canonical definition that binds its deployment,
 the current Foundation identity, and the empty authenticated proof state before
 deriving the chain address and virtual genesis.

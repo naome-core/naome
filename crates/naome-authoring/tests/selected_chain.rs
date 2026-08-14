@@ -166,14 +166,15 @@ fn assert_unknown_reference(
     result: Result<CompiledProof, SelectedChainCompileError>,
     expected: ProofId,
 ) {
-    assert!(matches!(
-        result,
+    match result {
         Err(SelectedChainCompileError::Compilation {
-            source: CompileError::Check {
-                source: CheckError::UnknownProofReference { step: 0, proof_id }
-            }
-        }) if proof_id == expected
-    ));
+            source: CompileError::Check { source, .. },
+        }) => assert!(matches!(
+            source.as_ref(),
+            CheckError::UnknownProofReference { step: 0, proof_id } if *proof_id == expected
+        )),
+        other => panic!("expected unknown proof reference, got {other:?}"),
+    }
 }
 
 fn hex32(encoded: &str) -> [u8; 32] {

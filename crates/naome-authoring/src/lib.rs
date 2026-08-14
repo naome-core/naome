@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt;
+use std::fmt::{self, Write as _};
 
-use naome_checker::{CheckError, ProofState, normalize_and_check_with_state};
+use naome_checker::{CheckError, ProofState, check_normal_form_with_state};
 use naome_foundation::{
     FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, Formula, FormulaCodecError, FreeVariable,
     Replacement, Separation, ZfcAxiom,
@@ -17,6 +17,8 @@ use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 /// Maximum UTF-8 bytes accepted in one `.nao` source value.
 pub const AUTHORING_SOURCE_MAX_BYTES: usize = CERTIFICATE_MAX_BYTES;
+
+const DIAGNOSTIC_NAME_MAX_SCALARS: usize = 64;
 
 /// Compiles one complete, dependency-free `.nao` proof source.
 ///
@@ -134,6 +136,138 @@ impl CompiledProof {
     }
 }
 
+/// A stable machine-readable class for one source compilation diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DiagnosticCode {
+    SourceTooLong,
+    Syntax,
+    FoundationMismatch,
+    DuplicateStep,
+    UnknownStep,
+    ReturnNotFinal,
+    FormulaDepthLimitExceeded,
+    Statement,
+    Certificate,
+    Check,
+    StatementMismatch,
+}
+
+impl DiagnosticCode {
+    /// Returns the stable printable diagnostic code.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceTooLong => "NAO0001",
+            Self::Syntax => "NAO0002",
+            Self::FoundationMismatch => "NAO0003",
+            Self::DuplicateStep => "NAO0004",
+            Self::UnknownStep => "NAO0005",
+            Self::ReturnNotFinal => "NAO0006",
+            Self::FormulaDepthLimitExceeded => "NAO0007",
+            Self::Statement => "NAO0008",
+            Self::Certificate => "NAO0009",
+            Self::Check => "NAO0010",
+            Self::StatementMismatch => "NAO0011",
+        }
+    }
+}
+
+impl fmt::Display for DiagnosticCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// A half-open UTF-8 byte range in one complete `.nao` source value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceSpan {
+    start: u32,
+    end: u32,
+}
+
+impl SourceSpan {
+    fn new(start: usize, end: usize) -> Self {
+        Self::try_new(start, end).expect("accepted source offsets fit in u32")
+    }
+
+    fn try_new(start: usize, end: usize) -> Option<Self> {
+        Some(Self {
+            start: u32::try_from(start).ok()?,
+            end: u32::try_from(end).ok()?,
+        })
+    }
+
+    fn point(offset: usize) -> Self {
+        Self::new(offset, offset)
+    }
+
+    /// Returns the inclusive start byte offset.
+    pub const fn start(self) -> usize {
+        self.start as usize
+    }
+
+    /// Returns the exclusive end byte offset.
+    pub const fn end(self) -> usize {
+        self.end as usize
+    }
+
+    /// Returns whether the span contains no source bytes.
+    pub const fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+}
+
+/// A one-based source position derived from a UTF-8 byte offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourcePosition {
+    line: u32,
+    column: u32,
+}
+
+impl SourcePosition {
+    /// Returns the one-based source line.
+    pub const fn line(self) -> usize {
+        self.line as usize
+    }
+
+    /// Returns the one-based Unicode-scalar column.
+    pub const fn column(self) -> usize {
+        self.column as usize
+    }
+}
+
+/// Structured, deterministic source information derived from one compile error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct CompileDiagnostic {
+    code: DiagnosticCode,
+    message: Box<str>,
+    primary_span: Option<SourceSpan>,
+    primary_position: Option<SourcePosition>,
+}
+
+impl CompileDiagnostic {
+    /// Returns the stable error-class code.
+    pub const fn code(&self) -> DiagnosticCode {
+        self.code
+    }
+
+    /// Returns the source-oriented diagnostic message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Returns the primary UTF-8 byte span, when the error is source-local.
+    pub const fn primary_span(&self) -> Option<SourceSpan> {
+        self.primary_span
+    }
+
+    /// Returns the one-based start position of the primary span.
+    pub const fn primary_position(&self) -> Option<SourcePosition> {
+        self.primary_position
+    }
+}
+
 /// A deterministic `.nao` source compilation failure.
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -152,17 +286,126 @@ pub enum CompileError {
     /// A proof step refers to a step that has not already been declared.
     UnknownStep { offset: usize, name: String },
     /// The return does not name the final declared proof step.
-    ResultNotFinal { offset: usize },
+    ReturnNotFinal { offset: usize },
     /// Formula parsing exceeded the executable Foundation depth limit.
     FormulaDepthLimitExceeded { offset: usize, maximum: u32 },
     /// The declared statement exceeds the canonical Foundation formula limits.
-    Statement { source: FormulaCodecError },
+    Statement {
+        offset: usize,
+        source: FormulaCodecError,
+    },
     /// The lowered proof certificate is structurally invalid.
-    Certificate { source: ProofCertificateError },
+    Certificate {
+        offset: usize,
+        source: ProofCertificateError,
+    },
     /// The lowered certificate fails deterministic mathematical checking.
-    Check { source: CheckError },
+    Check {
+        span: SourceSpan,
+        source: Box<CheckError>,
+    },
     /// The checked conclusion differs from the source statement.
-    StatementMismatch,
+    StatementMismatch { span: SourceSpan },
+}
+
+impl CompileError {
+    /// Returns the stable diagnostic class for this failure.
+    pub const fn diagnostic_code(&self) -> DiagnosticCode {
+        match self {
+            Self::SourceTooLong { .. } => DiagnosticCode::SourceTooLong,
+            Self::Syntax { .. } => DiagnosticCode::Syntax,
+            Self::FoundationMismatch { .. } => DiagnosticCode::FoundationMismatch,
+            Self::DuplicateStep { .. } => DiagnosticCode::DuplicateStep,
+            Self::UnknownStep { .. } => DiagnosticCode::UnknownStep,
+            Self::ReturnNotFinal { .. } => DiagnosticCode::ReturnNotFinal,
+            Self::FormulaDepthLimitExceeded { .. } => DiagnosticCode::FormulaDepthLimitExceeded,
+            Self::Statement { .. } => DiagnosticCode::Statement,
+            Self::Certificate { .. } => DiagnosticCode::Certificate,
+            Self::Check { .. } => DiagnosticCode::Check,
+            Self::StatementMismatch { .. } => DiagnosticCode::StatementMismatch,
+        }
+    }
+
+    /// Returns the zero-based UTF-8 byte offset of a source-local failure.
+    pub const fn source_offset(&self) -> Option<usize> {
+        match self {
+            Self::SourceTooLong { .. } => None,
+            Self::Syntax { offset, .. }
+            | Self::FoundationMismatch { offset }
+            | Self::DuplicateStep { offset, .. }
+            | Self::UnknownStep { offset, .. }
+            | Self::ReturnNotFinal { offset }
+            | Self::FormulaDepthLimitExceeded { offset, .. }
+            | Self::Statement { offset, .. }
+            | Self::Certificate { offset, .. } => Some(*offset),
+            Self::Check { span, .. } | Self::StatementMismatch { span } => Some(span.start()),
+        }
+    }
+
+    /// Derives one structured diagnostic against the exact source that failed.
+    ///
+    /// Positions are one-based. Columns count Unicode scalar values; LF, CRLF,
+    /// and bare CR each form one line boundary. The original byte span remains
+    /// available for deterministic machine repair.
+    pub fn diagnostic(&self, source: &str) -> CompileDiagnostic {
+        let primary_span = self.primary_span(source);
+        let primary_position = primary_span.and_then(|span| source_position(source, span.start()));
+        CompileDiagnostic {
+            code: self.diagnostic_code(),
+            message: self.diagnostic_message(source).into_boxed_str(),
+            primary_span,
+            primary_position,
+        }
+    }
+
+    fn primary_span(&self, source: &str) -> Option<SourceSpan> {
+        let span = match self {
+            Self::SourceTooLong { .. } => return None,
+            Self::Syntax { offset, .. }
+            | Self::FoundationMismatch { offset }
+            | Self::DuplicateStep { offset, .. }
+            | Self::UnknownStep { offset, .. }
+            | Self::ReturnNotFinal { offset }
+            | Self::FormulaDepthLimitExceeded { offset, .. }
+            | Self::Statement { offset, .. }
+            | Self::Certificate { offset, .. } => source_token_span(source, *offset)?,
+            Self::Check { span, .. } | Self::StatementMismatch { span } => *span,
+        };
+        valid_source_span(source, span).then_some(span)
+    }
+
+    fn diagnostic_message(&self, source_text: &str) -> String {
+        match self {
+            Self::SourceTooLong { actual, maximum } => {
+                format!("source has {actual} bytes; the limit is {maximum}")
+            }
+            Self::Syntax { expected, .. } => format!("expected {expected}"),
+            Self::FoundationMismatch { .. } => {
+                format!("unsupported Foundation identifier; expected {FOUNDATION_ID:?}")
+            }
+            Self::DuplicateStep { name, .. } => {
+                format!("duplicate step {}", diagnostic_name(name))
+            }
+            Self::UnknownStep { name, .. } => {
+                format!("unknown or forward step {}", diagnostic_name(name))
+            }
+            Self::ReturnNotFinal { .. } => "return does not name the final step".to_owned(),
+            Self::FormulaDepthLimitExceeded { maximum, .. } => {
+                format!("formula exceeds the depth limit {maximum}")
+            }
+            Self::Statement { source, .. } => format!("invalid statement: {source}"),
+            Self::Certificate { source, .. } => format!("invalid proof structure: {source}"),
+            Self::Check { span, source } => {
+                let step_name = source_token_span(source_text, span.start())
+                    .and_then(|name_span| source_text.get(name_span.start()..name_span.end()))
+                    .unwrap_or("<proof>");
+                check_diagnostic_message(step_name, source)
+            }
+            Self::StatementMismatch { .. } => {
+                "declared statement differs from the checked conclusion".to_owned()
+            }
+        }
+    }
 }
 
 impl fmt::Display for CompileError {
@@ -190,7 +433,7 @@ impl fmt::Display for CompileError {
                     "unknown or forward step {name:?} at byte {offset}"
                 )
             }
-            Self::ResultNotFinal { offset } => {
+            Self::ReturnNotFinal { offset } => {
                 write!(
                     formatter,
                     "return does not name the final step at byte {offset}"
@@ -200,10 +443,12 @@ impl fmt::Display for CompileError {
                 formatter,
                 "formula at byte {offset} exceeds the depth limit {maximum}"
             ),
-            Self::Statement { source } => write!(formatter, "invalid statement: {source}"),
-            Self::Certificate { source } => write!(formatter, "invalid proof structure: {source}"),
-            Self::Check { source } => write!(formatter, "proof checking failed: {source}"),
-            Self::StatementMismatch => {
+            Self::Statement { source, .. } => write!(formatter, "invalid statement: {source}"),
+            Self::Certificate { source, .. } => {
+                write!(formatter, "invalid proof structure: {source}")
+            }
+            Self::Check { source, .. } => write!(formatter, "proof checking failed: {source}"),
+            Self::StatementMismatch { .. } => {
                 formatter.write_str("declared statement differs from the checked conclusion")
             }
         }
@@ -213,12 +458,134 @@ impl fmt::Display for CompileError {
 impl Error for CompileError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Statement { source } => Some(source),
-            Self::Certificate { source } => Some(source),
-            Self::Check { source } => Some(source),
+            Self::Statement { source, .. } => Some(source),
+            Self::Certificate { source, .. } => Some(source),
+            Self::Check { source, .. } => Some(source.as_ref()),
             _ => None,
         }
     }
+}
+
+fn check_diagnostic_message(step_name: &str, error: &CheckError) -> String {
+    let step_name = diagnostic_name(step_name);
+    match error {
+        CheckError::UnknownProofReference { .. } => {
+            format!("step {step_name} references an unknown proof")
+        }
+        CheckError::Logic { source, .. } => {
+            format!("step {step_name} violates Foundation logic: {source}")
+        }
+        CheckError::Schema { source, .. } => {
+            format!("step {step_name} violates a ZFC schema: {source}")
+        }
+        CheckError::DerivedFormula { source, .. } => {
+            format!("step {step_name} derives a formula outside Formula limits: {source}")
+        }
+        CheckError::FormulaWorkLimitExceeded {
+            actual, maximum, ..
+        } => format!(
+            "step {step_name} raises formula work to {actual} bytes; the Checker limit is {maximum}"
+        ),
+        CheckError::OpenConclusion { .. } => {
+            format!("proof conclusion at step {step_name} is not closed")
+        }
+        _ => format!("step {step_name} failed proof checking: {error}"),
+    }
+}
+
+fn diagnostic_name(name: &str) -> DiagnosticName<'_> {
+    DiagnosticName(name)
+}
+
+struct DiagnosticName<'name>(&'name str);
+
+impl fmt::Display for DiagnosticName<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_char('"')?;
+        let mut characters = self.0.chars();
+        for character in characters.by_ref().take(DIAGNOSTIC_NAME_MAX_SCALARS) {
+            for escaped in character.escape_debug() {
+                formatter.write_char(escaped)?;
+            }
+        }
+        if characters.next().is_some() {
+            formatter.write_str("...")?;
+        }
+        formatter.write_char('"')
+    }
+}
+
+fn source_token_span(source: &str, offset: usize) -> Option<SourceSpan> {
+    if offset > source.len() || !source.is_char_boundary(offset) {
+        return None;
+    }
+    if offset == source.len() {
+        return SourceSpan::try_new(offset, offset);
+    }
+
+    let remainder = &source[offset..];
+    let first = remainder.chars().next()?;
+    if first == '"' {
+        let end = remainder[1..]
+            .find('"')
+            .map_or(source.len(), |relative| offset + relative + 2);
+        return SourceSpan::try_new(offset, end);
+    }
+    if first.is_ascii_alphabetic() || first == '_' {
+        let end = remainder
+            .char_indices()
+            .take_while(|(_, character)| character.is_ascii_alphanumeric() || *character == '_')
+            .last()
+            .map_or(offset, |(relative, character)| {
+                offset + relative + character.len_utf8()
+            });
+        return SourceSpan::try_new(offset, end);
+    }
+    SourceSpan::try_new(offset, offset + first.len_utf8())
+}
+
+fn valid_source_span(source: &str, span: SourceSpan) -> bool {
+    span.start() <= span.end()
+        && span.end() <= source.len()
+        && source.is_char_boundary(span.start())
+        && source.is_char_boundary(span.end())
+}
+
+fn source_position(source: &str, offset: usize) -> Option<SourcePosition> {
+    if offset > source.len() || !source.is_char_boundary(offset) {
+        return None;
+    }
+
+    let bytes = source.as_bytes();
+    let mut cursor = 0;
+    let mut line = 1_u32;
+    let mut column = 1_u32;
+    while cursor < offset {
+        match bytes[cursor] {
+            b'\r' => {
+                cursor += 1;
+                if cursor < offset && bytes.get(cursor) == Some(&b'\n') {
+                    cursor += 1;
+                }
+                line = line.checked_add(1)?;
+                column = 1;
+            }
+            b'\n' => {
+                cursor += 1;
+                line = line.checked_add(1)?;
+                column = 1;
+            }
+            _ => {
+                let character = source[cursor..]
+                    .chars()
+                    .next()
+                    .expect("a UTF-8 boundary before source end contains a character");
+                cursor += character.len_utf8();
+                column = column.checked_add(1)?;
+            }
+        }
+    }
+    Some(SourcePosition { line, column })
 }
 
 #[derive(Clone, Copy)]
@@ -233,11 +600,17 @@ struct ParsedFormula {
     expanded_depth: u32,
 }
 
+#[derive(Clone, Copy)]
+struct StepBinding {
+    position: u32,
+    span: SourceSpan,
+}
+
 struct Parser<'source> {
     source: &'source str,
     offset: usize,
     variables: HashMap<&'source str, FreeVariable>,
-    steps: HashMap<&'source str, u32>,
+    steps: HashMap<&'source str, StepBinding>,
     statement_nodes: usize,
     certificate_formula_nodes: usize,
 }
@@ -266,7 +639,10 @@ impl<'source> Parser<'source> {
         }
         self.keyword("statement")?;
         self.punctuation('=')?;
+        let statement_offset = self.next_offset();
         let statement = self.formula(1, FormulaContext::Statement)?;
+        let statement_span = SourceSpan::new(statement_offset, self.offset);
+        let proof_offset = self.next_offset();
         self.keyword("proof")?;
         self.punctuation(':')?;
 
@@ -274,7 +650,9 @@ impl<'source> Parser<'source> {
         let mut last_step_name = None;
         while !self.peek_word("return") {
             if proof_steps.len() == CERTIFICATE_MAX_STEPS {
+                let offset = self.next_offset();
                 return Err(CompileError::Certificate {
+                    offset,
                     source: ProofCertificateError::TooManySteps {
                         actual: CERTIFICATE_MAX_STEPS + 1,
                         maximum: CERTIFICATE_MAX_STEPS,
@@ -293,7 +671,13 @@ impl<'source> Parser<'source> {
             let step = self.proof_step()?;
             let position = u32::try_from(proof_steps.len())
                 .expect("the certificate step limit fits one local step index");
-            self.steps.insert(name, position);
+            self.steps.insert(
+                name,
+                StepBinding {
+                    position,
+                    span: SourceSpan::new(name_offset, self.offset),
+                },
+            );
             proof_steps.push(step);
             last_step_name = Some(name);
         }
@@ -303,17 +687,36 @@ impl<'source> Parser<'source> {
         self.end()?;
 
         if last_step_name != Some(result) {
-            return Err(CompileError::ResultNotFinal {
+            return Err(CompileError::ReturnNotFinal {
                 offset: result_offset,
             });
         }
 
-        let certificate = ProofCertificate::new(proof_steps)
-            .map_err(|source| CompileError::Certificate { source })?;
-        let checked = normalize_and_check_with_state(certificate, proof_state)
-            .map_err(|source| CompileError::Check { source })?;
+        let certificate =
+            ProofCertificate::new(proof_steps).map_err(|source| CompileError::Certificate {
+                offset: proof_offset,
+                source,
+            })?;
+        let (normal_form, step_origins) =
+            certificate.into_unchecked_normal_form_with_step_origins();
+        let checked = check_normal_form_with_state(normal_form, proof_state).map_err(|source| {
+            let source_step = step_origins.source_step(source.step());
+            let origin = source_step.and_then(|position| {
+                self.steps
+                    .iter()
+                    .find(|(_, binding)| binding.position == position)
+            });
+            let span = origin.map_or(SourceSpan::point(proof_offset), |(_, binding)| binding.span);
+            CompileError::Check {
+                span,
+                source: Box::new(source),
+            }
+        })?;
+        drop(step_origins);
         if checked.conclusion() != &statement {
-            return Err(CompileError::StatementMismatch);
+            return Err(CompileError::StatementMismatch {
+                span: statement_span,
+            });
         }
         let statement_id = checked.statement_id();
         let derivation_id = checked.derivation_id();
@@ -527,7 +930,7 @@ impl<'source> Parser<'source> {
         let name = self.name()?;
         self.steps
             .get(name)
-            .copied()
+            .map(|binding| binding.position)
             .ok_or_else(|| CompileError::UnknownStep {
                 offset,
                 name: name.to_owned(),
@@ -596,7 +999,7 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
         let formula_offset = self.next_offset();
-        self.charge_formula_nodes(context, 1)?;
+        self.charge_formula_nodes(context, 1, formula_offset)?;
         if depth > FORMULA_MAX_DEPTH {
             return Err(CompileError::FormulaDepthLimitExceeded {
                 offset: formula_offset,
@@ -663,7 +1066,7 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
         let body = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(context, &[1, body.expanded_nodes])?;
+        let expanded_nodes = self.checked_node_sum(context, &[1, body.expanded_nodes], offset)?;
         let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 1)?;
         self.check_expanded_depth(offset, depth, expanded_depth)?;
         Ok(ParsedFormula {
@@ -685,6 +1088,7 @@ impl<'source> Parser<'source> {
         let expanded_nodes = self.checked_node_sum(
             context,
             &[1, antecedent.expanded_nodes, consequent.expanded_nodes],
+            offset,
         )?;
         let expanded_depth = self.checked_depth_add(
             offset,
@@ -708,7 +1112,7 @@ impl<'source> Parser<'source> {
         let variable = self.variable()?;
         self.punctuation(',')?;
         let body = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(context, &[1, body.expanded_nodes])?;
+        let expanded_nodes = self.checked_node_sum(context, &[1, body.expanded_nodes], offset)?;
         let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 1)?;
         self.check_expanded_depth(offset, depth, expanded_depth)?;
         Ok(ParsedFormula {
@@ -727,8 +1131,11 @@ impl<'source> Parser<'source> {
         let left = self.parsed_formula(depth + 1, context)?;
         self.punctuation(',')?;
         let right = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes =
-            self.checked_node_sum(context, &[3, left.expanded_nodes, right.expanded_nodes])?;
+        let expanded_nodes = self.checked_node_sum(
+            context,
+            &[3, left.expanded_nodes, right.expanded_nodes],
+            offset,
+        )?;
         let left_depth = self.checked_depth_add(offset, left.expanded_depth, 2)?;
         let right_depth = self.checked_depth_add(offset, right.expanded_depth, 3)?;
         let expanded_depth = left_depth.max(right_depth);
@@ -749,8 +1156,11 @@ impl<'source> Parser<'source> {
         let left = self.parsed_formula(depth + 1, context)?;
         self.punctuation(',')?;
         let right = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes =
-            self.checked_node_sum(context, &[2, left.expanded_nodes, right.expanded_nodes])?;
+        let expanded_nodes = self.checked_node_sum(
+            context,
+            &[2, left.expanded_nodes, right.expanded_nodes],
+            offset,
+        )?;
         let left_depth = self.checked_depth_add(offset, left.expanded_depth, 2)?;
         let right_depth = self.checked_depth_add(offset, right.expanded_depth, 1)?;
         let expanded_depth = left_depth.max(right_depth);
@@ -780,9 +1190,13 @@ impl<'source> Parser<'source> {
                 right.expanded_nodes,
                 right.expanded_nodes,
             ],
+            offset,
         )?;
-        let additional_nodes =
-            self.checked_node_sum(context, &[4, left.expanded_nodes, right.expanded_nodes])?;
+        let additional_nodes = self.checked_node_sum(
+            context,
+            &[4, left.expanded_nodes, right.expanded_nodes],
+            offset,
+        )?;
         let expanded_depth =
             self.checked_depth_add(offset, left.expanded_depth.max(right.expanded_depth), 4)?;
         self.check_derived_expansion(offset, depth, context, expanded_depth, additional_nodes)?;
@@ -802,7 +1216,7 @@ impl<'source> Parser<'source> {
         let variable = self.variable()?;
         self.punctuation(',')?;
         let body = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(context, &[3, body.expanded_nodes])?;
+        let expanded_nodes = self.checked_node_sum(context, &[3, body.expanded_nodes], offset)?;
         let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 3)?;
         self.check_derived_expansion(offset, depth, context, expanded_depth, 2)?;
         Ok(ParsedFormula {
@@ -820,7 +1234,7 @@ impl<'source> Parser<'source> {
         expanded_depth: u32,
         additional_nodes: usize,
     ) -> Result<(), CompileError> {
-        self.charge_formula_nodes(context, additional_nodes)?;
+        self.charge_formula_nodes(context, additional_nodes, operator_offset)?;
         self.check_expanded_depth(operator_offset, source_depth, expanded_depth)
     }
 
@@ -846,11 +1260,12 @@ impl<'source> Parser<'source> {
         &self,
         context: FormulaContext,
         terms: &[usize],
+        offset: usize,
     ) -> Result<usize, CompileError> {
         terms
             .iter()
             .try_fold(0_usize, |sum, term| sum.checked_add(*term))
-            .ok_or_else(|| Self::formula_node_limit(context))
+            .ok_or_else(|| Self::formula_node_limit(context, offset))
     }
 
     fn checked_depth_add(
@@ -871,6 +1286,7 @@ impl<'source> Parser<'source> {
         &mut self,
         context: FormulaContext,
         additional: usize,
+        offset: usize,
     ) -> Result<(), CompileError> {
         let (used, maximum) = match context {
             FormulaContext::Statement => (&mut self.statement_nodes, FORMULA_MAX_NODES),
@@ -880,23 +1296,25 @@ impl<'source> Parser<'source> {
             ),
         };
         let Some(total) = used.checked_add(additional) else {
-            return Err(Self::formula_node_limit(context));
+            return Err(Self::formula_node_limit(context, offset));
         };
         if total > maximum {
-            return Err(Self::formula_node_limit(context));
+            return Err(Self::formula_node_limit(context, offset));
         }
         *used = total;
         Ok(())
     }
 
-    fn formula_node_limit(context: FormulaContext) -> CompileError {
+    fn formula_node_limit(context: FormulaContext, offset: usize) -> CompileError {
         match context {
             FormulaContext::Statement => CompileError::Statement {
+                offset,
                 source: FormulaCodecError::NodeLimitExceeded {
                     maximum: FORMULA_MAX_NODES,
                 },
             },
             FormulaContext::Certificate => CompileError::Certificate {
+                offset,
                 source: ProofCertificateError::FormulaNodeLimitExceeded {
                     maximum: CERTIFICATE_MAX_FORMULA_NODES,
                 },

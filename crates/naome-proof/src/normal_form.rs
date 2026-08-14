@@ -4,9 +4,17 @@ use naome_foundation::{Formula, FreeVariable, Replacement, Separation};
 
 use crate::{ProofCertificate, ProofStep, codec};
 
+pub(crate) const UNNORMALIZED_STEP: u32 = u32::MAX;
+
 pub(super) fn normalize(certificate: ProofCertificate) -> ProofCertificate {
+    normalize_with_step_origins(certificate).0
+}
+
+pub(super) fn normalize_with_step_origins(
+    certificate: ProofCertificate,
+) -> (ProofCertificate, Vec<u32>) {
     let mut source = certificate.steps.into_iter().map(Some).collect::<Vec<_>>();
-    let mut normalized_indices = vec![None; source.len()];
+    let mut normalized_indices = vec![UNNORMALIZED_STEP; source.len()];
     let mut normalized_steps = Vec::new();
     let mut interned_steps = BTreeMap::new();
     let mut variables = VariableNormalizer::default();
@@ -16,7 +24,7 @@ pub(super) fn normalize(certificate: ProofCertificate) -> ProofCertificate {
         let position = match visit {
             Visit::Enter(position) | Visit::Exit(position) => position,
         };
-        if normalized_indices[position].is_some() {
+        if normalized_indices[position] != UNNORMALIZED_STEP {
             continue;
         }
 
@@ -53,16 +61,19 @@ pub(super) fn normalize(certificate: ProofCertificate) -> ProofCertificate {
                         index
                     }
                 };
-                normalized_indices[position] = Some(normalized);
+                normalized_indices[position] = normalized;
             }
         }
     }
 
     // Mapping fixed-width identifiers cannot enlarge a step; reachability and
     // interning only remove steps, so every source certificate limit remains.
-    ProofCertificate {
-        steps: normalized_steps,
-    }
+    (
+        ProofCertificate {
+            steps: normalized_steps,
+        },
+        normalized_indices,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -73,7 +84,7 @@ enum Visit {
 
 fn normalize_step(
     step: ProofStep,
-    normalized_indices: &[Option<u32>],
+    normalized_indices: &[u32],
     variables: &mut VariableNormalizer,
 ) -> ProofStep {
     match step {
@@ -181,9 +192,13 @@ fn normalize_step(
     }
 }
 
-fn normalized_reference(reference: u32, normalized_indices: &[Option<u32>]) -> u32 {
-    normalized_indices[reference as usize]
-        .expect("dependency-first traversal normalizes every referenced step first")
+fn normalized_reference(reference: u32, normalized_indices: &[u32]) -> u32 {
+    let normalized = normalized_indices[reference as usize];
+    assert_ne!(
+        normalized, UNNORMALIZED_STEP,
+        "dependency-first traversal normalizes every referenced step first"
+    );
+    normalized
 }
 
 #[derive(Default)]

@@ -1,6 +1,6 @@
 use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
 
-use crate::{CERTIFICATE_MAX_STEPS, ProofCertificate, ProofId, ProofStep};
+use crate::{CERTIFICATE_MAX_STEPS, ProofCertificate, ProofId, ProofStep, ProofStepOrigins};
 
 #[test]
 fn topological_order_and_free_variable_names_do_not_change_the_normal_form() {
@@ -168,6 +168,94 @@ fn unreachable_steps_are_removed_and_normalization_is_idempotent() {
         .into_unchecked_normal_form()
         .into_canonical_bytes();
     assert_eq!(second_bytes.as_ref(), first_bytes);
+}
+
+#[test]
+fn traced_normalization_omits_unreachable_step_origins() {
+    let x = FreeVariable::new(13);
+    let certificate = certificate(vec![
+        ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
+        ProofStep::EqualityReflexivity { variable: x },
+        ProofStep::Generalization {
+            premise: 1,
+            variable: x,
+        },
+    ]);
+
+    let (normal, origins) = certificate.into_unchecked_normal_form_with_step_origins();
+
+    assert_eq!(normal.certificate().steps().len(), 2);
+    assert_step_origins(&origins, &[1, 2]);
+}
+
+#[test]
+fn traced_normalization_follows_dependency_first_reordering() {
+    let first = ProofId::from_bytes([0x11; 32]);
+    let second = ProofId::from_bytes([0x22; 32]);
+    let certificate = certificate(vec![
+        ProofStep::ProofReference { proof_id: first },
+        ProofStep::ProofReference { proof_id: second },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: FreeVariable::new(7),
+        },
+        ProofStep::Generalization {
+            premise: 1,
+            variable: FreeVariable::new(8),
+        },
+        ProofStep::ModusPonens {
+            premise: 3,
+            implication: 2,
+        },
+    ]);
+
+    let (normal, origins) = certificate.into_unchecked_normal_form_with_step_origins();
+
+    assert_eq!(normal.certificate().steps().len(), 5);
+    assert_step_origins(&origins, &[1, 3, 0, 2, 4]);
+}
+
+#[test]
+fn traced_normalization_keeps_lowest_origin_for_interned_steps() {
+    let proof_id = ProofId::from_bytes([0x33; 32]);
+    let x = FreeVariable::new(7);
+    let certificate = certificate(vec![
+        ProofStep::ProofReference { proof_id },
+        ProofStep::ProofReference { proof_id },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: x,
+        },
+        ProofStep::Generalization {
+            premise: 1,
+            variable: x,
+        },
+        ProofStep::ModusPonens {
+            premise: 3,
+            implication: 2,
+        },
+    ]);
+
+    let (normal, origins) = certificate.into_unchecked_normal_form_with_step_origins();
+
+    assert_eq!(normal.certificate().steps().len(), 3);
+    assert_step_origins(&origins, &[0, 2, 4]);
+}
+
+#[test]
+fn traced_and_untraced_normalization_have_identical_canonical_output() {
+    let certificate = duplicate_identity_proof(FreeVariable::new(42));
+    let expected = certificate
+        .clone()
+        .into_unchecked_normal_form()
+        .into_canonical_bytes();
+    let (traced, origins) = certificate.into_unchecked_normal_form_with_step_origins();
+
+    assert_eq!(traced.canonical_bytes(), expected.as_ref());
+    assert_eq!(
+        origins.source_step(u32::try_from(traced.certificate().steps().len()).unwrap()),
+        None
+    );
 }
 
 #[test]
@@ -344,6 +432,19 @@ fn maximum_step_chain_normalizes_iteratively() {
 
     let normal = certificate(steps).into_unchecked_normal_form();
     assert_eq!(normal.certificate().steps().len(), CERTIFICATE_MAX_STEPS);
+}
+
+fn assert_step_origins(origins: &ProofStepOrigins, expected: &[u32]) {
+    for (normalized, source) in expected.iter().copied().enumerate() {
+        assert_eq!(
+            origins.source_step(u32::try_from(normalized).unwrap()),
+            Some(source)
+        );
+    }
+    assert_eq!(
+        origins.source_step(u32::try_from(expected.len()).unwrap()),
+        None
+    );
 }
 
 fn identity_proof(variable: FreeVariable, reordered: bool) -> ProofCertificate {
