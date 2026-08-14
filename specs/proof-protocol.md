@@ -1,19 +1,21 @@
 # NAOME Proof Protocol
 
-This document normatively defines NAOME's canonical proof certificate, checked
-selected state, authenticated proof set, and linear single-proof block. The
-[ZFC Foundation](foundation.md) owns the mathematical language
-and primitive rules. The [Proof Chain Journal](proof-chain-journal.md) owns
-durable selected-state recovery.
+This document normatively defines NAOME's canonical proof certificate, proof
+identities, typed artifact admission, authenticated artifact set, and linear
+single-artifact block. The [ZFC Foundation](foundation.md) owns the primitive
+language and rules; [Mathematical Definitions](mathematical-definitions.md)
+owns conservative definition artifacts and expansion. The
+[Artifact Chain Journal](artifact-chain-journal.md) owns durable selected-state
+recovery.
 
 The protocol pipeline is:
 
 ```text
-canonical certificate
-  -> deterministic mathematical checking
+canonical typed artifact
+  -> deterministic proof or definition checking
   -> immutable accepted record
-  -> authenticated selected proof set
-  -> exact-parent single-proof block
+  -> authenticated selected artifact set
+  -> exact-parent single-artifact block
 ```
 
 Mathematical checking decides Foundation-relative proof validity. State roots,
@@ -45,6 +47,7 @@ Formulas use prefix order:
 | `02` | negation | one formula |
 | `03` | implication | antecedent, consequent |
 | `04` | universal quantifier | one formula |
+| `05` | selected graph relation | `DefinitionId`, argument count, variables |
 
 Variables are:
 
@@ -55,7 +58,11 @@ Variables are:
 
 Binder names are absent. A bound index must be smaller than the number of
 enclosing universal quantifiers. Derived connectives and existential
-quantification are encoded only after expansion to Foundation primitives.
+quantification are encoded only after expansion to Foundation primitives. Tag
+`05` is permitted only in definition-aware proof formula fields and has the
+exact codec and selected-resolution semantics in
+[Mathematical Definitions](mathematical-definitions.md). A primitive formula
+has no extra envelope and retains its exact Foundation bytes.
 
 The standalone formula codec admits at most 65,536 nodes, nesting depth 256,
 and 393,216 bytes in one formula. These processing limits do not restrict the
@@ -140,8 +147,9 @@ The decoder accepts bytes exactly when:
 - no bytes remain after the declared steps.
 
 These rules make local references finite and acyclic. Duplicate and unused
-steps are structurally valid. Structural decoding does not check reference
-existence, axiom-schema side conditions, inference rules, or final closure.
+steps are structurally valid. Structural decoding does not check proof or
+definition reference existence, definition arity or expansion, axiom-schema
+side conditions, inference rules, or final closure.
 
 ### Mathematical checking
 
@@ -149,17 +157,20 @@ Checking executes every supplied step in encoded order and accepts exactly when
 each operation succeeds and the final formula is closed. The first failure in
 that order reports the zero-based step index. Admission checks the normal-form
 certificate, not presentation-only steps removed by normalization. The
-dependency-free entry point uses an empty proof state and therefore rejects
-every proof reference; reference-aware checking uses an explicit immutable
-selected proof state.
+dependency-free entry point uses an empty artifact state and therefore rejects
+every proof reference and reachable definition application; reference-aware
+checking uses explicit immutable selected artifact state.
 
-Each result is reconstructed only through its Foundation operation:
+Every definition-aware formula field is conservatively expanded before its
+primitive operation. Expansion failure is attributed to that normal-form step.
+Each result is then reconstructed only through its Foundation operation:
 
 - L1 through L3, Q1, Q3, E1, and E2 instantiate their logical axioms;
 - Q2 constructs nameless vacuous universal quantification;
 - fixed ZFC steps expand their selected axiom;
-- Separation and Replacement validate schema side conditions before expansion;
-- proof references reuse the closed conclusion registered for the exact
+- Separation and Replacement expand their predicates, then validate schema side
+  conditions while constructing the primitive axiom instance;
+- proof references reuse the primitive closed conclusion registered for the exact
   selected `ProofId`;
 - modus ponens consumes its referenced premise and implication; and
 - generalization universally quantifies its referenced premise.
@@ -169,7 +180,9 @@ limits before it can be referenced. A Separation or Replacement step with at
 least 256 parameters fails with the formula depth-limit error before expansion,
 because those binders alone cannot fit the limit.
 
-Checker admits at most 4,194,304 bytes of cumulative canonical formula work. It
+Each definition-aware field has a separate 65,536-node, depth-256 expansion
+bound. Checker admits at most 4,194,304 bytes of cumulative canonical primitive
+formula work. It
 charges both operand lengths before modus ponens, the premise length before
 generalization, every reconstructed result, a resolved reference result before
 cloning, and the conclusion once more before closure checking. An operand
@@ -206,14 +219,17 @@ equivalence search.
 
 A proof reference is a leaf. It contributes no local dependency or free
 variable; exact duplicate reference leaves merge byte-for-byte, while different
-`ProofId` values never merge even if they resolve to one statement.
+`ProofId` values never merge even if they resolve to one statement. A
+`DefinitionId` application remains compact, participates in formula bytes and
+free-variable normalization, and is expanded only during checking.
 
 Encoded input follows this order:
 
 ```text
 structurally decode the complete input certificate
 derive its proof normal form
-mathematically check every normal-form step exactly once, resolving each ProofId at its step
+mathematically check every normal-form step exactly once, resolving every
+  reachable ProofId and DefinitionId from selected state
 require a closed conclusion
 ```
 
@@ -380,10 +396,13 @@ Any added rule whose result and ordered parent identities do not preserve its
 complete variable wiring must define additional canonical witness bytes or a
 distinct derivation domain; it cannot reuse this transcript silently.
 
-`statement_bytes` are the checked closed conclusion's canonical formula bytes;
-`normal_proof_bytes` are the checked normal-form certificate bytes, never the
-unnormalized submission. Presentation order, systematic free-variable
-renaming, unreachable steps, and duplicate nodes change no identity. Inlining
+`statement_bytes` are the fully expanded checked conclusion's canonical
+primitive formula bytes; `normal_proof_bytes` are the compact checked
+normal-form certificate bytes, never the unnormalized submission. Definition
+applications therefore remain identity-bearing in `ProofId` while derivation
+nodes and `StatementId` use their primitive expansions. Presentation order,
+systematic free-variable renaming, unreachable steps, and duplicate nodes
+change no identity. Inlining
 versus citing can change `ProofId` but not `DerivationId`. Different inference
 DAGs of one conclusion share `StatementId` but normally differ in the other two
 identities. No logical-equivalence or proof-minimization search occurs.
@@ -422,76 +441,89 @@ Canonical bytes are:
 00 00 00 01 06 01 02 03 04
 ```
 
-## Selected proof state and admission
+## Selected artifact state and admission
 
-Selected in-memory state contains one `ProofId -> DerivationId` entry for every
-accepted concrete proof, one `DerivationId -> StatementId` entry for every
-accepted inference DAG, and one canonical closed conclusion plus its canonical
-length for every accepted statement. Only successfully checked proofs may add
-entries; existing proof, derivation, or statement identities are never replaced.
+Selected in-memory `ArtifactState` contains:
 
-State grows monotonically but is not an order-free mergeable CRDT. Separate
-states may select different artifacts for one derivation; after one artifact is
-selected, another with the same `DerivationId` fails as a duplicate derivation.
+- `ProofId -> DerivationId` for every selected concrete proof;
+- `DerivationId -> StatementId` for every selected inference DAG;
+- one canonical primitive conclusion and encoded length for every selected
+  statement; and
+- one exact checked definition and one non-identity-bearing, fully expanded
+  graph view for every selected `DefinitionId`.
 
-### Single-proof admission
+Only strict proof or definition admission may add entries. Existing identities
+are never replaced. State grows monotonically but is not an order-free CRDT:
+dependency availability and duplicate derivation rules make admission depend on
+the selected prefix.
 
-The owned-certificate authoring path may normalize representation noise before
-checking and atomic registration; it is not the external byte boundary. Strict
-byte admission executes:
+### Typed payload and strict admission
 
-1. decode one structurally valid complete certificate;
-2. derive its root-proof normal form;
-3. require the submitted bytes to equal the normal-form encoding exactly;
-4. check that normal form once against unchanged selected state;
-5. for addressed admission, require its checked `ProofId` to equal the immutable
-   expected `ProofId`;
-6. atomically register the checked proof; and
-7. return its accepted record.
+One externally admitted payload is:
 
-Structural decoding errors precede `NonCanonicalProof`; canonicality errors
-precede checker errors; checker errors precede `ProofIdMismatch`; identity
-mismatch precedes registration errors. Identity mismatch reports expected and
-actual checked IDs. The expected ID is request context, not proof content: it is
-compared with the fully checked normal-form identity, never a raw byte hash or
-caller field, and is not retained in the record.
+```text
+artifact = type_tag u8 | typed_payload
 
-The candidate remains invisible while checking, so every reference resolves
-from unchanged selected state. Every error leaves state unchanged.
+00 | canonical proof certificate
+01 | canonical definition certificate
+```
 
-### Accepted records and proof DAG
+The envelope has no inner length, is at most 4,194,305 bytes, and must end with
+its typed payload. Exact definition encoding and semantics are specified in
+[Mathematical Definitions](mathematical-definitions.md).
 
-Each successful admission produces one immutable accepted record containing:
+Strict addressed admission executes:
 
-- exact canonical root-proof-normal-form certificate bytes;
-- its checked `ProofId`, `DerivationId`, and `StatementId`; and
-- each directly cited `ProofId` once, in canonical normal-form step order.
+1. decode one complete tagged payload;
+2. for a proof, derive root-proof normal form and require the submitted inner
+   bytes to equal it; for a definition, require exact canonical re-encoding;
+3. check the proof or conservative definition against unchanged selected
+   artifact state;
+4. derive `ArtifactId` from the resulting `ProofId` or `DefinitionId`;
+5. require it to equal the immutable expected `ArtifactId`;
+6. revalidate duplicates and every direct selected dependency; and
+7. atomically register one accepted record.
 
-Direct dependencies exclude transitive dependencies and local indices. Exact
-duplicate reference leaves have already been interned. Records expose no mutable
-payload or dependency list. Exact canonical bytes are retained, dependencies
-remain immutable, and replay-derived metadata must never bypass strict
-admission. `ProofSetRoot` binds the selected exact `ProofId` set independently of
-insertion order.
+Decode errors precede canonicality errors; canonicality precedes mathematical
+checking; checking precedes expected-address comparison; address mismatch
+precedes registration failure. The expected address is request context, never a
+trusted payload field. Every failure leaves all selected state unchanged.
 
-Callers cannot insert unchecked bytes, identities, edges, or leaves directly.
-The [Proof Chain Journal](proof-chain-journal.md) is the sole durable owner and
-reconstructs selected state only through strict block replay.
+The owned-certificate authoring path may normalize a proof before checking and
+registration. It is not an external byte-admission substitute. Definitions
+have one canonical encoding and are never normalized from another form.
 
-Every admitted proof is decoded, canonicality-checked, and mathematically
-checked once. Registry operations use ordered-map lookup; authenticated-set
-operations traverse at most 256 key bits.
+### Accepted records and artifact DAG
 
-## Authenticated proof set
+An accepted proof record contains the exact tagged canonical payload; its
+`ArtifactId`, `ProofId`, `DerivationId`, and `StatementId`; directly cited
+`ProofId` values in normal-form step order; and unique direct `DefinitionId`
+values in canonical occurrence order. An accepted definition record contains
+the exact tagged payload; its `ArtifactId` and `DefinitionId`; unique direct
+definition dependencies in body-prefix order; and its optional exact obligation
+`ProofId`.
 
-The selected exact `ProofId` set is a compressed binary Merkle-Patricia tree.
-It has one insertion-order-independent `ProofSetRoot` and compact membership and
-non-membership proofs. The only key is the complete 32-byte `ProofId`; certificate
-bytes, statement and derivation identities, conclusions, and dependency indexes
-are not separately hashed. Using `StatementId` or `DerivationId` would collapse
-distinct accepted proof artifacts incorrectly.
+Dependencies are direct, not transitive. Accepted bytes and dependency lists are
+immutable. Callers cannot insert unchecked records, identities, edges, or set
+leaves. Registration rechecks direct dependencies so a checked value cannot be
+moved from a different selected context. The
+[Artifact Chain Journal](artifact-chain-journal.md) is the sole durable selected
+state owner and reconstructs records only through strict block replay.
 
-### Key bits and canonical topology
+Duplicate concrete proofs, derivations, and definitions are rejected. Multiple
+different checked derivations may establish one `StatementId`, but selecting a
+second packaging of an already selected derivation is rejected. Identity
+collision checks are fail-closed.
+
+## Authenticated artifact set
+
+The selected exact `ArtifactId` set is a compressed binary Merkle-Patricia tree.
+It has one insertion-order-independent `ArtifactSetRoot` and compact membership
+and non-membership proofs. Its sole key is the complete 32-byte `ArtifactId`.
+Typed payloads, `ProofId`, `DefinitionId`, statement and derivation identities,
+conclusions, and dependency indexes are not separately hashed into this set.
+
+### Key bits and topology
 
 Bits are read most-significant first:
 
@@ -499,476 +531,255 @@ Bits are read most-significant first:
 bit(key, d) = (key[d / 8] >> (7 - (d mod 8))) & 1
 ```
 
-where `d` is in `0..=255`. For a finite key set `S`:
+For `d` in `0..=255` and finite key set `S`:
 
 ```text
 Tree(empty) = Empty
 Tree({key}) = Leaf(key)
-
-Tree(S) = Branch(d, Tree(S0), Tree(S1))
+Tree(S)     = Branch(d, Tree(S0), Tree(S1))
 ```
 
-For more than one key, `d` is the first bit at which the keys differ; `S0` and
-`S1` are the nonempty zero- and one-bit subsets. Consequently every leaf stores
-one key, every branch has two nonempty children, branch bits strictly increase
-from root to leaf, a nonempty `n`-key tree has `n` leaves and `n - 1` branches,
-and no empty, unary, or extension node is stored. Topology depends only on the
-key set. Lookup, insertion, and one proof path traverse at most 256 branches.
+For more than one key, `d` is the first differing bit; `S0` and `S1` are the
+nonempty zero- and one-bit subsets. Every branch therefore has two nonempty
+children, branch bits increase strictly from root to leaf, and a nonempty
+`n`-key tree has `n` leaves and `n - 1` branches. There are no empty, unary, or
+extension nodes. Lookup, insertion, projection, and one proof path traverse at
+most 256 branches.
 
 ### Hash transcript
 
-Every digest is SHA-256. The exact domain includes its trailing NUL:
+Every digest is SHA-256 under the exact trailing-NUL domain:
 
 ```text
-naome:proof-set\0
-```
+artifact_set_domain = "naome:artifact-set:v0\0"
 
-Node digests are:
-
-```text
-E = SHA256("naome:proof-set\0" || 00)
-
-L(key) = SHA256(
-    "naome:proof-set\0"
-    || 01
-    || key[32]
-)
-
+E = SHA256(artifact_set_domain || 00)
+L(key) = SHA256(artifact_set_domain || 01 || key[32])
 B(d, left, right) = SHA256(
-    "naome:proof-set\0"
-    || 02
-    || d_u8
-    || left[32]
-    || right[32]
+  artifact_set_domain || 02 || d_u8 || left[32] || right[32]
 )
 ```
 
-`E` is the empty-set root; a singleton root is its leaf digest. A branch hashes
-its discriminating bit and ordered children, with zero left and one right. The
-branch bit is authenticated content and must not be omitted.
+`E` is the empty root. Branch children are ordered with zero left and one right;
+the discriminating bit is authenticated content.
 
 ### Compact set proofs
 
 A proof has an empty-tree, membership, or non-membership terminal. A non-member
-terminal contains the different leaf reached while searching. Its root-to-
-terminal path stores only each branch bit and sibling digest; direction derives
-from the query and is not encoded.
-
-The count-free canonical encoding is:
+terminal contains the different leaf reached by the query. The root-to-terminal
+path stores only the branch bit and sibling digest because direction derives
+from the queried `ArtifactId`.
 
 ```text
 Empty     = 00
-Member    = 01 || Path
-NonMember = 02 || terminal_proof_id[32] || Path
+Member    = 01 | Path
+NonMember = 02 | terminal_artifact_id[32] | Path
 
-Path      = Step*
-Step      = branch_bit_u8 || sibling_digest[32]
+Path = Step*
+Step = branch_bit u8 | sibling_digest[32]
 ```
 
-Steps appear root-to-terminal and are exactly 33 bytes, so the complete input
-boundary determines their count. The query, expected root, directions, count,
-and a format version are not repeated. Sizes are:
+The complete input boundary determines the count. A membership proof can cover
+all 256 bit positions and is at most 8,449 bytes. A non-membership proof can
+cover at most 255 positions and is at most 8,448 bytes because its terminal key
+must differ at another bit.
 
-```text
-Empty:      1 byte
-Member:     1 + 33 * path_length bytes
-NonMember: 33 + 33 * path_length bytes
-```
-
-A membership path may cover all 256 bit positions and reach 8,449 bytes. A
-non-membership path has at most 255 positions and reaches 8,448 bytes because
-its terminal key must differ at a bit not already present in the path.
-
-Decoding executes:
-
-1. reject input longer than 8,449 bytes before path allocation;
-2. require one known terminal tag;
-3. require an empty terminal to end the input immediately;
-4. require a non-member terminal's complete 32-byte `ProofId`;
-5. require remaining bytes to divide exactly into 33-byte steps;
-6. enforce the terminal-specific 256- or 255-step limit;
-7. require branch bits to increase strictly; and
-8. reject an empty sibling digest.
-
-This validates structure only. Because no redundant count is encoded, changing
-an input by one complete step can produce another structurally canonical value;
-verification must still reconstruct the trusted expected root. Partial steps
-are rejected. Decoding never normalizes, infers, or repairs a proof.
-
-Fixed proof encodings use `zero` for 32 zero bytes and `high` for `80` followed
-by 31 zero bytes. The empty proof is `00`; singleton membership is `01`; and a
-singleton non-membership proof terminating at `zero` is:
-
-```text
-02 0000000000000000000000000000000000000000000000000000000000000000
-```
-
-For `{zero, high}`, membership of `zero` is:
-
-```text
-01 00 93e7bd037407e8654873ed319b0130c3117246bd84e184e25dd7d10964a765ed
-```
-
-For the same set, non-membership of `40` followed by 31 zero bytes terminates at
-`zero`:
-
-```text
-02 0000000000000000000000000000000000000000000000000000000000000000
-   00 93e7bd037407e8654873ed319b0130c3117246bd84e184e25dd7d10964a765ed
-```
-
-Whitespace and line breaks above are not encoded.
-
-Verification is fail-closed and executes:
-
-1. enforce the terminal-specific path limit;
-2. require strictly increasing branch bits;
-3. reject an empty sibling digest;
-4. require an empty terminal to have an empty path;
-5. for non-membership, require the terminal key to differ from the query and
-   choose the query's direction at every path bit;
-6. start from `E`, `L(query)`, or `L(non_member_terminal)`;
-7. fold terminal-to-root with children ordered by the query bit;
-8. require the reconstructed root to equal the trusted expected root; and
-9. only then return `Present` or `Absent`.
-
-Non-membership in a nonempty tree terminates at a different leaf, never an empty
-stored child. If the query existed elsewhere, its first differing bit would be
-an authenticated branch and verification would fail.
-
-### Integration, projection, and reconstruction
-
-The authenticated tree directly owns accepted records. Strict decode,
-canonicality, mathematical checking, dependency resolution, expected-address
-comparison, and identity registration all succeed before insertion. Duplicate
-rules make insertion logically infallible; failed admission changes neither
-record count, topology, root, nor witnesses. The structure is append-only.
-
-Single-block preparation and preflight project the root obtained by adding one
-exact `ProofId`. Projection has normal insertion semantics but mutates no record,
-topology, root, witness, or selected registry. It is bounded by that key's
-Patricia path and must not clone, scan, or rebuild the set. Projection accepts
-the identity only; it performs no proof decode, checking, dependency validation,
-or record admission.
-
-The [Proof Chain Journal](proof-chain-journal.md) stores no Merkle nodes; strict
-block replay reconstructs and verifies the set. Different valid block orders
-may produce one final set root but different ancestry. A head, root, or
-witness from an untrusted peer establishes no freshness, selection, or finality;
-verification must bind the expected root and queried `ProofId` to trusted caller
-context.
-
-### Golden roots
+Decoding rejects oversize input before allocation, unknown or incomplete
+terminals, partial 33-byte steps, excessive paths, non-increasing branch bits,
+empty siblings, and a path after an empty terminal. This establishes structure
+only. Verification additionally requires the non-member key to differ from the
+query and follow the same authenticated path, folds the terminal digest back to
+the root using query directions, and returns membership only after equality with
+the trusted expected root.
 
 The empty-set root is:
 
 ```text
-e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca
+976e576ec6145d57b5e192d1c37a0938bb5c76663532d0354fcd98ba3fbf597a
 ```
 
-The all-zero `ProofId` singleton root is:
+For all-zero `ArtifactId`, the singleton root is:
 
 ```text
-6035299a52844d846d83ca0395e1a7df37e62b7de9adc638ea2cbaf97d799a04
+f8d94326ff427a5311fd43c28524588f5fa955cb1b1be096a34b1b724c103963
 ```
 
-The root for all-zero plus `80` followed by 31 zero bytes is:
+For all-zero plus `80` followed by 31 zero bytes, the root is:
 
 ```text
-4c77fb731087d077c434cc706d41eea1fc9aa9b324638f709747b492cbb52687
+f89fb7c7336af38296e54143f3111c23dc352f8795ed76742549767ea42880a5
 ```
 
 Adding 31 zero bytes followed by `01` produces:
 
 ```text
-00d65391369a613d7a56aca448277a0da7cc44e57a12a8b2159f0b1c5712c396
+c8ecb7085200b45d99f505bd00fa791d0fdd2bbfc3d65014b89aa9491095d768
 ```
 
-These commitments assume SHA-256 collision and second-preimage resistance.
-Constructing a root from arbitrary bytes establishes only an address. A set
-proof authenticates exact membership or absence relative to that address; it
-does not replay a certificate, admit a proof, establish data availability, or
-show consensus selection. Exact block ancestry and journal replay remain
-responsible for order-dependent append integrity; block head and set root are
-not interchangeable.
+An `ArtifactSetRoot` or verified witness authenticates set membership relative
+to a caller-trusted root only. It does not check payloads, establish ancestry,
+prove availability, select a fork, or establish finality.
 
-## Single-proof block and linear chain state
+### Integration and projection
 
-A `ProofBlock` is the sole canonical selected-state change. It binds one exact
-parent, the selected proof-set roots immediately before and after admission,
-and exactly one `ProofId`:
+Strict typed admission, dependency resolution, expected-address comparison,
+and registration all succeed before tree insertion. Duplicate rules then make
+insertion logically infallible. Failed admission changes neither record count,
+topology, root, nor existing witnesses.
+
+Block preparation and preflight project the root produced by one `ArtifactId`
+without mutating records or topology. Projection performs no payload decode,
+checking, dependency resolution, or registry admission and must not clone or
+scan the selected set. Journal replay stores no Merkle nodes; it reconstructs
+and verifies the set through strict block application.
+
+## Single-artifact block and linear chain state
+
+An `ArtifactBlock` is the sole canonical selected-state transition. It commits:
 
 ```text
-parent_block_id:          ProofBlockId
-previous_proof_set_root:  ProofSetRoot
-resulting_proof_set_root: ProofSetRoot
-proof_id:                 ProofId
+parent_block_id:            ArtifactBlockId
+previous_artifact_set_root: ArtifactSetRoot
+resulting_artifact_set_root: ArtifactSetRoot
+artifact_id:                ArtifactId
 ```
 
-The four block fields are complete; there is no subordinate state-change object
-or identity. A block never contains a proof list, count, dependency closure, or
-more than one mathematical artifact. Every dependency of `proof_id` must already
-be selected by an earlier block in the same ancestry.
+There is no subordinate change object, artifact list, count, or dependency
+closure. Each block selects exactly one proof or one definition. Every proof
+reference, definition application, and definition obligation used by that
+artifact must already be available from earlier selected blocks in the same
+ancestry.
 
-A canonical `ProofChainDefinition` derives one `ProofChainId`, which derives the
-virtual genesis parent for an initially empty chain state. Every admitted block
-must extend the exact current head and admit its one proof atomically to the
-privately owned selected proof DAG. The
-[Proof Chain Journal](proof-chain-journal.md) persists this selected line
-without changing block bytes or application rules.
+### Chain definition and virtual genesis
 
-### Chain definition, identity, and virtual genesis
-
-A `ProofChainDefinition` fixes the executable context of one proof-chain
-deployment. The caller controls only one opaque 32-byte deployment
-discriminator. The definition also binds the exact current Foundation identity
-and the authenticated root of the empty proof set; callers cannot inject either
-fixed field through the trusted construction path.
-
-Its sole canonical representation is exactly 73 bytes:
+`ArtifactChainDefinition` binds one caller-supplied 32-byte deployment
+discriminator, the exact Foundation identifier, and the empty artifact-set root:
 
 ```text
 deployment_discriminator[32]
-foundation_id[9]              = "naome:zfc"
-genesis_proof_set_root[32]    = e9a980287e770ac389d3735ff064e744
-                                7f11c9640efdb90b91781766497f16ca
+foundation_id[9]           = "naome:zfc"
+genesis_artifact_root[32]  =
+  976e576ec6145d57b5e192d1c37a0938bb5c76663532d0354fcd98ba3fbf597a
 ```
 
-All fields have fixed width, so the representation contains no version, tag,
-length, padding, or checksum. Decoding executes:
-
-1. require exactly 73 bytes, otherwise `InvalidLength`;
-2. require the exact compiled Foundation bytes, otherwise
-   `FoundationIdMismatch`; and
-3. require the exact executable empty `ProofSetRoot`, otherwise
-   `GenesisProofSetRootMismatch`.
-
-Length validation precedes all fixed-field inspection. Decoding allocates no
-memory, returns no partial definition, and re-encoding every accepted input
-reproduces its bytes exactly. The empty root is the same value returned by the
-authenticated proof-set implementation, not an independent genesis constant.
-
-`ProofChainId` is the SHA-256 content identity of the complete canonical
-definition:
+The canonical definition is exactly 73 bytes. Decoding first requires that
+length, then the compiled Foundation bytes, then the executable empty root. It
+accepts no caller-supplied Foundation or genesis semantics.
 
 ```text
-ProofChainId = SHA256(
-    "naome:proof-chain-definition:single-proof-v0\0"
-    || canonical_proof_chain_definition[73]
+ArtifactChainId = SHA256(
+  "naome:artifact-chain-definition:single-artifact-v0\0"
+  || canonical_definition[73]
+)
+
+virtual_genesis = SHA256(
+  "naome:artifact-chain-genesis:v0\0" || ArtifactChainId[32]
 )
 ```
 
-Exact definition-domain bytes are:
+For a deployment discriminator of 32 bytes `11`:
 
 ```text
-6e616f6d653a70726f6f662d636861696e2d646566696e6974696f6e3a73696e676c652d70726f6f662d763000
+ArtifactChainId = 1007f212015cb2d5bd3e58e93fb0941e6dbb8496bf3669093303cf65d3895de0
+virtual_genesis = 31ca052e8c2660d98d4eb0586adc388702841cf31a924c4c3563dfc920d2850c
 ```
 
-For a deployment discriminator containing 32 bytes of `11`, the canonical
-definition and derived chain ID are:
-
-```text
-definition = 1111111111111111111111111111111111111111111111111111111111111111
-             6e616f6d653a7a6663
-             e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca
-
-ProofChainId = 33c98c37f2a2d480e79c106efc0fbeaa9e1179f4274e423033cc7775cf5f74b4
-```
-
-Changing the deployment discriminator, Foundation identity, or genesis root
-changes the chain identity under collision resistance. The discriminator
-separates intentional deployments that otherwise share the same executable
-genesis semantics. It is not a secret, signature, operator identity, consensus
-parameter, or authorization token.
-
-The explicit `single-proof-v0` identity domain separates this block model from
-the earlier prerelease multi-proof format even though the 73 definition bytes
-are otherwise unchanged. Old and new nodes therefore cannot advertise
-incompatible heads under one `ProofChainId`.
-
-A `ProofChainId` remains an exact 32-byte address on journal and network
-boundaries. Constructing that address from raw bytes supports strict message
-and file decoding; it does not establish that the bytes derive from a supported
-definition. Trusted chain-state and journal construction accept the complete
-definition and derive its ID instead of accepting an arbitrary address.
-
-An empty chain derives its initial head as:
-
-```text
-virtual_genesis_parent = SHA256(
-    "naome:proof-chain-genesis\0"
-    || proof_chain_id[32]
-)
-```
-
-Exact genesis-domain bytes are:
-
-```text
-6e616f6d653a70726f6f662d636861696e2d67656e6573697300
-```
-
-For the `11` discriminator definition above, the virtual genesis parent is:
-
-```text
-11e721588dde6890ed9891c28243e3e1d6c6501b08b9dd2c683c1d801a11e0e4
-```
-
-This anchor is not an admitted block and has no payload, height, or
-stored record. The first block names it as parent; every later block names the
-exact identity of its admitted predecessor.
-
-`ProofChainId` is not repeated in blocks, so standalone block bytes are not
-self-labeling. Context comes from a supported definition, its derived chain ID,
-and unbroken ancestry to its virtual genesis. Reusing one ancestry under another
-definition fails at the first exact-head comparison unless the chain identity,
-virtual genesis, or later block identity collides.
+The deployment discriminator separates intentional deployments; it is not a
+secret, signer, authorization token, or consensus parameter. The virtual
+genesis is an anchor, not an admitted block, and has no payload or height.
+Blocks omit `ArtifactChainId`; their context comes from a supported definition
+and unbroken exact-parent ancestry.
 
 ### Block encoding and identity
 
-A block is:
+Canonical block bytes are exactly:
 
 ```text
-Block = parent_block_id[32]
-     || previous_proof_set_root[32]
-     || resulting_proof_set_root[32]
-     || proof_id[32]
+parent_block_id[32]
+previous_artifact_set_root[32]
+resulting_artifact_set_root[32]
+artifact_id[32]
 ```
 
-Every field has fixed width. No version, tag, chain ID, height, timestamp,
-count, length, padding, or checksum is encoded. A canonical block is exactly
-128 bytes.
-
-Decoding executes:
-
-1. require exactly 128 bytes, otherwise `InvalidLength`; and
-2. decode the four fixed 32-byte fields without allocation.
-
-No partial block is returned, and re-encoding reproduces accepted bytes exactly.
-
-Block identity is SHA-256 over the exact trailing-NUL domain and complete
-canonical bytes:
+The block is fixed at 128 bytes. It contains no version, type tag, chain ID,
+height, timestamp, count, length, payload, padding, or checksum. The separately
+supplied tagged payload reveals whether the opaque `ArtifactId` addresses a
+proof or definition.
 
 ```text
-ProofBlockId = SHA256(
-    "naome:proof-block\0"
-    || canonical_block_bytes
+ArtifactBlockId = SHA256(
+  "naome:artifact-block:v0\0" || canonical_block[128]
 )
 ```
 
-Exact block-domain bytes are:
+For the preceding `11` definition, its virtual genesis parent, previous root
+`22` repeated 32 bytes, resulting root `33` repeated 32 bytes, and `ArtifactId`
+`44` repeated 32 bytes, the block ID is:
 
 ```text
-6e616f6d653a70726f6f662d626c6f636b00
+13d756593fe06f15e22f7e0b55d6037f38af7304aa5ce06acc9b8f833c86707d
 ```
 
-For the `11` discriminator definition's virtual genesis above, previous root
-`11` repeated 32 bytes, resulting root `22` repeated 32 bytes, and proof ID `33`
-repeated 32 bytes, the 128-byte block ID is:
+Changing any committed byte changes the block identity under SHA-256 collision
+resistance. Identity alone establishes neither valid ancestry nor selection.
 
-```text
-61443f12756d101185e9c28dcfa61b0f0e449649ae935cf3791da27dabc2b569
-```
+### Preparation, validation, and application
 
-Changing any parent, root, or proof-ID byte changes the identity under collision
-resistance. Parent recursively commits claimed ancestry; only successful exact-
-head application establishes it for the local selected chain. Identity alone
-does not establish ancestry availability, validity, selection, or finality.
+Chain state begins from one supported definition with an empty private artifact
+DAG and its virtual genesis head. It accepts no arbitrary chain ID, initial
+head, or pre-populated DAG.
 
-### Preparation, validation, and exact-head application
-
-A chain state begins from one supported definition with an empty private proof
-DAG and its derived virtual genesis as current head. It accepts neither a raw
-caller-selected chain ID, an arbitrary pre-populated DAG, nor a caller-selected
-initial head.
-
-Local preparation takes exactly one `ProofId`. It rejects an already-selected
-identity, binds the exact current head and proof-set root, projects insertion of
-that one key, and commits the projected result in a new block. It performs no
-certificate checking, admission, head advance, or other mutation. Multiple
-siblings may be prepared from one head; the linear state can admit at most one
-before its head changes.
+Preparation takes one `ArtifactId`, rejects it if already selected, binds the
+current head and root, and projects the one-key resulting root. It does not read
+or check payload bytes and does not mutate state.
 
 Read-only validation and application each take one block and exactly one owned
-canonical proof payload. Before reading payload bytes, they execute:
+canonical tagged payload. Before payload work they execute in this order:
 
-1. require `parent_block_id` to equal the exact current head;
-2. require current `ProofSetRoot == previous_proof_set_root`;
-3. reject `proof_id` when it is already selected; and
-4. project insertion of `proof_id` and require the result to equal
-   `resulting_proof_set_root`.
+1. require the block parent to equal the exact current head;
+2. require its previous root to equal the current `ArtifactSetRoot`;
+3. reject an already selected `ArtifactId`; and
+4. project insertion and require the committed resulting root.
 
-Parent mismatch precedes previous-root mismatch; previous-root mismatch
-precedes already-selected rejection; and already-selected rejection precedes
-projected-root mismatch. Every preflight error precedes certificate work.
+Preflight failure precedes payload decoding. After preflight, strict artifact
+admission decodes and checks the one typed payload against unchanged selected
+state, derives its typed `ArtifactId`, compares the block address, and registers
+it atomically. Application computes the next `ArtifactBlockId` before mutation
+and assigns it only after registration. No fallible operation follows selected
+state commit.
 
-After preflight, strict single-proof admission decodes the candidate, requires
-exact canonical root-proof normal form, checks it against unchanged selected
-state, compares the checked `ProofId` with the block's `proof_id`, and registers
-the accepted record atomically. References can resolve only to proofs already
-selected before this block. The payload cannot use itself or a fetched but
-unselected dependency.
+Read-only validation runs the same checks in discarded state and returns no
+authority token. Application always repeats validation against its then-current
+state. Every failure preserves head, records, resolver maps, authenticated-set
+topology and root, and existing witnesses. Success adds exactly one artifact and
+advances the head exactly once.
 
-Application computes `ProofBlockId` before mutation and assigns it as the new
-head only after the one proof registers successfully. No fallible operation
-occurs after proof-state commit. Read-only validation performs the same checks
-in discarded state and returns no record or transferable validation artifact.
-Durable or in-memory application never consumes prior validation as authority
-and always repeats the complete check against its then-current state.
+Two siblings may be prepared from one head, but after one applies the other
+fails at parent comparison before payload work. This defines one local selected
+line; it does not define fork choice, rollback, reorganization, consensus, or
+finality.
 
-Every failure preserves the head, registries, accepted records, selected proof
-count, authenticated topology and root, and existing witnesses. Success admits
-exactly `proof_id`, leaves the DAG at `resulting_proof_set_root`, and advances
-the head exactly once. The selected proof DAG is exposed only immutably, so
-callers cannot bypass parentage or admit a second proof under the block.
+### Payload and trust boundaries
 
-Immediate replay or application of a sibling with the old parent fails at the
-parent comparison before proof work. This defines one append-only local line,
-not fork choice. Competing branches, sibling selection, rollback, reorganization,
-and network-wide ordering require later policy. Journal replay reconstructs one
-such line and an exact-ID index of its committed blocks; the index is not a
-branch store or selection rule.
+Block bytes contain an `ArtifactId` but no typed payload. Possessing a block
+does not establish payload availability. Exact import requests only that
+artifact payload and never fetches a dependency implicitly. If application
+finds an unselected proof or definition dependency, it rejects the block;
+catch-up must apply the dependency's earlier block first.
 
-### Payload, resource, and trust boundaries
+Only successful application or verified journal replay supplies selected
+resolver authority. Candidate stores, payload archives, fetched responses,
+peer-reported heads, ancestry pulls, membership witnesses, and successful
+read-only validation remain non-authoritative observations.
 
-Block bytes contain one `ProofId` commitment but no certificate payload.
-Validation and application receive the payload separately and use the block's
-`proof_id` as its sole expected address.
-Possessing or retrieving a block does not establish possession or availability
-of its proof, and neither
-retrieval, local journal retention, nor successful read-only validation
-establishes network selection.
+Domains separate proof identity, definition identity, typed artifact identity,
+artifact-set nodes, chain definitions, genesis anchors, and blocks. These
+commitments assume SHA-256 collision and second-preimage resistance. They do
+not establish proposer identity, data availability, mathematical novelty,
+reward, fee, consensus selection, or finality.
 
-A block is a fixed 128-byte value and retains no heap-allocated proof-ID list.
-The parent comparison, root projection, identity hashing, and head assignment
-are constant-size. Preparation, validation, and application must not clone,
-scan, or rebuild the complete selected set or check the payload more than once
-per call. Payload bytes and mathematical work retain their independent limits.
-
-Direct block import requests only the exact payload for the block's `proof_id`.
-It does not predecode that payload or retrieve a cited dependency. If strict
-application finds an unselected reference, the block is rejected. Catch-up must
-first import the earlier block that selected each dependency.
-
-Chain-definition identity, virtual genesis, block identity, ancestry, and roots
-assume SHA-256 collision and second-preimage resistance. Distinct domains
-separate chain definitions, genesis anchors, blocks, proof identities, and
-authenticated-set nodes. Exact parent matching prevents local replay and sibling
-application after head advance; roots bind selected proof state before and after
-the block; addressed admission prevents substitution and invalid-proof
-admission; singular block cardinality prevents unrelated-proof smuggling.
-
-The definition and chain identifier are neither secret nor authentication keys.
-A remote party can calculate the same identity and virtual genesis. A valid
-definition, certificate, identity, set root, ancestry, block, or
-successful local application establishes no proposer identity, data
-availability, consensus, finality, novelty, reward, fee, or economic value.
-Source syntax, network selection, durable recovery, competing-history
-selection, reorganization, consensus, finality, and economy remain separate
-contracts.
-
-This prerelease block and chain-identity cutover has no compatibility reader or
-migration path. Journals and block-candidate stores created for the earlier
-multi-proof block format must be recreated. Mathematical `ProofId`,
-`DerivationId`, and `StatementId` values do not change. This proof-only block
-model does not define on-chain definitions, a generalized artifact union,
-consensus, fork choice, finality, or reorganization.
+This is a clean prerelease cutover to `single-artifact-v0`. There is no legacy
+reader, compatibility alias, or local migration. Proof-only journals,
+candidate stores, payload archives, and network protocol data must be removed
+and recreated. Existing primitive canonical proof certificates and their
+`ProofId`, `DerivationId`, and `StatementId` values remain byte-identical.

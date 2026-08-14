@@ -1,14 +1,14 @@
-//! Authenticated proof transport plus bounded untrusted peer-address routing.
+//! Authenticated artifact transport plus bounded untrusted peer-address routing.
 //!
 //! TCP carries mutually authenticated Noise sessions, Yamux provides one
 //! substream per exchange, and the retained libp2p request handle plus
-//! authenticated peer bind each terminal to the immutable proof, proof-block,
-//! proof-chain-head, or head-announcement operation that caused it. Static
-//! authorization is not Sybil resistance, discovery, consensus, or proof
+//! authenticated peer bind each terminal to the immutable artifact, artifact-block,
+//! artifact-chain-head, or head-announcement operation that caused it. Static
+//! authorization is not Sybil resistance, discovery, consensus, or artifact
 //! selection.
 //!
 //! The endpoint with the lexicographically lower raw binary `PeerId` in each
-//! configured pair owns dialing; proof, exact-block, head-pull, and
+//! configured pair owns dialing; artifact, exact-block, head-pull, and
 //! head-announcement exchanges reuse that managed full-duplex session and
 //! never open connections.
 //!
@@ -17,13 +17,13 @@
 //! batches for explicit atomic admission. A separate inbound-only
 //! [`PeerRecordBootstrapResponder`] serves one operator-supplied immutable
 //! canonical batch to bounded authenticated requesters. Neither swarm installs
-//! the proof protocol or converts a learned candidate into proof authority.
+//! the artifact protocol or converts a learned candidate into artifact authority.
 //! A separate [`LocalPeerRecordIssuer`] persists one identity-bound sequence
 //! watermark before returning each newly signed standard peer record. It never
 //! retains the private key, discovers addresses, or publishes by itself.
 //!
 //! The caller owns the Tokio runtime, drives every network event loop, routes
-//! correlated proof events through exact one-payload block imports, consumes
+//! correlated artifact events through exact one-payload block imports, consumes
 //! exact-block terminals through their generation tickets, may pull, explicitly
 //! announce, broadcast, or survey source-bound untrusted chain heads across a
 //! bounded caller-selected peer set, may retrieve one bounded caller-selected
@@ -32,12 +32,12 @@
 //! catch-up. Every import target remains a separate caller decision. The caller
 //! also explicitly admits a peer-record batch. The
 //! responder publication is not derived from the address store.
-//! [`StaticProofNetwork::next_journal_service_event`] serves authenticated
-//! proof, block, and head pulls from one borrowed journal while returning
+//! [`StaticArtifactNetwork::next_journal_service_event`] serves authenticated
+//! artifact, block, and head pulls from one borrowed journal while returning
 //! announcements and every other event unchanged; it starts no background
 //! task.
 //! This crate starts no NAOME-owned background task and owns no
-//! [`ProofChainJournal`].
+//! [`ArtifactChainJournal`].
 
 mod address_store;
 mod block_ancestry;
@@ -68,21 +68,22 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use block_transport::PendingProofBlockRequest;
+use block_transport::PendingArtifactBlockRequest;
 use codec::{
-    PROOF_BLOCK_PROTOCOL, PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, PROOF_CHAIN_HEAD_PROTOCOL,
-    PROTOCOL, ProofBlockCodec, ProofChainHeadAnnouncementCodec, ProofChainHeadCodec, ProofCodec,
+    ARTIFACT_BLOCK_PROTOCOL, ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+    ARTIFACT_CHAIN_HEAD_PROTOCOL, ARTIFACT_PROTOCOL, ArtifactBlockCodec,
+    ArtifactChainHeadAnnouncementCodec, ArtifactChainHeadCodec, ArtifactCodec,
 };
-use head_announcement::PendingProofChainHeadAnnouncement;
-use head_transport::PendingProofChainHeadRequest;
+use head_announcement::PendingArtifactChainHeadAnnouncement;
+use head_transport::PendingArtifactChainHeadRequest;
 use libp2p::futures::StreamExt;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{
     Swarm, SwarmBuilder, allow_block_list, connection_limits, noise, request_response, tcp, yamux,
 };
-use naome::proof_exchange::{PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse};
-use naome_chain::ProofBlockId;
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
+use naome::artifact_exchange::{ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRequest, ArtifactResponse};
+use naome_chain::ArtifactBlockId;
+use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 use session::Behaviour as SessionBehaviour;
 use tokio::time::Instant;
 
@@ -109,41 +110,48 @@ pub use address_store::{
     PeerRecordBatchAdmission, SignedPeerRecord, SignedPeerRecordError,
 };
 pub use block_ancestry::{
-    MAX_PROOF_BLOCK_ANCESTRY_BLOCKS, ProofBlockAncestryPull, ProofBlockAncestryPullError,
-    ProofBlockAncestryPullProgress, UnselectedProofBlockAncestry,
+    ArtifactBlockAncestryPull, ArtifactBlockAncestryPullError, ArtifactBlockAncestryPullProgress,
+    MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS, UnselectedArtifactBlockAncestry,
 };
 pub use block_ancestry_import::{
-    ProofBlockAncestryImport, ProofBlockAncestryImportError, ProofBlockAncestryImportProgress,
+    ArtifactBlockAncestryImport, ArtifactBlockAncestryImportError,
+    ArtifactBlockAncestryImportProgress,
 };
-pub use block_catch_up::{ProofBlockCatchUp, ProofBlockCatchUpError, ProofBlockCatchUpProgress};
-pub use block_import::{ProofBlockImport, ProofBlockImportError, ProofBlockImportProgress};
+pub use block_catch_up::{
+    ArtifactBlockCatchUp, ArtifactBlockCatchUpError, ArtifactBlockCatchUpProgress,
+};
+pub use block_import::{
+    ArtifactBlockImport, ArtifactBlockImportError, ArtifactBlockImportProgress,
+};
 pub use block_transport::{
-    BlockRequestTicket, InboundProofBlockRequest, OutboundProofBlockEvent,
-    OutboundProofBlockFailure, ProofBlockRequestEventMismatch,
+    ArtifactBlockRequestEventMismatch, BlockRequestTicket, InboundArtifactBlockRequest,
+    OutboundArtifactBlockEvent, OutboundArtifactBlockFailure,
 };
 pub use bootstrap::{
     AuthenticatedPeerRecordBatch, PeerRecordBootstrapBuildError, PeerRecordBootstrapClient,
     PeerRecordBootstrapEvent, PeerRecordPullFailure, PeerRecordPullStartError,
 };
 pub use head_announcement::{
-    AuthenticatedProofChainHeadAnnouncementReceipt, HeadAnnouncementAcknowledgeError,
-    HeadAnnouncementStartError, HeadAnnouncementTicket, InboundProofChainHeadAnnouncement,
-    OutboundProofChainHeadAnnouncementEvent, OutboundProofChainHeadAnnouncementFailure,
-    ProofChainHeadAnnouncementEventMismatch,
+    ArtifactChainHeadAnnouncementEventMismatch, AuthenticatedArtifactChainHeadAnnouncementReceipt,
+    HeadAnnouncementAcknowledgeError, HeadAnnouncementStartError, HeadAnnouncementTicket,
+    InboundArtifactChainHeadAnnouncement, OutboundArtifactChainHeadAnnouncementEvent,
+    OutboundArtifactChainHeadAnnouncementFailure,
 };
 pub use head_broadcast::{
-    CompletedProofChainHeadBroadcast, MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS,
-    ProofChainHeadBroadcast, ProofChainHeadBroadcastEventMismatch,
-    ProofChainHeadBroadcastPeerResult, ProofChainHeadBroadcastProgress,
-    ProofChainHeadBroadcastStartError,
+    ArtifactChainHeadBroadcast, ArtifactChainHeadBroadcastEventMismatch,
+    ArtifactChainHeadBroadcastPeerResult, ArtifactChainHeadBroadcastProgress,
+    ArtifactChainHeadBroadcastStartError, CompletedArtifactChainHeadBroadcast,
+    MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS,
 };
 pub use head_survey::{
-    CompletedProofChainHeadSurvey, ProofChainHeadSurvey, ProofChainHeadSurveyEventMismatch,
-    ProofChainHeadSurveyPeerResult, ProofChainHeadSurveyProgress, ProofChainHeadSurveyStartError,
+    ArtifactChainHeadSurvey, ArtifactChainHeadSurveyEventMismatch,
+    ArtifactChainHeadSurveyPeerResult, ArtifactChainHeadSurveyProgress,
+    ArtifactChainHeadSurveyStartError, CompletedArtifactChainHeadSurvey,
 };
 pub use head_transport::{
-    AuthenticatedProofChainHeadResponse, ChainHeadRequestTicket, InboundProofChainHeadRequest,
-    OutboundProofChainHeadEvent, OutboundProofChainHeadFailure, ProofChainHeadRequestEventMismatch,
+    ArtifactChainHeadRequestEventMismatch, AuthenticatedArtifactChainHeadResponse,
+    ChainHeadRequestTicket, InboundArtifactChainHeadRequest, OutboundArtifactChainHeadEvent,
+    OutboundArtifactChainHeadFailure,
 };
 pub use journal_service::{JournalServiceEvent, JournalServiceRequest};
 pub use libp2p::core::transport::ListenerId;
@@ -160,11 +168,11 @@ pub use responder::{
 };
 
 fn selected_context_contains_block(
-    selected: &ProofChainJournal,
-    current_head: ProofBlockId,
-    virtual_genesis: ProofBlockId,
-    block_id: ProofBlockId,
-) -> Result<bool, ProofChainJournalError> {
+    selected: &ArtifactChainJournal,
+    current_head: ArtifactBlockId,
+    virtual_genesis: ArtifactBlockId,
+    block_id: ArtifactBlockId,
+) -> Result<bool, ArtifactChainJournalError> {
     Ok(block_id == current_head
         || block_id == virtual_genesis
         || selected.block(block_id)?.is_some())
@@ -174,9 +182,9 @@ fn selected_context_contains_block(
 pub const MAX_STATIC_PEERS: usize = 8;
 /// Maximum established connections with one authenticated peer.
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
-/// Maximum pending or caller-retained outbound proof, block, head, and announcement requests.
+/// Maximum pending or caller-retained outbound artifact, block, head, and announcement requests.
 pub const MAX_PENDING_REQUESTS: usize = 8;
-/// Maximum concurrent streams for each proof, block, or head-pull exchange.
+/// Maximum concurrent streams for each artifact, block, or head-pull exchange.
 pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
 /// Maximum concurrent head-announcement streams on one connection.
 pub const MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION: usize = 1;
@@ -191,8 +199,8 @@ pub const TCP_LISTEN_BACKLOG: u32 = 16;
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum duration of the negotiated request-response phase.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Absolute monotonic budget for importing one block's exact proof payload.
-pub const PROOF_BLOCK_IMPORT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Absolute monotonic budget for importing one block's exact artifact payload.
+pub const ARTIFACT_BLOCK_IMPORT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Initial delay after one failed managed-session dial.
 pub const DIAL_RETRY_BASE: Duration = DIAL_RETRY_DELAYS[0];
 /// Maximum delay between managed-session dial attempts.
@@ -240,38 +248,38 @@ struct Behaviour {
     limits: connection_limits::Behaviour,
     allowed: allow_block_list::Behaviour<allow_block_list::AllowedPeers>,
     sessions: SessionBehaviour,
-    proof_exchange: request_response::Behaviour<ProofCodec>,
-    block_exchange: request_response::Behaviour<ProofBlockCodec>,
-    head_exchange: request_response::Behaviour<ProofChainHeadCodec>,
-    head_announcement: request_response::Behaviour<ProofChainHeadAnnouncementCodec>,
+    artifact_exchange: request_response::Behaviour<ArtifactCodec>,
+    block_exchange: request_response::Behaviour<ArtifactBlockCodec>,
+    head_exchange: request_response::Behaviour<ArtifactChainHeadCodec>,
+    head_announcement: request_response::Behaviour<ArtifactChainHeadAnnouncementCodec>,
 }
 
-struct PendingProofRequest {
+struct PendingArtifactRequest {
     peer_index: usize,
-    request: ProofRequest,
-    control: Arc<ProofRequestControl>,
+    request: ArtifactRequest,
+    control: Arc<ArtifactRequestControl>,
     _permit: PendingPermit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ExchangeRequestId {
-    Proof(request_response::OutboundRequestId),
+    Artifact(request_response::OutboundRequestId),
     Block(request_response::OutboundRequestId),
     Head(request_response::OutboundRequestId),
     Announcement(request_response::OutboundRequestId),
 }
 
 enum PendingRequest {
-    Proof(PendingProofRequest),
-    Block(PendingProofBlockRequest),
-    Head(PendingProofChainHeadRequest),
-    Announcement(PendingProofChainHeadAnnouncement),
+    Artifact(PendingArtifactRequest),
+    Block(PendingArtifactBlockRequest),
+    Head(PendingArtifactChainHeadRequest),
+    Announcement(PendingArtifactChainHeadAnnouncement),
 }
 
 impl PendingRequest {
     fn peer_index(&self) -> usize {
         match self {
-            Self::Proof(pending) => pending.peer_index,
+            Self::Artifact(pending) => pending.peer_index,
             Self::Block(pending) => pending.peer_index,
             Self::Head(pending) => pending.peer_index,
             Self::Announcement(pending) => pending.peer_index,
@@ -279,13 +287,13 @@ impl PendingRequest {
     }
 }
 
-struct ProofRequestControl {
+struct ArtifactRequestControl {
     network_budget: Arc<PendingBudget>,
     deadline: Instant,
     cancelled: AtomicBool,
 }
 
-impl ProofRequestControl {
+impl ArtifactRequestControl {
     fn new(network_budget: Arc<PendingBudget>, deadline: Instant) -> Self {
         Self {
             network_budget,
@@ -303,16 +311,16 @@ impl ProofRequestControl {
     }
 }
 
-/// Authenticated proof transport over a fixed set of authorized peers.
-pub struct StaticProofNetwork {
+/// Authenticated artifact transport over a fixed set of authorized peers.
+pub struct StaticArtifactNetwork {
     swarm: Swarm<Behaviour>,
     pending: HashMap<ExchangeRequestId, PendingRequest>,
     pending_budget: Arc<PendingBudget>,
     inbound_application_request_budget: rate_limit::TokenBucket,
 }
 
-impl StaticProofNetwork {
-    /// Builds a bounded TCP + Noise + Yamux proof transport.
+impl StaticArtifactNetwork {
+    /// Builds a bounded TCP + Noise + Yamux artifact transport.
     ///
     /// This must run inside a Tokio runtime with I/O and time drivers enabled.
     /// Useful connectivity requires both endpoints to configure each other,
@@ -360,23 +368,23 @@ impl StaticProofNetwork {
         let exchange_config = request_response::Config::default()
             .with_request_timeout(REQUEST_TIMEOUT)
             .with_max_concurrent_streams(MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION);
-        let proof_exchange = request_response::Behaviour::with_codec(
-            ProofCodec,
-            [(PROTOCOL, request_response::ProtocolSupport::Full)],
+        let artifact_exchange = request_response::Behaviour::with_codec(
+            ArtifactCodec,
+            [(ARTIFACT_PROTOCOL, request_response::ProtocolSupport::Full)],
             exchange_config.clone(),
         );
         let block_exchange = request_response::Behaviour::with_codec(
-            ProofBlockCodec,
+            ArtifactBlockCodec,
             [(
-                PROOF_BLOCK_PROTOCOL,
+                ARTIFACT_BLOCK_PROTOCOL,
                 request_response::ProtocolSupport::Full,
             )],
             exchange_config.clone(),
         );
         let head_exchange = request_response::Behaviour::with_codec(
-            ProofChainHeadCodec,
+            ArtifactChainHeadCodec,
             [(
-                PROOF_CHAIN_HEAD_PROTOCOL,
+                ARTIFACT_CHAIN_HEAD_PROTOCOL,
                 request_response::ProtocolSupport::Full,
             )],
             exchange_config,
@@ -385,9 +393,9 @@ impl StaticProofNetwork {
             .with_request_timeout(REQUEST_TIMEOUT)
             .with_max_concurrent_streams(MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION);
         let head_announcement = request_response::Behaviour::with_codec(
-            ProofChainHeadAnnouncementCodec,
+            ArtifactChainHeadAnnouncementCodec,
             [(
-                PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+                ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
                 request_response::ProtocolSupport::Full,
             )],
             announcement_config,
@@ -397,7 +405,7 @@ impl StaticProofNetwork {
             limits,
             allowed,
             sessions,
-            proof_exchange,
+            artifact_exchange,
             block_exchange,
             head_exchange,
             head_announcement,
@@ -411,7 +419,7 @@ impl StaticProofNetwork {
             )
             .map_err(BuildError::Noise)?
             .with_behaviour(|_| behaviour)
-            .expect("constructing the fixed proof-network behavior is infallible")
+            .expect("constructing the fixed artifact-network behavior is infallible")
             .with_swarm_config(|config| {
                 config
                     .with_idle_connection_timeout(MANAGED_SESSION_IDLE_TIMEOUT)
@@ -444,22 +452,26 @@ impl StaticProofNetwork {
         self.swarm.listen_on(address).map_err(ListenError)
     }
 
-    fn request_controlled_proof(
+    fn request_controlled_artifact(
         &mut self,
         peer_id: PeerId,
-        request: ProofRequest,
-        control: &Arc<ProofRequestControl>,
+        request: ArtifactRequest,
+        control: &Arc<ArtifactRequestControl>,
     ) -> Result<request_response::OutboundRequestId, RequestStartError> {
-        let transport_connected = self.swarm.behaviour().proof_exchange.is_connected(&peer_id);
+        let transport_connected = self
+            .swarm
+            .behaviour()
+            .artifact_exchange
+            .is_connected(&peer_id);
         let (peer_index, permit) = self.acquire_request_permit(peer_id, transport_connected)?;
         let request_id = self
             .swarm
             .behaviour_mut()
-            .proof_exchange
+            .artifact_exchange
             .send_request(&peer_id, request);
         self.insert_pending(
-            ExchangeRequestId::Proof(request_id),
-            PendingRequest::Proof(PendingProofRequest {
+            ExchangeRequestId::Artifact(request_id),
+            PendingRequest::Artifact(PendingArtifactRequest {
                 peer_index,
                 request,
                 control: Arc::clone(control),
@@ -512,7 +524,7 @@ impl StaticProofNetwork {
     fn insert_pending(&mut self, key: ExchangeRequestId, pending: PendingRequest) {
         debug_assert!(matches!(
             (&key, &pending),
-            (ExchangeRequestId::Proof(_), PendingRequest::Proof(_))
+            (ExchangeRequestId::Artifact(_), PendingRequest::Artifact(_))
                 | (ExchangeRequestId::Block(_), PendingRequest::Block(_))
                 | (ExchangeRequestId::Head(_), PendingRequest::Head(_))
                 | (
@@ -533,29 +545,29 @@ impl StaticProofNetwork {
     }
 
     #[cfg(test)]
-    fn request_proof(
+    fn request_artifact(
         &mut self,
         peer_id: PeerId,
-        request: ProofRequest,
+        request: ArtifactRequest,
     ) -> Result<request_response::OutboundRequestId, RequestStartError> {
         let deadline = Instant::now()
-            .checked_add(PROOF_BLOCK_IMPORT_TIMEOUT)
-            .expect("the fixed proof-request timeout fits Tokio Instant");
-        let control = Arc::new(ProofRequestControl::new(
+            .checked_add(ARTIFACT_BLOCK_IMPORT_TIMEOUT)
+            .expect("the fixed artifact-request timeout fits Tokio Instant");
+        let control = Arc::new(ArtifactRequestControl::new(
             Arc::clone(&self.pending_budget),
             deadline,
         ));
-        self.request_controlled_proof(peer_id, request, &control)
+        self.request_controlled_artifact(peer_id, request, &control)
     }
 
-    /// Waits for the next proof-network event.
+    /// Waits for the next artifact-network event.
     pub async fn next_event(&mut self) -> NetworkEvent {
         loop {
-            if let Some(event) = self.take_due_proof_request_deadline(Instant::now()) {
+            if let Some(event) = self.take_due_artifact_request_deadline(Instant::now()) {
                 return event;
             }
 
-            let swarm_event = if let Some(deadline) = self.next_proof_request_deadline() {
+            let swarm_event = if let Some(deadline) = self.next_artifact_request_deadline() {
                 tokio::select! {
                     biased;
                     _ = tokio::time::sleep_until(deadline) => continue,
@@ -566,8 +578,8 @@ impl StaticProofNetwork {
             };
 
             match swarm_event {
-                SwarmEvent::Behaviour(BehaviourEvent::ProofExchange(event)) => {
-                    if let Some(event) = self.handle_proof_exchange_event(event) {
+                SwarmEvent::Behaviour(BehaviourEvent::ArtifactExchange(event)) => {
+                    if let Some(event) = self.handle_artifact_exchange_event(event) {
                         return event;
                     }
                 }
@@ -611,14 +623,14 @@ impl StaticProofNetwork {
         }
     }
 
-    fn next_proof_request_deadline(&self) -> Option<Instant> {
+    fn next_artifact_request_deadline(&self) -> Option<Instant> {
         self.pending
             .values()
             .filter_map(|pending| match pending {
-                PendingRequest::Proof(pending) if !pending.control.is_cancelled() => {
+                PendingRequest::Artifact(pending) if !pending.control.is_cancelled() => {
                     Some(pending.control.deadline)
                 }
-                PendingRequest::Proof(_)
+                PendingRequest::Artifact(_)
                 | PendingRequest::Block(_)
                 | PendingRequest::Head(_)
                 | PendingRequest::Announcement(_) => None,
@@ -626,12 +638,12 @@ impl StaticProofNetwork {
             .min()
     }
 
-    fn take_due_proof_request_deadline(&mut self, now: Instant) -> Option<NetworkEvent> {
+    fn take_due_artifact_request_deadline(&mut self, now: Instant) -> Option<NetworkEvent> {
         let request_id = self
             .pending
             .iter()
             .filter_map(|(key, pending)| match (key, pending) {
-                (ExchangeRequestId::Proof(request_id), PendingRequest::Proof(pending))
+                (ExchangeRequestId::Artifact(request_id), PendingRequest::Artifact(pending))
                     if !pending.control.is_cancelled() && now >= pending.control.deadline =>
                 {
                     Some((*request_id, pending.control.deadline))
@@ -640,29 +652,29 @@ impl StaticProofNetwork {
             })
             .min_by_key(|(request_id, deadline)| (*deadline, *request_id))?
             .0;
-        let PendingRequest::Proof(pending) = self
+        let PendingRequest::Artifact(pending) = self
             .pending
-            .get(&ExchangeRequestId::Proof(request_id))
-            .expect("the due proof request remains pending")
+            .get(&ExchangeRequestId::Artifact(request_id))
+            .expect("the due artifact request remains pending")
         else {
-            unreachable!("a proof request key always stores a proof request")
+            unreachable!("an artifact request key always stores an artifact request")
         };
         if !pending.control.cancel() {
             return None;
         }
         let peer_id = self.pending_peer_id(pending.peer_index);
-        Some(NetworkEvent::OutboundProof(OutboundProofEvent {
+        Some(NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
             request_id,
             peer_id,
             request: pending.request,
             control: Arc::clone(&pending.control),
-            outcome: OutboundProofOutcome::DeadlineExceeded,
+            outcome: OutboundArtifactOutcome::DeadlineExceeded,
         }))
     }
 
-    fn handle_proof_exchange_event(
+    fn handle_artifact_exchange_event(
         &mut self,
-        event: request_response::Event<ProofRequest, ProofResponse>,
+        event: request_response::Event<ArtifactRequest, ArtifactResponse>,
     ) -> Option<NetworkEvent> {
         match event {
             request_response::Event::Message { peer, message, .. } => match message {
@@ -670,17 +682,19 @@ impl StaticProofNetwork {
                     request_id,
                     request,
                     channel,
-                } => Some(NetworkEvent::InboundProofRequest(InboundProofRequest {
-                    peer_id: peer,
-                    request_id,
-                    request,
-                    channel,
-                })),
+                } => Some(NetworkEvent::InboundArtifactRequest(
+                    InboundArtifactRequest {
+                        peer_id: peer,
+                        request_id,
+                        request,
+                        channel,
+                    },
+                )),
                 request_response::Message::Response {
                     request_id,
                     response,
                 } => {
-                    let pending = self.remove_pending_proof(request_id)?;
+                    let pending = self.remove_pending_artifact(request_id)?;
                     let expected = self.pending_peer_id(pending.peer_index);
                     if expected != peer {
                         return Some(Self::finish_peer_mismatch(
@@ -688,7 +702,7 @@ impl StaticProofNetwork {
                         ));
                     }
                     if pending.control.is_cancelled() {
-                        return Some(NetworkEvent::ProofCancellationDrained {
+                        return Some(NetworkEvent::ArtifactCancellationDrained {
                             peer_id: expected,
                             request: pending.request,
                             outcome: CancellationDrainOutcome::ResponseDiscarded,
@@ -696,27 +710,27 @@ impl StaticProofNetwork {
                     }
                     if Instant::now() >= pending.control.deadline {
                         return Some(if pending.control.cancel() {
-                            NetworkEvent::OutboundProof(OutboundProofEvent {
+                            NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
                                 request_id,
                                 peer_id: expected,
                                 request: pending.request,
                                 control: pending.control,
-                                outcome: OutboundProofOutcome::DeadlineExceeded,
+                                outcome: OutboundArtifactOutcome::DeadlineExceeded,
                             })
                         } else {
-                            NetworkEvent::ProofCancellationDrained {
+                            NetworkEvent::ArtifactCancellationDrained {
                                 peer_id: expected,
                                 request: pending.request,
                                 outcome: CancellationDrainOutcome::ResponseDiscarded,
                             }
                         });
                     }
-                    Some(NetworkEvent::OutboundProof(OutboundProofEvent {
+                    Some(NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
                         request_id,
                         peer_id: expected,
                         request: pending.request,
                         control: pending.control,
-                        outcome: OutboundProofOutcome::Response {
+                        outcome: OutboundArtifactOutcome::Response {
                             response,
                             _permit: pending._permit,
                         },
@@ -729,7 +743,7 @@ impl StaticProofNetwork {
                 error,
                 ..
             } => {
-                let pending = self.remove_pending_proof(request_id)?;
+                let pending = self.remove_pending_artifact(request_id)?;
                 let expected = self.pending_peer_id(pending.peer_index);
                 if expected != peer {
                     return Some(Self::finish_peer_mismatch(
@@ -740,7 +754,7 @@ impl StaticProofNetwork {
                     request_id,
                     pending,
                     expected,
-                    Box::new(OutboundProofFailure::Transport(error)),
+                    Box::new(OutboundArtifactFailure::Transport(error)),
                 ))
             }
             request_response::Event::InboundFailure {
@@ -748,7 +762,7 @@ impl StaticProofNetwork {
                 request_id,
                 error,
                 ..
-            } => Some(NetworkEvent::InboundProofFailure {
+            } => Some(NetworkEvent::InboundArtifactFailure {
                 peer_id: peer,
                 request_id,
                 error,
@@ -759,35 +773,35 @@ impl StaticProofNetwork {
 
     fn finish_peer_mismatch(
         request_id: request_response::OutboundRequestId,
-        pending: PendingProofRequest,
+        pending: PendingArtifactRequest,
         expected: PeerId,
         actual: PeerId,
     ) -> NetworkEvent {
-        let error = Box::new(OutboundProofFailure::PeerMismatch { expected, actual });
+        let error = Box::new(OutboundArtifactFailure::PeerMismatch { expected, actual });
         if pending.control.is_cancelled() {
-            return NetworkEvent::ProofCancellationDrained {
+            return NetworkEvent::ArtifactCancellationDrained {
                 peer_id: expected,
                 request: pending.request,
                 outcome: CancellationDrainOutcome::Failure(error),
             };
         }
-        NetworkEvent::OutboundProof(OutboundProofEvent {
+        NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
             request_id,
             peer_id: expected,
             request: pending.request,
             control: pending.control,
-            outcome: OutboundProofOutcome::Failure(error),
+            outcome: OutboundArtifactOutcome::Failure(error),
         })
     }
 
     fn finish_failed_request(
         request_id: request_response::OutboundRequestId,
-        pending: PendingProofRequest,
+        pending: PendingArtifactRequest,
         peer_id: PeerId,
-        error: Box<OutboundProofFailure>,
+        error: Box<OutboundArtifactFailure>,
     ) -> NetworkEvent {
         if pending.control.is_cancelled() {
-            return NetworkEvent::ProofCancellationDrained {
+            return NetworkEvent::ArtifactCancellationDrained {
                 peer_id,
                 request: pending.request,
                 outcome: CancellationDrainOutcome::Failure(error),
@@ -795,66 +809,68 @@ impl StaticProofNetwork {
         }
         if Instant::now() >= pending.control.deadline {
             return if pending.control.cancel() {
-                NetworkEvent::OutboundProof(OutboundProofEvent {
+                NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
                     request_id,
                     peer_id,
                     request: pending.request,
                     control: pending.control,
-                    outcome: OutboundProofOutcome::DeadlineExceeded,
+                    outcome: OutboundArtifactOutcome::DeadlineExceeded,
                 })
             } else {
-                NetworkEvent::ProofCancellationDrained {
+                NetworkEvent::ArtifactCancellationDrained {
                     peer_id,
                     request: pending.request,
                     outcome: CancellationDrainOutcome::Failure(error),
                 }
             };
         }
-        NetworkEvent::OutboundProof(OutboundProofEvent {
+        NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
             request_id,
             peer_id,
             request: pending.request,
             control: pending.control,
-            outcome: OutboundProofOutcome::Failure(error),
+            outcome: OutboundArtifactOutcome::Failure(error),
         })
     }
 
-    fn remove_pending_proof(
+    fn remove_pending_artifact(
         &mut self,
         request_id: request_response::OutboundRequestId,
-    ) -> Option<PendingProofRequest> {
-        let pending = self.pending.remove(&ExchangeRequestId::Proof(request_id))?;
-        let PendingRequest::Proof(pending) = pending else {
-            unreachable!("a proof request key always stores a proof request")
+    ) -> Option<PendingArtifactRequest> {
+        let pending = self
+            .pending
+            .remove(&ExchangeRequestId::Artifact(request_id))?;
+        let PendingRequest::Artifact(pending) = pending else {
+            unreachable!("an artifact request key always stores an artifact request")
         };
         Some(pending)
     }
 
     /// Serves one authenticated request from the healthy local journal.
     ///
-    /// One bounded proof-sized copy is required because rust-libp2p owns the
+    /// One bounded artifact-sized copy is required because rust-libp2p owns the
     /// response until its asynchronous stream write completes. The journal is
     /// not borrowed across that write.
-    pub fn respond_proof_from_journal(
+    pub fn respond_artifact_from_journal(
         &mut self,
-        inbound: InboundProofRequest,
-        journal: &ProofChainJournal,
+        inbound: InboundArtifactRequest,
+        journal: &ArtifactChainJournal,
     ) -> Result<(), RespondError> {
         let response_bytes = journal
-            .proof(inbound.request.proof_id())
+            .artifact(inbound.request.artifact_id())
             .map_err(RespondError::Journal)?
-            .map(|record| record.canonical_proof_bytes());
+            .map(|record| record.canonical_artifact_bytes());
         if !inbound.channel.is_open() {
             return Err(RespondError::ChannelClosed);
         }
         self.take_inbound_application_request()?;
         let bytes = response_bytes.map_or_else(Vec::new, <[u8]>::to_vec);
-        debug_assert!(bytes.len() <= PROOF_RESPONSE_MAX_BYTES);
-        let response = ProofResponse::from_wire_bytes(bytes)
-            .expect("retained canonical proof obeys the certificate limit");
+        debug_assert!(bytes.len() <= ARTIFACT_RESPONSE_MAX_BYTES);
+        let response = ArtifactResponse::from_wire_bytes(bytes)
+            .expect("retained canonical artifact obeys the certificate limit");
         self.swarm
             .behaviour_mut()
-            .proof_exchange
+            .artifact_exchange
             .send_response(inbound.channel, response)
             .map_err(|_| RespondError::ChannelClosed)
     }
@@ -875,29 +891,29 @@ fn yamux_config(max_streams: usize) -> yamux::Config {
 
 /// One request received from an authenticated, authorized peer.
 #[must_use]
-pub struct InboundProofRequest {
+pub struct InboundArtifactRequest {
     peer_id: PeerId,
     request_id: request_response::InboundRequestId,
-    request: ProofRequest,
-    channel: request_response::ResponseChannel<ProofResponse>,
+    request: ArtifactRequest,
+    channel: request_response::ResponseChannel<ArtifactResponse>,
 }
 
-impl InboundProofRequest {
+impl InboundArtifactRequest {
     /// Returns the authenticated sender.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
-    /// Returns the requested proof address.
-    pub const fn request(&self) -> ProofRequest {
+    /// Returns the requested artifact address.
+    pub const fn request(&self) -> ArtifactRequest {
         self.request
     }
 }
 
-impl fmt::Debug for InboundProofRequest {
+impl fmt::Debug for InboundArtifactRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("InboundProofRequest")
+            .debug_struct("InboundArtifactRequest")
             .field("peer_id", &self.peer_id)
             .field("request_id", &self.request_id)
             .field("request", &self.request)
@@ -905,51 +921,51 @@ impl fmt::Debug for InboundProofRequest {
     }
 }
 
-/// One terminal outcome correlated with its exact outbound proof request.
+/// One terminal outcome correlated with its exact outbound artifact request.
 #[must_use]
-pub struct OutboundProofEvent {
+pub struct OutboundArtifactEvent {
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
-    request: ProofRequest,
-    control: Arc<ProofRequestControl>,
-    outcome: OutboundProofOutcome,
+    request: ArtifactRequest,
+    control: Arc<ArtifactRequestControl>,
+    outcome: OutboundArtifactOutcome,
 }
 
-impl OutboundProofEvent {
+impl OutboundArtifactEvent {
     /// Returns the expected authenticated peer.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
     /// Returns the immutable request that caused this terminal outcome.
-    pub const fn request(&self) -> ProofRequest {
+    pub const fn request(&self) -> ArtifactRequest {
         self.request
     }
 
     /// Returns the terminal request failure, when this was not a response or
-    /// proof-request deadline.
-    pub fn failure(&self) -> Option<&OutboundProofFailure> {
+    /// artifact-request deadline.
+    pub fn failure(&self) -> Option<&OutboundArtifactFailure> {
         match &self.outcome {
-            OutboundProofOutcome::Failure(error) => Some(error.as_ref()),
+            OutboundArtifactOutcome::Failure(error) => Some(error.as_ref()),
             _ => None,
         }
     }
 
-    /// Returns whether the absolute proof-request deadline caused this event.
+    /// Returns whether the absolute artifact-request deadline caused this event.
     pub const fn is_deadline_exceeded(&self) -> bool {
-        matches!(self.outcome, OutboundProofOutcome::DeadlineExceeded)
+        matches!(self.outcome, OutboundArtifactOutcome::DeadlineExceeded)
     }
 }
 
-impl fmt::Debug for OutboundProofEvent {
+impl fmt::Debug for OutboundArtifactEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let outcome = match &self.outcome {
-            OutboundProofOutcome::Response { .. } => "Response",
-            OutboundProofOutcome::Failure(_) => "Failure",
-            OutboundProofOutcome::DeadlineExceeded => "DeadlineExceeded",
+            OutboundArtifactOutcome::Response { .. } => "Response",
+            OutboundArtifactOutcome::Failure(_) => "Failure",
+            OutboundArtifactOutcome::DeadlineExceeded => "DeadlineExceeded",
         };
         formatter
-            .debug_struct("OutboundProofEvent")
+            .debug_struct("OutboundArtifactEvent")
             .field("request_id", &self.request_id)
             .field("peer_id", &self.peer_id)
             .field("request", &self.request)
@@ -958,38 +974,38 @@ impl fmt::Debug for OutboundProofEvent {
     }
 }
 
-enum OutboundProofOutcome {
+enum OutboundArtifactOutcome {
     Response {
-        response: ProofResponse,
+        response: ArtifactResponse,
         _permit: PendingPermit,
     },
-    Failure(Box<OutboundProofFailure>),
+    Failure(Box<OutboundArtifactFailure>),
     DeadlineExceeded,
 }
 
-/// A typed terminal failure for one exact outbound proof request.
+/// A typed terminal failure for one exact outbound artifact request.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum OutboundProofFailure {
+pub enum OutboundArtifactFailure {
     Transport(request_response::OutboundFailure),
     PeerMismatch { expected: PeerId, actual: PeerId },
 }
 
-impl fmt::Display for OutboundProofFailure {
+impl fmt::Display for OutboundArtifactFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Transport(source) => write!(formatter, "proof request failed: {source}"),
+            Self::Transport(source) => write!(formatter, "artifact request failed: {source}"),
             Self::PeerMismatch { expected, actual } => {
                 write!(
                     formatter,
-                    "proof terminal event came from {actual}, expected {expected}"
+                    "artifact terminal event came from {actual}, expected {expected}"
                 )
             }
         }
     }
 }
 
-impl Error for OutboundProofFailure {
+impl Error for OutboundArtifactFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Transport(source) => Some(source),
@@ -1004,7 +1020,7 @@ impl Error for OutboundProofFailure {
 #[non_exhaustive]
 pub enum CancellationDrainOutcome {
     ResponseDiscarded,
-    Failure(Box<OutboundProofFailure>),
+    Failure(Box<OutboundArtifactFailure>),
 }
 
 /// An externally relevant transport event.
@@ -1015,20 +1031,20 @@ pub enum NetworkEvent {
     Listening {
         address: Multiaddr,
     },
-    InboundProofRequest(InboundProofRequest),
-    OutboundProof(OutboundProofEvent),
-    InboundBlockRequest(InboundProofBlockRequest),
-    OutboundBlock(OutboundProofBlockEvent),
-    InboundChainHeadRequest(InboundProofChainHeadRequest),
-    OutboundChainHead(OutboundProofChainHeadEvent),
-    InboundChainHeadAnnouncement(InboundProofChainHeadAnnouncement),
-    OutboundChainHeadAnnouncement(OutboundProofChainHeadAnnouncementEvent),
-    ProofCancellationDrained {
+    InboundArtifactRequest(InboundArtifactRequest),
+    OutboundArtifact(OutboundArtifactEvent),
+    InboundBlockRequest(InboundArtifactBlockRequest),
+    OutboundBlock(OutboundArtifactBlockEvent),
+    InboundChainHeadRequest(InboundArtifactChainHeadRequest),
+    OutboundChainHead(OutboundArtifactChainHeadEvent),
+    InboundChainHeadAnnouncement(InboundArtifactChainHeadAnnouncement),
+    OutboundChainHeadAnnouncement(OutboundArtifactChainHeadAnnouncementEvent),
+    ArtifactCancellationDrained {
         peer_id: PeerId,
-        request: ProofRequest,
+        request: ArtifactRequest,
         outcome: CancellationDrainOutcome,
     },
-    InboundProofFailure {
+    InboundArtifactFailure {
         peer_id: PeerId,
         request_id: request_response::InboundRequestId,
         error: request_response::InboundFailure,
@@ -1110,7 +1126,7 @@ impl Drop for PendingPermit {
     }
 }
 
-/// Construction failure for a static proof network.
+/// Construction failure for a static artifact network.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum BuildError {
@@ -1158,7 +1174,7 @@ pub struct ListenError(libp2p::TransportError<std::io::Error>);
 
 impl fmt::Display for ListenError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "cannot listen for proof peers: {}", self.0)
+        write!(formatter, "cannot listen for artifact peers: {}", self.0)
     }
 }
 
@@ -1168,7 +1184,7 @@ impl Error for ListenError {
     }
 }
 
-/// Failure to start one outbound proof-network exchange request.
+/// Failure to start one outbound artifact-network exchange request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RequestStartError {
@@ -1230,7 +1246,7 @@ impl PeerSessionEvent {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RespondError {
-    Journal(ProofChainJournalError),
+    Journal(ArtifactChainJournalError),
     ChannelClosed,
     RateLimited,
 }
@@ -1239,7 +1255,7 @@ impl fmt::Display for RespondError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Journal(source) => {
-                write!(formatter, "cannot read proof-chain journal: {source}")
+                write!(formatter, "cannot read artifact-chain journal: {source}")
             }
             Self::ChannelClosed => write!(formatter, "response channel is closed"),
             Self::RateLimited => {

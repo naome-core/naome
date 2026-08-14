@@ -4,9 +4,9 @@ use super::{
 };
 use crate::{
     CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS, ProofCertificate,
-    ProofCertificateError, ProofId, ProofStep,
+    ProofCertificateError, ProofId, ProofReplacement, ProofSeparation, ProofStep,
 };
-use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
+use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 
 mod golden;
 mod limits;

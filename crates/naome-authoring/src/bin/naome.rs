@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use naome_authoring::{
-    AUTHORING_SOURCE_MAX_BYTES, CompileDiagnostic, CompileError, CompiledProof, DiagnosticCode,
-    compile,
+    AUTHORING_SOURCE_MAX_BYTES, CompileDiagnostic, CompileError, CompiledArtifact,
+    CompiledDefinition, CompiledProof, DiagnosticCode, compile_artifact,
 };
+use naome_proof::ArtifactId;
 
 const USAGE: &str = "usage: naome proof <proof.nao>";
 
@@ -37,12 +38,12 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
 
     let path = PathBuf::from(path);
     let source = read_source(&path)?;
-    let proof = compile(&source).map_err(|error| CliError::Compile {
+    let artifact = compile_artifact(&source).map_err(|error| CliError::Compile {
         path: path.clone(),
         diagnostic: error.diagnostic(&source),
         source: Box::new(error),
     })?;
-    write_compiled(output, &proof).map_err(|source| CliError::Output { source })
+    write_compiled(output, &artifact).map_err(|source| CliError::Output { source })
 }
 
 fn read_source(path: &Path) -> Result<String, CliError> {
@@ -71,11 +72,40 @@ fn read_source(path: &Path) -> Result<String, CliError> {
     })
 }
 
-fn write_compiled(output: &mut impl Write, proof: &CompiledProof) -> io::Result<()> {
+fn write_compiled(output: &mut impl Write, artifact: &CompiledArtifact) -> io::Result<()> {
+    match artifact {
+        CompiledArtifact::Proof(proof) => write_compiled_proof(output, proof),
+        CompiledArtifact::Definition(definition) => write_compiled_definition(output, definition),
+    }
+}
+
+fn write_compiled_proof(output: &mut impl Write, proof: &CompiledProof) -> io::Result<()> {
     write_hex_line(output, "statement_id", proof.statement_id().as_bytes())?;
     write_hex_line(output, "derivation_id", proof.derivation_id().as_bytes())?;
     write_hex_line(output, "proof_id", proof.proof_id().as_bytes())?;
+    write_hex_line(
+        output,
+        "artifact_id",
+        ArtifactId::from_proof_id(proof.proof_id()).as_bytes(),
+    )?;
     write_hex_line(output, "canonical_proof", proof.canonical_proof_bytes())
+}
+
+fn write_compiled_definition(
+    output: &mut impl Write,
+    definition: &CompiledDefinition,
+) -> io::Result<()> {
+    write_hex_line(
+        output,
+        "definition_id",
+        definition.definition_id().as_bytes(),
+    )?;
+    write_hex_line(output, "artifact_id", definition.artifact_id().as_bytes())?;
+    write_hex_line(
+        output,
+        "canonical_definition",
+        definition.canonical_definition_bytes(),
+    )
 }
 
 fn write_hex_line(output: &mut impl Write, label: &str, bytes: &[u8]) -> io::Result<()> {

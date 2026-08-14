@@ -1791,6 +1791,7 @@ name = "naome-proof"
 version = "0.1.0"
 dependencies = [
  "naome-foundation",
+ "sha2 0.11.0",
 ]
 
 [[package]]

@@ -1,0 +1,7 @@
+foundation = "naome:zfc"
+
+definition empty_set = constant(
+    value,
+    obligation = "0919162ae0dc2bf2f95966473aba97f22a072e26074ab5f92b55d043d730bfde",
+):
+    forall(element, not_(member(element, value)))

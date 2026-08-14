@@ -14,31 +14,31 @@ fn logical_axiom_steps_reconstruct_exact_foundation_formulas() {
     let cases = [
         (
             ProofStep::Simplification {
-                antecedent: first.clone(),
-                consequent: second.clone(),
+                antecedent: first.clone().into(),
+                consequent: second.clone().into(),
             },
             Logic::simplification(first.clone(), second.clone()),
         ),
         (
             ProofStep::Frege {
-                first: first.clone(),
-                second: second.clone(),
-                third: third.clone(),
+                first: first.clone().into(),
+                second: second.clone().into(),
+                third: third.clone().into(),
             },
             Logic::frege(first.clone(), second.clone(), third.clone()),
         ),
         (
             ProofStep::ClassicalContraposition {
-                antecedent: first.clone(),
-                consequent: second.clone(),
+                antecedent: first.clone().into(),
+                consequent: second.clone().into(),
             },
             Logic::classical_contraposition(first.clone(), second.clone()),
         ),
         (
             ProofStep::UniversalDistribution {
                 variable: x,
-                antecedent: quantified_antecedent.clone(),
-                consequent: quantified_consequent.clone(),
+                antecedent: quantified_antecedent.clone().into(),
+                consequent: quantified_consequent.clone().into(),
             },
             Logic::universal_distribution(x, quantified_antecedent, quantified_consequent),
         ),
@@ -56,7 +56,9 @@ fn vacuous_universal_reconstructs_the_nameless_binder() {
     let vacuous = Logic::vacuous_universal(body.clone());
     let expected = Logic::generalization(zero, vacuous);
     let proof = certificate(vec![
-        ProofStep::VacuousUniversal { formula: body },
+        ProofStep::VacuousUniversal {
+            formula: body.into(),
+        },
         ProofStep::Generalization {
             premise: 0,
             variable: zero,
@@ -77,7 +79,7 @@ fn universal_instantiation_maps_binder_and_replacement_fields() {
         ProofStep::UniversalInstantiation {
             variable: x,
             replacement: y,
-            body,
+            body: body.into(),
         },
         ProofStep::Generalization {
             premise: 0,

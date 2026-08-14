@@ -1,26 +1,26 @@
-//! Authenticated transport binding for one peer-local proof-chain head.
+//! Authenticated transport binding for one peer-local artifact-chain head.
 
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
 use libp2p::request_response;
-use naome::chain_head_exchange::{ProofChainHeadRequest, ProofChainHeadResponse};
-use naome_chain::ProofBlockId;
-use naome_storage::ProofChainJournal;
+use naome::chain_head_exchange::{ArtifactChainHeadRequest, ArtifactChainHeadResponse};
+use naome_chain::ArtifactBlockId;
+use naome_storage::ArtifactChainJournal;
 
 use super::{
     ExchangeRequestId, NetworkEvent, PeerId, PendingBudget, PendingPermit, PendingRequest,
-    RequestStartError, RespondError, StaticProofNetwork,
+    RequestStartError, RespondError, StaticArtifactNetwork,
 };
 
-pub(super) struct PendingProofChainHeadRequest {
+pub(super) struct PendingArtifactChainHeadRequest {
     pub(super) peer_index: usize,
-    pub(super) request: ProofChainHeadRequest,
+    pub(super) request: ArtifactChainHeadRequest,
     pub(super) _permit: PendingPermit,
 }
 
-/// One opaque generation of an outbound proof-chain-head request.
+/// One opaque generation of an outbound artifact-chain-head request.
 ///
 /// Dropping the ticket does not cancel its physical libp2p request. The
 /// transport retains the peer slot and global permit until the corresponding
@@ -29,7 +29,7 @@ pub(super) struct PendingProofChainHeadRequest {
 pub struct ChainHeadRequestTicket {
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
-    request: ProofChainHeadRequest,
+    request: ArtifactChainHeadRequest,
     network_budget: Arc<PendingBudget>,
 }
 
@@ -40,12 +40,12 @@ impl ChainHeadRequestTicket {
     }
 
     /// Returns the immutable chain-head request carried by this generation.
-    pub const fn request(&self) -> ProofChainHeadRequest {
+    pub const fn request(&self) -> ArtifactChainHeadRequest {
         self.request
     }
 
     /// Returns whether `event` is the exact terminal for this ticket.
-    pub fn accepts_event(&self, event: &OutboundProofChainHeadEvent) -> bool {
+    pub fn accepts_event(&self, event: &OutboundArtifactChainHeadEvent) -> bool {
         self.request_id == event.request_id
             && self.peer_id == event.peer_id
             && self.request == event.request
@@ -58,13 +58,13 @@ impl ChainHeadRequestTicket {
     /// no response or failure can be extracted without generation correlation.
     pub fn complete(
         self,
-        event: OutboundProofChainHeadEvent,
+        event: OutboundArtifactChainHeadEvent,
     ) -> Result<
-        Result<AuthenticatedProofChainHeadResponse, Box<OutboundProofChainHeadFailure>>,
-        Box<ProofChainHeadRequestEventMismatch>,
+        Result<AuthenticatedArtifactChainHeadResponse, Box<OutboundArtifactChainHeadFailure>>,
+        Box<ArtifactChainHeadRequestEventMismatch>,
     > {
         if !self.accepts_event(&event) {
-            return Err(Box::new(ProofChainHeadRequestEventMismatch {
+            return Err(Box::new(ArtifactChainHeadRequestEventMismatch {
                 ticket: self,
                 event,
             }));
@@ -85,61 +85,61 @@ impl fmt::Debug for ChainHeadRequestTicket {
 
 /// One ticket/event mismatch that preserves both values for routing.
 #[must_use]
-pub struct ProofChainHeadRequestEventMismatch {
+pub struct ArtifactChainHeadRequestEventMismatch {
     ticket: ChainHeadRequestTicket,
-    event: OutboundProofChainHeadEvent,
+    event: OutboundArtifactChainHeadEvent,
 }
 
-impl ProofChainHeadRequestEventMismatch {
+impl ArtifactChainHeadRequestEventMismatch {
     /// Returns the unmatched ticket and terminal event.
-    pub fn into_parts(self) -> (ChainHeadRequestTicket, OutboundProofChainHeadEvent) {
+    pub fn into_parts(self) -> (ChainHeadRequestTicket, OutboundArtifactChainHeadEvent) {
         (self.ticket, self.event)
     }
 }
 
-impl fmt::Debug for ProofChainHeadRequestEventMismatch {
+impl fmt::Debug for ArtifactChainHeadRequestEventMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ProofChainHeadRequestEventMismatch")
+            .debug_struct("ArtifactChainHeadRequestEventMismatch")
             .field("ticket", &self.ticket)
             .field("event", &self.event)
             .finish()
     }
 }
 
-impl fmt::Display for ProofChainHeadRequestEventMismatch {
+impl fmt::Display for ArtifactChainHeadRequestEventMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("proof-chain-head terminal event does not match its request ticket")
+        formatter.write_str("artifact-chain-head terminal event does not match its request ticket")
     }
 }
 
-impl Error for ProofChainHeadRequestEventMismatch {}
+impl Error for ArtifactChainHeadRequestEventMismatch {}
 
 /// One request received from an authenticated, statically authorized peer.
 #[must_use]
-pub struct InboundProofChainHeadRequest {
+pub struct InboundArtifactChainHeadRequest {
     peer_id: PeerId,
     request_id: request_response::InboundRequestId,
-    request: ProofChainHeadRequest,
-    channel: request_response::ResponseChannel<ProofChainHeadResponse>,
+    request: ArtifactChainHeadRequest,
+    channel: request_response::ResponseChannel<ArtifactChainHeadResponse>,
 }
 
-impl InboundProofChainHeadRequest {
+impl InboundArtifactChainHeadRequest {
     /// Returns the authenticated sender.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
-    /// Returns the requested proof-chain context.
-    pub const fn request(&self) -> ProofChainHeadRequest {
+    /// Returns the requested artifact-chain context.
+    pub const fn request(&self) -> ArtifactChainHeadRequest {
         self.request
     }
 }
 
-impl fmt::Debug for InboundProofChainHeadRequest {
+impl fmt::Debug for InboundArtifactChainHeadRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("InboundProofChainHeadRequest")
+            .debug_struct("InboundArtifactChainHeadRequest")
             .field("peer_id", &self.peer_id)
             .field("request_id", &self.request_id)
             .field("request", &self.request)
@@ -149,55 +149,55 @@ impl fmt::Debug for InboundProofChainHeadRequest {
 
 /// One terminal chain-head event awaiting its exact generation ticket.
 #[must_use]
-pub struct OutboundProofChainHeadEvent {
+pub struct OutboundArtifactChainHeadEvent {
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
-    request: ProofChainHeadRequest,
-    outcome: OutboundProofChainHeadOutcome,
+    request: ArtifactChainHeadRequest,
+    outcome: OutboundArtifactChainHeadOutcome,
 }
 
-impl OutboundProofChainHeadEvent {
+impl OutboundArtifactChainHeadEvent {
     /// Returns the expected authenticated peer.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
     /// Returns the immutable request that caused this terminal event.
-    pub const fn request(&self) -> ProofChainHeadRequest {
+    pub const fn request(&self) -> ArtifactChainHeadRequest {
         self.request
     }
 
     fn network_budget(&self) -> &Arc<PendingBudget> {
         match &self.outcome {
-            OutboundProofChainHeadOutcome::Response { _permit, .. } => &_permit.budget,
-            OutboundProofChainHeadOutcome::Failure { network_budget, .. } => network_budget,
+            OutboundArtifactChainHeadOutcome::Response { _permit, .. } => &_permit.budget,
+            OutboundArtifactChainHeadOutcome::Failure { network_budget, .. } => network_budget,
         }
     }
 
     fn into_result(
         self,
-    ) -> Result<AuthenticatedProofChainHeadResponse, Box<OutboundProofChainHeadFailure>> {
+    ) -> Result<AuthenticatedArtifactChainHeadResponse, Box<OutboundArtifactChainHeadFailure>> {
         match self.outcome {
-            OutboundProofChainHeadOutcome::Response { response, .. } => {
-                Ok(AuthenticatedProofChainHeadResponse {
+            OutboundArtifactChainHeadOutcome::Response { response, .. } => {
+                Ok(AuthenticatedArtifactChainHeadResponse {
                     peer_id: self.peer_id,
                     request: self.request,
                     response,
                 })
             }
-            OutboundProofChainHeadOutcome::Failure { error, .. } => Err(error),
+            OutboundArtifactChainHeadOutcome::Failure { error, .. } => Err(error),
         }
     }
 }
 
-impl fmt::Debug for OutboundProofChainHeadEvent {
+impl fmt::Debug for OutboundArtifactChainHeadEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let outcome = match &self.outcome {
-            OutboundProofChainHeadOutcome::Response { .. } => "Response",
-            OutboundProofChainHeadOutcome::Failure { .. } => "Failure",
+            OutboundArtifactChainHeadOutcome::Response { .. } => "Response",
+            OutboundArtifactChainHeadOutcome::Failure { .. } => "Failure",
         };
         formatter
-            .debug_struct("OutboundProofChainHeadEvent")
+            .debug_struct("OutboundArtifactChainHeadEvent")
             .field("peer_id", &self.peer_id)
             .field("request", &self.request)
             .field("outcome", &outcome)
@@ -205,13 +205,13 @@ impl fmt::Debug for OutboundProofChainHeadEvent {
     }
 }
 
-enum OutboundProofChainHeadOutcome {
+enum OutboundArtifactChainHeadOutcome {
     Response {
-        response: ProofChainHeadResponse,
+        response: ArtifactChainHeadResponse,
         _permit: PendingPermit,
     },
     Failure {
-        error: Box<OutboundProofChainHeadFailure>,
+        error: Box<OutboundArtifactChainHeadFailure>,
         network_budget: Arc<PendingBudget>,
     },
 }
@@ -222,20 +222,20 @@ enum OutboundProofChainHeadOutcome {
 /// reported head fresh, selected, available, finalized, or authoritative.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
-pub struct AuthenticatedProofChainHeadResponse {
+pub struct AuthenticatedArtifactChainHeadResponse {
     peer_id: PeerId,
-    request: ProofChainHeadRequest,
-    response: ProofChainHeadResponse,
+    request: ArtifactChainHeadRequest,
+    response: ArtifactChainHeadResponse,
 }
 
-impl AuthenticatedProofChainHeadResponse {
+impl AuthenticatedArtifactChainHeadResponse {
     /// Returns the authenticated peer that supplied this response.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
     /// Returns the exact chain context requested from that peer.
-    pub const fn request(&self) -> ProofChainHeadRequest {
+    pub const fn request(&self) -> ArtifactChainHeadRequest {
         self.request
     }
 
@@ -245,7 +245,7 @@ impl AuthenticatedProofChainHeadResponse {
     }
 
     /// Returns this peer's untrusted reported head, when available.
-    pub const fn head_block_id(&self) -> Option<ProofBlockId> {
+    pub const fn head_block_id(&self) -> Option<ArtifactBlockId> {
         self.response.head_block_id()
     }
 }
@@ -253,28 +253,28 @@ impl AuthenticatedProofChainHeadResponse {
 /// A typed terminal failure for one exact outbound chain-head request.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum OutboundProofChainHeadFailure {
+pub enum OutboundArtifactChainHeadFailure {
     /// The request-response stream failed before a complete response arrived.
     Transport(request_response::OutboundFailure),
     /// A terminal event came from a peer other than the retained expectation.
     PeerMismatch { expected: PeerId, actual: PeerId },
 }
 
-impl fmt::Display for OutboundProofChainHeadFailure {
+impl fmt::Display for OutboundArtifactChainHeadFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Transport(source) => {
-                write!(formatter, "proof-chain-head request failed: {source}")
+                write!(formatter, "artifact-chain-head request failed: {source}")
             }
             Self::PeerMismatch { expected, actual } => write!(
                 formatter,
-                "proof-chain-head terminal event came from {actual}, expected {expected}"
+                "artifact-chain-head terminal event came from {actual}, expected {expected}"
             ),
         }
     }
 }
 
-impl Error for OutboundProofChainHeadFailure {
+impl Error for OutboundArtifactChainHeadFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Transport(source) => Some(source),
@@ -283,7 +283,7 @@ impl Error for OutboundProofChainHeadFailure {
     }
 }
 
-impl StaticProofNetwork {
+impl StaticArtifactNetwork {
     /// Starts one chain-scoped head request over an established managed session.
     ///
     /// The returned ticket is the only public path to the terminal outcome.
@@ -291,7 +291,7 @@ impl StaticProofNetwork {
     pub fn request_chain_head(
         &mut self,
         peer_id: PeerId,
-        request: ProofChainHeadRequest,
+        request: ArtifactChainHeadRequest,
     ) -> Result<ChainHeadRequestTicket, RequestStartError> {
         let transport_connected = self.swarm.behaviour().head_exchange.is_connected(&peer_id);
         let (peer_index, permit) = self.acquire_request_permit(peer_id, transport_connected)?;
@@ -302,7 +302,7 @@ impl StaticProofNetwork {
         &mut self,
         peer_index: usize,
         peer_id: PeerId,
-        request: ProofChainHeadRequest,
+        request: ArtifactChainHeadRequest,
         permit: PendingPermit,
     ) -> ChainHeadRequestTicket {
         debug_assert_eq!(self.pending_peer_id(peer_index), peer_id);
@@ -319,7 +319,7 @@ impl StaticProofNetwork {
         };
         self.insert_pending(
             ExchangeRequestId::Head(request_id),
-            PendingRequest::Head(PendingProofChainHeadRequest {
+            PendingRequest::Head(PendingArtifactChainHeadRequest {
                 peer_index,
                 request,
                 _permit: permit,
@@ -330,7 +330,7 @@ impl StaticProofNetwork {
 
     pub(super) fn handle_head_exchange_event(
         &mut self,
-        event: request_response::Event<ProofChainHeadRequest, ProofChainHeadResponse>,
+        event: request_response::Event<ArtifactChainHeadRequest, ArtifactChainHeadResponse>,
     ) -> Option<NetworkEvent> {
         match event {
             request_response::Event::Message { peer, message, .. } => match message {
@@ -339,7 +339,7 @@ impl StaticProofNetwork {
                     request,
                     channel,
                 } => Some(NetworkEvent::InboundChainHeadRequest(
-                    InboundProofChainHeadRequest {
+                    InboundArtifactChainHeadRequest {
                         peer_id: peer,
                         request_id,
                         request,
@@ -357,7 +357,7 @@ impl StaticProofNetwork {
                             request_id,
                             expected,
                             pending,
-                            OutboundProofChainHeadFailure::PeerMismatch {
+                            OutboundArtifactChainHeadFailure::PeerMismatch {
                                 expected,
                                 actual: peer,
                             },
@@ -377,9 +377,9 @@ impl StaticProofNetwork {
                 let pending = self.remove_pending_head(request_id)?;
                 let expected = self.pending_peer_id(pending.peer_index);
                 let failure = if expected == peer {
-                    OutboundProofChainHeadFailure::Transport(error)
+                    OutboundArtifactChainHeadFailure::Transport(error)
                 } else {
-                    OutboundProofChainHeadFailure::PeerMismatch {
+                    OutboundArtifactChainHeadFailure::PeerMismatch {
                         expected,
                         actual: peer,
                     }
@@ -405,34 +405,34 @@ impl StaticProofNetwork {
     fn finish_head_response(
         request_id: request_response::OutboundRequestId,
         peer_id: PeerId,
-        pending: PendingProofChainHeadRequest,
-        response: ProofChainHeadResponse,
+        pending: PendingArtifactChainHeadRequest,
+        response: ArtifactChainHeadResponse,
     ) -> NetworkEvent {
-        let PendingProofChainHeadRequest {
+        let PendingArtifactChainHeadRequest {
             peer_index: _,
             request,
             _permit,
         } = pending;
-        NetworkEvent::OutboundChainHead(OutboundProofChainHeadEvent {
+        NetworkEvent::OutboundChainHead(OutboundArtifactChainHeadEvent {
             request_id,
             peer_id,
             request,
-            outcome: OutboundProofChainHeadOutcome::Response { response, _permit },
+            outcome: OutboundArtifactChainHeadOutcome::Response { response, _permit },
         })
     }
 
     fn finish_head_failure(
         request_id: request_response::OutboundRequestId,
         peer_id: PeerId,
-        pending: PendingProofChainHeadRequest,
-        failure: OutboundProofChainHeadFailure,
+        pending: PendingArtifactChainHeadRequest,
+        failure: OutboundArtifactChainHeadFailure,
     ) -> NetworkEvent {
         let network_budget = Arc::clone(&pending._permit.budget);
-        NetworkEvent::OutboundChainHead(OutboundProofChainHeadEvent {
+        NetworkEvent::OutboundChainHead(OutboundArtifactChainHeadEvent {
             request_id,
             peer_id,
             request: pending.request,
-            outcome: OutboundProofChainHeadOutcome::Failure {
+            outcome: OutboundArtifactChainHeadOutcome::Failure {
                 error: Box::new(failure),
                 network_budget,
             },
@@ -442,7 +442,7 @@ impl StaticProofNetwork {
     fn remove_pending_head(
         &mut self,
         request_id: request_response::OutboundRequestId,
-    ) -> Option<PendingProofChainHeadRequest> {
+    ) -> Option<PendingArtifactChainHeadRequest> {
         let pending = self.pending.remove(&ExchangeRequestId::Head(request_id))?;
         let PendingRequest::Head(pending) = pending else {
             unreachable!("a chain-head request key always stores a chain-head request")
@@ -453,8 +453,8 @@ impl StaticProofNetwork {
     /// Serves one authenticated chain-head request from the healthy local journal.
     pub fn respond_chain_head_from_journal(
         &mut self,
-        inbound: InboundProofChainHeadRequest,
-        journal: &ProofChainJournal,
+        inbound: InboundArtifactChainHeadRequest,
+        journal: &ArtifactChainJournal,
     ) -> Result<(), RespondError> {
         let head_block_id = journal.head_block_id().map_err(RespondError::Journal)?;
         let head_bytes = (journal.chain_id() == inbound.request.chain_id())
@@ -464,12 +464,12 @@ impl StaticProofNetwork {
             return Err(RespondError::ChannelClosed);
         }
         self.take_inbound_application_request()?;
-        let response = ProofChainHeadResponse::from_wire_bytes(
+        let response = ArtifactChainHeadResponse::from_wire_bytes(
             head_bytes
                 .as_ref()
-                .map_or(&[][..], <[u8; ProofBlockId::BYTE_LENGTH]>::as_slice),
+                .map_or(&[][..], <[u8; ArtifactBlockId::BYTE_LENGTH]>::as_slice),
         )
-        .expect("a journal head is an exact proof-block identity");
+        .expect("a journal head is an exact artifact-block identity");
         self.swarm
             .behaviour_mut()
             .head_exchange

@@ -2,7 +2,7 @@
 name = "naome-storage"
 version.workspace = true
 edition.workspace = true
-description = "Crash-consistent local storage for NAOME proof chains and canonical proof payloads."
+description = "Crash-consistent local storage for NAOME artifact chains and canonical artifact payloads."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

@@ -1,8 +1,11 @@
 use naome_chain::{
-    ProofBlock, ProofBlockId, ProofChainDefinition, ProofDag, ProofSetProof, ProofSetRoot,
+    ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactDag, ArtifactSetProof,
+    ArtifactSetRoot,
 };
 use naome_foundation::{Formula, FreeVariable};
-use naome_proof::{ProofCertificate, ProofId, ProofStep};
+use naome_proof::{
+    ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate, ProofCertificate, ProofStep,
+};
 
 const RANDOM_CASES: usize = 2_048;
 const RANDOM_MAX_BYTES: usize = 4_096;
@@ -47,27 +50,36 @@ fn canonical_decoders_round_trip_deterministic_malformed_inputs() {
     }
 }
 
-fn canonical_seeds() -> [Vec<u8>; 5] {
+fn canonical_seeds() -> [Vec<u8>; 7] {
     let formula = Formula::equal(FreeVariable::new(0), FreeVariable::new(1));
     let certificate = ProofCertificate::new(vec![ProofStep::EqualityReflexivity {
         variable: FreeVariable::new(1),
     }])
     .unwrap();
-    let block = ProofBlock::new(
-        ProofBlockId::from_bytes([0x44; 32]),
-        ProofSetRoot::from_bytes([0x11; 32]),
-        ProofSetRoot::from_bytes([0x22; 32]),
-        ProofId::from_bytes([0x33; 32]),
+    let block = ArtifactBlock::new(
+        ArtifactBlockId::from_bytes([0x44; 32]),
+        ArtifactSetRoot::from_bytes([0x11; 32]),
+        ArtifactSetRoot::from_bytes([0x22; 32]),
+        ArtifactId::from_bytes([0x33; 32]),
     );
-    let proof_set = ProofDag::new().proof_set_proof(ProofId::from_bytes([0x55; 32]));
-    let definition = ProofChainDefinition::new([0x66; 32]);
+    let artifact_set = ArtifactDag::new().artifact_set_proof(ArtifactId::from_bytes([0x55; 32]));
+    let chain_definition = ArtifactChainDefinition::new([0x66; 32]);
+    let proof_payload = ArtifactPayload::Proof(certificate.clone());
+    let relation = DefinitionCertificate::relation(
+        1,
+        DefinedFormula::equal(FreeVariable::new(0), FreeVariable::new(0)),
+    )
+    .unwrap();
+    let definition_payload = ArtifactPayload::Definition(relation);
 
     [
         formula.encode_canonical().unwrap(),
         certificate.to_canonical_bytes(),
+        proof_payload.to_canonical_bytes(),
+        definition_payload.to_canonical_bytes(),
         block.to_canonical_bytes().to_vec(),
-        proof_set.to_canonical_bytes(),
-        definition.to_canonical_bytes().to_vec(),
+        artifact_set.to_canonical_bytes(),
+        chain_definition.to_canonical_bytes().to_vec(),
     ]
 }
 
@@ -78,13 +90,16 @@ fn assert_accepted_values_reencode_exactly(bytes: &[u8]) {
     if let Ok(certificate) = ProofCertificate::from_canonical_bytes(bytes) {
         assert_eq!(certificate.to_canonical_bytes(), bytes);
     }
-    if let Ok(block) = ProofBlock::from_canonical_bytes(bytes) {
+    if let Ok(payload) = ArtifactPayload::from_canonical_bytes(bytes) {
+        assert_eq!(payload.to_canonical_bytes(), bytes);
+    }
+    if let Ok(block) = ArtifactBlock::from_canonical_bytes(bytes) {
         assert_eq!(block.to_canonical_bytes().as_slice(), bytes);
     }
-    if let Ok(proof) = ProofSetProof::from_canonical_bytes(bytes) {
+    if let Ok(proof) = ArtifactSetProof::from_canonical_bytes(bytes) {
         assert_eq!(proof.to_canonical_bytes(), bytes);
     }
-    if let Ok(definition) = ProofChainDefinition::from_canonical_bytes(bytes) {
+    if let Ok(definition) = ArtifactChainDefinition::from_canonical_bytes(bytes) {
         assert_eq!(definition.to_canonical_bytes().as_slice(), bytes);
     }
 }

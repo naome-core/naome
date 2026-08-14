@@ -8,29 +8,29 @@ use libp2p::futures::AsyncRead;
 use libp2p::futures::executor::block_on;
 use libp2p::futures::io::Cursor;
 use libp2p::request_response::Codec;
+use naome::artifact_exchange::{
+    ARTIFACT_REQUEST_BYTES, ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRequest, ArtifactResponse,
+};
 use naome::block_exchange::{
-    PROOF_BLOCK_REQUEST_BYTES, PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockRequest,
+    ARTIFACT_BLOCK_REQUEST_BYTES, ARTIFACT_BLOCK_RESPONSE_MAX_BYTES, ArtifactBlockRequest,
 };
 use naome::chain_head_announcement::{
-    PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES, ProofChainHeadAnnouncement,
+    ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_BYTES, ArtifactChainHeadAnnouncement,
 };
 use naome::chain_head_exchange::{
-    PROOF_CHAIN_HEAD_REQUEST_BYTES, PROOF_CHAIN_HEAD_RESPONSE_BYTES, ProofChainHeadRequest,
-    ProofChainHeadResponse,
+    ARTIFACT_CHAIN_HEAD_REQUEST_BYTES, ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES,
+    ArtifactChainHeadRequest, ArtifactChainHeadResponse,
 };
-use naome::proof_exchange::{
-    PROOF_REQUEST_BYTES, PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse,
-};
-use naome_chain::{ProofBlockId, ProofChainId};
+use naome_chain::{ArtifactBlockId, ArtifactChainId};
 
 use crate::{MAX_PEER_RECORDS_PER_BATCH, MAX_SIGNED_PEER_RECORD_BYTES, PeerRecordBatch};
 
 use super::{
-    PEER_RECORD_PROTOCOL, PROOF_BLOCK_PROTOCOL, PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
-    PROOF_CHAIN_HEAD_PROTOCOL, PROTOCOL, PeerRecordCodec, PeerRecordResponderCodec,
-    PeerRecordResponderRequest, ProofBlockCodec, ProofBlockWireResponse,
-    ProofChainHeadAnnouncementCodec, ProofChainHeadAnnouncementReceipt, ProofChainHeadCodec,
-    ProofCodec,
+    ARTIFACT_BLOCK_PROTOCOL, ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+    ARTIFACT_CHAIN_HEAD_PROTOCOL, ARTIFACT_PROTOCOL, ArtifactBlockCodec, ArtifactBlockWireResponse,
+    ArtifactChainHeadAnnouncementCodec, ArtifactChainHeadAnnouncementReceipt,
+    ArtifactChainHeadCodec, ArtifactCodec, PEER_RECORD_PROTOCOL, PeerRecordCodec,
+    PeerRecordResponderCodec, PeerRecordResponderRequest,
 };
 
 struct PendingReader;
@@ -60,19 +60,19 @@ impl AsyncRead for FailingReader {
     }
 }
 
-fn request_bytes() -> [u8; PROOF_REQUEST_BYTES] {
-    let mut bytes = [0_u8; PROOF_REQUEST_BYTES];
+fn request_bytes() -> [u8; ARTIFACT_REQUEST_BYTES] {
+    let mut bytes = [0_u8; ARTIFACT_REQUEST_BYTES];
     for (index, byte) in bytes.iter_mut().enumerate() {
         *byte = u8::try_from(index).unwrap();
     }
     bytes
 }
 
-fn block_request_bytes() -> [u8; PROOF_BLOCK_REQUEST_BYTES] {
-    [0x42; PROOF_BLOCK_REQUEST_BYTES]
+fn block_request_bytes() -> [u8; ARTIFACT_BLOCK_REQUEST_BYTES] {
+    [0x42; ARTIFACT_BLOCK_REQUEST_BYTES]
 }
 
-fn chain_head_request_bytes() -> [u8; PROOF_CHAIN_HEAD_REQUEST_BYTES] {
+fn chain_head_request_bytes() -> [u8; ARTIFACT_CHAIN_HEAD_REQUEST_BYTES] {
     [
         0x71, 0x74, 0xca, 0xe8, 0x6b, 0x0c, 0xd1, 0x8e, 0x23, 0x64, 0x80, 0x5d, 0x1b, 0xb8, 0xda,
         0x7a, 0x34, 0x26, 0x2f, 0x3e, 0xfa, 0x6f, 0x5e, 0x2b, 0x72, 0x3e, 0xc6, 0x61, 0x2a, 0x9e,
@@ -80,35 +80,35 @@ fn chain_head_request_bytes() -> [u8; PROOF_CHAIN_HEAD_REQUEST_BYTES] {
     ]
 }
 
-fn chain_head_announcement_bytes() -> [u8; PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES] {
-    let mut bytes = [0_u8; PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES];
+fn chain_head_announcement_bytes() -> [u8; ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_BYTES] {
+    let mut bytes = [0_u8; ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_BYTES];
     bytes[..32].fill(0x11);
     bytes[32..].fill(0x22);
     bytes
 }
 
-const CHAIN_HEAD_FOUND_RESPONSE_GOLDEN: [u8; 1 + PROOF_CHAIN_HEAD_RESPONSE_BYTES] = [
+const CHAIN_HEAD_FOUND_RESPONSE_GOLDEN: [u8; 1 + ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES] = [
     0x20, 0x71, 0xca, 0x84, 0xdc, 0xea, 0xe5, 0x1f, 0xd2, 0x33, 0x11, 0xeb, 0x1d, 0x79, 0xfc, 0x97,
     0x22, 0x3d, 0xba, 0x62, 0x82, 0x1d, 0x60, 0x4c, 0xd6, 0xf4, 0xd5, 0x70, 0x10, 0x34, 0xc5, 0xf6,
     0x2d,
 ];
 
 #[test]
-fn request_requires_exact_proof_id_and_eof() {
-    assert_eq!(PROTOCOL.as_ref(), "/naome/proof-exchange");
-    let expected = ProofRequest::from_wire_bytes(&request_bytes()).unwrap();
-    let mut codec = ProofCodec;
+fn request_requires_exact_artifact_id_and_eof() {
+    assert_eq!(ARTIFACT_PROTOCOL.as_ref(), "/naome/artifact-exchange");
+    let expected = ArtifactRequest::from_wire_bytes(&request_bytes()).unwrap();
+    let mut codec = ArtifactCodec;
 
     let mut exact = Cursor::new(request_bytes().to_vec());
     assert_eq!(
-        block_on(codec.read_request(&PROTOCOL, &mut exact)).unwrap(),
+        block_on(codec.read_request(&ARTIFACT_PROTOCOL, &mut exact)).unwrap(),
         expected
     );
 
-    for length in 0..PROOF_REQUEST_BYTES {
+    for length in 0..ARTIFACT_REQUEST_BYTES {
         let mut truncated = Cursor::new(request_bytes()[..length].to_vec());
         assert_eq!(
-            block_on(codec.read_request(&PROTOCOL, &mut truncated))
+            block_on(codec.read_request(&ARTIFACT_PROTOCOL, &mut truncated))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::UnexpectedEof
@@ -119,48 +119,48 @@ fn request_requires_exact_proof_id_and_eof() {
     trailing_bytes.push(0xff);
     let mut trailing = Cursor::new(trailing_bytes);
     assert_eq!(
-        block_on(codec.read_request(&PROTOCOL, &mut trailing))
+        block_on(codec.read_request(&ARTIFACT_PROTOCOL, &mut trailing))
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
     );
 
     let mut encoded = Cursor::new(Vec::new());
-    block_on(codec.write_request(&PROTOCOL, &mut encoded, expected)).unwrap();
+    block_on(codec.write_request(&ARTIFACT_PROTOCOL, &mut encoded, expected)).unwrap();
     assert_eq!(encoded.into_inner(), request_bytes());
 }
 
 #[test]
 fn response_framing_distinguishes_unavailable_and_exact_payload() {
-    let mut codec = ProofCodec;
+    let mut codec = ArtifactCodec;
 
     let mut unavailable = Cursor::new(0_u32.to_be_bytes().to_vec());
-    let unavailable = block_on(codec.read_response(&PROTOCOL, &mut unavailable)).unwrap();
+    let unavailable = block_on(codec.read_response(&ARTIFACT_PROTOCOL, &mut unavailable)).unwrap();
     assert!(unavailable.is_unavailable());
 
     let payload = vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x01];
     let mut frame = u32::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
     frame.extend_from_slice(&payload);
     let mut found = Cursor::new(frame.clone());
-    let found = block_on(codec.read_response(&PROTOCOL, &mut found)).unwrap();
+    let found = block_on(codec.read_response(&ARTIFACT_PROTOCOL, &mut found)).unwrap();
     assert_eq!(found.into_wire_bytes(), payload);
 
     let mut encoded = Cursor::new(Vec::new());
-    let response = ProofResponse::from_wire_bytes(frame[4..].to_vec()).unwrap();
-    block_on(codec.write_response(&PROTOCOL, &mut encoded, response)).unwrap();
+    let response = ArtifactResponse::from_wire_bytes(frame[4..].to_vec()).unwrap();
+    block_on(codec.write_response(&ARTIFACT_PROTOCOL, &mut encoded, response)).unwrap();
     assert_eq!(encoded.into_inner(), frame);
 }
 
 #[test]
 fn oversized_response_stops_after_length_prefix() {
-    let mut codec = ProofCodec;
-    let oversized = u32::try_from(PROOF_RESPONSE_MAX_BYTES + 1).unwrap();
+    let mut codec = ArtifactCodec;
+    let oversized = u32::try_from(ARTIFACT_RESPONSE_MAX_BYTES + 1).unwrap();
     let mut frame = oversized.to_be_bytes().to_vec();
     frame.extend_from_slice(&[0xa5; 64]);
     let mut input = Cursor::new(frame);
 
     assert_eq!(
-        block_on(codec.read_response(&PROTOCOL, &mut input))
+        block_on(codec.read_response(&ARTIFACT_PROTOCOL, &mut input))
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
@@ -170,12 +170,12 @@ fn oversized_response_stops_after_length_prefix() {
 
 #[test]
 fn response_rejects_truncation_and_trailing_bytes() {
-    let mut codec = ProofCodec;
+    let mut codec = ArtifactCodec;
 
     for prefix_length in 0..4 {
         let mut prefix = Cursor::new(3_u32.to_be_bytes()[..prefix_length].to_vec());
         assert_eq!(
-            block_on(codec.read_response(&PROTOCOL, &mut prefix))
+            block_on(codec.read_response(&ARTIFACT_PROTOCOL, &mut prefix))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::UnexpectedEof
@@ -186,7 +186,7 @@ fn response_rejects_truncation_and_trailing_bytes() {
     truncated.extend_from_slice(&[1, 2]);
     let mut truncated = Cursor::new(truncated);
     assert_eq!(
-        block_on(codec.read_response(&PROTOCOL, &mut truncated))
+        block_on(codec.read_response(&ARTIFACT_PROTOCOL, &mut truncated))
             .unwrap_err()
             .kind(),
         io::ErrorKind::UnexpectedEof
@@ -196,7 +196,7 @@ fn response_rejects_truncation_and_trailing_bytes() {
     unavailable_with_trailing.push(0xff);
     let mut unavailable_with_trailing = Cursor::new(unavailable_with_trailing);
     assert_eq!(
-        block_on(codec.read_response(&PROTOCOL, &mut unavailable_with_trailing))
+        block_on(codec.read_response(&ARTIFACT_PROTOCOL, &mut unavailable_with_trailing))
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
@@ -206,7 +206,7 @@ fn response_rejects_truncation_and_trailing_bytes() {
     declared_shorter.extend_from_slice(&[1, 2, 3]);
     let mut declared_shorter = Cursor::new(declared_shorter);
     assert_eq!(
-        block_on(codec.read_response(&PROTOCOL, &mut declared_shorter))
+        block_on(codec.read_response(&ARTIFACT_PROTOCOL, &mut declared_shorter))
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
@@ -215,38 +215,41 @@ fn response_rejects_truncation_and_trailing_bytes() {
 
 #[test]
 fn maximum_response_is_accepted() {
-    let mut codec = ProofCodec;
-    let mut frame = Vec::with_capacity(4 + PROOF_RESPONSE_MAX_BYTES);
+    let mut codec = ArtifactCodec;
+    let mut frame = Vec::with_capacity(4 + ARTIFACT_RESPONSE_MAX_BYTES);
     frame.extend_from_slice(
-        &u32::try_from(PROOF_RESPONSE_MAX_BYTES)
+        &u32::try_from(ARTIFACT_RESPONSE_MAX_BYTES)
             .unwrap()
             .to_be_bytes(),
     );
-    frame.resize(4 + PROOF_RESPONSE_MAX_BYTES, 0x5a);
+    frame.resize(4 + ARTIFACT_RESPONSE_MAX_BYTES, 0x5a);
     let mut maximum = Cursor::new(frame);
-    let decoded = block_on(codec.read_response(&PROTOCOL, &mut maximum)).unwrap();
+    let decoded = block_on(codec.read_response(&ARTIFACT_PROTOCOL, &mut maximum)).unwrap();
     let decoded = decoded.into_wire_bytes();
-    assert_eq!(decoded.len(), PROOF_RESPONSE_MAX_BYTES);
+    assert_eq!(decoded.len(), ARTIFACT_RESPONSE_MAX_BYTES);
     assert_eq!(decoded.first(), Some(&0x5a));
     assert_eq!(decoded.last(), Some(&0x5a));
 }
 
 #[test]
-fn proof_block_request_requires_exact_block_id_and_eof() {
-    assert_eq!(PROOF_BLOCK_PROTOCOL.as_ref(), "/naome/proof-block-exchange");
-    let expected = ProofBlockRequest::new(ProofBlockId::from_bytes(block_request_bytes()));
-    let mut codec = ProofBlockCodec;
+fn artifact_block_request_requires_exact_block_id_and_eof() {
+    assert_eq!(
+        ARTIFACT_BLOCK_PROTOCOL.as_ref(),
+        "/naome/artifact-block-exchange"
+    );
+    let expected = ArtifactBlockRequest::new(ArtifactBlockId::from_bytes(block_request_bytes()));
+    let mut codec = ArtifactBlockCodec;
 
     let mut exact = Cursor::new(block_request_bytes().to_vec());
     assert_eq!(
-        block_on(codec.read_request(&PROOF_BLOCK_PROTOCOL, &mut exact)).unwrap(),
+        block_on(codec.read_request(&ARTIFACT_BLOCK_PROTOCOL, &mut exact)).unwrap(),
         expected
     );
 
-    for length in 0..PROOF_BLOCK_REQUEST_BYTES {
+    for length in 0..ARTIFACT_BLOCK_REQUEST_BYTES {
         let mut truncated = Cursor::new(block_request_bytes()[..length].to_vec());
         assert_eq!(
-            block_on(codec.read_request(&PROOF_BLOCK_PROTOCOL, &mut truncated))
+            block_on(codec.read_request(&ARTIFACT_BLOCK_PROTOCOL, &mut truncated))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::UnexpectedEof
@@ -257,128 +260,123 @@ fn proof_block_request_requires_exact_block_id_and_eof() {
     trailing_bytes.push(0xff);
     let mut trailing = Cursor::new(trailing_bytes);
     assert_eq!(
-        block_on(codec.read_request(&PROOF_BLOCK_PROTOCOL, &mut trailing))
+        block_on(codec.read_request(&ARTIFACT_BLOCK_PROTOCOL, &mut trailing))
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
     );
 
     let mut encoded = Cursor::new(Vec::new());
-    block_on(codec.write_request(&PROOF_BLOCK_PROTOCOL, &mut encoded, expected)).unwrap();
+    block_on(codec.write_request(&ARTIFACT_BLOCK_PROTOCOL, &mut encoded, expected)).unwrap();
     assert_eq!(encoded.into_inner(), block_request_bytes());
 }
 
 #[test]
-fn proof_block_response_uses_bounded_u16_framing() {
-    let mut codec = ProofBlockCodec;
+fn artifact_block_response_uses_bounded_u8_framing() {
+    let mut codec = ArtifactBlockCodec;
 
-    let mut unavailable = Cursor::new(0_u16.to_be_bytes().to_vec());
+    let mut unavailable = Cursor::new(vec![0]);
     let unavailable =
-        block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut unavailable)).unwrap();
+        block_on(codec.read_response(&ARTIFACT_BLOCK_PROTOCOL, &mut unavailable)).unwrap();
     assert!(unavailable.as_bytes().is_empty());
     let mut encoded_unavailable = Cursor::new(Vec::new());
     block_on(codec.write_response(
-        &PROOF_BLOCK_PROTOCOL,
+        &ARTIFACT_BLOCK_PROTOCOL,
         &mut encoded_unavailable,
-        ProofBlockWireResponse::new(Vec::new()),
+        ArtifactBlockWireResponse::new(Vec::new()),
     ))
     .unwrap();
-    assert_eq!(encoded_unavailable.into_inner(), [0x00, 0x00]);
+    assert_eq!(encoded_unavailable.into_inner(), [0x00]);
 
     let payload = vec![0x10, 0x20, 0x30];
-    let mut frame = u16::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
+    let mut frame = vec![u8::try_from(payload.len()).unwrap()];
     frame.extend_from_slice(&payload);
     let mut found = Cursor::new(frame.clone());
-    let found = block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut found)).unwrap();
+    let found = block_on(codec.read_response(&ARTIFACT_BLOCK_PROTOCOL, &mut found)).unwrap();
     assert_eq!(found.as_bytes(), payload);
 
     let mut encoded = Cursor::new(Vec::new());
     block_on(codec.write_response(
-        &PROOF_BLOCK_PROTOCOL,
+        &ARTIFACT_BLOCK_PROTOCOL,
         &mut encoded,
-        ProofBlockWireResponse::new(payload),
+        ArtifactBlockWireResponse::new(payload),
     ))
     .unwrap();
     assert_eq!(encoded.into_inner(), frame);
 }
 
 #[test]
-fn proof_block_response_is_inline_and_roundtrips_every_bounded_length() {
+fn artifact_block_response_is_inline_and_roundtrips_every_bounded_length() {
     assert_eq!(
-        size_of::<ProofBlockWireResponse>(),
-        PROOF_BLOCK_RESPONSE_MAX_BYTES + size_of::<u8>()
+        size_of::<ArtifactBlockWireResponse>(),
+        ARTIFACT_BLOCK_RESPONSE_MAX_BYTES + size_of::<u8>()
     );
 
-    for length in 0..=PROOF_BLOCK_RESPONSE_MAX_BYTES {
+    for length in 0..=ARTIFACT_BLOCK_RESPONSE_MAX_BYTES {
         let body = (0..length)
             .map(|index| u8::try_from(index).unwrap())
             .collect::<Vec<_>>();
-        let mut frame = u16::try_from(length).unwrap().to_be_bytes().to_vec();
+        let mut frame = vec![u8::try_from(length).unwrap()];
         frame.extend_from_slice(&body);
 
         let mut input = Cursor::new(frame.clone());
-        let mut codec = ProofBlockCodec;
-        let response = block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut input)).unwrap();
+        let mut codec = ArtifactBlockCodec;
+        let response = block_on(codec.read_response(&ARTIFACT_BLOCK_PROTOCOL, &mut input)).unwrap();
         assert_eq!(response.as_bytes(), body, "decoded body length {length}");
 
         let mut output = Cursor::new(Vec::new());
-        block_on(codec.write_response(&PROOF_BLOCK_PROTOCOL, &mut output, response)).unwrap();
+        block_on(codec.write_response(&ARTIFACT_BLOCK_PROTOCOL, &mut output, response)).unwrap();
         assert_eq!(output.into_inner(), frame, "encoded body length {length}");
     }
 }
 
 #[test]
-fn oversized_proof_block_response_stops_after_u16_prefix() {
-    let mut codec = ProofBlockCodec;
-    let oversized = u16::try_from(PROOF_BLOCK_RESPONSE_MAX_BYTES + 1).unwrap();
-    let mut frame = oversized.to_be_bytes().to_vec();
+fn oversized_artifact_block_response_stops_after_u8_prefix() {
+    let mut codec = ArtifactBlockCodec;
+    let oversized = u8::try_from(ARTIFACT_BLOCK_RESPONSE_MAX_BYTES + 1).unwrap();
+    let mut frame = vec![oversized];
     frame.extend_from_slice(&[0xa5; 64]);
     let mut input = Cursor::new(frame);
 
     assert_eq!(
-        block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut input))
+        block_on(codec.read_response(&ARTIFACT_BLOCK_PROTOCOL, &mut input))
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
     );
-    assert_eq!(input.position(), 2);
+    assert_eq!(input.position(), 1);
 }
 
 #[test]
-fn proof_block_response_rejects_truncation_and_trailing_bytes() {
-    let mut codec = ProofBlockCodec;
+fn artifact_block_response_rejects_truncation_and_trailing_bytes() {
+    let mut codec = ArtifactBlockCodec;
 
-    for prefix_length in 0..2 {
-        let mut prefix = Cursor::new(3_u16.to_be_bytes()[..prefix_length].to_vec());
-        assert_eq!(
-            block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut prefix))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::UnexpectedEof
-        );
-    }
+    let mut prefix = Cursor::new(Vec::new());
+    assert_eq!(
+        block_on(codec.read_response(&ARTIFACT_BLOCK_PROTOCOL, &mut prefix))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::UnexpectedEof
+    );
 
-    for body_length in 0..PROOF_BLOCK_RESPONSE_MAX_BYTES {
-        let mut truncated = u16::try_from(PROOF_BLOCK_RESPONSE_MAX_BYTES)
-            .unwrap()
-            .to_be_bytes()
-            .to_vec();
-        truncated.resize(2 + body_length, 0xa5);
+    for body_length in 0..ARTIFACT_BLOCK_RESPONSE_MAX_BYTES {
+        let mut truncated = vec![u8::try_from(ARTIFACT_BLOCK_RESPONSE_MAX_BYTES).unwrap()];
+        truncated.resize(1 + body_length, 0xa5);
         let mut truncated = Cursor::new(truncated);
         assert_eq!(
-            block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut truncated))
+            block_on(codec.read_response(&ARTIFACT_BLOCK_PROTOCOL, &mut truncated))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::UnexpectedEof,
-            "accepted truncated proof-block body length {body_length}"
+            "accepted truncated artifact-block body length {body_length}"
         );
     }
 
-    for mut frame in [0_u16.to_be_bytes().to_vec(), 2_u16.to_be_bytes().to_vec()] {
+    for mut frame in [vec![0], vec![2]] {
         frame.extend_from_slice(&[1, 2, 3]);
         let mut trailing = Cursor::new(frame);
         assert_eq!(
-            block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut trailing))
+            block_on(codec.read_response(&ARTIFACT_BLOCK_PROTOCOL, &mut trailing))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData
@@ -387,42 +385,39 @@ fn proof_block_response_rejects_truncation_and_trailing_bytes() {
 }
 
 #[test]
-fn maximum_proof_block_response_is_accepted() {
-    let mut codec = ProofBlockCodec;
-    let mut frame = Vec::with_capacity(2 + PROOF_BLOCK_RESPONSE_MAX_BYTES);
-    frame.extend_from_slice(
-        &u16::try_from(PROOF_BLOCK_RESPONSE_MAX_BYTES)
-            .unwrap()
-            .to_be_bytes(),
-    );
-    frame.resize(2 + PROOF_BLOCK_RESPONSE_MAX_BYTES, 0x5a);
+fn maximum_artifact_block_response_is_accepted() {
+    let mut codec = ArtifactBlockCodec;
+    let mut frame = Vec::with_capacity(1 + ARTIFACT_BLOCK_RESPONSE_MAX_BYTES);
+    frame.push(u8::try_from(ARTIFACT_BLOCK_RESPONSE_MAX_BYTES).unwrap());
+    frame.resize(1 + ARTIFACT_BLOCK_RESPONSE_MAX_BYTES, 0x5a);
     let mut maximum = Cursor::new(frame);
 
-    let decoded = block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut maximum)).unwrap();
-    assert_eq!(decoded.as_bytes().len(), PROOF_BLOCK_RESPONSE_MAX_BYTES);
+    let decoded = block_on(codec.read_response(&ARTIFACT_BLOCK_PROTOCOL, &mut maximum)).unwrap();
+    assert_eq!(decoded.as_bytes().len(), ARTIFACT_BLOCK_RESPONSE_MAX_BYTES);
     assert_eq!(decoded.as_bytes().first(), Some(&0x5a));
     assert_eq!(decoded.as_bytes().last(), Some(&0x5a));
 }
 
 #[test]
-fn proof_chain_head_request_requires_exact_chain_id_and_eof() {
+fn artifact_chain_head_request_requires_exact_chain_id_and_eof() {
     assert_eq!(
-        PROOF_CHAIN_HEAD_PROTOCOL.as_ref(),
-        "/naome/proof-chain-head-exchange"
+        ARTIFACT_CHAIN_HEAD_PROTOCOL.as_ref(),
+        "/naome/artifact-chain-head-exchange"
     );
-    let expected = ProofChainHeadRequest::new(ProofChainId::from_bytes(chain_head_request_bytes()));
-    let mut codec = ProofChainHeadCodec;
+    let expected =
+        ArtifactChainHeadRequest::new(ArtifactChainId::from_bytes(chain_head_request_bytes()));
+    let mut codec = ArtifactChainHeadCodec;
 
     let mut exact = Cursor::new(chain_head_request_bytes().to_vec());
     assert_eq!(
-        block_on(codec.read_request(&PROOF_CHAIN_HEAD_PROTOCOL, &mut exact)).unwrap(),
+        block_on(codec.read_request(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut exact)).unwrap(),
         expected
     );
 
-    for length in 0..PROOF_CHAIN_HEAD_REQUEST_BYTES {
+    for length in 0..ARTIFACT_CHAIN_HEAD_REQUEST_BYTES {
         let mut truncated = Cursor::new(chain_head_request_bytes()[..length].to_vec());
         assert_eq!(
-            block_on(codec.read_request(&PROOF_CHAIN_HEAD_PROTOCOL, &mut truncated))
+            block_on(codec.read_request(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut truncated))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::UnexpectedEof
@@ -433,57 +428,57 @@ fn proof_chain_head_request_requires_exact_chain_id_and_eof() {
     trailing_bytes.push(0xff);
     let mut trailing = Cursor::new(trailing_bytes);
     assert_eq!(
-        block_on(codec.read_request(&PROOF_CHAIN_HEAD_PROTOCOL, &mut trailing))
+        block_on(codec.read_request(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut trailing))
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
     );
 
     let mut encoded = Cursor::new(Vec::new());
-    block_on(codec.write_request(&PROOF_CHAIN_HEAD_PROTOCOL, &mut encoded, expected)).unwrap();
+    block_on(codec.write_request(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut encoded, expected)).unwrap();
     assert_eq!(encoded.into_inner(), chain_head_request_bytes());
 }
 
 #[test]
-fn proof_chain_head_response_has_exact_one_byte_length_frames() {
-    let mut codec = ProofChainHeadCodec;
+fn artifact_chain_head_response_has_exact_one_byte_length_frames() {
+    let mut codec = ArtifactChainHeadCodec;
 
     let mut unavailable = Cursor::new(vec![0]);
     let unavailable =
-        block_on(codec.read_response(&PROOF_CHAIN_HEAD_PROTOCOL, &mut unavailable)).unwrap();
+        block_on(codec.read_response(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut unavailable)).unwrap();
     assert!(unavailable.is_unavailable());
     let mut encoded_unavailable = Cursor::new(Vec::new());
     block_on(codec.write_response(
-        &PROOF_CHAIN_HEAD_PROTOCOL,
+        &ARTIFACT_CHAIN_HEAD_PROTOCOL,
         &mut encoded_unavailable,
-        ProofChainHeadResponse::from_wire_bytes(&[]).unwrap(),
+        ArtifactChainHeadResponse::from_wire_bytes(&[]).unwrap(),
     ))
     .unwrap();
     assert_eq!(encoded_unavailable.into_inner(), [0]);
 
-    let head: [u8; PROOF_CHAIN_HEAD_RESPONSE_BYTES] =
+    let head: [u8; ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES] =
         CHAIN_HEAD_FOUND_RESPONSE_GOLDEN[1..].try_into().unwrap();
     let mut found = Cursor::new(CHAIN_HEAD_FOUND_RESPONSE_GOLDEN.to_vec());
-    let found = block_on(codec.read_response(&PROOF_CHAIN_HEAD_PROTOCOL, &mut found)).unwrap();
+    let found = block_on(codec.read_response(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut found)).unwrap();
     assert_eq!(found.head_block_id().unwrap().as_bytes(), &head);
 
     let mut encoded_found = Cursor::new(Vec::new());
     block_on(codec.write_response(
-        &PROOF_CHAIN_HEAD_PROTOCOL,
+        &ARTIFACT_CHAIN_HEAD_PROTOCOL,
         &mut encoded_found,
-        ProofChainHeadResponse::from_wire_bytes(&head).unwrap(),
+        ArtifactChainHeadResponse::from_wire_bytes(&head).unwrap(),
     ))
     .unwrap();
     assert_eq!(encoded_found.into_inner(), CHAIN_HEAD_FOUND_RESPONSE_GOLDEN);
 }
 
 #[test]
-fn proof_chain_head_response_rejects_every_noncanonical_frame() {
-    let mut codec = ProofChainHeadCodec;
+fn artifact_chain_head_response_rejects_every_noncanonical_frame() {
+    let mut codec = ArtifactChainHeadCodec;
 
     let mut missing_prefix = Cursor::new(Vec::<u8>::new());
     assert_eq!(
-        block_on(codec.read_response(&PROOF_CHAIN_HEAD_PROTOCOL, &mut missing_prefix))
+        block_on(codec.read_response(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut missing_prefix))
             .unwrap_err()
             .kind(),
         io::ErrorKind::UnexpectedEof
@@ -494,10 +489,10 @@ fn proof_chain_head_response_rejects_every_noncanonical_frame() {
             continue;
         }
         let mut frame = vec![declared];
-        frame.extend_from_slice(&[0xa5; PROOF_CHAIN_HEAD_RESPONSE_BYTES]);
+        frame.extend_from_slice(&[0xa5; ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES]);
         let mut invalid = Cursor::new(frame);
         assert_eq!(
-            block_on(codec.read_response(&PROOF_CHAIN_HEAD_PROTOCOL, &mut invalid))
+            block_on(codec.read_response(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut invalid))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData,
@@ -510,12 +505,12 @@ fn proof_chain_head_response_rejects_every_noncanonical_frame() {
         );
     }
 
-    for body_length in 0..PROOF_CHAIN_HEAD_RESPONSE_BYTES {
-        let mut frame = vec![u8::try_from(PROOF_CHAIN_HEAD_RESPONSE_BYTES).unwrap()];
+    for body_length in 0..ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES {
+        let mut frame = vec![u8::try_from(ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES).unwrap()];
         frame.resize(1 + body_length, 0xa5);
         let mut truncated = Cursor::new(frame);
         assert_eq!(
-            block_on(codec.read_response(&PROOF_CHAIN_HEAD_PROTOCOL, &mut truncated))
+            block_on(codec.read_response(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut truncated))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::UnexpectedEof,
@@ -525,18 +520,18 @@ fn proof_chain_head_response_rejects_every_noncanonical_frame() {
 
     let mut unavailable_trailing = Cursor::new(vec![0, 0xff]);
     assert_eq!(
-        block_on(codec.read_response(&PROOF_CHAIN_HEAD_PROTOCOL, &mut unavailable_trailing))
+        block_on(codec.read_response(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut unavailable_trailing))
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
     );
 
-    let mut found_trailing = vec![u8::try_from(PROOF_CHAIN_HEAD_RESPONSE_BYTES).unwrap()];
-    found_trailing.extend_from_slice(&[0xa5; PROOF_CHAIN_HEAD_RESPONSE_BYTES]);
+    let mut found_trailing = vec![u8::try_from(ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES).unwrap()];
+    found_trailing.extend_from_slice(&[0xa5; ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES]);
     found_trailing.push(0xff);
     let mut found_trailing = Cursor::new(found_trailing);
     assert_eq!(
-        block_on(codec.read_response(&PROOF_CHAIN_HEAD_PROTOCOL, &mut found_trailing))
+        block_on(codec.read_response(&ARTIFACT_CHAIN_HEAD_PROTOCOL, &mut found_trailing))
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
@@ -544,26 +539,27 @@ fn proof_chain_head_response_rejects_every_noncanonical_frame() {
 }
 
 #[test]
-fn proof_chain_head_announcement_has_exact_request_and_receipt_frames() {
+fn artifact_chain_head_announcement_has_exact_request_and_receipt_frames() {
     assert_eq!(
-        PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL.as_ref(),
-        "/naome/proof-chain-head-announcement"
+        ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL.as_ref(),
+        "/naome/artifact-chain-head-announcement"
     );
-    let expected = ProofChainHeadAnnouncement::new(
-        ProofChainId::from_bytes([0x11; 32]),
-        ProofBlockId::from_bytes([0x22; 32]),
+    let expected = ArtifactChainHeadAnnouncement::new(
+        ArtifactChainId::from_bytes([0x11; 32]),
+        ArtifactBlockId::from_bytes([0x22; 32]),
     );
-    let mut codec = ProofChainHeadAnnouncementCodec;
+    let mut codec = ArtifactChainHeadAnnouncementCodec;
 
     let mut exact = Cursor::new(chain_head_announcement_bytes().to_vec());
     assert_eq!(
-        block_on(codec.read_request(&PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut exact)).unwrap(),
+        block_on(codec.read_request(&ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut exact))
+            .unwrap(),
         expected
     );
 
     let mut encoded_request = Cursor::new(Vec::new());
     block_on(codec.write_request(
-        &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+        &ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
         &mut encoded_request,
         expected,
     ))
@@ -575,32 +571,34 @@ fn proof_chain_head_announcement_has_exact_request_and_receipt_frames() {
 
     let mut receipt = Cursor::new(vec![0x01]);
     assert_eq!(
-        block_on(codec.read_response(&PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut receipt,))
+        block_on(codec.read_response(&ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut receipt,))
             .unwrap(),
-        ProofChainHeadAnnouncementReceipt
+        ArtifactChainHeadAnnouncementReceipt
     );
 
     let mut encoded_receipt = Cursor::new(Vec::new());
     block_on(codec.write_response(
-        &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+        &ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
         &mut encoded_receipt,
-        ProofChainHeadAnnouncementReceipt,
+        ArtifactChainHeadAnnouncementReceipt,
     ))
     .unwrap();
     assert_eq!(encoded_receipt.into_inner(), [0x01]);
 }
 
 #[test]
-fn proof_chain_head_announcement_rejects_every_noncanonical_frame() {
-    let mut codec = ProofChainHeadAnnouncementCodec;
+fn artifact_chain_head_announcement_rejects_every_noncanonical_frame() {
+    let mut codec = ArtifactChainHeadAnnouncementCodec;
     let bytes = chain_head_announcement_bytes();
 
-    for length in 0..PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES {
+    for length in 0..ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_BYTES {
         let mut truncated = Cursor::new(bytes[..length].to_vec());
         assert_eq!(
-            block_on(codec.read_request(&PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut truncated,))
-                .unwrap_err()
-                .kind(),
+            block_on(
+                codec.read_request(&ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut truncated,)
+            )
+            .unwrap_err()
+            .kind(),
             io::ErrorKind::UnexpectedEof,
             "accepted truncated announcement length {length}"
         );
@@ -611,7 +609,7 @@ fn proof_chain_head_announcement_rejects_every_noncanonical_frame() {
     let mut trailing_request = Cursor::new(trailing_request);
     assert_eq!(
         block_on(codec.read_request(
-            &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+            &ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
             &mut trailing_request,
         ))
         .unwrap_err()
@@ -622,7 +620,7 @@ fn proof_chain_head_announcement_rejects_every_noncanonical_frame() {
     let mut missing_receipt = Cursor::new(Vec::<u8>::new());
     assert_eq!(
         block_on(codec.read_response(
-            &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+            &ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
             &mut missing_receipt,
         ))
         .unwrap_err()
@@ -636,9 +634,11 @@ fn proof_chain_head_announcement_rejects_every_noncanonical_frame() {
         }
         let mut invalid = Cursor::new(vec![receipt, 0xff]);
         assert_eq!(
-            block_on(codec.read_response(&PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut invalid,))
-                .unwrap_err()
-                .kind(),
+            block_on(
+                codec.read_response(&ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL, &mut invalid,)
+            )
+            .unwrap_err()
+            .kind(),
             io::ErrorKind::InvalidData,
             "accepted receipt byte {receipt:#04x}"
         );
@@ -648,7 +648,7 @@ fn proof_chain_head_announcement_rejects_every_noncanonical_frame() {
     let mut trailing_receipt = Cursor::new(vec![0x01, 0xff]);
     assert_eq!(
         block_on(codec.read_response(
-            &PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+            &ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
             &mut trailing_receipt,
         ))
         .unwrap_err()
@@ -659,7 +659,7 @@ fn proof_chain_head_announcement_rejects_every_noncanonical_frame() {
 
 #[test]
 fn canonical_128_byte_block_has_the_normative_found_frame() {
-    let mut block = Vec::with_capacity(PROOF_BLOCK_RESPONSE_MAX_BYTES);
+    let mut block = Vec::with_capacity(ARTIFACT_BLOCK_RESPONSE_MAX_BYTES);
     block.extend_from_slice(&[
         0x71, 0xca, 0x84, 0xdc, 0xea, 0xe5, 0x1f, 0xd2, 0x33, 0x11, 0xeb, 0x1d, 0x79, 0xfc, 0x97,
         0x22, 0x3d, 0xba, 0x62, 0x82, 0x1d, 0x60, 0x4c, 0xd6, 0xf4, 0xd5, 0x70, 0x10, 0x34, 0xc5,
@@ -668,15 +668,15 @@ fn canonical_128_byte_block_has_the_normative_found_frame() {
     block.extend_from_slice(&[0x11; 32]);
     block.extend_from_slice(&[0x22; 32]);
     block.extend_from_slice(&[0x33; 32]);
-    assert_eq!(block.len(), PROOF_BLOCK_RESPONSE_MAX_BYTES);
+    assert_eq!(block.len(), ARTIFACT_BLOCK_RESPONSE_MAX_BYTES);
 
-    let mut expected = vec![0x00, 0x80];
+    let mut expected = vec![0x80];
     expected.extend_from_slice(&block);
     let mut encoded = Cursor::new(Vec::new());
-    block_on(ProofBlockCodec.write_response(
-        &PROOF_BLOCK_PROTOCOL,
+    block_on(ArtifactBlockCodec.write_response(
+        &ARTIFACT_BLOCK_PROTOCOL,
         &mut encoded,
-        ProofBlockWireResponse::new(block),
+        ArtifactBlockWireResponse::new(block),
     ))
     .unwrap();
     assert_eq!(encoded.into_inner(), expected);

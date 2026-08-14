@@ -1,13 +1,12 @@
-use naome_foundation::{
-    Formula, FormulaCodecError, FreeVariable, Replacement, Separation, ZfcAxiom,
-};
+use naome_foundation::{FormulaCodecError, FreeVariable, ZfcAxiom};
 
 use crate::{
     CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS,
     CLASSICAL_CONTRAPOSITION, EQUALITY_REFLEXIVITY, EQUALITY_SUBSTITUTION, FREGE, GENERALIZATION,
-    MODUS_PONENS, PROOF_REFERENCE, ProofCertificate, ProofCertificateError, ProofId, ProofStep,
-    REPLACEMENT, SEPARATION, SIMPLIFICATION, UNIVERSAL_DISTRIBUTION, UNIVERSAL_INSTANTIATION,
-    VACUOUS_UNIVERSAL, ZFC_AXIOM, validate_step_references,
+    MODUS_PONENS, PROOF_REFERENCE, ProofCertificate, ProofCertificateError, ProofFormula, ProofId,
+    ProofReplacement, ProofSeparation, ProofStep, REPLACEMENT, SEPARATION, SIMPLIFICATION,
+    UNIVERSAL_DISTRIBUTION, UNIVERSAL_INSTANTIATION, VACUOUS_UNIVERSAL, ZFC_AXIOM,
+    proof_formula::ProofFormulaCodecError, validate_step_references,
 };
 
 pub(super) fn encode_steps(steps: &[ProofStep]) -> Result<Vec<u8>, ProofCertificateError> {
@@ -221,14 +220,14 @@ fn decode_step(
             body: read_formula(cursor, remaining_formula_nodes)?,
         }),
         ZFC_AXIOM => Ok(ProofStep::ZfcAxiom(decode_zfc_axiom(cursor.read_u8()?)?)),
-        SEPARATION => Ok(ProofStep::Separation(Separation {
+        SEPARATION => Ok(ProofStep::Separation(ProofSeparation {
             predicate: read_formula(cursor, remaining_formula_nodes)?,
             element: read_variable(cursor)?,
             source: read_variable(cursor)?,
             result: read_variable(cursor)?,
             parameters: read_variables(cursor)?,
         })),
-        REPLACEMENT => Ok(ProofStep::Replacement(Replacement {
+        REPLACEMENT => Ok(ProofStep::Replacement(ProofReplacement {
             predicate: read_formula(cursor, remaining_formula_nodes)?,
             input: read_variable(cursor)?,
             output: read_variable(cursor)?,
@@ -258,13 +257,13 @@ fn decode_step(
 }
 
 fn write_formula(
-    formula: &Formula,
+    formula: &ProofFormula,
     output: &mut impl ByteSink,
     remaining_formula_nodes: &mut usize,
 ) -> Result<(), ProofCertificateError> {
     let (bytes, used_nodes) = formula
         .encode_canonical_with_node_limit(*remaining_formula_nodes)
-        .map_err(map_formula_error)?;
+        .map_err(map_proof_formula_error)?;
     *remaining_formula_nodes = remaining_formula_nodes
         .checked_sub(used_nodes)
         .expect("Formula reports no more nodes than the supplied limit");
@@ -279,16 +278,30 @@ fn write_formula(
 fn read_formula(
     cursor: &mut Cursor<'_>,
     remaining_formula_nodes: &mut usize,
-) -> Result<Formula, ProofCertificateError> {
+) -> Result<ProofFormula, ProofCertificateError> {
     let length = usize::try_from(cursor.read_u32()?)
         .expect("u32 is representable as usize on supported Rust targets");
-    let (formula, used_nodes) =
-        Formula::decode_canonical_with_node_limit(cursor.take(length)?, *remaining_formula_nodes)
-            .map_err(map_formula_error)?;
+    let (formula, used_nodes) = ProofFormula::decode_canonical_with_node_limit(
+        cursor.take(length)?,
+        *remaining_formula_nodes,
+    )
+    .map_err(map_proof_formula_error)?;
     *remaining_formula_nodes = remaining_formula_nodes
         .checked_sub(used_nodes)
         .expect("Formula reports no more nodes than the supplied limit");
     Ok(formula)
+}
+
+fn map_proof_formula_error(source: ProofFormulaCodecError) -> ProofCertificateError {
+    match source {
+        ProofFormulaCodecError::Primitive(source) => map_formula_error(source),
+        ProofFormulaCodecError::Defined(crate::DefinedFormulaCodecError::NodeLimitExceeded {
+            ..
+        }) => ProofCertificateError::FormulaNodeLimitExceeded {
+            maximum: CERTIFICATE_MAX_FORMULA_NODES,
+        },
+        ProofFormulaCodecError::Defined(source) => ProofCertificateError::DefinedFormula(source),
+    }
 }
 
 fn map_formula_error(source: FormulaCodecError) -> ProofCertificateError {

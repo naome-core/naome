@@ -1,6 +1,9 @@
-use naome_foundation::{Formula, FreeVariable, Replacement, Separation, ZfcAxiom};
+use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 
-use crate::{CERTIFICATE_MAX_STEPS, ProofCertificate, ProofId, ProofStep, ProofStepOrigins};
+use crate::{
+    CERTIFICATE_MAX_STEPS, ProofCertificate, ProofId, ProofReplacement, ProofSeparation, ProofStep,
+    ProofStepOrigins,
+};
 
 #[test]
 fn topological_order_and_free_variable_names_do_not_change_the_normal_form() {
@@ -72,8 +75,8 @@ fn exact_reachable_nodes_are_shared_without_sorting_dependency_roles() {
     let correct = certificate(vec![
         ProofStep::EqualityReflexivity { variable: x },
         ProofStep::Simplification {
-            antecedent: formula.clone(),
-            consequent: formula,
+            antecedent: (formula.clone()).into(),
+            consequent: (formula).into(),
         },
         ProofStep::ModusPonens {
             premise: 0,
@@ -84,8 +87,8 @@ fn exact_reachable_nodes_are_shared_without_sorting_dependency_roles() {
     let swapped = certificate(vec![
         ProofStep::EqualityReflexivity { variable: x },
         ProofStep::Simplification {
-            antecedent: Formula::equal(x, x),
-            consequent: Formula::equal(x, x),
+            antecedent: (Formula::equal(x, x)).into(),
+            consequent: (Formula::equal(x, x)).into(),
         },
         ProofStep::ModusPonens {
             premise: 1,
@@ -291,66 +294,70 @@ fn every_non_reference_step_payload_is_normalized_in_wire_order() {
     let cases = vec![
         (
             ProofStep::Simplification {
-                antecedent: Formula::member(b, a),
-                consequent: Formula::equal(c, b),
+                antecedent: (Formula::member(b, a)).into(),
+                consequent: (Formula::equal(c, b)).into(),
             },
             ProofStep::Simplification {
-                antecedent: Formula::member(n(0), n(1)),
-                consequent: Formula::equal(n(2), n(0)),
+                antecedent: (Formula::member(n(0), n(1))).into(),
+                consequent: (Formula::equal(n(2), n(0))).into(),
             },
         ),
         (
             ProofStep::Frege {
-                first: Formula::equal(a, b),
-                second: Formula::member(c, a),
-                third: Formula::equal(d, c),
+                first: (Formula::equal(a, b)).into(),
+                second: (Formula::member(c, a)).into(),
+                third: (Formula::equal(d, c)).into(),
             },
             ProofStep::Frege {
-                first: Formula::equal(n(0), n(1)),
-                second: Formula::member(n(2), n(0)),
-                third: Formula::equal(n(3), n(2)),
+                first: (Formula::equal(n(0), n(1))).into(),
+                second: (Formula::member(n(2), n(0))).into(),
+                third: (Formula::equal(n(3), n(2))).into(),
             },
         ),
         (
             ProofStep::ClassicalContraposition {
-                antecedent: Formula::member(b, a),
-                consequent: Formula::equal(c, b),
+                antecedent: (Formula::member(b, a)).into(),
+                consequent: (Formula::equal(c, b)).into(),
             },
             ProofStep::ClassicalContraposition {
-                antecedent: Formula::member(n(0), n(1)),
-                consequent: Formula::equal(n(2), n(0)),
+                antecedent: (Formula::member(n(0), n(1))).into(),
+                consequent: (Formula::equal(n(2), n(0))).into(),
             },
         ),
         (
             ProofStep::UniversalDistribution {
                 variable: c,
-                antecedent: Formula::equal(a, b),
-                consequent: Formula::member(b, c),
+                antecedent: (Formula::equal(a, b)).into(),
+                consequent: (Formula::member(b, c)).into(),
             },
             ProofStep::UniversalDistribution {
                 variable: n(0),
-                antecedent: Formula::equal(n(1), n(2)),
-                consequent: Formula::member(n(2), n(0)),
+                antecedent: (Formula::equal(n(1), n(2))).into(),
+                consequent: (Formula::member(n(2), n(0))).into(),
             },
         ),
         (
             ProofStep::VacuousUniversal {
-                formula: Formula::implies(Formula::equal(a, b), Formula::member(c, a)),
+                formula: (Formula::implies(Formula::equal(a, b), Formula::member(c, a))).into(),
             },
             ProofStep::VacuousUniversal {
-                formula: Formula::implies(Formula::equal(n(0), n(1)), Formula::member(n(2), n(0))),
+                formula: (Formula::implies(
+                    Formula::equal(n(0), n(1)),
+                    Formula::member(n(2), n(0)),
+                ))
+                .into(),
             },
         ),
         (
             ProofStep::UniversalInstantiation {
                 variable: c,
                 replacement: a,
-                body: Formula::member(b, c),
+                body: (Formula::member(b, c)).into(),
             },
             ProofStep::UniversalInstantiation {
                 variable: n(0),
                 replacement: n(1),
-                body: Formula::member(n(2), n(0)),
+                body: (Formula::member(n(2), n(0))).into(),
             },
         ),
         (
@@ -361,12 +368,13 @@ fn every_non_reference_step_payload_is_normalized_in_wire_order() {
             ProofStep::EqualitySubstitution {
                 from: b,
                 to: c,
-                body: Formula::implies(Formula::member(a, b), Formula::equal(c, a)),
+                body: (Formula::implies(Formula::member(a, b), Formula::equal(c, a))).into(),
             },
             ProofStep::EqualitySubstitution {
                 from: n(0),
                 to: n(1),
-                body: Formula::implies(Formula::member(n(2), n(0)), Formula::equal(n(1), n(2))),
+                body: (Formula::implies(Formula::member(n(2), n(0)), Formula::equal(n(1), n(2))))
+                    .into(),
             },
         ),
         (
@@ -374,15 +382,15 @@ fn every_non_reference_step_payload_is_normalized_in_wire_order() {
             ProofStep::ZfcAxiom(ZfcAxiom::Choice),
         ),
         (
-            ProofStep::Separation(Separation {
-                predicate: Formula::equal(c, b),
+            ProofStep::Separation(ProofSeparation {
+                predicate: (Formula::equal(c, b)).into(),
                 element: a,
                 source: d,
                 result: e,
                 parameters: vec![b, f, a],
             }),
-            ProofStep::Separation(Separation {
-                predicate: Formula::equal(n(0), n(1)),
+            ProofStep::Separation(ProofSeparation {
+                predicate: (Formula::equal(n(0), n(1))).into(),
                 element: n(2),
                 source: n(3),
                 result: n(4),
@@ -390,8 +398,8 @@ fn every_non_reference_step_payload_is_normalized_in_wire_order() {
             }),
         ),
         (
-            ProofStep::Replacement(Replacement {
-                predicate: Formula::member(d, c),
+            ProofStep::Replacement(ProofReplacement {
+                predicate: (Formula::member(d, c)).into(),
                 input: b,
                 output: e,
                 uniqueness_witness: a,
@@ -399,8 +407,8 @@ fn every_non_reference_step_payload_is_normalized_in_wire_order() {
                 result: g,
                 parameters: vec![c, h, b],
             }),
-            ProofStep::Replacement(Replacement {
-                predicate: Formula::member(n(0), n(1)),
+            ProofStep::Replacement(ProofReplacement {
+                predicate: (Formula::member(n(0), n(1))).into(),
                 input: n(2),
                 output: n(3),
                 uniqueness_witness: n(4),
@@ -450,8 +458,8 @@ fn assert_step_origins(origins: &ProofStepOrigins, expected: &[u32]) {
 fn identity_proof(variable: FreeVariable, reordered: bool) -> ProofCertificate {
     let formula = Formula::equal(variable, variable);
     let axiom = ProofStep::Simplification {
-        antecedent: formula.clone(),
-        consequent: formula,
+        antecedent: (formula.clone()).into(),
+        consequent: (formula).into(),
     };
     let reflexivity = ProofStep::EqualityReflexivity { variable };
     let mut steps = if reordered {
@@ -482,8 +490,8 @@ fn duplicate_identity_proof(variable: FreeVariable) -> ProofCertificate {
         ProofStep::EqualityReflexivity { variable },
         ProofStep::EqualityReflexivity { variable },
         ProofStep::Simplification {
-            antecedent: equality.clone(),
-            consequent: equality,
+            antecedent: (equality.clone()).into(),
+            consequent: (equality).into(),
         },
         ProofStep::ModusPonens {
             premise: 0,
@@ -494,8 +502,8 @@ fn duplicate_identity_proof(variable: FreeVariable) -> ProofCertificate {
             implication: 2,
         },
         ProofStep::Simplification {
-            antecedent: identity.clone(),
-            consequent: identity,
+            antecedent: (identity.clone()).into(),
+            consequent: (identity).into(),
         },
         ProofStep::ModusPonens {
             premise: 3,

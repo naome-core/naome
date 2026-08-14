@@ -1,4 +1,6 @@
 use super::*;
+use crate::{DefinedFormula, DefinitionId, ProofFormula};
+use naome_foundation::FormulaCodecError;
 
 #[test]
 fn equality_reflexivity_has_stable_big_endian_golden_bytes() {
@@ -22,15 +24,15 @@ fn every_step_variant_round_trips_canonically() {
     let first = Formula::equal(x, x);
     let second = Formula::member(x, y);
     let third = Formula::equal(y, y);
-    let separation = Separation {
-        predicate: Formula::member(x, w),
+    let separation = ProofSeparation {
+        predicate: (Formula::member(x, w)).into(),
         element: x,
         source: y,
         result: z,
         parameters: vec![w],
     };
-    let replacement = Replacement {
-        predicate: Formula::equal(x, y),
+    let replacement = ProofReplacement {
+        predicate: (Formula::equal(x, y)).into(),
         input: x,
         output: y,
         uniqueness_witness: z,
@@ -40,36 +42,36 @@ fn every_step_variant_round_trips_canonically() {
     };
     let steps = vec![
         ProofStep::Simplification {
-            antecedent: first.clone(),
-            consequent: second.clone(),
+            antecedent: (first.clone()).into(),
+            consequent: (second.clone()).into(),
         },
         ProofStep::Frege {
-            first: first.clone(),
-            second: second.clone(),
-            third: third.clone(),
+            first: (first.clone()).into(),
+            second: (second.clone()).into(),
+            third: (third.clone()).into(),
         },
         ProofStep::ClassicalContraposition {
-            antecedent: first.clone(),
-            consequent: second.clone(),
+            antecedent: (first.clone()).into(),
+            consequent: (second.clone()).into(),
         },
         ProofStep::UniversalDistribution {
             variable: x,
-            antecedent: first.clone(),
-            consequent: second.clone(),
+            antecedent: (first.clone()).into(),
+            consequent: (second.clone()).into(),
         },
         ProofStep::VacuousUniversal {
-            formula: first.clone(),
+            formula: (first.clone()).into(),
         },
         ProofStep::UniversalInstantiation {
             variable: x,
             replacement: y,
-            body: second.clone(),
+            body: (second.clone()).into(),
         },
         ProofStep::EqualityReflexivity { variable: x },
         ProofStep::EqualitySubstitution {
             from: x,
             to: y,
-            body: first,
+            body: (first).into(),
         },
         ProofStep::ZfcAxiom(ZfcAxiom::Extensionality),
         ProofStep::Separation(separation),
@@ -96,6 +98,41 @@ fn every_step_variant_round_trips_canonically() {
 }
 
 #[test]
+fn definition_application_round_trips_inside_a_proof_formula() {
+    let definition_id = DefinitionId::from_bytes([0x7d; DefinitionId::BYTE_LENGTH]);
+    let x = FreeVariable::new(1);
+    let y = FreeVariable::new(2);
+    let antecedent = DefinedFormula::defined_relation(definition_id, [x, y]);
+    let step = ProofStep::Simplification {
+        antecedent: ProofFormula::from_defined(antecedent).unwrap(),
+        consequent: Formula::equal(x, x).into(),
+    };
+    let certificate = ProofCertificate::new(vec![step.clone()]).unwrap();
+
+    let encoded = certificate.to_canonical_bytes();
+
+    // step count | simplification tag | antecedent length | defined-relation tag
+    assert_eq!(
+        &encoded[..10],
+        &[0, 0, 0, 1, SIMPLIFICATION, 0, 0, 0, 47, 0x05]
+    );
+    assert_eq!(
+        ProofCertificate::from_canonical_bytes(&encoded).unwrap(),
+        certificate
+    );
+    assert_eq!(step.definition_references(), vec![definition_id]);
+
+    let mut unknown_tag = encoded;
+    unknown_tag[9] = 0x06;
+    assert_eq!(
+        ProofCertificate::from_canonical_bytes(&unknown_tag),
+        Err(ProofCertificateError::Formula(
+            FormulaCodecError::UnknownFormulaTag(0x06)
+        ))
+    );
+}
+
+#[test]
 fn logical_step_payloads_have_stable_field_order() {
     let x = FreeVariable::new(0x0102_0304);
     let y = FreeVariable::new(0x1112_1314);
@@ -115,37 +152,37 @@ fn logical_step_payloads_have_stable_field_order() {
 
     assert_step_bytes(
         &ProofStep::Simplification {
-            antecedent: first.clone(),
-            consequent: second.clone(),
+            antecedent: (first.clone()).into(),
+            consequent: (second.clone()).into(),
         },
         concatenate(&[&[0x00], &first_field, &second_field]),
     );
     assert_step_bytes(
         &ProofStep::Frege {
-            first: first.clone(),
-            second: second.clone(),
-            third: third.clone(),
+            first: (first.clone()).into(),
+            second: (second.clone()).into(),
+            third: (third.clone()).into(),
         },
         concatenate(&[&[0x01], &first_field, &second_field, &third_field]),
     );
     assert_step_bytes(
         &ProofStep::ClassicalContraposition {
-            antecedent: first.clone(),
-            consequent: second.clone(),
+            antecedent: (first.clone()).into(),
+            consequent: (second.clone()).into(),
         },
         concatenate(&[&[0x02], &first_field, &second_field]),
     );
     assert_step_bytes(
         &ProofStep::UniversalDistribution {
             variable: x,
-            antecedent: first.clone(),
-            consequent: second.clone(),
+            antecedent: (first.clone()).into(),
+            consequent: (second.clone()).into(),
         },
         concatenate(&[&[0x03, 0x01, 0x02, 0x03, 0x04], &first_field, &second_field]),
     );
     assert_step_bytes(
         &ProofStep::VacuousUniversal {
-            formula: first.clone(),
+            formula: (first.clone()).into(),
         },
         concatenate(&[&[0x04], &first_field]),
     );
@@ -153,7 +190,7 @@ fn logical_step_payloads_have_stable_field_order() {
         &ProofStep::UniversalInstantiation {
             variable: x,
             replacement: y,
-            body: first.clone(),
+            body: (first.clone()).into(),
         },
         concatenate(&[
             &[0x05, 0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13, 0x14],
@@ -164,7 +201,7 @@ fn logical_step_payloads_have_stable_field_order() {
         &ProofStep::EqualitySubstitution {
             from: x,
             to: y,
-            body: second,
+            body: (second).into(),
         },
         concatenate(&[
             &[0x07, 0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13, 0x14],
@@ -213,8 +250,8 @@ fn schema_steps_have_stable_formula_framing_and_field_order() {
     let result = FreeVariable::new(0x4142_4344);
     let parameter = FreeVariable::new(0x5152_5354);
 
-    let separation = ProofCertificate::new(vec![ProofStep::Separation(Separation {
-        predicate: Formula::member(input, source),
+    let separation = ProofCertificate::new(vec![ProofStep::Separation(ProofSeparation {
+        predicate: (Formula::member(input, source)).into(),
         element: input,
         source: output,
         result: witness,
@@ -232,8 +269,8 @@ fn schema_steps_have_stable_formula_framing_and_field_order() {
         separation
     );
 
-    let replacement = ProofCertificate::new(vec![ProofStep::Replacement(Replacement {
-        predicate: Formula::equal(input, output),
+    let replacement = ProofCertificate::new(vec![ProofStep::Replacement(ProofReplacement {
+        predicate: (Formula::equal(input, output)).into(),
         input,
         output,
         uniqueness_witness: witness,

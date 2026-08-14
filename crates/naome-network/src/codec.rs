@@ -5,18 +5,18 @@ use std::time::Duration;
 use async_trait::async_trait;
 use libp2p::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{StreamProtocol, request_response};
+use naome::artifact_exchange::{
+    ARTIFACT_REQUEST_BYTES, ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRequest, ArtifactResponse,
+};
 use naome::block_exchange::{
-    PROOF_BLOCK_REQUEST_BYTES, PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockRequest,
+    ARTIFACT_BLOCK_REQUEST_BYTES, ARTIFACT_BLOCK_RESPONSE_MAX_BYTES, ArtifactBlockRequest,
 };
 use naome::chain_head_announcement::{
-    PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES, ProofChainHeadAnnouncement,
+    ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_BYTES, ArtifactChainHeadAnnouncement,
 };
 use naome::chain_head_exchange::{
-    PROOF_CHAIN_HEAD_REQUEST_BYTES, PROOF_CHAIN_HEAD_RESPONSE_BYTES,
-    ProofChainHeadExchangeWireError, ProofChainHeadRequest, ProofChainHeadResponse,
-};
-use naome::proof_exchange::{
-    PROOF_REQUEST_BYTES, PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse,
+    ARTIFACT_CHAIN_HEAD_REQUEST_BYTES, ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES,
+    ArtifactChainHeadExchangeWireError, ArtifactChainHeadRequest, ArtifactChainHeadResponse,
 };
 
 use crate::address_store::MAX_SIGNED_PEER_RECORD_BYTES;
@@ -24,32 +24,33 @@ use crate::record_exchange::{
     MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
 };
 
-pub(super) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/proof-exchange");
-pub(super) const PROOF_BLOCK_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/proof-block-exchange");
-pub(super) const PROOF_CHAIN_HEAD_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/proof-chain-head-exchange");
-pub(super) const PROOF_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/proof-chain-head-announcement");
+pub(super) const ARTIFACT_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/naome/artifact-exchange");
+pub(super) const ARTIFACT_BLOCK_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/naome/artifact-block-exchange");
+pub(super) const ARTIFACT_CHAIN_HEAD_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/naome/artifact-chain-head-exchange");
+pub(super) const ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/naome/artifact-chain-head-announcement");
 pub(super) const PEER_RECORD_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/peer-record-exchange");
 
 #[derive(Clone)]
-pub(super) struct ProofCodec;
+pub(super) struct ArtifactCodec;
 
 #[derive(Clone)]
-pub(super) struct ProofBlockCodec;
+pub(super) struct ArtifactBlockCodec;
 
 #[derive(Clone)]
-pub(super) struct ProofChainHeadCodec;
+pub(super) struct ArtifactChainHeadCodec;
 
 #[derive(Clone)]
-pub(super) struct ProofChainHeadAnnouncementCodec;
+pub(super) struct ArtifactChainHeadAnnouncementCodec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct ProofChainHeadAnnouncementReceipt;
+pub(super) struct ArtifactChainHeadAnnouncementReceipt;
 
-const PROOF_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT: u8 = 0x01;
+const ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT: u8 = 0x01;
 
 #[derive(Clone)]
 pub(super) struct PeerRecordCodec;
@@ -68,24 +69,24 @@ pub(super) enum PeerRecordResponderRequest {
 const RESPONDER_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
-pub(super) struct ProofBlockWireResponse {
-    bytes: [u8; PROOF_BLOCK_RESPONSE_MAX_BYTES],
+pub(super) struct ArtifactBlockWireResponse {
+    bytes: [u8; ARTIFACT_BLOCK_RESPONSE_MAX_BYTES],
     length: u8,
 }
 
-impl ProofBlockWireResponse {
+impl ArtifactBlockWireResponse {
     pub(super) const fn unavailable() -> Self {
         Self {
-            bytes: [0; PROOF_BLOCK_RESPONSE_MAX_BYTES],
+            bytes: [0; ARTIFACT_BLOCK_RESPONSE_MAX_BYTES],
             length: 0,
         }
     }
 
-    pub(super) fn from_block_bytes(bytes: [u8; PROOF_BLOCK_RESPONSE_MAX_BYTES]) -> Self {
+    pub(super) fn from_block_bytes(bytes: [u8; ARTIFACT_BLOCK_RESPONSE_MAX_BYTES]) -> Self {
         Self {
             bytes,
-            length: u8::try_from(PROOF_BLOCK_RESPONSE_MAX_BYTES)
-                .expect("the fixed proof-block response length fits u8"),
+            length: u8::try_from(ARTIFACT_BLOCK_RESPONSE_MAX_BYTES)
+                .expect("the fixed artifact-block response length fits u8"),
         }
     }
 
@@ -93,8 +94,8 @@ impl ProofBlockWireResponse {
     pub(super) fn new(bytes: impl AsRef<[u8]>) -> Self {
         let bytes = bytes.as_ref();
         assert!(
-            bytes.len() <= PROOF_BLOCK_RESPONSE_MAX_BYTES,
-            "proof-block wire response exceeds its fixed buffer"
+            bytes.len() <= ARTIFACT_BLOCK_RESPONSE_MAX_BYTES,
+            "artifact-block wire response exceeds its fixed buffer"
         );
         let mut response = Self::with_length(bytes.len());
         response.as_bytes_mut().copy_from_slice(bytes);
@@ -102,10 +103,10 @@ impl ProofBlockWireResponse {
     }
 
     fn with_length(length: usize) -> Self {
-        debug_assert!(length <= PROOF_BLOCK_RESPONSE_MAX_BYTES);
+        debug_assert!(length <= ARTIFACT_BLOCK_RESPONSE_MAX_BYTES);
         Self {
-            bytes: [0; PROOF_BLOCK_RESPONSE_MAX_BYTES],
-            length: u8::try_from(length).expect("the proof-block response length fits u8"),
+            bytes: [0; ARTIFACT_BLOCK_RESPONSE_MAX_BYTES],
+            length: u8::try_from(length).expect("the artifact-block response length fits u8"),
         }
     }
 
@@ -120,10 +121,10 @@ impl ProofBlockWireResponse {
 }
 
 #[async_trait]
-impl request_response::Codec for ProofCodec {
+impl request_response::Codec for ArtifactCodec {
     type Protocol = StreamProtocol;
-    type Request = ProofRequest;
-    type Response = ProofResponse;
+    type Request = ArtifactRequest;
+    type Response = ArtifactResponse;
 
     async fn read_request<T>(
         &mut self,
@@ -133,10 +134,10 @@ impl request_response::Codec for ProofCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        let mut bytes = [0_u8; PROOF_REQUEST_BYTES];
+        let mut bytes = [0_u8; ARTIFACT_REQUEST_BYTES];
         io.read_exact(&mut bytes).await?;
-        require_eof(io, "proof request has trailing bytes").await?;
-        ProofRequest::from_wire_bytes(&bytes)
+        require_eof(io, "artifact request has trailing bytes").await?;
+        ArtifactRequest::from_wire_bytes(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
@@ -151,11 +152,11 @@ impl request_response::Codec for ProofCodec {
         let mut length_bytes = [0_u8; size_of::<u32>()];
         io.read_exact(&mut length_bytes).await?;
         let length = u32::from_be_bytes(length_bytes) as usize;
-        if length > PROOF_RESPONSE_MAX_BYTES {
+        if length > ARTIFACT_RESPONSE_MAX_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "proof response length {length} exceeds maximum {PROOF_RESPONSE_MAX_BYTES}"
+                    "artifact response length {length} exceeds maximum {ARTIFACT_RESPONSE_MAX_BYTES}"
                 ),
             ));
         }
@@ -166,8 +167,8 @@ impl request_response::Codec for ProofCodec {
             .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
         bytes.resize(length, 0);
         io.read_exact(&mut bytes).await?;
-        require_eof(io, "proof response has trailing bytes").await?;
-        ProofResponse::from_wire_bytes(bytes)
+        require_eof(io, "artifact response has trailing bytes").await?;
+        ArtifactResponse::from_wire_bytes(bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
@@ -196,7 +197,7 @@ impl request_response::Codec for ProofCodec {
         let length = u32::try_from(bytes.len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "proof response length does not fit u32",
+                "artifact response length does not fit u32",
             )
         })?;
         io.write_all(&length.to_be_bytes()).await?;
@@ -205,10 +206,10 @@ impl request_response::Codec for ProofCodec {
 }
 
 #[async_trait]
-impl request_response::Codec for ProofBlockCodec {
+impl request_response::Codec for ArtifactBlockCodec {
     type Protocol = StreamProtocol;
-    type Request = ProofBlockRequest;
-    type Response = ProofBlockWireResponse;
+    type Request = ArtifactBlockRequest;
+    type Response = ArtifactBlockWireResponse;
 
     async fn read_request<T>(
         &mut self,
@@ -218,10 +219,10 @@ impl request_response::Codec for ProofBlockCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        let mut bytes = [0_u8; PROOF_BLOCK_REQUEST_BYTES];
+        let mut bytes = [0_u8; ARTIFACT_BLOCK_REQUEST_BYTES];
         io.read_exact(&mut bytes).await?;
-        require_eof(io, "proof-block request has trailing bytes").await?;
-        ProofBlockRequest::from_wire_bytes(&bytes)
+        require_eof(io, "artifact-block request has trailing bytes").await?;
+        ArtifactBlockRequest::from_wire_bytes(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
@@ -233,22 +234,22 @@ impl request_response::Codec for ProofBlockCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        let mut length_bytes = [0_u8; size_of::<u16>()];
-        io.read_exact(&mut length_bytes).await?;
-        let length = usize::from(u16::from_be_bytes(length_bytes));
-        if length > PROOF_BLOCK_RESPONSE_MAX_BYTES {
+        let mut length = [0_u8; 1];
+        io.read_exact(&mut length).await?;
+        let length = usize::from(length[0]);
+        if length > ARTIFACT_BLOCK_RESPONSE_MAX_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "proof-block response length {length} exceeds maximum \
-                     {PROOF_BLOCK_RESPONSE_MAX_BYTES}"
+                    "artifact-block response length {length} exceeds maximum \
+                     {ARTIFACT_BLOCK_RESPONSE_MAX_BYTES}"
                 ),
             ));
         }
 
-        let mut response = ProofBlockWireResponse::with_length(length);
+        let mut response = ArtifactBlockWireResponse::with_length(length);
         io.read_exact(response.as_bytes_mut()).await?;
-        require_eof(io, "proof-block response has trailing bytes").await?;
+        require_eof(io, "artifact-block response has trailing bytes").await?;
         Ok(response)
     }
 
@@ -275,17 +276,17 @@ impl request_response::Codec for ProofBlockCodec {
     {
         let bytes = response.as_bytes();
         let length =
-            u16::try_from(bytes.len()).expect("the fixed proof-block response length fits u16");
-        io.write_all(&length.to_be_bytes()).await?;
+            u8::try_from(bytes.len()).expect("the fixed artifact-block response length fits u8");
+        io.write_all(&[length]).await?;
         io.write_all(bytes).await
     }
 }
 
 #[async_trait]
-impl request_response::Codec for ProofChainHeadCodec {
+impl request_response::Codec for ArtifactChainHeadCodec {
     type Protocol = StreamProtocol;
-    type Request = ProofChainHeadRequest;
-    type Response = ProofChainHeadResponse;
+    type Request = ArtifactChainHeadRequest;
+    type Response = ArtifactChainHeadResponse;
 
     async fn read_request<T>(
         &mut self,
@@ -295,10 +296,10 @@ impl request_response::Codec for ProofChainHeadCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        let mut bytes = [0_u8; PROOF_CHAIN_HEAD_REQUEST_BYTES];
+        let mut bytes = [0_u8; ARTIFACT_CHAIN_HEAD_REQUEST_BYTES];
         io.read_exact(&mut bytes).await?;
-        require_eof(io, "proof-chain-head request has trailing bytes").await?;
-        ProofChainHeadRequest::from_wire_bytes(&bytes)
+        require_eof(io, "artifact-chain-head request has trailing bytes").await?;
+        ArtifactChainHeadRequest::from_wire_bytes(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
@@ -313,16 +314,16 @@ impl request_response::Codec for ProofChainHeadCodec {
         let mut length = [0_u8; 1];
         io.read_exact(&mut length).await?;
         let length = usize::from(length[0]);
-        if length != 0 && length != PROOF_CHAIN_HEAD_RESPONSE_BYTES {
+        if length != 0 && length != ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                ProofChainHeadExchangeWireError::InvalidResponseLength { actual: length },
+                ArtifactChainHeadExchangeWireError::InvalidResponseLength { actual: length },
             ));
         }
-        let mut bytes = [0_u8; PROOF_CHAIN_HEAD_RESPONSE_BYTES];
+        let mut bytes = [0_u8; ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES];
         io.read_exact(&mut bytes[..length]).await?;
-        require_eof(io, "proof-chain-head response has trailing bytes").await?;
-        ProofChainHeadResponse::from_wire_bytes(&bytes[..length])
+        require_eof(io, "artifact-chain-head response has trailing bytes").await?;
+        ArtifactChainHeadResponse::from_wire_bytes(&bytes[..length])
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
@@ -349,8 +350,8 @@ impl request_response::Codec for ProofChainHeadCodec {
     {
         match response.to_wire_bytes() {
             Some(bytes) => {
-                let mut frame = [0_u8; 1 + PROOF_CHAIN_HEAD_RESPONSE_BYTES];
-                frame[0] = u8::try_from(PROOF_CHAIN_HEAD_RESPONSE_BYTES)
+                let mut frame = [0_u8; 1 + ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES];
+                frame[0] = u8::try_from(ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES)
                     .expect("the chain-head response length fits u8");
                 frame[1..].copy_from_slice(&bytes);
                 io.write_all(&frame).await
@@ -361,10 +362,10 @@ impl request_response::Codec for ProofChainHeadCodec {
 }
 
 #[async_trait]
-impl request_response::Codec for ProofChainHeadAnnouncementCodec {
+impl request_response::Codec for ArtifactChainHeadAnnouncementCodec {
     type Protocol = StreamProtocol;
-    type Request = ProofChainHeadAnnouncement;
-    type Response = ProofChainHeadAnnouncementReceipt;
+    type Request = ArtifactChainHeadAnnouncement;
+    type Response = ArtifactChainHeadAnnouncementReceipt;
 
     async fn read_request<T>(
         &mut self,
@@ -374,10 +375,10 @@ impl request_response::Codec for ProofChainHeadAnnouncementCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        let mut bytes = [0_u8; PROOF_CHAIN_HEAD_ANNOUNCEMENT_BYTES];
+        let mut bytes = [0_u8; ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_BYTES];
         io.read_exact(&mut bytes).await?;
-        require_eof(io, "proof-chain-head announcement has trailing bytes").await?;
-        ProofChainHeadAnnouncement::from_wire_bytes(&bytes)
+        require_eof(io, "artifact-chain-head announcement has trailing bytes").await?;
+        ArtifactChainHeadAnnouncement::from_wire_bytes(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
@@ -391,18 +392,18 @@ impl request_response::Codec for ProofChainHeadAnnouncementCodec {
     {
         let mut receipt = [0_u8; 1];
         io.read_exact(&mut receipt).await?;
-        if receipt[0] != PROOF_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT {
+        if receipt[0] != ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "proof-chain-head announcement receipt is not 0x01",
+                "artifact-chain-head announcement receipt is not 0x01",
             ));
         }
         require_eof(
             io,
-            "proof-chain-head announcement receipt has trailing bytes",
+            "artifact-chain-head announcement receipt has trailing bytes",
         )
         .await?;
-        Ok(ProofChainHeadAnnouncementReceipt)
+        Ok(ArtifactChainHeadAnnouncementReceipt)
     }
 
     async fn write_request<T>(
@@ -426,7 +427,8 @@ impl request_response::Codec for ProofChainHeadAnnouncementCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        io.write_all(&[PROOF_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT]).await
+        io.write_all(&[ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT])
+            .await
     }
 }
 

@@ -1,0 +1,4 @@
+foundation = "naome:zfc"
+
+definition holds = relation(element, set):
+    member(element, set)

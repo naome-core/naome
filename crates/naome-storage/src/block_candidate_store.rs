@@ -6,34 +6,34 @@ use std::io::{self, SeekFrom, Write};
 use std::path::Path;
 
 use naome_chain::{
-    PROOF_BLOCK_BYTES, ProofBlock, ProofBlockId, ProofChainDefinition, ProofChainId,
+    ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactChainId,
 };
 
 use crate::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
-const LOCK_FILE_NAME: &str = "proof-block-candidate-store.lock";
-const STORE_FILE_NAME: &str = "proof-block-candidate-store.log";
-const STORE_HEADER: &[u8] = b"naome:proof-block-candidate-store\0";
-const CHAIN_ID_BYTES: u64 = ProofChainId::BYTE_LENGTH as u64;
-const BLOCK_ID_BYTES: u64 = ProofBlockId::BYTE_LENGTH as u64;
-const ENTRY_BYTES: u64 = PROOF_BLOCK_BYTES as u64 + BLOCK_ID_BYTES;
+const LOCK_FILE_NAME: &str = "artifact-block-candidate-store.lock";
+const STORE_FILE_NAME: &str = "artifact-block-candidate-store.log";
+const STORE_HEADER: &[u8] = b"naome:artifact-block-candidate-store:v0\0";
+const CHAIN_ID_BYTES: u64 = ArtifactChainId::BYTE_LENGTH as u64;
+const BLOCK_ID_BYTES: u64 = ArtifactBlockId::BYTE_LENGTH as u64;
+const ENTRY_BYTES: u64 = ARTIFACT_BLOCK_BYTES as u64 + BLOCK_ID_BYTES;
 const STORE_PREFIX_BYTES: u64 = STORE_HEADER.len() as u64 + CHAIN_ID_BYTES;
 
-/// Local resource limits for one proof-block candidate store handle.
+/// Local resource limits for one artifact-block candidate store handle.
 ///
 /// Limits are caller policy rather than persisted identity. Reopening the same
 /// store with different positive limits is allowed if its complete committed
 /// contents fit those limits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProofBlockCandidateStoreLimits {
+pub struct ArtifactBlockCandidateStoreLimits {
     max_entries: usize,
 }
 
-impl ProofBlockCandidateStoreLimits {
+impl ArtifactBlockCandidateStoreLimits {
     /// Constructs a positive retained-entry limit.
-    pub const fn new(max_entries: usize) -> Result<Self, ProofBlockCandidateStoreLimitsError> {
+    pub const fn new(max_entries: usize) -> Result<Self, ArtifactBlockCandidateStoreLimitsError> {
         if max_entries == 0 {
-            return Err(ProofBlockCandidateStoreLimitsError::ZeroMaxEntries);
+            return Err(ArtifactBlockCandidateStoreLimitsError::ZeroMaxEntries);
         }
         Ok(Self { max_entries })
     }
@@ -44,53 +44,53 @@ impl ProofBlockCandidateStoreLimits {
     }
 }
 
-/// A rejected proof-block candidate store limit configuration.
+/// A rejected artifact-block candidate store limit configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ProofBlockCandidateStoreLimitsError {
+pub enum ArtifactBlockCandidateStoreLimitsError {
     /// At least one retained entry must be permitted.
     ZeroMaxEntries,
 }
 
-impl fmt::Display for ProofBlockCandidateStoreLimitsError {
+impl fmt::Display for ArtifactBlockCandidateStoreLimitsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ZeroMaxEntries => {
-                formatter.write_str("proof-block candidate store entry limit must be positive")
+                formatter.write_str("artifact-block candidate store entry limit must be positive")
             }
         }
     }
 }
 
-impl Error for ProofBlockCandidateStoreLimitsError {}
+impl Error for ArtifactBlockCandidateStoreLimitsError {}
 
-/// The result of inserting one structural proof-block candidate.
+/// The result of inserting one structural artifact-block candidate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
-pub enum ProofBlockCandidateInsertOutcome {
+pub enum ArtifactBlockCandidateInsertOutcome {
     /// A new immutable candidate was durably appended.
     Inserted,
     /// The same block identity and exact canonical bytes were already retained.
     AlreadyPresent,
 }
 
-/// An exclusively opened append-only store of structural proof-block candidates.
+/// An exclusively opened append-only store of structural artifact-block candidates.
 ///
-/// The store is bound to one exact [`ProofChainDefinition`] and accepts typed
-/// canonical [`ProofBlock`] values. It deliberately performs no parent lookup,
-/// proof execution, chain selection, fork choice, networking, or consensus.
+/// The store is bound to one exact [`ArtifactChainDefinition`] and accepts typed
+/// canonical [`ArtifactBlock`] values. It deliberately performs no parent lookup,
+/// artifact execution, chain selection, fork choice, networking, or consensus.
 ///
 /// A commit I/O error poisons the handle because the durable outcome is then
 /// ambiguous. A post-open read or integrity failure also poisons it because the
 /// retained offset index can no longer be trusted. Dropping and reopening is
 /// the only recovery path.
 #[must_use]
-pub struct ProofBlockCandidateStore {
+pub struct ArtifactBlockCandidateStore {
     _lock: File,
-    core: ProofBlockCandidateStoreCore<File>,
+    core: ArtifactBlockCandidateStoreCore<File>,
 }
 
-impl ProofBlockCandidateStore {
+impl ArtifactBlockCandidateStore {
     /// Creates and exclusively opens a new empty store for `definition`.
     ///
     /// Creation never replaces an existing store. The chain-scoped prefix is
@@ -98,9 +98,9 @@ impl ProofBlockCandidateStore {
     /// entry durability remains the caller's provisioning responsibility.
     pub fn create(
         directory: impl AsRef<Path>,
-        definition: ProofChainDefinition,
-        limits: ProofBlockCandidateStoreLimits,
-    ) -> Result<Self, ProofBlockCandidateStoreError> {
+        definition: ArtifactChainDefinition,
+        limits: ArtifactBlockCandidateStoreLimits,
+    ) -> Result<Self, ArtifactBlockCandidateStoreError> {
         let directory = directory.as_ref();
         let lock = open_and_lock(directory)?;
         let store_path = directory.join(STORE_FILE_NAME);
@@ -109,17 +109,17 @@ impl ProofBlockCandidateStore {
             .write(true)
             .create_new(true)
             .open(store_path)
-            .map_err(|source| ProofBlockCandidateStoreError::Create { source })?;
+            .map_err(|source| ArtifactBlockCandidateStoreError::Create { source })?;
         let chain_id = definition.id();
 
         file.write_all(STORE_HEADER)
             .and_then(|()| file.write_all(chain_id.as_bytes()))
             .and_then(|()| file.sync_all())
-            .map_err(|source| ProofBlockCandidateStoreError::Create { source })?;
+            .map_err(|source| ArtifactBlockCandidateStoreError::Create { source })?;
 
         Ok(Self {
             _lock: lock,
-            core: ProofBlockCandidateStoreCore::empty(file, chain_id, limits),
+            core: ArtifactBlockCandidateStoreCore::empty(file, chain_id, limits),
         })
     }
 
@@ -130,9 +130,9 @@ impl ProofBlockCandidateStore {
     /// malformed, corrupt, or duplicate entries fail closed.
     pub fn open(
         directory: impl AsRef<Path>,
-        expected_definition: ProofChainDefinition,
-        limits: ProofBlockCandidateStoreLimits,
-    ) -> Result<Self, ProofBlockCandidateStoreError> {
+        expected_definition: ArtifactChainDefinition,
+        limits: ArtifactBlockCandidateStoreLimits,
+    ) -> Result<Self, ArtifactBlockCandidateStoreError> {
         let directory = directory.as_ref();
         let lock = open_and_lock(directory)?;
         let store_path = directory.join(STORE_FILE_NAME);
@@ -140,81 +140,90 @@ impl ProofBlockCandidateStore {
             .read(true)
             .write(true)
             .open(store_path)
-            .map_err(|source| ProofBlockCandidateStoreError::Open { source })?;
-        let core = ProofBlockCandidateStoreCore::replay(file, expected_definition.id(), limits)?;
+            .map_err(|source| ArtifactBlockCandidateStoreError::Open { source })?;
+        let core = ArtifactBlockCandidateStoreCore::replay(file, expected_definition.id(), limits)?;
         Ok(Self { _lock: lock, core })
     }
 
     /// Durably retains one typed canonical block as a structural candidate.
     ///
     /// Repeating the exact block is idempotent even at configured capacity.
-    /// Its parent and proof commitment are not evaluated against chain state.
+    /// Its parent and artifact commitment are not evaluated against chain state.
     pub fn insert(
         &mut self,
-        block: &ProofBlock,
-    ) -> Result<ProofBlockCandidateInsertOutcome, ProofBlockCandidateStoreError> {
+        block: &ArtifactBlock,
+    ) -> Result<ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStoreError> {
         self.core.insert(block)
     }
 
     /// Loads one owned, structurally checked canonical block candidate.
     ///
-    /// Storage does not establish that its parent exists, its proof is
+    /// Storage does not establish that its parent exists, its artifact is
     /// executable, or that the block is selected, preferred, or finalized.
     pub fn get(
         &mut self,
-        block_id: ProofBlockId,
-    ) -> Result<Option<ProofBlock>, ProofBlockCandidateStoreError> {
+        block_id: ArtifactBlockId,
+    ) -> Result<Option<ArtifactBlock>, ArtifactBlockCandidateStoreError> {
         self.core.get(block_id)
     }
 
     /// Returns whether an exact block address is indexed.
-    pub fn contains(&self, block_id: ProofBlockId) -> Result<bool, ProofBlockCandidateStoreError> {
+    pub fn contains(
+        &self,
+        block_id: ArtifactBlockId,
+    ) -> Result<bool, ArtifactBlockCandidateStoreError> {
         self.core.ensure_healthy()?;
         Ok(self.core.index.contains_key(&block_id))
     }
 
     /// Returns the number of uniquely retained block candidates.
-    pub fn len(&self) -> Result<usize, ProofBlockCandidateStoreError> {
+    pub fn len(&self) -> Result<usize, ArtifactBlockCandidateStoreError> {
         self.core.ensure_healthy()?;
         Ok(self.core.index.len())
     }
 
     /// Returns whether no block candidates are retained.
-    pub fn is_empty(&self) -> Result<bool, ProofBlockCandidateStoreError> {
+    pub fn is_empty(&self) -> Result<bool, ArtifactBlockCandidateStoreError> {
         self.core.ensure_healthy()?;
         Ok(self.core.index.is_empty())
     }
 
     /// Returns the exact chain context bound into this store.
-    pub const fn chain_id(&self) -> ProofChainId {
+    pub const fn chain_id(&self) -> ArtifactChainId {
         self.core.chain_id
     }
 
     /// Returns the local resource policy used by this handle.
-    pub const fn limits(&self) -> ProofBlockCandidateStoreLimits {
+    pub const fn limits(&self) -> ArtifactBlockCandidateStoreLimits {
         self.core.limits
     }
 }
 
-fn open_and_lock(directory: &Path) -> Result<File, ProofBlockCandidateStoreError> {
+fn open_and_lock(directory: &Path) -> Result<File, ArtifactBlockCandidateStoreError> {
     open_exclusive_lock(directory, LOCK_FILE_NAME).map_err(|error| match error {
-        ExclusiveLockError::LockFile(source) => ProofBlockCandidateStoreError::LockFile { source },
-        ExclusiveLockError::Locked => ProofBlockCandidateStoreError::Locked,
-        ExclusiveLockError::Lock(source) => ProofBlockCandidateStoreError::Lock { source },
+        ExclusiveLockError::LockFile(source) => {
+            ArtifactBlockCandidateStoreError::LockFile { source }
+        }
+        ExclusiveLockError::Locked => ArtifactBlockCandidateStoreError::Locked,
+        ExclusiveLockError::Lock(source) => ArtifactBlockCandidateStoreError::Lock { source },
     })
 }
 
-struct ProofBlockCandidateStoreCore<F> {
+struct ArtifactBlockCandidateStoreCore<F> {
     file: F,
-    chain_id: ProofChainId,
-    index: HashMap<ProofBlockId, u64>,
+    chain_id: ArtifactChainId,
+    index: HashMap<ArtifactBlockId, u64>,
     committed_end: u64,
-    limits: ProofBlockCandidateStoreLimits,
+    limits: ArtifactBlockCandidateStoreLimits,
     poisoned: bool,
 }
 
-impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
-    fn empty(file: F, chain_id: ProofChainId, limits: ProofBlockCandidateStoreLimits) -> Self {
+impl<F: StoreIo> ArtifactBlockCandidateStoreCore<F> {
+    fn empty(
+        file: F,
+        chain_id: ArtifactChainId,
+        limits: ArtifactBlockCandidateStoreLimits,
+    ) -> Self {
         Self {
             file,
             chain_id,
@@ -227,28 +236,28 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
 
     fn replay(
         mut file: F,
-        expected_chain_id: ProofChainId,
-        limits: ProofBlockCandidateStoreLimits,
-    ) -> Result<Self, ProofBlockCandidateStoreError> {
+        expected_chain_id: ArtifactChainId,
+        limits: ArtifactBlockCandidateStoreLimits,
+    ) -> Result<Self, ArtifactBlockCandidateStoreError> {
         let file_len = file
             .seek(SeekFrom::End(0))
-            .map_err(|source| ProofBlockCandidateStoreError::Read { offset: 0, source })?;
+            .map_err(|source| ArtifactBlockCandidateStoreError::Read { offset: 0, source })?;
         if file_len < STORE_PREFIX_BYTES {
-            return Err(ProofBlockCandidateStoreError::InvalidHeader);
+            return Err(ArtifactBlockCandidateStoreError::InvalidHeader);
         }
 
         file.seek(SeekFrom::Start(0))
-            .map_err(|source| ProofBlockCandidateStoreError::Read { offset: 0, source })?;
+            .map_err(|source| ArtifactBlockCandidateStoreError::Read { offset: 0, source })?;
         let mut header = [0_u8; STORE_HEADER.len()];
         read_field(&mut file, &mut header, 0)?;
         if header != STORE_HEADER {
-            return Err(ProofBlockCandidateStoreError::InvalidHeader);
+            return Err(ArtifactBlockCandidateStoreError::InvalidHeader);
         }
-        let mut chain_id_bytes = [0_u8; ProofChainId::BYTE_LENGTH];
+        let mut chain_id_bytes = [0_u8; ArtifactChainId::BYTE_LENGTH];
         read_field(&mut file, &mut chain_id_bytes, STORE_HEADER.len() as u64)?;
-        let actual_chain_id = ProofChainId::from_bytes(chain_id_bytes);
+        let actual_chain_id = ArtifactChainId::from_bytes(chain_id_bytes);
         if actual_chain_id != expected_chain_id {
-            return Err(ProofBlockCandidateStoreError::ChainIdMismatch {
+            return Err(ArtifactBlockCandidateStoreError::ChainIdMismatch {
                 expected: expected_chain_id,
                 actual: actual_chain_id,
             });
@@ -257,7 +266,7 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
         let mut index = HashMap::new();
         let mut entry_start = STORE_PREFIX_BYTES;
         let mut entry = 0_u64;
-        let mut block_bytes = [0_u8; PROOF_BLOCK_BYTES];
+        let mut block_bytes = [0_u8; ARTIFACT_BLOCK_BYTES];
 
         while entry_start < file_len {
             let remaining = file_len - entry_start;
@@ -273,7 +282,7 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
             }
 
             let entry_end = entry_start.checked_add(ENTRY_BYTES).ok_or(
-                ProofBlockCandidateStoreError::EntryOffsetOverflow {
+                ArtifactBlockCandidateStoreError::EntryOffsetOverflow {
                     entry,
                     offset: entry_start,
                 },
@@ -290,16 +299,16 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
             }
 
             read_field(&mut file, &mut block_bytes, entry_start)?;
-            let block = ProofBlock::from_canonical_bytes(&block_bytes)
-                .expect("every fixed-length proof block byte string is structurally valid");
+            let block = ArtifactBlock::from_canonical_bytes(&block_bytes)
+                .expect("every fixed-length artifact block byte string is structurally valid");
             let actual_block_id = block.id();
 
-            let footer_offset = entry_start + PROOF_BLOCK_BYTES as u64;
-            let mut stored_id_bytes = [0_u8; ProofBlockId::BYTE_LENGTH];
+            let footer_offset = entry_start + ARTIFACT_BLOCK_BYTES as u64;
+            let mut stored_id_bytes = [0_u8; ArtifactBlockId::BYTE_LENGTH];
             read_field(&mut file, &mut stored_id_bytes, footer_offset)?;
-            let stored_block_id = ProofBlockId::from_bytes(stored_id_bytes);
+            let stored_block_id = ArtifactBlockId::from_bytes(stored_id_bytes);
             if stored_block_id != actual_block_id {
-                return Err(ProofBlockCandidateStoreError::BlockIdMismatch {
+                return Err(ArtifactBlockCandidateStoreError::BlockIdMismatch {
                     entry,
                     offset: entry_start,
                     stored: stored_block_id,
@@ -307,7 +316,7 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
                 });
             }
             if index.contains_key(&actual_block_id) {
-                return Err(ProofBlockCandidateStoreError::DuplicateBlockId {
+                return Err(ArtifactBlockCandidateStoreError::DuplicateBlockId {
                     entry,
                     offset: entry_start,
                     block_id: actual_block_id,
@@ -317,9 +326,9 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
             let actual_entries = index
                 .len()
                 .checked_add(1)
-                .ok_or(ProofBlockCandidateStoreError::EntryCountOverflow)?;
+                .ok_or(ArtifactBlockCandidateStoreError::EntryCountOverflow)?;
             if actual_entries > limits.max_entries {
-                return Err(ProofBlockCandidateStoreError::EntryLimitExceeded {
+                return Err(ArtifactBlockCandidateStoreError::EntryLimitExceeded {
                     actual: actual_entries,
                     maximum: limits.max_entries,
                 });
@@ -336,17 +345,17 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
 
     fn finish_replay(
         mut file: F,
-        chain_id: ProofChainId,
-        index: HashMap<ProofBlockId, u64>,
+        chain_id: ArtifactChainId,
+        index: HashMap<ArtifactBlockId, u64>,
         committed_end: u64,
-        limits: ProofBlockCandidateStoreLimits,
+        limits: ArtifactBlockCandidateStoreLimits,
         recovery_offset: Option<u64>,
-    ) -> Result<Self, ProofBlockCandidateStoreError> {
+    ) -> Result<Self, ArtifactBlockCandidateStoreError> {
         if let Some(offset) = recovery_offset {
             recover_tail(&mut file, offset)?;
         } else {
             file.sync_all()
-                .map_err(|source| ProofBlockCandidateStoreError::Stabilize { source })?;
+                .map_err(|source| ArtifactBlockCandidateStoreError::Stabilize { source })?;
         }
         Ok(Self {
             file,
@@ -360,8 +369,8 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
 
     fn insert(
         &mut self,
-        block: &ProofBlock,
-    ) -> Result<ProofBlockCandidateInsertOutcome, ProofBlockCandidateStoreError> {
+        block: &ArtifactBlock,
+    ) -> Result<ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStoreError> {
         self.ensure_healthy()?;
         let block_id = block.id();
 
@@ -371,9 +380,9 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
                 Err(error) => return Err(self.poison_stored_read(block_id, error)),
             };
             return if stored == *block {
-                Ok(ProofBlockCandidateInsertOutcome::AlreadyPresent)
+                Ok(ArtifactBlockCandidateInsertOutcome::AlreadyPresent)
             } else {
-                Err(ProofBlockCandidateStoreError::BlockConflict { block_id })
+                Err(ArtifactBlockCandidateStoreError::BlockConflict { block_id })
             };
         }
 
@@ -381,9 +390,9 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
             .index
             .len()
             .checked_add(1)
-            .ok_or(ProofBlockCandidateStoreError::EntryCountOverflow)?;
+            .ok_or(ArtifactBlockCandidateStoreError::EntryCountOverflow)?;
         if actual_entries > self.limits.max_entries {
-            return Err(ProofBlockCandidateStoreError::EntryLimitExceeded {
+            return Err(ArtifactBlockCandidateStoreError::EntryLimitExceeded {
                 actual: actual_entries,
                 maximum: self.limits.max_entries,
             });
@@ -394,7 +403,7 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
         reserve_index_entry(&mut self.index, entry)?;
         let entry_offset = self.committed_end;
         let entry_end = entry_offset.checked_add(ENTRY_BYTES).ok_or(
-            ProofBlockCandidateStoreError::EntryOffsetOverflow {
+            ArtifactBlockCandidateStoreError::EntryOffsetOverflow {
                 entry,
                 offset: entry_offset,
             },
@@ -403,7 +412,7 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
             Ok(actual_end) => actual_end,
             Err(source) => {
                 self.poisoned = true;
-                return Err(ProofBlockCandidateStoreError::Commit {
+                return Err(ArtifactBlockCandidateStoreError::Commit {
                     block_id,
                     block_bytes: block_bytes.len(),
                     source,
@@ -412,7 +421,7 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
         };
         if actual_end != entry_offset {
             self.poisoned = true;
-            return Err(ProofBlockCandidateStoreError::StoreLengthChanged {
+            return Err(ArtifactBlockCandidateStoreError::StoreLengthChanged {
                 expected: entry_offset,
                 actual: actual_end,
             });
@@ -430,7 +439,7 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
 
         if let Err(source) = commit_result {
             self.poisoned = true;
-            return Err(ProofBlockCandidateStoreError::Commit {
+            return Err(ArtifactBlockCandidateStoreError::Commit {
                 block_id,
                 block_bytes: block_bytes.len(),
                 source,
@@ -440,13 +449,13 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
         let replaced = self.index.insert(block_id, entry_offset);
         debug_assert!(replaced.is_none());
         self.committed_end = entry_end;
-        Ok(ProofBlockCandidateInsertOutcome::Inserted)
+        Ok(ArtifactBlockCandidateInsertOutcome::Inserted)
     }
 
     fn get(
         &mut self,
-        block_id: ProofBlockId,
-    ) -> Result<Option<ProofBlock>, ProofBlockCandidateStoreError> {
+        block_id: ArtifactBlockId,
+    ) -> Result<Option<ArtifactBlock>, ArtifactBlockCandidateStoreError> {
         self.ensure_healthy()?;
         let Some(entry_offset) = self.index.get(&block_id).copied() else {
             return Ok(None);
@@ -460,23 +469,23 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
 
     fn poison_stored_read(
         &mut self,
-        block_id: ProofBlockId,
+        block_id: ArtifactBlockId,
         error: StoredReadError,
-    ) -> ProofBlockCandidateStoreError {
+    ) -> ArtifactBlockCandidateStoreError {
         self.poisoned = true;
         match error {
             StoredReadError::Io { offset, source } => {
-                ProofBlockCandidateStoreError::Read { offset, source }
+                ArtifactBlockCandidateStoreError::Read { offset, source }
             }
             StoredReadError::Changed => {
-                ProofBlockCandidateStoreError::StoredEntryChanged { block_id }
+                ArtifactBlockCandidateStoreError::StoredEntryChanged { block_id }
             }
         }
     }
 
-    fn ensure_healthy(&self) -> Result<(), ProofBlockCandidateStoreError> {
+    fn ensure_healthy(&self) -> Result<(), ArtifactBlockCandidateStoreError> {
         if self.poisoned {
-            Err(ProofBlockCandidateStoreError::Poisoned)
+            Err(ArtifactBlockCandidateStoreError::Poisoned)
         } else {
             Ok(())
         }
@@ -484,30 +493,30 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
 }
 
 fn reserve_index_entry(
-    index: &mut HashMap<ProofBlockId, u64>,
+    index: &mut HashMap<ArtifactBlockId, u64>,
     entry: u64,
-) -> Result<(), ProofBlockCandidateStoreError> {
+) -> Result<(), ArtifactBlockCandidateStoreError> {
     index
         .try_reserve(1)
-        .map_err(|_| ProofBlockCandidateStoreError::IndexAllocation { entry })
+        .map_err(|_| ArtifactBlockCandidateStoreError::IndexAllocation { entry })
 }
 
 fn recover_tail<F: StoreIo>(
     file: &mut F,
     offset: u64,
-) -> Result<(), ProofBlockCandidateStoreError> {
+) -> Result<(), ArtifactBlockCandidateStoreError> {
     file.set_len(offset)
         .and_then(|()| file.sync_all())
-        .map_err(|source| ProofBlockCandidateStoreError::Recovery { offset, source })
+        .map_err(|source| ArtifactBlockCandidateStoreError::Recovery { offset, source })
 }
 
 fn read_field<F: StoreIo>(
     file: &mut F,
     bytes: &mut [u8],
     offset: u64,
-) -> Result<(), ProofBlockCandidateStoreError> {
+) -> Result<(), ArtifactBlockCandidateStoreError> {
     file.read_exact(bytes)
-        .map_err(|source| ProofBlockCandidateStoreError::Read { offset, source })
+        .map_err(|source| ArtifactBlockCandidateStoreError::Read { offset, source })
 }
 
 #[derive(Debug)]
@@ -519,42 +528,42 @@ enum StoredReadError {
 fn read_stored_block<F: StoreIo>(
     file: &mut F,
     entry_offset: u64,
-    expected_block_id: ProofBlockId,
-) -> Result<ProofBlock, StoredReadError> {
+    expected_block_id: ArtifactBlockId,
+) -> Result<ArtifactBlock, StoredReadError> {
     file.seek(SeekFrom::Start(entry_offset))
         .map_err(|source| StoredReadError::Io {
             offset: entry_offset,
             source,
         })?;
-    let mut block_bytes = [0_u8; PROOF_BLOCK_BYTES];
+    let mut block_bytes = [0_u8; ARTIFACT_BLOCK_BYTES];
     file.read_exact(&mut block_bytes)
         .map_err(|source| StoredReadError::Io {
             offset: entry_offset,
             source,
         })?;
-    let block = ProofBlock::from_canonical_bytes(&block_bytes)
-        .expect("every fixed-length proof block byte string is structurally valid");
+    let block = ArtifactBlock::from_canonical_bytes(&block_bytes)
+        .expect("every fixed-length artifact block byte string is structurally valid");
     if block.id() != expected_block_id {
         return Err(StoredReadError::Changed);
     }
 
-    let footer_offset = entry_offset + PROOF_BLOCK_BYTES as u64;
-    let mut stored_id_bytes = [0_u8; ProofBlockId::BYTE_LENGTH];
+    let footer_offset = entry_offset + ARTIFACT_BLOCK_BYTES as u64;
+    let mut stored_id_bytes = [0_u8; ArtifactBlockId::BYTE_LENGTH];
     file.read_exact(&mut stored_id_bytes)
         .map_err(|source| StoredReadError::Io {
             offset: footer_offset,
             source,
         })?;
-    if ProofBlockId::from_bytes(stored_id_bytes) != expected_block_id {
+    if ArtifactBlockId::from_bytes(stored_id_bytes) != expected_block_id {
         return Err(StoredReadError::Changed);
     }
     Ok(block)
 }
 
-/// A fail-closed proof-block candidate store error.
+/// A fail-closed artifact-block candidate store error.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum ProofBlockCandidateStoreError {
+pub enum ArtifactBlockCandidateStoreError {
     /// The sidecar lock file could not be opened.
     LockFile { source: io::Error },
     /// Another process or handle already owns the candidate-store lock.
@@ -569,10 +578,10 @@ pub enum ProofBlockCandidateStoreError {
     Read { offset: u64, source: io::Error },
     /// The store header is incomplete or unsupported.
     InvalidHeader,
-    /// The store belongs to a different exact proof-chain definition.
+    /// The store belongs to a different exact artifact-chain definition.
     ChainIdMismatch {
-        expected: ProofChainId,
-        actual: ProofChainId,
+        expected: ArtifactChainId,
+        actual: ArtifactChainId,
     },
     /// An entry boundary cannot be represented safely.
     EntryOffsetOverflow { entry: u64, offset: u64 },
@@ -580,14 +589,14 @@ pub enum ProofBlockCandidateStoreError {
     BlockIdMismatch {
         entry: u64,
         offset: u64,
-        stored: ProofBlockId,
-        actual: ProofBlockId,
+        stored: ArtifactBlockId,
+        actual: ArtifactBlockId,
     },
     /// A committed log contains the same immutable block address twice.
     DuplicateBlockId {
         entry: u64,
         offset: u64,
-        block_id: ProofBlockId,
+        block_id: ArtifactBlockId,
     },
     /// Counting one more indexed entry overflowed the platform range.
     EntryCountOverflow,
@@ -596,18 +605,18 @@ pub enum ProofBlockCandidateStoreError {
     /// Reserving one bounded index slot failed.
     IndexAllocation { entry: u64 },
     /// One address is already durably associated with different exact bytes.
-    BlockConflict { block_id: ProofBlockId },
+    BlockConflict { block_id: ArtifactBlockId },
     /// The visible log length changed after this handle established its index.
     StoreLengthChanged { expected: u64, actual: u64 },
     /// A previously indexed entry changed or failed its structural check.
-    StoredEntryChanged { block_id: ProofBlockId },
+    StoredEntryChanged { block_id: ArtifactBlockId },
     /// An incomplete final entry could not be removed durably.
     Recovery { offset: u64, source: io::Error },
     /// A fully replayed visible store image could not be stabilized.
     Stabilize { source: io::Error },
     /// Commit durability is unknown and the handle is now poisoned.
     Commit {
-        block_id: ProofBlockId,
+        block_id: ArtifactBlockId,
         block_bytes: usize,
         source: io::Error,
     },
@@ -615,14 +624,14 @@ pub enum ProofBlockCandidateStoreError {
     Poisoned,
 }
 
-impl fmt::Display for ProofBlockCandidateStoreError {
+impl fmt::Display for ArtifactBlockCandidateStoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LockFile { source } => {
                 write!(formatter, "block candidate store lock failed: {source}")
             }
             Self::Locked => {
-                formatter.write_str("proof-block candidate store is already exclusively open")
+                formatter.write_str("artifact-block candidate store is already exclusively open")
             }
             Self::Lock { source } => {
                 write!(formatter, "block candidate store locking failed: {source}")
@@ -637,10 +646,10 @@ impl fmt::Display for ProofBlockCandidateStoreError {
                 formatter,
                 "block candidate store read failed at byte {offset}: {source}"
             ),
-            Self::InvalidHeader => formatter.write_str("invalid proof-block candidate store header"),
+            Self::InvalidHeader => formatter.write_str("invalid artifact-block candidate store header"),
             Self::ChainIdMismatch { expected, actual } => write!(
                 formatter,
-                "proof-block candidate store chain mismatch: expected {expected:?}, actual {actual:?}"
+                "artifact-block candidate store chain mismatch: expected {expected:?}, actual {actual:?}"
             ),
             Self::EntryOffsetOverflow { entry, offset } => write!(
                 formatter,
@@ -664,11 +673,11 @@ impl fmt::Display for ProofBlockCandidateStoreError {
                 "block candidate store entry {entry} at byte {offset} duplicates block {block_id:?}"
             ),
             Self::EntryCountOverflow => {
-                formatter.write_str("proof-block candidate store entry count overflowed")
+                formatter.write_str("artifact-block candidate store entry count overflowed")
             }
             Self::EntryLimitExceeded { actual, maximum } => write!(
                 formatter,
-                "proof-block candidate store has {actual} entries, exceeding limit {maximum}"
+                "artifact-block candidate store has {actual} entries, exceeding limit {maximum}"
             ),
             Self::IndexAllocation { entry } => write!(
                 formatter,
@@ -676,15 +685,15 @@ impl fmt::Display for ProofBlockCandidateStoreError {
             ),
             Self::BlockConflict { block_id } => write!(
                 formatter,
-                "proof block {block_id:?} is already associated with different bytes"
+                "artifact block {block_id:?} is already associated with different bytes"
             ),
             Self::StoreLengthChanged { expected, actual } => write!(
                 formatter,
-                "proof-block candidate store length changed after open: expected {expected} bytes, actual {actual} bytes"
+                "artifact-block candidate store length changed after open: expected {expected} bytes, actual {actual} bytes"
             ),
             Self::StoredEntryChanged { block_id } => write!(
                 formatter,
-                "indexed proof block {block_id:?} changed after candidate store open"
+                "indexed artifact block {block_id:?} changed after candidate store open"
             ),
             Self::Recovery { offset, source } => write!(
                 formatter,
@@ -708,7 +717,7 @@ impl fmt::Display for ProofBlockCandidateStoreError {
     }
 }
 
-impl Error for ProofBlockCandidateStoreError {
+impl Error for ArtifactBlockCandidateStoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::LockFile { source }

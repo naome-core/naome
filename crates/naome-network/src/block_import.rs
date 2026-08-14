@@ -1,70 +1,71 @@
-//! Caller-selected import of one exact direct-child proof block.
+//! Caller-selected import of one exact direct-child artifact block.
 
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
 use libp2p::request_response::OutboundRequestId;
-use naome::block_exchange::ProofBlockRequest;
-use naome::proof_exchange::ProofRequest;
-use naome_chain::{ProofBlock, ProofBlockId, ProofSetRoot};
-use naome_proof::ProofId;
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
+use naome::artifact_exchange::ArtifactRequest;
+use naome::block_exchange::ArtifactBlockRequest;
+use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactSetRoot};
+use naome_proof::ArtifactId;
+use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 use super::{
-    BlockRequestTicket, NetworkEvent, OutboundProofBlockFailure, OutboundProofEvent,
-    OutboundProofFailure, OutboundProofOutcome, PROOF_BLOCK_IMPORT_TIMEOUT, PeerId,
-    ProofRequestControl, RequestStartError, StaticProofNetwork, selected_context_contains_block,
+    ARTIFACT_BLOCK_IMPORT_TIMEOUT, ArtifactRequestControl, BlockRequestTicket, NetworkEvent,
+    OutboundArtifactBlockFailure, OutboundArtifactEvent, OutboundArtifactFailure,
+    OutboundArtifactOutcome, PeerId, RequestStartError, StaticArtifactNetwork,
+    selected_context_contains_block,
 };
 
 /// One caller-selected direct-child block import in progress.
 ///
 /// The caller supplies the exact target block identity. The import retrieves
 /// only that block, preflights its fixed commitments, requests exactly its one
-/// committed [`ProofId`], and delegates the sole mutation to the journal's
-/// canonical single-proof block application.
+/// committed [`ArtifactId`], and delegates the sole mutation to the journal's
+/// canonical single-artifact block application.
 #[derive(Debug)]
 #[must_use]
-pub struct ProofBlockImport {
-    target_block_id: ProofBlockId,
-    phase: ProofBlockImportPhase,
+pub struct ArtifactBlockImport {
+    target_block_id: ArtifactBlockId,
+    phase: ArtifactBlockImportPhase,
 }
 
 #[derive(Debug)]
-enum ProofBlockImportPhase {
+enum ArtifactBlockImportPhase {
     Block {
         ticket: BlockRequestTicket,
     },
-    Proof {
-        block: ProofBlock,
-        request: ProofPayloadRequest,
+    Artifact {
+        block: ArtifactBlock,
+        request: ArtifactPayloadRequest,
     },
 }
 
-struct ProofPayloadRequest {
-    control: Option<Arc<ProofRequestControl>>,
+struct ArtifactPayloadRequest {
+    control: Option<Arc<ArtifactRequestControl>>,
     peer_id: PeerId,
-    request: ProofRequest,
+    request: ArtifactRequest,
     request_id: OutboundRequestId,
     attempted_peers: u8,
 }
 
-impl ProofPayloadRequest {
+impl ArtifactPayloadRequest {
     fn start(
-        network: &mut StaticProofNetwork,
+        network: &mut StaticArtifactNetwork,
         preferred_peer_id: PeerId,
-        proof_id: ProofId,
-    ) -> Result<Self, ProofBlockImportError> {
+        artifact_id: ArtifactId,
+    ) -> Result<Self, ArtifactBlockImportError> {
         let deadline = tokio::time::Instant::now()
-            .checked_add(PROOF_BLOCK_IMPORT_TIMEOUT)
-            .expect("the fixed proof-block import timeout fits Tokio Instant");
-        let control = Arc::new(ProofRequestControl::new(
+            .checked_add(ARTIFACT_BLOCK_IMPORT_TIMEOUT)
+            .expect("the fixed artifact-block import timeout fits Tokio Instant");
+        let control = Arc::new(ArtifactRequestControl::new(
             Arc::clone(&network.pending_budget),
             deadline,
         ));
-        let request = ProofRequest::new(proof_id);
+        let request = ArtifactRequest::new(artifact_id);
         let mut attempted_peers = 0;
-        let (peer_id, request_id) = start_next_proof_attempt(
+        let (peer_id, request_id) = start_next_artifact_attempt(
             network,
             preferred_peer_id,
             request,
@@ -72,11 +73,14 @@ impl ProofPayloadRequest {
             &mut attempted_peers,
         )
         .map_err(|source| match source {
-            ProofAttemptSelectionError::NoEligiblePeer => {
-                ProofBlockImportError::NoEligibleProofPeer { proof_id }
+            ArtifactAttemptSelectionError::NoEligiblePeer => {
+                ArtifactBlockImportError::NoEligibleArtifactPeer { artifact_id }
             }
-            ProofAttemptSelectionError::RequestStart(source) => {
-                ProofBlockImportError::ProofRequestStart { proof_id, source }
+            ArtifactAttemptSelectionError::RequestStart(source) => {
+                ArtifactBlockImportError::ArtifactRequestStart {
+                    artifact_id,
+                    source,
+                }
             }
         })?;
         Ok(Self {
@@ -88,17 +92,17 @@ impl ProofPayloadRequest {
         })
     }
 
-    fn control(&self) -> &Arc<ProofRequestControl> {
+    fn control(&self) -> &Arc<ArtifactRequestControl> {
         self.control
             .as_ref()
-            .expect("an active block import retains proof-request control")
+            .expect("an active block import retains artifact-request control")
     }
 
-    fn belongs_to_network(&self, network: &StaticProofNetwork) -> bool {
+    fn belongs_to_network(&self, network: &StaticArtifactNetwork) -> bool {
         Arc::ptr_eq(&self.control().network_budget, &network.pending_budget)
     }
 
-    fn accepts_event(&self, event: &OutboundProofEvent) -> bool {
+    fn accepts_event(&self, event: &OutboundArtifactEvent) -> bool {
         Arc::ptr_eq(self.control(), &event.control)
             && self.request_id == event.request_id
             && self.peer_id == event.peer_id
@@ -111,20 +115,20 @@ impl ProofPayloadRequest {
 
     fn retry(
         mut self,
-        network: &mut StaticProofNetwork,
-        terminal_error: ProofBlockImportError,
-    ) -> Result<Self, ProofBlockImportError> {
+        network: &mut StaticArtifactNetwork,
+        terminal_error: ArtifactBlockImportError,
+    ) -> Result<Self, ArtifactBlockImportError> {
         if self.deadline_expired() {
-            return Err(ProofBlockImportError::ProofDeadlineExceeded {
+            return Err(ArtifactBlockImportError::ArtifactDeadlineExceeded {
                 peer_id: self.peer_id,
-                proof_id: self.request.proof_id(),
+                artifact_id: self.request.artifact_id(),
             });
         }
         let control = self
             .control
             .as_ref()
-            .expect("an active block import retains proof-request control");
-        let (peer_id, request_id) = match start_next_proof_attempt(
+            .expect("an active block import retains artifact-request control");
+        let (peer_id, request_id) = match start_next_artifact_attempt(
             network,
             self.peer_id,
             self.request,
@@ -132,10 +136,10 @@ impl ProofPayloadRequest {
             &mut self.attempted_peers,
         ) {
             Ok(started) => started,
-            Err(ProofAttemptSelectionError::NoEligiblePeer) => return Err(terminal_error),
-            Err(ProofAttemptSelectionError::RequestStart(source)) => {
-                return Err(ProofBlockImportError::ProofRequestStart {
-                    proof_id: self.request.proof_id(),
+            Err(ArtifactAttemptSelectionError::NoEligiblePeer) => return Err(terminal_error),
+            Err(ArtifactAttemptSelectionError::RequestStart(source)) => {
+                return Err(ArtifactBlockImportError::ArtifactRequestStart {
+                    artifact_id: self.request.artifact_id(),
                     source,
                 });
             }
@@ -150,7 +154,7 @@ impl ProofPayloadRequest {
     }
 }
 
-impl Drop for ProofPayloadRequest {
+impl Drop for ArtifactPayloadRequest {
     fn drop(&mut self) {
         if let Some(control) = &self.control {
             control.cancel();
@@ -158,10 +162,10 @@ impl Drop for ProofPayloadRequest {
     }
 }
 
-impl fmt::Debug for ProofPayloadRequest {
+impl fmt::Debug for ArtifactPayloadRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ProofPayloadRequest")
+            .debug_struct("ArtifactPayloadRequest")
             .field("peer_id", &self.peer_id)
             .field("request", &self.request)
             .field("request_id", &self.request_id)
@@ -169,22 +173,22 @@ impl fmt::Debug for ProofPayloadRequest {
     }
 }
 
-enum ProofAttemptSelectionError {
+enum ArtifactAttemptSelectionError {
     NoEligiblePeer,
     RequestStart(RequestStartError),
 }
 
-fn start_next_proof_attempt(
-    network: &mut StaticProofNetwork,
+fn start_next_artifact_attempt(
+    network: &mut StaticArtifactNetwork,
     preferred_peer_id: PeerId,
-    request: ProofRequest,
-    control: &Arc<ProofRequestControl>,
+    request: ArtifactRequest,
+    control: &Arc<ArtifactRequestControl>,
     attempted_peers: &mut u8,
-) -> Result<(PeerId, OutboundRequestId), ProofAttemptSelectionError> {
+) -> Result<(PeerId, OutboundRequestId), ArtifactAttemptSelectionError> {
     let (preferred_index, peer_count) = {
         let sessions = &network.swarm.behaviour().sessions;
         let preferred_index = sessions.peer_index(&preferred_peer_id).ok_or(
-            ProofAttemptSelectionError::RequestStart(RequestStartError::UnknownPeer(
+            ArtifactAttemptSelectionError::RequestStart(RequestStartError::UnknownPeer(
                 preferred_peer_id,
             )),
         )?;
@@ -216,73 +220,74 @@ fn start_next_proof_attempt(
             .sessions
             .peer_id_at(index)
             .expect("the configured peer index remains stable");
-        match network.request_controlled_proof(peer_id, request, control) {
+        match network.request_controlled_artifact(peer_id, request, control) {
             Ok(request_id) => return Ok((peer_id, request_id)),
             Err(RequestStartError::AlreadyPending(_) | RequestStartError::PeerDisconnected(_)) => {}
-            Err(source) => return Err(ProofAttemptSelectionError::RequestStart(source)),
+            Err(source) => return Err(ArtifactAttemptSelectionError::RequestStart(source)),
         }
     }
 
-    Err(ProofAttemptSelectionError::NoEligiblePeer)
+    Err(ArtifactAttemptSelectionError::NoEligiblePeer)
 }
 
-impl StaticProofNetwork {
+impl StaticArtifactNetwork {
     /// Starts importing one caller-selected block that must directly extend
     /// `selected`.
-    pub fn start_proof_block_import(
+    pub fn start_artifact_block_import(
         &mut self,
-        selected: &ProofChainJournal,
+        selected: &ArtifactChainJournal,
         peer_id: PeerId,
-        target_block_id: ProofBlockId,
-    ) -> Result<ProofBlockImport, ProofBlockImportError> {
+        target_block_id: ArtifactBlockId,
+    ) -> Result<ArtifactBlockImport, ArtifactBlockImportError> {
         let current_head = selected
             .head_block_id()
-            .map_err(ProofBlockImportError::selected_state)?;
+            .map_err(ArtifactBlockImportError::selected_state)?;
         let virtual_genesis = selected.chain_id().virtual_genesis_block_id();
         if selected_context_contains_block(selected, current_head, virtual_genesis, target_block_id)
-            .map_err(ProofBlockImportError::selected_state)?
+            .map_err(ArtifactBlockImportError::selected_state)?
         {
-            return Err(ProofBlockImportError::TargetAlreadySelected {
+            return Err(ArtifactBlockImportError::TargetAlreadySelected {
                 block_id: target_block_id,
             });
         }
 
         let ticket = self
-            .request_block(peer_id, ProofBlockRequest::new(target_block_id))
-            .map_err(|source| ProofBlockImportError::RequestStart {
+            .request_block(peer_id, ArtifactBlockRequest::new(target_block_id))
+            .map_err(|source| ArtifactBlockImportError::RequestStart {
                 block_id: target_block_id,
                 source,
             })?;
-        Ok(ProofBlockImport {
+        Ok(ArtifactBlockImport {
             target_block_id,
-            phase: ProofBlockImportPhase::Block { ticket },
+            phase: ArtifactBlockImportPhase::Block { ticket },
         })
     }
 }
 
-impl ProofBlockImport {
+impl ArtifactBlockImport {
     /// Returns the exact block identity selected by the caller.
-    pub const fn target_block_id(&self) -> ProofBlockId {
+    pub const fn target_block_id(&self) -> ArtifactBlockId {
         self.target_block_id
     }
 
     /// Returns the authenticated peer serving the currently pending request.
     pub const fn pending_peer_id(&self) -> PeerId {
         match &self.phase {
-            ProofBlockImportPhase::Block { ticket } => ticket.peer_id(),
-            ProofBlockImportPhase::Proof { request, .. } => request.peer_id,
+            ArtifactBlockImportPhase::Block { ticket } => ticket.peer_id(),
+            ArtifactBlockImportPhase::Artifact { request, .. } => request.peer_id,
         }
     }
 
     /// Returns whether `event` is the exact terminal awaited by this phase.
     pub fn accepts_event(&self, event: &NetworkEvent) -> bool {
         match (&self.phase, event) {
-            (ProofBlockImportPhase::Block { ticket }, NetworkEvent::OutboundBlock(event)) => {
+            (ArtifactBlockImportPhase::Block { ticket }, NetworkEvent::OutboundBlock(event)) => {
                 ticket.accepts_event(event)
             }
-            (ProofBlockImportPhase::Proof { request, .. }, NetworkEvent::OutboundProof(event)) => {
-                request.accepts_event(event)
-            }
+            (
+                ArtifactBlockImportPhase::Artifact { request, .. },
+                NetworkEvent::OutboundArtifact(event),
+            ) => request.accepts_event(event),
             _ => false,
         }
     }
@@ -293,12 +298,12 @@ impl ProofBlockImport {
     /// Advances this import with its exact correlated network event.
     pub fn on_event(
         self,
-        network: &mut StaticProofNetwork,
-        selected: &mut ProofChainJournal,
+        network: &mut StaticArtifactNetwork,
+        selected: &mut ArtifactChainJournal,
         event: NetworkEvent,
-    ) -> Result<ProofBlockImportProgress, ProofBlockImportError> {
+    ) -> Result<ArtifactBlockImportProgress, ArtifactBlockImportError> {
         if !self.accepts_event(&event) {
-            return Err(ProofBlockImportError::UnexpectedEvent);
+            return Err(ArtifactBlockImportError::UnexpectedEvent);
         }
 
         let Self {
@@ -306,18 +311,18 @@ impl ProofBlockImport {
             phase,
         } = self;
         match phase {
-            ProofBlockImportPhase::Block { ticket } => {
+            ArtifactBlockImportPhase::Block { ticket } => {
                 let NetworkEvent::OutboundBlock(event) = event else {
                     unreachable!("the accepted block phase event is an outbound block terminal")
                 };
                 if !ticket.belongs_to_network(network) {
-                    return Err(ProofBlockImportError::UnexpectedEvent);
+                    return Err(ArtifactBlockImportError::UnexpectedEvent);
                 }
                 let peer_id = ticket.peer_id();
                 let response = ticket
                     .complete(event)
                     .expect("the accepted block event matches its ticket")
-                    .map_err(|source| ProofBlockImportError::BlockRequestFailed {
+                    .map_err(|source| ArtifactBlockImportError::BlockRequestFailed {
                         peer_id,
                         block_id: target_block_id,
                         source,
@@ -325,7 +330,7 @@ impl ProofBlockImport {
                 let block =
                     response
                         .into_block()
-                        .ok_or(ProofBlockImportError::BlockUnavailable {
+                        .ok_or(ArtifactBlockImportError::BlockUnavailable {
                             peer_id,
                             block_id: target_block_id,
                         })?;
@@ -333,73 +338,80 @@ impl ProofBlockImport {
                 Self::start_from_retained_block(network, selected, peer_id, target_block_id, block)
                     .map(Some)
             }
-            ProofBlockImportPhase::Proof { block, mut request } => {
-                let NetworkEvent::OutboundProof(event) = event else {
-                    unreachable!("the accepted proof phase event is an outbound proof terminal")
+            ArtifactBlockImportPhase::Artifact { block, mut request } => {
+                let NetworkEvent::OutboundArtifact(event) = event else {
+                    unreachable!(
+                        "the accepted artifact phase event is an outbound artifact terminal"
+                    )
                 };
                 if !request.belongs_to_network(network) {
-                    return Err(ProofBlockImportError::UnexpectedEvent);
+                    return Err(ArtifactBlockImportError::UnexpectedEvent);
                 }
 
-                let OutboundProofEvent {
+                let OutboundArtifactEvent {
                     peer_id, outcome, ..
                 } = event;
-                let proof_id = block.proof_id();
+                let artifact_id = block.artifact_id();
                 if matches!(
                     &outcome,
-                    OutboundProofOutcome::Failure(source)
-                        if matches!(source.as_ref(), OutboundProofFailure::PeerMismatch { .. })
+                    OutboundArtifactOutcome::Failure(source)
+                        if matches!(source.as_ref(), OutboundArtifactFailure::PeerMismatch { .. })
                 ) {
-                    let OutboundProofOutcome::Failure(source) = outcome else {
+                    let OutboundArtifactOutcome::Failure(source) = outcome else {
                         unreachable!("the peer-mismatch guard matched a failure")
                     };
-                    return Err(ProofBlockImportError::ProofRequestFailed {
+                    return Err(ArtifactBlockImportError::ArtifactRequestFailed {
                         peer_id,
-                        proof_id,
+                        artifact_id,
                         source,
                     });
                 }
 
                 Self::require_current_parent(selected, &block)?;
-                if matches!(outcome, OutboundProofOutcome::DeadlineExceeded)
+                if matches!(outcome, OutboundArtifactOutcome::DeadlineExceeded)
                     || request.deadline_expired()
                 {
-                    return Err(ProofBlockImportError::ProofDeadlineExceeded { peer_id, proof_id });
+                    return Err(ArtifactBlockImportError::ArtifactDeadlineExceeded {
+                        peer_id,
+                        artifact_id,
+                    });
                 }
 
                 match outcome {
-                    OutboundProofOutcome::Response { response, _permit } => {
+                    OutboundArtifactOutcome::Response { response, _permit } => {
                         if response.is_unavailable() {
                             drop(response);
                             drop(_permit);
-                            let error =
-                                ProofBlockImportError::ProofUnavailable { peer_id, proof_id };
+                            let error = ArtifactBlockImportError::ArtifactUnavailable {
+                                peer_id,
+                                artifact_id,
+                            };
                             let request = request.retry(network, error)?;
                             return Ok(Some(Self {
                                 target_block_id,
-                                phase: ProofBlockImportPhase::Proof { block, request },
+                                phase: ArtifactBlockImportPhase::Artifact { block, request },
                             }));
                         }
 
                         request.disarm();
                         let result = selected.apply_block(&block, response.into_wire_bytes());
                         drop(_permit);
-                        let _ = result.map_err(ProofBlockImportError::selected_state)?;
+                        let _ = result.map_err(ArtifactBlockImportError::selected_state)?;
                         Ok(None)
                     }
-                    OutboundProofOutcome::Failure(source) => {
-                        let error = ProofBlockImportError::ProofRequestFailed {
+                    OutboundArtifactOutcome::Failure(source) => {
+                        let error = ArtifactBlockImportError::ArtifactRequestFailed {
                             peer_id,
-                            proof_id,
+                            artifact_id,
                             source,
                         };
                         let request = request.retry(network, error)?;
                         Ok(Some(Self {
                             target_block_id,
-                            phase: ProofBlockImportPhase::Proof { block, request },
+                            phase: ArtifactBlockImportPhase::Artifact { block, request },
                         }))
                     }
-                    OutboundProofOutcome::DeadlineExceeded => {
+                    OutboundArtifactOutcome::DeadlineExceeded => {
                         unreachable!("the deadline terminal was handled above")
                     }
                 }
@@ -408,45 +420,45 @@ impl ProofBlockImport {
     }
 
     pub(super) fn start_from_retained_block(
-        network: &mut StaticProofNetwork,
-        selected: &ProofChainJournal,
+        network: &mut StaticArtifactNetwork,
+        selected: &ArtifactChainJournal,
         peer_id: PeerId,
-        target_block_id: ProofBlockId,
-        block: ProofBlock,
-    ) -> Result<Self, ProofBlockImportError> {
+        target_block_id: ArtifactBlockId,
+        block: ArtifactBlock,
+    ) -> Result<Self, ArtifactBlockImportError> {
         debug_assert_eq!(block.id(), target_block_id);
         Self::preflight_block(selected, &block)?;
-        let request = ProofPayloadRequest::start(network, peer_id, block.proof_id())?;
+        let request = ArtifactPayloadRequest::start(network, peer_id, block.artifact_id())?;
         Ok(Self {
             target_block_id,
-            phase: ProofBlockImportPhase::Proof { block, request },
+            phase: ArtifactBlockImportPhase::Artifact { block, request },
         })
     }
 
     fn preflight_block(
-        selected: &ProofChainJournal,
-        block: &ProofBlock,
-    ) -> Result<(), ProofBlockImportError> {
+        selected: &ArtifactChainJournal,
+        block: &ArtifactBlock,
+    ) -> Result<(), ArtifactBlockImportError> {
         Self::require_current_parent(selected, block)?;
 
         let expected_previous = selected
-            .proof_set_root()
-            .map_err(ProofBlockImportError::selected_state)?;
-        let actual_previous = block.previous_proof_set_root();
+            .artifact_set_root()
+            .map_err(ArtifactBlockImportError::selected_state)?;
+        let actual_previous = block.previous_artifact_set_root();
         if actual_previous != expected_previous {
-            return Err(ProofBlockImportError::PreviousProofSetRootMismatch {
+            return Err(ArtifactBlockImportError::PreviousArtifactSetRootMismatch {
                 expected: expected_previous,
                 actual: actual_previous,
             });
         }
 
         let prepared = selected
-            .prepare_block(block.proof_id())
-            .map_err(ProofBlockImportError::selected_state)?;
-        let expected_resulting = prepared.resulting_proof_set_root();
-        let actual_resulting = block.resulting_proof_set_root();
+            .prepare_block(block.artifact_id())
+            .map_err(ArtifactBlockImportError::selected_state)?;
+        let expected_resulting = prepared.resulting_artifact_set_root();
+        let actual_resulting = block.resulting_artifact_set_root();
         if actual_resulting != expected_resulting {
-            return Err(ProofBlockImportError::ResultingProofSetRootMismatch {
+            return Err(ArtifactBlockImportError::ResultingArtifactSetRootMismatch {
                 expected: expected_resulting,
                 actual: actual_resulting,
             });
@@ -456,34 +468,36 @@ impl ProofBlockImport {
     }
 
     fn require_current_parent(
-        selected: &ProofChainJournal,
-        block: &ProofBlock,
-    ) -> Result<(), ProofBlockImportError> {
+        selected: &ArtifactChainJournal,
+        block: &ArtifactBlock,
+    ) -> Result<(), ArtifactBlockImportError> {
         let expected = selected
             .head_block_id()
-            .map_err(ProofBlockImportError::selected_state)?;
+            .map_err(ArtifactBlockImportError::selected_state)?;
         let actual = block.parent_block_id();
         if actual != expected {
-            return Err(ProofBlockImportError::ParentBlockIdMismatch { expected, actual });
+            return Err(ArtifactBlockImportError::ParentBlockIdMismatch { expected, actual });
         }
         Ok(())
     }
 }
 
 /// Progress for one caller-selected block import event.
-pub type ProofBlockImportProgress = Option<ProofBlockImport>;
+pub type ArtifactBlockImportProgress = Option<ArtifactBlockImport>;
 
-/// A fail-closed caller-selected proof-block import error.
+/// A fail-closed caller-selected artifact-block import error.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum ProofBlockImportError {
+pub enum ArtifactBlockImportError {
     /// The selected journal failed a read, preparation, application, or commit.
-    SelectedState { source: Box<ProofChainJournalError> },
+    SelectedState {
+        source: Box<ArtifactChainJournalError>,
+    },
     /// The target is the current head, virtual genesis, or a selected block.
-    TargetAlreadySelected { block_id: ProofBlockId },
+    TargetAlreadySelected { block_id: ArtifactBlockId },
     /// The exact target block request could not be started.
     RequestStart {
-        block_id: ProofBlockId,
+        block_id: ArtifactBlockId,
         source: RequestStartError,
     },
     /// The supplied event or driver did not belong to this import generation.
@@ -491,148 +505,163 @@ pub enum ProofBlockImportError {
     /// The exact target block request failed before yielding a usable response.
     BlockRequestFailed {
         peer_id: PeerId,
-        block_id: ProofBlockId,
-        source: Box<OutboundProofBlockFailure>,
+        block_id: ArtifactBlockId,
+        source: Box<OutboundArtifactBlockFailure>,
     },
     /// The authenticated peer reported no block for the exact target address.
     BlockUnavailable {
         peer_id: PeerId,
-        block_id: ProofBlockId,
+        block_id: ArtifactBlockId,
     },
     /// The fetched block did not directly extend the current selected head.
     ParentBlockIdMismatch {
-        expected: ProofBlockId,
-        actual: ProofBlockId,
+        expected: ArtifactBlockId,
+        actual: ArtifactBlockId,
     },
     /// The fetched block committed a different selected root before execution.
-    PreviousProofSetRootMismatch {
-        expected: ProofSetRoot,
-        actual: ProofSetRoot,
+    PreviousArtifactSetRootMismatch {
+        expected: ArtifactSetRoot,
+        actual: ArtifactSetRoot,
     },
     /// The fetched block committed a different projected selected root.
-    ResultingProofSetRootMismatch {
-        expected: ProofSetRoot,
-        actual: ProofSetRoot,
+    ResultingArtifactSetRootMismatch {
+        expected: ArtifactSetRoot,
+        actual: ArtifactSetRoot,
     },
-    /// No configured, connected, free peer could serve the exact proof payload.
-    NoEligibleProofPeer { proof_id: ProofId },
-    /// The exact proof request could not be started.
-    ProofRequestStart {
-        proof_id: ProofId,
+    /// No configured, connected, free peer could serve the exact artifact payload.
+    NoEligibleArtifactPeer { artifact_id: ArtifactId },
+    /// The exact artifact request could not be started.
+    ArtifactRequestStart {
+        artifact_id: ArtifactId,
         source: RequestStartError,
     },
-    /// One authenticated peer's exact proof request failed.
-    ProofRequestFailed {
+    /// One authenticated peer's exact artifact request failed.
+    ArtifactRequestFailed {
         peer_id: PeerId,
-        proof_id: ProofId,
-        source: Box<OutboundProofFailure>,
+        artifact_id: ArtifactId,
+        source: Box<OutboundArtifactFailure>,
     },
-    /// Every eligible peer tried so far reported the exact proof unavailable.
-    ProofUnavailable { peer_id: PeerId, proof_id: ProofId },
+    /// Every eligible peer tried so far reported the exact artifact unavailable.
+    ArtifactUnavailable {
+        peer_id: PeerId,
+        artifact_id: ArtifactId,
+    },
     /// The absolute single-payload import deadline expired.
-    ProofDeadlineExceeded { peer_id: PeerId, proof_id: ProofId },
+    ArtifactDeadlineExceeded {
+        peer_id: PeerId,
+        artifact_id: ArtifactId,
+    },
 }
 
-impl ProofBlockImportError {
-    fn selected_state(source: ProofChainJournalError) -> Self {
+impl ArtifactBlockImportError {
+    fn selected_state(source: ArtifactChainJournalError) -> Self {
         Self::SelectedState {
             source: Box::new(source),
         }
     }
 }
 
-impl fmt::Display for ProofBlockImportError {
+impl fmt::Display for ArtifactBlockImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SelectedState { source } => {
                 write!(
                     formatter,
-                    "proof-block import cannot use selected state: {source}"
+                    "artifact-block import cannot use selected state: {source}"
                 )
             }
             Self::TargetAlreadySelected { block_id } => {
-                write!(formatter, "proof block {block_id:?} is already selected")
+                write!(formatter, "artifact block {block_id:?} is already selected")
             }
             Self::RequestStart { block_id, source } => {
                 write!(
                     formatter,
-                    "cannot request proof block {block_id:?}: {source}"
+                    "cannot request artifact block {block_id:?}: {source}"
                 )
             }
             Self::UnexpectedEvent => formatter
-                .write_str("network event or driver does not belong to this proof-block import"),
+                .write_str("network event or driver does not belong to this artifact-block import"),
             Self::BlockRequestFailed {
                 peer_id,
                 block_id,
                 source,
             } => write!(
                 formatter,
-                "peer {peer_id} failed proof-block import request {block_id:?}: {source}"
+                "peer {peer_id} failed artifact-block import request {block_id:?}: {source}"
             ),
             Self::BlockUnavailable { peer_id, block_id } => write!(
                 formatter,
-                "peer {peer_id} has no proof block at {block_id:?}"
+                "peer {peer_id} has no artifact block at {block_id:?}"
             ),
             Self::ParentBlockIdMismatch { expected, actual } => write!(
                 formatter,
-                "proof block extends parent {actual:?}, expected current head {expected:?}"
+                "artifact block extends parent {actual:?}, expected current head {expected:?}"
             ),
-            Self::PreviousProofSetRootMismatch { expected, actual } => write!(
+            Self::PreviousArtifactSetRootMismatch { expected, actual } => write!(
                 formatter,
-                "proof block starts at proof-set root {actual:?}, expected {expected:?}"
+                "artifact block starts at artifact-set root {actual:?}, expected {expected:?}"
             ),
-            Self::ResultingProofSetRootMismatch { expected, actual } => write!(
+            Self::ResultingArtifactSetRootMismatch { expected, actual } => write!(
                 formatter,
-                "proof block projects proof-set root {actual:?}, expected {expected:?}"
+                "artifact block projects artifact-set root {actual:?}, expected {expected:?}"
             ),
-            Self::NoEligibleProofPeer { proof_id } => write!(
+            Self::NoEligibleArtifactPeer { artifact_id } => write!(
                 formatter,
-                "no configured peer can currently serve block proof {proof_id:?}"
+                "no configured peer can currently serve block artifact {artifact_id:?}"
             ),
-            Self::ProofRequestStart { proof_id, source } => {
+            Self::ArtifactRequestStart {
+                artifact_id,
+                source,
+            } => {
                 write!(
                     formatter,
-                    "cannot request block proof {proof_id:?}: {source}"
+                    "cannot request block artifact {artifact_id:?}: {source}"
                 )
             }
-            Self::ProofRequestFailed {
+            Self::ArtifactRequestFailed {
                 peer_id,
-                proof_id,
+                artifact_id,
                 source,
             } => write!(
                 formatter,
-                "peer {peer_id} failed block proof request {proof_id:?}: {source}"
+                "peer {peer_id} failed block artifact request {artifact_id:?}: {source}"
             ),
-            Self::ProofUnavailable { peer_id, proof_id } => write!(
+            Self::ArtifactUnavailable {
+                peer_id,
+                artifact_id,
+            } => write!(
                 formatter,
-                "peer {peer_id} reported block proof {proof_id:?} unavailable"
+                "peer {peer_id} reported block artifact {artifact_id:?} unavailable"
             ),
-            Self::ProofDeadlineExceeded { peer_id, proof_id } => write!(
+            Self::ArtifactDeadlineExceeded {
+                peer_id,
+                artifact_id,
+            } => write!(
                 formatter,
-                "block proof import from {peer_id} exceeded {PROOF_BLOCK_IMPORT_TIMEOUT:?} while awaiting {proof_id:?}"
+                "block artifact import from {peer_id} exceeded {ARTIFACT_BLOCK_IMPORT_TIMEOUT:?} while awaiting {artifact_id:?}"
             ),
         }
     }
 }
 
-impl Error for ProofBlockImportError {
+impl Error for ArtifactBlockImportError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::SelectedState { source } => Some(source.as_ref()),
-            Self::RequestStart { source, .. } | Self::ProofRequestStart { source, .. } => {
+            Self::RequestStart { source, .. } | Self::ArtifactRequestStart { source, .. } => {
                 Some(source)
             }
             Self::BlockRequestFailed { source, .. } => Some(source.as_ref()),
-            Self::ProofRequestFailed { source, .. } => Some(source.as_ref()),
+            Self::ArtifactRequestFailed { source, .. } => Some(source.as_ref()),
             Self::TargetAlreadySelected { .. }
             | Self::UnexpectedEvent
             | Self::BlockUnavailable { .. }
             | Self::ParentBlockIdMismatch { .. }
-            | Self::PreviousProofSetRootMismatch { .. }
-            | Self::ResultingProofSetRootMismatch { .. }
-            | Self::NoEligibleProofPeer { .. }
-            | Self::ProofUnavailable { .. }
-            | Self::ProofDeadlineExceeded { .. } => None,
+            | Self::PreviousArtifactSetRootMismatch { .. }
+            | Self::ResultingArtifactSetRootMismatch { .. }
+            | Self::NoEligibleArtifactPeer { .. }
+            | Self::ArtifactUnavailable { .. }
+            | Self::ArtifactDeadlineExceeded { .. } => None,
         }
     }
 }

@@ -16,11 +16,11 @@ fn canonical_bytes_match_authoring_admission_and_duplicate_semantics() {
             .contains_proof(strict_applied.proof_id())
     );
     assert_eq!(strict_applied.canonical_proof_bytes(), bytes);
-    assert!(strict_applied.direct_dependencies().is_empty());
+    assert!(strict_applied.direct_proof_dependencies().is_empty());
     assert_eq!(
         strict.apply_canonical_proof_bytes(bytes),
         Err(LedgerError::State {
-            source: ProofStateError::DuplicateProof {
+            source: ArtifactStateError::DuplicateProof {
                 proof_id: strict_applied.proof_id(),
             },
         })
@@ -40,7 +40,13 @@ fn expected_proof_id_is_checked_before_registration_and_duplicate_state() {
     let mismatch = ledger
         .apply_canonical_proof_bytes_with_expected_id(bytes.clone(), expected)
         .unwrap_err();
-    assert_eq!(mismatch, LedgerError::ProofIdMismatch { expected, actual });
+    assert_eq!(
+        mismatch,
+        LedgerError::ArtifactIdMismatch {
+            expected: ArtifactId::from_proof_id(expected),
+            actual: ArtifactId::from_proof_id(actual),
+        }
+    );
     assert!(mismatch.source().is_none());
     assert!(!ledger.contains_proof(actual));
     assert!(!ledger.contains_derivation(checked.derivation_id()));
@@ -54,12 +60,15 @@ fn expected_proof_id_is_checked_before_registration_and_duplicate_state() {
 
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(bytes.clone(), expected),
-        Err(LedgerError::ProofIdMismatch { expected, actual })
+        Err(LedgerError::ArtifactIdMismatch {
+            expected: ArtifactId::from_proof_id(expected),
+            actual: ArtifactId::from_proof_id(actual),
+        })
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(bytes, actual),
         Err(LedgerError::State {
-            source: ProofStateError::DuplicateProof { proof_id: actual },
+            source: ArtifactStateError::DuplicateProof { proof_id: actual },
         })
     );
 }
@@ -85,7 +94,7 @@ fn addressed_validation_matches_single_admission_without_mutating() {
         .apply_canonical_proof_bytes_with_expected_id(bytes.clone(), proof_id)
         .unwrap();
     let expected = Err(LedgerError::State {
-        source: ProofStateError::DuplicateProof { proof_id },
+        source: ArtifactStateError::DuplicateProof { proof_id },
     });
     assert_eq!(
         ledger.validate_canonical_proof_bytes_with_expected_id(bytes, proof_id),
@@ -118,7 +127,7 @@ fn validation_errors_precede_expected_proof_id_binding() {
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(vec![0], expected),
         Err(LedgerError::Decode {
-            source: ProofCertificateError::UnexpectedEnd,
+            source: ArtifactPayloadError::Proof(ProofCertificateError::UnexpectedEnd),
         })
     );
     assert_eq!(
@@ -127,7 +136,7 @@ fn validation_errors_precede_expected_proof_id_binding() {
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(invalid_inference, expected),
-        Err(LedgerError::Check {
+        Err(LedgerError::ProofCheck {
             source: CheckError::Logic {
                 step: 2,
                 source: LogicError::ModusPonensMismatch,
@@ -136,7 +145,7 @@ fn validation_errors_precede_expected_proof_id_binding() {
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(missing_reference, expected),
-        Err(LedgerError::Check {
+        Err(LedgerError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 0,
                 proof_id: missing,
@@ -177,13 +186,16 @@ fn representation_mutations_are_noncanonical_and_atomic() {
         (
             "unreachable invalid step",
             certificate(vec![
-                ProofStep::Separation(Separation {
-                    predicate: Formula::equal(result, result),
-                    element: FreeVariable::new(1),
-                    source: FreeVariable::new(2),
-                    result,
-                    parameters: Vec::new(),
-                }),
+                ProofStep::Separation(
+                    Separation {
+                        predicate: Formula::equal(result, result),
+                        element: FreeVariable::new(1),
+                        source: FreeVariable::new(2),
+                        result,
+                        parameters: Vec::new(),
+                    }
+                    .into(),
+                ),
                 ProofStep::EqualityReflexivity { variable: zero },
                 ProofStep::Generalization {
                     premise: 1,
@@ -219,16 +231,19 @@ fn decode_errors_precede_canonicality_without_mutation() {
     trailing.push(0);
     let over_limit = vec![0; CERTIFICATE_MAX_BYTES + 1];
     let cases = [
-        (&[0][..], ProofCertificateError::UnexpectedEnd),
+        (
+            &[0][..],
+            ArtifactPayloadError::Proof(ProofCertificateError::UnexpectedEnd),
+        ),
         (
             trailing.as_slice(),
-            ProofCertificateError::TrailingBytes { remaining: 1 },
+            ArtifactPayloadError::Proof(ProofCertificateError::TrailingBytes { remaining: 1 }),
         ),
         (
             over_limit.as_slice(),
-            ProofCertificateError::InputTooLong {
-                actual: CERTIFICATE_MAX_BYTES + 1,
-                maximum: CERTIFICATE_MAX_BYTES,
+            ArtifactPayloadError::InputTooLong {
+                actual: CERTIFICATE_MAX_BYTES + 2,
+                maximum: CERTIFICATE_MAX_BYTES + 1,
             },
         ),
     ];
@@ -269,7 +284,7 @@ fn canonicality_precedes_reachable_reference_checking() {
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes(canonical),
-        Err(LedgerError::Check {
+        Err(LedgerError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 0,
                 proof_id: missing,
@@ -278,7 +293,7 @@ fn canonicality_precedes_reachable_reference_checking() {
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes(invalid_inference),
-        Err(LedgerError::Check {
+        Err(LedgerError::ProofCheck {
             source: CheckError::Logic {
                 step: 2,
                 source: LogicError::ModusPonensMismatch,
@@ -318,7 +333,7 @@ fn canonical_five_reference_proof_requires_complete_pre_transition_state() {
     }
     assert_eq!(
         ledger.apply_canonical_proof_bytes(target_bytes.clone()),
-        Err(LedgerError::Check {
+        Err(LedgerError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 4,
                 proof_id: parents[4].1,
@@ -334,7 +349,7 @@ fn canonical_five_reference_proof_requires_complete_pre_transition_state() {
         .unwrap();
     assert_eq!(applied.canonical_proof_bytes(), target_bytes);
     assert_eq!(
-        applied.direct_dependencies(),
+        applied.direct_proof_dependencies(),
         parents
             .iter()
             .map(|(_, proof_id, _)| *proof_id)
@@ -355,7 +370,7 @@ fn records_keep_only_unique_direct_dependencies_and_replay_in_dependency_order()
     ];
     let child_bytes = canonical_bytes(proof_using_every_reference(&repeated, ZfcAxiom::Choice));
     let child = original.apply_canonical_proof_bytes(child_bytes).unwrap();
-    assert_eq!(child.direct_dependencies(), [source.proof_id()]);
+    assert_eq!(child.direct_proof_dependencies(), [source.proof_id()]);
 
     let grandchild_bytes = canonical_bytes(proof_using_every_reference(
         &[(child.proof_id(), ZfcAxiom::Choice.formula())],
@@ -364,17 +379,17 @@ fn records_keep_only_unique_direct_dependencies_and_replay_in_dependency_order()
     let grandchild = original
         .apply_canonical_proof_bytes(grandchild_bytes)
         .unwrap();
-    assert_eq!(grandchild.direct_dependencies(), [child.proof_id()]);
+    assert_eq!(grandchild.direct_proof_dependencies(), [child.proof_id()]);
     assert!(
         !grandchild
-            .direct_dependencies()
+            .direct_proof_dependencies()
             .contains(&source.proof_id())
     );
 
     let mut replay = LedgerState::new();
     assert_eq!(
         replay.apply_canonical_proof_bytes(child.canonical_proof_bytes().to_vec()),
-        Err(LedgerError::Check {
+        Err(LedgerError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 0,
                 proof_id: source.proof_id(),
@@ -408,7 +423,7 @@ fn authoring_record_excludes_unreachable_unknown_dependencies() {
     let record = ledger.apply(candidate).unwrap();
 
     assert_eq!(record.canonical_proof_bytes(), expected_bytes);
-    assert!(record.direct_dependencies().is_empty());
+    assert!(record.direct_proof_dependencies().is_empty());
     assert!(!ledger.contains_proof(missing));
     assert!(ledger.contains_proof(record.proof_id()));
 }
@@ -459,7 +474,7 @@ fn references_resolve_only_from_the_selected_pre_transition_state() {
     let mut independent = LedgerState::new();
     assert_eq!(
         independent.apply(dependent.clone()),
-        Err(LedgerError::Check {
+        Err(LedgerError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 0,
                 proof_id: source.proof_id(),
@@ -514,7 +529,7 @@ fn one_proof_can_use_five_members_of_the_pre_transition_state() {
 
         assert!(matches!(
             incomplete.apply(proof.clone()),
-            Err(LedgerError::Check {
+            Err(LedgerError::ProofCheck {
                 source: CheckError::UnknownProofReference { proof_id, .. }
             }) if proof_id == references[missing].0
         ));
@@ -534,7 +549,7 @@ fn duplicate_artifacts_and_reference_aliases_leave_state_unchanged() {
     assert_eq!(
         ledger.apply(identity(FreeVariable::new(42))),
         Err(LedgerError::State {
-            source: ProofStateError::DuplicateProof {
+            source: ArtifactStateError::DuplicateProof {
                 proof_id: source.proof_id(),
             },
         })
@@ -542,14 +557,14 @@ fn duplicate_artifacts_and_reference_aliases_leave_state_unchanged() {
     let alias = certificate(vec![ProofStep::ProofReference {
         proof_id: source.proof_id(),
     }]);
-    let alias_id = normalize_and_check_with_state(alias.clone(), &ledger.proof_state)
+    let alias_id = normalize_and_check_with_state(alias.clone(), ledger.proof_state())
         .unwrap()
         .proof_id();
     let alias_bytes = canonical_bytes(alias.clone());
     assert_eq!(
         ledger.apply(alias),
         Err(LedgerError::State {
-            source: ProofStateError::DuplicateDerivation {
+            source: ArtifactStateError::DuplicateDerivation {
                 derivation_id: source.derivation_id(),
             },
         })
@@ -560,15 +575,15 @@ fn duplicate_artifacts_and_reference_aliases_leave_state_unchanged() {
         ledger.apply_canonical_proof_bytes_with_expected_id(alias_bytes.clone(), wrong_expected);
     assert_eq!(
         mismatch,
-        Err(LedgerError::ProofIdMismatch {
-            expected: wrong_expected,
-            actual: alias_id,
+        Err(LedgerError::ArtifactIdMismatch {
+            expected: ArtifactId::from_proof_id(wrong_expected),
+            actual: ArtifactId::from_proof_id(alias_id),
         })
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(alias_bytes, alias_id),
         Err(LedgerError::State {
-            source: ProofStateError::DuplicateDerivation {
+            source: ArtifactStateError::DuplicateDerivation {
                 derivation_id: source.derivation_id(),
             },
         })
@@ -588,7 +603,7 @@ fn checker_and_registration_errors_expose_sources_without_partial_updates() {
     let open_error = ledger.apply(open).unwrap_err();
     assert!(matches!(
         open_error,
-        LedgerError::Check {
+        LedgerError::ProofCheck {
             source: CheckError::OpenConclusion { step: 0 }
         }
     ));
@@ -600,14 +615,14 @@ fn checker_and_registration_errors_expose_sources_without_partial_updates() {
     assert!(matches!(
         duplicate_error,
         LedgerError::State {
-            source: ProofStateError::DuplicateProof { .. }
+            source: ArtifactStateError::DuplicateProof { .. }
         }
     ));
     assert!(duplicate_error.source().is_some());
     assert!(
         duplicate_error
             .to_string()
-            .contains("proof registration failed")
+            .contains("artifact registration failed")
     );
     assert!(ledger.contains_proof(applied.proof_id()));
     assert!(ledger.contains_derivation(applied.derivation_id()));

@@ -1,19 +1,24 @@
-//! Prerelease `.nao` proof-source lowering for one checked Foundation proof.
+//! Prerelease `.nao` lowering for one checked proof or conservative definition.
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Write as _};
 
-use naome_checker::{CheckError, ProofState, check_normal_form_with_state};
+use naome_checker::{
+    ArtifactState, CheckError, DefinitionCheckError, check_definition_with_state,
+    check_normal_form_with_state,
+};
 use naome_foundation::{
-    FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, Formula, FormulaCodecError, FreeVariable,
-    Replacement, Separation, ZfcAxiom,
+    FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, FormulaCodecError, FreeVariable, ZfcAxiom,
 };
 use naome_proof::{
-    CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS, DerivationId,
-    ProofCertificate, ProofCertificateError, ProofId, ProofStep, StatementId,
+    ArtifactId, ArtifactPayload, CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES,
+    CERTIFICATE_MAX_STEPS, DefinedFormula, DefinedFormulaCodecError, DefinitionCertificate,
+    DefinitionCertificateError, DefinitionExpansionError, DefinitionId, DefinitionKind,
+    DerivationId, ProofCertificate, ProofCertificateError, ProofFormula, ProofId, ProofReplacement,
+    ProofSeparation, ProofStep, StatementId,
 };
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
+use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 /// Maximum UTF-8 bytes accepted in one `.nao` source value.
 pub const AUTHORING_SOURCE_MAX_BYTES: usize = CERTIFICATE_MAX_BYTES;
@@ -23,40 +28,64 @@ const FORMULA_BINDING_MAX_NODES: usize = FORMULA_MAX_NODES;
 
 /// Compiles one complete, dependency-free `.nao` proof source.
 ///
-/// Reachable proof references fail because this entry point uses an empty
-/// checked-proof state. Use [`compile_against_selected_chain`] when references
-/// to already selected proofs are expected.
+/// Reachable dependencies fail because this entry point uses an empty selected-
+/// artifact state. Use [`compile_against_selected_chain`] when references to
+/// already selected artifacts are expected.
 pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
-    compile_with_proof_state(source, &ProofState::new())
+    match compile_artifact(source)? {
+        CompiledArtifact::Proof(proof) => Ok(proof),
+        CompiledArtifact::Definition(_) => Err(CompileError::ExpectedProof { offset: 0 }),
+    }
 }
 
-/// Compiles one `.nao` proof source against a selected proof-chain journal.
+/// Compiles one complete `.nao` proof or definition against empty selected state.
+///
+/// The empty state can compile dependency-free relation definitions and proofs,
+/// but it cannot authorize citations, definition aliases, or obligations.
+pub fn compile_artifact(source: &str) -> Result<CompiledArtifact, CompileError> {
+    compile_with_artifact_state(source, &ArtifactState::new())
+}
+
+/// Compiles one `.nao` proof source against a selected artifact-chain journal.
 ///
 /// Journal health is checked before source compilation. Root-reachable
-/// references resolve only from proofs strictly applied or replayed into
+/// references resolve only from artifacts strictly applied or replayed into
 /// `selected`; block candidates, archived payloads, and arbitrary caller-built
-/// proof states are not inputs. Compilation performs no journal I/O or mutation.
+/// resolver states are not inputs. Compilation performs no journal I/O or mutation.
 /// Its output is still an unselected authoring artifact, and later admission
 /// fully rechecks it against the then-current target state. The selected journal
 /// does not by itself establish network provenance, consensus, or finality.
 pub fn compile_against_selected_chain(
     source: &str,
-    selected: &ProofChainJournal,
+    selected: &ArtifactChainJournal,
 ) -> Result<CompiledProof, SelectedChainCompileError> {
-    let proof_state =
+    match compile_artifact_against_selected_chain(source, selected)? {
+        CompiledArtifact::Proof(proof) => Ok(proof),
+        CompiledArtifact::Definition(_) => Err(SelectedChainCompileError::Compilation {
+            source: CompileError::ExpectedProof { offset: 0 },
+        }),
+    }
+}
+
+/// Compiles one proof or definition using only the journal's healthy selected state.
+pub fn compile_artifact_against_selected_chain(
+    source: &str,
+    selected: &ArtifactChainJournal,
+) -> Result<CompiledArtifact, SelectedChainCompileError> {
+    let artifact_state =
         selected
-            .proof_state()
+            .artifact_state()
             .map_err(|source| SelectedChainCompileError::SelectedState {
                 source: Box::new(source),
             })?;
-    compile_with_proof_state(source, proof_state)
+    compile_with_artifact_state(source, artifact_state)
         .map_err(|source| SelectedChainCompileError::Compilation { source })
 }
 
-fn compile_with_proof_state(
+fn compile_with_artifact_state(
     source: &str,
-    proof_state: &ProofState,
-) -> Result<CompiledProof, CompileError> {
+    artifact_state: &ArtifactState,
+) -> Result<CompiledArtifact, CompileError> {
     if source.len() > AUTHORING_SOURCE_MAX_BYTES {
         return Err(CompileError::SourceTooLong {
             actual: source.len(),
@@ -64,7 +93,7 @@ fn compile_with_proof_state(
         });
     }
 
-    Parser::new(source).compile(proof_state)
+    Parser::new(source).compile(artifact_state)
 }
 
 /// Failure to obtain selected state or compile against it.
@@ -72,7 +101,9 @@ fn compile_with_proof_state(
 #[non_exhaustive]
 pub enum SelectedChainCompileError {
     /// The selected journal cannot expose healthy applied-or-replayed state.
-    SelectedState { source: Box<ProofChainJournalError> },
+    SelectedState {
+        source: Box<ArtifactChainJournalError>,
+    },
     /// Source parsing, proof checking, or exact reference resolution failed.
     Compilation { source: CompileError },
 }
@@ -83,10 +114,12 @@ impl fmt::Display for SelectedChainCompileError {
             Self::SelectedState { source } => {
                 write!(
                     formatter,
-                    "selected proof-chain state is unavailable: {source}"
+                    "selected artifact-chain state is unavailable: {source}"
                 )
             }
-            Self::Compilation { source } => write!(formatter, "proof compilation failed: {source}"),
+            Self::Compilation { source } => {
+                write!(formatter, "artifact compilation failed: {source}")
+            }
         }
     }
 }
@@ -108,6 +141,73 @@ pub struct CompiledProof {
     statement_id: StatementId,
     derivation_id: DerivationId,
     proof_id: ProofId,
+}
+
+/// Canonical checked output of one successful definition compilation.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub struct CompiledDefinition {
+    canonical_definition_bytes: Box<[u8]>,
+    definition_id: DefinitionId,
+    artifact_id: ArtifactId,
+}
+
+impl CompiledDefinition {
+    /// Returns the exact canonical definition-certificate bytes.
+    pub fn canonical_definition_bytes(&self) -> &[u8] {
+        &self.canonical_definition_bytes
+    }
+
+    /// Consumes this result and returns the exact canonical definition bytes.
+    pub fn into_canonical_definition_bytes(self) -> Box<[u8]> {
+        self.canonical_definition_bytes
+    }
+
+    /// Returns the checked definition identity.
+    pub const fn definition_id(&self) -> DefinitionId {
+        self.definition_id
+    }
+
+    /// Returns the typed artifact identity used by blocks.
+    pub const fn artifact_id(&self) -> ArtifactId {
+        self.artifact_id
+    }
+}
+
+/// One typed checked artifact produced from a complete `.nao` source.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub enum CompiledArtifact {
+    /// A checked proof and its three proof identities.
+    Proof(CompiledProof),
+    /// A checked conservative definition.
+    Definition(CompiledDefinition),
+}
+
+impl CompiledArtifact {
+    /// Returns canonical tagged artifact bytes ready for block admission.
+    #[must_use]
+    pub fn canonical_artifact_bytes(&self) -> Vec<u8> {
+        let (tag, payload) = match self {
+            Self::Proof(proof) => (ArtifactPayload::PROOF_TAG, proof.canonical_proof_bytes()),
+            Self::Definition(definition) => (
+                ArtifactPayload::DEFINITION_TAG,
+                definition.canonical_definition_bytes(),
+            ),
+        };
+        let mut artifact = Vec::with_capacity(1 + payload.len());
+        artifact.push(tag);
+        artifact.extend_from_slice(payload);
+        artifact
+    }
+
+    /// Returns the typed artifact identity used by blocks.
+    pub fn artifact_id(&self) -> ArtifactId {
+        match self {
+            Self::Proof(proof) => ArtifactId::from_proof_id(proof.proof_id()),
+            Self::Definition(definition) => definition.artifact_id(),
+        }
+    }
 }
 
 impl CompiledProof {
@@ -155,6 +255,15 @@ pub enum DiagnosticCode {
     DuplicateFormulaBinding,
     UnknownFormulaBinding,
     FormulaBindingNodeLimitExceeded,
+    ExpectedProof,
+    DuplicateDefinitionAlias,
+    UnknownDefinitionAlias,
+    DefinitionNotSelected,
+    DefinitionArityMismatch,
+    Definition,
+    DefinitionCheck,
+    DefinitionFormula,
+    DefinitionExpansion,
 }
 
 impl DiagnosticCode {
@@ -175,6 +284,15 @@ impl DiagnosticCode {
             Self::DuplicateFormulaBinding => "NAO0012",
             Self::UnknownFormulaBinding => "NAO0013",
             Self::FormulaBindingNodeLimitExceeded => "NAO0014",
+            Self::ExpectedProof => "NAO0015",
+            Self::DuplicateDefinitionAlias => "NAO0016",
+            Self::UnknownDefinitionAlias => "NAO0017",
+            Self::DefinitionNotSelected => "NAO0018",
+            Self::DefinitionArityMismatch => "NAO0019",
+            Self::Definition => "NAO0020",
+            Self::DefinitionCheck => "NAO0021",
+            Self::DefinitionFormula => "NAO0022",
+            Self::DefinitionExpansion => "NAO0023",
         }
     }
 }
@@ -319,6 +437,44 @@ pub enum CompileError {
     UnknownFormulaBinding { offset: usize, name: String },
     /// Expanded formula bindings exceed their cumulative retention budget.
     FormulaBindingNodeLimitExceeded { offset: usize, maximum: usize },
+    /// A proof-only compatibility entry point received a definition source.
+    ExpectedProof { offset: usize },
+    /// A source-only selected-definition alias was declared twice.
+    DuplicateDefinitionAlias { offset: usize, name: String },
+    /// A formula or term call names no declared selected-definition alias.
+    UnknownDefinitionAlias { offset: usize, name: String },
+    /// An alias names a DefinitionId absent from immutable selected state.
+    DefinitionNotSelected {
+        offset: usize,
+        definition_id: DefinitionId,
+    },
+    /// A relation or term call supplies the wrong number of arguments.
+    DefinitionArityMismatch {
+        offset: usize,
+        name: String,
+        expected: u32,
+        actual: usize,
+    },
+    /// A lowered definition certificate is structurally invalid.
+    Definition {
+        offset: usize,
+        source: DefinitionCertificateError,
+    },
+    /// A definition fails selected-dependency or obligation checking.
+    DefinitionCheck {
+        span: SourceSpan,
+        source: Box<DefinitionCheckError>,
+    },
+    /// A compact or expanded definition-aware formula is invalid.
+    DefinitionFormula {
+        offset: usize,
+        source: DefinedFormulaCodecError,
+    },
+    /// A selected definition cannot be expanded under deterministic bounds.
+    DefinitionExpansion {
+        offset: usize,
+        source: DefinitionExpansionError,
+    },
 }
 
 impl CompileError {
@@ -341,6 +497,15 @@ impl CompileError {
             Self::FormulaBindingNodeLimitExceeded { .. } => {
                 DiagnosticCode::FormulaBindingNodeLimitExceeded
             }
+            Self::ExpectedProof { .. } => DiagnosticCode::ExpectedProof,
+            Self::DuplicateDefinitionAlias { .. } => DiagnosticCode::DuplicateDefinitionAlias,
+            Self::UnknownDefinitionAlias { .. } => DiagnosticCode::UnknownDefinitionAlias,
+            Self::DefinitionNotSelected { .. } => DiagnosticCode::DefinitionNotSelected,
+            Self::DefinitionArityMismatch { .. } => DiagnosticCode::DefinitionArityMismatch,
+            Self::Definition { .. } => DiagnosticCode::Definition,
+            Self::DefinitionCheck { .. } => DiagnosticCode::DefinitionCheck,
+            Self::DefinitionFormula { .. } => DiagnosticCode::DefinitionFormula,
+            Self::DefinitionExpansion { .. } => DiagnosticCode::DefinitionExpansion,
         }
     }
 
@@ -359,7 +524,17 @@ impl CompileError {
             | Self::DuplicateFormulaBinding { offset, .. }
             | Self::UnknownFormulaBinding { offset, .. }
             | Self::FormulaBindingNodeLimitExceeded { offset, .. } => Some(*offset),
-            Self::Check { span, .. } | Self::StatementMismatch { span } => Some(span.start()),
+            Self::ExpectedProof { offset }
+            | Self::DuplicateDefinitionAlias { offset, .. }
+            | Self::UnknownDefinitionAlias { offset, .. }
+            | Self::DefinitionNotSelected { offset, .. }
+            | Self::DefinitionArityMismatch { offset, .. }
+            | Self::Definition { offset, .. }
+            | Self::DefinitionFormula { offset, .. } => Some(*offset),
+            Self::DefinitionExpansion { offset, .. } => Some(*offset),
+            Self::Check { span, .. }
+            | Self::StatementMismatch { span }
+            | Self::DefinitionCheck { span, .. } => Some(span.start()),
         }
     }
 
@@ -392,10 +567,18 @@ impl CompileError {
             | Self::Certificate { offset, .. }
             | Self::DuplicateFormulaBinding { offset, .. }
             | Self::UnknownFormulaBinding { offset, .. }
-            | Self::FormulaBindingNodeLimitExceeded { offset, .. } => {
-                source_token_span(source, *offset)?
-            }
-            Self::Check { span, .. } | Self::StatementMismatch { span } => *span,
+            | Self::FormulaBindingNodeLimitExceeded { offset, .. }
+            | Self::ExpectedProof { offset }
+            | Self::DuplicateDefinitionAlias { offset, .. }
+            | Self::UnknownDefinitionAlias { offset, .. }
+            | Self::DefinitionNotSelected { offset, .. }
+            | Self::DefinitionArityMismatch { offset, .. }
+            | Self::Definition { offset, .. }
+            | Self::DefinitionFormula { offset, .. } => source_token_span(source, *offset)?,
+            Self::DefinitionExpansion { offset, .. } => source_token_span(source, *offset)?,
+            Self::Check { span, .. }
+            | Self::StatementMismatch { span }
+            | Self::DefinitionCheck { span, .. } => *span,
         };
         valid_source_span(source, span).then_some(span)
     }
@@ -439,6 +622,37 @@ impl CompileError {
             ),
             Self::FormulaBindingNodeLimitExceeded { maximum, .. } => {
                 format!("formula bindings exceed the {maximum}-node retention limit")
+            }
+            Self::ExpectedProof { .. } => "expected a proof source".to_owned(),
+            Self::DuplicateDefinitionAlias { name, .. } => {
+                format!("duplicate definition alias {}", diagnostic_name(name))
+            }
+            Self::UnknownDefinitionAlias { name, .. } => {
+                format!("unknown definition alias {}", diagnostic_name(name))
+            }
+            Self::DefinitionNotSelected { .. } => {
+                "definition alias is absent from selected chain state".to_owned()
+            }
+            Self::DefinitionArityMismatch {
+                name,
+                expected,
+                actual,
+                ..
+            } => format!(
+                "definition {} expects {expected} arguments but received {actual}",
+                diagnostic_name(name)
+            ),
+            Self::Definition { source, .. } => {
+                format!("invalid definition structure: {source}")
+            }
+            Self::DefinitionCheck { source, .. } => {
+                format!("definition checking failed: {source}")
+            }
+            Self::DefinitionFormula { source, .. } => {
+                format!("invalid definition-aware formula: {source}")
+            }
+            Self::DefinitionExpansion { source, .. } => {
+                format!("definition expansion failed: {source}")
             }
         }
     }
@@ -501,6 +715,50 @@ impl fmt::Display for CompileError {
                 formatter,
                 "formula bindings at byte {offset} exceed the {maximum}-node retention limit"
             ),
+            Self::ExpectedProof { offset } => {
+                write!(formatter, "expected a proof source at byte {offset}")
+            }
+            Self::DuplicateDefinitionAlias { offset, name } => {
+                write!(
+                    formatter,
+                    "duplicate definition alias {name:?} at byte {offset}"
+                )
+            }
+            Self::UnknownDefinitionAlias { offset, name } => {
+                write!(
+                    formatter,
+                    "unknown definition alias {name:?} at byte {offset}"
+                )
+            }
+            Self::DefinitionNotSelected {
+                offset,
+                definition_id,
+            } => write!(
+                formatter,
+                "definition {:?} is absent from selected state at byte {offset}",
+                definition_id.as_bytes()
+            ),
+            Self::DefinitionArityMismatch {
+                offset,
+                name,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "definition {name:?} expects {expected} arguments but received {actual} at byte {offset}"
+            ),
+            Self::Definition { source, .. } => {
+                write!(formatter, "invalid definition structure: {source}")
+            }
+            Self::DefinitionCheck { source, .. } => {
+                write!(formatter, "definition checking failed: {source}")
+            }
+            Self::DefinitionFormula { source, .. } => {
+                write!(formatter, "invalid definition-aware formula: {source}")
+            }
+            Self::DefinitionExpansion { source, .. } => {
+                write!(formatter, "definition expansion failed: {source}")
+            }
         }
     }
 }
@@ -511,6 +769,10 @@ impl Error for CompileError {
             Self::Statement { source, .. } => Some(source),
             Self::Certificate { source, .. } => Some(source),
             Self::Check { source, .. } => Some(source.as_ref()),
+            Self::Definition { source, .. } => Some(source),
+            Self::DefinitionCheck { source, .. } => Some(source.as_ref()),
+            Self::DefinitionFormula { source, .. } => Some(source),
+            Self::DefinitionExpansion { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -646,9 +908,31 @@ enum FormulaContext {
 }
 
 struct ParsedFormula {
-    formula: Formula,
+    formula: DefinedFormula,
     expanded_nodes: u32,
     expanded_depth: u32,
+}
+
+struct ParsedTerm {
+    variable: FreeVariable,
+    graph_constraints: Vec<DefinedFormula>,
+    witnesses: Vec<FreeVariable>,
+}
+
+impl ParsedTerm {
+    fn variable(variable: FreeVariable) -> Self {
+        Self {
+            variable,
+            graph_constraints: Vec::new(),
+            witnesses: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DefinitionAlias {
+    definition_id: DefinitionId,
+    kind: DefinitionKind,
 }
 
 #[derive(Clone, Copy)]
@@ -661,11 +945,13 @@ struct Parser<'source> {
     source: &'source str,
     offset: usize,
     variables: HashMap<&'source str, FreeVariable>,
+    definition_aliases: HashMap<&'source str, DefinitionAlias>,
     formula_bindings: HashMap<&'source str, ParsedFormula>,
     steps: HashMap<&'source str, StepBinding>,
     formula_binding_nodes: usize,
     statement_nodes: usize,
     certificate_formula_nodes: usize,
+    next_variable_identifier: u32,
 }
 
 impl<'source> Parser<'source> {
@@ -674,15 +960,17 @@ impl<'source> Parser<'source> {
             source,
             offset: 0,
             variables: HashMap::new(),
+            definition_aliases: HashMap::new(),
             formula_bindings: HashMap::new(),
             steps: HashMap::new(),
             formula_binding_nodes: 0,
             statement_nodes: 0,
             certificate_formula_nodes: 0,
+            next_variable_identifier: 0,
         }
     }
 
-    fn compile(mut self, proof_state: &ProofState) -> Result<CompiledProof, CompileError> {
+    fn compile(mut self, artifact_state: &ArtifactState) -> Result<CompiledArtifact, CompileError> {
         self.keyword("foundation")?;
         self.punctuation('=')?;
         let foundation_offset = self.next_offset();
@@ -692,10 +980,13 @@ impl<'source> Parser<'source> {
                 offset: foundation_offset,
             });
         }
+        if self.peek_word("definitions") {
+            self.definition_aliases(artifact_state)?;
+        }
         if self.peek_word("formulas") {
             self.keyword("formulas")?;
             self.punctuation(':')?;
-            if self.peek_word("statement") {
+            if self.peek_word("statement") || self.peek_word("definition") {
                 return Err(CompileError::Syntax {
                     offset: self.next_offset(),
                     expected: "at least one formula binding",
@@ -706,12 +997,28 @@ impl<'source> Parser<'source> {
                 if self.peek_word("statement") {
                     break;
                 }
+                if self.peek_word("definition") {
+                    return Err(CompileError::Syntax {
+                        offset: self.next_offset(),
+                        expected: "a proof statement after formula bindings",
+                    });
+                }
             }
+        }
+        if self.peek_word("definition") {
+            return self.compile_definition(artifact_state);
         }
         self.keyword("statement")?;
         self.punctuation('=')?;
         let statement_offset = self.next_offset();
-        let statement = self.formula(1, FormulaContext::Statement)?;
+        let compact_statement = self.formula(1, FormulaContext::Statement)?;
+        let statement = compact_statement
+            .expand_with_node_limit(artifact_state, FORMULA_MAX_NODES)
+            .map(|(formula, _)| formula)
+            .map_err(|source| CompileError::DefinitionExpansion {
+                offset: statement_offset,
+                source,
+            })?;
         let statement_span = SourceSpan::new(statement_offset, self.offset);
         let proof_offset = self.next_offset();
         self.keyword("proof")?;
@@ -772,19 +1079,21 @@ impl<'source> Parser<'source> {
             })?;
         let (normal_form, step_origins) =
             certificate.into_unchecked_normal_form_with_step_origins();
-        let checked = check_normal_form_with_state(normal_form, proof_state).map_err(|source| {
-            let source_step = step_origins.source_step(source.step());
-            let origin = source_step.and_then(|position| {
-                step_bindings
-                    .iter()
-                    .find(|(_, binding)| binding.position == position)
-            });
-            let span = origin.map_or(SourceSpan::point(proof_offset), |(_, binding)| binding.span);
-            CompileError::Check {
-                span,
-                source: Box::new(source),
-            }
-        })?;
+        let checked =
+            check_normal_form_with_state(normal_form, artifact_state).map_err(|source| {
+                let source_step = step_origins.source_step(source.step());
+                let origin = source_step.and_then(|position| {
+                    step_bindings
+                        .iter()
+                        .find(|(_, binding)| binding.position == position)
+                });
+                let span =
+                    origin.map_or(SourceSpan::point(proof_offset), |(_, binding)| binding.span);
+                CompileError::Check {
+                    span,
+                    source: Box::new(source),
+                }
+            })?;
         drop(step_bindings);
         drop(step_origins);
         if checked.conclusion() != &statement {
@@ -796,12 +1105,178 @@ impl<'source> Parser<'source> {
         let derivation_id = checked.derivation_id();
         let proof_id = checked.proof_id();
         let canonical_proof_bytes = checked.into_normal_form().into_canonical_bytes();
-        Ok(CompiledProof {
+        Ok(CompiledArtifact::Proof(CompiledProof {
             canonical_proof_bytes,
             statement_id,
             derivation_id,
             proof_id,
-        })
+        }))
+    }
+
+    fn definition_aliases(&mut self, artifact_state: &ArtifactState) -> Result<(), CompileError> {
+        self.keyword("definitions")?;
+        self.punctuation(':')?;
+        if self.peek_word("formulas") || self.peek_word("statement") || self.peek_word("definition")
+        {
+            return Err(CompileError::Syntax {
+                offset: self.next_offset(),
+                expected: "at least one selected definition alias",
+            });
+        }
+        loop {
+            let offset = self.next_offset();
+            let name = self.name()?;
+            if is_reserved_definition_alias_name(name) {
+                return Err(CompileError::Syntax {
+                    offset,
+                    expected: "a non-reserved definition alias",
+                });
+            }
+            if self.definition_aliases.contains_key(name) {
+                return Err(CompileError::DuplicateDefinitionAlias {
+                    offset,
+                    name: name.to_owned(),
+                });
+            }
+            self.punctuation('=')?;
+            let definition_id = self.definition_id()?;
+            let kind = artifact_state.definition_kind(definition_id).ok_or(
+                CompileError::DefinitionNotSelected {
+                    offset,
+                    definition_id,
+                },
+            )?;
+            self.definition_aliases.insert(
+                name,
+                DefinitionAlias {
+                    definition_id,
+                    kind,
+                },
+            );
+            if self.peek_word("formulas")
+                || self.peek_word("statement")
+                || self.peek_word("definition")
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    fn compile_definition(
+        mut self,
+        artifact_state: &ArtifactState,
+    ) -> Result<CompiledArtifact, CompileError> {
+        let definition_offset = self.next_offset();
+        self.keyword("definition")?;
+        let name_offset = self.next_offset();
+        let source_name = self.name()?;
+        if self.definition_aliases.contains_key(source_name) {
+            return Err(CompileError::DuplicateDefinitionAlias {
+                offset: name_offset,
+                name: source_name.to_owned(),
+            });
+        }
+        self.punctuation('=')?;
+        let kind_offset = self.next_offset();
+        let kind_name = self.name()?;
+        self.punctuation('(')?;
+        let kind = match kind_name {
+            "relation" => {
+                let parameters = self.definition_parameters(false)?;
+                DefinitionKind::Relation {
+                    arity: u32::try_from(parameters.len())
+                        .expect("the source byte limit bounds definition arity"),
+                }
+            }
+            "constant" => {
+                self.definition_variable()?;
+                self.punctuation(',')?;
+                self.keyword("obligation")?;
+                self.punctuation('=')?;
+                DefinitionKind::Constant {
+                    unique_existence_proof: self.proof_id()?,
+                }
+            }
+            "function" => {
+                let parameters = self.definition_parameters(true)?;
+                let input_arity = parameters
+                    .len()
+                    .checked_sub(1)
+                    .filter(|arity| *arity > 0)
+                    .ok_or(CompileError::Syntax {
+                        offset: kind_offset,
+                        expected: "at least one function input and one output",
+                    })?;
+                DefinitionKind::Function {
+                    input_arity: u32::try_from(input_arity)
+                        .expect("the source byte limit bounds definition arity"),
+                    total_unique_proof: self.proof_id()?,
+                }
+            }
+            _ => {
+                return Err(CompileError::Syntax {
+                    offset: kind_offset,
+                    expected: "`relation`, `constant`, or `function`",
+                });
+            }
+        };
+        self.call_end()?;
+        self.punctuation(':')?;
+        let body_offset = self.next_offset();
+        let body = self.formula(1, FormulaContext::Statement)?;
+        self.end()?;
+
+        let certificate =
+            DefinitionCertificate::new(kind, body).map_err(|source| CompileError::Definition {
+                offset: body_offset,
+                source,
+            })?;
+        let checked =
+            check_definition_with_state(certificate, artifact_state).map_err(|source| {
+                CompileError::DefinitionCheck {
+                    span: SourceSpan::new(definition_offset, self.offset.max(name_offset)),
+                    source: Box::new(source),
+                }
+            })?;
+        let definition_id = checked.definition_id();
+        let artifact_id = ArtifactId::from_definition_id(definition_id);
+        let canonical_definition_bytes = checked
+            .into_certificate()
+            .to_canonical_bytes()
+            .into_boxed_slice();
+        Ok(CompiledArtifact::Definition(CompiledDefinition {
+            canonical_definition_bytes,
+            definition_id,
+            artifact_id,
+        }))
+    }
+
+    fn definition_parameters(
+        &mut self,
+        obligation_follows: bool,
+    ) -> Result<Vec<FreeVariable>, CompileError> {
+        let mut parameters = Vec::new();
+        self.skip_trivia();
+        if self.byte() == Some(b')') {
+            return Ok(parameters);
+        }
+        loop {
+            parameters.push(self.definition_variable()?);
+            self.skip_trivia();
+            if self.byte() == Some(b')') {
+                return Ok(parameters);
+            }
+            self.punctuation(',')?;
+            self.skip_trivia();
+            if self.byte() == Some(b')') {
+                return Ok(parameters);
+            }
+            if obligation_follows && self.peek_word("obligation") {
+                self.keyword("obligation")?;
+                self.punctuation('=')?;
+                return Ok(parameters);
+            }
+        }
     }
 
     fn formula_binding(&mut self) -> Result<(), CompileError> {
@@ -819,6 +1294,12 @@ impl<'source> Parser<'source> {
                 name: name.to_owned(),
             });
         }
+        if self.definition_aliases.contains_key(name) {
+            return Err(CompileError::DuplicateDefinitionAlias {
+                offset: name_offset,
+                name: name.to_owned(),
+            });
+        }
         self.punctuation('=')?;
         let parsed = self.parsed_formula(1, FormulaContext::Binding)?;
         self.formula_bindings.insert(name, parsed);
@@ -831,20 +1312,20 @@ impl<'source> Parser<'source> {
         self.punctuation('(')?;
         let step = match rule {
             "simplification" => {
-                let antecedent = self.formula(1, FormulaContext::Certificate)?;
+                let antecedent = self.proof_formula(1, FormulaContext::Certificate)?;
                 self.punctuation(',')?;
-                let consequent = self.formula(1, FormulaContext::Certificate)?;
+                let consequent = self.proof_formula(1, FormulaContext::Certificate)?;
                 ProofStep::Simplification {
                     antecedent,
                     consequent,
                 }
             }
             "frege" => {
-                let first = self.formula(1, FormulaContext::Certificate)?;
+                let first = self.proof_formula(1, FormulaContext::Certificate)?;
                 self.punctuation(',')?;
-                let second = self.formula(1, FormulaContext::Certificate)?;
+                let second = self.proof_formula(1, FormulaContext::Certificate)?;
                 self.punctuation(',')?;
-                let third = self.formula(1, FormulaContext::Certificate)?;
+                let third = self.proof_formula(1, FormulaContext::Certificate)?;
                 ProofStep::Frege {
                     first,
                     second,
@@ -852,9 +1333,9 @@ impl<'source> Parser<'source> {
                 }
             }
             "classical_contraposition" => {
-                let antecedent = self.formula(1, FormulaContext::Certificate)?;
+                let antecedent = self.proof_formula(1, FormulaContext::Certificate)?;
                 self.punctuation(',')?;
-                let consequent = self.formula(1, FormulaContext::Certificate)?;
+                let consequent = self.proof_formula(1, FormulaContext::Certificate)?;
                 ProofStep::ClassicalContraposition {
                     antecedent,
                     consequent,
@@ -863,9 +1344,9 @@ impl<'source> Parser<'source> {
             "universal_distribution" => {
                 let variable = self.variable()?;
                 self.punctuation(',')?;
-                let antecedent = self.formula(1, FormulaContext::Certificate)?;
+                let antecedent = self.proof_formula(1, FormulaContext::Certificate)?;
                 self.punctuation(',')?;
-                let consequent = self.formula(1, FormulaContext::Certificate)?;
+                let consequent = self.proof_formula(1, FormulaContext::Certificate)?;
                 ProofStep::UniversalDistribution {
                     variable,
                     antecedent,
@@ -873,7 +1354,7 @@ impl<'source> Parser<'source> {
                 }
             }
             "vacuous_universal" => {
-                let formula = self.formula(1, FormulaContext::Certificate)?;
+                let formula = self.proof_formula(1, FormulaContext::Certificate)?;
                 ProofStep::VacuousUniversal { formula }
             }
             "universal_instantiation" => {
@@ -881,7 +1362,7 @@ impl<'source> Parser<'source> {
                 self.punctuation(',')?;
                 let replacement = self.variable()?;
                 self.punctuation(',')?;
-                let body = self.formula(1, FormulaContext::Certificate)?;
+                let body = self.proof_formula(1, FormulaContext::Certificate)?;
                 ProofStep::UniversalInstantiation {
                     variable,
                     replacement,
@@ -906,12 +1387,12 @@ impl<'source> Parser<'source> {
                 self.punctuation(',')?;
                 let to = self.variable()?;
                 self.punctuation(',')?;
-                let body = self.formula(1, FormulaContext::Certificate)?;
+                let body = self.proof_formula(1, FormulaContext::Certificate)?;
                 ProofStep::EqualitySubstitution { from, to, body }
             }
             "zfc_axiom" => ProofStep::ZfcAxiom(self.zfc_axiom()?),
-            "separation" => ProofStep::Separation(Separation {
-                predicate: self.formula(1, FormulaContext::Certificate)?,
+            "separation" => ProofStep::Separation(ProofSeparation {
+                predicate: self.proof_formula(1, FormulaContext::Certificate)?,
                 element: {
                     self.punctuation(',')?;
                     self.variable()?
@@ -929,8 +1410,8 @@ impl<'source> Parser<'source> {
                     self.schema_parameters()?
                 },
             }),
-            "replacement" => ProofStep::Replacement(Replacement {
-                predicate: self.formula(1, FormulaContext::Certificate)?,
+            "replacement" => ProofStep::Replacement(ProofReplacement {
+                predicate: self.proof_formula(1, FormulaContext::Certificate)?,
                 input: {
                     self.punctuation(',')?;
                     self.variable()?
@@ -1033,33 +1514,38 @@ impl<'source> Parser<'source> {
     }
 
     fn proof_id(&mut self) -> Result<ProofId, CompileError> {
-        const HEX_LENGTH: usize = ProofId::BYTE_LENGTH * 2;
-        const EXPECTED: &str = "a 64-digit lowercase hexadecimal ProofId";
+        self.fixed_id_bytes("a 64-digit lowercase hexadecimal ProofId")
+            .map(ProofId::from_bytes)
+    }
 
+    fn definition_id(&mut self) -> Result<DefinitionId, CompileError> {
+        self.fixed_id_bytes("a 64-digit lowercase hexadecimal DefinitionId")
+            .map(DefinitionId::from_bytes)
+    }
+
+    fn fixed_id_bytes(&mut self, expected: &'static str) -> Result<[u8; 32], CompileError> {
+        const HEX_LENGTH: usize = 64;
         self.skip_trivia();
         let quote_offset = self.offset;
         if self.byte() != Some(b'"') {
             return Err(CompileError::Syntax {
                 offset: quote_offset,
-                expected: EXPECTED,
+                expected,
             });
         }
         self.offset += 1;
         let offset = self.offset;
         let Some(encoded) = self.source.as_bytes().get(offset..offset + HEX_LENGTH) else {
-            return Err(CompileError::Syntax {
-                offset,
-                expected: EXPECTED,
-            });
+            return Err(CompileError::Syntax { offset, expected });
         };
-        let mut bytes = [0_u8; ProofId::BYTE_LENGTH];
+        let mut bytes = [0_u8; 32];
         for (index, (pair, byte)) in encoded.chunks_exact(2).zip(bytes.iter_mut()).enumerate() {
             let high_offset = offset + index * 2;
             let high_byte = pair[0];
             let Some(high) = lowercase_hex_nibble(high_byte) else {
                 return Err(CompileError::Syntax {
                     offset: proof_id_error_offset(offset, high_offset, high_byte),
-                    expected: EXPECTED,
+                    expected,
                 });
             };
             let low_offset = high_offset + 1;
@@ -1067,7 +1553,7 @@ impl<'source> Parser<'source> {
             let Some(low) = lowercase_hex_nibble(low_byte) else {
                 return Err(CompileError::Syntax {
                     offset: proof_id_error_offset(offset, low_offset, low_byte),
-                    expected: EXPECTED,
+                    expected,
                 });
             };
             *byte = (high << 4) | low;
@@ -1080,12 +1566,27 @@ impl<'source> Parser<'source> {
             });
         }
         self.offset += 1;
-        Ok(ProofId::from_bytes(bytes))
+        Ok(bytes)
     }
 
-    fn formula(&mut self, depth: u32, context: FormulaContext) -> Result<Formula, CompileError> {
+    fn formula(
+        &mut self,
+        depth: u32,
+        context: FormulaContext,
+    ) -> Result<DefinedFormula, CompileError> {
         self.parsed_formula(depth, context)
             .map(|parsed| parsed.formula)
+    }
+
+    fn proof_formula(
+        &mut self,
+        depth: u32,
+        context: FormulaContext,
+    ) -> Result<ProofFormula, CompileError> {
+        let offset = self.next_offset();
+        let formula = self.formula(depth, context)?;
+        ProofFormula::from_defined(formula)
+            .map_err(|source| CompileError::DefinitionFormula { offset, source })
     }
 
     fn parsed_formula(
@@ -1122,37 +1623,9 @@ impl<'source> Parser<'source> {
             self.punctuation('(')?;
         }
         let parsed = match operator {
-            "equal" => {
-                let left = self.variable()?;
-                self.punctuation(',')?;
-                let right = self.variable()?;
-                ParsedFormula {
-                    formula: Formula::equal(left, right),
-                    expanded_nodes: 1,
-                    expanded_depth: 1,
-                }
-            }
-            "member" => {
-                let element = self.variable()?;
-                self.punctuation(',')?;
-                let set = self.variable()?;
-                ParsedFormula {
-                    formula: Formula::member(element, set),
-                    expanded_nodes: 1,
-                    expanded_depth: 1,
-                }
-            }
-            "not_equal" => {
-                let left = self.variable()?;
-                self.punctuation(',')?;
-                let right = self.variable()?;
-                self.check_derived_expansion(operator_offset, depth, context, 2, 1)?;
-                ParsedFormula {
-                    formula: Formula::negate(Formula::equal(left, right)),
-                    expanded_nodes: 2,
-                    expanded_depth: 2,
-                }
-            }
+            "equal" => self.parse_equal(formula_offset, depth, context, false)?,
+            "member" => self.parse_member(formula_offset, depth, context)?,
+            "not_equal" => self.parse_equal(formula_offset, depth, context, true)?,
             "not_" => self.parse_not(operator_offset, depth, context)?,
             "implies" => self.parse_implies(operator_offset, depth, context)?,
             "forall" => self.parse_for_all(operator_offset, depth, context)?,
@@ -1160,15 +1633,229 @@ impl<'source> Parser<'source> {
             "or_" => self.parse_disjunction(operator_offset, depth, context)?,
             "iff" => self.parse_biconditional(operator_offset, depth, context)?,
             "exists" => self.parse_exists(operator_offset, depth, context)?,
-            _ => {
-                return Err(CompileError::Syntax {
-                    offset: operator_offset,
-                    expected: "a supported formula",
-                });
-            }
+            _ => self.parse_defined_relation(operator_offset, operator, context, depth)?,
         };
         self.call_end()?;
         Ok(parsed)
+    }
+
+    fn parse_equal(
+        &mut self,
+        offset: usize,
+        depth: u32,
+        context: FormulaContext,
+        negated: bool,
+    ) -> Result<ParsedFormula, CompileError> {
+        let left = self.term()?;
+        self.punctuation(',')?;
+        let right = self.term()?;
+        self.relationalized_formula(
+            [left, right],
+            |variables| {
+                let equality = DefinedFormula::equal(variables[0], variables[1]);
+                if negated {
+                    DefinedFormula::negate(equality)
+                } else {
+                    equality
+                }
+            },
+            offset,
+            context,
+            depth,
+            if negated { 2 } else { 1 },
+        )
+    }
+
+    fn parse_member(
+        &mut self,
+        offset: usize,
+        depth: u32,
+        context: FormulaContext,
+    ) -> Result<ParsedFormula, CompileError> {
+        let element = self.term()?;
+        self.punctuation(',')?;
+        let set = self.term()?;
+        self.relationalized_formula(
+            [element, set],
+            |variables| DefinedFormula::member(variables[0], variables[1]),
+            offset,
+            context,
+            depth,
+            1,
+        )
+    }
+
+    fn parse_defined_relation(
+        &mut self,
+        offset: usize,
+        name: &'source str,
+        context: FormulaContext,
+        depth: u32,
+    ) -> Result<ParsedFormula, CompileError> {
+        let alias = self.definition_aliases.get(name).copied().ok_or_else(|| {
+            CompileError::UnknownDefinitionAlias {
+                offset,
+                name: name.to_owned(),
+            }
+        })?;
+        let DefinitionKind::Relation { arity } = alias.kind else {
+            return Err(CompileError::Syntax {
+                offset,
+                expected: "a relation definition alias in formula position",
+            });
+        };
+        let arguments = self.term_arguments()?;
+        self.ensure_definition_arity(offset, name, arity, arguments.len())?;
+        self.relationalized_formula(
+            arguments,
+            |variables| {
+                DefinedFormula::defined_relation(alias.definition_id, variables.iter().copied())
+            },
+            offset,
+            context,
+            depth,
+            1,
+        )
+    }
+
+    fn term(&mut self) -> Result<ParsedTerm, CompileError> {
+        let offset = self.next_offset();
+        let name = self.name()?;
+        let offset_after_name = self.offset;
+        self.skip_trivia();
+        if self.byte() != Some(b'(') {
+            self.offset = offset_after_name;
+            return Ok(ParsedTerm::variable(self.variable_named(name)));
+        }
+        self.offset += 1;
+        let alias = self.definition_aliases.get(name).copied().ok_or_else(|| {
+            CompileError::UnknownDefinitionAlias {
+                offset,
+                name: name.to_owned(),
+            }
+        })?;
+        let expected = match alias.kind {
+            DefinitionKind::Constant { .. } => 0,
+            DefinitionKind::Function { input_arity, .. } => input_arity,
+            DefinitionKind::Relation { .. } => {
+                return Err(CompileError::Syntax {
+                    offset,
+                    expected: "a constant or function definition alias in term position",
+                });
+            }
+        };
+        let arguments = self.term_arguments()?;
+        self.ensure_definition_arity(offset, name, expected, arguments.len())?;
+        self.call_end()?;
+
+        let mut variables = Vec::with_capacity(arguments.len() + 1);
+        let mut graph_constraints = Vec::new();
+        let mut witnesses = Vec::new();
+        for argument in arguments {
+            variables.push(argument.variable);
+            graph_constraints.extend(argument.graph_constraints);
+            witnesses.extend(argument.witnesses);
+        }
+        let output = self.fresh_variable();
+        variables.push(output);
+        graph_constraints.push(DefinedFormula::defined_relation(
+            alias.definition_id,
+            variables,
+        ));
+        witnesses.push(output);
+        Ok(ParsedTerm {
+            variable: output,
+            graph_constraints,
+            witnesses,
+        })
+    }
+
+    fn term_arguments(&mut self) -> Result<Vec<ParsedTerm>, CompileError> {
+        let mut arguments = Vec::new();
+        self.skip_trivia();
+        if self.byte() == Some(b')') {
+            return Ok(arguments);
+        }
+        loop {
+            arguments.push(self.term()?);
+            self.skip_trivia();
+            if self.byte() == Some(b')') {
+                return Ok(arguments);
+            }
+            self.punctuation(',')?;
+            self.skip_trivia();
+            if self.byte() == Some(b')') {
+                return Ok(arguments);
+            }
+        }
+    }
+
+    fn ensure_definition_arity(
+        &self,
+        offset: usize,
+        name: &str,
+        expected: u32,
+        actual: usize,
+    ) -> Result<(), CompileError> {
+        if actual == expected as usize {
+            Ok(())
+        } else {
+            Err(CompileError::DefinitionArityMismatch {
+                offset,
+                name: name.to_owned(),
+                expected,
+                actual,
+            })
+        }
+    }
+
+    fn relationalized_formula(
+        &mut self,
+        terms: impl IntoIterator<Item = ParsedTerm>,
+        atom: impl FnOnce(&[FreeVariable]) -> DefinedFormula,
+        offset: usize,
+        context: FormulaContext,
+        source_depth: u32,
+        atom_depth: u32,
+    ) -> Result<ParsedFormula, CompileError> {
+        let mut variables = Vec::new();
+        let mut graph_constraints = Vec::new();
+        let mut witnesses = Vec::new();
+        for term in terms {
+            variables.push(term.variable);
+            graph_constraints.extend(term.graph_constraints);
+            witnesses.extend(term.witnesses);
+        }
+        let mut formula = atom(&variables);
+        let constraint_count = graph_constraints.len();
+        for constraint in graph_constraints.into_iter().rev() {
+            formula = DefinedFormula::conjunction(constraint, formula);
+        }
+        let witness_count = witnesses.len();
+        for witness in witnesses.into_iter().rev() {
+            formula = DefinedFormula::exists(witness, formula);
+        }
+        let (_, nodes) = formula
+            .encode_canonical_with_node_limit(FORMULA_MAX_NODES)
+            .map_err(|source| CompileError::DefinitionFormula { offset, source })?;
+        let additional = nodes.saturating_sub(1);
+        self.charge_formula_nodes(
+            context,
+            u32::try_from(additional).expect("the formula node limit fits u32"),
+            offset,
+        )?;
+        let relational_depth = (0..constraint_count).try_fold(atom_depth, |depth, _| {
+            self.checked_depth_add(offset, depth, 3)
+        })?;
+        let expanded_depth = (0..witness_count).try_fold(relational_depth, |depth, _| {
+            self.checked_depth_add(offset, depth, 3)
+        })?;
+        self.check_expanded_depth(offset, source_depth, expanded_depth)?;
+        Ok(ParsedFormula {
+            formula,
+            expanded_nodes: u32::try_from(nodes).expect("the formula node limit fits u32"),
+            expanded_depth,
+        })
     }
 
     fn parsed_formula_binding_reference(
@@ -1212,7 +1899,7 @@ impl<'source> Parser<'source> {
         let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 1)?;
         self.check_expanded_depth(offset, depth, expanded_depth)?;
         Ok(ParsedFormula {
-            formula: Formula::negate(body.formula),
+            formula: DefinedFormula::negate(body.formula),
             expanded_nodes,
             expanded_depth,
         })
@@ -1239,7 +1926,7 @@ impl<'source> Parser<'source> {
         )?;
         self.check_expanded_depth(offset, depth, expanded_depth)?;
         Ok(ParsedFormula {
-            formula: Formula::implies(antecedent.formula, consequent.formula),
+            formula: DefinedFormula::implies(antecedent.formula, consequent.formula),
             expanded_nodes,
             expanded_depth,
         })
@@ -1258,7 +1945,7 @@ impl<'source> Parser<'source> {
         let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 1)?;
         self.check_expanded_depth(offset, depth, expanded_depth)?;
         Ok(ParsedFormula {
-            formula: Formula::for_all(variable, body.formula),
+            formula: DefinedFormula::for_all(variable, body.formula),
             expanded_nodes,
             expanded_depth,
         })
@@ -1283,7 +1970,7 @@ impl<'source> Parser<'source> {
         let expanded_depth = left_depth.max(right_depth);
         self.check_derived_expansion(offset, depth, context, expanded_depth, 2)?;
         Ok(ParsedFormula {
-            formula: Formula::conjunction(left.formula, right.formula),
+            formula: DefinedFormula::conjunction(left.formula, right.formula),
             expanded_nodes,
             expanded_depth,
         })
@@ -1308,7 +1995,7 @@ impl<'source> Parser<'source> {
         let expanded_depth = left_depth.max(right_depth);
         self.check_derived_expansion(offset, depth, context, expanded_depth, 1)?;
         Ok(ParsedFormula {
-            formula: Formula::disjunction(left.formula, right.formula),
+            formula: DefinedFormula::disjunction(left.formula, right.formula),
             expanded_nodes,
             expanded_depth,
         })
@@ -1343,7 +2030,7 @@ impl<'source> Parser<'source> {
             self.checked_depth_add(offset, left.expanded_depth.max(right.expanded_depth), 4)?;
         self.check_derived_expansion(offset, depth, context, expanded_depth, additional_nodes)?;
         Ok(ParsedFormula {
-            formula: Formula::biconditional(left.formula, right.formula),
+            formula: DefinedFormula::biconditional(left.formula, right.formula),
             expanded_nodes,
             expanded_depth,
         })
@@ -1362,7 +2049,7 @@ impl<'source> Parser<'source> {
         let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 3)?;
         self.check_derived_expansion(offset, depth, context, expanded_depth, 2)?;
         Ok(ParsedFormula {
-            formula: Formula::exists(variable, body.formula),
+            formula: DefinedFormula::exists(variable, body.formula),
             expanded_nodes,
             expanded_depth,
         })
@@ -1471,14 +2158,37 @@ impl<'source> Parser<'source> {
 
     fn variable(&mut self) -> Result<FreeVariable, CompileError> {
         let name = self.name()?;
-        if let Some(variable) = self.variables.get(name) {
-            return Ok(*variable);
+        Ok(self.variable_named(name))
+    }
+
+    fn definition_variable(&mut self) -> Result<FreeVariable, CompileError> {
+        let offset = self.next_offset();
+        let name = self.name()?;
+        if self.variables.contains_key(name) {
+            return Err(CompileError::Syntax {
+                offset,
+                expected: "a unique definition parameter",
+            });
         }
-        let identifier = u32::try_from(self.variables.len())
-            .expect("the source-byte limit bounds presentation variables");
-        let variable = FreeVariable::new(identifier);
+        Ok(self.variable_named(name))
+    }
+
+    fn variable_named(&mut self, name: &'source str) -> FreeVariable {
+        if let Some(variable) = self.variables.get(name) {
+            return *variable;
+        }
+        let variable = self.fresh_variable();
         self.variables.insert(name, variable);
-        Ok(variable)
+        variable
+    }
+
+    fn fresh_variable(&mut self) -> FreeVariable {
+        let variable = FreeVariable::new(self.next_variable_identifier);
+        self.next_variable_identifier = self
+            .next_variable_identifier
+            .checked_add(1)
+            .expect("the source-byte limit bounds presentation variables");
+        variable
     }
 
     fn keyword(&mut self, expected: &'static str) -> Result<(), CompileError> {
@@ -1638,6 +2348,12 @@ fn is_reserved_formula_binding_name(name: &str) -> bool {
         || matches!(
             name,
             "foundation"
+                | "definitions"
+                | "definition"
+                | "relation"
+                | "constant"
+                | "function"
+                | "obligation"
                 | "formulas"
                 | "statement"
                 | "proof"
@@ -1658,6 +2374,10 @@ fn is_reserved_formula_binding_name(name: &str) -> bool {
                 | "cite"
                 | "generalization"
         )
+}
+
+fn is_reserved_definition_alias_name(name: &str) -> bool {
+    is_reserved_formula_binding_name(name)
 }
 
 const fn lowercase_hex_nibble(byte: u8) -> Option<u8> {

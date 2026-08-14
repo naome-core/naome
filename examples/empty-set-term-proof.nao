@@ -1,0 +1,19 @@
+foundation = "naome:zfc"
+
+definitions:
+    empty_set = "3d1289681291c49de8738a873ba9cb1514bad08ec671774d9861437635982fc8"
+
+statement = implies(
+    equal(empty_set(), empty_set()),
+    implies(
+        equal(empty_set(), empty_set()),
+        equal(empty_set(), empty_set()),
+    ),
+)
+
+proof:
+    p0 = simplification(
+        equal(empty_set(), empty_set()),
+        equal(empty_set(), empty_set()),
+    )
+    return p0

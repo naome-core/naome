@@ -9,17 +9,17 @@ use std::time::Duration;
 
 use libp2p::core::{Endpoint, transport::PortUse};
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, ToSwarm};
-use naome::proof_exchange::ProofRequest;
-use naome_chain::{ProofBlockId, ProofChainDefinition, ProofDag, ProofSetRoot};
+use naome::artifact_exchange::ArtifactRequest;
+use naome_chain::{ArtifactBlockId, ArtifactChainDefinition, ArtifactDag, ArtifactSetRoot};
 use naome_foundation::FreeVariable;
-use naome_proof::{ProofCertificate, ProofStep};
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
+use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
+use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 use tokio::time::{Instant, timeout};
 
 use super::{
     BuildError, INBOUND_APPLICATION_REQUEST_BURST, INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL,
-    MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent, OutboundProofEvent, PeerId,
-    PeerSessionEvent, PendingBudget, RequestStartError, StaticPeer, StaticProofNetwork,
+    MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent, OutboundArtifactEvent, PeerId,
+    PeerSessionEvent, PendingBudget, RequestStartError, StaticArtifactNetwork, StaticPeer,
 };
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -29,28 +29,31 @@ pub(crate) struct TestDirectory {
 }
 pub(crate) struct JournalSnapshot {
     pub(crate) bytes: Vec<u8>,
-    pub(crate) head: ProofBlockId,
-    pub(crate) root: ProofSetRoot,
+    pub(crate) head: ArtifactBlockId,
+    pub(crate) root: ArtifactSetRoot,
     pub(crate) len: usize,
 }
 
-pub(crate) fn snapshot(directory: &TestDirectory, journal: &ProofChainJournal) -> JournalSnapshot {
+pub(crate) fn snapshot(
+    directory: &TestDirectory,
+    journal: &ArtifactChainJournal,
+) -> JournalSnapshot {
     JournalSnapshot {
         bytes: directory.journal_bytes(),
         head: journal.head_block_id().unwrap(),
-        root: journal.proof_set_root().unwrap(),
+        root: journal.artifact_set_root().unwrap(),
         len: journal.len().unwrap(),
     }
 }
 
 pub(crate) fn assert_snapshot(
     directory: &TestDirectory,
-    journal: &ProofChainJournal,
+    journal: &ArtifactChainJournal,
     expected: &JournalSnapshot,
 ) {
     assert_eq!(directory.journal_bytes(), expected.bytes);
     assert_eq!(journal.head_block_id().unwrap(), expected.head);
-    assert_eq!(journal.proof_set_root().unwrap(), expected.root);
+    assert_eq!(journal.artifact_set_root().unwrap(), expected.root);
     assert_eq!(journal.len().unwrap(), expected.len);
 }
 
@@ -75,7 +78,7 @@ impl TestDirectory {
     }
 
     pub(crate) fn journal_bytes(&self) -> Vec<u8> {
-        fs::read(self.path.join("proof-chain.journal")).unwrap()
+        fs::read(self.path.join("artifact-chain.journal")).unwrap()
     }
 }
 
@@ -86,10 +89,13 @@ impl Drop for TestDirectory {
 }
 
 pub(crate) fn pairing_bytes() -> Vec<u8> {
-    vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x01]
+    ArtifactPayload::Proof(
+        ProofCertificate::from_canonical_bytes(&[0x00, 0x00, 0x00, 0x01, 0x10, 0x01]).unwrap(),
+    )
+    .to_canonical_bytes()
 }
 
-pub(crate) fn test_network_for_peers(peer_ids: &[super::PeerId]) -> StaticProofNetwork {
+pub(crate) fn test_network_for_peers(peer_ids: &[super::PeerId]) -> StaticArtifactNetwork {
     let local = super::Keypair::generate_ed25519();
     assert!(!peer_ids.contains(&local.public().to_peer_id()));
     let peers = peer_ids
@@ -100,7 +106,7 @@ pub(crate) fn test_network_for_peers(peer_ids: &[super::PeerId]) -> StaticProofN
             StaticPeer::new(peer_id, address(u16::try_from(9 + index).unwrap()))
         })
         .collect::<Vec<_>>();
-    let mut network = StaticProofNetwork::new(local, peers).unwrap();
+    let mut network = StaticArtifactNetwork::new(local, peers).unwrap();
     for &peer_id in peer_ids {
         network
             .swarm
@@ -113,60 +119,62 @@ pub(crate) fn test_network_for_peers(peer_ids: &[super::PeerId]) -> StaticProofN
 
 pub(crate) fn create_journal(
     directory: impl AsRef<Path>,
-) -> Result<ProofChainJournal, ProofChainJournalError> {
-    ProofChainJournal::create(directory, test_chain_definition())
+) -> Result<ArtifactChainJournal, ArtifactChainJournalError> {
+    ArtifactChainJournal::create(directory, test_chain_definition())
 }
 
-pub(crate) fn test_chain_definition() -> ProofChainDefinition {
-    ProofChainDefinition::new([0x41; 32])
+pub(crate) fn test_chain_definition() -> ArtifactChainDefinition {
+    ArtifactChainDefinition::new([0x41; 32])
 }
 
 pub(crate) fn apply_fresh_blocks(
-    journal: &mut ProofChainJournal,
+    journal: &mut ArtifactChainJournal,
     payloads: impl IntoIterator<Item = Vec<u8>>,
-) -> Vec<naome_proof::ProofId> {
-    let mut identity = ProofDag::new();
+) -> Vec<ArtifactId> {
+    let mut identity = ArtifactDag::new();
     payloads
         .into_iter()
         .map(|bytes| {
-            let proof_id = identity
-                .apply_canonical_proof_bytes(bytes.clone())
+            let artifact_id = identity
+                .apply_canonical_artifact_bytes(bytes.clone())
                 .unwrap()
-                .proof_id();
-            let block = journal.prepare_block(proof_id).unwrap();
+                .artifact_id();
+            let block = journal.prepare_block(artifact_id).unwrap();
             journal.apply_block(&block, bytes).unwrap();
-            proof_id
+            artifact_id
         })
         .collect()
 }
 
-fn apply_referenced_pair(
-    journal: &mut ProofChainJournal,
-) -> (naome_proof::ProofId, naome_proof::ProofId) {
+fn apply_referenced_pair(journal: &mut ArtifactChainJournal) -> (ArtifactId, ArtifactId) {
     let parent_bytes = pairing_bytes();
-    let mut identity = ProofDag::new();
-    let parent_id = identity
-        .apply_canonical_proof_bytes(parent_bytes.clone())
+    let mut identity = ArtifactDag::new();
+    let parent_record = identity
+        .apply_canonical_artifact_bytes(parent_bytes.clone())
+        .unwrap();
+    let parent_artifact_id = parent_record.artifact_id();
+    let parent_proof_id = parent_record.as_proof().unwrap().proof_id();
+    let root_bytes = referenced_generalization(parent_proof_id);
+    let root_artifact_id = identity
+        .apply_canonical_artifact_bytes(root_bytes.clone())
         .unwrap()
-        .proof_id();
-    let root_bytes = referenced_generalization(parent_id);
-    let root_id = identity
-        .apply_canonical_proof_bytes(root_bytes.clone())
-        .unwrap()
-        .proof_id();
-    let parent_block = journal.prepare_block(parent_id).unwrap();
+        .artifact_id();
+    let parent_block = journal.prepare_block(parent_artifact_id).unwrap();
     journal.apply_block(&parent_block, parent_bytes).unwrap();
-    let root_block = journal.prepare_block(root_id).unwrap();
+    let root_block = journal.prepare_block(root_artifact_id).unwrap();
     journal.apply_block(&root_block, root_bytes).unwrap();
-    (parent_id, root_id)
+    (parent_artifact_id, root_artifact_id)
 }
 
 pub(crate) fn union_bytes() -> Vec<u8> {
-    vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x02]
+    ArtifactPayload::Proof(
+        ProofCertificate::from_canonical_bytes(&[0x00, 0x00, 0x00, 0x01, 0x10, 0x02]).unwrap(),
+    )
+    .to_canonical_bytes()
 }
 
 fn referenced_generalization(proof_id: naome_proof::ProofId) -> Vec<u8> {
-    ProofCertificate::new(vec![
+    let normal = ProofCertificate::new(vec![
         ProofStep::ProofReference { proof_id },
         ProofStep::Generalization {
             premise: 0,
@@ -174,13 +182,12 @@ fn referenced_generalization(proof_id: naome_proof::ProofId) -> Vec<u8> {
         },
     ])
     .unwrap()
-    .into_unchecked_normal_form()
-    .canonical_bytes()
-    .to_vec()
+    .into_unchecked_normal_form();
+    ArtifactPayload::Proof(normal.certificate().clone()).to_canonical_bytes()
 }
 
-fn request(bytes: [u8; 32]) -> ProofRequest {
-    ProofRequest::from_wire_bytes(&bytes).unwrap()
+fn request(bytes: [u8; 32]) -> ArtifactRequest {
+    ArtifactRequest::from_wire_bytes(&bytes).unwrap()
 }
 
 pub(crate) fn address(port: u16) -> super::Multiaddr {
@@ -201,7 +208,7 @@ fn ordered_identities() -> (super::Keypair, super::Keypair) {
     }
 }
 
-pub(crate) async fn listening_address(network: &mut StaticProofNetwork) -> super::Multiaddr {
+pub(crate) async fn listening_address(network: &mut StaticArtifactNetwork) -> super::Multiaddr {
     network.listen_on(address(0)).unwrap();
     timeout(Duration::from_secs(10), async {
         loop {
@@ -222,8 +229,8 @@ pub(crate) async fn listening_address(network: &mut StaticProofNetwork) -> super
 }
 
 async fn await_session(
-    owner: &mut StaticProofNetwork,
-    passive: &mut StaticProofNetwork,
+    owner: &mut StaticArtifactNetwork,
+    passive: &mut StaticArtifactNetwork,
     owner_peer_id: PeerId,
     passive_peer_id: PeerId,
 ) {
@@ -258,17 +265,18 @@ async fn await_session(
     .expect("managed peer session did not establish");
 }
 
-pub(crate) async fn connected_pair() -> (StaticProofNetwork, StaticProofNetwork, PeerId, PeerId) {
+pub(crate) async fn connected_pair()
+-> (StaticArtifactNetwork, StaticArtifactNetwork, PeerId, PeerId) {
     let (owner_identity, passive_identity) = ordered_identities();
     let owner_peer_id = owner_identity.public().to_peer_id();
     let passive_peer_id = passive_identity.public().to_peer_id();
-    let mut passive = StaticProofNetwork::new(
+    let mut passive = StaticArtifactNetwork::new(
         passive_identity,
         [StaticPeer::new(owner_peer_id, address(1))],
     )
     .unwrap();
     let passive_address = listening_address(&mut passive).await;
-    let mut owner = StaticProofNetwork::new(
+    let mut owner = StaticArtifactNetwork::new(
         owner_identity,
         [StaticPeer::new(passive_peer_id, passive_address)],
     )
@@ -278,41 +286,41 @@ pub(crate) async fn connected_pair() -> (StaticProofNetwork, StaticProofNetwork,
 }
 
 async fn exchange_once(
-    client: &mut StaticProofNetwork,
-    server: &mut StaticProofNetwork,
-    server_journal: &ProofChainJournal,
+    client: &mut StaticArtifactNetwork,
+    server: &mut StaticArtifactNetwork,
+    server_journal: &ArtifactChainJournal,
     server_peer_id: PeerId,
-    request: ProofRequest,
-) -> OutboundProofEvent {
-    client.request_proof(server_peer_id, request).unwrap();
+    request: ArtifactRequest,
+) -> OutboundArtifactEvent {
+    client.request_artifact(server_peer_id, request).unwrap();
     receive_once(client, server, server_journal).await
 }
 
 async fn receive_once(
-    client: &mut StaticProofNetwork,
-    server: &mut StaticProofNetwork,
-    server_journal: &ProofChainJournal,
-) -> OutboundProofEvent {
+    client: &mut StaticArtifactNetwork,
+    server: &mut StaticArtifactNetwork,
+    server_journal: &ArtifactChainJournal,
+) -> OutboundArtifactEvent {
     timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
                 event = client.next_event() => {
-                    if let NetworkEvent::OutboundProof(event) = event {
+                    if let NetworkEvent::OutboundArtifact(event) = event {
                         if let Some(error) = event.failure() {
-                            panic!("outbound proof exchange failed: {error}");
+                            panic!("outbound artifact exchange failed: {error}");
                         }
-                        assert!(!event.is_deadline_exceeded(), "proof exchange exceeded its deadline");
+                        assert!(!event.is_deadline_exceeded(), "artifact exchange exceeded its deadline");
                         return event;
                     }
                 },
                 event = server.next_event() => match event {
-                    NetworkEvent::InboundProofRequest(inbound) => {
+                    NetworkEvent::InboundArtifactRequest(inbound) => {
                         server
-                            .respond_proof_from_journal(inbound, server_journal)
+                            .respond_artifact_from_journal(inbound, server_journal)
                             .unwrap();
                     }
-                    NetworkEvent::InboundProofFailure { error, .. } => {
-                        panic!("inbound proof exchange failed: {error}")
+                    NetworkEvent::InboundArtifactFailure { error, .. } => {
+                        panic!("inbound artifact exchange failed: {error}")
                     }
                     _ => {}
                 },
@@ -320,12 +328,12 @@ async fn receive_once(
         }
     })
     .await
-    .expect("proof exchange timed out")
+    .expect("artifact exchange timed out")
 }
 
-fn event_is_unavailable(event: &OutboundProofEvent) -> bool {
+fn event_is_unavailable(event: &OutboundArtifactEvent) -> bool {
     match &event.outcome {
-        super::OutboundProofOutcome::Response { response, .. } => response.is_unavailable(),
+        super::OutboundArtifactOutcome::Response { response, .. } => response.is_unavailable(),
         _ => false,
     }
 }
@@ -339,18 +347,18 @@ fn referenced_dependency_is_selected_by_an_earlier_block_before_its_child() {
     let (parent_id, root_id) = apply_referenced_pair(&mut journal);
 
     assert_eq!(journal.len().unwrap(), 2);
-    assert!(journal.proof(parent_id).unwrap().is_some());
-    assert!(journal.proof(root_id).unwrap().is_some());
+    assert!(journal.artifact(parent_id).unwrap().is_some());
+    assert!(journal.artifact(root_id).unwrap().is_some());
     let root_block = journal
         .block(journal.head_block_id().unwrap())
         .unwrap()
         .unwrap();
-    assert_eq!(root_block.proof_id(), root_id);
+    assert_eq!(root_block.artifact_id(), root_id);
     let parent_block = journal
         .block(root_block.parent_block_id())
         .unwrap()
         .unwrap();
-    assert_eq!(parent_block.proof_id(), parent_id);
+    assert_eq!(parent_block.artifact_id(), parent_id);
     assert_eq!(parent_block.parent_block_id(), virtual_genesis);
 }
 
@@ -359,14 +367,14 @@ async fn static_configuration_rejects_local_duplicate_and_excess_peers() {
     let local = super::Keypair::generate_ed25519();
     let local_peer_id = local.public().to_peer_id();
     assert!(matches!(
-        StaticProofNetwork::new(local.clone(), [StaticPeer::new(local_peer_id, address(1))]),
+        StaticArtifactNetwork::new(local.clone(), [StaticPeer::new(local_peer_id, address(1))]),
         Err(BuildError::LocalPeer(peer_id)) if peer_id == local_peer_id
     ));
 
     let remote = super::Keypair::generate_ed25519();
     let duplicate = peer(&remote, address(2));
     assert!(matches!(
-        StaticProofNetwork::new(local.clone(), [duplicate.clone(), duplicate]),
+        StaticArtifactNetwork::new(local.clone(), [duplicate.clone(), duplicate]),
         Err(BuildError::DuplicatePeer(peer_id))
             if peer_id == remote.public().to_peer_id()
     ));
@@ -378,7 +386,7 @@ async fn static_configuration_rejects_local_duplicate_and_excess_peers() {
         })
         .collect::<Vec<_>>();
     assert!(matches!(
-        StaticProofNetwork::new(local, peers),
+        StaticArtifactNetwork::new(local, peers),
         Err(BuildError::TooManyPeers { actual, maximum })
             if actual == MAX_STATIC_PEERS + 1 && maximum == MAX_STATIC_PEERS
     ));
@@ -392,7 +400,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
     let local_address = address(8);
     let remote_address = address(9);
 
-    let mut owner = StaticProofNetwork::new(
+    let mut owner = StaticArtifactNetwork::new(
         owner_identity,
         [StaticPeer::new(passive_peer_id, remote_address.clone())],
     )
@@ -411,7 +419,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
         !owner
             .swarm
             .behaviour()
-            .proof_exchange
+            .artifact_exchange
             .is_connected(&passive_peer_id)
     );
 
@@ -439,7 +447,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
         !owner
             .swarm
             .behaviour()
-            .proof_exchange
+            .artifact_exchange
             .is_connected(&passive_peer_id)
     );
     assert!(
@@ -454,7 +462,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
         .is_ok()
     );
 
-    let mut passive = StaticProofNetwork::new(
+    let mut passive = StaticArtifactNetwork::new(
         passive_identity,
         [StaticPeer::new(owner_peer_id, local_address.clone())],
     )
@@ -474,7 +482,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
         !passive
             .swarm
             .behaviour()
-            .proof_exchange
+            .artifact_exchange
             .is_connected(&owner_peer_id)
     );
     assert!(
@@ -494,7 +502,7 @@ async fn connection_limit_rejection_does_not_consume_pre_authentication_budget()
     let local_identity = super::Keypair::generate_ed25519();
     let remote_identity = super::Keypair::generate_ed25519();
     let remote_peer_id = remote_identity.public().to_peer_id();
-    let mut network = StaticProofNetwork::new(
+    let mut network = StaticArtifactNetwork::new(
         local_identity,
         [StaticPeer::new(remote_peer_id, address(9))],
     )
@@ -531,7 +539,7 @@ async fn connection_limit_rejection_does_not_consume_pre_authentication_budget()
 
 #[tokio::test]
 async fn inbound_application_request_budget_has_exact_burst_and_lazy_refill() {
-    let mut network = StaticProofNetwork::new(super::Keypair::generate_ed25519(), []).unwrap();
+    let mut network = StaticArtifactNetwork::new(super::Keypair::generate_ed25519(), []).unwrap();
     assert_eq!(
         network.inbound_application_request_budget.tokens(),
         INBOUND_APPLICATION_REQUEST_BURST
@@ -563,16 +571,16 @@ async fn outbound_requests_are_authorized_and_bounded() {
     let remote = super::Keypair::generate_ed25519();
     let remote_peer_id = remote.public().to_peer_id();
     let mut network =
-        StaticProofNetwork::new(local, [StaticPeer::new(remote_peer_id, address(9))]).unwrap();
+        StaticArtifactNetwork::new(local, [StaticPeer::new(remote_peer_id, address(9))]).unwrap();
     let requested = request([0x11; 32]);
     let unknown = super::Keypair::generate_ed25519().public().to_peer_id();
 
     assert_eq!(
-        network.request_proof(unknown, requested),
+        network.request_artifact(unknown, requested),
         Err(RequestStartError::UnknownPeer(unknown))
     );
     assert_eq!(
-        network.request_proof(remote_peer_id, requested),
+        network.request_artifact(remote_peer_id, requested),
         Err(RequestStartError::PeerDisconnected(remote_peer_id))
     );
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
@@ -581,16 +589,16 @@ async fn outbound_requests_are_authorized_and_bounded() {
         .behaviour_mut()
         .sessions
         .mark_connected_for_test(remote_peer_id);
-    network.request_proof(remote_peer_id, requested).unwrap();
+    network.request_artifact(remote_peer_id, requested).unwrap();
     assert_eq!(
-        network.request_proof(remote_peer_id, request([0x22; 32])),
+        network.request_artifact(remote_peer_id, request([0x22; 32])),
         Err(RequestStartError::AlreadyPending(remote_peer_id))
     );
 
     let limited_local = super::Keypair::generate_ed25519();
     let limited_remote = super::Keypair::generate_ed25519();
     let limited_peer_id = limited_remote.public().to_peer_id();
-    let mut limited = StaticProofNetwork::new(
+    let mut limited = StaticArtifactNetwork::new(
         limited_local,
         [StaticPeer::new(limited_peer_id, address(10))],
     )
@@ -601,7 +609,7 @@ async fn outbound_requests_are_authorized_and_bounded() {
         .collect::<Vec<_>>();
     assert!(PendingBudget::try_acquire(&budget).is_none());
     assert_eq!(
-        limited.request_proof(limited_peer_id, request([0x55; 32])),
+        limited.request_artifact(limited_peer_id, request([0x55; 32])),
         Err(RequestStartError::PeerDisconnected(limited_peer_id))
     );
     assert_eq!(
@@ -614,7 +622,7 @@ async fn outbound_requests_are_authorized_and_bounded() {
         .sessions
         .mark_connected_for_test(limited_peer_id);
     assert_eq!(
-        limited.request_proof(limited_peer_id, request([0x66; 32])),
+        limited.request_artifact(limited_peer_id, request([0x66; 32])),
         Err(RequestStartError::GlobalLimit {
             maximum: MAX_PENDING_REQUESTS,
         })
@@ -628,12 +636,12 @@ async fn a_disconnected_passive_peer_request_cannot_trigger_a_dial() {
     let (remote_owner, local_passive) = ordered_identities();
     let remote_peer_id = remote_owner.public().to_peer_id();
     let mut network =
-        StaticProofNetwork::new(local_passive, [StaticPeer::new(remote_peer_id, address(9))])
+        StaticArtifactNetwork::new(local_passive, [StaticPeer::new(remote_peer_id, address(9))])
             .unwrap();
     let requested = request([0x56; 32]);
 
     assert_eq!(
-        network.request_proof(remote_peer_id, requested),
+        network.request_artifact(remote_peer_id, requested),
         Err(RequestStartError::PeerDisconnected(remote_peer_id))
     );
     assert!(network.pending.is_empty());
@@ -650,7 +658,7 @@ async fn a_disconnected_passive_peer_request_cannot_trigger_a_dial() {
         !network
             .swarm
             .behaviour()
-            .proof_exchange
+            .artifact_exchange
             .is_connected(&remote_peer_id)
     );
 }
@@ -670,17 +678,17 @@ async fn allowed_noise_peers_exchange_found_and_unavailable_responses() {
         &mut server,
         &server_journal,
         server_peer_id,
-        ProofRequest::new(proof_id),
+        ArtifactRequest::new(proof_id),
     )
     .await;
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 1);
     assert_eq!(found.peer_id(), server_peer_id);
-    assert_eq!(found.request(), ProofRequest::new(proof_id));
+    assert_eq!(found.request(), ArtifactRequest::new(proof_id));
     assert!(!event_is_unavailable(&found));
     assert!(client_journal.is_empty().unwrap());
     drop(found);
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 0);
-    assert!(client_journal.proof(proof_id).unwrap().is_none());
+    assert!(client_journal.artifact(proof_id).unwrap().is_none());
 
     let unknown = request([0xa5; 32]);
     let unavailable = exchange_once(
@@ -769,10 +777,10 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
     let proof_b = apply_fresh_blocks(&mut journal_b, [union_bytes()])[0];
 
     network_a
-        .request_proof(peer_b, ProofRequest::new(proof_b))
+        .request_artifact(peer_b, ArtifactRequest::new(proof_b))
         .unwrap();
     network_b
-        .request_proof(peer_a, ProofRequest::new(proof_a))
+        .request_artifact(peer_a, ArtifactRequest::new(proof_a))
         .unwrap();
     let mut response_a = None;
     let mut response_b = None;
@@ -780,12 +788,12 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
         while response_a.is_none() || response_b.is_none() {
             tokio::select! {
                 event = network_a.next_event() => match event {
-                    NetworkEvent::InboundProofRequest(inbound) => {
+                    NetworkEvent::InboundArtifactRequest(inbound) => {
                         network_a
-                            .respond_proof_from_journal(inbound, &journal_a)
+                            .respond_artifact_from_journal(inbound, &journal_a)
                             .unwrap();
                     }
-                    NetworkEvent::OutboundProof(event) => {
+                    NetworkEvent::OutboundArtifact(event) => {
                         if let Some(error) = event.failure() {
                             panic!("peer A request failed: {error}");
                         }
@@ -795,12 +803,12 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
                     _ => {}
                 },
                 event = network_b.next_event() => match event {
-                    NetworkEvent::InboundProofRequest(inbound) => {
+                    NetworkEvent::InboundArtifactRequest(inbound) => {
                         network_b
-                            .respond_proof_from_journal(inbound, &journal_b)
+                            .respond_artifact_from_journal(inbound, &journal_b)
                             .unwrap();
                     }
-                    NetworkEvent::OutboundProof(event) => {
+                    NetworkEvent::OutboundArtifact(event) => {
                         if let Some(error) = event.failure() {
                             panic!("peer B request failed: {error}");
                         }
@@ -818,38 +826,38 @@ async fn simultaneous_bidirectional_requests_are_correlated() {
     let response_a = response_a.unwrap();
     let response_b = response_b.unwrap();
     assert_eq!(response_a.peer_id(), peer_b);
-    assert_eq!(response_a.request(), ProofRequest::new(proof_b));
+    assert_eq!(response_a.request(), ArtifactRequest::new(proof_b));
     assert_eq!(response_b.peer_id(), peer_a);
-    assert_eq!(response_b.request(), ProofRequest::new(proof_a));
+    assert_eq!(response_b.request(), ArtifactRequest::new(proof_a));
     drop(response_a);
     drop(response_b);
-    assert!(journal_a.proof(proof_a).unwrap().is_some());
-    assert!(journal_a.proof(proof_b).unwrap().is_none());
-    assert!(journal_b.proof(proof_b).unwrap().is_some());
-    assert!(journal_b.proof(proof_a).unwrap().is_none());
+    assert!(journal_a.artifact(proof_a).unwrap().is_some());
+    assert!(journal_a.artifact(proof_b).unwrap().is_none());
+    assert!(journal_b.artifact(proof_b).unwrap().is_some());
+    assert!(journal_b.artifact(proof_a).unwrap().is_none());
 }
 
 #[tokio::test]
 async fn a_closed_response_channel_is_never_reported_as_unavailable() {
     let (mut client, mut server, _, server_peer_id) = connected_pair().await;
     client
-        .request_proof(server_peer_id, request([0xb6; 32]))
+        .request_artifact(server_peer_id, request([0xb6; 32]))
         .unwrap();
 
     timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
                 event = client.next_event() => {
-                    if let NetworkEvent::OutboundProof(event) = event {
+                    if let NetworkEvent::OutboundArtifact(event) = event {
                         assert_eq!(event.peer_id(), server_peer_id);
                         if event.failure().is_some() {
                             return;
                         }
-                        panic!("closed response channel became a successful proof response");
+                        panic!("closed response channel became a successful artifact response");
                     }
                 },
                 event = server.next_event() => {
-                    if let NetworkEvent::InboundProofRequest(inbound) = event {
+                    if let NetworkEvent::InboundArtifactRequest(inbound) = event {
                         drop(inbound);
                     }
                 },
@@ -873,15 +881,16 @@ async fn unlisted_authenticated_peer_cannot_deliver_a_request() {
     };
 
     let mut server =
-        StaticProofNetwork::new(server_identity, [peer(&authorized_identity, address(1))]).unwrap();
+        StaticArtifactNetwork::new(server_identity, [peer(&authorized_identity, address(1))])
+            .unwrap();
     let server_address = listening_address(&mut server).await;
-    let mut attacker = StaticProofNetwork::new(
+    let mut attacker = StaticArtifactNetwork::new(
         attacker_identity,
         [StaticPeer::new(server_peer_id, server_address)],
     )
     .unwrap();
     assert_eq!(
-        attacker.request_proof(server_peer_id, request([0x33; 32])),
+        attacker.request_artifact(server_peer_id, request([0x33; 32])),
         Err(RequestStartError::PeerDisconnected(server_peer_id))
     );
     assert_eq!(attacker.pending_budget.active.load(Ordering::Relaxed), 0);
@@ -897,10 +906,10 @@ async fn unlisted_authenticated_peer_cannot_deliver_a_request() {
                             if !request_started =>
                         {
                             assert_eq!(peer_id, server_peer_id);
-                            attacker.request_proof(server_peer_id, requested).unwrap();
+                            attacker.request_artifact(server_peer_id, requested).unwrap();
                             request_started = true;
                         }
-                        NetworkEvent::OutboundProof(event) if event.failure().is_some() => {
+                        NetworkEvent::OutboundArtifact(event) if event.failure().is_some() => {
                             assert_eq!(event.peer_id(), server_peer_id);
                             assert_eq!(event.request(), requested);
                             return;
@@ -915,7 +924,7 @@ async fn unlisted_authenticated_peer_cannot_deliver_a_request() {
                     }
                 },
                 event = server.next_event() => {
-                    if let NetworkEvent::InboundProofRequest(inbound) = event {
+                    if let NetworkEvent::InboundArtifactRequest(inbound) = event {
                         panic!("unlisted peer {} delivered request", inbound.peer_id());
                     }
                 },
@@ -927,7 +936,7 @@ async fn unlisted_authenticated_peer_cannot_deliver_a_request() {
 
     assert_ne!(attacker_peer_id, authorized_identity.public().to_peer_id());
     assert_eq!(
-        attacker.request_proof(server_peer_id, request([0x34; 32])),
+        attacker.request_artifact(server_peer_id, request([0x34; 32])),
         Err(RequestStartError::PeerDisconnected(server_peer_id))
     );
     assert_eq!(attacker.pending_budget.active.load(Ordering::Relaxed), 0);
@@ -949,19 +958,19 @@ async fn expected_peer_id_mismatch_never_delivers_a_request() {
     let actual_server_peer_id = server_identity.public().to_peer_id();
     let claimed_server_peer_id = claimed_server.public().to_peer_id();
 
-    let mut server = StaticProofNetwork::new(
+    let mut server = StaticArtifactNetwork::new(
         server_identity,
         [StaticPeer::new(client_peer_id, address(1))],
     )
     .unwrap();
     let server_address = listening_address(&mut server).await;
-    let mut client = StaticProofNetwork::new(
+    let mut client = StaticArtifactNetwork::new(
         client_identity,
         [StaticPeer::new(claimed_server_peer_id, server_address)],
     )
     .unwrap();
     assert_eq!(
-        client.request_proof(claimed_server_peer_id, request([0x44; 32])),
+        client.request_artifact(claimed_server_peer_id, request([0x44; 32])),
         Err(RequestStartError::PeerDisconnected(claimed_server_peer_id))
     );
 
@@ -975,7 +984,7 @@ async fn expected_peer_id_mismatch_never_delivers_a_request() {
                     }
                 },
                 event = server.next_event() => {
-                    if let NetworkEvent::InboundProofRequest(_) = event {
+                    if let NetworkEvent::InboundArtifactRequest(_) = event {
                         panic!("request reached a peer with the wrong authenticated identity");
                     }
                 },
@@ -1006,19 +1015,19 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
     let mut server_journal = create_journal(server_directory.path()).unwrap();
     let proof_id = apply_fresh_blocks(&mut server_journal, [pairing_bytes()])[0];
 
-    let mut wrong_server = StaticProofNetwork::new(
+    let mut wrong_server = StaticArtifactNetwork::new(
         wrong_server_identity,
         [StaticPeer::new(client_peer_id, address(1))],
     )
     .unwrap();
     let retry_address = listening_address(&mut wrong_server).await;
-    let mut client = StaticProofNetwork::new(
+    let mut client = StaticArtifactNetwork::new(
         client_identity,
         [StaticPeer::new(server_peer_id, retry_address.clone())],
     )
     .unwrap();
     assert_eq!(
-        client.request_proof(server_peer_id, ProofRequest::new(proof_id)),
+        client.request_artifact(server_peer_id, ArtifactRequest::new(proof_id)),
         Err(RequestStartError::PeerDisconnected(server_peer_id))
     );
     timeout(Duration::from_secs(15), async {
@@ -1031,7 +1040,7 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
                     }
                 }
                 event = wrong_server.next_event() => {
-                    if let NetworkEvent::InboundProofRequest(_) = event {
+                    if let NetworkEvent::InboundArtifactRequest(_) = event {
                         panic!("request reached a peer with the wrong authenticated identity");
                     }
                 }
@@ -1043,7 +1052,7 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
     assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 0);
     drop(wrong_server);
 
-    let mut server = StaticProofNetwork::new(
+    let mut server = StaticArtifactNetwork::new(
         server_identity,
         [StaticPeer::new(client_peer_id, address(1))],
     )
@@ -1067,7 +1076,7 @@ async fn static_address_is_reused_after_a_transient_dial_failure() {
         &mut server,
         &server_journal,
         server_peer_id,
-        ProofRequest::new(proof_id),
+        ArtifactRequest::new(proof_id),
     )
     .await;
     assert!(!event_is_unavailable(&response));

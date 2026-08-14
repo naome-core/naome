@@ -4,14 +4,14 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::block_exchange::ProofBlockRequest;
-use naome::chain_head_exchange::ProofChainHeadRequest;
-use naome::proof_exchange::ProofRequest;
-use naome_chain::{ProofBlockId, ProofChainId};
+use naome::artifact_exchange::ArtifactRequest;
+use naome::block_exchange::ArtifactBlockRequest;
+use naome::chain_head_exchange::ArtifactChainHeadRequest;
+use naome_chain::{ArtifactBlockId, ArtifactChainId};
 use tokio::time::timeout;
 
 use super::*;
-use crate::codec::ProofChainHeadAnnouncementReceipt;
+use crate::codec::ArtifactChainHeadAnnouncementReceipt;
 use crate::tests::{
     TestDirectory, apply_fresh_blocks, assert_snapshot, connected_pair, create_journal,
     pairing_bytes, snapshot, test_network_for_peers, union_bytes,
@@ -23,30 +23,30 @@ use crate::{
     PendingBudget, RequestStartError,
 };
 
-fn chain_id(byte: u8) -> ProofChainId {
-    ProofChainId::from_bytes([byte; 32])
+fn chain_id(byte: u8) -> ArtifactChainId {
+    ArtifactChainId::from_bytes([byte; 32])
 }
 
-fn block_id(byte: u8) -> ProofBlockId {
-    ProofBlockId::from_bytes([byte; 32])
+fn block_id(byte: u8) -> ArtifactBlockId {
+    ArtifactBlockId::from_bytes([byte; 32])
 }
 
-fn proof_request(byte: u8) -> ProofRequest {
-    ProofRequest::from_wire_bytes(&[byte; 32]).unwrap()
+fn artifact_request(byte: u8) -> ArtifactRequest {
+    ArtifactRequest::from_wire_bytes(&[byte; 32]).unwrap()
 }
 
 fn announcement_receipt_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
-) -> OutboundProofChainHeadAnnouncementEvent {
+) -> OutboundArtifactChainHeadAnnouncementEvent {
     let event = network
         .handle_head_announcement_event(request_response::Event::Message {
             peer: peer_id,
             connection_id: ConnectionId::new_unchecked(1_000),
             message: request_response::Message::Response {
                 request_id,
-                response: ProofChainHeadAnnouncementReceipt,
+                response: ArtifactChainHeadAnnouncementReceipt,
             },
         })
         .expect("the retained announcement produces one terminal event");
@@ -57,11 +57,11 @@ fn announcement_receipt_event(
 }
 
 fn announcement_failure_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
     error: request_response::OutboundFailure,
-) -> OutboundProofChainHeadAnnouncementEvent {
+) -> OutboundArtifactChainHeadAnnouncementEvent {
     let event = network
         .handle_head_announcement_event(request_response::Event::OutboundFailure {
             peer: peer_id,
@@ -96,13 +96,13 @@ fn tagged_request_ids_isolate_all_four_application_protocols() {
     let journal = create_journal(directory.path()).unwrap();
 
     let proof_id = network
-        .request_proof(proof_peer, proof_request(0x11))
+        .request_artifact(proof_peer, artifact_request(0x11))
         .unwrap();
     let block_ticket = network
-        .request_block(block_peer, ProofBlockRequest::new(block_id(0x22)))
+        .request_block(block_peer, ArtifactBlockRequest::new(block_id(0x22)))
         .unwrap();
     let head_ticket = network
-        .request_chain_head(head_peer, ProofChainHeadRequest::new(chain_id(0x33)))
+        .request_chain_head(head_peer, ArtifactChainHeadRequest::new(chain_id(0x33)))
         .unwrap();
     let announcement_ticket = network
         .announce_chain_head_from_journal(announcement_peer, &journal)
@@ -130,7 +130,7 @@ fn tagged_request_ids_isolate_all_four_application_protocols() {
     assert!(
         network
             .pending
-            .contains_key(&ExchangeRequestId::Proof(proof_id))
+            .contains_key(&ExchangeRequestId::Artifact(proof_id))
     );
     assert!(
         network
@@ -164,7 +164,7 @@ fn tagged_request_ids_isolate_all_four_application_protocols() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 3);
 
     for key in [
-        ExchangeRequestId::Proof(proof_id),
+        ExchangeRequestId::Artifact(proof_id),
         ExchangeRequestId::Block(block_request_id),
         ExchangeRequestId::Head(head_request_id),
     ] {
@@ -342,7 +342,7 @@ fn peer_mismatch_precedes_receipt_or_transport_and_failures_release_permits() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert!(matches!(
         ticket.complete(event).unwrap().unwrap_err().as_ref(),
-        OutboundProofChainHeadAnnouncementFailure::PeerMismatch {
+        OutboundArtifactChainHeadAnnouncementFailure::PeerMismatch {
             expected: retained,
             actual: received,
         } if *retained == expected && *received == actual
@@ -359,7 +359,7 @@ fn peer_mismatch_precedes_receipt_or_transport_and_failures_release_permits() {
     );
     assert!(matches!(
         ticket.complete(event).unwrap().unwrap_err().as_ref(),
-        OutboundProofChainHeadAnnouncementFailure::PeerMismatch {
+        OutboundArtifactChainHeadAnnouncementFailure::PeerMismatch {
             expected: retained,
             actual: received,
         } if *retained == expected && *received == actual
@@ -376,7 +376,7 @@ fn peer_mismatch_precedes_receipt_or_transport_and_failures_release_permits() {
     );
     assert!(matches!(
         ticket.complete(event).unwrap().unwrap_err().as_ref(),
-        OutboundProofChainHeadAnnouncementFailure::Transport(
+        OutboundArtifactChainHeadAnnouncementFailure::Transport(
             request_response::OutboundFailure::Timeout
         )
     ));
@@ -403,7 +403,7 @@ fn unsupported_protocol_is_an_ordinary_source_bound_terminal() {
     assert!(ticket.accepts_event(&event));
     assert!(matches!(
         ticket.complete(event).unwrap().unwrap_err().as_ref(),
-        OutboundProofChainHeadAnnouncementFailure::Transport(
+        OutboundArtifactChainHeadAnnouncementFailure::Transport(
             request_response::OutboundFailure::UnsupportedProtocols
         )
     ));
@@ -516,7 +516,7 @@ async fn one_held_announcement_stream_blocks_the_opposite_direction() {
             .unwrap()
             .unwrap_err()
             .as_ref(),
-        OutboundProofChainHeadAnnouncementFailure::Transport(
+        OutboundArtifactChainHeadAnnouncementFailure::Transport(
             request_response::OutboundFailure::Io(_)
         )
     ));
@@ -634,7 +634,7 @@ async fn declining_an_inbound_announcement_yields_no_receipt_or_state_change() {
 
     assert!(matches!(
         ticket.complete(outbound).unwrap().unwrap_err().as_ref(),
-        OutboundProofChainHeadAnnouncementFailure::Transport(_)
+        OutboundArtifactChainHeadAnnouncementFailure::Transport(_)
     ));
     assert_snapshot(&sender_directory, &sender_journal, &sender_before);
     assert_snapshot(&receiver_directory, &receiver_journal, &receiver_before);

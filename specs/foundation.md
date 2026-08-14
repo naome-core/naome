@@ -215,22 +215,26 @@ The input, output, uniqueness witness, source, result, and parameter variables m
 
 ## Definition boundary
 
-Foundation contains no definition rule or defined mathematical symbol. Any
-definition extension must be eliminable and conservative:
+Foundation contains no definition rule or defined mathematical symbol. The
+separate [Mathematical Definitions](mathematical-definitions.md) protocol may
+admit selected conservative graph abbreviations: relations expand to existing
+formulas, constants name an exact selected proof of unique existence, and
+positive-arity functions name an exact selected proof of total unique
+existence. Every application is eliminated before a Foundation operation or
+primitive result identity is computed.
 
-- relation definitions expand to existing formulas;
-- constant definitions reference a proof of unique existence;
-- function definitions reference a proof of total unique existence; and
-- recursive definitions reference the required recursion theorem.
-
-No defined symbol or definition construct is valid under `naome:zfc`.
+These definition artifacts do not change `naome:zfc`. No defined symbol,
+definition certificate, constant term, or function term is a primitive value
+under this Foundation identity. Recursive definitions are not admitted by the
+current selected-prior-block definition protocol.
 
 ## Verification boundary
 
 This specification is the sole normative definition of the abstract Foundation
 boundary. The `naome-foundation` crate is its executable Rust reference. Neither
 checks complete proofs. [Proof Protocol](proof-protocol.md) defines certificate
-encoding and local references while preserving an empty hypothesis context,
-only the rules above, and a closed final theorem. Checking is deterministic.
+encoding and references while preserving an empty hypothesis context, only the
+rules above, and a closed final theorem. Definition-aware proof formulas are
+conservatively expanded before those rules execute. Checking is deterministic.
 
 Canonical serialization, content hashing, proof certificates, definitions, parsers, theorem libraries, storage, networking, and economic consensus are outside Foundation.

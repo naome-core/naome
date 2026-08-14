@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::chain_head_exchange::{ProofChainHeadRequest, ProofChainHeadResponse};
-use naome_chain::{ProofBlockId, ProofChainDefinition, ProofChainId};
-use naome_storage::ProofChainJournal;
+use naome::chain_head_exchange::{ArtifactChainHeadRequest, ArtifactChainHeadResponse};
+use naome_chain::{ArtifactBlockId, ArtifactChainDefinition, ArtifactChainId};
+use naome_storage::ArtifactChainJournal;
 use tokio::time::timeout;
 
 use super::*;
@@ -15,20 +15,20 @@ use crate::tests::{
     pairing_bytes, snapshot, test_network_for_peers,
 };
 use crate::{
-    ExchangeRequestId, InboundProofChainHeadRequest, Keypair, PeerSessionEvent, PendingRequest,
+    ExchangeRequestId, InboundArtifactChainHeadRequest, Keypair, PeerSessionEvent, PendingRequest,
     StaticPeer,
 };
 
-fn chain_id(byte: u8) -> ProofChainId {
-    ProofChainId::from_bytes([byte; 32])
+fn chain_id(byte: u8) -> ArtifactChainId {
+    ArtifactChainId::from_bytes([byte; 32])
 }
 
-fn block_id(byte: u8) -> ProofBlockId {
-    ProofBlockId::from_bytes([byte; 32])
+fn block_id(byte: u8) -> ArtifactBlockId {
+    ArtifactBlockId::from_bytes([byte; 32])
 }
 
 fn request_id(
-    network: &StaticProofNetwork,
+    network: &StaticArtifactNetwork,
     peer_id: PeerId,
 ) -> request_response::OutboundRequestId {
     let peer_index = network
@@ -52,10 +52,10 @@ fn request_id(
 }
 
 fn response_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
-    head: Option<ProofBlockId>,
+    head: Option<ArtifactBlockId>,
 ) -> NetworkEvent {
     let bytes = head.as_ref().map_or(&[][..], |head| head.as_bytes());
     network
@@ -64,14 +64,14 @@ fn response_event(
             connection_id: ConnectionId::new_unchecked(3_000),
             message: request_response::Message::Response {
                 request_id,
-                response: ProofChainHeadResponse::from_wire_bytes(bytes).unwrap(),
+                response: ArtifactChainHeadResponse::from_wire_bytes(bytes).unwrap(),
             },
         })
         .expect("the retained survey request produces one terminal")
 }
 
 fn failure_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
 ) -> NetworkEvent {
@@ -85,25 +85,25 @@ fn failure_event(
         .expect("the retained survey request produces one failure terminal")
 }
 
-fn awaiting(progress: ProofChainHeadSurveyProgress) -> ProofChainHeadSurvey {
-    let ProofChainHeadSurveyProgress::AwaitingResponses(survey) = progress else {
+fn awaiting(progress: ArtifactChainHeadSurveyProgress) -> ArtifactChainHeadSurvey {
+    let ArtifactChainHeadSurveyProgress::AwaitingResponses(survey) = progress else {
         panic!("survey completed while selected peers remained pending")
     };
     survey
 }
 
-fn complete(progress: ProofChainHeadSurveyProgress) -> CompletedProofChainHeadSurvey {
-    let ProofChainHeadSurveyProgress::Complete(survey) = progress else {
+fn complete(progress: ArtifactChainHeadSurveyProgress) -> CompletedArtifactChainHeadSurvey {
+    let ArtifactChainHeadSurveyProgress::Complete(survey) = progress else {
         panic!("survey remained pending after all selected peers settled")
     };
     survey
 }
 
 async fn serve_and_receive_terminal(
-    surveyor: &mut StaticProofNetwork,
-    server: &mut StaticProofNetwork,
-    inbound: InboundProofChainHeadRequest,
-    journal: &ProofChainJournal,
+    surveyor: &mut StaticArtifactNetwork,
+    server: &mut StaticArtifactNetwork,
+    inbound: InboundArtifactChainHeadRequest,
+    journal: &ArtifactChainJournal,
     expected_peer: PeerId,
 ) -> NetworkEvent {
     server
@@ -134,27 +134,27 @@ async fn serve_and_receive_terminal(
 fn shape_failures_start_nothing_and_do_not_advance_request_generation() {
     let peer = Keypair::generate_ed25519().public().to_peer_id();
     let unknown = Keypair::generate_ed25519().public().to_peer_id();
-    let request = ProofChainHeadRequest::new(chain_id(0x11));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x11));
     let mut control = test_network_for_peers(&[peer]);
     let mut after_failures = test_network_for_peers(&[peer]);
 
     assert!(matches!(
         after_failures.start_chain_head_survey(&[], request),
-        Err(ProofChainHeadSurveyStartError::EmptyPeerSet)
+        Err(ArtifactChainHeadSurveyStartError::EmptyPeerSet)
     ));
     let oversized = vec![peer; MAX_STATIC_PEERS + 1];
     assert!(matches!(
         after_failures.start_chain_head_survey(&oversized, request),
-        Err(ProofChainHeadSurveyStartError::TooManyPeers { actual, maximum })
+        Err(ArtifactChainHeadSurveyStartError::TooManyPeers { actual, maximum })
             if actual == MAX_STATIC_PEERS + 1 && maximum == MAX_STATIC_PEERS
     ));
     assert!(matches!(
         after_failures.start_chain_head_survey(&[peer, peer], request),
-        Err(ProofChainHeadSurveyStartError::DuplicatePeer(actual)) if actual == peer
+        Err(ArtifactChainHeadSurveyStartError::DuplicatePeer(actual)) if actual == peer
     ));
     assert!(matches!(
         after_failures.start_chain_head_survey(&[peer, unknown], request),
-        Err(ProofChainHeadSurveyStartError::RequestStart(
+        Err(ArtifactChainHeadSurveyStartError::RequestStart(
             RequestStartError::UnknownPeer(actual)
         )) if actual == unknown
     ));
@@ -188,12 +188,12 @@ fn ordered_peer_preflight_is_all_or_none() {
     let first = Keypair::generate_ed25519().public().to_peer_id();
     let second = Keypair::generate_ed25519().public().to_peer_id();
     let unknown = Keypair::generate_ed25519().public().to_peer_id();
-    let request = ProofChainHeadRequest::new(chain_id(0x21));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x21));
 
     let mut unknown_network = test_network_for_peers(&[first]);
     assert!(matches!(
         unknown_network.start_chain_head_survey(&[first, unknown, second], request),
-        Err(ProofChainHeadSurveyStartError::RequestStart(
+        Err(ArtifactChainHeadSurveyStartError::RequestStart(
             RequestStartError::UnknownPeer(actual)
         )) if actual == unknown
     ));
@@ -207,7 +207,7 @@ fn ordered_peer_preflight_is_all_or_none() {
         .mark_disconnected_for_test(second);
     assert!(matches!(
         disconnected.start_chain_head_survey(&[first, second], request),
-        Err(ProofChainHeadSurveyStartError::RequestStart(
+        Err(ArtifactChainHeadSurveyStartError::RequestStart(
             RequestStartError::PeerDisconnected(actual)
         )) if actual == second
     ));
@@ -218,7 +218,7 @@ fn ordered_peer_preflight_is_all_or_none() {
     let occupied_id = request_id(&occupied, second);
     assert!(matches!(
         occupied.start_chain_head_survey(&[first, second], request),
-        Err(ProofChainHeadSurveyStartError::RequestStart(
+        Err(ArtifactChainHeadSurveyStartError::RequestStart(
             RequestStartError::AlreadyPending(actual)
         )) if actual == second
     ));
@@ -237,7 +237,7 @@ fn capacity_is_reserved_atomically_after_peer_preflight() {
     let second = Keypair::generate_ed25519().public().to_peer_id();
     let unknown = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[first, second]);
-    let request = ProofChainHeadRequest::new(chain_id(0x31));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x31));
     let budget = Arc::clone(&network.pending_budget);
     let retained = (0..MAX_PENDING_REQUESTS - 1)
         .map(|_| PendingBudget::try_acquire(&budget).unwrap())
@@ -245,13 +245,13 @@ fn capacity_is_reserved_atomically_after_peer_preflight() {
 
     assert!(matches!(
         network.start_chain_head_survey(&[first, unknown], request),
-        Err(ProofChainHeadSurveyStartError::RequestStart(
+        Err(ArtifactChainHeadSurveyStartError::RequestStart(
             RequestStartError::UnknownPeer(actual)
         )) if actual == unknown
     ));
     assert!(matches!(
         network.start_chain_head_survey(&[first, second], request),
-        Err(ProofChainHeadSurveyStartError::InsufficientCapacity {
+        Err(ArtifactChainHeadSurveyStartError::InsufficientCapacity {
             requested: 2,
             available: 1,
             maximum: MAX_PENDING_REQUESTS,
@@ -288,7 +288,7 @@ fn reverse_mixed_terminals_preserve_request_and_caller_order() {
         .map(|_| Keypair::generate_ed25519().public().to_peer_id())
         .collect::<Vec<_>>();
     let mut network = test_network_for_peers(&peers);
-    let request = ProofChainHeadRequest::new(chain_id(0x41));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x41));
     let mut survey = network.start_chain_head_survey(&peers, request).unwrap();
     let ids = peers
         .iter()
@@ -317,7 +317,7 @@ fn reverse_mixed_terminals_preserve_request_and_caller_order() {
     );
     assert!(matches!(
         rows[0].result(),
-        Err(OutboundProofChainHeadFailure::Transport(
+        Err(OutboundArtifactChainHeadFailure::Transport(
             request_response::OutboundFailure::Timeout
         ))
     ));
@@ -330,7 +330,7 @@ fn reverse_mixed_terminals_preserve_request_and_caller_order() {
 #[test]
 fn unrelated_cross_network_and_late_generation_events_remain_routable() {
     let peer = Keypair::generate_ed25519().public().to_peer_id();
-    let request = ProofChainHeadRequest::new(chain_id(0x51));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x51));
     let mut first_network = test_network_for_peers(&[peer]);
     let mut second_network = test_network_for_peers(&[peer]);
     let first = first_network
@@ -384,7 +384,7 @@ fn wrong_authenticated_peer_is_one_source_bound_row_failure() {
     let expected = Keypair::generate_ed25519().public().to_peer_id();
     let actual = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[expected, actual]);
-    let request = ProofChainHeadRequest::new(chain_id(0x61));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x61));
     let survey = network
         .start_chain_head_survey(&[expected], request)
         .unwrap();
@@ -400,7 +400,7 @@ fn wrong_authenticated_peer_is_one_source_bound_row_failure() {
     assert_eq!(row.peer_id(), expected);
     assert!(matches!(
         row.result(),
-        Err(OutboundProofChainHeadFailure::PeerMismatch {
+        Err(OutboundArtifactChainHeadFailure::PeerMismatch {
             expected: retained,
             actual: received,
         }) if *retained == expected && *received == actual
@@ -413,7 +413,7 @@ fn cancellation_retains_physical_requests_until_each_terminal_drains() {
         .map(|_| Keypair::generate_ed25519().public().to_peer_id())
         .collect::<Vec<_>>();
     let mut network = test_network_for_peers(&peers);
-    let request = ProofChainHeadRequest::new(chain_id(0x71));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x71));
     let survey = network.start_chain_head_survey(&peers, request).unwrap();
     let ids = peers
         .iter()
@@ -455,7 +455,7 @@ fn identical_heads_remain_distinct_authenticated_rows() {
         .map(|_| Keypair::generate_ed25519().public().to_peer_id())
         .collect::<Vec<_>>();
     let mut network = test_network_for_peers(&peers);
-    let request = ProofChainHeadRequest::new(chain_id(0x81));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x81));
     let shared_head = block_id(0x82);
     let mut survey = network.start_chain_head_survey(&peers, request).unwrap();
     let ids = peers
@@ -508,15 +508,16 @@ async fn three_real_peers_report_source_bound_heads_without_mutating_any_journal
     let passive_surveyor = StaticPeer::new(surveyor_peer, "/ip4/127.0.0.1/tcp/1".parse().unwrap());
 
     let mut empty_server =
-        StaticProofNetwork::new(empty_identity, [passive_surveyor.clone()]).unwrap();
+        StaticArtifactNetwork::new(empty_identity, [passive_surveyor.clone()]).unwrap();
     let mut advanced_server =
-        StaticProofNetwork::new(advanced_identity, [passive_surveyor.clone()]).unwrap();
-    let mut foreign_server = StaticProofNetwork::new(foreign_identity, [passive_surveyor]).unwrap();
+        StaticArtifactNetwork::new(advanced_identity, [passive_surveyor.clone()]).unwrap();
+    let mut foreign_server =
+        StaticArtifactNetwork::new(foreign_identity, [passive_surveyor]).unwrap();
     let empty_address = listening_address(&mut empty_server).await;
     let advanced_address = listening_address(&mut advanced_server).await;
     let foreign_address = listening_address(&mut foreign_server).await;
 
-    let mut surveyor = StaticProofNetwork::new(
+    let mut surveyor = StaticArtifactNetwork::new(
         surveyor_identity,
         [
             StaticPeer::new(empty_peer, empty_address),
@@ -581,14 +582,14 @@ async fn three_real_peers_report_source_bound_heads_without_mutating_any_journal
     apply_fresh_blocks(&mut advanced_journal, [pairing_bytes()]);
     let advanced_before = snapshot(&advanced_directory, &advanced_journal);
     let foreign_directory = TestDirectory::new("head-survey-real-foreign");
-    let foreign_journal = ProofChainJournal::create(
+    let foreign_journal = ArtifactChainJournal::create(
         foreign_directory.path(),
-        ProofChainDefinition::new([0x99; 32]),
+        ArtifactChainDefinition::new([0x99; 32]),
     )
     .unwrap();
     let foreign_before = snapshot(&foreign_directory, &foreign_journal);
 
-    let request = ProofChainHeadRequest::new(surveyor_journal.chain_id());
+    let request = ArtifactChainHeadRequest::new(surveyor_journal.chain_id());
     let caller_order = [foreign_peer, advanced_peer, empty_peer];
     let mut survey = surveyor
         .start_chain_head_survey(&caller_order, request)

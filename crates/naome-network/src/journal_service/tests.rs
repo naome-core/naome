@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use naome::block_exchange::ProofBlockRequest;
-use naome::chain_head_exchange::ProofChainHeadRequest;
-use naome::proof_exchange::ProofRequest;
-use naome_chain::{ProofBlockId, ProofChainId};
+use naome::artifact_exchange::ArtifactRequest;
+use naome::block_exchange::ArtifactBlockRequest;
+use naome::chain_head_exchange::ArtifactChainHeadRequest;
+use naome_chain::{ArtifactBlockId, ArtifactChainId};
 use tokio::time::{Instant, timeout};
 
 use super::*;
@@ -12,8 +12,8 @@ use crate::tests::{
     listening_address, pairing_bytes, snapshot,
 };
 use crate::{
-    NetworkEvent, OutboundProofOutcome, PeerSessionEvent, RespondError, StaticPeer,
-    StaticProofNetwork,
+    NetworkEvent, OutboundArtifactOutcome, PeerSessionEvent, RespondError, StaticArtifactNetwork,
+    StaticPeer,
 };
 
 #[tokio::test]
@@ -26,7 +26,7 @@ async fn service_forwards_announcement_without_acknowledging_or_mutating() {
     let service_journal = create_journal(service_directory.path()).unwrap();
     let sender_before = snapshot(&sender_directory, &sender_journal);
     let service_before = snapshot(&service_directory, &service_journal);
-    let expected_announcement = naome::chain_head_announcement::ProofChainHeadAnnouncement::new(
+    let expected_announcement = naome::chain_head_announcement::ArtifactChainHeadAnnouncement::new(
         sender_journal.chain_id(),
         sender_journal.head_block_id().unwrap(),
     );
@@ -100,19 +100,19 @@ async fn closed_response_channel_is_observable_with_exact_request_metadata() {
     let directory = TestDirectory::new("journal-service-closed-channel");
     let journal = create_journal(directory.path()).unwrap();
     let before = snapshot(&directory, &journal);
-    let request = ProofRequest::from_wire_bytes(&[0xa7; 32]).unwrap();
-    client.request_proof(service_peer_id, request).unwrap();
+    let request = ArtifactRequest::from_wire_bytes(&[0xa7; 32]).unwrap();
+    client.request_artifact(service_peer_id, request).unwrap();
 
     let inbound = timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
                 event = client.next_event() => {
-                    if let NetworkEvent::OutboundProof(event) = event {
+                    if let NetworkEvent::OutboundArtifact(event) = event {
                         panic!("proof request became terminal before serving: {event:?}")
                     }
                 }
                 event = service.next_event() => {
-                    if let NetworkEvent::InboundProofRequest(inbound) = event {
+                    if let NetworkEvent::InboundArtifactRequest(inbound) = event {
                         break inbound;
                     }
                 }
@@ -132,7 +132,7 @@ async fn closed_response_channel_is_observable_with_exact_request_metadata() {
                     assert_eq!(peer_id, client_peer_id);
                     break;
                 }
-                NetworkEvent::InboundProofFailure { peer_id, .. } => {
+                NetworkEvent::InboundArtifactFailure { peer_id, .. } => {
                     assert_eq!(peer_id, client_peer_id)
                 }
                 _ => {}
@@ -142,11 +142,12 @@ async fn closed_response_channel_is_observable_with_exact_request_metadata() {
     .await
     .expect("closed client connection was not observed");
 
-    match service.handle_journal_service_event(NetworkEvent::InboundProofRequest(inbound), &journal)
+    match service
+        .handle_journal_service_event(NetworkEvent::InboundArtifactRequest(inbound), &journal)
     {
         JournalServiceEvent::ServeFailed {
             request:
-                JournalServiceRequest::Proof {
+                JournalServiceRequest::Artifact {
                     peer_id,
                     request: actual,
                 },
@@ -172,19 +173,19 @@ async fn exhausted_application_budget_rejects_found_proof_before_serving() {
     let mut journal = create_journal(directory.path()).unwrap();
     let proof_id = apply_fresh_blocks(&mut journal, [pairing_bytes()])[0];
     let before = snapshot(&directory, &journal);
-    let request = ProofRequest::new(proof_id);
-    client.request_proof(service_peer_id, request).unwrap();
+    let request = ArtifactRequest::new(proof_id);
+    client.request_artifact(service_peer_id, request).unwrap();
 
     let inbound = timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
                 event = client.next_event() => {
-                    if let NetworkEvent::OutboundProof(event) = event {
+                    if let NetworkEvent::OutboundArtifact(event) = event {
                         panic!("proof request became terminal before rate rejection: {event:?}")
                     }
                 }
                 event = service.next_event() => {
-                    if let NetworkEvent::InboundProofRequest(inbound) = event {
+                    if let NetworkEvent::InboundArtifactRequest(inbound) = event {
                         break inbound;
                     }
                 }
@@ -197,11 +198,12 @@ async fn exhausted_application_budget_rejects_found_proof_before_serving() {
         .inbound_application_request_budget
         .exhaust(Instant::now() + Duration::from_secs(60));
 
-    match service.handle_journal_service_event(NetworkEvent::InboundProofRequest(inbound), &journal)
+    match service
+        .handle_journal_service_event(NetworkEvent::InboundArtifactRequest(inbound), &journal)
     {
         JournalServiceEvent::ServeFailed {
             request:
-                JournalServiceRequest::Proof {
+                JournalServiceRequest::Artifact {
                     peer_id,
                     request: actual,
                 },
@@ -223,7 +225,7 @@ async fn exhausted_application_budget_rejects_found_block_before_serving() {
     let mut journal = create_journal(directory.path()).unwrap();
     apply_fresh_blocks(&mut journal, [pairing_bytes()]);
     let before = snapshot(&directory, &journal);
-    let request = ProofBlockRequest::new(journal.head_block_id().unwrap());
+    let request = ArtifactBlockRequest::new(journal.head_block_id().unwrap());
     let _ticket = client.request_block(service_peer_id, request).unwrap();
 
     let inbound = timeout(Duration::from_secs(10), async {
@@ -274,7 +276,7 @@ async fn exhausted_application_budget_rejects_matching_chain_head_before_serving
     let mut journal = create_journal(directory.path()).unwrap();
     apply_fresh_blocks(&mut journal, [pairing_bytes()]);
     let before = snapshot(&directory, &journal);
-    let request = ProofChainHeadRequest::new(journal.chain_id());
+    let request = ArtifactChainHeadRequest::new(journal.chain_id());
     let _ticket = client.request_chain_head(service_peer_id, request).unwrap();
 
     let inbound = timeout(Duration::from_secs(10), async {
@@ -334,7 +336,7 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
     let client_c_peer_id = client_c_identity.public().to_peer_id();
     let service_peer_id = service_identity.public().to_peer_id();
 
-    let mut service = StaticProofNetwork::new(
+    let mut service = StaticArtifactNetwork::new(
         service_identity,
         [
             StaticPeer::new(client_a_peer_id, address(1)),
@@ -344,17 +346,17 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
     )
     .unwrap();
     let service_address = listening_address(&mut service).await;
-    let mut client_a = StaticProofNetwork::new(
+    let mut client_a = StaticArtifactNetwork::new(
         client_a_identity,
         [StaticPeer::new(service_peer_id, service_address.clone())],
     )
     .unwrap();
-    let mut client_b = StaticProofNetwork::new(
+    let mut client_b = StaticArtifactNetwork::new(
         client_b_identity,
         [StaticPeer::new(service_peer_id, service_address.clone())],
     )
     .unwrap();
-    let mut client_c = StaticProofNetwork::new(
+    let mut client_c = StaticArtifactNetwork::new(
         client_c_identity,
         [StaticPeer::new(service_peer_id, service_address)],
     )
@@ -423,10 +425,10 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
     let block_id = journal.head_block_id().unwrap();
     let chain_id = journal.chain_id();
     let retained_proof_bytes = journal
-        .proof(proof_id)
+        .artifact(proof_id)
         .unwrap()
         .unwrap()
-        .canonical_proof_bytes()
+        .canonical_artifact_bytes()
         .to_vec();
     let retained_block_bytes = journal
         .block(block_id)
@@ -435,9 +437,9 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
         .to_canonical_bytes()
         .to_vec();
     let before = snapshot(&directory, &journal);
-    let proof_request = ProofRequest::new(proof_id);
-    let block_request = ProofBlockRequest::new(block_id);
-    let head_request = ProofChainHeadRequest::new(chain_id);
+    let artifact_request = ArtifactRequest::new(proof_id);
+    let block_request = ArtifactBlockRequest::new(block_id);
+    let head_request = ArtifactChainHeadRequest::new(chain_id);
 
     let client_a_directory = TestDirectory::new("journal-service-requester-a");
     let client_a_journal = create_journal(client_a_directory.path()).unwrap();
@@ -450,7 +452,7 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
     let client_c_before = snapshot(&client_c_directory, &client_c_journal);
 
     client_a
-        .request_proof(service_peer_id, proof_request)
+        .request_artifact(service_peer_id, artifact_request)
         .unwrap();
     let mut block_ticket = Some(
         client_b
@@ -471,9 +473,9 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
         {
             tokio::select! {
                 event = service.next_journal_service_event(&journal) => match event {
-                    JournalServiceEvent::Served(JournalServiceRequest::Proof { peer_id, request }) => {
+                    JournalServiceEvent::Served(JournalServiceRequest::Artifact { peer_id, request }) => {
                         assert_eq!(peer_id, client_a_peer_id);
-                        assert_eq!(request, proof_request);
+                        assert_eq!(request, artifact_request);
                         assert!(!served[0], "proof request was reported served twice");
                         served[0] = true;
                     }
@@ -498,14 +500,14 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
                     JournalServiceEvent::Network(_) => {}
                 },
                 event = client_a.next_event() => {
-                    if let NetworkEvent::OutboundProof(event) = event {
+                    if let NetworkEvent::OutboundArtifact(event) = event {
                         assert!(served[0], "proof response preceded its Served event");
                         assert_eq!(event.peer_id(), service_peer_id);
-                        assert_eq!(event.request(), proof_request);
+                        assert_eq!(event.request(), artifact_request);
                         assert!(event.failure().is_none());
                         assert!(!event.is_deadline_exceeded());
                         match event.outcome {
-                            OutboundProofOutcome::Response { response, .. } => {
+                            OutboundArtifactOutcome::Response { response, .. } => {
                                 assert_eq!(response.into_wire_bytes(), proof_bytes);
                             }
                             _ => panic!("proof request did not receive a response"),
@@ -537,15 +539,17 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
     .await
     .expect("three-client journal service exchange timed out");
 
-    let unavailable_proof_request = ProofRequest::from_wire_bytes(&[0xd1; 32]).unwrap();
-    let unavailable_block_request = ProofBlockRequest::new(ProofBlockId::from_bytes([0xd2; 32]));
-    let foreign_head_request = ProofChainHeadRequest::new(ProofChainId::from_bytes([0xd3; 32]));
-    assert_ne!(unavailable_proof_request, proof_request);
+    let unavailable_artifact_request = ArtifactRequest::from_wire_bytes(&[0xd1; 32]).unwrap();
+    let unavailable_block_request =
+        ArtifactBlockRequest::new(ArtifactBlockId::from_bytes([0xd2; 32]));
+    let foreign_head_request =
+        ArtifactChainHeadRequest::new(ArtifactChainId::from_bytes([0xd3; 32]));
+    assert_ne!(unavailable_artifact_request, artifact_request);
     assert_ne!(unavailable_block_request, block_request);
     assert_ne!(foreign_head_request, head_request);
 
     client_a
-        .request_proof(service_peer_id, unavailable_proof_request)
+        .request_artifact(service_peer_id, unavailable_artifact_request)
         .unwrap();
     let mut block_ticket = Some(
         client_b
@@ -566,9 +570,9 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
         {
             tokio::select! {
                 event = service.next_journal_service_event(&journal) => match event {
-                    JournalServiceEvent::Served(JournalServiceRequest::Proof { peer_id, request }) => {
+                    JournalServiceEvent::Served(JournalServiceRequest::Artifact { peer_id, request }) => {
                         assert_eq!(peer_id, client_a_peer_id);
-                        assert_eq!(request, unavailable_proof_request);
+                        assert_eq!(request, unavailable_artifact_request);
                         assert!(!served[0], "unavailable proof request was reported served twice");
                         served[0] = true;
                     }
@@ -593,14 +597,14 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
                     JournalServiceEvent::Network(_) => {}
                 },
                 event = client_a.next_event() => {
-                    if let NetworkEvent::OutboundProof(event) = event {
+                    if let NetworkEvent::OutboundArtifact(event) = event {
                         assert!(served[0], "unavailable proof response preceded its Served event");
                         assert_eq!(event.peer_id(), service_peer_id);
-                        assert_eq!(event.request(), unavailable_proof_request);
+                        assert_eq!(event.request(), unavailable_artifact_request);
                         assert!(event.failure().is_none());
                         assert!(!event.is_deadline_exceeded());
                         match event.outcome {
-                            OutboundProofOutcome::Response { response, .. } => {
+                            OutboundArtifactOutcome::Response { response, .. } => {
                                 assert!(response.is_unavailable());
                             }
                             _ => panic!("missing proof request did not receive a response"),
@@ -636,10 +640,10 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
     assert_eq!(journal.chain_id(), chain_id);
     assert_eq!(
         journal
-            .proof(proof_id)
+            .artifact(proof_id)
             .unwrap()
             .unwrap()
-            .canonical_proof_bytes(),
+            .canonical_artifact_bytes(),
         retained_proof_bytes
     );
     assert_eq!(

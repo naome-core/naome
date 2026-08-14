@@ -1,5 +1,7 @@
-use super::{CERTIFICATE_MAX_BYTES, ProofCertificate, ProofCertificateError, ProofStep};
-use naome_foundation::{FORMULA_MAX_DEPTH, Formula, FormulaCodecError, FreeVariable, Separation};
+use super::{
+    CERTIFICATE_MAX_BYTES, ProofCertificate, ProofCertificateError, ProofSeparation, ProofStep,
+};
+use naome_foundation::{FORMULA_MAX_DEPTH, Formula, FormulaCodecError, FreeVariable};
 
 #[test]
 fn certificate_requires_a_conclusion_step() {
@@ -63,7 +65,9 @@ fn certificate_constructor_enforces_formula_codec_limits() {
     }
 
     assert_eq!(
-        ProofCertificate::new(vec![ProofStep::VacuousUniversal { formula: oversized }]),
+        ProofCertificate::new(vec![ProofStep::VacuousUniversal {
+            formula: oversized.into(),
+        }]),
         Err(ProofCertificateError::Formula(
             FormulaCodecError::DepthLimitExceeded {
                 maximum: FORMULA_MAX_DEPTH,
@@ -80,8 +84,8 @@ fn certificate_constructor_enforces_the_total_byte_limit() {
     let parameter = FreeVariable::new(4);
     let parameters = vec![parameter; CERTIFICATE_MAX_BYTES / 4 + 1];
 
-    let construction = ProofCertificate::new(vec![ProofStep::Separation(Separation {
-        predicate: Formula::member(element, source),
+    let construction = ProofCertificate::new(vec![ProofStep::Separation(ProofSeparation {
+        predicate: (Formula::member(element, source)).into(),
         element,
         source,
         result: result_variable,

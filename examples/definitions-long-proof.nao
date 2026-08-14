@@ -1,0 +1,86 @@
+foundation = "naome:zfc"
+
+definitions:
+    self_equal = "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018"
+    holds = "70c732d536e51e376e42fbc60ddcc581bec6aec75aeb3917c7055fd1fb7c3004"
+    same_members = "1a787bc02cf38f5743535b38749b486a4c038998e8e8338d2aa66ed19f4d7634"
+
+statement = forall(a, forall(set,
+    implies(holds(a, set), holds(a, set))
+))
+
+proof:
+    p0 = cite("c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73")
+    p1 = cite("6e35a728527633573509b24fa20cb2359a14c1f93e9f6b6f1500f8650f731720")
+    p2 = cite("dad1eccea41c54d5618a35bff0bc3b8fb52e0489017fd9a444cdae14355b6285")
+    p3 = cite("e89dcbf998af185fd368a2531e2f0ee4953cc2232ec93da38ed3e89e21cede71")
+    p4 = cite("7db633cf3f2a73749e143c3f26a0083b17c39e8a24c8940f64471cf6b49d515d")
+
+    p5 = simplification(
+        forall(x, equal(x, x)),
+        forall(y, equal(y, y)),
+    )
+    p6 = modus_ponens(p0, p5)
+    p7 = modus_ponens(p1, p6)
+
+    p8 = universal_instantiation(x, a, self_equal(x,))
+    p9 = modus_ponens(p7, p8)
+
+    p10 = universal_instantiation(
+        x,
+        a,
+        implies(self_equal(x), self_equal(x)),
+    )
+    p11 = modus_ponens(p2, p10)
+    p12 = modus_ponens(p9, p11)
+
+    p13 = simplification(
+        self_equal(a),
+        forall(x, forall(y,
+            implies(
+                same_members(x, y),
+                equal(x, y),
+            ),
+        )),
+    )
+    p14 = modus_ponens(p12, p13)
+    p15 = modus_ponens(p4, p14)
+
+    p16 = universal_instantiation(
+        x,
+        a,
+        forall(y, forall(s,
+            implies(
+                equal(x, y),
+                implies(holds(x, s), holds(y, s)),
+            ),
+        )),
+    )
+    p17 = modus_ponens(p3, p16)
+
+    p18 = universal_instantiation(
+        y,
+        a,
+        forall(s,
+            implies(
+                equal(a, y),
+                implies(holds(a, s), holds(y, s)),
+            ),
+        ),
+    )
+    p19 = modus_ponens(p17, p18)
+
+    p20 = universal_instantiation(
+        s,
+        set,
+        implies(
+            self_equal(a),
+            implies(holds(a, s), holds(a, s)),
+        ),
+    )
+    p21 = modus_ponens(p19, p20)
+
+    p22 = modus_ponens(p15, p21)
+    p23 = generalization(p22, set)
+    p24 = generalization(p23, a)
+    return p24

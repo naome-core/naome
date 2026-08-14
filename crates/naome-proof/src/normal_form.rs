@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 
-use naome_foundation::{Formula, FreeVariable, Replacement, Separation};
+use naome_foundation::FreeVariable;
 
-use crate::{ProofCertificate, ProofStep, codec};
+use crate::{ProofCertificate, ProofFormula, ProofReplacement, ProofSeparation, ProofStep, codec};
 
 pub(crate) const UNNORMALIZED_STEP: u32 = u32::MAX;
 
@@ -142,14 +142,14 @@ fn normalize_step(
         },
         ProofStep::ZfcAxiom(axiom) => ProofStep::ZfcAxiom(axiom),
         ProofStep::Separation(instance) => {
-            let Separation {
+            let ProofSeparation {
                 predicate,
                 element,
                 source,
                 result,
                 parameters,
             } = instance;
-            ProofStep::Separation(Separation {
+            ProofStep::Separation(ProofSeparation {
                 predicate: variables.formula(predicate),
                 element: variables.variable(element),
                 source: variables.variable(source),
@@ -158,7 +158,7 @@ fn normalize_step(
             })
         }
         ProofStep::Replacement(instance) => {
-            let Replacement {
+            let ProofReplacement {
                 predicate,
                 input,
                 output,
@@ -167,7 +167,7 @@ fn normalize_step(
                 result,
                 parameters,
             } = instance;
-            ProofStep::Replacement(Replacement {
+            ProofStep::Replacement(ProofReplacement {
                 predicate: variables.formula(predicate),
                 input: variables.variable(input),
                 output: variables.variable(output),
@@ -208,7 +208,7 @@ struct VariableNormalizer {
 }
 
 impl VariableNormalizer {
-    fn formula(&mut self, formula: Formula) -> Formula {
+    fn formula(&mut self, formula: ProofFormula) -> ProofFormula {
         formula.map_free_variables(|variable| self.variable(variable))
     }
 

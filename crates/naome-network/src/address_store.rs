@@ -64,7 +64,7 @@ const MAX_STORE_BYTES: usize = STORE_HEADER.len()
 
 /// One operator-selected first-contact endpoint.
 ///
-/// A bootstrap peer is routing configuration. It is not a proof-authorized
+/// A bootstrap peer is routing configuration. It is not a artifact-authorized
 /// [`crate::StaticPeer`] and cannot be converted into one implicitly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]

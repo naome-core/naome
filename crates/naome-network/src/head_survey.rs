@@ -3,33 +3,34 @@
 use std::error::Error;
 use std::fmt;
 
-use naome::chain_head_exchange::ProofChainHeadRequest;
-use naome_chain::ProofBlockId;
+use naome::chain_head_exchange::ArtifactChainHeadRequest;
+use naome_chain::ArtifactBlockId;
 
 use super::{
     ChainHeadRequestTicket, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent,
-    OutboundProofChainHeadFailure, PeerId, PendingBudget, RequestStartError, StaticProofNetwork,
+    OutboundArtifactChainHeadFailure, PeerId, PendingBudget, RequestStartError,
+    StaticArtifactNetwork,
 };
 
-/// One bounded proof-chain-head survey awaiting peer terminals.
+/// One bounded artifact-chain-head survey awaiting peer terminals.
 ///
 /// Each result remains bound to its authenticated source. This workflow does
 /// not group equal heads, rank observations, select a target, or read or mutate
 /// local selected state.
 #[derive(Debug)]
 #[must_use]
-pub struct ProofChainHeadSurvey {
-    request: ProofChainHeadRequest,
+pub struct ArtifactChainHeadSurvey {
+    request: ArtifactChainHeadRequest,
     peers: Vec<SurveyPeerState>,
 }
 
 #[derive(Debug)]
 enum SurveyPeerState {
     Pending(ChainHeadRequestTicket),
-    Complete(ProofChainHeadSurveyPeerResult),
+    Complete(ArtifactChainHeadSurveyPeerResult),
 }
 
-impl StaticProofNetwork {
+impl StaticArtifactNetwork {
     /// Starts one all-or-none survey for an exact caller-selected chain context.
     ///
     /// `peer_ids` must contain one to [`MAX_STATIC_PEERS`] unique, statically
@@ -38,8 +39,8 @@ impl StaticProofNetwork {
     pub fn start_chain_head_survey(
         &mut self,
         peer_ids: &[PeerId],
-        request: ProofChainHeadRequest,
-    ) -> Result<ProofChainHeadSurvey, ProofChainHeadSurveyStartError> {
+        request: ArtifactChainHeadRequest,
+    ) -> Result<ArtifactChainHeadSurvey, ArtifactChainHeadSurveyStartError> {
         validate_peer_set(peer_ids)?;
 
         let mut peer_indices = [0; MAX_STATIC_PEERS];
@@ -47,12 +48,12 @@ impl StaticProofNetwork {
             let transport_connected = self.swarm.behaviour().head_exchange.is_connected(&peer_id);
             *peer_index = self
                 .preflight_request(peer_id, transport_connected)
-                .map_err(ProofChainHeadSurveyStartError::RequestStart)?;
+                .map_err(ArtifactChainHeadSurveyStartError::RequestStart)?;
         }
 
         let permits = PendingBudget::try_acquire_many(&self.pending_budget, peer_ids.len())
             .map_err(
-                |available| ProofChainHeadSurveyStartError::InsufficientCapacity {
+                |available| ArtifactChainHeadSurveyStartError::InsufficientCapacity {
                     requested: peer_ids.len(),
                     available,
                     maximum: MAX_PENDING_REQUESTS,
@@ -69,13 +70,13 @@ impl StaticProofNetwork {
             ));
         }
 
-        Ok(ProofChainHeadSurvey { request, peers })
+        Ok(ArtifactChainHeadSurvey { request, peers })
     }
 }
 
-impl ProofChainHeadSurvey {
+impl ArtifactChainHeadSurvey {
     /// Returns the single immutable chain-head request sent to every peer.
-    pub const fn request(&self) -> ProofChainHeadRequest {
+    pub const fn request(&self) -> ArtifactChainHeadRequest {
         self.request
     }
 
@@ -106,7 +107,7 @@ impl ProofChainHeadSurvey {
     ///
     /// Pending tickets retain their existing non-cancelling transport
     /// semantics: physical terminals continue to drain their peer slots and
-    /// shared permits through [`StaticProofNetwork::next_event`].
+    /// shared permits through [`StaticArtifactNetwork::next_event`].
     pub fn cancel(self) {}
 
     /// Advances this survey with one exact source-bound peer terminal.
@@ -117,9 +118,9 @@ impl ProofChainHeadSurvey {
     pub fn on_event(
         mut self,
         event: NetworkEvent,
-    ) -> Result<ProofChainHeadSurveyProgress, Box<ProofChainHeadSurveyEventMismatch>> {
+    ) -> Result<ArtifactChainHeadSurveyProgress, Box<ArtifactChainHeadSurveyEventMismatch>> {
         let NetworkEvent::OutboundChainHead(terminal) = event else {
-            return Err(Box::new(ProofChainHeadSurveyEventMismatch {
+            return Err(Box::new(ArtifactChainHeadSurveyEventMismatch {
                 survey: self,
                 event,
             }));
@@ -127,7 +128,7 @@ impl ProofChainHeadSurvey {
         let Some(index) = self.peers.iter().position(|peer| {
             matches!(peer, SurveyPeerState::Pending(ticket) if ticket.accepts_event(&terminal))
         }) else {
-            return Err(Box::new(ProofChainHeadSurveyEventMismatch {
+            return Err(Box::new(ArtifactChainHeadSurveyEventMismatch {
                 survey: self,
                 event: NetworkEvent::OutboundChainHead(terminal),
             }));
@@ -136,7 +137,7 @@ impl ProofChainHeadSurvey {
         let peer_id = terminal.peer_id();
         let state = std::mem::replace(
             &mut self.peers[index],
-            SurveyPeerState::Complete(ProofChainHeadSurveyPeerResult {
+            SurveyPeerState::Complete(ArtifactChainHeadSurveyPeerResult {
                 peer_id,
                 outcome: Ok(None),
             }),
@@ -156,10 +157,10 @@ impl ProofChainHeadSurvey {
             Err(failure) => Err(failure),
         };
         self.peers[index] =
-            SurveyPeerState::Complete(ProofChainHeadSurveyPeerResult { peer_id, outcome });
+            SurveyPeerState::Complete(ArtifactChainHeadSurveyPeerResult { peer_id, outcome });
 
         if self.pending_peer_count() != 0 {
-            return Ok(ProofChainHeadSurveyProgress::AwaitingResponses(self));
+            return Ok(ArtifactChainHeadSurveyProgress::AwaitingResponses(self));
         }
 
         let peer_results = self
@@ -172,8 +173,8 @@ impl ProofChainHeadSurvey {
                 }
             })
             .collect();
-        Ok(ProofChainHeadSurveyProgress::Complete(
-            CompletedProofChainHeadSurvey {
+        Ok(ArtifactChainHeadSurveyProgress::Complete(
+            CompletedArtifactChainHeadSurvey {
                 request: self.request,
                 peer_results,
             },
@@ -184,34 +185,39 @@ impl ProofChainHeadSurvey {
 /// Progress after one exact survey terminal.
 #[derive(Debug)]
 #[must_use]
-pub enum ProofChainHeadSurveyProgress {
+pub enum ArtifactChainHeadSurveyProgress {
     /// At least one selected peer terminal remains pending.
-    AwaitingResponses(ProofChainHeadSurvey),
+    AwaitingResponses(ArtifactChainHeadSurvey),
     /// Every selected peer produced exactly one source-bound outcome.
-    Complete(CompletedProofChainHeadSurvey),
+    Complete(CompletedArtifactChainHeadSurvey),
 }
 
 /// One completed survey with deterministic caller-ordered peer outcomes.
 #[derive(Debug)]
 #[must_use]
-pub struct CompletedProofChainHeadSurvey {
-    request: ProofChainHeadRequest,
-    peer_results: Vec<ProofChainHeadSurveyPeerResult>,
+pub struct CompletedArtifactChainHeadSurvey {
+    request: ArtifactChainHeadRequest,
+    peer_results: Vec<ArtifactChainHeadSurveyPeerResult>,
 }
 
-impl CompletedProofChainHeadSurvey {
+impl CompletedArtifactChainHeadSurvey {
     /// Returns the single immutable request sent to every peer.
-    pub const fn request(&self) -> ProofChainHeadRequest {
+    pub const fn request(&self) -> ArtifactChainHeadRequest {
         self.request
     }
 
     /// Returns source-bound outcomes in original caller order.
-    pub fn peer_results(&self) -> &[ProofChainHeadSurveyPeerResult] {
+    pub fn peer_results(&self) -> &[ArtifactChainHeadSurveyPeerResult] {
         &self.peer_results
     }
 
     /// Consumes this report into its one shared request and ordered rows.
-    pub fn into_parts(self) -> (ProofChainHeadRequest, Vec<ProofChainHeadSurveyPeerResult>) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        ArtifactChainHeadRequest,
+        Vec<ArtifactChainHeadSurveyPeerResult>,
+    ) {
         (self.request, self.peer_results)
     }
 }
@@ -219,19 +225,19 @@ impl CompletedProofChainHeadSurvey {
 /// One caller-ordered source-bound peer outcome.
 #[derive(Debug)]
 #[must_use]
-pub struct ProofChainHeadSurveyPeerResult {
+pub struct ArtifactChainHeadSurveyPeerResult {
     peer_id: PeerId,
-    outcome: Result<Option<ProofBlockId>, Box<OutboundProofChainHeadFailure>>,
+    outcome: Result<Option<ArtifactBlockId>, Box<OutboundArtifactChainHeadFailure>>,
 }
 
-impl ProofChainHeadSurveyPeerResult {
+impl ArtifactChainHeadSurveyPeerResult {
     /// Returns the authenticated peer for this outcome.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
     /// Borrows the exact found, unavailable, or failure outcome.
-    pub fn result(&self) -> Result<Option<ProofBlockId>, &OutboundProofChainHeadFailure> {
+    pub fn result(&self) -> Result<Option<ArtifactBlockId>, &OutboundArtifactChainHeadFailure> {
         match &self.outcome {
             Ok(head_block_id) => Ok(*head_block_id),
             Err(failure) => Err(failure),
@@ -239,7 +245,9 @@ impl ProofChainHeadSurveyPeerResult {
     }
 
     /// Consumes the exact found, unavailable, or failure outcome.
-    pub fn into_result(self) -> Result<Option<ProofBlockId>, Box<OutboundProofChainHeadFailure>> {
+    pub fn into_result(
+        self,
+    ) -> Result<Option<ArtifactBlockId>, Box<OutboundArtifactChainHeadFailure>> {
         self.outcome
     }
 }
@@ -247,30 +255,30 @@ impl ProofChainHeadSurveyPeerResult {
 /// One mismatch preserving the complete survey and unrouted event.
 #[derive(Debug)]
 #[must_use]
-pub struct ProofChainHeadSurveyEventMismatch {
-    survey: ProofChainHeadSurvey,
+pub struct ArtifactChainHeadSurveyEventMismatch {
+    survey: ArtifactChainHeadSurvey,
     event: NetworkEvent,
 }
 
-impl ProofChainHeadSurveyEventMismatch {
+impl ArtifactChainHeadSurveyEventMismatch {
     /// Returns both values unchanged for caller routing or recovery.
-    pub fn into_parts(self) -> (ProofChainHeadSurvey, NetworkEvent) {
+    pub fn into_parts(self) -> (ArtifactChainHeadSurvey, NetworkEvent) {
         (self.survey, self.event)
     }
 }
 
-impl fmt::Display for ProofChainHeadSurveyEventMismatch {
+impl fmt::Display for ArtifactChainHeadSurveyEventMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("network event does not belong to this proof-chain-head survey")
+        formatter.write_str("network event does not belong to this artifact-chain-head survey")
     }
 }
 
-impl Error for ProofChainHeadSurveyEventMismatch {}
+impl Error for ArtifactChainHeadSurveyEventMismatch {}
 
-/// Failure to atomically start one bounded proof-chain-head survey.
+/// Failure to atomically start one bounded artifact-chain-head survey.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum ProofChainHeadSurveyStartError {
+pub enum ArtifactChainHeadSurveyStartError {
     /// No source peer was selected.
     EmptyPeerSet,
     /// The selected peer count exceeds the fixed static-peer bound.
@@ -287,20 +295,23 @@ pub enum ProofChainHeadSurveyStartError {
     },
 }
 
-impl fmt::Display for ProofChainHeadSurveyStartError {
+impl fmt::Display for ArtifactChainHeadSurveyStartError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyPeerSet => formatter.write_str("proof-chain-head survey has no peers"),
+            Self::EmptyPeerSet => formatter.write_str("artifact-chain-head survey has no peers"),
             Self::TooManyPeers { actual, maximum } => write!(
                 formatter,
-                "proof-chain-head survey peer count {actual} exceeds maximum {maximum}"
+                "artifact-chain-head survey peer count {actual} exceeds maximum {maximum}"
             ),
             Self::DuplicatePeer(peer_id) => write!(
                 formatter,
-                "proof-chain-head survey selects peer {peer_id} more than once"
+                "artifact-chain-head survey selects peer {peer_id} more than once"
             ),
             Self::RequestStart(source) => {
-                write!(formatter, "cannot start proof-chain-head survey: {source}")
+                write!(
+                    formatter,
+                    "cannot start artifact-chain-head survey: {source}"
+                )
             }
             Self::InsufficientCapacity {
                 requested,
@@ -308,13 +319,13 @@ impl fmt::Display for ProofChainHeadSurveyStartError {
                 maximum,
             } => write!(
                 formatter,
-                "proof-chain-head survey needs {requested} request slots, only {available} of {maximum} are available"
+                "artifact-chain-head survey needs {requested} request slots, only {available} of {maximum} are available"
             ),
         }
     }
 }
 
-impl Error for ProofChainHeadSurveyStartError {
+impl Error for ArtifactChainHeadSurveyStartError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::RequestStart(source) => Some(source),
@@ -323,19 +334,19 @@ impl Error for ProofChainHeadSurveyStartError {
     }
 }
 
-fn validate_peer_set(peer_ids: &[PeerId]) -> Result<(), ProofChainHeadSurveyStartError> {
+fn validate_peer_set(peer_ids: &[PeerId]) -> Result<(), ArtifactChainHeadSurveyStartError> {
     if peer_ids.is_empty() {
-        return Err(ProofChainHeadSurveyStartError::EmptyPeerSet);
+        return Err(ArtifactChainHeadSurveyStartError::EmptyPeerSet);
     }
     if peer_ids.len() > MAX_STATIC_PEERS {
-        return Err(ProofChainHeadSurveyStartError::TooManyPeers {
+        return Err(ArtifactChainHeadSurveyStartError::TooManyPeers {
             actual: peer_ids.len(),
             maximum: MAX_STATIC_PEERS,
         });
     }
     for (index, &peer_id) in peer_ids.iter().enumerate() {
         if peer_ids[..index].contains(&peer_id) {
-            return Err(ProofChainHeadSurveyStartError::DuplicatePeer(peer_id));
+            return Err(ArtifactChainHeadSurveyStartError::DuplicatePeer(peer_id));
         }
     }
     Ok(())

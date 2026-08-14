@@ -10,11 +10,11 @@ The following facts remain separate:
 
 | Fact | What it establishes | What it does not establish |
 | --- | --- | --- |
-| `BootstrapPeer` | An operator chose one expected `PeerId` and initial address | General trust, proof authorization, or availability |
+| `BootstrapPeer` | An operator chose one expected `PeerId` and initial address | General trust, artifact authorization, or availability |
 | Standard signed peer record | The identity-key holder signed its own address claim | Honest operation, unique control, freshness, or reachability |
 | Local receipt time | This store accepted this exact record recently enough for local policy | Signing time or network-wide freshness |
 | Observed authenticated reachability | One exact endpoint was reachable at one instant | The protocol persists no such observation |
-| `StaticPeer` | The operator authorized one identity for proof transport | Sybil or eclipse resistance |
+| `StaticPeer` | The operator authorized one identity for artifact transport | Sybil or eclipse resistance |
 
 Source and subject are also distinct. The `source` is the configured bootstrap
 whose authenticated connection supplied a batch. The `subject` is the identity
@@ -189,7 +189,7 @@ SHA256(
 Bytewise subject, address, then source order breaks equal scores. Scanning this
 total order selects at most eight rows while preserving at most one address per
 subject, two subjects per source, and one candidate per IPv4 `/16` or IPv6
-`/32` group. A selected candidate conveys no reachability or proof authority.
+`/32` group. A selected candidate conveys no reachability or artifact authority.
 
 ### Snapshot ownership, encoding, and recovery
 
@@ -422,7 +422,7 @@ this exchange, not complete or network-wide absence.
 
 One dedicated `PeerRecordBootstrapClient` has zero to eight configured sources
 and supports only outbound `/naome/peer-record-exchange`. It has no listener,
-inbound stream capacity, responder API, or proof protocol. A cold request dials
+inbound stream capacity, responder API, or artifact protocol. A cold request dials
 the exact configured address and Noise identity; a different identity is a
 terminal transport failure. A healthy authenticated connection may be reused.
 
@@ -475,7 +475,7 @@ or failure is encoded as an empty response.
 
 The responder supports only inbound `/naome/peer-record-exchange`, one
 listener, and any successfully Noise-authenticated requester. It has no dial
-API, outbound protocol, or proof protocol. The responder's Noise `PeerId`
+API, outbound protocol, or artifact protocol. The responder's Noise `PeerId`
 becomes the pull result's source; it is never substituted by a signed subject
 or by an operator's upstream source.
 
@@ -550,5 +550,5 @@ authenticated bootstrap provenance, local receipt freshness, retained sequence
 watermarks, atomic snapshot transitions, deterministic local candidate
 diversification, commit-before-return local issuance, and bounded directional
 exchange. It does not provide reachability, key custody, rollback protection,
-live publication, automatic discovery, proof authorization, operator
+live publication, automatic discovery, artifact authorization, operator
 independence, reputation, Sybil or eclipse resistance, consensus, or finality.

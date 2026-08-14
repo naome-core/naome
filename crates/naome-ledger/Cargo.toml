@@ -2,7 +2,7 @@
 name = "naome-ledger"
 version.workspace = true
 edition.workspace = true
-description = "Deterministic proof ledger state transitions for NAOME."
+description = "Deterministic proof and definition artifact admission for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

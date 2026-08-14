@@ -1,22 +1,22 @@
 use std::fmt::Write;
 
 use super::{
-    AuthenticatedProofSet, ProofPathStep, ProofSetMembership, ProofSetProofError, ProofSetRoot,
-    ProofSetValue, first_differing_bit, key_bit,
+    ArtifactPathStep, ArtifactSetMembership, ArtifactSetProofError, ArtifactSetRoot,
+    ArtifactSetValue, AuthenticatedArtifactSet, first_differing_bit, key_bit,
 };
-use naome_proof::ProofId;
+use naome_proof::ArtifactId;
 
-impl ProofSetValue for ProofId {
-    fn proof_id(&self) -> ProofId {
+impl ArtifactSetValue for ArtifactId {
+    fn artifact_id(&self) -> ArtifactId {
         *self
     }
 }
 
-fn id(bytes: [u8; 32]) -> ProofId {
-    ProofId::from_bytes(bytes)
+fn id(bytes: [u8; 32]) -> ArtifactId {
+    ArtifactId::from_bytes(bytes)
 }
 
-fn id_with_bit(bit: u8) -> ProofId {
+fn id_with_bit(bit: u8) -> ArtifactId {
     let mut bytes = [0; 32];
     let bit = usize::from(bit);
     bytes[bit / 8] = 1_u8 << (7 - bit % 8);
@@ -31,29 +31,29 @@ fn hex(bytes: &[u8]) -> String {
     encoded
 }
 
-fn root_for(order: &[ProofId]) -> ProofSetRoot {
-    let mut set = AuthenticatedProofSet::new();
-    for proof_id in order {
-        assert!(set.insert(*proof_id).is_some());
+fn root_for(order: &[ArtifactId]) -> ArtifactSetRoot {
+    let mut set = AuthenticatedArtifactSet::new();
+    for artifact_id in order {
+        assert!(set.insert(*artifact_id).is_some());
     }
     set.root()
 }
 
-fn reference_root(keys: &[ProofId]) -> ProofSetRoot {
+fn reference_root(keys: &[ArtifactId]) -> ArtifactSetRoot {
     let mut keys = keys.to_vec();
     keys.sort_unstable();
     keys.dedup();
     reference_subtree(&keys)
 }
 
-fn reference_subtree(keys: &[ProofId]) -> ProofSetRoot {
+fn reference_subtree(keys: &[ArtifactId]) -> ArtifactSetRoot {
     match keys {
-        [] => ProofSetRoot::empty(),
-        [key] => ProofSetRoot(super::leaf_digest(*key)),
+        [] => ArtifactSetRoot::empty(),
+        [key] => ArtifactSetRoot(super::leaf_digest(*key)),
         _ => {
             let bit = first_differing_bit(keys[0], keys[keys.len() - 1]);
             let split = keys.partition_point(|key| !key_bit(*key, bit));
-            ProofSetRoot(super::branch_digest(
+            ArtifactSetRoot(super::branch_digest(
                 bit,
                 reference_subtree(&keys[..split]).0,
                 reference_subtree(&keys[split..]).0,
@@ -62,7 +62,7 @@ fn reference_subtree(keys: &[ProofId]) -> ProofSetRoot {
     }
 }
 
-fn permutations(values: &mut [ProofId], start: usize, roots: &mut Vec<ProofSetRoot>) {
+fn permutations(values: &mut [ArtifactId], start: usize, roots: &mut Vec<ArtifactSetRoot>) {
     if start == values.len() {
         roots.push(root_for(values));
         return;
@@ -84,23 +84,23 @@ fn empty_leaf_and_branch_roots_have_stable_goldens() {
 
     assert_eq!(
         hex(root_for(&[]).as_bytes()),
-        "e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca"
+        "976e576ec6145d57b5e192d1c37a0938bb5c76663532d0354fcd98ba3fbf597a"
     );
     assert_eq!(
-        ProofSetRoot::empty().as_bytes(),
+        ArtifactSetRoot::empty().as_bytes(),
         &super::tagged_digest(0x00, &[])
     );
     assert_eq!(
         hex(root_for(&[zero]).as_bytes()),
-        "6035299a52844d846d83ca0395e1a7df37e62b7de9adc638ea2cbaf97d799a04"
+        "f8d94326ff427a5311fd43c28524588f5fa955cb1b1be096a34b1b724c103963"
     );
     assert_eq!(
         hex(root_for(&[zero, id(high)]).as_bytes()),
-        "4c77fb731087d077c434cc706d41eea1fc9aa9b324638f709747b492cbb52687"
+        "f89fb7c7336af38296e54143f3111c23dc352f8795ed76742549767ea42880a5"
     );
     assert_eq!(
         hex(root_for(&[zero, id(high), id(low)]).as_bytes()),
-        "00d65391369a613d7a56aca448277a0da7cc44e57a12a8b2159f0b1c5712c396"
+        "c8ecb7085200b45d99f505bd00fa791d0fdd2bbfc3d65014b89aa9491095d768"
     );
 }
 
@@ -120,7 +120,7 @@ fn long_shared_prefixes_store_only_one_branch() {
     let zero = id([0; 32]);
     let mut last_bit = [0; 32];
     last_bit[31] = 1;
-    let mut set = AuthenticatedProofSet::new();
+    let mut set = AuthenticatedArtifactSet::new();
 
     let _ = set.insert(zero).unwrap();
     let _ = set.insert(id(last_bit)).unwrap();
@@ -135,7 +135,7 @@ fn long_shared_prefixes_store_only_one_branch() {
 fn membership_and_nonmembership_proofs_verify_exclusively() {
     let members = [id([0x11; 32]), id([0x77; 32]), id([0xee; 32])];
     let absent = id([0x55; 32]);
-    let mut set = AuthenticatedProofSet::new();
+    let mut set = AuthenticatedArtifactSet::new();
     for member in members {
         let _ = set.insert(member).unwrap();
     }
@@ -144,29 +144,29 @@ fn membership_and_nonmembership_proofs_verify_exclusively() {
     for member in members {
         assert_eq!(
             set.proof(member).verify(root, member),
-            Ok(ProofSetMembership::Present)
+            Ok(ArtifactSetMembership::Present)
         );
     }
     assert_eq!(
         set.proof(absent).verify(root, absent),
-        Ok(ProofSetMembership::Absent)
+        Ok(ArtifactSetMembership::Absent)
     );
     assert_eq!(
-        AuthenticatedProofSet::<ProofId>::new()
+        AuthenticatedArtifactSet::<ArtifactId>::new()
             .proof(absent)
-            .verify(ProofSetRoot::empty(), absent),
-        Ok(ProofSetMembership::Absent)
+            .verify(ArtifactSetRoot::empty(), absent),
+        Ok(ArtifactSetMembership::Absent)
     );
 }
 
 #[test]
 fn duplicate_insertions_do_not_change_structure_or_root() {
-    let proof_id = id([0x44; 32]);
-    let mut set = AuthenticatedProofSet::new();
-    let _ = set.insert(proof_id).unwrap();
+    let artifact_id = id([0x44; 32]);
+    let mut set = AuthenticatedArtifactSet::new();
+    let _ = set.insert(artifact_id).unwrap();
     let root = set.root();
 
-    assert!(set.insert(proof_id).is_none());
+    assert!(set.insert(artifact_id).is_none());
     assert_eq!(set.len(), 1);
     assert_eq!(set.branches.len(), 0);
     assert_eq!(set.root(), root);
@@ -185,26 +185,26 @@ fn projected_root_matches_insertion_without_mutating_the_selected_set() {
         id([0xe0; 32]),
         id([0xff; 32]),
     ];
-    let mut set = AuthenticatedProofSet::new();
-    for proof_id in selected {
-        let _ = set.insert(proof_id).unwrap();
+    let mut set = AuthenticatedArtifactSet::new();
+    for artifact_id in selected {
+        let _ = set.insert(artifact_id).unwrap();
     }
     let selected_root = set.root();
     let selected_len = set.len();
     let selected_branches = set.branches.len();
 
-    for proof_id in additions {
-        let (projected, existing) = set.projected_root(proof_id);
+    for artifact_id in additions {
+        let (projected, existing) = set.projected_root(artifact_id);
         assert!(!existing);
         assert_eq!(set.root(), selected_root);
         assert_eq!(set.len(), selected_len);
         assert_eq!(set.branches.len(), selected_branches);
 
-        let mut expected = AuthenticatedProofSet::new();
+        let mut expected = AuthenticatedArtifactSet::new();
         for selected in selected {
             let _ = expected.insert(selected).unwrap();
         }
-        let _ = expected.insert(proof_id).unwrap();
+        let _ = expected.insert(artifact_id).unwrap();
         assert_eq!(projected, expected.root());
     }
 }
@@ -221,9 +221,9 @@ fn scalar_projection_matches_deep_reference_paths() {
         id_with_bit(254),
         id_with_bit(255),
     ];
-    let mut selected = AuthenticatedProofSet::new();
-    for proof_id in &corpus[..corpus.len() - 1] {
-        let _ = selected.insert(*proof_id).unwrap();
+    let mut selected = AuthenticatedArtifactSet::new();
+    for artifact_id in &corpus[..corpus.len() - 1] {
+        let _ = selected.insert(*artifact_id).unwrap();
     }
     let before = selected.root();
     let addition = *corpus.last().unwrap();
@@ -235,29 +235,32 @@ fn scalar_projection_matches_deep_reference_paths() {
 
 #[test]
 fn empty_and_singleton_projections_match_real_insertion_without_mutation() {
-    let proof_id = id([0x5a; 32]);
-    let empty = AuthenticatedProofSet::<ProofId>::new();
+    let artifact_id = id([0x5a; 32]);
+    let empty = AuthenticatedArtifactSet::<ArtifactId>::new();
     let empty_root = empty.root();
-    let (singleton_root, existing) = empty.projected_root(proof_id);
+    let (singleton_root, existing) = empty.projected_root(artifact_id);
     assert!(!existing);
-    assert_eq!(singleton_root, reference_root(&[proof_id]));
+    assert_eq!(singleton_root, reference_root(&[artifact_id]));
     assert_eq!(empty.root(), empty_root);
     assert!(empty.is_empty());
 
-    let mut applied = AuthenticatedProofSet::new();
-    let _ = applied.insert(proof_id).unwrap();
+    let mut applied = AuthenticatedArtifactSet::new();
+    let _ = applied.insert(artifact_id).unwrap();
     assert_eq!(applied.root(), singleton_root);
 
-    let mut selected = AuthenticatedProofSet::new();
-    let _ = selected.insert(proof_id).unwrap();
-    assert_eq!(selected.projected_root(proof_id), (selected.root(), true));
+    let mut selected = AuthenticatedArtifactSet::new();
+    let _ = selected.insert(artifact_id).unwrap();
+    assert_eq!(
+        selected.projected_root(artifact_id),
+        (selected.root(), true)
+    );
 }
 
 #[test]
 fn malformed_or_mutated_proofs_fail_closed() {
     let members = [id([0x10; 32]), id([0x40; 32]), id([0xf0; 32])];
     let query = id([0x20; 32]);
-    let mut set = AuthenticatedProofSet::new();
+    let mut set = AuthenticatedArtifactSet::new();
     for member in members {
         let _ = set.insert(member).unwrap();
     }
@@ -268,33 +271,33 @@ fn malformed_or_mutated_proofs_fail_closed() {
     changed_sibling.path[0].sibling[0] ^= 1;
     assert!(matches!(
         changed_sibling.verify(root, query),
-        Err(ProofSetProofError::RootMismatch { .. })
+        Err(ArtifactSetProofError::RootMismatch { .. })
     ));
 
     let mut changed_bit = proof.clone();
     changed_bit.path[0].bit = changed_bit.path[1].bit;
     assert!(matches!(
         changed_bit.verify(root, query),
-        Err(ProofSetProofError::NonIncreasingBits { .. })
+        Err(ArtifactSetProofError::NonIncreasingBits { .. })
     ));
 
     let mut empty_sibling = proof.clone();
-    empty_sibling.path[0].sibling = *ProofSetRoot::empty().as_bytes();
+    empty_sibling.path[0].sibling = *ArtifactSetRoot::empty().as_bytes();
     assert!(matches!(
         empty_sibling.verify(root, query),
-        Err(ProofSetProofError::EmptySibling { .. })
+        Err(ArtifactSetProofError::EmptySibling { .. })
     ));
 
     let mut wrong_terminal = proof.clone();
-    wrong_terminal.terminal = super::ProofTerminal::NonMember(id([0xa0; 32]));
+    wrong_terminal.terminal = super::ArtifactTerminal::NonMember(id([0xa0; 32]));
     assert!(matches!(
         wrong_terminal.verify(root, query),
-        Err(ProofSetProofError::TerminalPathMismatch { .. })
+        Err(ArtifactSetProofError::TerminalPathMismatch { .. })
     ));
 
     let mut too_long = proof;
     too_long.path = vec![
-        ProofPathStep {
+        ArtifactPathStep {
             sibling: [0x55; 32],
             bit: 0,
         };
@@ -303,14 +306,14 @@ fn malformed_or_mutated_proofs_fail_closed() {
     .into_boxed_slice();
     assert_eq!(
         too_long.verify(root, query),
-        Err(ProofSetProofError::PathTooLong)
+        Err(ArtifactSetProofError::PathTooLong)
     );
 
     let mut wrong_root = *root.as_bytes();
     wrong_root[0] ^= 1;
     assert!(matches!(
         set.proof(query)
-            .verify(ProofSetRoot::from_bytes(wrong_root), query),
-        Err(ProofSetProofError::RootMismatch { .. })
+            .verify(ArtifactSetRoot::from_bytes(wrong_root), query),
+        Err(ArtifactSetProofError::RootMismatch { .. })
     ));
 }
