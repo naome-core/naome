@@ -28,6 +28,25 @@ const SELF_EQUALITY_PROOF_HEX: &str = "000000020600000000210000000000000000";
 const PROOF_ID_EXPECTED: &str = "a 64-digit lowercase hexadecimal ProofId";
 
 const IMPLICATION_SOURCE: &str = include_str!("../../../examples/implication-identity.nao");
+const INLINED_IMPLICATION_SOURCE: &str = r#"
+foundation = "naome:zfc"
+statement = forall(x, implies(equal(x, x), equal(x, x)))
+proof:
+    p0 = simplification(equal(x, x), equal(x, x))
+    p1 = simplification(
+        equal(x, x),
+        implies(equal(x, x), equal(x, x)),
+    )
+    p2 = frege(
+        equal(x, x),
+        implies(equal(x, x), equal(x, x)),
+        equal(x, x),
+    )
+    p3 = modus_ponens(p1, p2)
+    p4 = modus_ponens(p0, p3)
+    p5 = generalization(p4, x)
+    return p5
+"#;
 const QUANTIFIER_SOURCE: &str = include_str!("../../../examples/quantifier-instantiation.nao");
 const EQUALITY_SUBSTITUTION_SOURCE: &str =
     include_str!("../../../examples/equality-substitution.nao");
@@ -64,6 +83,15 @@ fn parse_formula(source: &str, context: FormulaContext) -> Result<ParsedFormula,
 
 fn parse_step(source: &str) -> Result<ProofStep, CompileError> {
     parse_step_with_names(source, &[])
+}
+
+fn parse_bound_step(binding: &str, step: &str) -> Result<ProofStep, CompileError> {
+    let source = format!("{binding} {step}");
+    let mut parser = Parser::new(&source);
+    parser.formula_binding()?;
+    let step = parser.proof_step()?;
+    parser.end()?;
+    Ok(step)
 }
 
 fn parse_step_with_names(source: &str, names: &[&'static str]) -> Result<ProofStep, CompileError> {
@@ -182,6 +210,133 @@ fn every_repository_example_preserves_its_checked_identities_and_bytes() {
         );
         assert_eq!(compiled.proof_id(), ProofId::from_bytes(hex32(proof)));
         assert_eq!(compiled.canonical_proof_bytes(), hex_bytes(bytes));
+    }
+}
+
+#[test]
+fn formula_bindings_preserve_the_exact_inlined_checked_artifact() {
+    let bound = r#"
+foundation = "naome:zfc"
+formulas:
+    unused = equal(z, z)
+    reflexive = equal(x, x)
+    identity = implies(reflexive, reflexive)
+statement = forall(x, identity)
+proof:
+    p0 = simplification(reflexive, reflexive)
+    p1 = simplification(reflexive, identity)
+    p2 = frege(reflexive, identity, reflexive)
+    p3 = modus_ponens(p1, p2)
+    p4 = modus_ponens(p0, p3)
+    p5 = generalization(p4, x)
+    return p5
+"#;
+    let baseline = compile(INLINED_IMPLICATION_SOURCE).unwrap();
+    assert_eq!(compile(IMPLICATION_SOURCE).unwrap(), baseline);
+    assert_eq!(compile(bound).unwrap(), baseline);
+
+    let reordered = bound.replace(
+        "    unused = equal(z, z)\n    reflexive = equal(x, x)",
+        "    reflexive = equal(x, x)\n    unused = equal(z, z)",
+    );
+    assert_eq!(compile(&reordered).unwrap(), baseline);
+
+    let renamed = bound
+        .replace("reflexive", "r")
+        .replace("identity", "i")
+        .replace("unused = equal(z, z)", "other = equal(y, y)");
+    assert_eq!(compile(&renamed).unwrap(), baseline);
+}
+
+#[test]
+fn binding_expansion_uses_the_global_variable_namespace_and_enclosing_binders() {
+    let captured = r#"
+foundation = "naome:zfc"
+formulas:
+    reflexive = equal(x, x)
+    closed = forall(x, reflexive)
+statement = closed
+proof:
+    p0 = equality_reflexivity(x)
+    p1 = generalization(p0, x)
+    return p1
+"#;
+    assert_eq!(compile(captured).unwrap(), compile(SOURCE).unwrap());
+
+    let independent_namespaces = r#"
+foundation = "naome:zfc"
+formulas:
+    x = equal(x, x)
+    p0 = x
+statement = forall(x, p0)
+proof:
+    p0 = equality_reflexivity(x)
+    p1 = generalization(p0, x)
+    return p1
+"#;
+    assert_eq!(
+        compile(independent_namespaces).unwrap(),
+        compile(SOURCE).unwrap()
+    );
+
+    let step_position = r#"
+foundation = "naome:zfc"
+formulas:
+    premise = equal(x, x)
+statement = forall(x, premise)
+proof:
+    p0 = equality_reflexivity(x)
+    p1 = modus_ponens(premise, p0)
+    return p1
+"#;
+    assert!(matches!(
+        compile(step_position),
+        Err(CompileError::UnknownStep { name, .. }) if name == "premise"
+    ));
+}
+
+#[test]
+fn bindings_are_accepted_in_every_formula_bearing_proof_operand() {
+    for (bound, inlined) in [
+        (
+            "simplification(refl, refl)",
+            "simplification(equal(x, x), equal(x, x))",
+        ),
+        (
+            "frege(refl, refl, refl)",
+            "frege(equal(x, x), equal(x, x), equal(x, x))",
+        ),
+        (
+            "classical_contraposition(refl, refl)",
+            "classical_contraposition(equal(x, x), equal(x, x))",
+        ),
+        (
+            "universal_distribution(x, refl, refl)",
+            "universal_distribution(x, equal(x, x), equal(x, x))",
+        ),
+        ("vacuous_universal(refl)", "vacuous_universal(equal(x, x))"),
+        (
+            "universal_instantiation(x, x, refl)",
+            "universal_instantiation(x, x, equal(x, x))",
+        ),
+        (
+            "equality_substitution(x, x, refl)",
+            "equality_substitution(x, x, equal(x, x))",
+        ),
+        (
+            "separation(refl, x, x, x, parameters=[refl])",
+            "separation(equal(x, x), x, x, x, parameters=[refl])",
+        ),
+        (
+            "replacement(refl, x, x, x, x, x, parameters=[])",
+            "replacement(equal(x, x), x, x, x, x, x, parameters=[])",
+        ),
+    ] {
+        assert_eq!(
+            parse_bound_step("refl = equal(x, x)", bound).unwrap(),
+            parse_step(inlined).unwrap(),
+            "binding changed {bound}"
+        );
     }
 }
 
@@ -320,9 +475,14 @@ fn call_commas_arity_and_trailing_commas_are_exact() {
         );
     }
 
+    for source in ["and_(broken, equal(x, x))", "and_(equal(x, x), broken)"] {
+        assert!(matches!(
+            parse_formula(source, FormulaContext::Statement),
+            Err(CompileError::UnknownFormulaBinding { name, .. }) if name == "broken"
+        ));
+    }
+
     for (source, expected) in [
-        ("and_(broken, equal(x, x))", "`(`"),
-        ("and_(equal(x, x), broken)", "`(`"),
         ("or_(equal(x, x))", "`,`"),
         ("iff(equal(x, x), equal(y, y), extra)", "`)`"),
         ("exists(1bad, equal(x, x))", "a name"),
@@ -348,10 +508,7 @@ fn formula_and_rule_spellings_have_one_python_shaped_form() {
         "not-equal(x, y)",
         "not_equal(x-y, z)",
     ] {
-        assert!(matches!(
-            parse_formula(source, FormulaContext::Statement),
-            Err(CompileError::Syntax { .. })
-        ));
+        assert!(parse_formula(source, FormulaContext::Statement).is_err());
     }
 
     for source in [
@@ -823,6 +980,242 @@ fn duplicate_unknown_forward_and_nonfinal_steps_fail_at_their_source_offsets() {
 }
 
 #[test]
+fn formula_binding_block_is_nonempty_unique_and_backward_only() {
+    let source = |bindings: &str, statement: &str| {
+        format!(
+            "foundation = \"naome:zfc\" formulas: {bindings} statement = {statement} proof: p0 = equality_reflexivity(x) p1 = generalization(p0, x) return p1"
+        )
+    };
+
+    let empty = source("", "forall(x, equal(x, x))");
+    assert_eq!(
+        compile(&empty),
+        Err(CompileError::Syntax {
+            offset: empty.find("statement").unwrap(),
+            expected: "at least one formula binding",
+        })
+    );
+
+    let repeated_block = source(
+        "fact = equal(x, x) formulas: other = equal(x, x)",
+        "forall(x, fact)",
+    );
+    assert_eq!(
+        compile(&repeated_block),
+        Err(CompileError::Syntax {
+            offset: repeated_block.rfind("formulas:").unwrap(),
+            expected: "a non-reserved formula binding name",
+        })
+    );
+
+    let duplicate = source("fact = equal(x, x) fact = unsupported(", "forall(x, fact)");
+    let duplicate_offset = duplicate.rfind("fact =").unwrap();
+    assert_eq!(
+        compile(&duplicate),
+        Err(CompileError::DuplicateFormulaBinding {
+            offset: duplicate_offset,
+            name: "fact".to_owned(),
+        })
+    );
+
+    for bindings in ["fact = fact", "fact = later later = equal(x, x)"] {
+        let invalid = source(bindings, "forall(x, equal(x, x))");
+        let reference = if bindings == "fact = fact" {
+            invalid.find("= fact").unwrap() + 2
+        } else {
+            invalid.find("= later").unwrap() + 2
+        };
+        let expected_name = if bindings == "fact = fact" {
+            "fact"
+        } else {
+            "later"
+        };
+        assert_eq!(
+            compile(&invalid),
+            Err(CompileError::UnknownFormulaBinding {
+                offset: reference,
+                name: expected_name.to_owned(),
+            })
+        );
+    }
+
+    let unknown = source("fact = equal(x, x)", "forall(x, missing)");
+    assert_eq!(
+        compile(&unknown),
+        Err(CompileError::UnknownFormulaBinding {
+            offset: unknown.find("missing").unwrap(),
+            name: "missing".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn fixed_names_and_call_shape_cannot_be_reinterpreted_as_bindings() {
+    const RESERVED: &[&str] = &[
+        "foundation",
+        "formulas",
+        "statement",
+        "proof",
+        "return",
+        "parameters",
+        "equal",
+        "member",
+        "not_",
+        "implies",
+        "forall",
+        "and_",
+        "or_",
+        "iff",
+        "exists",
+        "not_equal",
+        "simplification",
+        "frege",
+        "classical_contraposition",
+        "universal_distribution",
+        "vacuous_universal",
+        "universal_instantiation",
+        "modus_ponens",
+        "equality_reflexivity",
+        "equality_substitution",
+        "zfc_axiom",
+        "separation",
+        "replacement",
+        "cite",
+        "generalization",
+    ];
+
+    for name in RESERVED {
+        let source = format!(
+            "foundation = \"naome:zfc\" formulas: {name} = equal(x, x) statement = forall(x, equal(x, x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0, x) return p1"
+        );
+        assert!(
+            matches!(compile(&source), Err(CompileError::Syntax { .. })),
+            "accepted reserved binding {name}"
+        );
+    }
+
+    for bare in ["equal", "return", "simplification"] {
+        let source = complete_source(
+            &format!("forall(x, {bare})"),
+            "p0 = equality_reflexivity(x) p1 = generalization(p0, x)",
+            "p1",
+        );
+        assert!(matches!(compile(&source), Err(CompileError::Syntax { .. })));
+    }
+
+    let unknown_call = complete_source(
+        "forall(x, missing())",
+        "p0 = equality_reflexivity(x) p1 = generalization(p0, x)",
+        "p1",
+    );
+    assert!(matches!(
+        compile(&unknown_call),
+        Err(CompileError::Syntax {
+            expected: "a supported formula",
+            ..
+        })
+    ));
+
+    let unknown_bare = complete_source(
+        "forall(x, missing)",
+        "p0 = equality_reflexivity(x) p1 = generalization(p0, x)",
+        "p1",
+    );
+    assert!(matches!(
+        compile(&unknown_bare),
+        Err(CompileError::UnknownFormulaBinding { name, .. }) if name == "missing"
+    ));
+
+    let binding_as_axiom_selector = r#"
+foundation = "naome:zfc"
+formulas:
+    selector = equal(x, x)
+statement = forall(x, equal(x, x))
+proof:
+    p0 = zfc_axiom(selector)
+    return p0
+"#;
+    assert!(matches!(
+        compile(binding_as_axiom_selector),
+        Err(CompileError::Syntax {
+            expected: "a quoted ZFC axiom selector",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn formula_binding_failures_keep_source_precedence_and_bounded_full_name_spans() {
+    let wrong_foundation = "foundation = \"wrong\" formulas: fact = missing statement = missing";
+    assert!(matches!(
+        compile(wrong_foundation),
+        Err(CompileError::FoundationMismatch { .. })
+    ));
+
+    let malformed_block = SOURCE.replacen(
+        "statement =",
+        "formulas = fact = equal(x, x) statement =",
+        1,
+    );
+    assert!(matches!(
+        compile(&malformed_block),
+        Err(CompileError::Syntax {
+            expected: "`:`",
+            ..
+        })
+    ));
+
+    let long_name = "n".repeat(DIAGNOSTIC_NAME_MAX_SCALARS + 32);
+    let source = format!(
+        "foundation = \"naome:zfc\" formulas: {long_name} = equal(x, x) {long_name} = equal(x, x) statement = forall(x, equal(x, x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0, x) return p1"
+    );
+    let offset = source.rfind(&long_name).unwrap();
+    let error = compile(&source).unwrap_err();
+    assert_eq!(
+        error,
+        CompileError::DuplicateFormulaBinding {
+            offset,
+            name: long_name.clone(),
+        }
+    );
+    let diagnostic = error.diagnostic(&source);
+    let span = diagnostic.primary_span().unwrap();
+    assert_eq!(&source[span.start()..span.end()], long_name);
+    assert_eq!(diagnostic.code(), DiagnosticCode::DuplicateFormulaBinding);
+    assert_eq!(
+        diagnostic.message(),
+        format!(
+            "duplicate formula binding \"{}...\"",
+            "n".repeat(DIAGNOSTIC_NAME_MAX_SCALARS)
+        )
+    );
+
+    let unknown_source = format!(
+        "foundation = \"naome:zfc\" formulas: fact = equal(x, x) statement = forall(x, {long_name}) proof: p0 = equality_reflexivity(x) p1 = generalization(p0, x) return p1"
+    );
+    let offset = unknown_source.find(&long_name).unwrap();
+    let error = compile(&unknown_source).unwrap_err();
+    assert_eq!(
+        error,
+        CompileError::UnknownFormulaBinding {
+            offset,
+            name: long_name.clone(),
+        }
+    );
+    let diagnostic = error.diagnostic(&unknown_source);
+    let span = diagnostic.primary_span().unwrap();
+    assert_eq!(&unknown_source[span.start()..span.end()], long_name);
+    assert_eq!(diagnostic.code(), DiagnosticCode::UnknownFormulaBinding);
+    assert_eq!(
+        diagnostic.message(),
+        format!(
+            "unknown or forward formula binding \"{}...\"",
+            "n".repeat(DIAGNOSTIC_NAME_MAX_SCALARS)
+        )
+    );
+}
+
+#[test]
 fn complete_parsing_precedes_checking_and_statement_comparison() {
     let trailing = format!("{SOURCE} trailing");
     assert!(matches!(
@@ -881,6 +1274,35 @@ fn citation_lowers_to_the_exact_checked_identity_without_mutating_state() {
     );
     assert!(state.contains_proof(ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX))));
     assert!(!state.contains_proof(reference.proof_id()));
+}
+
+#[test]
+fn formula_bindings_do_not_change_citation_identity_or_reference_authority() {
+    let (state, _) = checked_state(SOURCE);
+    let inlined = proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX);
+    let bound = format!(
+        "foundation = \"naome:zfc\" formulas: reflexive = equal(x, x) closed = forall(x, reflexive) statement = closed proof: known = cite(\"{SELF_EQUALITY_PROOF_ID_HEX}\") return known"
+    );
+    assert_eq!(
+        compile_with_proof_state(&bound, &state).unwrap(),
+        compile_with_proof_state(&inlined, &state).unwrap()
+    );
+    assert_check_error(
+        compile(&bound),
+        CheckError::UnknownProofReference {
+            step: 0,
+            proof_id: ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX)),
+        },
+    );
+
+    let binding_as_id = "foundation = \"naome:zfc\" formulas: dependency = forall(x, equal(x, x)) statement = dependency proof: known = cite(dependency) return known";
+    assert!(matches!(
+        compile(binding_as_id),
+        Err(CompileError::Syntax {
+            expected: PROOF_ID_EXPECTED,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -1051,20 +1473,25 @@ fn derived_formula_node_and_depth_limits_apply_to_expanded_primitives() {
     const IFF: &str = "iff(equal(x, x), equal(y, y))";
     let expanded_nodes = 9;
     for (context, maximum) in [
+        (FormulaContext::Binding, FORMULA_BINDING_MAX_NODES),
         (FormulaContext::Statement, FORMULA_MAX_NODES),
         (FormulaContext::Certificate, CERTIFICATE_MAX_FORMULA_NODES),
     ] {
         let mut parser = Parser::new(IFF);
         match context {
+            FormulaContext::Binding => {
+                parser.formula_binding_nodes = maximum - expanded_nodes;
+            }
             FormulaContext::Statement => parser.statement_nodes = maximum - expanded_nodes,
             FormulaContext::Certificate => {
                 parser.certificate_formula_nodes = maximum - expanded_nodes;
             }
         }
         let parsed = parser.parsed_formula(1, context).unwrap();
-        assert_eq!(parsed.expanded_nodes, expanded_nodes);
+        assert_eq!(parsed.expanded_nodes as usize, expanded_nodes);
         assert_eq!(
             match context {
+                FormulaContext::Binding => parser.formula_binding_nodes,
                 FormulaContext::Statement => parser.statement_nodes,
                 FormulaContext::Certificate => parser.certificate_formula_nodes,
             },
@@ -1073,12 +1500,19 @@ fn derived_formula_node_and_depth_limits_apply_to_expanded_primitives() {
 
         let mut parser = Parser::new(IFF);
         match context {
+            FormulaContext::Binding => {
+                parser.formula_binding_nodes = maximum - expanded_nodes + 1;
+            }
             FormulaContext::Statement => parser.statement_nodes = maximum - expanded_nodes + 1,
             FormulaContext::Certificate => {
                 parser.certificate_formula_nodes = maximum - expanded_nodes + 1;
             }
         }
         assert!(match (context, parser.parsed_formula(1, context)) {
+            (
+                FormulaContext::Binding,
+                Err(CompileError::FormulaBindingNodeLimitExceeded { maximum, .. }),
+            ) => maximum == FORMULA_BINDING_MAX_NODES,
             (
                 FormulaContext::Statement,
                 Err(CompileError::Statement {
@@ -1126,6 +1560,147 @@ fn derived_formula_node_and_depth_limits_apply_to_expanded_primitives() {
         Err(CompileError::FormulaDepthLimitExceeded { offset, maximum })
             if offset == terminal_offset && maximum == FORMULA_MAX_DEPTH
     ));
+}
+
+#[test]
+fn formula_alias_uses_recharge_every_context_before_clone() {
+    const SOURCE: &str = "fact = iff(equal(x, x), equal(y, y)) fact";
+    const NODES: usize = 9;
+    const DEPTH: u32 = 5;
+
+    for (context, maximum) in [
+        (FormulaContext::Binding, FORMULA_BINDING_MAX_NODES),
+        (FormulaContext::Statement, FORMULA_MAX_NODES),
+        (FormulaContext::Certificate, CERTIFICATE_MAX_FORMULA_NODES),
+    ] {
+        let mut at_limit = Parser::new(SOURCE);
+        at_limit.formula_binding().unwrap();
+        match context {
+            FormulaContext::Binding => at_limit.formula_binding_nodes = maximum - NODES,
+            FormulaContext::Statement => at_limit.statement_nodes = maximum - NODES,
+            FormulaContext::Certificate => {
+                at_limit.certificate_formula_nodes = maximum - NODES;
+            }
+        }
+        let alias_offset = at_limit.next_offset();
+        let parsed = at_limit.parsed_formula(1, context).unwrap();
+        assert_eq!(parsed.expanded_nodes as usize, NODES);
+        assert_eq!(parsed.expanded_depth, DEPTH);
+        assert_eq!(
+            match context {
+                FormulaContext::Binding => at_limit.formula_binding_nodes,
+                FormulaContext::Statement => at_limit.statement_nodes,
+                FormulaContext::Certificate => at_limit.certificate_formula_nodes,
+            },
+            maximum
+        );
+        at_limit.end().unwrap();
+
+        let mut over_limit = Parser::new(SOURCE);
+        over_limit.formula_binding().unwrap();
+        match context {
+            FormulaContext::Binding => over_limit.formula_binding_nodes = maximum - NODES + 1,
+            FormulaContext::Statement => over_limit.statement_nodes = maximum - NODES + 1,
+            FormulaContext::Certificate => {
+                over_limit.certificate_formula_nodes = maximum - NODES + 1;
+            }
+        }
+        assert!(match (context, over_limit.parsed_formula(1, context)) {
+            (
+                FormulaContext::Binding,
+                Err(CompileError::FormulaBindingNodeLimitExceeded { offset, maximum }),
+            ) => offset == alias_offset && maximum == FORMULA_BINDING_MAX_NODES,
+            (
+                FormulaContext::Statement,
+                Err(CompileError::Statement {
+                    offset,
+                    source: FormulaCodecError::NodeLimitExceeded { maximum },
+                }),
+            ) => offset == alias_offset && maximum == FORMULA_MAX_NODES,
+            (
+                FormulaContext::Certificate,
+                Err(CompileError::Certificate {
+                    offset,
+                    source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
+                }),
+            ) => offset == alias_offset && maximum == CERTIFICATE_MAX_FORMULA_NODES,
+            _ => false,
+        });
+
+        let mut at_depth = Parser::new(SOURCE);
+        at_depth.formula_binding().unwrap();
+        assert!(
+            at_depth
+                .parsed_formula(FORMULA_MAX_DEPTH - DEPTH + 1, context)
+                .is_ok()
+        );
+        let mut over_depth = Parser::new(SOURCE);
+        over_depth.formula_binding().unwrap();
+        assert!(matches!(
+            over_depth.parsed_formula(FORMULA_MAX_DEPTH - DEPTH + 2, context),
+            Err(CompileError::FormulaDepthLimitExceeded { offset, maximum })
+                if offset == alias_offset && maximum == FORMULA_MAX_DEPTH
+        ));
+    }
+}
+
+#[test]
+fn unknown_alias_precedes_an_exhausted_use_budget_in_every_context() {
+    for (context, maximum) in [
+        (FormulaContext::Binding, FORMULA_BINDING_MAX_NODES),
+        (FormulaContext::Statement, FORMULA_MAX_NODES),
+        (FormulaContext::Certificate, CERTIFICATE_MAX_FORMULA_NODES),
+    ] {
+        let mut parser = Parser::new("missing");
+        match context {
+            FormulaContext::Binding => parser.formula_binding_nodes = maximum,
+            FormulaContext::Statement => parser.statement_nodes = maximum,
+            FormulaContext::Certificate => parser.certificate_formula_nodes = maximum,
+        }
+        assert!(matches!(
+            parser.parsed_formula(1, context),
+            Err(CompileError::UnknownFormulaBinding { offset: 0, name })
+                if name == "missing"
+        ));
+    }
+}
+
+#[test]
+fn alias_doubling_cannot_bypass_the_cumulative_retention_budget() {
+    use std::fmt::Write as _;
+
+    let mut source = String::from("a0 = equal(x, x) ");
+    for index in 1..=15 {
+        write!(
+            &mut source,
+            "a{index} = implies(a{}, a{}) ",
+            index - 1,
+            index - 1
+        )
+        .unwrap();
+    }
+    let mut parser = Parser::new(&source);
+    for _ in 0..15 {
+        parser.formula_binding().unwrap();
+    }
+    assert_eq!(parser.formula_binding_nodes, 65_519);
+    let error_offset = source.rfind("a15 = implies(a14").unwrap() + "a15 = implies(".len();
+    let error = parser.formula_binding().unwrap_err();
+    assert_eq!(
+        error,
+        CompileError::FormulaBindingNodeLimitExceeded {
+            offset: error_offset,
+            maximum: FORMULA_BINDING_MAX_NODES,
+        }
+    );
+    assert!(!parser.formula_bindings.contains_key("a15"));
+    let diagnostic = error.diagnostic(&source);
+    let span = diagnostic.primary_span().unwrap();
+    assert_eq!(&source[span.start()..span.end()], "a14");
+    assert_eq!(
+        diagnostic.message(),
+        format!("formula bindings exceed the {FORMULA_BINDING_MAX_NODES}-node retention limit")
+    );
 }
 
 #[test]
@@ -1242,6 +1817,18 @@ fn diagnostic_codes_and_source_positions_are_stable() {
         CompileError::StatementMismatch {
             span: SourceSpan::point(0),
         },
+        CompileError::DuplicateFormulaBinding {
+            offset: 0,
+            name: "formula".to_owned(),
+        },
+        CompileError::UnknownFormulaBinding {
+            offset: 0,
+            name: "formula".to_owned(),
+        },
+        CompileError::FormulaBindingNodeLimitExceeded {
+            offset: 0,
+            maximum: FORMULA_BINDING_MAX_NODES,
+        },
     ];
     assert_eq!(
         errors
@@ -1250,7 +1837,7 @@ fn diagnostic_codes_and_source_positions_are_stable() {
             .collect::<Vec<_>>(),
         vec![
             "NAO0001", "NAO0002", "NAO0003", "NAO0004", "NAO0005", "NAO0006", "NAO0007", "NAO0008",
-            "NAO0009", "NAO0010", "NAO0011",
+            "NAO0009", "NAO0010", "NAO0011", "NAO0012", "NAO0013", "NAO0014",
         ]
     );
     assert_eq!(errors[0].source_offset(), None);

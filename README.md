@@ -21,9 +21,11 @@ A prerelease `.nao` compiler provides a bounded, complete source-authoring path
 from one closed statement through every Foundation axiom, schema, and explicit
 inference rule to checked canonical proof bytes and IDs. Its Python-shaped call
 syntax uses one spelling per form, short SSA-style proof names, and no theorem
-wrapper, braces, semicolons, or step markers. `and_`/`or_`/`iff`/`exists`/
-`not_equal` reduce nesting before being expanded to the same primitive
-Foundation formulas:
+wrapper, braces, semicolons, or step markers. An optional `formulas:` block gives
+repeated formulas backward-only presentation names; every use expands to the
+same primitive formula and cannot change canonical proof bytes or identities.
+`and_`/`or_`/`iff`/`exists`/`not_equal` likewise reduce nesting before primitive
+expansion:
 
 ```sh
 cargo run -p naome-authoring --bin naome -- proof examples/separation.nao
@@ -39,7 +41,7 @@ fetch, select, register, or mutate proofs; the CLI deliberately uses an empty
 state and rejects reachable references. The normative authoring specification
 includes the full source form and selected-state boundary.
 
-Compilation failures expose stable `NAO0001`-`NAO0011` classes; source-local
+Compilation failures expose stable `NAO0001`-`NAO0014` classes; source-local
 failures also carry UTF-8 spans and one-based line and column positions for
 deterministic agent repair.
 The CLI renders one compact diagnostic line and never echoes an unbounded

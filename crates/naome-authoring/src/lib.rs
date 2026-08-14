@@ -19,6 +19,7 @@ use naome_storage::{ProofChainJournal, ProofChainJournalError};
 pub const AUTHORING_SOURCE_MAX_BYTES: usize = CERTIFICATE_MAX_BYTES;
 
 const DIAGNOSTIC_NAME_MAX_SCALARS: usize = 64;
+const FORMULA_BINDING_MAX_NODES: usize = FORMULA_MAX_NODES;
 
 /// Compiles one complete, dependency-free `.nao` proof source.
 ///
@@ -151,6 +152,9 @@ pub enum DiagnosticCode {
     Certificate,
     Check,
     StatementMismatch,
+    DuplicateFormulaBinding,
+    UnknownFormulaBinding,
+    FormulaBindingNodeLimitExceeded,
 }
 
 impl DiagnosticCode {
@@ -168,6 +172,9 @@ impl DiagnosticCode {
             Self::Certificate => "NAO0009",
             Self::Check => "NAO0010",
             Self::StatementMismatch => "NAO0011",
+            Self::DuplicateFormulaBinding => "NAO0012",
+            Self::UnknownFormulaBinding => "NAO0013",
+            Self::FormulaBindingNodeLimitExceeded => "NAO0014",
         }
     }
 }
@@ -306,6 +313,12 @@ pub enum CompileError {
     },
     /// The checked conclusion differs from the source statement.
     StatementMismatch { span: SourceSpan },
+    /// A source-only formula binding was declared more than once.
+    DuplicateFormulaBinding { offset: usize, name: String },
+    /// A formula position names a binding that has not already been declared.
+    UnknownFormulaBinding { offset: usize, name: String },
+    /// Expanded formula bindings exceed their cumulative retention budget.
+    FormulaBindingNodeLimitExceeded { offset: usize, maximum: usize },
 }
 
 impl CompileError {
@@ -323,6 +336,11 @@ impl CompileError {
             Self::Certificate { .. } => DiagnosticCode::Certificate,
             Self::Check { .. } => DiagnosticCode::Check,
             Self::StatementMismatch { .. } => DiagnosticCode::StatementMismatch,
+            Self::DuplicateFormulaBinding { .. } => DiagnosticCode::DuplicateFormulaBinding,
+            Self::UnknownFormulaBinding { .. } => DiagnosticCode::UnknownFormulaBinding,
+            Self::FormulaBindingNodeLimitExceeded { .. } => {
+                DiagnosticCode::FormulaBindingNodeLimitExceeded
+            }
         }
     }
 
@@ -337,7 +355,10 @@ impl CompileError {
             | Self::ReturnNotFinal { offset }
             | Self::FormulaDepthLimitExceeded { offset, .. }
             | Self::Statement { offset, .. }
-            | Self::Certificate { offset, .. } => Some(*offset),
+            | Self::Certificate { offset, .. }
+            | Self::DuplicateFormulaBinding { offset, .. }
+            | Self::UnknownFormulaBinding { offset, .. }
+            | Self::FormulaBindingNodeLimitExceeded { offset, .. } => Some(*offset),
             Self::Check { span, .. } | Self::StatementMismatch { span } => Some(span.start()),
         }
     }
@@ -368,7 +389,12 @@ impl CompileError {
             | Self::ReturnNotFinal { offset }
             | Self::FormulaDepthLimitExceeded { offset, .. }
             | Self::Statement { offset, .. }
-            | Self::Certificate { offset, .. } => source_token_span(source, *offset)?,
+            | Self::Certificate { offset, .. }
+            | Self::DuplicateFormulaBinding { offset, .. }
+            | Self::UnknownFormulaBinding { offset, .. }
+            | Self::FormulaBindingNodeLimitExceeded { offset, .. } => {
+                source_token_span(source, *offset)?
+            }
             Self::Check { span, .. } | Self::StatementMismatch { span } => *span,
         };
         valid_source_span(source, span).then_some(span)
@@ -403,6 +429,16 @@ impl CompileError {
             }
             Self::StatementMismatch { .. } => {
                 "declared statement differs from the checked conclusion".to_owned()
+            }
+            Self::DuplicateFormulaBinding { name, .. } => {
+                format!("duplicate formula binding {}", diagnostic_name(name))
+            }
+            Self::UnknownFormulaBinding { name, .. } => format!(
+                "unknown or forward formula binding {}",
+                diagnostic_name(name)
+            ),
+            Self::FormulaBindingNodeLimitExceeded { maximum, .. } => {
+                format!("formula bindings exceed the {maximum}-node retention limit")
             }
         }
     }
@@ -451,6 +487,20 @@ impl fmt::Display for CompileError {
             Self::StatementMismatch { .. } => {
                 formatter.write_str("declared statement differs from the checked conclusion")
             }
+            Self::DuplicateFormulaBinding { offset, name } => {
+                write!(
+                    formatter,
+                    "duplicate formula binding {name:?} at byte {offset}"
+                )
+            }
+            Self::UnknownFormulaBinding { offset, name } => write!(
+                formatter,
+                "unknown or forward formula binding {name:?} at byte {offset}"
+            ),
+            Self::FormulaBindingNodeLimitExceeded { offset, maximum } => write!(
+                formatter,
+                "formula bindings at byte {offset} exceed the {maximum}-node retention limit"
+            ),
         }
     }
 }
@@ -590,13 +640,14 @@ fn source_position(source: &str, offset: usize) -> Option<SourcePosition> {
 
 #[derive(Clone, Copy)]
 enum FormulaContext {
+    Binding,
     Statement,
     Certificate,
 }
 
 struct ParsedFormula {
     formula: Formula,
-    expanded_nodes: usize,
+    expanded_nodes: u32,
     expanded_depth: u32,
 }
 
@@ -610,7 +661,9 @@ struct Parser<'source> {
     source: &'source str,
     offset: usize,
     variables: HashMap<&'source str, FreeVariable>,
+    formula_bindings: HashMap<&'source str, ParsedFormula>,
     steps: HashMap<&'source str, StepBinding>,
+    formula_binding_nodes: usize,
     statement_nodes: usize,
     certificate_formula_nodes: usize,
 }
@@ -621,7 +674,9 @@ impl<'source> Parser<'source> {
             source,
             offset: 0,
             variables: HashMap::new(),
+            formula_bindings: HashMap::new(),
             steps: HashMap::new(),
+            formula_binding_nodes: 0,
             statement_nodes: 0,
             certificate_formula_nodes: 0,
         }
@@ -636,6 +691,22 @@ impl<'source> Parser<'source> {
             return Err(CompileError::FoundationMismatch {
                 offset: foundation_offset,
             });
+        }
+        if self.peek_word("formulas") {
+            self.keyword("formulas")?;
+            self.punctuation(':')?;
+            if self.peek_word("statement") {
+                return Err(CompileError::Syntax {
+                    offset: self.next_offset(),
+                    expected: "at least one formula binding",
+                });
+            }
+            loop {
+                self.formula_binding()?;
+                if self.peek_word("statement") {
+                    break;
+                }
+            }
         }
         self.keyword("statement")?;
         self.punctuation('=')?;
@@ -691,6 +762,8 @@ impl<'source> Parser<'source> {
                 offset: result_offset,
             });
         }
+        let step_bindings = std::mem::take(&mut self.steps);
+        drop(self);
 
         let certificate =
             ProofCertificate::new(proof_steps).map_err(|source| CompileError::Certificate {
@@ -702,7 +775,7 @@ impl<'source> Parser<'source> {
         let checked = check_normal_form_with_state(normal_form, proof_state).map_err(|source| {
             let source_step = step_origins.source_step(source.step());
             let origin = source_step.and_then(|position| {
-                self.steps
+                step_bindings
                     .iter()
                     .find(|(_, binding)| binding.position == position)
             });
@@ -712,6 +785,7 @@ impl<'source> Parser<'source> {
                 source: Box::new(source),
             }
         })?;
+        drop(step_bindings);
         drop(step_origins);
         if checked.conclusion() != &statement {
             return Err(CompileError::StatementMismatch {
@@ -728,6 +802,27 @@ impl<'source> Parser<'source> {
             derivation_id,
             proof_id,
         })
+    }
+
+    fn formula_binding(&mut self) -> Result<(), CompileError> {
+        let name_offset = self.next_offset();
+        let name = self.name()?;
+        if is_reserved_formula_binding_name(name) {
+            return Err(CompileError::Syntax {
+                offset: name_offset,
+                expected: "a non-reserved formula binding name",
+            });
+        }
+        if self.formula_bindings.contains_key(name) {
+            return Err(CompileError::DuplicateFormulaBinding {
+                offset: name_offset,
+                name: name.to_owned(),
+            });
+        }
+        self.punctuation('=')?;
+        let parsed = self.parsed_formula(1, FormulaContext::Binding)?;
+        self.formula_bindings.insert(name, parsed);
+        Ok(())
     }
 
     fn proof_step(&mut self) -> Result<ProofStep, CompileError> {
@@ -999,6 +1094,21 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
         let formula_offset = self.next_offset();
+        let operator_offset = formula_offset;
+        let operator = self.name()?;
+        let offset_after_name = self.offset;
+        self.skip_trivia();
+        let opening_parenthesis_offset = self.offset;
+        let has_call = self.byte() == Some(b'(');
+        self.offset = offset_after_name;
+        if !has_call && !is_reserved_formula_binding_name(operator) {
+            return self.parsed_formula_binding_reference(
+                operator_offset,
+                operator,
+                depth,
+                context,
+            );
+        }
         self.charge_formula_nodes(context, 1, formula_offset)?;
         if depth > FORMULA_MAX_DEPTH {
             return Err(CompileError::FormulaDepthLimitExceeded {
@@ -1006,9 +1116,11 @@ impl<'source> Parser<'source> {
                 maximum: FORMULA_MAX_DEPTH,
             });
         }
-        let operator_offset = formula_offset;
-        let operator = self.name()?;
-        self.punctuation('(')?;
+        if has_call {
+            self.offset = opening_parenthesis_offset + 1;
+        } else {
+            self.punctuation('(')?;
+        }
         let parsed = match operator {
             "equal" => {
                 let left = self.variable()?;
@@ -1057,6 +1169,36 @@ impl<'source> Parser<'source> {
         };
         self.call_end()?;
         Ok(parsed)
+    }
+
+    fn parsed_formula_binding_reference(
+        &mut self,
+        offset: usize,
+        name: &'source str,
+        depth: u32,
+        context: FormulaContext,
+    ) -> Result<ParsedFormula, CompileError> {
+        let (expanded_nodes, expanded_depth) = self
+            .formula_bindings
+            .get(name)
+            .map(|binding| (binding.expanded_nodes, binding.expanded_depth))
+            .ok_or_else(|| CompileError::UnknownFormulaBinding {
+                offset,
+                name: name.to_owned(),
+            })?;
+        self.charge_formula_nodes(context, expanded_nodes, offset)?;
+        self.check_expanded_depth(offset, depth, expanded_depth)?;
+        let formula = self
+            .formula_bindings
+            .get(name)
+            .expect("a preflighted formula binding remains present")
+            .formula
+            .clone();
+        Ok(ParsedFormula {
+            formula,
+            expanded_nodes,
+            expanded_depth,
+        })
     }
 
     fn parse_not(
@@ -1232,7 +1374,7 @@ impl<'source> Parser<'source> {
         source_depth: u32,
         context: FormulaContext,
         expanded_depth: u32,
-        additional_nodes: usize,
+        additional_nodes: u32,
     ) -> Result<(), CompileError> {
         self.charge_formula_nodes(context, additional_nodes, operator_offset)?;
         self.check_expanded_depth(operator_offset, source_depth, expanded_depth)
@@ -1259,12 +1401,12 @@ impl<'source> Parser<'source> {
     fn checked_node_sum(
         &self,
         context: FormulaContext,
-        terms: &[usize],
+        terms: &[u32],
         offset: usize,
-    ) -> Result<usize, CompileError> {
+    ) -> Result<u32, CompileError> {
         terms
             .iter()
-            .try_fold(0_usize, |sum, term| sum.checked_add(*term))
+            .try_fold(0_u32, |sum, term| sum.checked_add(*term))
             .ok_or_else(|| Self::formula_node_limit(context, offset))
     }
 
@@ -1285,17 +1427,18 @@ impl<'source> Parser<'source> {
     fn charge_formula_nodes(
         &mut self,
         context: FormulaContext,
-        additional: usize,
+        additional: u32,
         offset: usize,
     ) -> Result<(), CompileError> {
         let (used, maximum) = match context {
+            FormulaContext::Binding => (&mut self.formula_binding_nodes, FORMULA_BINDING_MAX_NODES),
             FormulaContext::Statement => (&mut self.statement_nodes, FORMULA_MAX_NODES),
             FormulaContext::Certificate => (
                 &mut self.certificate_formula_nodes,
                 CERTIFICATE_MAX_FORMULA_NODES,
             ),
         };
-        let Some(total) = used.checked_add(additional) else {
+        let Some(total) = used.checked_add(additional as usize) else {
             return Err(Self::formula_node_limit(context, offset));
         };
         if total > maximum {
@@ -1307,6 +1450,10 @@ impl<'source> Parser<'source> {
 
     fn formula_node_limit(context: FormulaContext, offset: usize) -> CompileError {
         match context {
+            FormulaContext::Binding => CompileError::FormulaBindingNodeLimitExceeded {
+                offset,
+                maximum: FORMULA_BINDING_MAX_NODES,
+            },
             FormulaContext::Statement => CompileError::Statement {
                 offset,
                 source: FormulaCodecError::NodeLimitExceeded {
@@ -1327,10 +1474,8 @@ impl<'source> Parser<'source> {
         if let Some(variable) = self.variables.get(name) {
             return Ok(*variable);
         }
-        let identifier = u32::try_from(self.variables.len()).map_err(|_| CompileError::Syntax {
-            offset: self.offset,
-            expected: "a representable variable",
-        })?;
+        let identifier = u32::try_from(self.variables.len())
+            .expect("the source-byte limit bounds presentation variables");
         let variable = FreeVariable::new(identifier);
         self.variables.insert(name, variable);
         Ok(variable)
@@ -1470,6 +1615,49 @@ impl<'source> Parser<'source> {
     fn byte(&self) -> Option<u8> {
         self.source.as_bytes().get(self.offset).copied()
     }
+}
+
+fn is_formula_operator_name(name: &str) -> bool {
+    matches!(
+        name,
+        "equal"
+            | "member"
+            | "not_"
+            | "implies"
+            | "forall"
+            | "and_"
+            | "or_"
+            | "iff"
+            | "exists"
+            | "not_equal"
+    )
+}
+
+fn is_reserved_formula_binding_name(name: &str) -> bool {
+    is_formula_operator_name(name)
+        || matches!(
+            name,
+            "foundation"
+                | "formulas"
+                | "statement"
+                | "proof"
+                | "return"
+                | "parameters"
+                | "simplification"
+                | "frege"
+                | "classical_contraposition"
+                | "universal_distribution"
+                | "vacuous_universal"
+                | "universal_instantiation"
+                | "modus_ponens"
+                | "equality_reflexivity"
+                | "equality_substitution"
+                | "zfc_axiom"
+                | "separation"
+                | "replacement"
+                | "cite"
+                | "generalization"
+        )
 }
 
 const fn lowercase_hex_nibble(byte: u8) -> Option<u8> {

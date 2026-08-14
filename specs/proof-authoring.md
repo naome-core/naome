@@ -18,26 +18,36 @@ abstraction, or mutation path. The selected-chain adapter only supplies the
 checker with the immutable proof state already owned by a healthy
 `ProofChainJournal`.
 
-Source text is not a canonical protocol object. Its step and variable names,
-comments, optional trailing commas, and whitespace are absent from canonical
-proof bytes and all content identities. The checked canonical proof remains
-governed by the [Proof Protocol](proof-protocol.md); the source file grants no
-admission, selected-state membership, chain inclusion, authorship, or consensus
-authority.
+Source text is not a canonical protocol object. Its formula-binding, step, and
+variable names, comments, optional trailing commas, and whitespace are absent
+from canonical proof bytes and all content identities. The checked canonical
+proof remains governed by the [Proof Protocol](proof-protocol.md); the source
+file grants no admission, selected-state membership, chain inclusion,
+authorship, or consensus authority.
 
 The source syntax is prerelease presentation syntax. It may be replaced without
 a compatibility parser while no stable authoring-format commitment exists.
 
 ## Complete source grammar
 
-One file contains exactly one Foundation declaration, statement, and proof:
+One file contains exactly one Foundation declaration, an optional formula
+binding block, one statement, and one proof:
 
 ```text
 source      := "foundation" "=" foundation-id
+               formula-bindings?
                "statement" "=" formula
                "proof" ":" step+ return EOF
 
 foundation-id := '"naome:zfc"'
+
+formula-bindings
+            := "formulas" ":" formula-binding+
+formula-binding
+            := formula-binding-name "=" formula
+formula-binding-name
+            := name except any fixed source keyword, formula operator,
+               or proof-expression name
 
 formula     := "equal" "(" name "," name trailing-comma? ")"
              | "member" "(" name "," name trailing-comma? ")"
@@ -49,6 +59,9 @@ formula     := "equal" "(" name "," name trailing-comma? ")"
              | "iff" "(" formula "," formula trailing-comma? ")"
              | "exists" "(" name "," formula trailing-comma? ")"
              | "not_equal" "(" name "," name trailing-comma? ")"
+             | formula-reference
+formula-reference
+            := formula-binding-name
 
 step        := step-name "=" proof-expression
 step-name   := name except "return"
@@ -107,20 +120,40 @@ single-line source therefore do not change the compiled proof. Commas between
 operands are mandatory; one comma before a closing `)` or `]` is optional.
 Missing, doubled, or additional operand commas are rejected.
 
-Keywords and rule names are case-sensitive, and `return` is reserved as the
-proof terminator rather than permitted as a step name. The complete input must
-match the grammar; trailing tokens are rejected. The 64 characters inside a
-cited `ProofId` string form one indivisible value: whitespace and comments
-cannot occur within it, and uppercase hexadecimal is rejected. `and_`, `or_`,
-`iff`, `exists`, and `not_equal` are the Foundation's exact eliminable
-abbreviations, not additional primitive formulas. No alternate spelling exists.
-Formula syntax alone does not make a statement derivable.
+Keywords and rule names are case-sensitive. The optional `formulas:` block may
+occur at most once, directly after `foundation`, and must contain at least one
+binding. `statement` terminates that block. A formula-binding name cannot equal
+any fixed source keyword (`foundation`, `formulas`, `statement`, `proof`,
+`return`, or `parameters`), formula operator, or proof-expression name. A
+reserved name in a binding declaration or bare formula position is `Syntax`, as
+is an unknown call such as `foo(...)`; an unknown non-reserved bare name is
+`UnknownFormulaBinding`. `return` remains reserved as the proof terminator
+rather than permitted as a step name. The complete input must match the grammar;
+trailing tokens are rejected. The 64 characters inside a cited `ProofId` string
+form one indivisible value: whitespace and comments cannot occur within it, and
+uppercase hexadecimal is rejected. `and_`, `or_`, `iff`, `exists`, and
+`not_equal` are the Foundation's exact eliminable abbreviations, not additional
+primitive formulas. No alternate spelling exists. Formula syntax alone does
+not make a statement derivable.
 Proof expressions instantiate L1-L3, Q1-Q3, E1-E2, Separation, or Replacement;
 select one of the seven fixed ZFC axioms; cite one exact checked proof; or apply
 explicit modus ponens or generalization. The checker still determines whether
 those steps derive the declared statement.
 
 ## Names and proof construction
+
+Formula bindings, presentation variables, and proof steps have independent
+namespaces. Binding names are unique within `formulas:`. Declarations resolve
+from left to right, so a binding RHS may use only an earlier binding; self,
+forward, and absent bare references fail as `UnknownFormulaBinding`. Each use
+expands to the exact already-lowered primitive Foundation formula before its
+surrounding formula is constructed.
+
+Bindings are presentation aliases, not mathematical definitions or canonical
+objects. An outer `forall(x, binding)` or `exists(x, binding)` captures free
+occurrences of the same presentation variable exactly as if the binding's RHS
+were written inline; binders already inside the RHS remain locally nameless and
+capture-safe.
 
 Variable names identify presentation variables throughout the source. The
 compiler assigns internal free-variable identifiers deterministically and
@@ -235,18 +268,21 @@ Compilation proceeds in this order:
    `AUTHORING_SOURCE_MAX_BYTES` (`4_194_304` bytes);
 2. parse the Foundation declaration and require the exact identifier
    `naome:zfc`;
-3. parse and recursively expand the declared statement, then require the
+3. if present, parse the nonempty `formulas:` block from left to right, resolve
+   only earlier bindings, and retain each expanded formula within the binding
+   node budget;
+4. parse and recursively expand the declared statement, then require the
    resulting primitive formula to satisfy the canonical Foundation limits;
-4. parse the proof in source order, resolving variables and backward-only step
+5. parse the proof in source order, resolving variables and backward-only step
    names, enforcing the cumulative certificate formula-node budget, and
    lowering each expression;
-5. require one final `return` naming the last step and end of source;
-6. construct one structurally valid `ProofCertificate`;
-7. normalize and check that certificate against either the empty state used by
+6. require one final `return` naming the last step and end of source;
+7. construct one structurally valid `ProofCertificate`;
+8. normalize and check that certificate against either the empty state used by
    `compile` or the immutable selected journal state obtained by
    `compile_against_selected_chain`;
-8. require the checked closed conclusion to equal the declared statement; and
-9. return the checked canonical proof bytes with its `StatementId`,
+9. require the checked closed conclusion to equal the declared statement; and
+10. return the checked canonical proof bytes with its `StatementId`,
    `DerivationId`, and `ProofId`.
 
 The checker is authoritative for mathematical validity, reference resolution,
@@ -258,11 +294,12 @@ mathematical checking.
 
 Normalization removes presentation-only proof structure and canonicalizes
 free-variable identifiers according to the Proof Protocol. Systematically
-renaming step or variable names, or changing only comments, whitespace,
-indentation, line breaks, or optional trailing commas, therefore preserves the
-canonical proof bytes and all three IDs.
-Replacing a derived formula with its exact primitive expansion also preserves
-the canonical proof bytes and identities.
+renaming a formula binding together with its uses, a step, or a variable, or
+changing only comments, whitespace, indentation, line breaks, or optional
+trailing commas, therefore preserves the canonical proof bytes and all three
+IDs. So does reordering independent bindings, adding or removing unused
+bindings, replacing a binding use with its exact RHS, or replacing a derived
+formula with its exact primitive expansion.
 
 Derivation identity is reference-transparent: a referenced subproof contributes
 its already checked `DerivationId`, so replacing that same derivation's inline
@@ -348,6 +385,17 @@ and token count have no separate arbitrary cap; their total representation is
 already bounded by source bytes, while the number that can reach a compiled
 proof is bounded by the existing formula, schema-depth, step, and
 certificate-byte limits.
+
+The `formulas:` block may cumulatively retain at most `65_536` primitive formula
+nodes across all expanded binding RHS values. This authoring-only budget has no
+public constant. Declarations and nested references charge it left to right;
+reusing an earlier binding inside a later binding charges every retained clone.
+After a bare binding name resolves, the compiler charges the referenced
+formula's complete expanded node count to the active binding, statement, or
+certificate budget and preflights its resulting absolute depth, then clones it.
+Statement and proof uses therefore incur exactly the same limits as an inline
+RHS and cannot use bindings to bypass node or depth checks.
+
 Formula node and depth limits apply to the recursively expanded primitive
 formula, not to the shorter source spelling. If `A` and `B` expand to `nA` and
 `nB` primitive nodes with root-to-leaf depths `dA` and `dB`, respectively, the
@@ -396,10 +444,11 @@ certificate byte limit first, because certificate construction precedes
 checking. Limits fail closed: compilation never truncates, wraps, aliases, or
 silently omits source.
 
-The exact inherited executable limits are:
+The exact executable limits relevant here are:
 
-| Constant | Inclusive maximum |
+| Limit | Inclusive maximum |
 | --- | ---: |
+| `formulas:` retained primitive nodes (authoring-only) | `65_536` nodes |
 | `FORMULA_MAX_DEPTH` | `256` nodes on one root-to-leaf path |
 | `FORMULA_MAX_NODES` | `65_536` nodes in one formula |
 | `FORMULA_MAX_BYTES` | `393_216` canonical bytes in one formula |
@@ -410,17 +459,29 @@ The exact inherited executable limits are:
 
 `CompileError` reports the first failure reached in source order. The complete
 source-length check precedes parsing. Within parsing, syntax, Foundation, name,
-dependency, formula-depth, and cumulative certificate formula-node checks occur
+dependency, formula-depth, and cumulative formula-node checks occur
 when their token is reached; an earlier Foundation mismatch therefore precedes
-errors in the statement or proof. Call operands are parsed left to right in
-grammar order, with each mandatory comma checked before the next operand. A
-derived formula follows the same resource checks. Only after its
-operands succeed does the compiler charge and depth-check the additional
-primitive expansion at the derived operator's offset, before constructing or
-cloning that expansion. Malformed operands and operand-local limit failures
-therefore precede an expansion-only node or depth failure. The declared
-statement's formula-limit checks complete when that formula has parsed, before
-the proof.
+errors in formula bindings, the statement, or the proof. An optional
+`formulas:` block is parsed completely before `statement`. It must be nonempty
+and cannot repeat. Each declaration first validates its non-reserved name and
+rejects a duplicate before its `=` or RHS is parsed. At each RHS formula
+call, the root primitive node is charged before the operator is classified. A
+non-reserved bare name is instead resolved before any active-context node
+charge, so an absent, self, or forward name is `UnknownFormulaBinding` even
+when that node budget is already full. A known binding charges its complete
+expanded node count, preflights depth, and only then clones. The exact RHS
+operator, primitive leaf, or alias token whose left-to-right charge crosses the
+retention limit is `FormulaBindingNodeLimitExceeded`. No incomplete declaration
+is retained.
+
+Call operands are parsed left to right in grammar order, with each mandatory
+comma checked before the next operand. A derived formula follows the same
+resource checks. Only after its operands succeed does the compiler charge and
+depth-check the additional primitive expansion at the derived operator's
+offset, before constructing or cloning that expansion. Malformed operands and
+operand-local limit failures therefore precede an expansion-only node or depth
+failure. The declared statement's formula-limit checks complete when that
+formula has parsed, before the proof.
 The first step beyond `CERTIFICATE_MAX_STEPS` returns that certificate-limit
 error immediately, before parsing its proof call or any later `return` or EOF
 token. `cite` first requires an opening quote. Otherwise an invalid or uppercase
@@ -489,6 +550,15 @@ repair.
 | `NAO0009` | `Certificate { offset, source }` | The offending proof token, or `proof` for a whole-certificate failure. |
 | `NAO0010` | `Check { span, source }` | The complete originating source-step assignment after traced normalization. |
 | `NAO0011` | `StatementMismatch { span }` | The complete declared statement formula. |
+| `NAO0012` | `DuplicateFormulaBinding { offset, name }` | The complete duplicate binding name. |
+| `NAO0013` | `UnknownFormulaBinding { offset, name }` | The complete absent, self, or forward binding name. |
+| `NAO0014` | `FormulaBindingNodeLimitExceeded { offset, maximum }` | The RHS operator, primitive leaf, or alias token whose charge crosses the retention limit. |
+
+The three binding messages are respectively `duplicate formula binding "…"`,
+`unknown or forward formula binding "…"`, and
+`formula bindings exceed the {maximum}-node retention limit`, where `maximum`
+is `65_536`. Their source-derived names use the same bounded display rule above;
+their primary spans remain complete.
 
 `diagnostic_code` returns the code without needing the source, while
 `diagnostic(&source)` returns its source-oriented message, optional primary
@@ -528,7 +598,8 @@ as `examples/extensionality.nao`. `examples/separation.nao` uses `exists`,
 `examples/replacement.nao` uses the same derived forms to state the identity
 image instance with the mandatory empty parameter list. The implication,
 quantifier, equality-substitution, and minimal self-equality examples remain
-available separately.
+available separately. `examples/implication-identity.nao` uses two backward-only
+formula bindings while retaining its exact prior canonical bytes and IDs.
 
 A reference-aware protocol application can compile the following source only
 after block application has committed the cited self-equality proof to its
@@ -558,10 +629,12 @@ This authoring contract defines no:
 
 - additional primitive formulas, other connective aliases, implicit schema
   parameters, or alternate schema spellings;
+- parameterized, recursive, forward, exported, or cross-file formula bindings;
+  canonical formula tables or references; mathematical definitions, constants,
+  functions, namespaces, modules, or macros;
 - symbolic imports, semantic proof aliases, theorem-name or `StatementId`
-  lookup, multiple statements, theorem libraries, definitions, constants,
-  functions, namespaces, modules, macros, a canonical-source or formatting
-  command, or compatibility aliases;
+  lookup, multiple statements, theorem libraries, a canonical-source or
+  formatting command, or compatibility aliases;
 - proof discovery, fetching, dependency acquisition, proof-state construction
   or serialization, opening or selecting a journal, CLI state selection, or
   implicit choice among proofs of one statement;

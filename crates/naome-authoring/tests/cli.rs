@@ -57,7 +57,7 @@ const REPLACEMENT_PROOF_BYTES: &str =
 static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-fn proof_command_emits_exact_identities_from_primitive_and_derived_sources() {
+fn proof_command_emits_exact_identities_from_primitive_derived_and_bound_sources() {
     for (file, statement_id, derivation_id, proof_id, proof_bytes) in [
         (
             "self-equality.nao",
@@ -162,7 +162,7 @@ fn invalid_modus_ponens_is_nonzero_and_emits_no_partial_identity_output() {
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
         format!(
-            "naome: {}:17:5: error[NAO0010]: step \"p3\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise\n",
+            "naome: {}:14:5: error[NAO0010]: step \"p3\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise\n",
             source.path.display(),
         )
     );
