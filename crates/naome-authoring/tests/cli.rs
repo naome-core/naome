@@ -169,6 +169,24 @@ fn invalid_modus_ponens_is_nonzero_and_emits_no_partial_identity_output() {
     assert!(stderr.contains("modus ponens"));
 }
 
+#[test]
+fn compile_command_has_no_hidden_proof_reference_state() {
+    let source = TemporarySource::new(&format!(
+        "foundation \"naome:zfc\"; theorem cited {{ statement (forall x (equal x x)); proof {{ step known = (proof-reference {PROOF_ID}); result known; }} }}"
+    ));
+    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+        .args(["proof", "compile"])
+        .arg(&source.path)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("naome: "));
+    assert!(stderr.contains("references an unknown proof"));
+}
+
 struct TemporarySource {
     path: PathBuf,
 }

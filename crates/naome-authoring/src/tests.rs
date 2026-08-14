@@ -1,3 +1,4 @@
+use naome_checker::{ProofState, ProofStateError, normalize_and_check};
 use naome_foundation::{Replacement, SchemaError, Separation};
 use naome_proof::{DerivationId, ProofCertificate, ProofId, StatementId};
 
@@ -20,6 +21,38 @@ const NORMAL_PROOF: &[u8] = &[
     0x00, 0x00, 0x00, 0x02, 0x06, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00,
 ];
+
+const SELF_EQUALITY_PROOF_ID_HEX: &str =
+    "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73";
+const SELF_EQUALITY_STATEMENT_ID_HEX: &str =
+    "f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19";
+const SELF_EQUALITY_DERIVATION_ID_HEX: &str =
+    "59219d63c7c2353dcb6ffd1e604153143380ae6602e04215703bc0ea043243fb";
+const SELF_EQUALITY_REFERENCE_PROOF_ID_HEX: &str =
+    "bfd427b447e1514686cfa31b0b5aa1dd5036464cd8c5d73d0c3112cb46b0519b";
+const SELF_EQUALITY_REFERENCE_PROOF_HEX: &str =
+    "0000000130c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73";
+
+const QUANTIFIER_PROOF_ID_HEX: &str =
+    "6e35a728527633573509b24fa20cb2359a14c1f93e9f6b6f1500f8650f731720";
+
+const PROOF_ID_EXPECTED: &str = "a 64-digit lowercase hexadecimal ProofId";
+
+fn proof_reference_source(proof_id: &str) -> String {
+    format!(
+        "foundation \"naome:zfc\"; theorem cited {{ statement (forall x (equal x x)); proof {{ step known = (proof-reference {proof_id}); result known; }} }}"
+    )
+}
+
+fn checked_state(source: &str) -> (ProofState, CompiledProof) {
+    let compiled = compile(source).unwrap();
+    let certificate =
+        ProofCertificate::from_canonical_bytes(compiled.canonical_proof_bytes()).unwrap();
+    let checked = normalize_and_check(certificate).unwrap();
+    let mut state = ProofState::new();
+    state.register(checked).unwrap();
+    (state, compiled)
+}
 
 const IMPLICATION_SOURCE: &str = include_str!("../../../examples/implication-identity.nao");
 
@@ -266,6 +299,291 @@ fn derived_formula_expanded_depth_has_an_exact_boundary() {
                 if offset == expected_offset && maximum == FORMULA_MAX_DEPTH
         ));
     }
+}
+
+#[test]
+fn proof_reference_lowers_to_the_exact_checked_identity_vector_without_mutating_state() {
+    let (state, direct) = checked_state(SOURCE);
+    let source_proof_id = ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX));
+    let source_derivation_id = DerivationId::from_bytes(hex32(SELF_EQUALITY_DERIVATION_ID_HEX));
+    let reference =
+        compile_with_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state).unwrap();
+
+    assert_eq!(
+        reference.statement_id(),
+        StatementId::from_bytes(hex32(SELF_EQUALITY_STATEMENT_ID_HEX))
+    );
+    assert_eq!(reference.statement_id(), direct.statement_id());
+    assert_eq!(reference.derivation_id(), source_derivation_id);
+    assert_eq!(reference.derivation_id(), direct.derivation_id());
+    assert_eq!(
+        reference.proof_id(),
+        ProofId::from_bytes(hex32(SELF_EQUALITY_REFERENCE_PROOF_ID_HEX))
+    );
+    assert_ne!(reference.proof_id(), direct.proof_id());
+    assert_eq!(
+        reference.canonical_proof_bytes(),
+        hex_bytes(SELF_EQUALITY_REFERENCE_PROOF_HEX)
+    );
+
+    let decoded =
+        ProofCertificate::from_canonical_bytes(reference.canonical_proof_bytes()).unwrap();
+    assert_eq!(
+        decoded.steps(),
+        &[ProofStep::ProofReference {
+            proof_id: source_proof_id,
+        }]
+    );
+    assert!(state.contains_proof(source_proof_id));
+    assert!(!state.contains_proof(reference.proof_id()));
+}
+
+#[test]
+fn referenced_theorem_participates_in_inference_and_remains_dependency_closed() {
+    let monolithic = r#"foundation "naome:zfc"; theorem nested {
+      statement (forall y (forall x (equal x x)));
+      proof {
+        step reflexive = (equality-reflexivity x);
+        step for_x = (generalization reflexive x);
+        step for_y = (generalization for_x y);
+        result for_y;
+      }
+    }"#;
+    let referenced = format!(
+        "foundation \"naome:zfc\"; theorem nested {{ statement (forall y (forall x (equal x x))); proof {{ step known = (proof-reference {SELF_EQUALITY_PROOF_ID_HEX}); step for_y = (generalization known y); result for_y; }} }}"
+    );
+    let (mut state, _) = checked_state(SOURCE);
+    let inline = compile(monolithic).unwrap();
+    let cited = compile_with_state(&referenced, &state).unwrap();
+
+    assert_eq!(cited.statement_id(), inline.statement_id());
+    assert_eq!(cited.derivation_id(), inline.derivation_id());
+    assert_ne!(cited.proof_id(), inline.proof_id());
+    assert_ne!(
+        cited.canonical_proof_bytes(),
+        inline.canonical_proof_bytes()
+    );
+
+    let certificate =
+        ProofCertificate::from_canonical_bytes(cited.canonical_proof_bytes()).unwrap();
+    let checked = naome_checker::normalize_and_check_with_state(certificate, &state).unwrap();
+    let cited_id = checked.proof_id();
+    state.register(checked).unwrap();
+    assert!(state.contains_proof(ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX))));
+    assert!(state.contains_proof(cited_id));
+}
+
+#[test]
+fn proof_reference_requires_the_exact_id_in_the_supplied_state() {
+    let reference = proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX);
+    let expected = || CompileError::Check {
+        source: CheckError::UnknownProofReference {
+            step: 0,
+            proof_id: ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX)),
+        },
+    };
+
+    assert_eq!(compile(&reference), Err(expected()));
+    assert_eq!(
+        compile_with_state(&reference, &ProofState::new()),
+        Err(expected())
+    );
+
+    let (wrong_statement_state, _) = checked_state(EXTENSIONALITY_SOURCE);
+    assert_eq!(
+        compile_with_state(&reference, &wrong_statement_state),
+        Err(expected())
+    );
+
+    // This state contains a different proof of the exact same statement. A
+    // StatementId or mathematical conclusion is not an alias for ProofId.
+    let (same_statement_state, _) = checked_state(QUANTIFIER_SOURCE);
+    assert!(
+        same_statement_state.contains_proof(ProofId::from_bytes(hex32(QUANTIFIER_PROOF_ID_HEX)))
+    );
+    assert_eq!(
+        compile_with_state(&reference, &same_statement_state),
+        Err(expected())
+    );
+
+    let (exact_state, _) = checked_state(SOURCE);
+    assert!(compile_with_state(&reference, &exact_state).is_ok());
+}
+
+#[test]
+fn proof_reference_is_identity_neutral_only_for_presentation_changes() {
+    let (state, _) = checked_state(SOURCE);
+    let baseline =
+        compile_with_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state).unwrap();
+    let renamed = format!(
+        "# presentation only\nfoundation \"naome:zfc\"; theorem renamed {{ statement (forall value (equal value value)); proof {{ step imported_theorem = (proof-reference {SELF_EQUALITY_PROOF_ID_HEX}); result imported_theorem; }} }}"
+    );
+    assert_eq!(compile_with_state(&renamed, &state).unwrap(), baseline);
+
+    for alias in [
+        SELF_EQUALITY_STATEMENT_ID_HEX,
+        SELF_EQUALITY_DERIVATION_ID_HEX,
+    ] {
+        let alias_id = ProofId::from_bytes(hex32(alias));
+        assert_eq!(
+            compile_with_state(&proof_reference_source(alias), &state),
+            Err(CompileError::Check {
+                source: CheckError::UnknownProofReference {
+                    step: 0,
+                    proof_id: alias_id,
+                },
+            })
+        );
+    }
+
+    let reference =
+        compile_with_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state).unwrap();
+    let certificate =
+        ProofCertificate::from_canonical_bytes(reference.canonical_proof_bytes()).unwrap();
+    let checked = naome_checker::normalize_and_check_with_state(certificate, &state).unwrap();
+    let alias_id = checked.proof_id();
+    assert_eq!(
+        ProofState::new().register(checked),
+        Err(ProofStateError::MissingProofDependency {
+            proof_id: ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX)),
+        })
+    );
+
+    let certificate =
+        ProofCertificate::from_canonical_bytes(reference.canonical_proof_bytes()).unwrap();
+    let checked = naome_checker::normalize_and_check_with_state(certificate, &state).unwrap();
+    let mut target = state;
+    assert_eq!(
+        target.register(checked),
+        Err(ProofStateError::DuplicateDerivation {
+            derivation_id: DerivationId::from_bytes(hex32(SELF_EQUALITY_DERIVATION_ID_HEX)),
+        })
+    );
+    assert!(!target.contains_proof(alias_id));
+}
+
+#[test]
+fn normalization_prunes_unreachable_references_after_complete_source_parsing() {
+    let unknown = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    let unreachable = SOURCE.replace(
+        "step reflexive =",
+        &format!("step unavailable = (proof-reference {unknown});\n    step reflexive ="),
+    );
+    assert_eq!(compile(&unreachable).unwrap(), compile(SOURCE).unwrap());
+
+    let malformed = unreachable.replace(unknown, &unknown[..63]);
+    let token_offset = malformed.find(&unknown[..63]).unwrap();
+    assert_eq!(
+        compile(&malformed),
+        Err(CompileError::Syntax {
+            offset: token_offset,
+            expected: PROOF_ID_EXPECTED,
+        })
+    );
+}
+
+#[test]
+fn proof_reference_hex_is_exact_lowercase_and_reports_precise_offsets() {
+    let valid = proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX);
+    let token_offset = valid.find(SELF_EQUALITY_PROOF_ID_HEX).unwrap();
+    assert!(matches!(
+        parse_step(&format!("(proof-reference {SELF_EQUALITY_PROOF_ID_HEX})")),
+        Ok(ProofStep::ProofReference { proof_id })
+            if proof_id == ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX))
+    ));
+    assert!(matches!(
+        parse_step(&format!(
+            "(proof-reference # before\n {SELF_EQUALITY_PROOF_ID_HEX} # after\n)"
+        )),
+        Ok(ProofStep::ProofReference { .. })
+    ));
+
+    for malformed in [
+        &SELF_EQUALITY_PROOF_ID_HEX[..63],
+        "0x17c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+        "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e7g",
+        "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e7-",
+        "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e7_",
+        "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e7é",
+    ] {
+        let source = proof_reference_source(malformed);
+        let start = source.find(malformed).unwrap();
+        let first_invalid = malformed
+            .bytes()
+            .position(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte));
+        let expected_offset = start + first_invalid.unwrap_or(0);
+        assert_eq!(
+            compile(&source),
+            Err(CompileError::Syntax {
+                offset: expected_offset,
+                expected: PROOF_ID_EXPECTED,
+            }),
+            "misreported {malformed:?}"
+        );
+    }
+
+    for (index, _) in SELF_EQUALITY_PROOF_ID_HEX
+        .bytes()
+        .enumerate()
+        .filter(|(_, byte)| byte.is_ascii_alphabetic())
+    {
+        let mut uppercase = SELF_EQUALITY_PROOF_ID_HEX.as_bytes().to_vec();
+        uppercase[index].make_ascii_uppercase();
+        let uppercase = String::from_utf8(uppercase).unwrap();
+        let source = proof_reference_source(&uppercase);
+        assert_eq!(
+            compile(&source),
+            Err(CompileError::Syntax {
+                offset: token_offset + index,
+                expected: PROOF_ID_EXPECTED,
+            })
+        );
+    }
+
+    let overlong = format!("{SELF_EQUALITY_PROOF_ID_HEX}0");
+    let source = proof_reference_source(&overlong);
+    assert_eq!(
+        compile(&source),
+        Err(CompileError::Syntax {
+            offset: token_offset + 64,
+            expected: "`)`",
+        })
+    );
+}
+
+#[test]
+fn complete_parsing_precedes_reachable_proof_reference_resolution_and_statement_matching() {
+    let base = proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX);
+    let duplicate = base.replace(
+        "result known;",
+        "step known = (proof-reference ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff); result known;",
+    );
+    assert!(matches!(
+        compile(&duplicate),
+        Err(CompileError::DuplicateStep { name, .. }) if name == "known"
+    ));
+
+    let trailing = format!("{base} trailing");
+    assert!(matches!(
+        compile(&trailing),
+        Err(CompileError::Syntax {
+            expected: "end of source",
+            ..
+        })
+    ));
+
+    let mismatch = base.replace("(forall x (equal x x))", "(forall x (member x x))");
+    assert!(matches!(
+        compile(&mismatch),
+        Err(CompileError::Check {
+            source: CheckError::UnknownProofReference { .. }
+        })
+    ));
+    let (state, _) = checked_state(SOURCE);
+    assert_eq!(
+        compile_with_state(&mismatch, &state),
+        Err(CompileError::StatementMismatch)
+    );
 }
 
 #[test]

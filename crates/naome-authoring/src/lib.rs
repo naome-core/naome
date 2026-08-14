@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
-use naome_checker::{CheckError, normalize_and_check};
+use naome_checker::{CheckError, ProofState, normalize_and_check_with_state};
 use naome_foundation::{
     FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, Formula, FormulaCodecError, FreeVariable,
     Replacement, Separation, ZfcAxiom,
@@ -17,8 +17,26 @@ use naome_proof::{
 /// Maximum UTF-8 bytes accepted in one `.nao` source value.
 pub const AUTHORING_SOURCE_MAX_BYTES: usize = CERTIFICATE_MAX_BYTES;
 
-/// Compiles one complete, self-contained `.nao` theorem.
+/// Compiles one complete, dependency-free `.nao` theorem.
+///
+/// Reachable proof references fail because this entry point uses an empty
+/// checked-proof state. Use [`compile_with_state`] when references are
+/// expected.
 pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
+    compile_with_state(source, &ProofState::new())
+}
+
+/// Compiles one `.nao` theorem against an immutable checked-proof state.
+///
+/// Only root-reachable references are resolved, and every exact [`ProofId`]
+/// must already be present in `proof_state`. Compilation never mutates or
+/// registers into that state. The caller remains responsible for establishing
+/// whether the supplied state represents any selected blockchain context, and
+/// later admission must resolve and check the proof again in its target state.
+pub fn compile_with_state(
+    source: &str,
+    proof_state: &ProofState,
+) -> Result<CompiledProof, CompileError> {
     if source.len() > AUTHORING_SOURCE_MAX_BYTES {
         return Err(CompileError::SourceTooLong {
             actual: source.len(),
@@ -26,7 +44,7 @@ pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
         });
     }
 
-    Parser::new(source).compile()
+    Parser::new(source).compile(proof_state)
 }
 
 /// Canonical checked output of one successful source compilation.
@@ -186,7 +204,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn compile(mut self) -> Result<CompiledProof, CompileError> {
+    fn compile(mut self, proof_state: &ProofState) -> Result<CompiledProof, CompileError> {
         self.keyword("foundation")?;
         let foundation_offset = self.next_offset();
         let foundation = self.string()?;
@@ -250,8 +268,8 @@ impl<'source> Parser<'source> {
 
         let certificate = ProofCertificate::new(proof_steps)
             .map_err(|source| CompileError::Certificate { source })?;
-        let checked =
-            normalize_and_check(certificate).map_err(|source| CompileError::Check { source })?;
+        let checked = normalize_and_check_with_state(certificate, proof_state)
+            .map_err(|source| CompileError::Check { source })?;
         if checked.conclusion() != &statement {
             return Err(CompileError::StatementMismatch);
         }
@@ -357,6 +375,9 @@ impl<'source> Parser<'source> {
                 result: self.variable()?,
                 parameters: self.schema_parameters()?,
             }),
+            "proof-reference" => ProofStep::ProofReference {
+                proof_id: self.proof_id()?,
+            },
             "generalization" => {
                 let premise = self.earlier_step()?;
                 let variable = self.variable()?;
@@ -418,6 +439,42 @@ impl<'source> Parser<'source> {
                 offset,
                 name: name.to_owned(),
             })
+    }
+
+    fn proof_id(&mut self) -> Result<ProofId, CompileError> {
+        const HEX_LENGTH: usize = ProofId::BYTE_LENGTH * 2;
+        const EXPECTED: &str = "a 64-digit lowercase hexadecimal ProofId";
+
+        self.skip_trivia();
+        let offset = self.offset;
+        let Some(encoded) = self.source.as_bytes().get(offset..offset + HEX_LENGTH) else {
+            return Err(CompileError::Syntax {
+                offset,
+                expected: EXPECTED,
+            });
+        };
+        let mut bytes = [0_u8; ProofId::BYTE_LENGTH];
+        for (index, (pair, byte)) in encoded.chunks_exact(2).zip(bytes.iter_mut()).enumerate() {
+            let high_offset = offset + index * 2;
+            let high_byte = pair[0];
+            let Some(high) = lowercase_hex_nibble(high_byte) else {
+                return Err(CompileError::Syntax {
+                    offset: proof_id_error_offset(offset, high_offset, high_byte),
+                    expected: EXPECTED,
+                });
+            };
+            let low_offset = high_offset + 1;
+            let low_byte = pair[1];
+            let Some(low) = lowercase_hex_nibble(low_byte) else {
+                return Err(CompileError::Syntax {
+                    offset: proof_id_error_offset(offset, low_offset, low_byte),
+                    expected: EXPECTED,
+                });
+            };
+            *byte = (high << 4) | low;
+        }
+        self.offset += HEX_LENGTH;
+        Ok(ProofId::from_bytes(bytes))
     }
 
     fn formula(&mut self, depth: u32, context: FormulaContext) -> Result<Formula, CompileError> {
@@ -871,6 +928,22 @@ impl<'source> Parser<'source> {
 
     fn byte(&self) -> Option<u8> {
         self.source.as_bytes().get(self.offset).copied()
+    }
+}
+
+const fn lowercase_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+const fn proof_id_error_offset(start: usize, offset: usize, byte: u8) -> usize {
+    if matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'#' | b')') {
+        start
+    } else {
+        offset
     }
 }
 

@@ -3,16 +3,18 @@
 ## Scope and trust boundary
 
 This document defines the prerelease `.nao` source accepted by
-`naome_authoring::compile` and the `naome proof compile` command. The source is
-a non-authoritative presentation of one assumption-free Foundation proof.
+`naome_authoring::compile`, `naome_authoring::compile_with_state`, and the
+`naome proof compile` command. The source is a non-authoritative presentation
+of one assumption-free Foundation proof.
 Compilation lowers names to a `ProofCertificate`, derives its canonical proof
 normal form, checks that proof through `naome-checker`, and requires its checked
 conclusion to equal the source statement.
 
 Every source formula lowers to the existing primitive Foundation formula
 language, and every proof expression lowers to an existing Proof Protocol step.
-The authoring grammar adds no canonical encoding, checker rule, or public
-compiler API.
+The authoring grammar adds no canonical encoding or checker rule. Its sole API
+expansion exposes the checker's existing immutable `ProofState` input; it adds
+no resolver abstraction or mutation path.
 
 Source text is not a canonical protocol object. Its theorem, step, and variable
 names, comments, and whitespace are absent from canonical proof bytes and all
@@ -64,6 +66,7 @@ proof-expression
                    schema-parameters ")"
              | "(" "replacement" formula name name name name name
                    schema-parameters ")"
+             | "(" "proof-reference" proof-id ")"
              | "(" "generalization" name name ")"
 
 schema-parameters
@@ -79,6 +82,10 @@ name        := name-start name-continue*
 name-start  := ASCII letter | "_"
 name-continue
             := name-start | ASCII digit | "-"
+
+proof-id    := lowercase-hex-digit{64}
+lowercase-hex-digit
+            := ASCII digit | "a" | "b" | "c" | "d" | "e" | "f"
 ```
 
 ASCII space, tab, carriage return, and line feed may occur between tokens. `#`
@@ -88,13 +95,15 @@ Foundation string. No string escape or other comment form exists.
 
 Keywords and rule names are case-sensitive. The complete input must match the
 grammar; trailing tokens are rejected. The theorem name is presentation data.
+The 64 characters of a `proof-id` form one indivisible token: whitespace and
+comments cannot occur within it, and uppercase hexadecimal is rejected.
 `and`, `or`, `iff`, `exists`, and `not-equal` are the Foundation's exact
 eliminable abbreviations, not additional primitive formulas. No alternate
 spelling exists. Formula syntax alone does not make a statement derivable.
 Proof expressions instantiate L1-L3, Q1-Q3, E1-E2, Separation, or Replacement;
-select one of the seven fixed ZFC axioms; or apply explicit modus ponens or
-generalization. The checker still determines whether those steps derive the
-declared statement.
+select one of the seven fixed ZFC axioms; cite one exact checked proof; or apply
+explicit modus ponens or generalization. The checker still determines whether
+those steps derive the declared statement.
 
 ## Names and proof construction
 
@@ -133,6 +142,21 @@ declared step. At least one step is required.
 Earlier steps may be unreachable from that result; the Proof Protocol's normal
 form removes them before checking and identity derivation.
 
+`proof-reference` takes one exact `ProofId`, not a theorem name or
+`StatementId`. Reference-aware compilation resolves that address only from the
+immutable `ProofState` supplied by the caller. That state can contain only
+previously checked proofs. Resolution reuses the cited proof's closed
+conclusion and derivation identity without executing its certificate again.
+The compiler neither inserts a missing proof, fetches dependencies, mutates the
+state, nor registers its output. A later ledger or chain admission must resolve
+the reference again against its own then-current selected state.
+
+Normalization removes an unreachable reference step before checking, so a
+well-formed but absent `ProofId` in such a step is not resolved. A reachable
+absent reference fails closed with `CheckError::UnknownProofReference` before
+any dependent inference. Exact `ProofId` selection is intentional: different
+proof artifacts of one statement remain different citations.
+
 Quantifier expressions refer to presentation variables, not binders already
 present in their formula operands. `universal-distribution x A B` instantiates
 Q1 with `x`, `A`, and `B`. `universal-instantiation x y A` instantiates Q3 by
@@ -159,7 +183,7 @@ distinct; every free variable of `P` must be `input`, `output`, `source`, or a
 declared parameter; and neither `witness` nor `result` may occur free in `P`.
 These are checker-enforced Foundation side conditions, not parser authority.
 
-The thirteen proof-expression forms lower exactly as follows:
+The fourteen proof-expression forms lower exactly as follows:
 
 | Source | Proof certificate step |
 | --- | --- |
@@ -175,6 +199,7 @@ The thirteen proof-expression forms lower exactly as follows:
 | `(zfc-axiom name)` | the fixed ZFC axiom selected by `extensionality`, `pairing`, `union`, `power-set`, `infinity`, `foundation`, or `choice` |
 | `(separation P element source result (parameters p q))` | Separation with predicate `P`, the three roles in source order, and parameters in quantifier order |
 | `(replacement P input output witness source result (parameters p q))` | Replacement with predicate `P`, the five roles in source order, and parameters in quantifier order |
+| `(proof-reference id)` | `ProofReference { proof_id: id }` for the exact 32-byte `ProofId` |
 | `(generalization premise x)` | generalization of the earlier `premise` step over `x` |
 
 No source construct adds an implicit proof step. Q2's nameless binder is the
@@ -195,15 +220,17 @@ Compilation proceeds in this order:
    lowering each expression;
 5. require one final result, both closing braces, and end of source;
 6. construct one structurally valid `ProofCertificate`;
-7. normalize and check that certificate through the dependency-free checker;
+7. normalize and check that certificate against the caller-supplied immutable
+   checked-proof state;
 8. require the checked closed conclusion to equal the declared statement; and
 9. return the checked canonical proof bytes with its `StatementId`,
    `DerivationId`, and `ProofId`.
 
-The dependency-free checker is authoritative for mathematical validity and
-closure. A declared statement does not override or supply the proof result.
-Statement mismatch is checked only after a proof has passed structural and
-mathematical checking.
+The checker is authoritative for mathematical validity, reference resolution,
+and closure. `compile` supplies an empty `ProofState`; `compile_with_state`
+supplies the exact immutable state passed by its caller. A declared statement
+does not override or supply the proof result. Statement mismatch is checked
+only after a proof has passed structural and mathematical checking.
 
 Normalization removes presentation-only proof structure and canonicalizes
 free-variable identifiers according to the Proof Protocol. Systematically
@@ -212,13 +239,27 @@ whitespace, therefore preserves the canonical proof bytes and all three IDs.
 Replacing a derived formula with its exact primitive expansion also preserves
 the canonical proof bytes and identities.
 
+Derivation identity is reference-transparent: a referenced subproof contributes
+its already checked `DerivationId`, so replacing that same derivation's inline
+steps with the exact citation preserves the enclosing `DerivationId`. Concrete
+proof identity is not reference-transparent: canonical proof bytes contain the
+cited `ProofId`, so changing an inline/citation boundary or selecting another
+proof artifact changes the enclosing `ProofId`. A certificate consisting only
+of a reference consequently has the cited derivation and statement identities
+but a distinct concrete proof identity; ordinary selected-state registration
+rejects that alias as a duplicate derivation.
+
 ## Public API and command
 
 `compile(&str) -> Result<CompiledProof, CompileError>` compiles one complete
-source value. `CompiledProof` exposes `canonical_proof_bytes`, `statement_id`,
+source value against an empty checked-proof state.
+`compile_with_state(&str, &ProofState) -> Result<CompiledProof, CompileError>`
+compiles the same grammar against one immutable caller-selected checked-proof
+snapshot. `CompiledProof` exposes `canonical_proof_bytes`, `statement_id`,
 `derivation_id`, and `proof_id`; `into_canonical_proof_bytes` consumes it and
-returns the owned canonical bytes. It is not an accepted ledger record and
-carries no selected proof state.
+returns the owned canonical bytes. It is not an accepted ledger record, carries
+no selected proof state, and conveys no authority from the state used during
+compilation.
 
 The command:
 
@@ -235,6 +276,12 @@ derivation_id <32-byte DerivationId>
 proof_id <32-byte ProofId>
 canonical_proof <canonical proof bytes>
 ```
+
+The command uses `compile` and therefore has an empty proof state. A source
+with a reachable `proof-reference` fails as an unknown reference. The command
+has no state, journal, dependency-file, network, or implicit discovery option;
+applications that already own an explicitly selected checked `ProofState` use
+`compile_with_state` instead.
 
 Usage errors exit with status `2`. File, compilation, and output errors exit
 with status `1`; success exits with status `0`. File and compilation failures
@@ -277,6 +324,12 @@ by the checker formula and work limits. A `zfc-axiom` expression contributes
 one certificate step but zero encoded certificate formula nodes. Its complete
 canonical step encoding is the fixed-ZFC step tag plus one axiom tag. The
 declared statement has its separate standalone formula budget.
+A `proof-reference` likewise contributes one certificate step and zero encoded
+formula nodes. Its canonical step is exactly one tag plus the 32-byte
+`ProofId`, or 33 bytes; the certificate still carries its separate four-byte
+step count. During checking, the resolved conclusion is charged to the formula
+work budget before it is cloned, and the referenced certificate is not
+re-executed.
 The CLI reads at most the limit plus one byte before decoding UTF-8. Its
 over-limit diagnostic therefore states only that the limit was exceeded; it
 does not misreport that bounded observation as the complete file length.
@@ -319,8 +372,15 @@ statement's formula-limit checks complete when that formula has parsed, before
 the rest of the theorem.
 The first step beyond `CERTIFICATE_MAX_STEPS` returns that certificate-limit
 error immediately, before parsing its proof expression or any later result or
-EOF token. Otherwise an unsupported `zfc-axiom` selector returns `Syntax` at the
-selector's first byte with `expected` equal to `"a fixed ZFC axiom"`. A schema
+EOF token. Otherwise an invalid or uppercase hexadecimal nibble returns
+`Syntax` at that offending byte with `expected` equal to
+`"a 64-digit lowercase hexadecimal ProofId"`; an early token delimiter or EOF
+reports the same expectation at the proof-ID token's first byte. After exactly
+64 valid digits, ordinary grammar resumes: a 65th digit therefore
+returns `Syntax` at that extra byte with `expected` equal to `"`)`"`. No
+`ProofReference` is constructed from partial or normalized input.
+An unsupported `zfc-axiom` selector returns `Syntax` at the selector's first
+byte with `expected` equal to `"a fixed ZFC axiom"`. A schema
 parses its predicate, role names, and mandatory parameter list from left to
 right; missing or malformed syntax therefore precedes mathematical schema
 errors. Complete parsing, including the final-result and EOF requirements,
@@ -383,16 +443,45 @@ image instance with the mandatory empty parameter list. The implication,
 quantifier, equality-substitution, and minimal self-equality examples remain
 available separately.
 
+A reference-aware application can compile the following source after placing
+the cited self-equality proof in the immutable `ProofState` it passes to
+`compile_with_state`:
+
+```nao
+# Extend one exact checked proof with a local inference.
+foundation "naome:zfc";
+
+theorem reflexivity_for_every_y {
+  statement (forall y (forall x (equal x x)));
+
+  proof {
+    step equality_is_reflexive =
+      (proof-reference c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73);
+    step for_every_y = (generalization equality_is_reflexive y);
+    result for_every_y;
+  }
+}
+```
+
+The reference step reuses the checked conclusion `forall x, x = x`; the local
+generalization derives `forall y, forall x, x = x`. The same source fails
+through `naome proof compile` because that command deliberately supplies an
+empty proof state.
+
 ## Non-goals
 
 This authoring contract defines no:
 
 - additional primitive formulas, other connective aliases, implicit schema
   parameters, or alternate schema spellings;
-- proof references, imports, multiple theorems, theorem libraries, definitions,
-  constants, functions, namespaces, modules, macros, a canonical-source or
-  formatting command, or compatibility aliases;
+- symbolic imports, proof aliases, theorem-name or `StatementId` lookup,
+  multiple theorems, theorem libraries, definitions, constants, functions,
+  namespaces, modules, macros, a canonical-source or formatting command, or
+  compatibility aliases;
+- proof discovery, fetching, dependency acquisition, proof-state construction
+  or serialization, journal loading, CLI state selection, or implicit choice
+  among proofs of one statement;
 - ledger registration, block construction, chain or candidate-store mutation,
-  payload archival, networking, dependency acquisition, or peer policy; or
+  payload archival, networking, or peer policy; or
 - fork choice, consensus, finality, validator policy, fees, rewards, staking,
   slashing, token issuance, or other economic state.
