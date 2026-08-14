@@ -252,6 +252,10 @@ fn poisoned_public_handle_exposes_only_chain_context_and_keeps_lock() {
         Err(ProofChainJournalError::Poisoned)
     ));
     assert!(matches!(
+        journal.proof_state(),
+        Err(ProofChainJournalError::Poisoned)
+    ));
+    assert!(matches!(
         journal.len(),
         Err(ProofChainJournalError::Poisoned)
     ));

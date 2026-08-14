@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use naome_foundation::FOUNDATION_ID;
-use naome_ledger::{AcceptedProofRecord, AddressedProofCandidate};
+use naome_ledger::{AcceptedProofRecord, AddressedProofCandidate, ProofState};
 use naome_proof::ProofId;
 use sha2::{Digest, Sha256};
 
@@ -353,6 +353,11 @@ impl ProofChainState {
     /// Returns read-only access to the selected proof DAG.
     pub const fn proof_dag(&self) -> &ProofDag {
         &self.proof_dag
+    }
+
+    /// Returns immutable access to the selected checked-proof resolver state.
+    pub const fn proof_state(&self) -> &ProofState {
+        self.proof_dag.proof_state()
     }
 
     /// Prepares one block against the exact current head and proof state.

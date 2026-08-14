@@ -3,18 +3,20 @@
 ## Scope and trust boundary
 
 This document defines the prerelease `.nao` source accepted by
-`naome_authoring::compile`, `naome_authoring::compile_with_state`, and the
-`naome proof compile` command. The source is a non-authoritative presentation
-of one assumption-free Foundation proof.
+`naome_authoring::compile`,
+`naome_authoring::compile_against_selected_chain`, and the `naome proof compile`
+command. The source is a non-authoritative presentation of one assumption-free
+Foundation proof.
 Compilation lowers names to a `ProofCertificate`, derives its canonical proof
 normal form, checks that proof through `naome-checker`, and requires its checked
 conclusion to equal the source statement.
 
 Every source formula lowers to the existing primitive Foundation formula
 language, and every proof expression lowers to an existing Proof Protocol step.
-The authoring grammar adds no canonical encoding or checker rule. Its sole API
-expansion exposes the checker's existing immutable `ProofState` input; it adds
-no resolver abstraction or mutation path.
+The authoring grammar adds no canonical encoding, checker rule, resolver
+abstraction, or mutation path. The selected-chain adapter only supplies the
+checker with the immutable proof state already owned by a healthy
+`ProofChainJournal`.
 
 Source text is not a canonical protocol object. Its theorem, step, and variable
 names, comments, and whitespace are absent from canonical proof bytes and all
@@ -143,13 +145,16 @@ Earlier steps may be unreachable from that result; the Proof Protocol's normal
 form removes them before checking and identity derivation.
 
 `proof-reference` takes one exact `ProofId`, not a theorem name or
-`StatementId`. Reference-aware compilation resolves that address only from the
-immutable `ProofState` supplied by the caller. That state can contain only
-previously checked proofs. Resolution reuses the cited proof's closed
-conclusion and derivation identity without executing its certificate again.
-The compiler neither inserts a missing proof, fetches dependencies, mutates the
-state, nor registers its output. A later ledger or chain admission must resolve
-the reference again against its own then-current selected state.
+`StatementId`. `compile_against_selected_chain` resolves that address only from
+the immutable checked state of a healthy selected-chain journal. A
+candidate-store block, archived payload, fetched proof, peer response, or
+otherwise checked local proof is not a reference source unless block
+application has committed it into that journal. Resolution reuses the cited
+proof's closed conclusion and derivation identity without executing its
+certificate again. Compilation neither inserts a missing proof, fetches
+dependencies, mutates the journal, nor registers its output. Later ledger or
+chain admission must resolve the reference again against its own then-current
+selected state.
 
 Normalization removes an unreachable reference step before checking, so a
 well-formed but absent `ProofId` in such a step is not resolved. A reachable
@@ -220,17 +225,19 @@ Compilation proceeds in this order:
    lowering each expression;
 5. require one final result, both closing braces, and end of source;
 6. construct one structurally valid `ProofCertificate`;
-7. normalize and check that certificate against the caller-supplied immutable
-   checked-proof state;
+7. normalize and check that certificate against either the empty state used by
+   `compile` or the immutable selected journal state obtained by
+   `compile_against_selected_chain`;
 8. require the checked closed conclusion to equal the declared statement; and
 9. return the checked canonical proof bytes with its `StatementId`,
    `DerivationId`, and `ProofId`.
 
 The checker is authoritative for mathematical validity, reference resolution,
-and closure. `compile` supplies an empty `ProofState`; `compile_with_state`
-supplies the exact immutable state passed by its caller. A declared statement
-does not override or supply the proof result. Statement mismatch is checked
-only after a proof has passed structural and mathematical checking.
+and closure. `compile` supplies an empty `ProofState`;
+`compile_against_selected_chain` supplies only the exact state borrowed from
+its journal. A declared statement does not override or supply the proof result.
+Statement mismatch is checked only after a proof has passed structural and
+mathematical checking.
 
 Normalization removes presentation-only proof structure and canonicalizes
 free-variable identifiers according to the Proof Protocol. Systematically
@@ -252,14 +259,26 @@ rejects that alias as a duplicate derivation.
 ## Public API and command
 
 `compile(&str) -> Result<CompiledProof, CompileError>` compiles one complete
-source value against an empty checked-proof state.
-`compile_with_state(&str, &ProofState) -> Result<CompiledProof, CompileError>`
-compiles the same grammar against one immutable caller-selected checked-proof
-snapshot. `CompiledProof` exposes `canonical_proof_bytes`, `statement_id`,
+source value against an empty checked-proof state. `CompiledProof` exposes
+`canonical_proof_bytes`, `statement_id`,
 `derivation_id`, and `proof_id`; `into_canonical_proof_bytes` consumes it and
 returns the owned canonical bytes. It is not an accepted ledger record, carries
 no selected proof state, and conveys no authority from the state used during
 compilation.
+
+`compile_against_selected_chain(&str, &ProofChainJournal) ->
+Result<CompiledProof, SelectedChainCompileError>` is the protocol-facing
+reference-authoring adapter. It first requests the journal's healthy state built
+by strict block application or replay and only then compiles the source. A
+journal failure is `SelectedState` and takes precedence over every source or
+checking failure; a later authoring failure is `Compilation`. The state borrow
+remains live for the compilation call, so the journal cannot be mutated
+concurrently through that handle. The adapter performs no journal I/O,
+candidate or payload lookup, network request, state clone, or mutation.
+
+This selected-journal entry point intentionally replaces the prerelease public
+`compile_with_state` API. Arbitrary caller-assembled `ProofState` values are not
+a supported dependency source, and no compatibility alias is retained.
 
 The command:
 
@@ -279,9 +298,9 @@ canonical_proof <canonical proof bytes>
 
 The command uses `compile` and therefore has an empty proof state. A source
 with a reachable `proof-reference` fails as an unknown reference. The command
-has no state, journal, dependency-file, network, or implicit discovery option;
-applications that already own an explicitly selected checked `ProofState` use
-`compile_with_state` instead.
+has no state, journal, dependency-file, network, or implicit discovery option.
+Protocol applications that own an opened selected-chain journal use
+`compile_against_selected_chain`.
 
 Usage errors exit with status `2`. File, compilation, and output errors exit
 with status `1`; success exits with status `0`. File and compilation failures
@@ -443,9 +462,10 @@ image instance with the mandatory empty parameter list. The implication,
 quantifier, equality-substitution, and minimal self-equality examples remain
 available separately.
 
-A reference-aware application can compile the following source after placing
-the cited self-equality proof in the immutable `ProofState` it passes to
-`compile_with_state`:
+A reference-aware protocol application can compile the following source only
+after block application has committed the cited self-equality proof to its
+selected-chain journal. It passes that journal to
+`compile_against_selected_chain`:
 
 ```nao
 # Extend one exact checked proof with a local inference.
@@ -463,10 +483,10 @@ theorem reflexivity_for_every_y {
 }
 ```
 
-The reference step reuses the checked conclusion `forall x, x = x`; the local
-generalization derives `forall y, forall x, x = x`. The same source fails
-through `naome proof compile` because that command deliberately supplies an
-empty proof state.
+The reference step reuses the selected checked conclusion `forall x, x = x`;
+the local generalization derives `forall y, forall x, x = x`. The same source
+fails through `naome proof compile`, with an empty selected journal, or while
+the proof exists only in a candidate store or payload archive.
 
 ## Non-goals
 
@@ -479,8 +499,8 @@ This authoring contract defines no:
   namespaces, modules, macros, a canonical-source or formatting command, or
   compatibility aliases;
 - proof discovery, fetching, dependency acquisition, proof-state construction
-  or serialization, journal loading, CLI state selection, or implicit choice
-  among proofs of one statement;
+  or serialization, opening or selecting a journal, CLI state selection, or
+  implicit choice among proofs of one statement;
 - ledger registration, block construction, chain or candidate-store mutation,
   payload archival, networking, or peer policy; or
 - fork choice, consensus, finality, validator policy, fees, rewards, staking,

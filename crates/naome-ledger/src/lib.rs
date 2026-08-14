@@ -12,8 +12,10 @@
 use std::error::Error;
 use std::fmt;
 
+pub use naome_checker::ProofState;
+
 use naome_checker::{
-    CheckError, CheckedProof, ProofState, ProofStateError, check_normal_form_with_state,
+    CheckError, CheckedProof, ProofStateError, check_normal_form_with_state,
     normalize_and_check_with_state,
 };
 use naome_proof::{
@@ -129,6 +131,14 @@ impl LedgerState {
         Self {
             proof_state: ProofState::new(),
         }
+    }
+
+    /// Returns immutable access to the accepted checked-proof resolver state.
+    ///
+    /// The borrow cannot register proofs or outlive this ledger state. Callers
+    /// therefore observe exactly the proofs admitted by completed transitions.
+    pub const fn proof_state(&self) -> &ProofState {
+        &self.proof_state
     }
 
     /// Returns whether the selected concrete proof has been accepted.

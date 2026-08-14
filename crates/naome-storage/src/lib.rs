@@ -44,7 +44,7 @@ use naome_chain::{
     ProofBlockApplyError, ProofBlockDecodeError, ProofBlockId, ProofChainDefinition, ProofChainId,
     ProofChainState, ProofSetProof, ProofSetRoot, ProofTransitionError,
 };
-use naome_ledger::AcceptedProofRecord;
+use naome_ledger::{AcceptedProofRecord, ProofState};
 use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
 
 const LOCK_FILE_NAME: &str = "proof-chain.lock";
@@ -217,6 +217,15 @@ impl ProofChainJournal {
     ) -> Result<Option<&AcceptedProofRecord>, ProofChainJournalError> {
         self.core.ensure_healthy()?;
         Ok(self.core.chain.proof_dag().proof(proof_id))
+    }
+
+    /// Returns immutable access to the committed checked-proof resolver state.
+    ///
+    /// The borrow contains only proofs selected through strict block application
+    /// or replay. A poisoned handle fails closed.
+    pub fn proof_state(&self) -> Result<&ProofState, ProofChainJournalError> {
+        self.core.ensure_healthy()?;
+        Ok(self.core.chain.proof_state())
     }
 
     /// Returns the number of committed proof records.

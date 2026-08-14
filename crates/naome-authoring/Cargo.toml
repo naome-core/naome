@@ -16,6 +16,10 @@ doc = false
 naome-checker = { path = "../naome-checker" }
 naome-foundation = { path = "../naome-foundation" }
 naome-proof = { path = "../naome-proof" }
+naome-storage = { path = "../naome-storage" }
+
+[dev-dependencies]
+naome-chain = { path = "../naome-chain" }
 
 [lints]
 workspace = true

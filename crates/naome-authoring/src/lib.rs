@@ -13,6 +13,7 @@ use naome_proof::{
     CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS, DerivationId,
     ProofCertificate, ProofCertificateError, ProofId, ProofStep, StatementId,
 };
+use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
 /// Maximum UTF-8 bytes accepted in one `.nao` source value.
 pub const AUTHORING_SOURCE_MAX_BYTES: usize = CERTIFICATE_MAX_BYTES;
@@ -20,20 +21,36 @@ pub const AUTHORING_SOURCE_MAX_BYTES: usize = CERTIFICATE_MAX_BYTES;
 /// Compiles one complete, dependency-free `.nao` theorem.
 ///
 /// Reachable proof references fail because this entry point uses an empty
-/// checked-proof state. Use [`compile_with_state`] when references are
-/// expected.
+/// checked-proof state. Use [`compile_against_selected_chain`] when references
+/// to already selected proofs are expected.
 pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
-    compile_with_state(source, &ProofState::new())
+    compile_with_proof_state(source, &ProofState::new())
 }
 
-/// Compiles one `.nao` theorem against an immutable checked-proof state.
+/// Compiles one `.nao` theorem against a selected proof-chain journal.
 ///
-/// Only root-reachable references are resolved, and every exact [`ProofId`]
-/// must already be present in `proof_state`. Compilation never mutates or
-/// registers into that state. The caller remains responsible for establishing
-/// whether the supplied state represents any selected blockchain context, and
-/// later admission must resolve and check the proof again in its target state.
-pub fn compile_with_state(
+/// Journal health is checked before source compilation. Root-reachable
+/// references resolve only from proofs strictly applied or replayed into
+/// `selected`; block candidates, archived payloads, and arbitrary caller-built
+/// proof states are not inputs. Compilation performs no journal I/O or mutation.
+/// Its output is still an unselected authoring artifact, and later admission
+/// fully rechecks it against the then-current target state. The selected journal
+/// does not by itself establish network provenance, consensus, or finality.
+pub fn compile_against_selected_chain(
+    source: &str,
+    selected: &ProofChainJournal,
+) -> Result<CompiledProof, SelectedChainCompileError> {
+    let proof_state =
+        selected
+            .proof_state()
+            .map_err(|source| SelectedChainCompileError::SelectedState {
+                source: Box::new(source),
+            })?;
+    compile_with_proof_state(source, proof_state)
+        .map_err(|source| SelectedChainCompileError::Compilation { source })
+}
+
+fn compile_with_proof_state(
     source: &str,
     proof_state: &ProofState,
 ) -> Result<CompiledProof, CompileError> {
@@ -45,6 +62,39 @@ pub fn compile_with_state(
     }
 
     Parser::new(source).compile(proof_state)
+}
+
+/// Failure to obtain selected state or compile against it.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum SelectedChainCompileError {
+    /// The selected journal cannot expose healthy applied-or-replayed state.
+    SelectedState { source: Box<ProofChainJournalError> },
+    /// Source parsing, proof checking, or exact reference resolution failed.
+    Compilation { source: CompileError },
+}
+
+impl fmt::Display for SelectedChainCompileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SelectedState { source } => {
+                write!(
+                    formatter,
+                    "selected proof-chain state is unavailable: {source}"
+                )
+            }
+            Self::Compilation { source } => write!(formatter, "proof compilation failed: {source}"),
+        }
+    }
+}
+
+impl Error for SelectedChainCompileError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::SelectedState { source } => Some(source.as_ref()),
+            Self::Compilation { source } => Some(source),
+        }
+    }
 }
 
 /// Canonical checked output of one successful source compilation.

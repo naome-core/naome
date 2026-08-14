@@ -28,13 +28,16 @@ same primitive Foundation formulas:
 cargo run -p naome-authoring --bin naome -- proof compile examples/separation.nao
 ```
 
-Agent-authored proofs may cite an exact already checked `ProofId` with
-`(proof-reference <64 lowercase hex characters>)`. The library's
-`compile_with_state` resolves such citations only from an immutable, explicitly
-supplied checked `ProofState`; compilation does not fetch, select, register, or
-mutate proofs. The CLI deliberately uses an empty state and therefore rejects
-reachable references. The normative authoring specification includes the full
-source form.
+Agent-authored proofs may cite an exact selected `ProofId` with
+`(proof-reference <64 lowercase hex characters>)`. The protocol-facing
+`compile_against_selected_chain` adapter resolves citations only from the
+immutable state built by strict block application or replay in a healthy
+selected-chain journal. Candidate blocks, archived or fetched payloads, and
+other local checked proofs never
+resolve implicitly. Compilation does not fetch, select, register, or mutate
+proofs; the CLI deliberately uses an empty state and rejects reachable
+references. The normative authoring specification includes the full source
+form and selected-state boundary.
 
 Each local chain begins from a canonical definition that binds its deployment,
 the current Foundation identity, and the empty authenticated proof state before
@@ -49,6 +52,7 @@ foundation -> proof -> checker -> ledger -> chain
                          |                  |-> storage -> network
                          |                  `-> naome   -> network
                          `-> authoring
+storage -> authoring
 ```
 
 `A -> B` means that `B` builds on `A`. The layers own, respectively: Foundation
@@ -57,14 +61,17 @@ atomic ledger transitions; authenticated proof state, transitions, and blocks;
 the selected-chain journal, chain-scoped structural-candidate store, and
 Foundation-scoped canonical-payload archive; transport-neutral messages; and
 bounded libp2p transport, orchestration, and peer-address management. The
-authoring layer owns prerelease source lowering into checked canonical proofs.
-A crate may also depend directly on an earlier contract it uses.
+authoring layer owns prerelease source lowering and borrows healthy selected
+state from storage for exact proof references. A crate may also depend directly
+on an earlier contract it uses.
 
 The following boundaries are invariant:
 
 - external proof admission is decode, canonicality, checking, expected-address
   comparison, then registration;
 - the journal is the sole durable selected-state owner;
+- reference-aware protocol authoring borrows only the healthy journal's
+  selected proof state and never searches candidate, archive, or network data;
 - the block-candidate store preserves canonical structural blocks but confers
   no ancestry, proof-validity, execution, or selection authority;
 - the payload archive preserves accepted canonical bytes but confers no reusable
