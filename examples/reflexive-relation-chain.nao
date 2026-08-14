@@ -1,7 +1,0 @@
-foundation = "naome:zfc"
-
-definitions:
-    previous = "7b24fa5223b987195fcdb94acd67c9519ba2b8d2fb1727150937e42c8bcc3e1c"
-
-definition reflexive_via_chain = relation(x):
-    previous(x)
