@@ -432,7 +432,8 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
         .block(block_id)
         .unwrap()
         .unwrap()
-        .to_canonical_bytes();
+        .to_canonical_bytes()
+        .to_vec();
     let before = snapshot(&directory, &journal);
     let proof_request = ProofRequest::new(proof_id);
     let block_request = ProofBlockRequest::new(block_id);
@@ -646,7 +647,8 @@ async fn one_service_node_serves_found_and_unavailable_to_three_neutral_clients(
             .block(block_id)
             .unwrap()
             .unwrap()
-            .to_canonical_bytes(),
+            .to_canonical_bytes()
+            .to_vec(),
         retained_block_bytes
     );
     assert_snapshot(&client_a_directory, &client_a_journal, &client_a_before);

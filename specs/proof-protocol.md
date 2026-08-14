@@ -1,8 +1,8 @@
 # NAOME Proof Protocol
 
 This document normatively defines NAOME's canonical proof certificate, checked
-selected state, authenticated proof set, proof-state transition, and linear
-proof block. The [ZFC Foundation](foundation.md) owns the mathematical language
+selected state, authenticated proof set, and linear single-proof block. The
+[ZFC Foundation](foundation.md) owns the mathematical language
 and primitive rules. The [Proof Chain Journal](proof-chain-journal.md) owns
 durable selected-state recovery.
 
@@ -13,12 +13,11 @@ canonical certificate
   -> deterministic mathematical checking
   -> immutable accepted record
   -> authenticated selected proof set
-  -> exact proof-state transition
-  -> exact-parent proof block
+  -> exact-parent single-proof block
 ```
 
 Mathematical checking decides Foundation-relative proof validity. State roots,
-transition identities, blocks, ancestry, persistence, and later consensus may
+blocks, ancestry, persistence, and later consensus may
 commit ordering, inclusion, and provenance; none can make an invalid proof
 valid or establish mathematical truth independently of checking.
 
@@ -460,75 +459,9 @@ caller field, and is not retained in the record.
 The candidate remains invisible while checking, so every reference resolves
 from unchanged selected state. Every error leaves state unchanged.
 
-### Atomic rooted proof transactions
-
-A rooted transaction admits one dependency closure all-or-none. The trusted
-local path accepts canonical buffers and derives their IDs. The addressed path
-accepts an immutable `requested_root` and candidates pairing each owned buffer
-with its immutable expected `ProofId`. Network-derived data must use the
-addressed path; raw peer bytes must never enter unaddressed admission.
-
-A transaction contains `1..=8` candidates. Each remains independently subject
-to the certificate byte, step, formula-node, and checker-work limits. The
-maximum candidate payload is eight certificates, or `33_554_432` bytes. The
-caller supplies dependency-first order; admission never sorts, retries,
-deduplicates, or partially accepts candidates.
-
-Addressed shape preflight executes before proof work:
-
-1. reject an empty batch;
-2. reject more than eight candidates;
-3. reject the first duplicate expected `ProofId` in input order; and
-4. require the final candidate's expected ID to equal `requested_root`.
-
-Candidates are then processed in input order. Candidate `i` may resolve exact
-references from the immutable selected base and successfully staged candidates
-at lower indices, never itself or a later candidate. A missing or forward
-reference returns the ordinary checker `UnknownProofReference` at that candidate
-and normal-form step.
-
-Each candidate follows this order:
-
-1. decode;
-2. verify canonical root-proof normal form;
-3. mathematically check and derive all three identities;
-4. when addressed, compare actual and expected `ProofId`;
-5. validate proof, dependency, derivation, and statement registration against
-   the base plus earlier staged candidates; and
-6. stage its accepted record without mutating selected state.
-
-The first candidate error stops processing, reports its index and supplied
-expected ID, preserves the underlying ledger error, and discards all staged
-state.
-
-After every candidate succeeds individually, reachability is computed from the
-final actual `ProofId` over direct exact-`ProofId` dependencies in checked normal
-forms. Every candidate must be transitively reachable; dependencies already in
-selected state are allowed but are not transaction candidates. Reachability
-uses neither statement nor derivation identities, an unmatched expected address,
-nor discarded presentation steps. The first unreachable candidate in input
-order returns `UnreachableCandidate` and discards the transaction. Dependency-
-first resolution plus root closure makes every successful addition acyclic and
-dependency-closed and prevents unrelated-proof smuggling.
-
-Candidates are staged privately against the immutable base. Only after checking
-and root closure succeed are all registry entries and accepted records committed;
-every possible insertion failure is validated before that infallible merge.
-
-Success inserts every candidate exactly once. Any shape, decode, canonicality,
-checker, expected-address, registration, or reachability error leaves unchanged:
-
-- all proof, derivation, and statement registries;
-- retained accepted records and selected proof count;
-- authenticated-set topology and `ProofSetRoot`; and
-- every membership and non-membership witness.
-
-The call consumes its input even on failure; atomicity protects selected state,
-not recovery of caller-owned buffers.
-
 ### Accepted records and proof DAG
 
-Each successful candidate produces one immutable accepted record containing:
+Each successful admission produces one immutable accepted record containing:
 
 - exact canonical root-proof-normal-form certificate bytes;
 - its checked `ProofId`, `DerivationId`, and `StatementId`; and
@@ -539,16 +472,15 @@ duplicate reference leaves have already been interned. Records expose no mutable
 payload or dependency list. Exact canonical bytes are retained, dependencies
 remain immutable, and replay-derived metadata must never bypass strict
 admission. `ProofSetRoot` binds the selected exact `ProofId` set independently of
-insertion order or transaction grouping.
+insertion order.
 
 Callers cannot insert unchecked bytes, identities, edges, or leaves directly.
 The [Proof Chain Journal](proof-chain-journal.md) is the sole durable owner and
 reconstructs selected state only through strict block replay.
 
-Every candidate is decoded, canonicality-checked, and mathematically checked
-once. Staging retains at most eight candidates without cloning, scanning, or
-rebuilding selected state. Registry operations use ordered-map lookup;
-authenticated-set operations traverse at most 256 key bits.
+Every admitted proof is decoded, canonicality-checked, and mathematically
+checked once. Registry operations use ordered-map lookup; authenticated-set
+operations traverse at most 256 key bits.
 
 ## Authenticated proof set
 
@@ -712,16 +644,16 @@ comparison, and identity registration all succeed before insertion. Duplicate
 rules make insertion logically infallible; failed admission changes neither
 record count, topology, root, nor witnesses. The structure is append-only.
 
-Transition preflight may project the root obtained by adding an exact ordered
-list of one to eight unique `ProofId` keys. Projection has normal insertion
-semantics but mutates no record, topology, root, witness, or selected registry.
-It is bounded by those keys and their Patricia paths and must not clone, scan,
-or rebuild the set. Projection accepts identities only; it performs no proof
-decode, checking, dependency validation, root closure, or record admission.
+Single-block preparation and preflight project the root obtained by adding one
+exact `ProofId`. Projection has normal insertion semantics but mutates no record,
+topology, root, witness, or selected registry. It is bounded by that key's
+Patricia path and must not clone, scan, or rebuild the set. Projection accepts
+the identity only; it performs no proof decode, checking, dependency validation,
+or record admission.
 
 The [Proof Chain Journal](proof-chain-journal.md) stores no Merkle nodes; strict
-block replay reconstructs and verifies the set. Different valid block grouping
-or order may produce one final set root but different ancestry. A head, root, or
+block replay reconstructs and verifies the set. Different valid block orders
+may produce one final set root but different ancestry. A head, root, or
 witness from an untrusted peer establishes no freshness, selection, or finality;
 verification must bind the expected root and queried `ProofId` to trusted caller
 context.
@@ -760,183 +692,30 @@ show consensus selection. Exact block ancestry and journal replay remain
 responsible for order-dependent append integrity; block head and set root are
 not interchangeable.
 
-## Proof-state transition
+## Single-proof block and linear chain state
 
-A `ProofTransition` commits one bounded selected-state change:
+A `ProofBlock` is the sole canonical selected-state change. It binds one exact
+parent, the selected proof-set roots immediately before and after admission,
+and exactly one `ProofId`:
 
 ```text
+parent_block_id:          ProofBlockId
 previous_proof_set_root:  ProofSetRoot
 resulting_proof_set_root: ProofSetRoot
-proof_ids:                1..=8 ProofId values
+proof_id:                 ProofId
 ```
 
-The ordered IDs are unique and dependency-first; the final ID is the rooted
-transaction root. Order is semantic and must not be sorted, deduplicated, retried,
-or normalized. Different valid topological presentations have different bytes
-and, assuming collision resistance, different `ProofTransitionId` values even
-when they produce one final set root. The codec cannot establish dependency
-order or closure; checked rooted admission does.
+The four block fields are complete; there is no subordinate state-change object
+or identity. A block never contains a proof list, count, dependency closure, or
+more than one mathematical artifact. Every dependency of `proof_id` must already
+be selected by an earlier block in the same ancestry.
 
-### Encoding and identity
-
-```text
-Transition = previous_proof_set_root[32]
-          || resulting_proof_set_root[32]
-          || proof_count_u8
-          || proof_ids[proof_count][32]
-```
-
-`proof_count` is in `1..=8`. There is no version, tag, length prefix, padding,
-or checksum; the complete input boundary delimits the value. Exact length is:
-
-```text
-65 + 32 * proof_count bytes
-```
-
-The transition is 97 bytes for one proof and at most 321 bytes for eight.
-Decoding executes:
-
-1. reject input longer than 321 bytes before proof-ID allocation;
-2. decode two complete roots and the count, returning unexpected-end when any
-   of the first 65 bytes is absent;
-3. reject count zero;
-4. reject count above eight;
-5. decode exactly the declared complete 32-byte IDs, returning unexpected-end
-   at the first incomplete value;
-6. reject trailing bytes; and
-7. reject the first duplicate ID in supplied order.
-
-No partially decoded transition is returned, and re-encoding reproduces the
-accepted bytes exactly.
-
-Transition identity is SHA-256 over the exact trailing-NUL domain and canonical
-encoding:
-
-```text
-ProofTransitionId = SHA256(
-    "naome:proof-transition\0"
-    || canonical_transition_bytes
-)
-```
-
-Exact domain bytes are:
-
-```text
-6e616f6d653a70726f6f662d7472616e736974696f6e00
-```
-
-For previous root `11` repeated 32 bytes, resulting root `22` repeated 32 bytes,
-count `02`, and ordered IDs `33` then `44`, each repeated 32 bytes, the identity
-is:
-
-```text
-7588941422cb2102d8c03f6aa8c1fc2c683d579f67b7f96e22eabd5b68c50070
-```
-
-Identity commits one exact proposed state change but establishes no inclusion,
-freshness, availability, authorship, finality, or economic value.
-
-### Correlation and projected root
-
-Application takes the transition and an owned addressed-candidate list. Before
-reading candidate bytes, it requires equal counts and then each immutable
-expected candidate `ProofId` to equal the transition ID at the same index. The
-first ordered mismatch fails. Unordered-set comparison, permutation, final-ID-
-only correlation, or correlation derived from untrusted bytes is forbidden.
-
-Correlation binds requested work to the commitment but does not validate a
-candidate. Rooted admission remains authoritative for decoding, canonicality,
-mathematics, checked-ID comparison, dependency resolution, registration, and
-root closure.
-
-Before checking proof bytes, application projects the root produced by inserting
-the transition's IDs into the current authenticated set. Projection is read-only
-and semantically identical to normal key insertion. It is bounded by eight keys
-and their Patricia paths and must not clone, scan, or rebuild selected state. An
-already selected key projects idempotently, while rooted admission still rejects
-duplicate proof admission.
-
-The projected root must equal `resulting_proof_set_root`; mismatch precedes any
-certificate decode or check. Arbitrary projected keys are not thereby valid
-proofs.
-
-Local preparation may bind the current root, ordered IDs, and projected result
-into a transition without checking proofs or mutating state. As an authoring
-convenience it rejects the first already-selected ID. Applying a constructed or
-decoded transition retains idempotent projection and leaves duplicate-proof
-rejection to rooted admission.
-
-### Atomic transition application
-
-Application to one selected proof DAG executes:
-
-1. require current `ProofSetRoot == previous_proof_set_root` before candidate
-   inspection;
-2. require exact candidate count;
-3. require exact ordered candidate-ID correlation, stopping at the first
-   mismatch;
-4. require the read-only projected root to equal `resulting_proof_set_root`; and
-5. invoke addressed rooted-batch admission exactly once with the final
-   transition ID as `requested_root` and the correlated candidates unchanged.
-
-Current-root mismatch precedes every candidate error; count mismatch precedes
-ID mismatch; ID mismatch precedes resulting-root mismatch; and every transition
-preflight error precedes rooted-batch errors. A rooted-batch error is preserved,
-not reclassified or retried.
-
-The transition layer must not duplicate certificate decoding, checking,
-dependency resolution, reachability, or registration. Rooted admission is the
-sole mutation after preflight. Success inserts each checked candidate exactly
-once and leaves the DAG at `resulting_proof_set_root`. Every failure leaves all
-registries, retained records, proof count, authenticated topology, root, and
-existing witnesses unchanged. No fallible transition check occurs after rooted
-admission commits.
-
-Reapplying a successful transition to the same state fails at current-root
-comparison before candidate work. This is state-relative, not global, replay
-protection: another DAG with the declared previous root may apply it.
-
-Read-only transition validation executes the same current-root, candidate-count,
-ordered-correlation, projected-root, and addressed rooted-batch checks against
-the selected state. It uses the same staged proof transaction as application but
-discards every checked registration and record on both success and failure.
-Validation and application therefore preserve the same preflight, batch,
-candidate, and ledger error precedence, while validation returns no record or
-transferable validation artifact.
-
-Successful validation means only that the complete transition was executable
-against that exact selected proof state during the call. It does not reserve the
-transition or make later application infallible. Application always repeats the
-complete validation because the selected state may have changed.
-
-A transition contains no chain position, time, network, authority, or nonce.
-Its identity and roots assume SHA-256 collision and second-preimage resistance.
-The previous root prevents application to a different selected key set; ordered
-correlation prevents substitution and permutation; pre-mutation projection
-binds the proposed post-state. Neither root authenticates its selector or gives
-an untrusted source provenance, freshness, availability, or consensus authority.
-
-Transition decode and duplicate/correlation work are bounded by eight identities
-and 321 bytes. Projection performs bounded Patricia work for eight keys and does
-not scale by scanning selected state. Candidate payload and mathematical work
-retain the independent certificate and admission limits above.
-
-## Proof block and linear chain state
-
-A `ProofBlock` binds one parent `ProofBlockId` and one complete canonical
-`ProofTransition`. A canonical `ProofChainDefinition` derives one
-`ProofChainId`, which derives the virtual genesis parent for an initially empty
-chain state. Every admitted block must extend the exact current head and apply
-its transition atomically to the privately owned selected proof DAG. The
+A canonical `ProofChainDefinition` derives one `ProofChainId`, which derives the
+virtual genesis parent for an initially empty chain state. Every admitted block
+must extend the exact current head and admit its one proof atomically to the
+privately owned selected proof DAG. The
 [Proof Chain Journal](proof-chain-journal.md) persists this selected line
 without changing block bytes or application rules.
-
-Its canonical value is exactly:
-
-```text
-parent_block_id: ProofBlockId
-transition:      ProofTransition
-```
 
 ### Chain definition, identity, and virtual genesis
 
@@ -974,7 +753,7 @@ definition:
 
 ```text
 ProofChainId = SHA256(
-    "naome:proof-chain-definition\0"
+    "naome:proof-chain-definition:single-proof-v0\0"
     || canonical_proof_chain_definition[73]
 )
 ```
@@ -982,7 +761,7 @@ ProofChainId = SHA256(
 Exact definition-domain bytes are:
 
 ```text
-6e616f6d653a70726f6f662d636861696e2d646566696e6974696f6e00
+6e616f6d653a70726f6f662d636861696e2d646566696e6974696f6e3a73696e676c652d70726f6f662d763000
 ```
 
 For a deployment discriminator containing 32 bytes of `11`, the canonical
@@ -993,7 +772,7 @@ definition = 1111111111111111111111111111111111111111111111111111111111111111
              6e616f6d653a7a6663
              e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca
 
-ProofChainId = 7174cae86b0cd18e2364805d1bb8da7a34262f3efa6f5e2b723ec6612a9ec15e
+ProofChainId = 33c98c37f2a2d480e79c106efc0fbeaa9e1179f4274e423033cc7775cf5f74b4
 ```
 
 Changing the deployment discriminator, Foundation identity, or genesis root
@@ -1001,6 +780,11 @@ changes the chain identity under collision resistance. The discriminator
 separates intentional deployments that otherwise share the same executable
 genesis semantics. It is not a secret, signature, operator identity, consensus
 parameter, or authorization token.
+
+The explicit `single-proof-v0` identity domain separates this block model from
+the earlier prerelease multi-proof format even though the 73 definition bytes
+are otherwise unchanged. Old and new nodes therefore cannot advertise
+incompatible heads under one `ProofChainId`.
 
 A `ProofChainId` remains an exact 32-byte address on journal and network
 boundaries. Constructing that address from raw bytes supports strict message
@@ -1026,10 +810,10 @@ Exact genesis-domain bytes are:
 For the `11` discriminator definition above, the virtual genesis parent is:
 
 ```text
-71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
+11e721588dde6890ed9891c28243e3e1d6c6501b08b9dd2c683c1d801a11e0e4
 ```
 
-This anchor is not an admitted block and has no transition, payload, height, or
+This anchor is not an admitted block and has no payload, height, or
 stored record. The first block names it as parent; every later block names the
 exact identity of its admitted predecessor.
 
@@ -1045,24 +829,19 @@ A block is:
 
 ```text
 Block = parent_block_id[32]
-     || canonical_proof_transition[97..321]
+     || previous_proof_set_root[32]
+     || resulting_proof_set_root[32]
+     || proof_id[32]
 ```
 
-It adds only parent context; the transition retains roots and ordered proof IDs.
-No version, tag, chain ID, height, timestamp, transition length, padding, or
-checksum is encoded. The parent is always present. The complete input boundary
-delimits the block and the transition count determines internal length. A block
-is 129 through 353 bytes.
+Every field has fixed width. No version, tag, chain ID, height, timestamp,
+count, length, padding, or checksum is encoded. A canonical block is exactly
+128 bytes.
 
 Decoding executes:
 
-1. reject input longer than 353 bytes as `InputTooLong` before transition-ID
-   allocation;
-2. require the complete 32-byte parent, otherwise `UnexpectedEnd`;
-3. decode the complete remaining slice with the transition decoder, preserving
-   its validation order as `Transition { source }`; and
-4. reject every transition truncation, invalid count, trailing byte, or
-   duplicate identity.
+1. require exactly 128 bytes, otherwise `InvalidLength`; and
+2. decode the four fixed 32-byte fields without allocation.
 
 No partial block is returned, and re-encoding reproduces accepted bytes exactly.
 
@@ -1082,15 +861,15 @@ Exact block-domain bytes are:
 6e616f6d653a70726f6f662d626c6f636b00
 ```
 
-For the `11` discriminator definition's virtual genesis and the transition
-golden above—roots `11` and `22`, count `02`, IDs `33` and `44`—the 161-byte
-block ID is:
+For the `11` discriminator definition's virtual genesis above, previous root
+`11` repeated 32 bytes, resulting root `22` repeated 32 bytes, and proof ID `33`
+repeated 32 bytes, the 128-byte block ID is:
 
 ```text
-474983a016ebf466488b634485b9e6e93f1629bf3d0afa5afa5618f2e04a70f4
+61443f12756d101185e9c28dcfa61b0f0e449649ae935cf3791da27dabc2b569
 ```
 
-Changing parent or any transition byte changes the identity under collision
+Changing any parent, root, or proof-ID byte changes the identity under collision
 resistance. Parent recursively commits claimed ancestry; only successful exact-
 head application establishes it for the local selected chain. Identity alone
 does not establish ancestry availability, validity, selection, or finality.
@@ -1102,48 +881,45 @@ DAG and its derived virtual genesis as current head. It accepts neither a raw
 caller-selected chain ID, an arbitrary pre-populated DAG, nor a caller-selected
 initial head.
 
-Local preparation takes one ordered list of `1..=8` proof IDs, prepares a
-transition using the read-only projection rules, and constructs a block whose
-parent is the exact current head. It performs no checking, admission, head
-advance, or other mutation. Multiple siblings may be prepared from one head;
-the linear state can admit at most one before its head changes.
+Local preparation takes exactly one `ProofId`. It rejects an already-selected
+identity, binds the exact current head and proof-set root, projects insertion of
+that one key, and commits the projected result in a new block. It performs no
+certificate checking, admission, head advance, or other mutation. Multiple
+siblings may be prepared from one head; the linear state can admit at most one
+before its head changes.
 
-Read-only block validation takes one block and a separate ordered addressed-
-candidate list. It first requires the block parent to equal the exact current
-head, then invokes read-only transition validation with the supplied candidates.
-It returns success without retaining proof records, advancing the head, or
-creating a validation object. Multiple siblings can therefore validate against
-one unchanged head. If one is later applied, every sibling with the old parent
-becomes stale and fails before proof work.
+Read-only validation and application each take one block and exactly one owned
+canonical proof payload. Before reading payload bytes, they execute:
 
-Application takes one block and a separate ordered addressed-candidate list and
-executes:
+1. require `parent_block_id` to equal the exact current head;
+2. require current `ProofSetRoot == previous_proof_set_root`;
+3. reject `proof_id` when it is already selected; and
+4. project insertion of `proof_id` and require the result to equal
+   `resulting_proof_set_root`.
 
-1. require `parent_block_id` to equal the exact current head before candidate
-   inspection;
-2. compute `ProofBlockId` before mutation;
-3. invoke atomic transition application exactly once with the supplied
-   candidates; and
-4. only after transition success, assign the already computed identity as the
-   new head infallibly.
+Parent mismatch precedes previous-root mismatch; previous-root mismatch
+precedes already-selected rejection; and already-selected rejection precedes
+projected-root mismatch. Every preflight error precedes certificate work.
 
-Transition application alone owns current-root binding, candidate count and
-order, projected post-root, certificate decode and canonicality, checking,
-dependency resolution, root closure, and proof-state mutation. The block layer
-must not duplicate, weaken, reorder, retry, or partially apply those checks.
+After preflight, strict single-proof admission decodes the candidate, requires
+exact canonical root-proof normal form, checks it against unchanged selected
+state, compares the checked `ProofId` with the block's `proof_id`, and registers
+the accepted record atomically. References can resolve only to proofs already
+selected before this block. The payload cannot use itself or a fetched but
+unselected dependency.
 
-Block validation delegates the same checks to the corresponding read-only
-transition path. Durable or in-memory application never consumes validation
-success as authority and always rechecks the block and proof closure against its
-then-current state.
+Application computes `ProofBlockId` before mutation and assigns it as the new
+head only after the one proof registers successfully. No fallible operation
+occurs after proof-state commit. Read-only validation performs the same checks
+in discarded state and returns no record or transferable validation artifact.
+Durable or in-memory application never consumes prior validation as authority
+and always repeats the complete check against its then-current state.
 
-Parent mismatch precedes every transition or candidate error. Transition errors
-retain their internal precedence and source. No fallible operation occurs after
-proof-state commit. Every failure preserves head, registries, records, proof
-count, authenticated topology/root, and existing witnesses. Success admits each
-transition proof once, leaves the DAG at the committed resulting root, and
-advances the head once to the block identity. The selected proof DAG is exposed
-only immutably, so callers cannot bypass parentage.
+Every failure preserves the head, registries, accepted records, selected proof
+count, authenticated topology and root, and existing witnesses. Success admits
+exactly `proof_id`, leaves the DAG at `resulting_proof_set_root`, and advances
+the head exactly once. The selected proof DAG is exposed only immutably, so
+callers cannot bypass parentage or admit a second proof under the block.
 
 Immediate replay or application of a sibling with the old parent fails at the
 parent comparison before proof work. This defines one append-only local line,
@@ -1154,35 +930,45 @@ branch store or selection rule.
 
 ### Payload, resource, and trust boundaries
 
-Block bytes contain transition commitments but no certificate payloads.
-Validation and application receive addressed candidates separately and
-correlate them through the exact ordered transition IDs. Possessing or retrieving
-a block does not establish possession or availability of its proofs, and neither
+Block bytes contain one `ProofId` commitment but no certificate payload.
+Validation and application receive the payload separately and use the block's
+`proof_id` as its sole expected address.
+Possessing or retrieving a block does not establish possession or availability
+of its proof, and neither
 retrieval, local journal retention, nor successful read-only validation
 establishes network selection.
 
-A block adds exactly 32 parent bytes to a 97-to-321-byte transition and is at
-most 353 bytes. Decoding retains at most eight proof identities. Identity hashing
-can process parent and transition directly without a second block buffer. The
-parent comparison and head assignment are constant-size; preparation,
-validation, and application must not clone, scan, or rebuild the complete
-selected set or check a candidate more than once per call. Candidate bytes and
-mathematical work retain their independent limits.
+A block is a fixed 128-byte value and retains no heap-allocated proof-ID list.
+The parent comparison, root projection, identity hashing, and head assignment
+are constant-size. Preparation, validation, and application must not clone,
+scan, or rebuild the complete selected set or check the payload more than once
+per call. Payload bytes and mathematical work retain their independent limits.
 
-Chain-definition identity, virtual genesis, block identity, ancestry, transition
-identities, and roots assume SHA-256 collision and second-preimage resistance.
-Distinct domains separate definitions, genesis anchors, blocks, transitions,
-proof identities, and authenticated-set nodes. Exact parent matching prevents
-local replay and sibling application after head advance; roots bind selected
-proof state before and after the block; addressed admission prevents
-substitution, permutation, invalid-proof admission, and unrelated-proof
-smuggling.
+Direct block import requests only the exact payload for the block's `proof_id`.
+It does not predecode that payload or retrieve a cited dependency. If strict
+application finds an unselected reference, the block is rejected. Catch-up must
+first import the earlier block that selected each dependency.
+
+Chain-definition identity, virtual genesis, block identity, ancestry, and roots
+assume SHA-256 collision and second-preimage resistance. Distinct domains
+separate chain definitions, genesis anchors, blocks, proof identities, and
+authenticated-set nodes. Exact parent matching prevents local replay and sibling
+application after head advance; roots bind selected proof state before and after
+the block; addressed admission prevents substitution and invalid-proof
+admission; singular block cardinality prevents unrelated-proof smuggling.
 
 The definition and chain identifier are neither secret nor authentication keys.
 A remote party can calculate the same identity and virtual genesis. A valid
-definition, certificate, identity, set root, transition, ancestry, block, or
+definition, certificate, identity, set root, ancestry, block, or
 successful local application establishes no proposer identity, data
 availability, consensus, finality, novelty, reward, fee, or economic value.
 Source syntax, network selection, durable recovery, competing-history
 selection, reorganization, consensus, finality, and economy remain separate
 contracts.
+
+This prerelease block and chain-identity cutover has no compatibility reader or
+migration path. Journals and block-candidate stores created for the earlier
+multi-proof block format must be recreated. Mathematical `ProofId`,
+`DerivationId`, and `StatementId` values do not change. This proof-only block
+model does not define on-chain definitions, a generalized artifact union,
+consensus, fork choice, finality, or reorganization.

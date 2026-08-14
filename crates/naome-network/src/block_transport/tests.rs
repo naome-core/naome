@@ -4,9 +4,11 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::block_exchange::{ProofBlockExchangeWireError, ProofBlockRequest};
+use naome::block_exchange::{
+    PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockExchangeWireError, ProofBlockRequest,
+};
 use naome::proof_exchange::{ProofRequest, ProofResponse};
-use naome_chain::ProofBlockId;
+use naome_chain::{PROOF_BLOCK_BYTES, ProofBlockDecodeError, ProofBlockId};
 use tokio::time::timeout;
 
 use super::*;
@@ -252,7 +254,8 @@ fn correlated_responses_distinguish_malformed_bytes_from_a_valid_wrong_id() {
         .block(actual_block_id)
         .unwrap()
         .unwrap()
-        .to_canonical_bytes();
+        .to_canonical_bytes()
+        .to_vec();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[peer_id]);
 
@@ -277,25 +280,32 @@ fn correlated_responses_distinguish_malformed_bytes_from_a_valid_wrong_id() {
         } if *expected == requested_block_id && *actual == actual_block_id
     ));
 
-    let malformed_ticket = network
-        .request_block(peer_id, ProofBlockRequest::new(actual_block_id))
-        .unwrap();
-    let malformed_event = block_response_event(
-        &mut network,
-        malformed_ticket.request_id,
-        peer_id,
-        vec![0xff],
-    );
-    let malformed = malformed_ticket
-        .complete(malformed_event)
-        .unwrap()
-        .unwrap_err();
-    assert!(matches!(
-        malformed.as_ref(),
-        OutboundProofBlockFailure::InvalidResponse {
-            source: ProofBlockExchangeWireError::BlockDecode { .. },
-        }
-    ));
+    for actual in 1..PROOF_BLOCK_RESPONSE_MAX_BYTES {
+        let malformed_ticket = network
+            .request_block(peer_id, ProofBlockRequest::new(actual_block_id))
+            .unwrap();
+        let malformed_event = block_response_event(
+            &mut network,
+            malformed_ticket.request_id,
+            peer_id,
+            vec![0xff; actual],
+        );
+        let malformed = malformed_ticket
+            .complete(malformed_event)
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(
+            malformed.as_ref(),
+            OutboundProofBlockFailure::InvalidResponse {
+                source: ProofBlockExchangeWireError::BlockDecode {
+                    source: ProofBlockDecodeError::InvalidLength {
+                        actual: error_actual,
+                        expected,
+                    },
+                },
+            } if *error_actual == actual && *expected == PROOF_BLOCK_BYTES
+        ));
+    }
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
 }
 
@@ -519,11 +529,7 @@ async fn committed_block_found_and_unavailable_round_trip_without_client_mutatio
     let mut server_journal = create_journal(server_directory.path()).unwrap();
     apply_fresh_blocks(&mut server_journal, [pairing_bytes()]);
     let committed_block_id = server_journal.head_block_id().unwrap();
-    let expected_block = server_journal
-        .block(committed_block_id)
-        .unwrap()
-        .unwrap()
-        .clone();
+    let expected_block = *server_journal.block(committed_block_id).unwrap().unwrap();
     let virtual_genesis = expected_block.parent_block_id();
 
     let client_directory = TestDirectory::new("block-transport-client");
@@ -579,12 +585,12 @@ async fn simultaneous_bidirectional_block_requests_remain_exactly_correlated() {
     let mut journal_a = create_journal(directory_a.path()).unwrap();
     apply_fresh_blocks(&mut journal_a, [pairing_bytes()]);
     let block_a_id = journal_a.head_block_id().unwrap();
-    let block_a = journal_a.block(block_a_id).unwrap().unwrap().clone();
+    let block_a = *journal_a.block(block_a_id).unwrap().unwrap();
     let directory_b = TestDirectory::new("bidirectional-block-b");
     let mut journal_b = create_journal(directory_b.path()).unwrap();
     apply_fresh_blocks(&mut journal_b, [vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x02]]);
     let block_b_id = journal_b.head_block_id().unwrap();
-    let block_b = journal_b.block(block_b_id).unwrap().unwrap().clone();
+    let block_b = *journal_b.block(block_b_id).unwrap().unwrap();
 
     let ticket_a = network_a
         .request_block(peer_b, ProofBlockRequest::new(block_b_id))
@@ -654,7 +660,7 @@ async fn proof_and_block_protocols_progress_concurrently_on_one_session() {
     let mut journal_a = create_journal(directory_a.path()).unwrap();
     apply_fresh_blocks(&mut journal_a, [pairing_bytes()]);
     let block_a_id = journal_a.head_block_id().unwrap();
-    let block_a = journal_a.block(block_a_id).unwrap().unwrap().clone();
+    let block_a = *journal_a.block(block_a_id).unwrap().unwrap();
     let directory_b = TestDirectory::new("mixed-exchange-b");
     let mut journal_b = create_journal(directory_b.path()).unwrap();
     let proof_b = apply_fresh_blocks(&mut journal_b, [pairing_bytes()])[0];

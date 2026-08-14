@@ -23,20 +23,6 @@ fn axiom(axiom: ZfcAxiom) -> crate::CheckedProof {
     normalize_and_check(certificate(vec![ProofStep::ZfcAxiom(axiom)])).unwrap()
 }
 
-fn referenced_generalization(
-    proof_id: naome_proof::ProofId,
-    variable: FreeVariable,
-) -> naome_proof::ProofNormalForm {
-    certificate(vec![
-        ProofStep::ProofReference { proof_id },
-        ProofStep::Generalization {
-            premise: 0,
-            variable,
-        },
-    ])
-    .into_unchecked_normal_form()
-}
-
 #[test]
 fn alternative_proofs_share_one_stored_conclusion() {
     let x = FreeVariable::new(7);
@@ -199,125 +185,24 @@ fn identity_collisions_fail_closed_without_mutating_state() {
 }
 
 #[test]
-fn batch_resolves_staged_dependencies_and_commits_only_on_success() {
-    let root = axiom(ZfcAxiom::Pairing);
-    let root_id = root.proof_id();
+fn single_registration_validation_matches_registration_without_mutating() {
+    let proof = axiom(ZfcAxiom::Pairing);
+    let proof_id = proof.proof_id();
+    let derivation_id = proof.derivation_id();
+    let statement_id = proof.statement_id();
     let mut state = ProofState::new();
 
-    let child_id = state
-        .apply_batch(|batch| {
-            batch.register(root).unwrap();
-            let child = batch
-                .check_normal_form(referenced_generalization(root_id, FreeVariable::new(0)))
-                .unwrap();
-            let child_id = child.proof_id();
-            batch.register(child).unwrap();
-            Ok::<_, ()>(child_id)
-        })
-        .unwrap();
+    state.validate_registration(&proof).unwrap();
+    state.validate_registration(&proof).unwrap();
+    assert!(!state.contains_proof(proof_id));
+    assert!(!state.contains_derivation(derivation_id));
+    assert!(!state.contains_statement(statement_id));
 
-    assert!(state.contains_proof(root_id));
-    assert!(state.contains_proof(child_id));
-    assert_eq!(state.proofs.len(), 2);
-    assert_eq!(state.derivations.len(), 2);
-    assert_eq!(state.statements.len(), 2);
-}
-
-#[test]
-fn validation_batch_resolves_staged_dependencies_without_committing() {
-    let root = axiom(ZfcAxiom::Pairing);
-    let root_id = root.proof_id();
-    let state = ProofState::new();
-
-    state
-        .validate_batch(|batch| {
-            batch.register(root).unwrap();
-            let child = batch
-                .check_normal_form(referenced_generalization(root_id, FreeVariable::new(0)))
-                .unwrap();
-            batch.register(child).unwrap();
-            Ok::<_, ()>(())
-        })
-        .unwrap();
-
-    assert!(!state.contains_proof(root_id));
-    assert!(state.proofs.is_empty());
-    assert!(state.derivations.is_empty());
-    assert!(state.statements.is_empty());
-
-    state
-        .validate_batch(|batch| {
-            batch.register(axiom(ZfcAxiom::Pairing)).unwrap();
-            let child = batch
-                .check_normal_form(referenced_generalization(root_id, FreeVariable::new(0)))
-                .unwrap();
-            batch.register(child).unwrap();
-            Ok::<_, ()>(())
-        })
-        .unwrap();
-    assert!(state.proofs.is_empty());
-}
-
-#[test]
-fn batch_error_discards_staged_dependencies_and_collisions() {
-    let selected = axiom(ZfcAxiom::Union);
-    let selected_id = selected.proof_id();
-    let staged = axiom(ZfcAxiom::Pairing);
-    let staged_id = staged.proof_id();
-    let mut state = ProofState::new();
-    state.register(selected).unwrap();
-
-    let mut dependent_id = None;
-    let aborted = state.apply_batch(|batch| {
-        batch.register(staged).unwrap();
-        let dependent = batch
-            .check_normal_form(referenced_generalization(staged_id, FreeVariable::new(1)))
-            .unwrap();
-        dependent_id = Some(dependent.proof_id());
-        batch.register(dependent).unwrap();
-        Err::<(), _>("abort")
-    });
-    assert_eq!(aborted, Err("abort"));
-    assert!(state.contains_proof(selected_id));
-    assert!(!state.contains_proof(staged_id));
-    assert!(!state.contains_proof(dependent_id.unwrap()));
-    assert_eq!(state.proofs.len(), 1);
-    assert_eq!(state.derivations.len(), 1);
-    assert_eq!(state.statements.len(), 1);
-
-    let staged = axiom(ZfcAxiom::Pairing);
-    let duplicate_selected = axiom(ZfcAxiom::Union);
-    let base_collision = state.apply_batch(|batch| {
-        batch.register(staged).unwrap();
-        batch.register(duplicate_selected)
-    });
-    assert_eq!(
-        base_collision,
-        Err(ProofStateError::DuplicateProof {
-            proof_id: selected_id,
-        })
-    );
-    assert!(state.contains_proof(selected_id));
-    assert!(!state.contains_proof(staged_id));
-    assert_eq!(state.proofs.len(), 1);
-    assert_eq!(state.derivations.len(), 1);
-    assert_eq!(state.statements.len(), 1);
-
-    let first = axiom(ZfcAxiom::Pairing);
+    state.register(proof).unwrap();
     let duplicate = axiom(ZfcAxiom::Pairing);
-    let collision = state.apply_batch(|batch| {
-        batch.register(first).unwrap();
-        batch.register(duplicate)
-    });
-    assert_eq!(
-        collision,
-        Err(ProofStateError::DuplicateProof {
-            proof_id: staged_id,
-        })
-    );
-    assert!(state.contains_proof(selected_id));
-    assert!(!state.contains_proof(staged_id));
-    assert_eq!(state.proofs.len(), 1);
-    assert_eq!(state.derivations.len(), 1);
-    assert_eq!(state.statements.len(), 1);
+    let expected = Err(ProofStateError::DuplicateProof { proof_id });
+    assert_eq!(state.validate_registration(&duplicate), expected);
+    assert!(state.contains_proof(proof_id));
+    assert!(state.contains_derivation(derivation_id));
+    assert!(state.contains_statement(statement_id));
 }

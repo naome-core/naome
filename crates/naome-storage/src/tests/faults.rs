@@ -11,10 +11,12 @@ fn block_rejection_consumes_no_journal_io_or_fault() {
     let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
     let state = ProofChainState::new(definition);
-    let block = prepared_block(&state, &proof_ids);
+    let block = prepared_block(&state, proof_ids[0]);
     let stale = ProofBlock::new(
         ProofBlockId::from_bytes([0xaa; 32]),
-        block.transition().clone(),
+        block.previous_proof_set_root(),
+        block.resulting_proof_set_root(),
+        block.proof_id(),
     );
     let fault = Fault::SyncBefore {
         phase: AppendPhase::Body,
@@ -23,13 +25,7 @@ fn block_rejection_consumes_no_journal_io_or_fault() {
     let before = core.file.volatile.get_ref().clone();
 
     assert!(matches!(
-        core.apply_block(
-            &stale,
-            vec![AddressedProofCandidate::new(
-                ProofId::from_bytes([0x99; 32]),
-                vec![0x00],
-            )],
-        ),
+        core.apply_block(&stale, vec![0x00]),
         Err(ProofChainJournalError::BlockAdmission {
             source: ProofBlockApplyError::ParentBlockIdMismatch { .. }
         })
@@ -42,7 +38,7 @@ fn block_rejection_consumes_no_journal_io_or_fault() {
     assert!(core.blocks.is_empty());
     assert!(core.ensure_healthy().is_ok());
 
-    core.apply_block(&block, addressed_candidates(&payloads, &proof_ids))
+    core.apply_block(&block, proof_bytes(&payloads[0]))
         .unwrap_err();
     assert!(core.file.fault().is_none());
     assert!(matches!(
@@ -56,9 +52,9 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
     let definition = chain_definition(CHAIN_BYTE);
     let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let block = one_block(definition, &payloads, &proof_ids);
+    let block = one_block(definition, proof_ids[0]);
     let block_bytes = block.to_canonical_bytes();
-    let body_write_bytes = 4 + 2 + block_bytes.len() + 4 + payloads[0].len();
+    let body_write_bytes = 4 + block_bytes.len() + payloads[0].len();
     let faults = all_append_faults(body_write_bytes, 32);
 
     for fault in faults {
@@ -68,10 +64,9 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
         );
         assert!(
             matches!(
-                core.apply_block(&block, addressed_candidates(&payloads, &proof_ids)),
+                core.apply_block(&block, proof_bytes(&payloads[0])),
                 Err(ProofChainJournalError::Commit {
                     block_id,
-                    proof_count: 1,
                     ..
                 }) if block_id == block.id()
             ),
@@ -123,23 +118,18 @@ fn append_barriers_are_ordered_and_every_ambiguous_failure_replays_old_or_new() 
 fn successful_commit_streams_body_then_two_sync_barriers_then_footer() {
     let definition = chain_definition(CHAIN_BYTE);
     let id = definition.id();
-    let (payloads, proof_ids) = dependency_chain_with_len(2);
-    let block = one_block(definition, &payloads, &proof_ids);
+    let (payloads, proof_ids) = dependency_chain_with_len(1);
+    let block = one_block(definition, proof_ids[0]);
     let block_len = block.to_canonical_bytes().len();
     let mut core = JournalCore::empty(scripted_io(id, None), ProofChainState::new(definition));
 
-    core.apply_block(&block, addressed_candidates(&payloads, &proof_ids))
-        .unwrap();
+    core.apply_block(&block, proof_bytes(&payloads[0])).unwrap();
     assert_eq!(
         core.file.trace,
         vec![
             Trace::Write(AppendPhase::Body, 4),
-            Trace::Write(AppendPhase::Body, 2),
             Trace::Write(AppendPhase::Body, block_len),
-            Trace::Write(AppendPhase::Body, 4),
             Trace::Write(AppendPhase::Body, payloads[0].len()),
-            Trace::Write(AppendPhase::Body, 4),
-            Trace::Write(AppendPhase::Body, payloads[1].len()),
             Trace::Sync(AppendPhase::Body),
             Trace::Write(AppendPhase::Commit, 32),
             Trace::Sync(AppendPhase::Commit),
@@ -147,7 +137,7 @@ fn successful_commit_streams_body_then_two_sync_barriers_then_footer() {
     );
     assert_eq!(
         core.file.durable,
-        journal_image(id, &[(block.clone(), payloads, proof_ids)])
+        journal_image(id, &[(block, payloads[0].clone(), proof_ids[0])])
     );
     assert_eq!(core.chain.head_block_id(), block.id());
     assert_eq!(core.blocks.get(&block.id()), Some(&block));
@@ -158,8 +148,8 @@ fn replay_recovery_and_stabilization_fail_without_returning_a_handle() {
     let definition = chain_definition(CHAIN_BYTE);
     let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let block = one_block(definition, &payloads, &proof_ids);
-    let complete = journal_image(id, &[(block, payloads, proof_ids)]);
+    let block = one_block(definition, proof_ids[0]);
+    let complete = journal_image(id, &[(block, payloads[0].clone(), proof_ids[0])]);
 
     let mut stabilization = ScriptedIo::from_images(complete.clone(), complete.clone());
     stabilization.plain_sync_failure = true;
@@ -189,8 +179,8 @@ fn complete_bad_footer_is_not_recovered_but_incomplete_footer_is() {
     let definition = chain_definition(CHAIN_BYTE);
     let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let block = one_block(definition, &payloads, &proof_ids);
-    let complete = journal_image(id, &[(block, payloads, proof_ids)]);
+    let block = one_block(definition, proof_ids[0]);
+    let complete = journal_image(id, &[(block, payloads[0].clone(), proof_ids[0])]);
 
     let incomplete = complete[..complete.len() - 1].to_vec();
     let recovered = JournalCore::replay(
@@ -227,13 +217,8 @@ fn poisoned_public_handle_exposes_only_chain_context_and_keeps_lock() {
         .unwrap()
         .proof_id();
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
-    let block = journal.prepare_block(vec![proof_id]).unwrap();
-    journal
-        .apply_block(
-            &block,
-            vec![AddressedProofCandidate::new(proof_id, payload.clone())],
-        )
-        .unwrap();
+    let block = journal.prepare_block(proof_id).unwrap();
+    journal.apply_block(&block, payload.clone()).unwrap();
     let block_id = block.id();
     assert_eq!(journal.block(block_id).unwrap(), Some(&block));
     journal.core.poisoned = true;
@@ -272,14 +257,11 @@ fn poisoned_public_handle_exposes_only_chain_context_and_keeps_lock() {
         Err(ProofChainJournalError::Poisoned)
     ));
     assert!(matches!(
-        journal.prepare_block(vec![proof_id]),
+        journal.prepare_block(proof_id),
         Err(ProofChainJournalError::Poisoned)
     ));
     assert!(matches!(
-        journal.apply_block(
-            &block,
-            vec![AddressedProofCandidate::new(proof_id, payload)],
-        ),
+        journal.apply_block(&block, payload),
         Err(ProofChainJournalError::Poisoned)
     ));
     assert!(matches!(

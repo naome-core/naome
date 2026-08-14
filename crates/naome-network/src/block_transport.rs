@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use libp2p::request_response;
 use naome::block_exchange::{ProofBlockExchangeWireError, ProofBlockRequest, ProofBlockResponse};
-use naome_chain::ProofBlock;
 use naome_storage::ProofChainJournal;
 
 use super::codec::ProofBlockWireResponse;
@@ -422,8 +421,9 @@ impl StaticProofNetwork {
             return Err(RespondError::ChannelClosed);
         }
         self.take_inbound_application_request()?;
-        let bytes = block.map_or_else(Vec::new, ProofBlock::to_canonical_bytes);
-        let response = ProofBlockWireResponse::new(bytes);
+        let response = block.map_or_else(ProofBlockWireResponse::unavailable, |block| {
+            ProofBlockWireResponse::from_block_bytes(block.to_canonical_bytes())
+        });
         self.swarm
             .behaviour_mut()
             .block_exchange

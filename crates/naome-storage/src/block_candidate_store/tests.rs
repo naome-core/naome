@@ -4,7 +4,9 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use naome_chain::{ProofBlock, ProofBlockId, ProofChainDefinition, ProofSetRoot, ProofTransition};
+use naome_chain::{
+    PROOF_BLOCK_BYTES, ProofBlock, ProofBlockId, ProofChainDefinition, ProofSetRoot,
+};
 use naome_proof::ProofId;
 
 use super::*;
@@ -56,8 +58,8 @@ fn chain_definition(byte: u8) -> ProofChainDefinition {
     ProofChainDefinition::new([byte; 32])
 }
 
-fn limits(max_entries: usize, max_total_block_bytes: u64) -> ProofBlockCandidateStoreLimits {
-    ProofBlockCandidateStoreLimits::new(max_entries, max_total_block_bytes).unwrap()
+fn limits(max_entries: usize) -> ProofBlockCandidateStoreLimits {
+    ProofBlockCandidateStoreLimits::new(max_entries).unwrap()
 }
 
 fn proof_id(byte: u8) -> ProofId {
@@ -67,12 +69,9 @@ fn proof_id(byte: u8) -> ProofId {
 fn block(parent: u8, proof: u8) -> ProofBlock {
     ProofBlock::new(
         ProofBlockId::from_bytes([parent; ProofBlockId::BYTE_LENGTH]),
-        ProofTransition::new(
-            ProofSetRoot::from_bytes([proof.wrapping_add(1); ProofSetRoot::BYTE_LENGTH]),
-            ProofSetRoot::from_bytes([proof.wrapping_add(2); ProofSetRoot::BYTE_LENGTH]),
-            vec![proof_id(proof)],
-        )
-        .unwrap(),
+        ProofSetRoot::from_bytes([proof.wrapping_add(1); ProofSetRoot::BYTE_LENGTH]),
+        ProofSetRoot::from_bytes([proof.wrapping_add(2); ProofSetRoot::BYTE_LENGTH]),
+        proof_id(proof),
     )
 }
 
@@ -85,8 +84,7 @@ fn prefix(definition: ProofChainDefinition) -> Vec<u8> {
 
 fn encoded_entry(block: &ProofBlock) -> Vec<u8> {
     let canonical = block.to_canonical_bytes();
-    let mut bytes = Vec::with_capacity(ENTRY_FIXED_BYTES as usize + canonical.len());
-    bytes.extend_from_slice(&u16::try_from(canonical.len()).unwrap().to_be_bytes());
+    let mut bytes = Vec::with_capacity(ENTRY_BYTES as usize);
     bytes.extend_from_slice(&canonical);
     bytes.extend_from_slice(block.id().as_bytes());
     bytes
@@ -103,24 +101,14 @@ fn image(definition: ProofChainDefinition, blocks: &[ProofBlock]) -> Vec<u8> {
 #[test]
 fn limits_round_trip_idempotence_and_create_without_replacement_are_exact() {
     assert_eq!(
-        ProofBlockCandidateStoreLimits::new(0, 0),
+        ProofBlockCandidateStoreLimits::new(0),
         Err(ProofBlockCandidateStoreLimitsError::ZeroMaxEntries)
-    );
-    assert_eq!(
-        ProofBlockCandidateStoreLimits::new(0, 1),
-        Err(ProofBlockCandidateStoreLimitsError::ZeroMaxEntries)
-    );
-    assert_eq!(
-        ProofBlockCandidateStoreLimits::new(1, 0),
-        Err(ProofBlockCandidateStoreLimitsError::ZeroMaxTotalBlockBytes)
     );
 
     let chain_definition = chain_definition(0x11);
     let candidate = block(0x22, 0x33);
-    let candidate_len = candidate.to_canonical_bytes().len() as u64;
-    let policy = limits(1, candidate_len);
+    let policy = limits(1);
     assert_eq!(policy.max_entries(), 1);
-    assert_eq!(policy.max_total_block_bytes(), candidate_len);
 
     let directory = TestDirectory::new("basics");
     let mut store =
@@ -139,10 +127,9 @@ fn limits_round_trip_idempotence_and_create_without_replacement_are_exact() {
         ProofBlockCandidateInsertOutcome::Inserted
     );
     let committed = fs::read(directory.store_path()).unwrap();
-    assert_eq!(store.get(candidate.id()).unwrap(), Some(candidate.clone()));
+    assert_eq!(store.get(candidate.id()).unwrap(), Some(candidate));
     assert!(store.contains(candidate.id()).unwrap());
     assert_eq!(store.len().unwrap(), 1);
-    assert_eq!(store.total_block_bytes().unwrap(), candidate_len);
     assert_eq!(
         store.insert(&candidate).unwrap(),
         ProofBlockCandidateInsertOutcome::AlreadyPresent
@@ -159,8 +146,7 @@ fn limits_round_trip_idempotence_and_create_without_replacement_are_exact() {
     ));
 
     let mut reopened =
-        ProofBlockCandidateStore::open(&directory.path, chain_definition, limits(2, 1_000))
-            .unwrap();
+        ProofBlockCandidateStore::open(&directory.path, chain_definition, limits(2)).unwrap();
     assert_eq!(reopened.get(candidate.id()).unwrap(), Some(candidate));
     assert_eq!(reopened.len().unwrap(), 1);
 }
@@ -174,27 +160,20 @@ fn exact_format_golden_binds_chain_block_and_footer() {
             0x97, 0x22, 0x3d, 0xba, 0x62, 0x82, 0x1d, 0x60, 0x4c, 0xd6, 0xf4, 0xd5, 0x70, 0x10,
             0x34, 0xc5, 0xf6, 0x2d,
         ]),
-        ProofTransition::new(
-            ProofSetRoot::from_bytes([0x11; 32]),
-            ProofSetRoot::from_bytes([0x22; 32]),
-            vec![proof_id(0x33), proof_id(0x44)],
-        )
-        .unwrap(),
+        ProofSetRoot::from_bytes([0x11; 32]),
+        ProofSetRoot::from_bytes([0x22; 32]),
+        proof_id(0x33),
     );
     let expected_id = ProofBlockId::from_bytes([
-        0x47, 0x49, 0x83, 0xa0, 0x16, 0xeb, 0xf4, 0x66, 0x48, 0x8b, 0x63, 0x44, 0x85, 0xb9, 0xe6,
-        0xe9, 0x3f, 0x16, 0x29, 0xbf, 0x3d, 0x0a, 0xfa, 0x5a, 0xfa, 0x56, 0x18, 0xf2, 0xe0, 0x4a,
-        0x70, 0xf4,
+        0x64, 0x1d, 0xa8, 0x6f, 0x08, 0x14, 0xc4, 0xeb, 0x26, 0x16, 0xc6, 0x66, 0x8d, 0x40, 0xc0,
+        0x02, 0x7b, 0x48, 0x94, 0x0f, 0x22, 0x82, 0x8c, 0xea, 0xbd, 0xc0, 0x9e, 0x2a, 0x5d, 0xe9,
+        0xab, 0xab,
     ]);
     assert_eq!(candidate.id(), expected_id);
 
     let directory = TestDirectory::new("golden");
-    let mut store = ProofBlockCandidateStore::create(
-        &directory.path,
-        definition,
-        limits(1, PROOF_BLOCK_MAX_BYTES as u64),
-    )
-    .unwrap();
+    let mut store =
+        ProofBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
     assert_eq!(
         store.insert(&candidate).unwrap(),
         ProofBlockCandidateInsertOutcome::Inserted
@@ -202,47 +181,35 @@ fn exact_format_golden_binds_chain_block_and_footer() {
 
     let bytes = fs::read(directory.store_path()).unwrap();
     let mut expected = prefix(definition);
-    expected.extend_from_slice(&0x00a1_u16.to_be_bytes());
     expected.extend_from_slice(&candidate.to_canonical_bytes());
     expected.extend_from_slice(expected_id.as_bytes());
     assert_eq!(bytes, expected);
-    assert_eq!(bytes.len(), 66 + 2 + 161 + 32);
+    assert_eq!(bytes.len(), 66 + PROOF_BLOCK_BYTES + 32);
 }
 
 #[test]
-fn maximum_canonical_block_round_trips_and_reopens() {
+fn fixed_canonical_block_round_trips_and_reopens() {
     let definition = chain_definition(0x11);
     let candidate = ProofBlock::new(
         ProofBlockId::from_bytes([0x22; ProofBlockId::BYTE_LENGTH]),
-        ProofTransition::new(
-            ProofSetRoot::from_bytes([0x31; ProofSetRoot::BYTE_LENGTH]),
-            ProofSetRoot::from_bytes([0x32; ProofSetRoot::BYTE_LENGTH]),
-            (0_u8..8).map(|offset| proof_id(0x40 + offset)).collect(),
-        )
-        .unwrap(),
+        ProofSetRoot::from_bytes([0x31; ProofSetRoot::BYTE_LENGTH]),
+        ProofSetRoot::from_bytes([0x32; ProofSetRoot::BYTE_LENGTH]),
+        proof_id(0x40),
     );
-    assert_eq!(candidate.to_canonical_bytes().len(), PROOF_BLOCK_MAX_BYTES);
+    assert_eq!(candidate.to_canonical_bytes().len(), PROOF_BLOCK_BYTES);
 
     let directory = TestDirectory::new("maximum-block");
-    let policy = limits(1, PROOF_BLOCK_MAX_BYTES as u64);
+    let policy = limits(1);
     let mut store = ProofBlockCandidateStore::create(&directory.path, definition, policy).unwrap();
     assert_eq!(
         store.insert(&candidate).unwrap(),
         ProofBlockCandidateInsertOutcome::Inserted
     );
-    assert_eq!(
-        store.total_block_bytes().unwrap(),
-        PROOF_BLOCK_MAX_BYTES as u64
-    );
-    assert_eq!(store.get(candidate.id()).unwrap(), Some(candidate.clone()));
+    assert_eq!(store.get(candidate.id()).unwrap(), Some(candidate));
     drop(store);
 
     let mut reopened = ProofBlockCandidateStore::open(&directory.path, definition, policy).unwrap();
     assert_eq!(reopened.get(candidate.id()).unwrap(), Some(candidate));
-    assert_eq!(
-        reopened.total_block_bytes().unwrap(),
-        PROOF_BLOCK_MAX_BYTES as u64
-    );
 }
 
 #[test]
@@ -258,18 +225,14 @@ fn siblings_and_orphans_are_retained_without_touching_selected_state() {
     let sibling_a = block(0x42, 0x51);
     let sibling_b = block(0x42, 0x52);
     let orphan = block(0xee, 0x53);
-    let mut store = ProofBlockCandidateStore::create(
-        &directory.path,
-        definition,
-        limits(3, 3 * PROOF_BLOCK_MAX_BYTES as u64),
-    )
-    .unwrap();
+    let mut store =
+        ProofBlockCandidateStore::create(&directory.path, definition, limits(3)).unwrap();
     for candidate in [&sibling_a, &sibling_b, &orphan] {
         assert_eq!(
             store.insert(candidate).unwrap(),
             ProofBlockCandidateInsertOutcome::Inserted
         );
-        assert_eq!(store.get(candidate.id()).unwrap(), Some(candidate.clone()));
+        assert_eq!(store.get(candidate.id()).unwrap(), Some(*candidate));
     }
     assert_eq!(store.len().unwrap(), 3);
     assert_eq!(journal.head_block_id().unwrap(), head_before);
@@ -284,24 +247,19 @@ fn wrong_chain_and_complete_corruption_precede_recovery_and_local_capacity() {
     let definition = chain_definition(0x11);
     let first = block(0x21, 0x31);
     let second = block(0x22, 0x32);
-    let first_len = first.to_canonical_bytes().len() as u64;
-    let mut corrupt = image(definition, &[first.clone(), second]);
+    let mut corrupt = image(definition, &[first, second]);
     *corrupt.last_mut().unwrap() ^= 0x01;
     corrupt.push(0xff);
     let directory = TestDirectory::new("precedence");
     directory.write_image(&corrupt);
 
     assert!(matches!(
-        ProofBlockCandidateStore::open(
-            &directory.path,
-            chain_definition(0x12),
-            limits(1, first_len)
-        ),
+        ProofBlockCandidateStore::open(&directory.path, chain_definition(0x12), limits(1)),
         Err(ProofBlockCandidateStoreError::ChainIdMismatch { .. })
     ));
     assert_eq!(fs::read(directory.store_path()).unwrap(), corrupt);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(1, first_len)),
+        ProofBlockCandidateStore::open(&directory.path, definition, limits(1)),
         Err(ProofBlockCandidateStoreError::BlockIdMismatch { entry: 1, .. })
     ));
     assert_eq!(fs::read(directory.store_path()).unwrap(), corrupt);
@@ -315,7 +273,7 @@ fn invalid_prefixes_and_reopen_entry_capacity_fail_without_mutation() {
         let directory = TestDirectory::new("short-prefix");
         directory.write_image(&exact_prefix[..cut]);
         assert!(matches!(
-            ProofBlockCandidateStore::open(&directory.path, definition, limits(2, 1_000)),
+            ProofBlockCandidateStore::open(&directory.path, definition, limits(2)),
             Err(ProofBlockCandidateStoreError::InvalidHeader)
         ));
         assert_eq!(
@@ -329,7 +287,7 @@ fn invalid_prefixes_and_reopen_entry_capacity_fail_without_mutation() {
     wrong_magic[0] ^= 0x01;
     directory.write_image(&wrong_magic);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(2, 1_000)),
+        ProofBlockCandidateStore::open(&directory.path, definition, limits(2)),
         Err(ProofBlockCandidateStoreError::InvalidHeader)
     ));
     assert_eq!(fs::read(directory.store_path()).unwrap(), wrong_magic);
@@ -340,7 +298,7 @@ fn invalid_prefixes_and_reopen_entry_capacity_fail_without_mutation() {
     let directory = TestDirectory::new("reopen-entry-limit");
     directory.write_image(&committed);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(1, 1_000)),
+        ProofBlockCandidateStore::open(&directory.path, definition, limits(1)),
         Err(ProofBlockCandidateStoreError::EntryLimitExceeded {
             actual: 2,
             maximum: 1,
@@ -350,41 +308,18 @@ fn invalid_prefixes_and_reopen_entry_capacity_fail_without_mutation() {
 }
 
 #[test]
-fn invalid_lengths_blocks_footers_and_duplicate_entries_fail_closed() {
+fn mismatched_footers_and_duplicate_entries_fail_closed() {
     let definition = chain_definition(0x11);
-    for actual in [0_u16, 1, 128, 354, u16::MAX] {
-        let directory = TestDirectory::new("invalid-length");
-        let mut bytes = prefix(definition);
-        bytes.extend_from_slice(&actual.to_be_bytes());
-        bytes.extend_from_slice(&[0xaa; 4]);
-        directory.write_image(&bytes);
-        assert!(matches!(
-            ProofBlockCandidateStore::open(
-                &directory.path,
-                definition,
-                limits(2, 1_000),
-            ),
-            Err(ProofBlockCandidateStoreError::InvalidBlockLength {
-                actual: found,
-                minimum: 129,
-                maximum: 353,
-                ..
-            }) if found == actual
-        ));
-        assert_eq!(fs::read(directory.store_path()).unwrap(), bytes);
-    }
-
     let candidate = block(0x21, 0x31);
     let canonical_len = candidate.to_canonical_bytes().len();
     let mut malformed = prefix(definition);
-    malformed.extend_from_slice(&u16::try_from(canonical_len).unwrap().to_be_bytes());
     malformed.extend_from_slice(&vec![0xff; canonical_len]);
     malformed.extend_from_slice(candidate.id().as_bytes());
     let directory = TestDirectory::new("invalid-block");
     directory.write_image(&malformed);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(2, 1_000)),
-        Err(ProofBlockCandidateStoreError::InvalidBlock { .. })
+        ProofBlockCandidateStore::open(&directory.path, definition, limits(2)),
+        Err(ProofBlockCandidateStoreError::BlockIdMismatch { .. })
     ));
 
     let entry = encoded_entry(&candidate);
@@ -394,7 +329,7 @@ fn invalid_lengths_blocks_footers_and_duplicate_entries_fail_closed() {
     let directory = TestDirectory::new("duplicate");
     directory.write_image(&duplicate);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(2, 1_000)),
+        ProofBlockCandidateStore::open(&directory.path, definition, limits(2)),
         Err(ProofBlockCandidateStoreError::DuplicateBlockId { entry: 1, .. })
     ));
 }
@@ -412,18 +347,10 @@ fn every_incomplete_append_cut_recovers_only_the_committed_prefix() {
         let mut visible = committed.clone();
         visible.extend_from_slice(&second_entry[..cut]);
         directory.write_image(&visible);
-        let mut store = ProofBlockCandidateStore::open(
-            &directory.path,
-            definition,
-            limits(2, 2 * PROOF_BLOCK_MAX_BYTES as u64),
-        )
-        .unwrap();
+        let mut store =
+            ProofBlockCandidateStore::open(&directory.path, definition, limits(2)).unwrap();
         assert_eq!(store.len().unwrap(), 1, "cut={cut}");
-        assert_eq!(
-            store.get(first.id()).unwrap(),
-            Some(first.clone()),
-            "cut={cut}"
-        );
+        assert_eq!(store.get(first.id()).unwrap(), Some(first), "cut={cut}");
         assert!(store.get(second.id()).unwrap().is_none(), "cut={cut}");
         drop(store);
         assert_eq!(
@@ -439,12 +366,7 @@ fn every_incomplete_append_cut_recovers_only_the_committed_prefix() {
         let mut visible = prefix(definition);
         visible.extend_from_slice(&first_entry[..cut]);
         directory.write_image(&visible);
-        let store = ProofBlockCandidateStore::open(
-            &directory.path,
-            definition,
-            limits(1, PROOF_BLOCK_MAX_BYTES as u64),
-        )
-        .unwrap();
+        let store = ProofBlockCandidateStore::open(&directory.path, definition, limits(1)).unwrap();
         assert!(store.is_empty().unwrap(), "cut={cut}");
         drop(store);
         assert_eq!(
@@ -455,15 +377,13 @@ fn every_incomplete_append_cut_recovers_only_the_committed_prefix() {
 }
 
 #[test]
-fn entry_and_byte_limits_apply_after_validity_but_exact_duplicates_stay_idempotent() {
+fn entry_limit_applies_after_validity_but_exact_duplicates_stay_idempotent() {
     let definition = chain_definition(0x11);
     let first = block(0x21, 0x31);
     let second = block(0x22, 0x32);
-    let first_len = first.to_canonical_bytes().len() as u64;
     let directory = TestDirectory::new("limits");
     let mut store =
-        ProofBlockCandidateStore::create(&directory.path, definition, limits(1, first_len))
-            .unwrap();
+        ProofBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
     assert_eq!(
         store.insert(&first).unwrap(),
         ProofBlockCandidateInsertOutcome::Inserted
@@ -482,33 +402,19 @@ fn entry_and_byte_limits_apply_after_validity_but_exact_duplicates_stay_idempote
     ));
     assert_eq!(fs::read(directory.store_path()).unwrap(), committed);
     drop(store);
-
-    assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(2, first_len - 1)),
-        Err(ProofBlockCandidateStoreError::BlockByteLimitExceeded { .. })
-    ));
-    assert_eq!(fs::read(directory.store_path()).unwrap(), committed);
 }
 
 #[test]
-fn post_open_length_block_footer_and_truncation_changes_poison_the_handle() {
+fn post_open_block_footer_and_truncation_changes_poison_the_handle() {
     let definition = chain_definition(0x11);
     let candidate = block(0x21, 0x31);
     let entry_offset = STORE_PREFIX_BYTES as usize;
-    let block_offset = entry_offset + BLOCK_LENGTH_BYTES as usize;
+    let block_offset = entry_offset;
     let footer_offset = block_offset + candidate.to_canonical_bytes().len();
-    for (label, offset) in [
-        ("length", entry_offset),
-        ("block", block_offset),
-        ("footer", footer_offset),
-    ] {
+    for (label, offset) in [("block", block_offset), ("footer", footer_offset)] {
         let directory = TestDirectory::new(label);
-        let mut store = ProofBlockCandidateStore::create(
-            &directory.path,
-            definition,
-            limits(1, PROOF_BLOCK_MAX_BYTES as u64),
-        )
-        .unwrap();
+        let mut store =
+            ProofBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
         assert_eq!(
             store.insert(&candidate).unwrap(),
             ProofBlockCandidateInsertOutcome::Inserted
@@ -529,12 +435,8 @@ fn post_open_length_block_footer_and_truncation_changes_poison_the_handle() {
     }
 
     let directory = TestDirectory::new("truncate");
-    let mut store = ProofBlockCandidateStore::create(
-        &directory.path,
-        definition,
-        limits(1, PROOF_BLOCK_MAX_BYTES as u64),
-    )
-    .unwrap();
+    let mut store =
+        ProofBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
     assert_eq!(
         store.insert(&candidate).unwrap(),
         ProofBlockCandidateInsertOutcome::Inserted
@@ -559,7 +461,7 @@ fn new_insert_detects_post_open_truncation_and_extension_before_writing() {
     let definition = chain_definition(0x11);
     let first = block(0x21, 0x31);
     let second = block(0x22, 0x32);
-    let policy = limits(2, 2 * PROOF_BLOCK_MAX_BYTES as u64);
+    let policy = limits(2);
 
     for (label, extend) in [("new-insert-truncate", false), ("new-insert-extend", true)] {
         let directory = TestDirectory::new(label);
@@ -604,7 +506,7 @@ fn append_barriers_and_every_ambiguous_failure_reopen_to_old_or_new() {
     let definition = chain_definition(0x11);
     let candidate = block(0x21, 0x31);
     let canonical_len = candidate.to_canonical_bytes().len();
-    let policy = limits(1, canonical_len as u64);
+    let policy = limits(1);
     let mut success =
         ProofBlockCandidateStoreCore::empty(scripted_io(definition, None), definition.id(), policy);
     assert_eq!(
@@ -614,7 +516,6 @@ fn append_barriers_and_every_ambiguous_failure_reopen_to_old_or_new() {
     assert_eq!(
         success.file.trace,
         [
-            Trace::Write(AppendPhase::Body, BLOCK_LENGTH_BYTES as usize),
             Trace::Write(AppendPhase::Body, canonical_len),
             Trace::Sync(AppendPhase::Body),
             Trace::Write(AppendPhase::Commit, BLOCK_ID_BYTES as usize),
@@ -622,7 +523,7 @@ fn append_barriers_and_every_ambiguous_failure_reopen_to_old_or_new() {
         ]
     );
 
-    let body_bytes = BLOCK_LENGTH_BYTES as usize + canonical_len;
+    let body_bytes = canonical_len;
     let faults = all_append_faults(body_bytes, BLOCK_ID_BYTES as usize);
 
     for fault in faults {
@@ -644,7 +545,6 @@ fn append_barriers_and_every_ambiguous_failure_reopen_to_old_or_new() {
         );
         assert!(core.poisoned, "fault={fault:?}");
         assert!(core.index.is_empty(), "fault={fault:?}");
-        assert_eq!(core.total_block_bytes, 0, "fault={fault:?}");
         assert_eq!(core.committed_end, STORE_PREFIX_BYTES, "fault={fault:?}");
 
         let durable = core.file.durable.clone();
@@ -655,14 +555,8 @@ fn append_barriers_and_every_ambiguous_failure_reopen_to_old_or_new() {
         )
         .unwrap();
         assert!(reopened.index.len() <= 1, "fault={fault:?}");
-        if reopened.index.is_empty() {
-            assert_eq!(reopened.total_block_bytes, 0, "fault={fault:?}");
-        } else {
-            assert_eq!(reopened.total_block_bytes, canonical_len as u64);
-            assert_eq!(
-                reopened.get(candidate.id()).unwrap(),
-                Some(candidate.clone())
-            );
+        if !reopened.index.is_empty() {
+            assert_eq!(reopened.get(candidate.id()).unwrap(), Some(candidate));
         }
     }
 }
@@ -675,7 +569,7 @@ fn recovery_and_stabilization_failures_return_no_handle() {
     let mut recovery_io = ScriptedIo::from_images(incomplete.clone(), incomplete);
     recovery_io.set_len_failure = true;
     assert!(matches!(
-        ProofBlockCandidateStoreCore::replay(recovery_io, definition.id(), limits(1, 1_000)),
+        ProofBlockCandidateStoreCore::replay(recovery_io, definition.id(), limits(1)),
         Err(ProofBlockCandidateStoreError::Recovery {
             offset: STORE_PREFIX_BYTES,
             ..
@@ -687,7 +581,7 @@ fn recovery_and_stabilization_failures_return_no_handle() {
     let mut recovery_io = ScriptedIo::from_images(incomplete.clone(), incomplete);
     recovery_io.plain_sync_failure = true;
     assert!(matches!(
-        ProofBlockCandidateStoreCore::replay(recovery_io, definition.id(), limits(1, 1_000)),
+        ProofBlockCandidateStoreCore::replay(recovery_io, definition.id(), limits(1)),
         Err(ProofBlockCandidateStoreError::Recovery { .. })
     ));
 
@@ -695,7 +589,7 @@ fn recovery_and_stabilization_failures_return_no_handle() {
     let mut stabilize_io = ScriptedIo::from_images(complete.clone(), complete);
     stabilize_io.plain_sync_failure = true;
     assert!(matches!(
-        ProofBlockCandidateStoreCore::replay(stabilize_io, definition.id(), limits(1, 1_000)),
+        ProofBlockCandidateStoreCore::replay(stabilize_io, definition.id(), limits(1)),
         Err(ProofBlockCandidateStoreError::Stabilize { .. })
     ));
 }

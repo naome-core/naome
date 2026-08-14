@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
-use naome_ledger::{AcceptedProofRecord, PROOF_BATCH_MAX_CANDIDATES};
+use naome_ledger::AcceptedProofRecord;
 use naome_proof::ProofId;
 use sha2::{Digest, Sha256};
 
@@ -293,35 +293,55 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
         })
     }
 
-    pub(crate) fn projected_root(
-        &self,
-        proof_ids: &[ProofId],
-    ) -> (ProofSetRoot, Option<(usize, ProofId)>) {
-        assert!(
-            proof_ids.len() <= PROOF_BATCH_MAX_CANDIDATES,
-            "proof-set projection exceeds the rooted proof-batch limit"
-        );
-        if self.root.is_none() && proof_ids.len() == 1 {
-            return (ProofSetRoot(leaf_digest(proof_ids[0])), None);
+    pub(crate) fn projected_root(&self, proof_id: ProofId) -> (ProofSetRoot, bool) {
+        let Some(mut node) = self.root else {
+            return (ProofSetRoot(leaf_digest(proof_id)), false);
+        };
+
+        let mut path = [0_usize; KEY_BITS];
+        let mut path_len = 0;
+        while node.is_branch() {
+            let branch_index = node.index();
+            path[path_len] = branch_index;
+            path_len += 1;
+            let branch = &self.branches[branch_index];
+            node = if key_bit(proof_id, branch.bit) {
+                branch.right
+            } else {
+                branch.left
+            };
         }
 
-        let mut projection = ProofSetProjection {
-            base: self,
-            proof_ids,
-            root: self.root.map(ProjectedNodeRef::Base),
-            branches: Vec::new(),
-            path: Vec::with_capacity(16),
-        };
-        let mut first_existing = None;
-        for (index, proof_id) in proof_ids.iter().copied().enumerate() {
-            if !projection.insert(index, proof_id) && first_existing.is_none() {
-                first_existing = Some((index, proof_id));
-            }
+        let terminal_id = self.leaves[node.index()].proof_id();
+        if terminal_id == proof_id {
+            return (self.root(), true);
         }
-        let root = projection.root.map_or_else(ProofSetRoot::empty, |root| {
-            ProofSetRoot(projection.node_digest(root))
-        });
-        (root, first_existing)
+
+        let differing_bit = first_differing_bit(proof_id, terminal_id);
+        let insertion_position =
+            path[..path_len].partition_point(|branch| self.branches[*branch].bit < differing_bit);
+        let old_subtree = if insertion_position == path_len {
+            node
+        } else {
+            NodeRef::branch(path[insertion_position])
+        };
+        let old_digest = self.node_digest(old_subtree);
+        let new_digest = leaf_digest(proof_id);
+        let mut subtree = if key_bit(proof_id, differing_bit) {
+            branch_digest(differing_bit, old_digest, new_digest)
+        } else {
+            branch_digest(differing_bit, new_digest, old_digest)
+        };
+
+        for position in (0..insertion_position).rev() {
+            let branch = &self.branches[path[position]];
+            subtree = if key_bit(proof_id, branch.bit) {
+                branch_digest(branch.bit, self.node_digest(branch.left), subtree)
+            } else {
+                branch_digest(branch.bit, subtree, self.node_digest(branch.right))
+            };
+        }
+        (ProofSetRoot(subtree), false)
     }
 
     pub(crate) fn get(&self, proof_id: ProofId) -> Option<&V> {
@@ -473,148 +493,6 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
             leaf_digest(self.leaves[node.index()].proof_id())
         }
     }
-}
-
-struct ProofSetProjection<'a, V> {
-    base: &'a AuthenticatedProofSet<V>,
-    proof_ids: &'a [ProofId],
-    root: Option<ProjectedNodeRef>,
-    branches: Vec<ProjectedBranch>,
-    path: Vec<ProjectedNodeRef>,
-}
-
-impl<V: ProofSetValue> ProofSetProjection<'_, V> {
-    fn insert(&mut self, index: usize, proof_id: ProofId) -> bool {
-        let added_leaf = ProjectedNodeRef::AddedLeaf(
-            u8::try_from(index).expect("bounded proof-set projection indices fit u8"),
-        );
-        let Some(mut node) = self.root else {
-            self.root = Some(added_leaf);
-            return true;
-        };
-
-        self.path.clear();
-        while let Some((bit, left, right)) = self.branch(node) {
-            self.path.push(node);
-            node = if key_bit(proof_id, bit) { right } else { left };
-        }
-
-        let terminal_id = self.node_proof_id(node);
-        if terminal_id == proof_id {
-            return false;
-        }
-        let differing_bit = first_differing_bit(proof_id, terminal_id);
-        let insertion_position = self.path.partition_point(|node| {
-            self.branch(*node)
-                .expect("the projection path contains only branches")
-                .0
-                < differing_bit
-        });
-        debug_assert!(
-            insertion_position == self.path.len()
-                || self
-                    .branch(self.path[insertion_position])
-                    .expect("the projection path contains only branches")
-                    .0
-                    > differing_bit
-        );
-
-        let old_subtree = if insertion_position == self.path.len() {
-            node
-        } else {
-            self.path[insertion_position]
-        };
-        let (left, right) = if key_bit(proof_id, differing_bit) {
-            (old_subtree, added_leaf)
-        } else {
-            (added_leaf, old_subtree)
-        };
-        let mut subtree = self.push_branch(differing_bit, left, right);
-
-        for position in (0..insertion_position).rev() {
-            let ancestor = self.path[position];
-            let (bit, left, right) = self
-                .branch(ancestor)
-                .expect("the projection path contains only branches");
-            let (left, right) = if key_bit(proof_id, bit) {
-                (left, subtree)
-            } else {
-                (subtree, right)
-            };
-            subtree = self.push_branch(bit, left, right);
-        }
-        self.root = Some(subtree);
-        true
-    }
-
-    fn branch(&self, node: ProjectedNodeRef) -> Option<(u8, ProjectedNodeRef, ProjectedNodeRef)> {
-        match node {
-            ProjectedNodeRef::Base(node) if node.is_branch() => {
-                let branch = &self.base.branches[node.index()];
-                Some((
-                    branch.bit,
-                    ProjectedNodeRef::Base(branch.left),
-                    ProjectedNodeRef::Base(branch.right),
-                ))
-            }
-            ProjectedNodeRef::AddedBranch(index) => {
-                let branch = &self.branches[index];
-                Some((branch.bit, branch.left, branch.right))
-            }
-            ProjectedNodeRef::Base(_) | ProjectedNodeRef::AddedLeaf(_) => None,
-        }
-    }
-
-    fn node_proof_id(&self, node: ProjectedNodeRef) -> ProofId {
-        match node {
-            ProjectedNodeRef::Base(node) if !node.is_branch() => {
-                self.base.leaves[node.index()].proof_id()
-            }
-            ProjectedNodeRef::AddedLeaf(index) => self.proof_ids[index as usize],
-            ProjectedNodeRef::Base(_) | ProjectedNodeRef::AddedBranch(_) => {
-                unreachable!("only projection leaves have proof identities")
-            }
-        }
-    }
-
-    fn node_digest(&self, node: ProjectedNodeRef) -> [u8; 32] {
-        match node {
-            ProjectedNodeRef::Base(node) => self.base.node_digest(node),
-            ProjectedNodeRef::AddedLeaf(index) => leaf_digest(self.proof_ids[index as usize]),
-            ProjectedNodeRef::AddedBranch(index) => self.branches[index].digest,
-        }
-    }
-
-    fn push_branch(
-        &mut self,
-        bit: u8,
-        left: ProjectedNodeRef,
-        right: ProjectedNodeRef,
-    ) -> ProjectedNodeRef {
-        let digest = branch_digest(bit, self.node_digest(left), self.node_digest(right));
-        let index = self.branches.len();
-        self.branches.push(ProjectedBranch {
-            bit,
-            left,
-            right,
-            digest,
-        });
-        ProjectedNodeRef::AddedBranch(index)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ProjectedNodeRef {
-    Base(NodeRef),
-    AddedLeaf(u8),
-    AddedBranch(usize),
-}
-
-struct ProjectedBranch {
-    bit: u8,
-    left: ProjectedNodeRef,
-    right: ProjectedNodeRef,
-    digest: [u8; 32],
 }
 
 #[derive(Clone, Copy)]

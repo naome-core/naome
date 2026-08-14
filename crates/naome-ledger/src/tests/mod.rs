@@ -8,9 +8,7 @@ use naome_proof::{
     CERTIFICATE_MAX_BYTES, ProofCertificate, ProofCertificateError, ProofId, ProofStep,
 };
 
-use super::{
-    AddressedProofCandidate, LedgerError, LedgerState, PROOF_BATCH_MAX_CANDIDATES, ProofBatchError,
-};
+use super::{LedgerError, LedgerState};
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
     ProofCertificate::new(steps).unwrap()
@@ -104,22 +102,6 @@ fn canonical_bytes(certificate: ProofCertificate) -> Vec<u8> {
         .into_vec()
 }
 
-fn axiom_candidate(axiom: ZfcAxiom) -> (Vec<u8>, ProofId) {
-    let proof = certificate(vec![ProofStep::ZfcAxiom(axiom)]);
-    let proof_id = normalize_and_check(proof.clone()).unwrap().proof_id();
-    (canonical_bytes(proof), proof_id)
-}
-
-fn referenced_generalization_bytes(proof_id: ProofId, variable: FreeVariable) -> Vec<u8> {
-    canonical_bytes(certificate(vec![
-        ProofStep::ProofReference { proof_id },
-        ProofStep::Generalization {
-            premise: 0,
-            variable,
-        },
-    ]))
-}
-
 fn reordered_identity_detour(variable: FreeVariable) -> ProofCertificate {
     let equality = Formula::equal(variable, variable);
     certificate(vec![
@@ -180,5 +162,4 @@ fn duplicate_identity(variable: FreeVariable) -> ProofCertificate {
     ])
 }
 
-mod batch;
 mod single;

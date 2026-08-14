@@ -13,8 +13,10 @@ admitted from accepted proof records, and bounded caller-driven exchange,
 multi-peer head surveys, and caller-selected proof-chain catch-up among
 statically authorized peers. Stored candidates, archived payloads, peer-reported
 heads, and fetched ancestry remain inputs that require explicit target-context
-validation before selection. One exact direct-child block and its addressed
-proof closure can be validated against current selected state without changing
+validation before selection. Every canonical block commits exactly one
+`ProofId`; all of that proof's dependencies must already occur in earlier
+selected ancestry blocks. One exact direct-child block and its exact addressed
+proof payload can be validated against current selected state without changing
 that state; durable application repeats the complete validation.
 
 A prerelease `.nao` compiler provides a bounded, complete source-authoring path
@@ -50,6 +52,10 @@ source line; successful identity and canonical-proof output is unchanged.
 Each local chain begins from a canonical definition that binds its deployment,
 the current Foundation identity, and the empty authenticated proof state before
 deriving the chain address and virtual genesis.
+The `single-proof-v0` chain-identity domain is an intentional prerelease
+cutover: journals and block-candidate stores created under the earlier block
+model must be recreated rather than migrated or accepted through a legacy
+reader.
 
 ## Architecture
 
@@ -65,7 +71,7 @@ storage -> authoring
 
 `A -> B` means that `B` builds on `A`. The layers own, respectively: Foundation
 syntax and rules; canonical proofs and identities; deterministic checking;
-atomic ledger transitions; authenticated proof state, transitions, and blocks;
+atomic proof admission; authenticated proof state and single-proof blocks;
 the selected-chain journal, chain-scoped structural-candidate store, and
 Foundation-scoped canonical-payload archive; transport-neutral messages; and
 bounded libp2p transport, orchestration, and peer-address management. The
@@ -78,6 +84,8 @@ The following boundaries are invariant:
 - external proof admission is decode, canonicality, checking, expected-address
   comparison, then registration;
 - the journal is the sole durable selected-state owner;
+- one selected block admits exactly one proof, and its dependencies must already
+  be selected by earlier blocks;
 - reference-aware protocol authoring borrows only the healthy journal's
   selected proof state and never searches candidate, archive, or network data;
 - the block-candidate store preserves canonical structural blocks but confers
@@ -97,7 +105,7 @@ The following boundaries are invariant:
 - [Proof Authoring](specs/proof-authoring.md) defines the deliberately small,
   prerelease `.nao` source compiler and its non-authoritative output boundary.
 - [Proof Protocol](specs/proof-protocol.md) defines canonical proofs,
-  identities, selected proof state, transitions, and blocks.
+  identities, selected proof state, and single-proof blocks.
 - [Proof Chain Journal](specs/proof-chain-journal.md) defines durable selected
   state, replay, recovery, and corruption handling.
 - [Proof Block Candidate Store](specs/proof-block-candidate-store.md) defines

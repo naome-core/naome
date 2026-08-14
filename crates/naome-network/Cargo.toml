@@ -21,7 +21,6 @@ libp2p = { version = "0.56.0", default-features = false, features = [
 ] }
 naome = { path = "../.." }
 naome-chain = { path = "../naome-chain" }
-naome-ledger = { path = "../naome-ledger" }
 naome-proof = { path = "../naome-proof" }
 naome-storage = { path = "../naome-storage" }
 sha2.workspace = true
@@ -29,6 +28,7 @@ tokio = { version = "1", default-features = false, features = ["macros", "time"]
 
 [dev-dependencies]
 naome-foundation = { path = "../naome-foundation" }
+naome-ledger = { path = "../naome-ledger" }
 tokio = { version = "1", default-features = false, features = [
     "rt",
     "test-util",

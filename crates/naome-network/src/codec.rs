@@ -69,21 +69,53 @@ const RESPONDER_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub(super) struct ProofBlockWireResponse {
-    bytes: Vec<u8>,
+    bytes: [u8; PROOF_BLOCK_RESPONSE_MAX_BYTES],
+    length: u8,
 }
 
 impl ProofBlockWireResponse {
-    pub(super) fn new(bytes: Vec<u8>) -> Self {
-        debug_assert!(bytes.len() <= PROOF_BLOCK_RESPONSE_MAX_BYTES);
-        Self { bytes }
+    pub(super) const fn unavailable() -> Self {
+        Self {
+            bytes: [0; PROOF_BLOCK_RESPONSE_MAX_BYTES],
+            length: 0,
+        }
+    }
+
+    pub(super) fn from_block_bytes(bytes: [u8; PROOF_BLOCK_RESPONSE_MAX_BYTES]) -> Self {
+        Self {
+            bytes,
+            length: u8::try_from(PROOF_BLOCK_RESPONSE_MAX_BYTES)
+                .expect("the fixed proof-block response length fits u8"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn new(bytes: impl AsRef<[u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        assert!(
+            bytes.len() <= PROOF_BLOCK_RESPONSE_MAX_BYTES,
+            "proof-block wire response exceeds its fixed buffer"
+        );
+        let mut response = Self::with_length(bytes.len());
+        response.as_bytes_mut().copy_from_slice(bytes);
+        response
+    }
+
+    fn with_length(length: usize) -> Self {
+        debug_assert!(length <= PROOF_BLOCK_RESPONSE_MAX_BYTES);
+        Self {
+            bytes: [0; PROOF_BLOCK_RESPONSE_MAX_BYTES],
+            length: u8::try_from(length).expect("the proof-block response length fits u8"),
+        }
     }
 
     pub(super) fn as_bytes(&self) -> &[u8] {
-        &self.bytes
+        &self.bytes[..usize::from(self.length)]
     }
 
-    fn into_bytes(self) -> Vec<u8> {
-        self.bytes
+    fn as_bytes_mut(&mut self) -> &mut [u8] {
+        let length = usize::from(self.length);
+        &mut self.bytes[..length]
     }
 }
 
@@ -214,14 +246,10 @@ impl request_response::Codec for ProofBlockCodec {
             ));
         }
 
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length)
-            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        bytes.resize(length, 0);
-        io.read_exact(&mut bytes).await?;
+        let mut response = ProofBlockWireResponse::with_length(length);
+        io.read_exact(response.as_bytes_mut()).await?;
         require_eof(io, "proof-block response has trailing bytes").await?;
-        Ok(ProofBlockWireResponse::new(bytes))
+        Ok(response)
     }
 
     async fn write_request<T>(
@@ -245,25 +273,11 @@ impl request_response::Codec for ProofBlockCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        let bytes = response.into_bytes();
-        if bytes.len() > PROOF_BLOCK_RESPONSE_MAX_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "proof-block response length {} exceeds maximum \
-                     {PROOF_BLOCK_RESPONSE_MAX_BYTES}",
-                    bytes.len()
-                ),
-            ));
-        }
-        let length = u16::try_from(bytes.len()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "proof-block response length does not fit u16",
-            )
-        })?;
+        let bytes = response.as_bytes();
+        let length =
+            u16::try_from(bytes.len()).expect("the fixed proof-block response length fits u16");
         io.write_all(&length.to_be_bytes()).await?;
-        io.write_all(&bytes).await
+        io.write_all(bytes).await
     }
 }
 

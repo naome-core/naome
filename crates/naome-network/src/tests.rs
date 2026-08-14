@@ -10,19 +10,16 @@ use std::time::Duration;
 use libp2p::core::{Endpoint, transport::PortUse};
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, ToSwarm};
 use naome::proof_exchange::ProofRequest;
-use naome_chain::{
-    AddressedProofCandidate, ProofBlockId, ProofChainDefinition, ProofDag, ProofSetRoot,
-};
+use naome_chain::{ProofBlockId, ProofChainDefinition, ProofDag, ProofSetRoot};
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofStep};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 use tokio::time::{Instant, timeout};
 
 use super::{
-    BuildError, DependencyAcquisitionProgress, INBOUND_APPLICATION_REQUEST_BURST,
-    INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS,
-    NetworkEvent, OutboundProofEvent, PeerId, PeerSessionEvent, PendingBudget, RequestStartError,
-    StaticPeer, StaticProofNetwork,
+    BuildError, INBOUND_APPLICATION_REQUEST_BURST, INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL,
+    MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent, OutboundProofEvent, PeerId,
+    PeerSessionEvent, PendingBudget, RequestStartError, StaticPeer, StaticProofNetwork,
 };
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -30,7 +27,6 @@ static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) struct TestDirectory {
     path: PathBuf,
 }
-
 pub(crate) struct JournalSnapshot {
     pub(crate) bytes: Vec<u8>,
     pub(crate) head: ProofBlockId,
@@ -137,10 +133,8 @@ pub(crate) fn apply_fresh_blocks(
                 .apply_canonical_proof_bytes(bytes.clone())
                 .unwrap()
                 .proof_id();
-            let block = journal.prepare_block(vec![proof_id]).unwrap();
-            journal
-                .apply_block(&block, vec![AddressedProofCandidate::new(proof_id, bytes)])
-                .unwrap();
+            let block = journal.prepare_block(proof_id).unwrap();
+            journal.apply_block(&block, bytes).unwrap();
             proof_id
         })
         .collect()
@@ -160,16 +154,10 @@ fn apply_referenced_pair(
         .apply_canonical_proof_bytes(root_bytes.clone())
         .unwrap()
         .proof_id();
-    let block = journal.prepare_block(vec![parent_id, root_id]).unwrap();
-    journal
-        .apply_block(
-            &block,
-            vec![
-                AddressedProofCandidate::new(parent_id, parent_bytes),
-                AddressedProofCandidate::new(root_id, root_bytes),
-            ],
-        )
-        .unwrap();
+    let parent_block = journal.prepare_block(parent_id).unwrap();
+    journal.apply_block(&parent_block, parent_bytes).unwrap();
+    let root_block = journal.prepare_block(root_id).unwrap();
+    journal.apply_block(&root_block, root_bytes).unwrap();
     (parent_id, root_id)
 }
 
@@ -342,203 +330,28 @@ fn event_is_unavailable(event: &OutboundProofEvent) -> bool {
     }
 }
 
-#[tokio::test]
-async fn dependency_acquisition_is_unselected_until_one_explicit_atomic_promotion() {
-    let (mut client, mut server, _, server_peer_id) = connected_pair().await;
+#[test]
+fn referenced_dependency_is_selected_by_an_earlier_block_before_its_child() {
+    let directory = TestDirectory::new("referenced-two-blocks");
+    let mut journal = create_journal(directory.path()).unwrap();
+    let virtual_genesis = journal.head_block_id().unwrap();
 
-    let server_directory = TestDirectory::new("closure-server");
-    let mut server_journal = create_journal(server_directory.path()).unwrap();
-    let (parent_id, root_id) = apply_referenced_pair(&mut server_journal);
+    let (parent_id, root_id) = apply_referenced_pair(&mut journal);
 
-    let client_directory = TestDirectory::new("closure-client");
-    let mut client_journal = create_journal(client_directory.path()).unwrap();
-    let empty_bytes = client_directory.journal_bytes();
-    let empty_root = client_journal.proof_set_root().unwrap();
-    let mut acquisition = client
-        .start_dependency_acquisition(&client_journal, server_peer_id, root_id)
+    assert_eq!(journal.len().unwrap(), 2);
+    assert!(journal.proof(parent_id).unwrap().is_some());
+    assert!(journal.proof(root_id).unwrap().is_some());
+    let root_block = journal
+        .block(journal.head_block_id().unwrap())
+        .unwrap()
         .unwrap();
-
-    let closure = loop {
-        let response = receive_once(&mut client, &mut server, &server_journal).await;
-        assert!(acquisition.accepts_event(&response));
-        assert_eq!(client_directory.journal_bytes(), empty_bytes);
-        assert_eq!(client_journal.proof_set_root().unwrap(), empty_root);
-        match acquisition
-            .on_event(&mut client, &client_journal, response)
-            .unwrap()
-        {
-            DependencyAcquisitionProgress::AwaitingResponse(next) => acquisition = next,
-            DependencyAcquisitionProgress::Complete(closure) => break closure,
-        }
-    };
-
-    assert_eq!(closure.requested_root(), root_id);
-    assert_eq!(closure.candidate_count(), 2);
-    assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 2);
-    assert_eq!(client_directory.journal_bytes(), empty_bytes);
-    assert_eq!(client_journal.proof_set_root().unwrap(), empty_root);
-    assert!(client_journal.is_empty().unwrap());
-
-    let block = client_journal
-        .prepare_block(vec![parent_id, root_id])
+    assert_eq!(root_block.proof_id(), root_id);
+    let parent_block = journal
+        .block(root_block.parent_block_id())
+        .unwrap()
         .unwrap();
-    let accepted = closure.apply_block(&mut client_journal, &block).unwrap();
-    assert_eq!(accepted.proof_id(), root_id);
-    assert_eq!(client.pending_budget.active.load(Ordering::Relaxed), 0);
-    assert_eq!(client_journal.len().unwrap(), 2);
-    assert!(client_journal.proof(parent_id).unwrap().is_some());
-    assert!(client_journal.proof(root_id).unwrap().is_some());
-
-    let selected_head = client_journal.head_block_id().unwrap();
-    drop(client_journal);
-    let reopened = ProofChainJournal::open_verified(
-        client_directory.path(),
-        test_chain_definition(),
-        selected_head,
-    )
-    .unwrap();
-    assert_eq!(reopened.len().unwrap(), 2);
-}
-
-#[tokio::test]
-async fn dependency_acquisition_falls_back_to_another_authenticated_peer() {
-    let mut identities = vec![
-        super::Keypair::generate_ed25519(),
-        super::Keypair::generate_ed25519(),
-        super::Keypair::generate_ed25519(),
-    ];
-    identities.sort_unstable_by_key(|identity| identity.public().to_peer_id().to_bytes());
-    let client_identity = identities.remove(0);
-    let preferred_identity = identities.remove(0);
-    let fallback_identity = identities.remove(0);
-    let client_peer_id = client_identity.public().to_peer_id();
-    let preferred_peer_id = preferred_identity.public().to_peer_id();
-    let fallback_peer_id = fallback_identity.public().to_peer_id();
-
-    let mut preferred = StaticProofNetwork::new(
-        preferred_identity,
-        [StaticPeer::new(client_peer_id, address(1))],
-    )
-    .unwrap();
-    let preferred_address = listening_address(&mut preferred).await;
-    let mut fallback = StaticProofNetwork::new(
-        fallback_identity,
-        [StaticPeer::new(client_peer_id, address(2))],
-    )
-    .unwrap();
-    let fallback_address = listening_address(&mut fallback).await;
-    let mut client = StaticProofNetwork::new(
-        client_identity,
-        [
-            StaticPeer::new(fallback_peer_id, fallback_address),
-            StaticPeer::new(preferred_peer_id, preferred_address),
-        ],
-    )
-    .unwrap();
-
-    let mut client_preferred = false;
-    let mut client_fallback = false;
-    let mut preferred_client = false;
-    let mut fallback_client = false;
-    timeout(Duration::from_secs(10), async {
-        while !(client_preferred && client_fallback && preferred_client && fallback_client) {
-            tokio::select! {
-                event = client.next_event() => {
-                    if let NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) = event {
-                        if peer_id == preferred_peer_id {
-                            client_preferred = true;
-                        } else if peer_id == fallback_peer_id {
-                            client_fallback = true;
-                        }
-                    }
-                },
-                event = preferred.next_event() => {
-                    if let NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) = event {
-                        assert_eq!(peer_id, client_peer_id);
-                        preferred_client = true;
-                    }
-                },
-                event = fallback.next_event() => {
-                    if let NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) = event {
-                        assert_eq!(peer_id, client_peer_id);
-                        fallback_client = true;
-                    }
-                },
-            }
-        }
-    })
-    .await
-    .expect("all three managed peer sessions did not establish");
-
-    let preferred_directory = TestDirectory::new("fallback-preferred-server");
-    let preferred_journal = create_journal(preferred_directory.path()).unwrap();
-    let fallback_directory = TestDirectory::new("fallback-source-server");
-    let mut fallback_journal = create_journal(fallback_directory.path()).unwrap();
-    let (parent_id, root_id) = apply_referenced_pair(&mut fallback_journal);
-    let client_directory = TestDirectory::new("fallback-client");
-    let mut client_journal = create_journal(client_directory.path()).unwrap();
-    let empty_bytes = client_directory.journal_bytes();
-    let mut acquisition = client
-        .start_dependency_acquisition(&client_journal, preferred_peer_id, root_id)
-        .unwrap();
-    let mut observed_fallback = false;
-
-    let closure = timeout(Duration::from_secs(10), async {
-        loop {
-            tokio::select! {
-                event = client.next_event() => {
-                    let NetworkEvent::OutboundProof(event) = event else {
-                        continue;
-                    };
-                    assert!(acquisition.accepts_event(&event));
-                    let response_peer = event.peer_id();
-                    match acquisition.on_event(&mut client, &client_journal, event).unwrap() {
-                        DependencyAcquisitionProgress::AwaitingResponse(next) => {
-                            if response_peer == preferred_peer_id {
-                                assert_eq!(next.pending_peer_id(), fallback_peer_id);
-                                observed_fallback = true;
-                            }
-                            acquisition = next;
-                        }
-                        DependencyAcquisitionProgress::Complete(closure) => break closure,
-                    }
-                },
-                event = preferred.next_event() => {
-                    if let NetworkEvent::InboundProofRequest(inbound) = event {
-                        preferred
-                            .respond_proof_from_journal(inbound, &preferred_journal)
-                            .unwrap();
-                    }
-                },
-                event = fallback.next_event() => {
-                    if let NetworkEvent::InboundProofRequest(inbound) = event {
-                        fallback
-                            .respond_proof_from_journal(inbound, &fallback_journal)
-                            .unwrap();
-                    }
-                },
-            }
-        }
-    })
-    .await
-    .expect("multi-peer dependency acquisition timed out");
-
-    assert!(observed_fallback);
-    assert_eq!(closure.candidate_count(), 2);
-    assert_eq!(client_directory.journal_bytes(), empty_bytes);
-    assert!(client_journal.is_empty().unwrap());
-    let block = client_journal
-        .prepare_block(vec![parent_id, root_id])
-        .unwrap();
-    assert_eq!(
-        closure
-            .apply_block(&mut client_journal, &block)
-            .unwrap()
-            .proof_id(),
-        root_id
-    );
-    assert_eq!(client_journal.len().unwrap(), 2);
-    assert!(client_journal.proof(parent_id).unwrap().is_some());
+    assert_eq!(parent_block.proof_id(), parent_id);
+    assert_eq!(parent_block.parent_block_id(), virtual_genesis);
 }
 
 #[tokio::test]

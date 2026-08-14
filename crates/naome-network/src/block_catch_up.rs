@@ -81,8 +81,8 @@ impl ProofBlockCatchUp {
 
     /// Returns the peer serving the active block or proof request.
     ///
-    /// During proof acquisition this may differ from the ancestry source under
-    /// the existing bounded dependency-fallback contract.
+    /// During exact proof-payload retrieval this may differ from the ancestry
+    /// source after a bounded retry.
     pub const fn pending_peer_id(&self) -> PeerId {
         match &self.state {
             ProofBlockCatchUpState::Pull(pull) => pull.pending_peer_id(),

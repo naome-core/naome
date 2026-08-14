@@ -15,7 +15,7 @@ use super::{
 /// One bounded caller-selected ancestry import in progress.
 ///
 /// Blocks are consumed in their retained forward order. Each block acquires
-/// and commits exactly one proof closure before the next block starts. A later
+/// and commits exactly its one proof payload before the next block starts. A later
 /// failure preserves the prefix already acknowledged by the journal.
 #[derive(Debug)]
 #[must_use]
@@ -96,7 +96,7 @@ impl ProofBlockAncestryImport {
         self.last_acknowledged_head_block_id
     }
 
-    /// Returns the retained block currently acquiring proof payloads.
+    /// Returns the retained block currently acquiring its proof payload.
     pub const fn pending_block_id(&self) -> ProofBlockId {
         self.current.target_block_id()
     }
@@ -113,7 +113,7 @@ impl ProofBlockAncestryImport {
 
     /// Cancels this workflow without rolling back its acknowledged prefix.
     ///
-    /// The active proof acquisition retains its existing physical drain
+    /// The active proof request retains its existing physical drain
     /// semantics. Every unprocessed retained block is released immediately.
     pub fn cancel(self) {}
 

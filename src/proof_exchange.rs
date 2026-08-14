@@ -9,8 +9,8 @@
 //!
 //! This module defines no sockets, peers, retries, dependency fetching,
 //! authentication, consensus, or proof selection. Received proof bytes remain
-//! unselected until a higher layer explicitly promotes a complete addressed
-//! closure.
+//! unselected until a strict consumer validates them in its exact target state;
+//! one selected proof block accepts only its own committed proof payload.
 
 use std::error::Error;
 use std::fmt;

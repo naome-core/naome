@@ -4,20 +4,20 @@ use super::*;
 fn journal_prefix_and_entry_encoding_are_exact() {
     assert_eq!(JOURNAL_HEADER.len(), 26);
     assert_eq!(JOURNAL_PREFIX_BYTES, 58);
-    assert_eq!(PROOF_BLOCK_MIN_BYTES, 129);
-    assert_eq!(ENTRY_MIN_BODY_BYTES, 136);
-    assert_eq!(ENTRY_MAX_BODY_BYTES, 33_554_819);
+    assert_eq!(PROOF_BLOCK_BYTES, 128);
+    assert_eq!(ENTRY_MIN_BODY_BYTES, 129);
+    assert_eq!(ENTRY_MAX_BODY_BYTES, 4_194_432);
 
     let definition = chain_definition(CHAIN_BYTE);
     let id = definition.id();
     let payloads = vec![axiom_bytes(ZfcAxiom::Pairing)];
     let proof_ids = addressed_proof_ids(&payloads);
-    let block = one_block(definition, &payloads, &proof_ids);
-    let expected = journal_image(id, &[(block.clone(), payloads.clone(), proof_ids.clone())]);
+    let block = one_block(definition, proof_ids[0]);
+    let expected = journal_image(id, &[(block, payloads[0].clone(), proof_ids[0])]);
     assert_eq!(
         expected,
         hex_bytes(
-            "6e616f6d653a70726f6f662d636861696e2d6a6f75726e616c007174cae86b0cd18e2364805d1bb8da7a34262f3efa6f5e2b723ec6612a9ec15e0000008d008171ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62de9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca8cf486cdd001c39de9da117a0fe882d1cba7e785645af4016bdf2f29726f195a015285fedf4eee3753a08eabac642e5eab8b6ef99e6357b592a5c34760a4aa04b700000006000000011001b21cbe0120049c8ae0a5732ec9a9ddaa8d137db2686627df0ddfb3d7d5708108"
+            "6e616f6d653a70726f6f662d636861696e2d6a6f75726e616c0033c98c37f2a2d480e79c106efc0fbeaa9e1179f4274e423033cc7775cf5f74b40000008611e721588dde6890ed9891c28243e3e1d6c6501b08b9dd2c683c1d801a11e0e4e9a980287e770ac389d3735ff064e7447f11c9640efdb90b91781766497f16ca8cf486cdd001c39de9da117a0fe882d1cba7e785645af4016bdf2f29726f195a5285fedf4eee3753a08eabac642e5eab8b6ef99e6357b592a5c34760a4aa04b70000000110013e83f63745a1f13e711e43c324a5975698a9ff38cb07844886dd4f9506c502a5"
         )
     );
 
@@ -25,7 +25,7 @@ fn journal_prefix_and_entry_encoding_are_exact() {
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
     let record = snapshot(
         journal
-            .apply_block(&block, addressed_candidates(&payloads, &proof_ids))
+            .apply_block(&block, proof_bytes(&payloads[0]))
             .unwrap(),
     );
     assert_eq!(record.proof_id, proof_ids[0]);
@@ -114,11 +114,7 @@ fn wrong_definition_precedes_corruption_tail_recovery_and_head_verification() {
     assert_eq!(fs::read(corrupt_directory.journal_path()).unwrap(), corrupt);
     assert!(matches!(
         ProofChainJournal::open_recovering_unverified(&corrupt_directory.path, definition),
-        Err(ProofChainJournalError::InvalidBlockLength {
-            entry: 0,
-            actual: 0,
-            ..
-        })
+        Err(ProofChainJournalError::BlockIdMismatch { entry: 0, .. })
     ));
     assert_eq!(fs::read(corrupt_directory.journal_path()).unwrap(), corrupt);
 
@@ -186,11 +182,9 @@ fn two_blocks_reopen_exact_head_records_root_and_witnesses() {
     let entries = two_block_chain(definition);
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
     let mut expected_records = Vec::new();
-    for (block, payloads, proof_ids) in &entries {
+    for (block, payload, _) in &entries {
         expected_records.push(snapshot(
-            journal
-                .apply_block(block, addressed_candidates(payloads, proof_ids))
-                .unwrap(),
+            journal.apply_block(block, proof_bytes(payload)).unwrap(),
         ));
     }
     let expected_head = entries[1].0.id();
@@ -234,36 +228,7 @@ fn two_blocks_reopen_exact_head_records_root_and_witnesses() {
 }
 
 #[test]
-fn maximum_eight_proof_block_is_one_entry_and_replays() {
-    let directory = TestDirectory::new();
-    let definition = chain_definition(CHAIN_BYTE);
-    let id = definition.id();
-    let (payloads, proof_ids) = dependency_chain_with_len(PROOF_BATCH_MAX_CANDIDATES);
-    let block = one_block(definition, &payloads, &proof_ids);
-    let expected_image = journal_image(id, &[(block.clone(), payloads.clone(), proof_ids.clone())]);
-    let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
-
-    let root = journal
-        .apply_block(&block, addressed_candidates(&payloads, &proof_ids))
-        .unwrap();
-    assert_eq!(root.proof_id(), *proof_ids.last().unwrap());
-    assert_eq!(journal.len().unwrap(), PROOF_BATCH_MAX_CANDIDATES);
-    assert_eq!(fs::read(directory.journal_path()).unwrap(), expected_image);
-    let expected_root = journal.proof_set_root().unwrap();
-    drop(journal);
-
-    let reopened =
-        ProofChainJournal::open_recovering_unverified(&directory.path, definition).unwrap();
-    assert_eq!(reopened.len().unwrap(), PROOF_BATCH_MAX_CANDIDATES);
-    assert_eq!(reopened.proof_set_root().unwrap(), expected_root);
-    assert_eq!(reopened.head_block_id().unwrap(), block.id());
-    for proof_id in proof_ids {
-        assert!(reopened.proof(proof_id).unwrap().is_some());
-    }
-}
-
-#[test]
-fn prepare_is_read_only_and_wraps_transition_errors() {
+fn prepare_is_read_only_and_rejects_an_already_selected_proof() {
     let directory = TestDirectory::new();
     let definition = chain_definition(CHAIN_BYTE);
     let journal = ProofChainJournal::create(&directory.path, definition).unwrap();
@@ -273,41 +238,43 @@ fn prepare_is_read_only_and_wraps_transition_errors() {
     let payload = axiom_bytes(ZfcAxiom::Pairing);
     let proof_id = addressed_proof_ids(std::slice::from_ref(&payload))[0];
 
-    let block = journal.prepare_block(vec![proof_id]).unwrap();
+    let block = journal.prepare_block(proof_id).unwrap();
     assert_eq!(block.parent_block_id(), head);
-    assert_eq!(block.transition().previous_proof_set_root(), root);
+    assert_eq!(block.previous_proof_set_root(), root);
     assert_eq!(journal.head_block_id().unwrap(), head);
     assert_eq!(journal.proof_set_root().unwrap(), root);
     assert_eq!(fs::read(directory.journal_path()).unwrap(), image);
 
+    drop(journal);
+    let mut journal =
+        ProofChainJournal::open_recovering_unverified(&directory.path, definition).unwrap();
+    journal.apply_block(&block, payload).unwrap();
+    let committed = fs::read(directory.journal_path()).unwrap();
     assert!(matches!(
-        journal.prepare_block(Vec::new()),
+        journal.prepare_block(proof_id),
         Err(ProofChainJournalError::Preparation { .. })
     ));
-    assert_eq!(fs::read(directory.journal_path()).unwrap(), image);
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), committed);
 }
 
 #[test]
-fn parent_and_transition_rejections_write_nothing_and_allow_retry() {
+fn parent_rejection_writes_nothing_and_allows_retry() {
     let directory = TestDirectory::new();
     let definition = chain_definition(CHAIN_BYTE);
-    let (payloads, proof_ids) = dependency_chain_with_len(2);
+    let (payloads, proof_ids) = dependency_chain_with_len(1);
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
-    let block = journal.prepare_block(proof_ids.clone()).unwrap();
+    let block = journal.prepare_block(proof_ids[0]).unwrap();
     let original_image = fs::read(directory.journal_path()).unwrap();
     let original_head = journal.head_block_id().unwrap();
     let original_root = journal.proof_set_root().unwrap();
-    let unknown = ProofId::from_bytes([0x77; 32]);
-
     let stale = ProofBlock::new(
         ProofBlockId::from_bytes([0x99; 32]),
-        block.transition().clone(),
+        block.previous_proof_set_root(),
+        block.resulting_proof_set_root(),
+        block.proof_id(),
     );
     assert!(matches!(
-        journal.apply_block(
-            &stale,
-            vec![AddressedProofCandidate::new(unknown, vec![0x00])]
-        ),
+        journal.apply_block(&stale, vec![0x00]),
         Err(ProofChainJournalError::BlockAdmission {
             source: ProofBlockApplyError::ParentBlockIdMismatch { .. }
         })
@@ -322,30 +289,11 @@ fn parent_and_transition_rejections_write_nothing_and_allow_retry() {
     assert_eq!(journal.block(stale.id()).unwrap(), None);
     assert_eq!(journal.block(block.id()).unwrap(), None);
 
-    let mut wrong_ids = proof_ids.clone();
-    wrong_ids[0] = unknown;
-    assert!(matches!(
-        journal.apply_block(&block, addressed_candidates(&payloads, &wrong_ids)),
-        Err(ProofChainJournalError::BlockAdmission {
-            source: ProofBlockApplyError::Transition {
-                source: ProofTransitionApplyError::CandidateProofIdMismatch { index: 0, .. }
-            }
-        })
-    ));
-    assert_unchanged(
-        &journal,
-        &directory,
-        &original_image,
-        original_head,
-        original_root,
-    );
-    assert_eq!(journal.block(block.id()).unwrap(), None);
-
     let root = journal
-        .apply_block(&block, addressed_candidates(&payloads, &proof_ids))
+        .apply_block(&block, proof_bytes(&payloads[0]))
         .unwrap();
-    assert_eq!(root.proof_id(), proof_ids[1]);
-    assert_eq!(journal.len().unwrap(), 2);
+    assert_eq!(root.proof_id(), proof_ids[0]);
+    assert_eq!(journal.len().unwrap(), 1);
     assert_eq!(journal.head_block_id().unwrap(), block.id());
     assert_eq!(journal.block(block.id()).unwrap(), Some(&block));
 }
@@ -397,62 +345,40 @@ fn formula_budget_rejection_is_atomic_and_complete_replay_fails_closed() {
     let over_budget = over_formula_node_budget_bytes();
     let over_id = ProofId::from_bytes([0x51; 32]);
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
-    let invalid_block = journal.prepare_block(vec![over_id]).unwrap();
+    let invalid_block = journal.prepare_block(over_id).unwrap();
     let before = fs::read(directory.journal_path()).unwrap();
 
     assert!(matches!(
-        journal.apply_block(
-            &invalid_block,
-            vec![AddressedProofCandidate::new(over_id, over_budget.clone())],
-        ),
+        journal.apply_block(&invalid_block, over_budget.clone()),
         Err(ProofChainJournalError::BlockAdmission {
-            source: ProofBlockApplyError::Transition {
-                source: ProofTransitionApplyError::Batch { source }
-            }
-        }) if matches!(
-            &source,
-            ProofBatchError::Candidate {
-                index: 0,
+            source: ProofBlockApplyError::Admission {
                 source: LedgerError::Decode {
                     source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
                 },
-                ..
-            } if *maximum == CERTIFICATE_MAX_FORMULA_NODES
-        )
+            }
+        }) if maximum == CERTIFICATE_MAX_FORMULA_NODES
     ));
     assert_eq!(fs::read(directory.journal_path()).unwrap(), before);
     assert!(journal.is_empty().unwrap());
 
-    let valid_block = journal.prepare_block(vec![valid_id]).unwrap();
-    journal
-        .apply_block(
-            &valid_block,
-            vec![AddressedProofCandidate::new(valid_id, valid_payload)],
-        )
-        .unwrap();
+    let valid_block = journal.prepare_block(valid_id).unwrap();
+    journal.apply_block(&valid_block, valid_payload).unwrap();
     drop(journal);
 
     let replay_directory = TestDirectory::new();
-    let invalid_block = one_block(definition, std::slice::from_ref(&over_budget), &[over_id]);
-    let invalid_image = journal_image(id, &[(invalid_block, vec![over_budget], vec![over_id])]);
+    let invalid_block = one_block(definition, over_id);
+    let invalid_image = journal_image(id, &[(invalid_block, over_budget, over_id)]);
     replay_directory.write_image(&invalid_image);
     assert!(matches!(
         ProofChainJournal::open_recovering_unverified(&replay_directory.path, definition),
         Err(ProofChainJournalError::Replay { entry: 0, source, .. })
             if matches!(
                 source.as_ref(),
-                ProofBlockApplyError::Transition {
-                    source: ProofTransitionApplyError::Batch { source }
-                } if matches!(
-                    source,
-                    ProofBatchError::Candidate {
-                        index: 0,
-                        source: LedgerError::Decode {
-                            source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
-                        },
-                        ..
-                    } if *maximum == CERTIFICATE_MAX_FORMULA_NODES
-                )
+                ProofBlockApplyError::Admission {
+                    source: LedgerError::Decode {
+                        source: ProofCertificateError::FormulaNodeLimitExceeded { maximum },
+                    },
+                } if *maximum == CERTIFICATE_MAX_FORMULA_NODES
             )
     ));
     assert_eq!(
@@ -494,13 +420,8 @@ fn commit_separate_blocks(
 ) -> ProofBlockId {
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
     for (payload, proof_id) in payloads.iter().zip(proof_ids.iter().copied()) {
-        let block = journal.prepare_block(vec![proof_id]).unwrap();
-        journal
-            .apply_block(
-                &block,
-                vec![AddressedProofCandidate::new(proof_id, payload.clone())],
-            )
-            .unwrap();
+        let block = journal.prepare_block(proof_id).unwrap();
+        journal.apply_block(&block, payload.clone()).unwrap();
     }
     journal.head_block_id().unwrap()
 }

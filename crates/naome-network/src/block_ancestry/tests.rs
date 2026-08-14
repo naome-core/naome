@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
 use naome::block_exchange::ProofBlockExchangeWireError;
-use naome_chain::{ProofBlock, ProofBlockId, ProofSetRoot, ProofTransition};
+use naome_chain::{ProofBlock, ProofBlockId, ProofSetRoot};
 use naome_proof::ProofId;
 use naome_storage::ProofChainJournal;
 
@@ -35,9 +35,7 @@ fn extension(anchor: ProofBlockId, anchor_root: ProofSetRoot, count: usize) -> V
     let mut blocks = Vec::with_capacity(count);
     for index in 0..count {
         let resulting = root(0x1000 + index);
-        let transition =
-            ProofTransition::new(previous, resulting, vec![proof_id(0x2000 + index)]).unwrap();
-        let block = ProofBlock::new(parent, transition);
+        let block = ProofBlock::new(parent, previous, resulting, proof_id(0x2000 + index));
         parent = block.id();
         previous = resulting;
         blocks.push(block);
@@ -70,8 +68,9 @@ fn block_response_event_from(
     network: &mut StaticProofNetwork,
     expected_peer_id: PeerId,
     actual_peer_id: PeerId,
-    bytes: Vec<u8>,
+    bytes: impl Into<Vec<u8>>,
 ) -> NetworkEvent {
+    let bytes = bytes.into();
     let (request_id, _) = pending_block_request(network, expected_peer_id);
     network
         .handle_block_exchange_event(request_response::Event::Message {
@@ -278,7 +277,7 @@ fn sixteen_blocks_succeed_but_seventeen_stop_before_request_seventeen() {
 }
 
 #[test]
-fn anchor_and_adjacent_transition_roots_are_both_required() {
+fn anchor_and_adjacent_proof_set_roots_are_both_required() {
     let directory = TestDirectory::new("ancestry-root-continuity");
     let selected = create_journal(directory.path()).unwrap();
     let before = snapshot(&directory, &selected);
@@ -286,16 +285,13 @@ fn anchor_and_adjacent_transition_roots_are_both_required() {
 
     let wrong_previous = root(0xdead);
     assert_ne!(wrong_previous, before.root);
-    let direct = ProofBlock::new(
-        before.head,
-        ProofTransition::new(wrong_previous, root(1), vec![proof_id(1)]).unwrap(),
-    );
+    let direct = ProofBlock::new(before.head, wrong_previous, root(1), proof_id(1));
     let mut network = test_network_for_peers(&[peer_id]);
     let pull = start_pull(&mut network, &selected, peer_id, direct.id());
     let event = block_response_event(&mut network, peer_id, &direct);
     assert!(matches!(
         pull.on_event(&mut network, &selected, event),
-        Err(ProofBlockAncestryPullError::TransitionRootMismatch {
+        Err(ProofBlockAncestryPullError::ProofSetRootMismatch {
             preceding_block_id,
             expected,
             actual,
@@ -306,21 +302,15 @@ fn anchor_and_adjacent_transition_roots_are_both_required() {
 
     let parent_result = root(2);
     let child_previous = root(3);
-    let parent = ProofBlock::new(
-        before.head,
-        ProofTransition::new(before.root, parent_result, vec![proof_id(2)]).unwrap(),
-    );
-    let child = ProofBlock::new(
-        parent.id(),
-        ProofTransition::new(child_previous, root(4), vec![proof_id(3)]).unwrap(),
-    );
+    let parent = ProofBlock::new(before.head, before.root, parent_result, proof_id(2));
+    let child = ProofBlock::new(parent.id(), child_previous, root(4), proof_id(3));
     let pull = start_pull(&mut network, &selected, peer_id, child.id());
     let child_event = block_response_event(&mut network, peer_id, &child);
     let pull = awaiting(pull.on_event(&mut network, &selected, child_event).unwrap());
     let parent_event = block_response_event(&mut network, peer_id, &parent);
     assert!(matches!(
         pull.on_event(&mut network, &selected, parent_event),
-        Err(ProofBlockAncestryPullError::TransitionRootMismatch {
+        Err(ProofBlockAncestryPullError::ProofSetRootMismatch {
             preceding_block_id,
             expected,
             actual,
@@ -382,10 +372,7 @@ fn older_selected_parent_and_virtual_genesis_are_divergence_not_fetch_targets() 
 #[test]
 fn repeated_id_guard_covers_target_and_every_requested_parent() {
     let target_parent = ProofBlockId::from_bytes([0x31; 32]);
-    let target = ProofBlock::new(
-        target_parent,
-        ProofTransition::new(root(1), root(2), vec![proof_id(1)]).unwrap(),
-    );
+    let target = ProofBlock::new(target_parent, root(1), root(2), proof_id(1));
     assert!(ProofBlockAncestryPull::was_already_requested(
         target.id(),
         &[],
@@ -574,10 +561,7 @@ fn selected_head_drift_precedes_block_semantics_but_not_transport_outcomes() {
     let anchor = selected.head_block_id().unwrap();
     let anchor_root = selected.proof_set_root().unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let target = ProofBlock::new(
-        anchor,
-        ProofTransition::new(root(0x81), root(0x82), vec![proof_id(0x83)]).unwrap(),
-    );
+    let target = ProofBlock::new(anchor, root(0x81), root(0x82), proof_id(0x83));
     let mut network = test_network_for_peers(&[peer_id]);
 
     let pull = start_pull(&mut network, &selected, peer_id, target.id());
@@ -612,14 +596,8 @@ fn selected_head_drift_is_rechecked_after_a_target_block_was_retained() {
     let mut selected = create_journal(directory.path()).unwrap();
     let anchor = selected.head_block_id().unwrap();
     let anchor_root = selected.proof_set_root().unwrap();
-    let parent = ProofBlock::new(
-        anchor,
-        ProofTransition::new(anchor_root, root(0xa1), vec![proof_id(0xa1)]).unwrap(),
-    );
-    let child = ProofBlock::new(
-        parent.id(),
-        ProofTransition::new(root(0xa2), root(0xa3), vec![proof_id(0xa2)]).unwrap(),
-    );
+    let parent = ProofBlock::new(anchor, anchor_root, root(0xa1), proof_id(0xa1));
+    let child = ProofBlock::new(parent.id(), root(0xa2), root(0xa3), proof_id(0xa2));
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[peer_id]);
 

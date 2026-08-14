@@ -516,7 +516,7 @@ async fn head_and_block_exchanges_progress_bidirectionally_on_one_session() {
     let mut journal_a = create_journal(directory_a.path()).unwrap();
     apply_fresh_blocks(&mut journal_a, [pairing_bytes()]);
     let block_a_id = journal_a.head_block_id().unwrap();
-    let block_a = journal_a.block(block_a_id).unwrap().unwrap().clone();
+    let block_a = *journal_a.block(block_a_id).unwrap().unwrap();
     let directory_b = TestDirectory::new("mixed-head-block-b");
     let journal_b = create_journal(directory_b.path()).unwrap();
     let expected_head_b = journal_b.head_block_id().unwrap();
