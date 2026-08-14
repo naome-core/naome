@@ -28,6 +28,14 @@ same primitive Foundation formulas:
 cargo run -p naome-authoring --bin naome -- proof compile examples/separation.nao
 ```
 
+Agent-authored proofs may cite an exact already checked `ProofId` with
+`(proof-reference <64 lowercase hex characters>)`. The library's
+`compile_with_state` resolves such citations only from an immutable, explicitly
+supplied checked `ProofState`; compilation does not fetch, select, register, or
+mutate proofs. The CLI deliberately uses an empty state and therefore rejects
+reachable references. The normative authoring specification includes the full
+source form.
+
 Each local chain begins from a canonical definition that binds its deployment,
 the current Foundation identity, and the empty authenticated proof state before
 deriving the chain address and virtual genesis.
