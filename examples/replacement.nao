@@ -1,36 +1,52 @@
 # Replacement instantiated for the identity relation.
-foundation "naome:zfc";
+foundation = "naome:zfc"
 
-theorem identity_image_exists {
-  statement
-    (forall source
-      (implies
-        (forall input
-          (implies
-            (member input source)
-            (exists output
-              (and
-                (equal input output)
-                (forall witness
-                  (implies
-                    (equal input witness)
-                    (equal witness output)))))))
-        (exists result
-          (forall output
-            (iff
-              (member output result)
-              (exists input
-                (and
-                  (member input source)
-                  (equal input output))))))));
+statement = forall(
+    source,
+    implies(
+        forall(
+            input,
+            implies(
+                member(input, source),
+                exists(
+                    output,
+                    and_(
+                        equal(input, output),
+                        forall(
+                            witness,
+                            implies(
+                                equal(input, witness),
+                                equal(witness, output),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        exists(
+            result,
+            forall(
+                output,
+                iff(
+                    member(output, result),
+                    exists(
+                        input,
+                        and_(member(input, source), equal(input, output)),
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
 
-  proof {
-    step image =
-      (replacement
-        (equal input output)
-        input output witness source result
-        (parameters));
-
-    result image;
-  }
-}
+proof:
+    p0 = replacement(
+        equal(input, output),
+        input,
+        output,
+        witness,
+        source,
+        result,
+        parameters=[],
+    )
+    return p0

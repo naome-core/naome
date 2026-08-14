@@ -18,26 +18,26 @@ proof closure can be validated against current selected state without changing
 that state; durable application repeats the complete validation.
 
 A prerelease `.nao` compiler provides a bounded, complete source-authoring path
-from one named closed theorem through every Foundation axiom, schema, and
-explicit inference rule to checked canonical proof bytes and IDs. One prefix
-spelling per derived form limits generator choice, while
-`and`/`or`/`iff`/`exists`/`not-equal` reduce nesting before being expanded to the
-same primitive Foundation formulas:
+from one closed statement through every Foundation axiom, schema, and explicit
+inference rule to checked canonical proof bytes and IDs. Its Python-shaped call
+syntax uses one spelling per form, short SSA-style proof names, and no theorem
+wrapper, braces, semicolons, or step markers. `and_`/`or_`/`iff`/`exists`/
+`not_equal` reduce nesting before being expanded to the same primitive
+Foundation formulas:
 
 ```sh
 cargo run -p naome-authoring --bin naome -- proof examples/separation.nao
 ```
 
 Agent-authored proofs may cite an exact selected `ProofId` with
-`(proof-reference <64 lowercase hex characters>)`. The protocol-facing
+`cite("<64 lowercase hex characters>")`. The protocol-facing
 `compile_against_selected_chain` adapter resolves citations only from the
 immutable state built by strict block application or replay in a healthy
 selected-chain journal. Candidate blocks, archived or fetched payloads, and
-other local checked proofs never
-resolve implicitly. Compilation does not fetch, select, register, or mutate
-proofs; the CLI deliberately uses an empty state and rejects reachable
-references. The normative authoring specification includes the full source
-form and selected-state boundary.
+other local checked proofs never resolve implicitly. Compilation does not
+fetch, select, register, or mutate proofs; the CLI deliberately uses an empty
+state and rejects reachable references. The normative authoring specification
+includes the full source form and selected-state boundary.
 
 Each local chain begins from a canonical definition that binds its deployment,
 the current Foundation identity, and the empty authenticated proof state before

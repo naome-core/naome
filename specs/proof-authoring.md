@@ -6,7 +6,7 @@ This document defines the prerelease `.nao` source accepted by
 `naome_authoring::compile`,
 `naome_authoring::compile_against_selected_chain`, and the `naome proof`
 command. The source is a non-authoritative presentation of one assumption-free
-Foundation proof.
+Foundation proof with one declared closed statement.
 Compilation lowers names to a `ProofCertificate`, derives its canonical proof
 normal form, checks that proof through `naome-checker`, and requires its checked
 conclusion to equal the source statement.
@@ -18,90 +18,103 @@ abstraction, or mutation path. The selected-chain adapter only supplies the
 checker with the immutable proof state already owned by a healthy
 `ProofChainJournal`.
 
-Source text is not a canonical protocol object. Its theorem, step, and variable
-names, comments, and whitespace are absent from canonical proof bytes and all
-content identities. The checked canonical proof remains governed by the
-[Proof Protocol](proof-protocol.md); the source file grants no admission,
-selected-state membership, chain inclusion, authorship, or consensus authority.
+Source text is not a canonical protocol object. Its step and variable names,
+comments, optional trailing commas, and whitespace are absent from canonical
+proof bytes and all content identities. The checked canonical proof remains
+governed by the [Proof Protocol](proof-protocol.md); the source file grants no
+admission, selected-state membership, chain inclusion, authorship, or consensus
+authority.
 
 The source syntax is prerelease presentation syntax. It may be replaced without
 a compatibility parser while no stable authoring-format commitment exists.
 
 ## Complete source grammar
 
-One file contains exactly one Foundation declaration and one theorem:
+One file contains exactly one Foundation declaration, statement, and proof:
 
 ```text
-source      := "foundation" foundation-id ";"
-               "theorem" name "{"
-                 "statement" formula ";"
-                 "proof" "{" step+ result "}"
-               "}" EOF
+source      := "foundation" "=" foundation-id
+               "statement" "=" formula
+               "proof" ":" step+ return EOF
 
 foundation-id := '"naome:zfc"'
 
-formula     := "(" "equal" name name ")"
-             | "(" "member" name name ")"
-             | "(" "not" formula ")"
-             | "(" "implies" formula formula ")"
-             | "(" "forall" name formula ")"
-             | "(" "and" formula formula ")"
-             | "(" "or" formula formula ")"
-             | "(" "iff" formula formula ")"
-             | "(" "exists" name formula ")"
-             | "(" "not-equal" name name ")"
+formula     := "equal" "(" name "," name trailing-comma? ")"
+             | "member" "(" name "," name trailing-comma? ")"
+             | "not_" "(" formula trailing-comma? ")"
+             | "implies" "(" formula "," formula trailing-comma? ")"
+             | "forall" "(" name "," formula trailing-comma? ")"
+             | "and_" "(" formula "," formula trailing-comma? ")"
+             | "or_" "(" formula "," formula trailing-comma? ")"
+             | "iff" "(" formula "," formula trailing-comma? ")"
+             | "exists" "(" name "," formula trailing-comma? ")"
+             | "not_equal" "(" name "," name trailing-comma? ")"
 
-step        := "step" name "=" proof-expression ";"
+step        := step-name "=" proof-expression
+step-name   := name except "return"
 
 proof-expression
-            := "(" "simplification" formula formula ")"
-             | "(" "frege" formula formula formula ")"
-             | "(" "classical-contraposition" formula formula ")"
-             | "(" "universal-distribution" name formula formula ")"
-             | "(" "vacuous-universal" formula ")"
-             | "(" "universal-instantiation" name name formula ")"
-             | "(" "modus-ponens" name name ")"
-             | "(" "equality-reflexivity" name ")"
-             | "(" "equality-substitution" name name formula ")"
-             | "(" "zfc-axiom" zfc-axiom-name ")"
-             | "(" "separation" formula name name name
-                   schema-parameters ")"
-             | "(" "replacement" formula name name name name name
-                   schema-parameters ")"
-             | "(" "proof-reference" proof-id ")"
-             | "(" "generalization" name name ")"
+            := "simplification" "(" formula "," formula trailing-comma? ")"
+             | "frege" "(" formula "," formula "," formula trailing-comma? ")"
+             | "classical_contraposition" "(" formula "," formula trailing-comma? ")"
+             | "universal_distribution" "(" name "," formula "," formula trailing-comma? ")"
+             | "vacuous_universal" "(" formula trailing-comma? ")"
+             | "universal_instantiation" "(" name "," name "," formula trailing-comma? ")"
+             | "modus_ponens" "(" name "," name trailing-comma? ")"
+             | "equality_reflexivity" "(" name trailing-comma? ")"
+             | "equality_substitution" "(" name "," name "," formula trailing-comma? ")"
+             | "zfc_axiom" "(" quoted-zfc-axiom-name trailing-comma? ")"
+             | "separation" "(" formula "," name "," name "," name ","
+                   schema-parameters trailing-comma? ")"
+             | "replacement" "(" formula "," name "," name "," name "," name "," name ","
+                   schema-parameters trailing-comma? ")"
+             | "cite" "(" quoted-proof-id trailing-comma? ")"
+             | "generalization" "(" name "," name trailing-comma? ")"
 
 schema-parameters
-            := "(" "parameters" name* ")"
+            := "parameters" "=" "[" parameter-list? "]"
+parameter-list
+            := name ("," name)* trailing-comma?
+trailing-comma
+            := ","
 
-zfc-axiom-name
-            := "extensionality" | "pairing" | "union" | "power-set"
-             | "infinity" | "foundation" | "choice"
+quoted-zfc-axiom-name
+            := '"extensionality"' | '"pairing"' | '"union"' | '"power_set"'
+             | '"infinity"' | '"foundation"' | '"choice"'
 
-result      := "result" name ";"
+return      := "return" name
 
 name        := name-start name-continue*
 name-start  := ASCII letter | "_"
 name-continue
-            := name-start | ASCII digit | "-"
+            := name-start | ASCII digit
 
-proof-id    := lowercase-hex-digit{64}
+quoted-proof-id
+            := '"' lowercase-hex-digit{64} '"'
 lowercase-hex-digit
             := ASCII digit | "a" | "b" | "c" | "d" | "e" | "f"
 ```
 
 ASCII space, tab, carriage return, and line feed may occur between tokens. `#`
-outside the Foundation string starts a comment extending to the next line feed
-or end of file. Comments and whitespace cannot split a name or the fixed
-Foundation string. No string escape or other comment form exists.
+outside any quoted string starts a comment extending to the next line feed or
+end of file. Comments and whitespace cannot split a name, quoted value, or
+fixed identifier. No string escape or other comment form exists.
 
-Keywords and rule names are case-sensitive. The complete input must match the
-grammar; trailing tokens are rejected. The theorem name is presentation data.
-The 64 characters of a `proof-id` form one indivisible token: whitespace and
-comments cannot occur within it, and uppercase hexadecimal is rejected.
-`and`, `or`, `iff`, `exists`, and `not-equal` are the Foundation's exact
-eliminable abbreviations, not additional primitive formulas. No alternate
-spelling exists. Formula syntax alone does not make a statement derivable.
+The examples use four-space indentation, but indentation and line boundaries
+are presentation-only. Balanced calls, the fixed declaration order, `return`,
+and EOF delimit the complete grammar. Tabs, different indentation, or a
+single-line source therefore do not change the compiled proof. Commas between
+operands are mandatory; one comma before a closing `)` or `]` is optional.
+Missing, doubled, or additional operand commas are rejected.
+
+Keywords and rule names are case-sensitive, and `return` is reserved as the
+proof terminator rather than permitted as a step name. The complete input must
+match the grammar; trailing tokens are rejected. The 64 characters inside a
+cited `ProofId` string form one indivisible value: whitespace and comments
+cannot occur within it, and uppercase hexadecimal is rejected. `and_`, `or_`,
+`iff`, `exists`, and `not_equal` are the Foundation's exact eliminable
+abbreviations, not additional primitive formulas. No alternate spelling exists.
+Formula syntax alone does not make a statement derivable.
 Proof expressions instantiate L1-L3, Q1-Q3, E1-E2, Separation, or Replacement;
 select one of the seven fixed ZFC axioms; cite one exact checked proof; or apply
 explicit modus ponens or generalization. The checker still determines whether
@@ -109,26 +122,27 @@ those steps derive the declared statement.
 
 ## Names and proof construction
 
-Variable names identify presentation variables throughout the theorem. The
+Variable names identify presentation variables throughout the source. The
 compiler assigns internal free-variable identifiers deterministically and
-`forall x A` binds occurrences of `x` in `A`. Formula operands of
-`simplification`, `frege`, and `classical-contraposition` instantiate the
-corresponding Foundation schema in source order. An `equality-substitution from
-to A` step constructs `from = to -> (A -> A[from := to])` using capture-free
-substitution. A `modus-ponens premise implication` step derives the consequent
-of the earlier implication step when its antecedent equals the earlier premise
-step. A `generalization premise x` step applies Foundation generalization to the
+`forall(x, A)` binds occurrences of `x` in `A`. Formula operands of
+`simplification`, `frege`, and `classical_contraposition` instantiate the
+corresponding Foundation schema in source order. An
+`equality_substitution(from, to, A)` step constructs
+`from = to -> (A -> A[from := to])` using capture-free substitution. A
+`modus_ponens(premise, implication)` step derives the consequent of the earlier
+implication step when its antecedent equals the earlier premise step. A
+`generalization(premise, x)` step applies Foundation generalization to the
 earlier step named by `premise` and binds the same presentation variable.
 
 Derived formula forms recursively lower before certificate construction:
 
 | Source | Primitive Foundation formula |
 | --- | --- |
-| `(and A B)` | `(not (implies A (not B)))` |
-| `(or A B)` | `(implies (not A) B)` |
-| `(iff A B)` | `(and (implies A B) (implies B A))` |
-| `(exists x A)` | `(not (forall x (not A)))` |
-| `(not-equal x y)` | `(not (equal x y))` |
+| `and_(A, B)` | `not_(implies(A, not_(B)))` |
+| `or_(A, B)` | `implies(not_(A), B)` |
+| `iff(A, B)` | `and_(implies(A, B), implies(B, A))` |
+| `exists(x, A)` | `not_(forall(x, not_(A)))` |
+| `not_equal(x, y)` | `not_(equal(x, y))` |
 
 These are one-way source expansions. They create no proof step, new primitive
 node, alternate canonical formula, or independent identity. In particular,
@@ -136,15 +150,15 @@ node, alternate canonical formula, or independent identity. In particular,
 and `exists` binds the named variable capture-freely through the same locally
 nameless representation as `forall`.
 
-Step names must be unique. Both modus-ponens operands and a generalization
+Step names must be unique. Both `modus_ponens` operands and a generalization
 premise must name previously declared steps, so source dependencies are finite
-and backward-only. Modus-ponens operand order is significant: the first name is
-the premise and the second is the implication. `result` must name the final
+and backward-only. `modus_ponens` operand order is significant: the first name is
+the premise and the second is the implication. `return` must name the final
 declared step. At least one step is required.
-Earlier steps may be unreachable from that result; the Proof Protocol's normal
-form removes them before checking and identity derivation.
+Earlier steps may be unreachable from that return value; the Proof Protocol's
+normal form removes them before checking and identity derivation.
 
-`proof-reference` takes one exact `ProofId`, not a theorem name or
+`cite("id")` takes one exact `ProofId`, not a theorem name or
 `StatementId`. `compile_against_selected_chain` resolves that address only from
 the immutable checked state of a healthy selected-chain journal. A
 candidate-store block, archived payload, fetched proof, peer response, or
@@ -163,23 +177,26 @@ any dependent inference. Exact `ProofId` selection is intentional: different
 proof artifacts of one statement remain different citations.
 
 Quantifier expressions refer to presentation variables, not binders already
-present in their formula operands. `universal-distribution x A B` instantiates
-Q1 with `x`, `A`, and `B`. `universal-instantiation x y A` instantiates Q3 by
-binding the free occurrences of `x` in `A`, then capture-freely substituting
-free `y` into the conclusion. Q2 has no source binder operand:
-`vacuous-universal A` constructs a fresh nameless binder internally, so its
-freshness side condition cannot depend on a presentation name.
+present in their formula operands. `universal_distribution(x, A, B)`
+instantiates Q1 with `x`, `A`, and `B`.
+`universal_instantiation(x, y, A)` instantiates Q3 by binding the free
+occurrences of `x` in `A`, then capture-freely substituting free `y` into the
+conclusion. Q2 has no source binder operand: `vacuous_universal(A)` constructs
+a fresh nameless binder internally, so its freshness side condition cannot
+depend on a presentation name.
 
-`zfc-axiom` takes one fixed, case-sensitive selector. It allocates no source
-variable and carries no source formula: the checker reconstructs the axiom's
-normative primitive Foundation formula from the existing protocol step.
+`zfc_axiom` takes one fixed, quoted, case-sensitive selector. It allocates no
+source variable and carries no source formula: the checker reconstructs the
+axiom's normative primitive Foundation formula from the existing protocol
+step.
 
-`separation P element source result (parameters p q)` and `replacement P
-input output witness source result (parameters p q)` preserve exactly that
-predicate, role order, and parameter order in the existing Proof Protocol
-steps. The `(parameters ...)` list is mandatory and may be empty; the compiler
-does not infer parameters from `P`. Its order is the schema's universal
-quantifier order, so reordering it is not presentation-only renaming.
+`separation(P, element, source, result, parameters=[p, q])` and
+`replacement(P, input, output, witness, source, result, parameters=[p, q])`
+preserve exactly that predicate, role order, and parameter order in the
+existing Proof Protocol steps. The `parameters=[...]` list is mandatory and
+may be empty; the compiler does not infer parameters from `P`. Its order is the
+schema's universal quantifier order, so reordering it is not presentation-only
+renaming.
 
 For Separation, every role and parameter must be distinct; every free variable
 of `P` must be `element`, `source`, or a declared parameter; and `result` must
@@ -192,20 +209,20 @@ The fourteen proof-expression forms lower exactly as follows:
 
 | Source | Proof certificate step |
 | --- | --- |
-| `(simplification A B)` | Foundation L1 instantiated as `A -> (B -> A)` |
-| `(frege A B C)` | Foundation L2 instantiated as `(A -> (B -> C)) -> ((A -> B) -> (A -> C))` |
-| `(classical-contraposition A B)` | Foundation L3 instantiated as `(not B -> not A) -> (A -> B)` |
-| `(universal-distribution x A B)` | Foundation Q1 instantiated as `forall x (A -> B) -> (forall x A -> forall x B)` |
-| `(vacuous-universal A)` | Foundation Q2 instantiated as `A -> forall _ A` with a fresh nameless binder |
-| `(universal-instantiation x y A)` | Foundation Q3 instantiated as `forall x A -> A[x := y]` with capture-free substitution |
-| `(modus-ponens premise implication)` | modus ponens with the two earlier steps in premise-then-implication order |
-| `(equality-reflexivity x)` | Foundation E1 for `x` |
-| `(equality-substitution from to A)` | Foundation E2 instantiated as `from = to -> (A -> A[from := to])` with capture-free substitution |
-| `(zfc-axiom name)` | the fixed ZFC axiom selected by `extensionality`, `pairing`, `union`, `power-set`, `infinity`, `foundation`, or `choice` |
-| `(separation P element source result (parameters p q))` | Separation with predicate `P`, the three roles in source order, and parameters in quantifier order |
-| `(replacement P input output witness source result (parameters p q))` | Replacement with predicate `P`, the five roles in source order, and parameters in quantifier order |
-| `(proof-reference id)` | `ProofReference { proof_id: id }` for the exact 32-byte `ProofId` |
-| `(generalization premise x)` | generalization of the earlier `premise` step over `x` |
+| `simplification(A, B)` | Foundation L1 instantiated as `A -> (B -> A)` |
+| `frege(A, B, C)` | Foundation L2 instantiated as `(A -> (B -> C)) -> ((A -> B) -> (A -> C))` |
+| `classical_contraposition(A, B)` | Foundation L3 instantiated as `(not B -> not A) -> (A -> B)` |
+| `universal_distribution(x, A, B)` | Foundation Q1 instantiated as `forall x (A -> B) -> (forall x A -> forall x B)` |
+| `vacuous_universal(A)` | Foundation Q2 instantiated as `A -> forall _ A` with a fresh nameless binder |
+| `universal_instantiation(x, y, A)` | Foundation Q3 instantiated as `forall x A -> A[x := y]` with capture-free substitution |
+| `modus_ponens(premise, implication)` | modus ponens with the two earlier steps in premise-then-implication order |
+| `equality_reflexivity(x)` | Foundation E1 for `x` |
+| `equality_substitution(from, to, A)` | Foundation E2 instantiated as `from = to -> (A -> A[from := to])` with capture-free substitution |
+| `zfc_axiom("name")` | the fixed ZFC axiom selected by `extensionality`, `pairing`, `union`, `power_set`, `infinity`, `foundation`, or `choice` |
+| `separation(P, element, source, result, parameters=[p, q])` | Separation with predicate `P`, the three roles in source order, and parameters in quantifier order |
+| `replacement(P, input, output, witness, source, result, parameters=[p, q])` | Replacement with predicate `P`, the five roles in source order, and parameters in quantifier order |
+| `cite("id")` | `ProofReference { proof_id: id }` for the exact 32-byte `ProofId` |
+| `generalization(premise, x)` | generalization of the earlier `premise` step over `x` |
 
 No source construct adds an implicit proof step. Q2's nameless binder is the
 only universal quantifier introduced without a presentation-variable operand.
@@ -223,7 +240,7 @@ Compilation proceeds in this order:
 4. parse the proof in source order, resolving variables and backward-only step
    names, enforcing the cumulative certificate formula-node budget, and
    lowering each expression;
-5. require one final result, both closing braces, and end of source;
+5. require one final `return` naming the last step and end of source;
 6. construct one structurally valid `ProofCertificate`;
 7. normalize and check that certificate against either the empty state used by
    `compile` or the immutable selected journal state obtained by
@@ -241,8 +258,9 @@ mathematical checking.
 
 Normalization removes presentation-only proof structure and canonicalizes
 free-variable identifiers according to the Proof Protocol. Systematically
-renaming theorem, step, or variable names, or changing only comments and
-whitespace, therefore preserves the canonical proof bytes and all three IDs.
+renaming step or variable names, or changing only comments, whitespace,
+indentation, line breaks, or optional trailing commas, therefore preserves the
+canonical proof bytes and all three IDs.
 Replacing a derived formula with its exact primitive expansion also preserves
 the canonical proof bytes and identities.
 
@@ -301,7 +319,7 @@ canonical_proof <canonical proof bytes>
 ```
 
 The command uses `compile` and therefore has an empty proof state. A source
-with a reachable `proof-reference` fails as an unknown reference. The command
+with a reachable `cite(...)` step fails as an unknown reference. The command
 has no state, journal, dependency-file, network, or implicit discovery option.
 Protocol applications that own an opened selected-chain journal use
 `compile_against_selected_chain`.
@@ -327,27 +345,27 @@ derived roots have these exact costs:
 
 | Source | Primitive nodes | Primitive depth |
 | --- | ---: | ---: |
-| `(and A B)` | `3 + nA + nB` | `max(dA + 2, dB + 3)` |
-| `(or A B)` | `2 + nA + nB` | `max(dA + 2, dB + 1)` |
-| `(iff A B)` | `5 + 2*nA + 2*nB` | `max(dA, dB) + 4` |
-| `(exists x A)` | `3 + nA` | `dA + 3` |
-| `(not-equal x y)` | `2` | `2` |
+| `and_(A, B)` | `3 + nA + nB` | `max(dA + 2, dB + 3)` |
+| `or_(A, B)` | `2 + nA + nB` | `max(dA + 2, dB + 1)` |
+| `iff(A, B)` | `5 + 2*nA + 2*nB` | `max(dA, dB) + 4` |
+| `exists(x, A)` | `3 + nA` | `dA + 3` |
+| `not_equal(x, y)` | `2` | `2` |
 
 `iff` therefore charges both copied occurrences of each operand; source sugar
 cannot bypass a formula or certificate budget.
 Every formula occurrence in a formula-bearing proof expression is charged
 independently against `CERTIFICATE_MAX_FORMULA_NODES`, including textually equal
 operands. This covers both operands of `simplification`,
-`classical-contraposition`, and `universal-distribution`, all three operands of
-`frege`, and the single operand of `vacuous-universal`,
-`universal-instantiation`, `equality-substitution`, `separation`, or
+`classical_contraposition`, and `universal_distribution`, all three operands of
+`frege`, and the single operand of `vacuous_universal`,
+`universal_instantiation`, `equality_substitution`, `separation`, or
 `replacement`. A schema predicate is encoded and charged once even though
 schema expansion can reuse it; the reconstructed result is separately governed
-by the checker formula and work limits. A `zfc-axiom` expression contributes
+by the checker formula and work limits. A `zfc_axiom` expression contributes
 one certificate step but zero encoded certificate formula nodes. Its complete
 canonical step encoding is the fixed-ZFC step tag plus one axiom tag. The
 declared statement has its separate standalone formula budget.
-A `proof-reference` likewise contributes one certificate step and zero encoded
+A `cite` likewise contributes one certificate step and zero encoded
 formula nodes. Its canonical step is exactly one tag plus the 32-byte
 `ProofId`, or 33 bytes; the certificate still carries its separate four-byte
 step count. During checking, the resolved conclusion is charged to the formula
@@ -384,31 +402,38 @@ The exact inherited executable limits are:
 source-length check precedes parsing. Within parsing, syntax, Foundation, name,
 dependency, formula-depth, and cumulative certificate formula-node checks occur
 when their token is reached; an earlier Foundation mismatch therefore precedes
-errors in the theorem body, for example. Proof-expression operands are parsed
-left to right in grammar order. A derived formula similarly parses its operands
-left to right under the existing syntax and resource checks. Only after its
+errors in the statement or proof. Call operands are parsed left to right in
+grammar order, with each mandatory comma checked before the next operand. A
+derived formula follows the same resource checks. Only after its
 operands succeed does the compiler charge and depth-check the additional
 primitive expansion at the derived operator's offset, before constructing or
 cloning that expansion. Malformed operands and operand-local limit failures
 therefore precede an expansion-only node or depth failure. The declared
 statement's formula-limit checks complete when that formula has parsed, before
-the rest of the theorem.
+the proof.
 The first step beyond `CERTIFICATE_MAX_STEPS` returns that certificate-limit
-error immediately, before parsing its proof expression or any later result or
-EOF token. Otherwise an invalid or uppercase hexadecimal nibble returns
+error immediately, before parsing its proof call or any later `return` or EOF
+token. `cite` first requires an opening quote. Otherwise an invalid or uppercase
+hexadecimal nibble within its first 64 content bytes returns
 `Syntax` at that offending byte with `expected` equal to
-`"a 64-digit lowercase hexadecimal ProofId"`; an early token delimiter or EOF
-reports the same expectation at the proof-ID token's first byte. After exactly
-64 valid digits, ordinary grammar resumes: a 65th digit therefore
-returns `Syntax` at that extra byte with `expected` equal to `"`)`"`. No
-`ProofReference` is constructed from partial or normalized input.
-An unsupported `zfc-axiom` selector returns `Syntax` at the selector's first
-byte with `expected` equal to `"a fixed ZFC axiom"`. A schema
-parses its predicate, role names, and mandatory parameter list from left to
-right; missing or malformed syntax therefore precedes mathematical schema
-errors. Complete parsing, including the final-result and EOF requirements,
-precedes certificate construction. Certificate errors precede checker errors;
-checked-proof failure precedes declared-statement mismatch.
+`"a 64-digit lowercase hexadecimal ProofId"`; early termination reports the
+same expectation. After exactly 64 valid digits, a missing closing quote,
+including a 65th hexadecimal digit, returns `Syntax` at that byte with
+`expected` equal to
+`"a closing quote after the ProofId"`. The call's closing `)` is checked only
+after the quoted ID. No `ProofReference` is constructed from partial or
+normalized input.
+
+`zfc_axiom` first requires a quoted selector; a missing or malformed opening
+quote expects `"a quoted ZFC axiom selector"`. An unsupported complete value
+returns `Syntax` at the opening quote with `expected` equal to
+`"a fixed ZFC axiom"`.
+
+A schema parses its predicate, role names, and mandatory parameter list from
+left to right; missing or malformed syntax therefore precedes mathematical
+schema errors. Complete parsing, including the final `return` and EOF
+requirements, precedes certificate construction. Certificate errors precede
+checker errors; checked-proof failure precedes declared-statement mismatch.
 
 Normalization removes unreachable steps before checker execution and assigns
 canonical variable identifiers. For each remaining schema step, the checker
@@ -429,8 +454,8 @@ Offsets below are zero-based UTF-8 byte offsets into the original source:
 | `Syntax { offset, expected }` | A lexical or grammar boundary failed. |
 | `FoundationMismatch { offset }` | The quoted Foundation identifier is not `naome:zfc`. |
 | `DuplicateStep { offset, name }` | A step name repeats an earlier step name. |
-| `UnknownStep { offset, name }` | A modus-ponens operand or generalization premise is unknown or not earlier. |
-| `ResultNotFinal { offset }` | `result` does not name the final declared step. |
+| `UnknownStep { offset, name }` | A `modus_ponens` operand or generalization premise is unknown or not earlier. |
+| `ResultNotFinal { offset }` | `return` does not name the final declared step. |
 | `FormulaDepthLimitExceeded { offset, maximum }` | The recursively expanded primitive formula exceeds `FORMULA_MAX_DEPTH` (`256`). |
 | `Statement { source }` | The declared statement violates a canonical Foundation formula limit. |
 | `Certificate { source }` | Lowered proof structure violates the Proof Protocol. |
@@ -441,26 +466,28 @@ Offsets below are zero-based UTF-8 byte offsets into the original source:
 
 ```nao
 # Extensionality: sets with exactly the same members are equal.
-foundation "naome:zfc";
+foundation = "naome:zfc"
 
-theorem same_members_are_equal {
-  statement
-    (forall x (forall y
-      (implies
-        (forall z (iff (member z x) (member z y)))
-        (equal x y))));
+statement = forall(
+    x,
+    forall(
+        y,
+        implies(
+            forall(z, iff(member(z, x), member(z, y))),
+            equal(x, y),
+        ),
+    ),
+)
 
-  proof {
-    step axiom = (zfc-axiom extensionality);
-    result axiom;
-  }
-}
+proof:
+    p0 = zfc_axiom("extensionality")
+    return p0
 ```
 
 The declared statement uses authoring-only `iff`; its recursive primitive
 expansion exactly matches the fixed axiom selected by the proof. It is runnable
 as `examples/extensionality.nao`. `examples/separation.nao` uses `exists`,
-`iff`, and `and` to state an intersection with one explicit parameter, while
+`iff`, and `and_` to state an intersection with one explicit parameter, while
 `examples/replacement.nao` uses the same derived forms to state the identity
 image instance with the mandatory empty parameter list. The implication,
 quantifier, equality-substitution, and minimal self-equality examples remain
@@ -473,18 +500,14 @@ selected-chain journal. It passes that journal to
 
 ```nao
 # Extend one exact checked proof with a local inference.
-foundation "naome:zfc";
+foundation = "naome:zfc"
 
-theorem reflexivity_for_every_y {
-  statement (forall y (forall x (equal x x)));
+statement = forall(y, forall(x, equal(x, x)))
 
-  proof {
-    step equality_is_reflexive =
-      (proof-reference c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73);
-    step for_every_y = (generalization equality_is_reflexive y);
-    result for_every_y;
-  }
-}
+proof:
+    p0 = cite("c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73")
+    p1 = generalization(p0, y)
+    return p1
 ```
 
 The reference step reuses the selected checked conclusion `forall x, x = x`;
@@ -498,10 +521,10 @@ This authoring contract defines no:
 
 - additional primitive formulas, other connective aliases, implicit schema
   parameters, or alternate schema spellings;
-- symbolic imports, proof aliases, theorem-name or `StatementId` lookup,
-  multiple theorems, theorem libraries, definitions, constants, functions,
-  namespaces, modules, macros, a canonical-source or formatting command, or
-  compatibility aliases;
+- symbolic imports, semantic proof aliases, theorem-name or `StatementId`
+  lookup, multiple statements, theorem libraries, definitions, constants,
+  functions, namespaces, modules, macros, a canonical-source or formatting
+  command, or compatibility aliases;
 - proof discovery, fetching, dependency acquisition, proof-state construction
   or serialization, opening or selecting a journal, CLI state selection, or
   implicit choice among proofs of one statement;
