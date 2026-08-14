@@ -1360,6 +1360,8 @@ fn two_blocks_apply_in_order_and_the_second_resolves_the_first() {
     );
     assert_eq!(chain.head_block_id(), second.id());
     assert_eq!(chain.proof_dag().len(), 2);
+    assert!(chain.proof_state().contains_proof(root_id));
+    assert!(chain.proof_state().contains_proof(child_id));
     assert_eq!(
         chain
             .proof_dag()

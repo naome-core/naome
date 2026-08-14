@@ -26,6 +26,19 @@ Every selected-state operation requires a healthy handle. The immutable
 I/O and the ID is not repeated in block or entry bytes. Private chain, proof,
 and block-index state is exposed only through health-sensitive queries.
 
+The health-sensitive `proof_state` query returns an immutable borrow of the
+checker state already owned by the selected proof DAG. It performs no replay,
+disk I/O, reconstruction, cloning, registration, or state mutation. Only proofs
+selected by strict block application or replay can resolve through this borrow.
+Structural candidates, archived payloads, fetched bytes, and checked proofs
+outside the journal are not consulted or merged.
+
+The borrow is tied to the journal handle, preventing mutable block application
+through that handle until the reader finishes. The selected authoring adapter
+uses this query before parsing source, so `Poisoned` takes precedence over
+authoring failures. Successful compilation does
+not change journal bytes, head, authenticated root, proof count, or records.
+
 The journal is local recovery state. A valid file is not evidence of network
 selection, checkpoint authority, finality, or consensus. It defines no
 competing-history store, reorganization, snapshot, pruning, or network policy.

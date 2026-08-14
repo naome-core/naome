@@ -10,6 +10,11 @@ fn canonical_bytes_match_authoring_admission_and_duplicate_semantics() {
     let mut authoring = LedgerState::new();
     let authoring_applied = authoring.apply(identity(variable)).unwrap();
     assert_eq!(strict_applied, authoring_applied);
+    assert!(
+        strict
+            .proof_state()
+            .contains_proof(strict_applied.proof_id())
+    );
     assert_eq!(strict_applied.canonical_proof_bytes(), bytes);
     assert!(strict_applied.direct_dependencies().is_empty());
     assert_eq!(

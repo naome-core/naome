@@ -22,7 +22,7 @@ mod transition;
 use std::error::Error;
 use std::fmt;
 
-use naome_ledger::{AcceptedProofRecord, LedgerError, LedgerState};
+use naome_ledger::{AcceptedProofRecord, LedgerError, LedgerState, ProofState};
 use naome_proof::ProofId;
 
 pub use naome_ledger::{AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, ProofBatchError};
@@ -73,6 +73,11 @@ impl ProofDag {
     /// Returns one locally accepted proof record by its content address.
     pub fn proof(&self, proof_id: ProofId) -> Option<&AcceptedProofRecord> {
         self.records.get(proof_id)
+    }
+
+    /// Returns immutable access to the selected checked-proof resolver state.
+    pub(crate) const fn proof_state(&self) -> &ProofState {
+        self.ledger.proof_state()
     }
 
     /// Returns the authenticated root of the selected exact [`ProofId`] set.

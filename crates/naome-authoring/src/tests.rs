@@ -307,7 +307,8 @@ fn proof_reference_lowers_to_the_exact_checked_identity_vector_without_mutating_
     let source_proof_id = ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX));
     let source_derivation_id = DerivationId::from_bytes(hex32(SELF_EQUALITY_DERIVATION_ID_HEX));
     let reference =
-        compile_with_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state).unwrap();
+        compile_with_proof_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state)
+            .unwrap();
 
     assert_eq!(
         reference.statement_id(),
@@ -354,7 +355,7 @@ fn referenced_theorem_participates_in_inference_and_remains_dependency_closed() 
     );
     let (mut state, _) = checked_state(SOURCE);
     let inline = compile(monolithic).unwrap();
-    let cited = compile_with_state(&referenced, &state).unwrap();
+    let cited = compile_with_proof_state(&referenced, &state).unwrap();
 
     assert_eq!(cited.statement_id(), inline.statement_id());
     assert_eq!(cited.derivation_id(), inline.derivation_id());
@@ -385,13 +386,13 @@ fn proof_reference_requires_the_exact_id_in_the_supplied_state() {
 
     assert_eq!(compile(&reference), Err(expected()));
     assert_eq!(
-        compile_with_state(&reference, &ProofState::new()),
+        compile_with_proof_state(&reference, &ProofState::new()),
         Err(expected())
     );
 
     let (wrong_statement_state, _) = checked_state(EXTENSIONALITY_SOURCE);
     assert_eq!(
-        compile_with_state(&reference, &wrong_statement_state),
+        compile_with_proof_state(&reference, &wrong_statement_state),
         Err(expected())
     );
 
@@ -402,23 +403,27 @@ fn proof_reference_requires_the_exact_id_in_the_supplied_state() {
         same_statement_state.contains_proof(ProofId::from_bytes(hex32(QUANTIFIER_PROOF_ID_HEX)))
     );
     assert_eq!(
-        compile_with_state(&reference, &same_statement_state),
+        compile_with_proof_state(&reference, &same_statement_state),
         Err(expected())
     );
 
     let (exact_state, _) = checked_state(SOURCE);
-    assert!(compile_with_state(&reference, &exact_state).is_ok());
+    assert!(compile_with_proof_state(&reference, &exact_state).is_ok());
 }
 
 #[test]
 fn proof_reference_is_identity_neutral_only_for_presentation_changes() {
     let (state, _) = checked_state(SOURCE);
     let baseline =
-        compile_with_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state).unwrap();
+        compile_with_proof_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state)
+            .unwrap();
     let renamed = format!(
         "# presentation only\nfoundation \"naome:zfc\"; theorem renamed {{ statement (forall value (equal value value)); proof {{ step imported_theorem = (proof-reference {SELF_EQUALITY_PROOF_ID_HEX}); result imported_theorem; }} }}"
     );
-    assert_eq!(compile_with_state(&renamed, &state).unwrap(), baseline);
+    assert_eq!(
+        compile_with_proof_state(&renamed, &state).unwrap(),
+        baseline
+    );
 
     for alias in [
         SELF_EQUALITY_STATEMENT_ID_HEX,
@@ -426,7 +431,7 @@ fn proof_reference_is_identity_neutral_only_for_presentation_changes() {
     ] {
         let alias_id = ProofId::from_bytes(hex32(alias));
         assert_eq!(
-            compile_with_state(&proof_reference_source(alias), &state),
+            compile_with_proof_state(&proof_reference_source(alias), &state),
             Err(CompileError::Check {
                 source: CheckError::UnknownProofReference {
                     step: 0,
@@ -437,7 +442,8 @@ fn proof_reference_is_identity_neutral_only_for_presentation_changes() {
     }
 
     let reference =
-        compile_with_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state).unwrap();
+        compile_with_proof_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state)
+            .unwrap();
     let certificate =
         ProofCertificate::from_canonical_bytes(reference.canonical_proof_bytes()).unwrap();
     let checked = naome_checker::normalize_and_check_with_state(certificate, &state).unwrap();
@@ -581,7 +587,7 @@ fn complete_parsing_precedes_reachable_proof_reference_resolution_and_statement_
     ));
     let (state, _) = checked_state(SOURCE);
     assert_eq!(
-        compile_with_state(&mismatch, &state),
+        compile_with_proof_state(&mismatch, &state),
         Err(CompileError::StatementMismatch)
     );
 }
