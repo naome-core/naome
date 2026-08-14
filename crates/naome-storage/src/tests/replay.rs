@@ -5,8 +5,8 @@ fn every_incomplete_first_entry_cut_recovers_to_empty_prefix() {
     let definition = chain_definition(CHAIN_BYTE);
     let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let block = one_block(definition, &payloads, &proof_ids);
-    let complete = journal_image(id, &[(block, payloads, proof_ids)]);
+    let block = one_block(definition, proof_ids[0]);
+    let complete = journal_image(id, &[(block, payloads[0].clone(), proof_ids[0])]);
     let prefix = journal_prefix(id);
 
     for cut in JOURNAL_PREFIX_BYTES + 1..complete.len() {
@@ -36,7 +36,7 @@ fn every_incomplete_second_entry_cut_recovers_exact_first_block() {
     let entries = two_block_chain(definition);
     let first_image = journal_image(id, &entries[..1]);
     let complete = journal_image(id, &entries);
-    let first_id = entries[0].2[0];
+    let first_id = entries[0].2;
     let first_head = entries[0].0.id();
     let second_head = entries[1].0.id();
 
@@ -68,9 +68,9 @@ fn complete_payload_and_footer_corruption_fail_without_recovery() {
     let definition = chain_definition(CHAIN_BYTE);
     let id = definition.id();
     let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let block = one_block(definition, &payloads, &proof_ids);
-    let complete = journal_image(id, &[(block.clone(), payloads.clone(), proof_ids)]);
-    let payload_offset = JOURNAL_PREFIX_BYTES + 4 + 2 + block.to_canonical_bytes().len() + 4;
+    let block = one_block(definition, proof_ids[0]);
+    let complete = journal_image(id, &[(block, payloads[0].clone(), proof_ids[0])]);
+    let payload_offset = JOURNAL_PREFIX_BYTES + 4 + block.to_canonical_bytes().len();
     let directory = TestDirectory::new();
     let mut corrupt_payload = complete.clone();
     corrupt_payload[payload_offset] ^= 0x01;
@@ -148,8 +148,7 @@ fn complete_framing_errors_fail_closed() {
             if actual == ENTRY_MIN_BODY_BYTES - 1
     ));
 
-    let mut invalid_block_body = vec![0_u8; ENTRY_MIN_BODY_BYTES as usize];
-    invalid_block_body[..2].copy_from_slice(&0_u16.to_be_bytes());
+    let invalid_block_body = vec![0_u8; ENTRY_MIN_BODY_BYTES as usize];
     let invalid_block_entry = raw_entry(&invalid_block_body, ProofBlockId::from_bytes([0_u8; 32]));
     let directory = TestDirectory::new();
     let mut invalid_block = journal_prefix(id);
@@ -157,50 +156,17 @@ fn complete_framing_errors_fail_closed() {
     directory.write_image(&invalid_block);
     assert!(matches!(
         ProofChainJournal::open_recovering_unverified(&directory.path, definition),
-        Err(ProofChainJournalError::InvalidBlockLength {
-            entry: 0,
-            actual: 0,
-            ..
-        })
+        Err(ProofChainJournalError::BlockIdMismatch { entry: 0, .. })
     ));
 
-    let (payloads, proof_ids) = dependency_chain_with_len(1);
-    let block = one_block(definition, &payloads, &proof_ids);
-    let block_bytes = block.to_canonical_bytes();
-    let mut zero_proof_body = Vec::new();
-    zero_proof_body.extend_from_slice(&u16::try_from(block_bytes.len()).unwrap().to_be_bytes());
-    zero_proof_body.extend_from_slice(&block_bytes);
-    zero_proof_body.extend_from_slice(&0_u32.to_be_bytes());
-    zero_proof_body.push(0);
-    let zero_proof_entry = raw_entry(&zero_proof_body, block.id());
+    let mut invalid_outer = journal_prefix(id);
+    invalid_outer.extend_from_slice(&(ENTRY_MAX_BODY_BYTES + 1).to_be_bytes());
     let directory = TestDirectory::new();
-    let mut zero_proof = journal_prefix(id);
-    zero_proof.extend_from_slice(&zero_proof_entry);
-    directory.write_image(&zero_proof);
+    directory.write_image(&invalid_outer);
     assert!(matches!(
         ProofChainJournal::open_recovering_unverified(&directory.path, definition),
-        Err(ProofChainJournalError::InvalidProofLength {
-            entry: 0,
-            proof: 0,
-            actual: 0,
-            ..
-        })
-    ));
-
-    let mut trailing_body = Vec::new();
-    trailing_body.extend_from_slice(&u16::try_from(block_bytes.len()).unwrap().to_be_bytes());
-    trailing_body.extend_from_slice(&block_bytes);
-    trailing_body.extend_from_slice(&u32::try_from(payloads[0].len()).unwrap().to_be_bytes());
-    trailing_body.extend_from_slice(&payloads[0]);
-    trailing_body.push(0xff);
-    let trailing_entry = raw_entry(&trailing_body, block.id());
-    let directory = TestDirectory::new();
-    let mut trailing = journal_prefix(id);
-    trailing.extend_from_slice(&trailing_entry);
-    directory.write_image(&trailing);
-    assert!(matches!(
-        ProofChainJournal::open_recovering_unverified(&directory.path, definition),
-        Err(ProofChainJournalError::InvalidEntryBody { entry: 0, .. })
+        Err(ProofChainJournalError::InvalidEntryLength { entry: 0, actual, .. })
+            if actual == ENTRY_MAX_BODY_BYTES + 1
     ));
 }
 
@@ -208,36 +174,27 @@ fn complete_framing_errors_fail_closed() {
 fn block_id_valid_parent_payload_and_entry_order_attacks_fail_replay() {
     let definition = chain_definition(CHAIN_BYTE);
     let id = definition.id();
-    let (payloads, proof_ids) = dependency_chain_with_len(2);
-    let valid = one_block(definition, &payloads, &proof_ids);
+    let (payloads, proof_ids) = dependency_chain_with_len(1);
+    let valid = one_block(definition, proof_ids[0]);
 
     let stale = ProofBlock::new(
         ProofBlockId::from_bytes([0xaa; 32]),
-        valid.transition().clone(),
+        valid.previous_proof_set_root(),
+        valid.resulting_proof_set_root(),
+        valid.proof_id(),
     );
-    assert_replay_parent_failure(
-        definition,
-        vec![(stale, payloads.clone(), proof_ids.clone())],
-    );
+    assert_replay_parent_failure(definition, vec![(stale, payloads[0].clone(), proof_ids[0])]);
 
     let directory = TestDirectory::new();
-    let swapped = vec![payloads[1].clone(), payloads[0].clone()];
-    let swapped_image = journal_image(id, &[(valid.clone(), swapped, proof_ids.clone())]);
+    let substituted = axiom_bytes(ZfcAxiom::Union);
+    let swapped_image = journal_image(id, &[(valid, substituted, proof_ids[0])]);
     directory.write_image(&swapped_image);
     assert!(matches!(
         ProofChainJournal::open_recovering_unverified(&directory.path, definition),
         Err(ProofChainJournalError::Replay { entry: 0, source, .. })
             if matches!(
                 source.as_ref(),
-                ProofBlockApplyError::Transition {
-                    source: ProofTransitionApplyError::Batch { source }
-                } if matches!(
-                    source,
-                    ProofBatchError::Candidate {
-                        index: 0,
-                        ..
-                    }
-                )
+                ProofBlockApplyError::Admission { .. }
             )
     ));
     assert_eq!(fs::read(directory.journal_path()).unwrap(), swapped_image);

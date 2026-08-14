@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use naome_authoring::{
     CompileError, CompiledProof, SelectedChainCompileError, compile, compile_against_selected_chain,
 };
-use naome_chain::{AddressedProofCandidate, ProofChainDefinition, ProofDag};
+use naome_chain::{ProofChainDefinition, ProofDag};
 use naome_checker::CheckError;
 use naome_proof::{DerivationId, ProofCertificate, ProofId, ProofStep, StatementId};
 use naome_storage::{
@@ -202,15 +202,9 @@ fn long_agent_style_proof_uses_only_selected_exact_dependencies_without_mutation
         include_str!("../../../examples/extensionality.nao"),
     ] {
         let dependency = compile(source).unwrap();
-        let block = journal.prepare_block(vec![dependency.proof_id()]).unwrap();
+        let block = journal.prepare_block(dependency.proof_id()).unwrap();
         journal
-            .apply_block(
-                &block,
-                vec![AddressedProofCandidate::new(
-                    dependency.proof_id(),
-                    dependency.canonical_proof_bytes().to_vec(),
-                )],
-            )
+            .apply_block(&block, dependency.canonical_proof_bytes().to_vec())
             .unwrap();
     }
 
@@ -267,12 +261,11 @@ fn only_exact_journal_selection_authorizes_reference_compilation_without_mutatio
     let monolithic = compile(NESTED_SELF_EQUALITY).unwrap();
 
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
-    let candidate = journal.prepare_block(vec![dependency_id]).unwrap();
-    let candidate_bytes = u64::try_from(candidate.to_canonical_bytes().len()).unwrap();
+    let candidate = journal.prepare_block(dependency_id).unwrap();
     let mut candidate_store = ProofBlockCandidateStore::create(
         &directory.path,
         definition,
-        ProofBlockCandidateStoreLimits::new(1, candidate_bytes).unwrap(),
+        ProofBlockCandidateStoreLimits::new(1).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -322,10 +315,7 @@ fn only_exact_journal_selection_authorizes_reference_compilation_without_mutatio
     journal
         .apply_block(
             &selected_block,
-            vec![AddressedProofCandidate::new(
-                dependency_id,
-                selected_payload.into_canonical_proof_bytes().into_vec(),
-            )],
+            selected_payload.into_canonical_proof_bytes().into_vec(),
         )
         .unwrap();
 

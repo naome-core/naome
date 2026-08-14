@@ -172,8 +172,8 @@ impl ProofBlockAncestryPull {
         if let Some(child) = blocks.last() {
             Self::require_root_continuity(
                 block_id,
-                block.transition().resulting_proof_set_root(),
-                child.transition().previous_proof_set_root(),
+                block.resulting_proof_set_root(),
+                child.previous_proof_set_root(),
             )?;
         }
 
@@ -182,7 +182,7 @@ impl ProofBlockAncestryPull {
             Self::require_root_continuity(
                 anchor_block_id,
                 anchor_proof_set_root,
-                block.transition().previous_proof_set_root(),
+                block.previous_proof_set_root(),
             )?;
             blocks.push(block);
             blocks.reverse();
@@ -246,7 +246,7 @@ impl ProofBlockAncestryPull {
         actual: ProofSetRoot,
     ) -> Result<(), ProofBlockAncestryPullError> {
         if expected != actual {
-            return Err(ProofBlockAncestryPullError::TransitionRootMismatch {
+            return Err(ProofBlockAncestryPullError::ProofSetRootMismatch {
                 preceding_block_id,
                 expected,
                 actual,
@@ -280,7 +280,7 @@ pub enum ProofBlockAncestryPullProgress {
 /// One authenticated, structurally continuous, but unselected block ancestry.
 ///
 /// Blocks are ordered from the anchor's direct child through the exact target.
-/// Exact content identities, parent links, and transition-root equality do not
+/// Exact content identities, parent links, and proof-set-root equality do not
 /// establish proof validity, payload availability, selection, consensus, or
 /// finality.
 #[derive(Debug)]
@@ -307,8 +307,8 @@ impl UnselectedProofBlockAncestry {
         for adjacent in blocks.windows(2) {
             assert_eq!(adjacent[1].parent_block_id(), adjacent[0].id());
             assert_eq!(
-                adjacent[1].transition().previous_proof_set_root(),
-                adjacent[0].transition().resulting_proof_set_root()
+                adjacent[1].previous_proof_set_root(),
+                adjacent[0].resulting_proof_set_root()
             );
         }
         Self {
@@ -385,8 +385,8 @@ pub enum ProofBlockAncestryPullError {
         expected: ProofBlockId,
         actual: ProofBlockId,
     },
-    /// One child transition did not start at its parent's resulting root.
-    TransitionRootMismatch {
+    /// One child block did not start at its parent's resulting proof-set root.
+    ProofSetRootMismatch {
         preceding_block_id: ProofBlockId,
         expected: ProofSetRoot,
         actual: ProofSetRoot,
@@ -453,7 +453,7 @@ impl fmt::Display for ProofBlockAncestryPullError {
                 formatter,
                 "selected head changed during ancestry pull: expected {expected:?}, actual {actual:?}"
             ),
-            Self::TransitionRootMismatch {
+            Self::ProofSetRootMismatch {
                 preceding_block_id,
                 expected,
                 actual,
@@ -492,7 +492,7 @@ impl Error for ProofBlockAncestryPullError {
             | Self::UnexpectedEvent
             | Self::BlockUnavailable { .. }
             | Self::SelectedHeadChanged { .. }
-            | Self::TransitionRootMismatch { .. }
+            | Self::ProofSetRootMismatch { .. }
             | Self::DivergentAncestry { .. }
             | Self::RepeatedBlockId { .. }
             | Self::AncestryLimitExceeded { .. } => None,

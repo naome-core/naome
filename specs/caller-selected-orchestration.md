@@ -257,11 +257,11 @@ receipt object.
 
 A direct import targets one immutable `ProofBlockId`, initially prefers one
 caller-selected static peer, and has exactly one active phase: exact block
-retrieval or bounded proof-dependency acquisition for that decoded block.
+retrieval or exact retrieval of that decoded block's one proof payload.
 
-Proof-peer fallback may change the peer serving a dependency request but never
-the target block, its contents, requested root, discovered addresses, deadline,
-or request budget.
+Proof-peer fallback may change the peer serving the same immutable `proof_id`
+but never the target block, its contents, proof address, deadline, or request
+budget. Direct import does not discover or request missing dependencies.
 
 Starting performs these steps in order:
 
@@ -294,41 +294,42 @@ Processing order is:
    immutable target;
 5. require its parent to equal the journal's current head;
 6. require its previous `ProofSetRoot` to equal the current selected root;
-7. call `ProofChainJournal::prepare_block` with its exact ordered `ProofId`
-   values;
+7. call singular `ProofChainJournal::prepare_block` with its exact `proof_id`;
 8. require its resulting root to equal the locally projected root; and
-9. start dependency acquisition for the transition's final root proof,
-   preferring the authenticated block peer.
+9. request exactly that `proof_id`, preferring the authenticated block peer.
 
 Parent mismatch precedes previous-root comparison and all proof traffic.
 Previous-root mismatch precedes local preparation. Preparation preserves the
-journal's count, duplicate, already-selected, and authenticated-set projection
+journal's expected-address, already-selected, and authenticated-set projection
 rules as `SelectedState`. Resulting-root mismatch follows successful
-preparation. No block field is repaired, normalized, reordered, or replaced by
-the locally prepared value. Preparation is read-only and does not select the
-block.
+preparation. No block field is repaired, normalized, or replaced by the locally
+prepared value. Preparation is read-only and does not select the block.
 
 ### Proof phase and commit
 
-The existing dependency acquisition remains authoritative for response
-framing, canonical normal form, mathematical checking, reference discovery,
-exact identities, cycle detection, fallback, request count, non-resetting
-deadline, and cancellation.
+The proof phase asks the existing addressed proof transport only for the block's
+immutable `proof_id`, tries each configured peer at most once, and retains at
+most one candidate without predecoding it. A transport failure or `Unavailable`
+may rotate to the next peer. Strict application owns decode, canonicality,
+checking, identity, and selected-state errors; each is terminal. A missing
+`ProofReference` never starts another network request.
 
 For each accepted `OutboundProof` terminal, network-instance and authenticated
 peer correlation precede a healthy-head read. A peer-mismatch terminal is
 reported before selected-state drift. The journal head must still equal the
 block parent before any other proof outcome is interpreted; otherwise
-`ParentBlockIdMismatch` terminates the import and quarantined payloads are
+`ParentBlockIdMismatch` terminates the import and the quarantined payload is
 dropped.
 
-Completion immediately consumes the opaque `UnselectedProofClosure` through
-its strict `apply_block` path. That sole mutation rechecks journal health and
-parentage; correlates candidates into exact transition order; and preserves
-previous-root, candidate-count, exact-identity, projected-root, canonical
-decoding, mathematical checking, dependency order, root closure, registration,
-and journal-commit validation. Only successful durable acknowledgement
-completes the import. The committed ID is the original caller target.
+Completion immediately consumes the one opaque payload through the
+strict singular `apply_block` path. That sole mutation rechecks journal health,
+parentage, previous root, already-selected status, and
+projected resulting root; strictly decodes and checks the exact canonical
+payload against selected state; requires every reference to resolve from an
+earlier selected ancestry block; compares the checked `ProofId` with both the
+immutable request and block; registers exactly one proof; and writes exactly one
+durable block entry. Only successful durable acknowledgement completes the
+import. The committed ID is the original caller target.
 
 The direct-import error classes are:
 
@@ -342,15 +343,19 @@ BlockUnavailable
 ParentBlockIdMismatch
 PreviousProofSetRootMismatch
 ResultingProofSetRootMismatch
-ProofAcquisition
+NoEligibleProofPeer
+ProofRequestStart
+ProofRequestFailed
+ProofUnavailable
+ProofDeadlineExceeded
 ```
 
 At start, selected-state health and membership precede request preflight. In the
 block phase, correlation precedes failure, which precedes unavailable and all
 journal context checks; parent, previous root, preparation, and resulting root
 then occur in that order. In the proof phase, correlation and peer mismatch
-precede head drift, which precedes dependency-outcome interpretation. Strict
-application retains its nested transition, ledger, and storage precedence.
+precede head drift, which precedes exact-payload outcome interpretation. Strict
+application retains its nested proof, ledger, and storage precedence.
 
 Every ordinary error writes nothing and leaves selected state unchanged. An
 ambiguous journal commit error may occur after successful in-memory application,
@@ -363,27 +368,27 @@ Drop and reopen is the only recovery path.
 | --- | ---: |
 | Caller-selected targets | 1 |
 | Block requests | 1, 32-byte body |
-| Found block response frame | at most 355 bytes |
-| Retained decoded block | at most 353 canonical bytes and 8 proof IDs |
-| Retained proof candidates | at most 8 |
-| Proof requests | at most 15 |
-| Block plus proof requests | at most 16 |
-| Retained canonical proof payloads | at most 33,554,432 bytes |
+| Found block response frame | exactly 130 bytes |
+| Retained decoded block | exactly 128 canonical bytes and 1 proof ID |
+| Retained proof candidates | at most 1 |
+| Proof requests | at most 8, one per configured peer |
+| Block plus proof requests | at most 9 |
+| Retained canonical proof payload | at most 4,194,304 bytes |
 | Shared network permits | 8 across the network |
 | Pending proof or block request per peer | 1 |
-| Durable entries on success | 1, at most 33,554,855 bytes |
+| Durable entries on success | 1, at most 4,194,468 bytes |
 | Journal synchronization barriers | 2 |
 
 The block phase retains its existing request-response timeout. The proof phase
-starts one non-resetting 120-second acquisition deadline only after block
+starts one non-resetting 120-second exact-payload deadline only after block
 preflight. Neither is a wall-time guarantee unless the caller keeps polling.
 
 Cancelling during block retrieval does not cancel the physical request; its
 peer slot and permit remain until a later `OutboundBlock` terminal. Cancelling
-during proof acquisition immediately releases quarantined candidates and marks
+during proof retrieval immediately releases the quarantined candidate and marks
 the in-flight request for drain; its terminal releases the remaining slot and
 permit through `ProofCancellationDrained`. Cancellation never commits a partial
-closure or block.
+payload or block.
 
 ## Ancestry pull
 
@@ -442,26 +447,26 @@ historical-index lookup precedes `DivergentAncestry`.
 For forward-adjacent blocks the required relation is:
 
 ```text
-parent.transition.resulting_proof_set_root
-    == child.transition.previous_proof_set_root
+parent.resulting_proof_set_root
+    == child.previous_proof_set_root
 ```
 
 For the anchor's direct child it is:
 
 ```text
 captured_selected_proof_set_root
-    == child.transition.previous_proof_set_root
+    == child.previous_proof_set_root
 ```
 
-A mismatch is `TransitionRootMismatch` and identifies the predecessor, expected
+A mismatch is `ProofSetRootMismatch` and identifies the predecessor, expected
 root, and child's actual previous root. These checks establish only structural
-continuity. They do not project a transition, retrieve or check proofs, or make
-the ancestry selected.
+continuity. They do not project a proof-set update, retrieve or check proofs, or
+make the ancestry selected.
 
 Completion yields an opaque `UnselectedProofBlockAncestry` that binds the one
 authenticated source peer, captured anchor, exact caller target, and `1..=16`
 decoded blocks ordered from the anchor's direct child through the target. Every
-parent identity and adjacent transition root is continuous. The result exposes
+parent identity and adjacent proof-set root is continuous. The result exposes
 no proof payload and cannot itself mutate a journal. A later consumer must
 revalidate against current selected state.
 
@@ -475,7 +480,7 @@ UnexpectedEvent
 BlockRequestFailed
 BlockUnavailable
 SelectedHeadChanged
-TransitionRootMismatch
+ProofSetRootMismatch
 DivergentAncestry
 RepeatedBlockId
 AncestryLimitExceeded
@@ -488,8 +493,8 @@ AncestryLimitExceeded
 | Targets and serving peers | 1 each |
 | Active requests | 1 |
 | Total requests and completed blocks | `1..=16` |
-| Canonical bytes represented by a completed path | `129..=5,648` |
-| Transition proof identities represented | `1..=128` |
+| Canonical bytes represented by a completed path | `128..=2,048` |
+| Proof identities represented | `1..=16` |
 | Permits attributable to the pull | at most 1 |
 | Journal writes, new files, protocols, connections, or behaviours | 0 |
 
@@ -517,19 +522,19 @@ continuity.
 Starting retains those values, takes the anchor's direct child, and runs the
 same direct-child context preflight against the current journal: current parent,
 previous root, local preparation, then resulting root. It then starts bounded
-proof-dependency acquisition for that block's root proof, preferring the
-ancestry source. It performs no block request, target substitution, journal
-write, or state mutation. A start failure reports zero committed blocks, the
-anchor as the last acknowledged head, the first block as failed, and the exact
-nested direct-import error.
+exact-payload retrieval for that block's `proof_id`, preferring the ancestry
+source. It performs no dependency discovery, block request, target substitution,
+journal write, or state mutation. A start failure reports zero committed blocks,
+the anchor as the last acknowledged head, the first block as failed, and the
+exact nested direct-import error.
 
 Only the exact `OutboundProof` terminal awaited by the current direct-child
 import is accepted; ancestry import never accepts `OutboundBlock` because all
 blocks are already decoded and identity-matched. The direct-child continuation
-retains event, network-instance, peer, generation, parent, dependency,
+retains event, network-instance, peer, generation, parent, exact-payload,
 application, and commit precedence.
 
-At most one block's proof closure exists at a time. On successful durable
+At most one block's proof candidate exists at a time. On successful durable
 acknowledgement the importer:
 
 1. increments the committed-prefix count;
@@ -537,12 +542,13 @@ acknowledgement the importer:
 3. drops the completed block and proof state;
 4. completes if it was the caller target; otherwise
 5. takes the next retained block, preflights it against the now-advanced
-   journal, and starts its proof acquisition.
+   journal, and starts its exact proof retrieval.
 
 Block `n + 1` is neither preflighted nor requested until block `n` returns from
 both journal synchronization barriers. Every block undergoes fresh current-state
 preflight, canonical and mathematical proof checking, exact payload
-correlation, and strict application against the complete acknowledged prefix.
+correlation, selected-ancestry-only reference resolution, and strict singular
+application against the complete acknowledged prefix.
 
 ### Committed-prefix failure semantics
 
@@ -565,11 +571,11 @@ acknowledged and need not equal the journal's head after independent caller
 activity.
 
 At every start boundary, parent precedes previous root, local preparation,
-resulting root, and proof request start. During proof acquisition, exact event,
-driver, and authenticated peer correlation precede head drift. Dependency
-acquisition preserves deadline, response, canonicality, identity,
-candidate-bound, cycle, and fallback precedence; strict application preserves
-transition and storage precedence.
+resulting root, and proof request start. During proof retrieval, exact event,
+driver, and authenticated peer correlation precede head drift. Exact-payload
+retrieval preserves deadline, response, canonicality, identity, one-candidate,
+and fallback precedence; strict application preserves proof and storage
+precedence. A missing reference is terminal and does not widen retrieval.
 
 An ambiguous commit failure is terminal: the failing block may or may not be
 durable, the journal is poisoned, and the importer must not guess, retry, or
@@ -584,25 +590,25 @@ pull anchored to the observed journal head.
 | --- | ---: |
 | Retained blocks | `1..=16` |
 | Block requests during import | 0 |
-| Active block proof acquisitions | 1 |
-| Proof candidates retained at once | at most 8 |
-| Proof requests per block | at most 15 |
-| Proof requests per complete ancestry | at most 240 |
-| Canonical proof payloads retained at once | at most 33,554,432 bytes |
+| Active block proof retrievals | 1 |
+| Proof candidates retained at once | at most 1 |
+| Proof requests per block | at most 8 |
+| Proof requests per complete ancestry | at most 128 |
+| Canonical proof payload retained at once | at most 4,194,304 bytes |
 | Shared network permits | 8 across the network |
 | Pending proof request per peer | 1 |
 | Durable entries on success | `1..=16` |
 | Synchronization barriers per block / complete ancestry | 2 / `2..=32` |
 
-Each block receives an independent non-resetting 120-second dependency deadline
-because its acquisition starts only after the preceding durable
+Each block receives an independent non-resetting 120-second exact-payload
+deadline because its retrieval starts only after the preceding durable
 acknowledgement. There is no ancestry-wide wall-time guarantee without continued
 polling.
 
-Cancel drops the current direct-child acquisition. Its guard releases
-quarantined candidates and marks the in-flight proof request for drain; the
+Cancel drops the current direct-child retrieval. Its guard releases the
+quarantined candidate and marks the in-flight proof request for drain; the
 physical terminal retains its slot and permit until `ProofCancellationDrained`.
-Cancellation never rolls back acknowledged blocks, applies a partial closure,
+Cancellation never rolls back acknowledged blocks, applies a partial payload,
 starts a later block, or refetches ancestry. Passing an unrelated event to
 `on_event` consumes both values and returns current prefix metadata with nested
 `UnexpectedEvent`; it does not reroute the event.
@@ -620,7 +626,7 @@ request, retry, or authority beyond the two contracts above.
 `committed_block_count` is zero and `last_acknowledged_head_block_id` is the
 captured anchor. During import, both accessors delegate to the ancestry
 importer's acknowledged-prefix state. `pending_block_id` is the exact block
-being fetched during pull and the retained block whose proof closure is being
+being fetched during pull and the retained block whose proof payload is being
 acquired during import. `pending_peer_id` is the one ancestry source during
 pull; during import it is the current proof peer and may change only through
 the existing bounded proof fallback. The anchor and caller target remain
@@ -655,23 +661,23 @@ Catch-up has the combined sequential envelope of its two phases:
 | Resource | Bound |
 | --- | ---: |
 | Block requests per complete catch-up | `1..=16` |
-| Proof requests per complete catch-up | `1..=240` |
-| Block plus proof requests per complete catch-up | at most 256 |
+| Proof requests per complete catch-up | `1..=128` |
+| Block plus proof requests per complete catch-up | at most 144 |
 | Retained decoded blocks at once | `0..=16` |
-| Proof candidates retained at once | at most 8 |
-| Canonical proof payloads retained at once | at most 33,554,432 bytes |
-| Simultaneous active work | one block request or one proof acquisition |
+| Proof candidates retained at once | at most 1 |
+| Canonical proof payload retained at once | at most 4,194,304 bytes |
+| Simultaneous active work | one block request or one proof retrieval |
 | Durable entries on success | `1..=16` |
 | Synchronization barriers per block / complete catch-up | 2 / `2..=32` |
 
 Block retrieval retains its existing protocol-negotiation and 30-second
 request-response timeouts. Each block import receives its own existing
-non-resetting 120-second dependency deadline. Catch-up adds no aggregate
+non-resetting 120-second exact-payload deadline. Catch-up adds no aggregate
 deadline; all progress requires continued caller polling.
 
 Cancel or drop delegates to the active phase. During pull it releases retained
 blocks while the physical block request drains. During import it preserves the
-acknowledged prefix, releases unprocessed blocks and quarantined payloads, and
+acknowledged prefix, releases unprocessed blocks and the quarantined payload, and
 retains the active proof request's existing drain semantics. Cancellation does
 not advance phases, retry, select another target, or roll back a commit.
 
@@ -679,15 +685,16 @@ Catch-up performs no head query or survey, automatic target choice, automatic
 retry or resume, multi-peer block fallback, ancestry-wide atomic rollback,
 competing-history storage, reorganization, fork choice, consensus, finality,
 or economic policy. It adds no protocol, storage format, connection,
-authorization, runtime, or background task.
+authorization, runtime, background task, definition artifact, or generalized
+proof/definition block union.
 
 ## Trust boundary
 
 Exact content addresses, private generations, authenticated peers, and
 network-instance correlation prevent one request or network from satisfying
 another. Parent and root continuity prevent silent structural substitution.
-Canonical decoding, mathematical checking, exact dependency resolution, and
-strict journal application—not peer identity—decide admission.
+Canonical decoding, mathematical checking, selected-ancestry reference
+resolution, and strict journal application—not peer identity—decide admission.
 
 Broadcast receipts do not establish storage, availability, freshness, quorum,
 or agreement. A completed ancestry establishes neither proof validity nor
@@ -695,4 +702,5 @@ payload availability. Successful import establishes deterministic local
 validity and durable local selection only. Discovery, automatic target choice,
 automatic retry or synchronization, competing-history storage, reorganization,
 fork choice, consensus, finality, and economic policy remain outside these
-workflows.
+workflows. Definitions and rules for selecting non-proof artifact kinds are
+also outside this proof-only orchestration contract.

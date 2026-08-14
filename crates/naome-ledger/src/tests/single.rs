@@ -65,6 +65,38 @@ fn expected_proof_id_is_checked_before_registration_and_duplicate_state() {
 }
 
 #[test]
+fn addressed_validation_matches_single_admission_without_mutating() {
+    let bytes = canonical_bytes(identity(FreeVariable::new(41)));
+    let checked = normalize_and_check(identity(FreeVariable::new(41))).unwrap();
+    let proof_id = checked.proof_id();
+    let mut ledger = LedgerState::new();
+
+    ledger
+        .validate_canonical_proof_bytes_with_expected_id(bytes.clone(), proof_id)
+        .unwrap();
+    ledger
+        .validate_canonical_proof_bytes_with_expected_id(bytes.clone(), proof_id)
+        .unwrap();
+    assert!(!ledger.contains_proof(proof_id));
+    assert!(!ledger.contains_derivation(checked.derivation_id()));
+    assert!(!ledger.contains_statement(checked.statement_id()));
+
+    let _ = ledger
+        .apply_canonical_proof_bytes_with_expected_id(bytes.clone(), proof_id)
+        .unwrap();
+    let expected = Err(LedgerError::State {
+        source: ProofStateError::DuplicateProof { proof_id },
+    });
+    assert_eq!(
+        ledger.validate_canonical_proof_bytes_with_expected_id(bytes, proof_id),
+        expected
+    );
+    assert!(ledger.contains_proof(proof_id));
+    assert!(ledger.contains_derivation(checked.derivation_id()));
+    assert!(ledger.contains_statement(checked.statement_id()));
+}
+
+#[test]
 fn validation_errors_precede_expected_proof_id_binding() {
     let expected = ProofId::from_bytes([0x92; 32]);
     let variable = FreeVariable::new(0);

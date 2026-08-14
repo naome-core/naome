@@ -2,7 +2,7 @@
 name = "naome-chain"
 version.workspace = true
 edition.workspace = true
-description = "Authenticated proof state, transitions, and linear proof blocks for NAOME."
+description = "Authenticated proof state and linear single-proof blocks for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

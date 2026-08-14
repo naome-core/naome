@@ -6,19 +6,17 @@ use std::io::{self, SeekFrom, Write};
 use std::path::Path;
 
 use naome_chain::{
-    PROOF_BLOCK_MAX_BYTES, ProofBlock, ProofBlockDecodeError, ProofBlockId, ProofChainDefinition,
-    ProofChainId,
+    PROOF_BLOCK_BYTES, ProofBlock, ProofBlockId, ProofChainDefinition, ProofChainId,
 };
 
-use crate::{AppendPhase, ExclusiveLockError, PROOF_BLOCK_MIN_BYTES, StoreIo, open_exclusive_lock};
+use crate::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
 const LOCK_FILE_NAME: &str = "proof-block-candidate-store.lock";
 const STORE_FILE_NAME: &str = "proof-block-candidate-store.log";
 const STORE_HEADER: &[u8] = b"naome:proof-block-candidate-store\0";
 const CHAIN_ID_BYTES: u64 = ProofChainId::BYTE_LENGTH as u64;
-const BLOCK_LENGTH_BYTES: u64 = 2;
 const BLOCK_ID_BYTES: u64 = ProofBlockId::BYTE_LENGTH as u64;
-const ENTRY_FIXED_BYTES: u64 = BLOCK_LENGTH_BYTES + BLOCK_ID_BYTES;
+const ENTRY_BYTES: u64 = PROOF_BLOCK_BYTES as u64 + BLOCK_ID_BYTES;
 const STORE_PREFIX_BYTES: u64 = STORE_HEADER.len() as u64 + CHAIN_ID_BYTES;
 
 /// Local resource limits for one proof-block candidate store handle.
@@ -29,35 +27,20 @@ const STORE_PREFIX_BYTES: u64 = STORE_HEADER.len() as u64 + CHAIN_ID_BYTES;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProofBlockCandidateStoreLimits {
     max_entries: usize,
-    max_total_block_bytes: u64,
 }
 
 impl ProofBlockCandidateStoreLimits {
-    /// Constructs positive entry-count and aggregate canonical-block limits.
-    pub const fn new(
-        max_entries: usize,
-        max_total_block_bytes: u64,
-    ) -> Result<Self, ProofBlockCandidateStoreLimitsError> {
+    /// Constructs a positive retained-entry limit.
+    pub const fn new(max_entries: usize) -> Result<Self, ProofBlockCandidateStoreLimitsError> {
         if max_entries == 0 {
             return Err(ProofBlockCandidateStoreLimitsError::ZeroMaxEntries);
         }
-        if max_total_block_bytes == 0 {
-            return Err(ProofBlockCandidateStoreLimitsError::ZeroMaxTotalBlockBytes);
-        }
-        Ok(Self {
-            max_entries,
-            max_total_block_bytes,
-        })
+        Ok(Self { max_entries })
     }
 
     /// Returns the maximum number of retained candidates.
     pub const fn max_entries(&self) -> usize {
         self.max_entries
-    }
-
-    /// Returns the maximum aggregate canonical block bytes.
-    pub const fn max_total_block_bytes(&self) -> u64 {
-        self.max_total_block_bytes
     }
 }
 
@@ -67,8 +50,6 @@ impl ProofBlockCandidateStoreLimits {
 pub enum ProofBlockCandidateStoreLimitsError {
     /// At least one retained entry must be permitted.
     ZeroMaxEntries,
-    /// At least one canonical block byte must be permitted.
-    ZeroMaxTotalBlockBytes,
 }
 
 impl fmt::Display for ProofBlockCandidateStoreLimitsError {
@@ -77,9 +58,6 @@ impl fmt::Display for ProofBlockCandidateStoreLimitsError {
             Self::ZeroMaxEntries => {
                 formatter.write_str("proof-block candidate store entry limit must be positive")
             }
-            Self::ZeroMaxTotalBlockBytes => formatter.write_str(
-                "proof-block candidate store aggregate block-byte limit must be positive",
-            ),
         }
     }
 }
@@ -170,7 +148,7 @@ impl ProofBlockCandidateStore {
     /// Durably retains one typed canonical block as a structural candidate.
     ///
     /// Repeating the exact block is idempotent even at configured capacity.
-    /// Its parent and transition are not evaluated against any chain state.
+    /// Its parent and proof commitment are not evaluated against chain state.
     pub fn insert(
         &mut self,
         block: &ProofBlock,
@@ -180,7 +158,7 @@ impl ProofBlockCandidateStore {
 
     /// Loads one owned, structurally checked canonical block candidate.
     ///
-    /// Storage does not establish that its parent exists, its transition is
+    /// Storage does not establish that its parent exists, its proof is
     /// executable, or that the block is selected, preferred, or finalized.
     pub fn get(
         &mut self,
@@ -207,12 +185,6 @@ impl ProofBlockCandidateStore {
         Ok(self.core.index.is_empty())
     }
 
-    /// Returns the aggregate canonical bytes of uniquely retained blocks.
-    pub fn total_block_bytes(&self) -> Result<u64, ProofBlockCandidateStoreError> {
-        self.core.ensure_healthy()?;
-        Ok(self.core.total_block_bytes)
-    }
-
     /// Returns the exact chain context bound into this store.
     pub const fn chain_id(&self) -> ProofChainId {
         self.core.chain_id
@@ -236,7 +208,6 @@ struct ProofBlockCandidateStoreCore<F> {
     file: F,
     chain_id: ProofChainId,
     index: HashMap<ProofBlockId, u64>,
-    total_block_bytes: u64,
     committed_end: u64,
     limits: ProofBlockCandidateStoreLimits,
     poisoned: bool,
@@ -248,7 +219,6 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
             file,
             chain_id,
             index: HashMap::new(),
-            total_block_bytes: 0,
             committed_end: STORE_PREFIX_BYTES,
             limits,
             poisoned: false,
@@ -285,42 +255,24 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
         }
 
         let mut index = HashMap::new();
-        let mut total_block_bytes = 0_u64;
         let mut entry_start = STORE_PREFIX_BYTES;
         let mut entry = 0_u64;
-        let mut block_buffer = [0_u8; PROOF_BLOCK_MAX_BYTES];
+        let mut block_bytes = [0_u8; PROOF_BLOCK_BYTES];
 
         while entry_start < file_len {
             let remaining = file_len - entry_start;
-            if remaining < BLOCK_LENGTH_BYTES {
+            if remaining < ENTRY_BYTES {
                 return Self::finish_replay(
                     file,
                     actual_chain_id,
                     index,
-                    total_block_bytes,
                     entry_start,
                     limits,
                     Some(entry_start),
                 );
             }
 
-            let mut block_length_bytes = [0_u8; BLOCK_LENGTH_BYTES as usize];
-            read_field(&mut file, &mut block_length_bytes, entry_start)?;
-            let block_len = u16::from_be_bytes(block_length_bytes);
-            if (block_len as usize) < PROOF_BLOCK_MIN_BYTES
-                || (block_len as usize) > PROOF_BLOCK_MAX_BYTES
-            {
-                return Err(ProofBlockCandidateStoreError::InvalidBlockLength {
-                    entry,
-                    offset: entry_start,
-                    actual: block_len,
-                    minimum: PROOF_BLOCK_MIN_BYTES as u16,
-                    maximum: PROOF_BLOCK_MAX_BYTES as u16,
-                });
-            }
-
-            let entry_len = ENTRY_FIXED_BYTES + u64::from(block_len);
-            let entry_end = entry_start.checked_add(entry_len).ok_or(
+            let entry_end = entry_start.checked_add(ENTRY_BYTES).ok_or(
                 ProofBlockCandidateStoreError::EntryOffsetOverflow {
                     entry,
                     offset: entry_start,
@@ -331,26 +283,18 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
                     file,
                     actual_chain_id,
                     index,
-                    total_block_bytes,
                     entry_start,
                     limits,
                     Some(entry_start),
                 );
             }
 
-            let block_offset = entry_start + BLOCK_LENGTH_BYTES;
-            let block_bytes = &mut block_buffer[..block_len as usize];
-            read_field(&mut file, block_bytes, block_offset)?;
-            let block = ProofBlock::from_canonical_bytes(block_bytes).map_err(|source| {
-                ProofBlockCandidateStoreError::InvalidBlock {
-                    entry,
-                    offset: block_offset,
-                    source,
-                }
-            })?;
+            read_field(&mut file, &mut block_bytes, entry_start)?;
+            let block = ProofBlock::from_canonical_bytes(&block_bytes)
+                .expect("every fixed-length proof block byte string is structurally valid");
             let actual_block_id = block.id();
 
-            let footer_offset = block_offset + u64::from(block_len);
+            let footer_offset = entry_start + PROOF_BLOCK_BYTES as u64;
             let mut stored_id_bytes = [0_u8; ProofBlockId::BYTE_LENGTH];
             read_field(&mut file, &mut stored_id_bytes, footer_offset)?;
             let stored_block_id = ProofBlockId::from_bytes(stored_id_bytes);
@@ -380,40 +324,20 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
                     maximum: limits.max_entries,
                 });
             }
-            let actual_block_bytes = total_block_bytes
-                .checked_add(u64::from(block_len))
-                .ok_or(ProofBlockCandidateStoreError::BlockByteCountOverflow)?;
-            if actual_block_bytes > limits.max_total_block_bytes {
-                return Err(ProofBlockCandidateStoreError::BlockByteLimitExceeded {
-                    actual: actual_block_bytes,
-                    maximum: limits.max_total_block_bytes,
-                });
-            }
-
             reserve_index_entry(&mut index, entry)?;
             let replaced = index.insert(actual_block_id, entry_start);
             debug_assert!(replaced.is_none());
-            total_block_bytes = actual_block_bytes;
             entry_start = entry_end;
             entry += 1;
         }
 
-        Self::finish_replay(
-            file,
-            actual_chain_id,
-            index,
-            total_block_bytes,
-            entry_start,
-            limits,
-            None,
-        )
+        Self::finish_replay(file, actual_chain_id, index, entry_start, limits, None)
     }
 
     fn finish_replay(
         mut file: F,
         chain_id: ProofChainId,
         index: HashMap<ProofBlockId, u64>,
-        total_block_bytes: u64,
         committed_end: u64,
         limits: ProofBlockCandidateStoreLimits,
         recovery_offset: Option<u64>,
@@ -428,7 +352,6 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
             file,
             chain_id,
             index,
-            total_block_bytes,
             committed_end,
             limits,
             poisoned: false,
@@ -467,30 +390,15 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
         }
 
         let block_bytes = block.to_canonical_bytes();
-        let block_len =
-            u16::try_from(block_bytes.len()).expect("a canonical proof block length fits u16");
-        let actual_block_bytes = self
-            .total_block_bytes
-            .checked_add(u64::from(block_len))
-            .ok_or(ProofBlockCandidateStoreError::BlockByteCountOverflow)?;
-        if actual_block_bytes > self.limits.max_total_block_bytes {
-            return Err(ProofBlockCandidateStoreError::BlockByteLimitExceeded {
-                actual: actual_block_bytes,
-                maximum: self.limits.max_total_block_bytes,
-            });
-        }
-
         let entry = u64::try_from(self.index.len()).expect("candidate index length fits u64");
         reserve_index_entry(&mut self.index, entry)?;
         let entry_offset = self.committed_end;
-        let entry_end = entry_offset
-            .checked_add(ENTRY_FIXED_BYTES + u64::from(block_len))
-            .ok_or(ProofBlockCandidateStoreError::EntryOffsetOverflow {
+        let entry_end = entry_offset.checked_add(ENTRY_BYTES).ok_or(
+            ProofBlockCandidateStoreError::EntryOffsetOverflow {
                 entry,
                 offset: entry_offset,
-            })?;
-        let block_length_bytes = block_len.to_be_bytes();
-
+            },
+        )?;
         let actual_end = match self.file.seek(SeekFrom::End(0)) {
             Ok(actual_end) => actual_end,
             Err(source) => {
@@ -512,8 +420,6 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
 
         let commit_result = (|| -> io::Result<()> {
             self.file
-                .append_write_all(AppendPhase::Body, &block_length_bytes)?;
-            self.file
                 .append_write_all(AppendPhase::Body, &block_bytes)?;
             self.file.append_sync_all(AppendPhase::Body)?;
             self.file
@@ -533,7 +439,6 @@ impl<F: StoreIo> ProofBlockCandidateStoreCore<F> {
 
         let replaced = self.index.insert(block_id, entry_offset);
         debug_assert!(replaced.is_none());
-        self.total_block_bytes = actual_block_bytes;
         self.committed_end = entry_end;
         Ok(ProofBlockCandidateInsertOutcome::Inserted)
     }
@@ -621,32 +526,19 @@ fn read_stored_block<F: StoreIo>(
             offset: entry_offset,
             source,
         })?;
-    let mut block_length_bytes = [0_u8; BLOCK_LENGTH_BYTES as usize];
-    file.read_exact(&mut block_length_bytes)
+    let mut block_bytes = [0_u8; PROOF_BLOCK_BYTES];
+    file.read_exact(&mut block_bytes)
         .map_err(|source| StoredReadError::Io {
             offset: entry_offset,
             source,
         })?;
-    let block_len = u16::from_be_bytes(block_length_bytes) as usize;
-    if !(PROOF_BLOCK_MIN_BYTES..=PROOF_BLOCK_MAX_BYTES).contains(&block_len) {
-        return Err(StoredReadError::Changed);
-    }
-
-    let mut block_buffer = [0_u8; PROOF_BLOCK_MAX_BYTES];
-    let block_bytes = &mut block_buffer[..block_len];
-    let block_offset = entry_offset + BLOCK_LENGTH_BYTES;
-    file.read_exact(block_bytes)
-        .map_err(|source| StoredReadError::Io {
-            offset: block_offset,
-            source,
-        })?;
-    let block =
-        ProofBlock::from_canonical_bytes(block_bytes).map_err(|_| StoredReadError::Changed)?;
+    let block = ProofBlock::from_canonical_bytes(&block_bytes)
+        .expect("every fixed-length proof block byte string is structurally valid");
     if block.id() != expected_block_id {
         return Err(StoredReadError::Changed);
     }
 
-    let footer_offset = block_offset + block_len as u64;
+    let footer_offset = entry_offset + PROOF_BLOCK_BYTES as u64;
     let mut stored_id_bytes = [0_u8; ProofBlockId::BYTE_LENGTH];
     file.read_exact(&mut stored_id_bytes)
         .map_err(|source| StoredReadError::Io {
@@ -682,22 +574,8 @@ pub enum ProofBlockCandidateStoreError {
         expected: ProofChainId,
         actual: ProofChainId,
     },
-    /// A complete entry declares an impossible canonical block length.
-    InvalidBlockLength {
-        entry: u64,
-        offset: u64,
-        actual: u16,
-        minimum: u16,
-        maximum: u16,
-    },
     /// An entry boundary cannot be represented safely.
     EntryOffsetOverflow { entry: u64, offset: u64 },
-    /// A complete entry contains a malformed canonical block.
-    InvalidBlock {
-        entry: u64,
-        offset: u64,
-        source: ProofBlockDecodeError,
-    },
     /// A complete entry footer does not match its canonical block address.
     BlockIdMismatch {
         entry: u64,
@@ -715,10 +593,6 @@ pub enum ProofBlockCandidateStoreError {
     EntryCountOverflow,
     /// The complete committed store exceeds the local entry-count policy.
     EntryLimitExceeded { actual: usize, maximum: usize },
-    /// Summing complete committed block lengths overflowed `u64`.
-    BlockByteCountOverflow,
-    /// The complete committed store exceeds the local aggregate-byte policy.
-    BlockByteLimitExceeded { actual: u64, maximum: u64 },
     /// Reserving one bounded index slot failed.
     IndexAllocation { entry: u64 },
     /// One address is already durably associated with different exact bytes.
@@ -768,27 +642,9 @@ impl fmt::Display for ProofBlockCandidateStoreError {
                 formatter,
                 "proof-block candidate store chain mismatch: expected {expected:?}, actual {actual:?}"
             ),
-            Self::InvalidBlockLength {
-                entry,
-                offset,
-                actual,
-                minimum,
-                maximum,
-            } => write!(
-                formatter,
-                "block candidate store entry {entry} at byte {offset} has block length {actual}, expected {minimum}..={maximum}"
-            ),
             Self::EntryOffsetOverflow { entry, offset } => write!(
                 formatter,
                 "block candidate store entry {entry} at byte {offset} exceeds the offset range"
-            ),
-            Self::InvalidBlock {
-                entry,
-                offset,
-                source,
-            } => write!(
-                formatter,
-                "block candidate store entry {entry} at byte {offset} is invalid: {source}"
             ),
             Self::BlockIdMismatch {
                 entry,
@@ -813,13 +669,6 @@ impl fmt::Display for ProofBlockCandidateStoreError {
             Self::EntryLimitExceeded { actual, maximum } => write!(
                 formatter,
                 "proof-block candidate store has {actual} entries, exceeding limit {maximum}"
-            ),
-            Self::BlockByteCountOverflow => {
-                formatter.write_str("proof-block candidate store byte count overflowed")
-            }
-            Self::BlockByteLimitExceeded { actual, maximum } => write!(
-                formatter,
-                "proof-block candidate store has {actual} canonical block bytes, exceeding limit {maximum}"
             ),
             Self::IndexAllocation { entry } => write!(
                 formatter,
@@ -870,7 +719,6 @@ impl Error for ProofBlockCandidateStoreError {
             | Self::Recovery { source, .. }
             | Self::Stabilize { source }
             | Self::Commit { source, .. } => Some(source),
-            Self::InvalidBlock { source, .. } => Some(source),
             _ => None,
         }
     }

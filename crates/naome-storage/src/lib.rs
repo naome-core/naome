@@ -40,9 +40,8 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use naome_chain::{
-    AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, PROOF_BLOCK_MAX_BYTES, ProofBlock,
-    ProofBlockApplyError, ProofBlockDecodeError, ProofBlockId, ProofChainDefinition, ProofChainId,
-    ProofChainState, ProofSetProof, ProofSetRoot, ProofTransitionError,
+    PROOF_BLOCK_BYTES, ProofBlock, ProofBlockApplyError, ProofBlockId, ProofBlockPrepareError,
+    ProofChainDefinition, ProofChainId, ProofChainState, ProofSetProof, ProofSetRoot,
 };
 use naome_ledger::{AcceptedProofRecord, ProofState};
 use naome_proof::{CERTIFICATE_MAX_BYTES, ProofId};
@@ -51,18 +50,11 @@ const LOCK_FILE_NAME: &str = "proof-chain.lock";
 const JOURNAL_FILE_NAME: &str = "proof-chain.journal";
 const JOURNAL_HEADER: &[u8] = b"naome:proof-chain-journal\0";
 const CHAIN_ID_BYTES: usize = ProofChainId::BYTE_LENGTH;
-const BLOCK_LENGTH_BYTES: usize = 2;
-const PROOF_LENGTH_BYTES: usize = 4;
 const BLOCK_ID_BYTES: u64 = ProofBlockId::BYTE_LENGTH as u64;
 const ENTRY_FIXED_BYTES: u64 = 4 + BLOCK_ID_BYTES;
-const PROOF_BLOCK_MIN_BYTES: usize = 129;
 const JOURNAL_PREFIX_BYTES: usize = JOURNAL_HEADER.len() + CHAIN_ID_BYTES;
-const ENTRY_MIN_BODY_BYTES: u32 =
-    (BLOCK_LENGTH_BYTES + PROOF_BLOCK_MIN_BYTES + PROOF_LENGTH_BYTES + 1) as u32;
-const ENTRY_MAX_BODY_BYTES: u32 = (BLOCK_LENGTH_BYTES
-    + PROOF_BLOCK_MAX_BYTES
-    + PROOF_BATCH_MAX_CANDIDATES * (PROOF_LENGTH_BYTES + CERTIFICATE_MAX_BYTES))
-    as u32;
+const ENTRY_MIN_BODY_BYTES: u32 = (PROOF_BLOCK_BYTES + 1) as u32;
+const ENTRY_MAX_BODY_BYTES: u32 = (PROOF_BLOCK_BYTES + CERTIFICATE_MAX_BYTES) as u32;
 
 /// An exclusively opened, crash-consistent journal for one selected proof chain.
 ///
@@ -155,14 +147,11 @@ impl ProofChainJournal {
     }
 
     /// Prepares one exact-parent block without changing memory or disk.
-    pub fn prepare_block(
-        &self,
-        proof_ids: Vec<ProofId>,
-    ) -> Result<ProofBlock, ProofChainJournalError> {
+    pub fn prepare_block(&self, proof_id: ProofId) -> Result<ProofBlock, ProofChainJournalError> {
         self.core.ensure_healthy()?;
         self.core
             .chain
-            .prepare_block(proof_ids)
+            .prepare_block(proof_id)
             .map_err(|source| ProofChainJournalError::Preparation { source })
     }
 
@@ -173,9 +162,9 @@ impl ProofChainJournal {
     pub fn apply_block(
         &mut self,
         block: &ProofBlock,
-        candidates: Vec<AddressedProofCandidate>,
+        canonical_proof_bytes: Vec<u8>,
     ) -> Result<&AcceptedProofRecord, ProofChainJournalError> {
-        self.core.apply_block(block, candidates)
+        self.core.apply_block(block, canonical_proof_bytes)
     }
 
     /// Validates one exact-parent block without changing memory or disk.
@@ -186,12 +175,12 @@ impl ProofChainJournal {
     pub fn validate_block(
         &self,
         block: &ProofBlock,
-        candidates: Vec<AddressedProofCandidate>,
+        canonical_proof_bytes: Vec<u8>,
     ) -> Result<(), ProofChainJournalError> {
         self.core.ensure_healthy()?;
         self.core
             .chain
-            .validate_block(block, candidates)
+            .validate_block(block, canonical_proof_bytes)
             .map_err(|source| ProofChainJournalError::BlockAdmission { source })
     }
 
@@ -426,107 +415,23 @@ impl<F: StoreIo> JournalCore<F> {
                 );
             }
 
-            let mut body_offset = entry_start + 4;
-            let mut body_remaining = u64::from(body_length);
-            let mut block_length_bytes = [0_u8; BLOCK_LENGTH_BYTES];
-            read_field(&mut file, &mut block_length_bytes, body_offset)?;
-            body_offset += BLOCK_LENGTH_BYTES as u64;
-            body_remaining -= BLOCK_LENGTH_BYTES as u64;
-            let block_length = usize::from(u16::from_be_bytes(block_length_bytes));
-            if !(PROOF_BLOCK_MIN_BYTES..=PROOF_BLOCK_MAX_BYTES).contains(&block_length) {
-                return Err(ProofChainJournalError::InvalidBlockLength {
-                    entry,
-                    offset: body_offset - BLOCK_LENGTH_BYTES as u64,
-                    actual: block_length,
-                    minimum: PROOF_BLOCK_MIN_BYTES,
-                    maximum: PROOF_BLOCK_MAX_BYTES,
-                });
-            }
-            if block_length as u64 > body_remaining {
-                return Err(ProofChainJournalError::InvalidEntryBody {
-                    entry,
-                    offset: entry_start,
-                });
-            }
-
-            let mut block_buffer = [0_u8; PROOF_BLOCK_MAX_BYTES];
-            let block_bytes = &mut block_buffer[..block_length];
-            read_field(&mut file, block_bytes, body_offset)?;
-            body_offset += block_length as u64;
-            body_remaining -= block_length as u64;
-            let block = ProofBlock::from_canonical_bytes(block_bytes).map_err(|source| {
-                ProofChainJournalError::BlockDecode {
-                    entry,
-                    offset: entry_start + 4 + BLOCK_LENGTH_BYTES as u64,
-                    source,
-                }
-            })?;
-
-            let proof_count = block.transition().proof_ids().len();
-            let mut candidates = Vec::new();
-            let candidate_bytes = proof_count
-                .checked_mul(std::mem::size_of::<AddressedProofCandidate>())
-                .expect("the bounded candidate vector size fits usize");
-            candidates.try_reserve_exact(proof_count).map_err(|_| {
+            let block_offset = entry_start + 4;
+            let mut block_bytes = [0_u8; PROOF_BLOCK_BYTES];
+            read_field(&mut file, &mut block_bytes, block_offset)?;
+            let block = ProofBlock::from_canonical_bytes(&block_bytes)
+                .expect("every fixed-length proof block byte string is structurally valid");
+            let proof_offset = block_offset + PROOF_BLOCK_BYTES as u64;
+            let proof_length = body_length as usize - PROOF_BLOCK_BYTES;
+            debug_assert!((1..=CERTIFICATE_MAX_BYTES).contains(&proof_length));
+            let mut payload = Vec::new();
+            payload.try_reserve_exact(proof_length).map_err(|_| {
                 ProofChainJournalError::Allocation {
                     entry,
-                    proof: None,
-                    bytes: candidate_bytes,
+                    bytes: proof_length,
                 }
             })?;
-            for proof in 0..proof_count {
-                if body_remaining < PROOF_LENGTH_BYTES as u64 {
-                    return Err(ProofChainJournalError::InvalidEntryBody {
-                        entry,
-                        offset: entry_start,
-                    });
-                }
-                let proof_length_offset = body_offset;
-                let mut proof_length_bytes = [0_u8; PROOF_LENGTH_BYTES];
-                read_field(&mut file, &mut proof_length_bytes, proof_length_offset)?;
-                body_offset += PROOF_LENGTH_BYTES as u64;
-                body_remaining -= PROOF_LENGTH_BYTES as u64;
-                let proof_length = u32::from_be_bytes(proof_length_bytes);
-                if proof_length == 0 || proof_length as usize > CERTIFICATE_MAX_BYTES {
-                    return Err(ProofChainJournalError::InvalidProofLength {
-                        entry,
-                        proof,
-                        offset: proof_length_offset,
-                        actual: proof_length,
-                        maximum: CERTIFICATE_MAX_BYTES as u32,
-                    });
-                }
-                if u64::from(proof_length) > body_remaining {
-                    return Err(ProofChainJournalError::InvalidEntryBody {
-                        entry,
-                        offset: entry_start,
-                    });
-                }
-
-                let mut payload = Vec::new();
-                payload
-                    .try_reserve_exact(proof_length as usize)
-                    .map_err(|_| ProofChainJournalError::Allocation {
-                        entry,
-                        proof: Some(proof),
-                        bytes: proof_length as usize,
-                    })?;
-                payload.resize(proof_length as usize, 0);
-                read_field(&mut file, &mut payload, body_offset)?;
-                body_offset += u64::from(proof_length);
-                body_remaining -= u64::from(proof_length);
-                candidates.push(AddressedProofCandidate::new(
-                    block.transition().proof_ids()[proof],
-                    payload,
-                ));
-            }
-            if body_remaining != 0 {
-                return Err(ProofChainJournalError::InvalidEntryBody {
-                    entry,
-                    offset: entry_start,
-                });
-            }
-
+            payload.resize(proof_length, 0);
+            read_field(&mut file, &mut payload, proof_offset)?;
             let mut stored_block_id = [0_u8; 32];
             file.read_exact(&mut stored_block_id).map_err(|source| {
                 ProofChainJournalError::Read {
@@ -545,7 +450,7 @@ impl<F: StoreIo> JournalCore<F> {
                 });
             }
 
-            chain.apply_block(&block, candidates).map_err(|source| {
+            chain.apply_block(&block, payload).map_err(|source| {
                 ProofChainJournalError::Replay {
                     entry,
                     offset: entry_start,
@@ -597,7 +502,7 @@ impl<F: StoreIo> JournalCore<F> {
     fn apply_block(
         &mut self,
         block: &ProofBlock,
-        candidates: Vec<AddressedProofCandidate>,
+        canonical_proof_bytes: Vec<u8>,
     ) -> Result<&AcceptedProofRecord, ProofChainJournalError> {
         self.ensure_healthy()?;
         let expected_parent = self.chain.head_block_id();
@@ -611,71 +516,49 @@ impl<F: StoreIo> JournalCore<F> {
             });
         }
         let block_bytes = block.to_canonical_bytes();
-        let indexed_block = block.clone();
+        let indexed_block = *block;
         let entry = u64::try_from(self.blocks.len()).expect("block index length fits u64");
         reserve_block_index_entry(&mut self.blocks, entry)?;
-        let root_proof_id = self
-            .chain
-            .apply_block(block, candidates)
-            .map_err(|source| ProofChainJournalError::BlockAdmission { source })?
-            .proof_id();
+        self.chain
+            .apply_block(block, canonical_proof_bytes)
+            .map_err(|source| ProofChainJournalError::BlockAdmission { source })?;
         let block_id = self.chain.head_block_id();
-        self.commit_entry(block_id, &block_bytes, block.transition().proof_ids())?;
+        self.commit_entry(block_id, &block_bytes, block.proof_id())?;
         let replaced = self.blocks.insert(block_id, indexed_block);
         debug_assert!(replaced.is_none());
         Ok(self
             .chain
             .proof_dag()
-            .proof(root_proof_id)
-            .expect("the committed block root remains retained"))
+            .proof(block.proof_id())
+            .expect("the committed block proof remains retained"))
     }
 
     fn commit_entry(
         &mut self,
         block_id: ProofBlockId,
-        block_bytes: &[u8],
-        proof_ids: &[ProofId],
+        block_bytes: &[u8; PROOF_BLOCK_BYTES],
+        proof_id: ProofId,
     ) -> Result<(), ProofChainJournalError> {
-        let mut body_length = BLOCK_LENGTH_BYTES + block_bytes.len();
-        for proof_id in proof_ids {
-            let proof_length = self
-                .chain
-                .proof_dag()
-                .proof(*proof_id)
-                .expect("every committed block proof is retained")
-                .canonical_proof_bytes()
-                .len();
-            body_length = body_length
-                .checked_add(PROOF_LENGTH_BYTES)
-                .and_then(|length| length.checked_add(proof_length))
-                .expect("bounded proof-chain entry length fits usize");
-        }
+        let payload = self
+            .chain
+            .proof_dag()
+            .proof(proof_id)
+            .expect("the committed block proof is retained")
+            .canonical_proof_bytes();
+        let body_length = block_bytes
+            .len()
+            .checked_add(payload.len())
+            .expect("bounded proof-chain entry length fits usize");
         let body_length = u32::try_from(body_length)
             .expect("bounded proof-chain entry length fits the u32 framing");
         debug_assert!((ENTRY_MIN_BODY_BYTES..=ENTRY_MAX_BODY_BYTES).contains(&body_length));
         let body_length_bytes = body_length.to_be_bytes();
-        let block_length = u16::try_from(block_bytes.len())
-            .expect("a canonical proof block length fits u16")
-            .to_be_bytes();
         let commit_result = (|| -> io::Result<()> {
             self.file.seek(SeekFrom::Start(self.committed_end))?;
             self.file
                 .append_write_all(AppendPhase::Body, &body_length_bytes)?;
-            self.file
-                .append_write_all(AppendPhase::Body, &block_length)?;
             self.file.append_write_all(AppendPhase::Body, block_bytes)?;
-            for proof_id in proof_ids {
-                let payload = self
-                    .chain
-                    .proof_dag()
-                    .proof(*proof_id)
-                    .expect("every committed block proof is retained")
-                    .canonical_proof_bytes();
-                let proof_length = (payload.len() as u32).to_be_bytes();
-                self.file
-                    .append_write_all(AppendPhase::Body, &proof_length)?;
-                self.file.append_write_all(AppendPhase::Body, payload)?;
-            }
+            self.file.append_write_all(AppendPhase::Body, payload)?;
             self.file.append_sync_all(AppendPhase::Body)?;
             self.file
                 .append_write_all(AppendPhase::Commit, block_id.as_bytes())?;
@@ -687,11 +570,7 @@ impl<F: StoreIo> JournalCore<F> {
             Ok(()) => {}
             Err(source) => {
                 self.poisoned = true;
-                return Err(ProofChainJournalError::Commit {
-                    block_id,
-                    proof_count: proof_ids.len(),
-                    source,
-                });
+                return Err(ProofChainJournalError::Commit { block_id, source });
             }
         }
 
@@ -769,38 +648,10 @@ pub enum ProofChainJournalError {
     },
     /// An entry boundary cannot be represented safely.
     EntryOffsetOverflow { entry: u64, offset: u64 },
-    /// A complete entry declares an impossible canonical block length.
-    InvalidBlockLength {
-        entry: u64,
-        offset: u64,
-        actual: usize,
-        minimum: usize,
-        maximum: usize,
-    },
-    /// The inner block and proof lengths do not consume the complete body.
-    InvalidEntryBody { entry: u64, offset: u64 },
-    /// One proof payload declares an impossible length.
-    InvalidProofLength {
-        entry: u64,
-        proof: usize,
-        offset: u64,
-        actual: u32,
-        maximum: u32,
-    },
-    /// Allocating one bounded replay field failed.
-    Allocation {
-        entry: u64,
-        proof: Option<usize>,
-        bytes: usize,
-    },
+    /// Allocating one bounded proof payload failed.
+    Allocation { entry: u64, bytes: usize },
     /// Reserving the selected-block index for one journal entry failed.
     BlockIndexAllocation { entry: u64 },
-    /// The canonical block inside a complete entry is malformed.
-    BlockDecode {
-        entry: u64,
-        offset: u64,
-        source: ProofBlockDecodeError,
-    },
     /// The commit footer does not repeat the decoded canonical block identity.
     BlockIdMismatch {
         entry: u64,
@@ -823,14 +674,13 @@ pub enum ProofChainJournalError {
         expected: ProofBlockId,
         actual: ProofBlockId,
     },
-    /// Read-only block preparation rejected its proof identities.
-    Preparation { source: ProofTransitionError },
+    /// Read-only block preparation rejected its proof identity.
+    Preparation { source: ProofBlockPrepareError },
     /// The supplied block failed before journal I/O.
     BlockAdmission { source: ProofBlockApplyError },
     /// Commit durability is unknown and the handle is now poisoned.
     Commit {
         block_id: ProofBlockId,
-        proof_count: usize,
         source: io::Error,
     },
     /// Memory may be ahead of durable storage after an ambiguous commit.
@@ -867,58 +717,16 @@ impl fmt::Display for ProofChainJournalError {
                 formatter,
                 "journal entry {entry} at byte {offset} exceeds the offset range"
             ),
-            Self::InvalidBlockLength {
-                entry,
-                offset,
-                actual,
-                minimum,
-                maximum,
-            } => write!(
+            Self::Allocation { entry, bytes } => write!(
                 formatter,
-                "journal entry {entry} block at byte {offset} has length {actual}, expected {minimum}..={maximum}"
+                "journal entry {entry} proof payload could not allocate {bytes} bytes"
             ),
-            Self::InvalidEntryBody { entry, offset } => write!(
-                formatter,
-                "journal entry {entry} at byte {offset} has inconsistent inner lengths"
-            ),
-            Self::InvalidProofLength {
-                entry,
-                proof,
-                offset,
-                actual,
-                maximum,
-            } => write!(
-                formatter,
-                "journal entry {entry} proof {proof} at byte {offset} has length {actual}, expected 1..={maximum}"
-            ),
-            Self::Allocation {
-                entry,
-                proof,
-                bytes,
-            } => match proof {
-                Some(proof) => write!(
-                    formatter,
-                    "journal entry {entry} proof {proof} could not allocate {bytes} bytes"
-                ),
-                None => write!(
-                    formatter,
-                    "journal entry {entry} could not allocate {bytes} bytes"
-                ),
-            },
             Self::BlockIndexAllocation { entry } => {
                 write!(
                     formatter,
                     "journal entry {entry} could not reserve its block index slot"
                 )
             }
-            Self::BlockDecode {
-                entry,
-                offset,
-                source,
-            } => write!(
-                formatter,
-                "journal entry {entry} block at byte {offset} failed decoding: {source}"
-            ),
             Self::BlockIdMismatch {
                 entry,
                 offset,
@@ -951,13 +759,9 @@ impl fmt::Display for ProofChainJournalError {
             Self::BlockAdmission { source } => {
                 write!(formatter, "block admission failed: {source}")
             }
-            Self::Commit {
-                block_id,
-                proof_count,
-                source,
-            } => write!(
+            Self::Commit { block_id, source } => write!(
                 formatter,
-                "journal commit of block {block_id:?} with {proof_count} proofs has unknown durability: {source}"
+                "journal commit of block {block_id:?} has unknown durability: {source}"
             ),
             Self::Poisoned => formatter
                 .write_str("journal is poisoned after an ambiguous commit; drop and reopen it"),
@@ -976,7 +780,6 @@ impl Error for ProofChainJournalError {
             | Self::Recovery { source, .. }
             | Self::Stabilize { source }
             | Self::Commit { source, .. } => Some(source),
-            Self::BlockDecode { source, .. } => Some(source),
             Self::Replay { source, .. } => Some(source.as_ref()),
             Self::Preparation { source } => Some(source),
             Self::BlockAdmission { source } => Some(source),
@@ -985,9 +788,6 @@ impl Error for ProofChainJournalError {
             | Self::ChainIdMismatch { .. }
             | Self::InvalidEntryLength { .. }
             | Self::EntryOffsetOverflow { .. }
-            | Self::InvalidBlockLength { .. }
-            | Self::InvalidEntryBody { .. }
-            | Self::InvalidProofLength { .. }
             | Self::Allocation { .. }
             | Self::BlockIndexAllocation { .. }
             | Self::BlockIdMismatch { .. }

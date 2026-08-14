@@ -25,7 +25,7 @@ use naome_proof::{
 use sha2::{Digest, Sha256};
 
 use state::ProofResolver;
-pub use state::{ProofState, ProofStateBatch, ProofStateError};
+pub use state::{ProofState, ProofStateError};
 
 const STATEMENT_ID_DOMAIN: &[u8] = b"naome:statement\0";
 const PROOF_ID_DOMAIN: &[u8] = b"naome:proof\0";

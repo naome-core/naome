@@ -303,6 +303,31 @@ fn proof_block_response_uses_bounded_u16_framing() {
 }
 
 #[test]
+fn proof_block_response_is_inline_and_roundtrips_every_bounded_length() {
+    assert_eq!(
+        size_of::<ProofBlockWireResponse>(),
+        PROOF_BLOCK_RESPONSE_MAX_BYTES + size_of::<u8>()
+    );
+
+    for length in 0..=PROOF_BLOCK_RESPONSE_MAX_BYTES {
+        let body = (0..length)
+            .map(|index| u8::try_from(index).unwrap())
+            .collect::<Vec<_>>();
+        let mut frame = u16::try_from(length).unwrap().to_be_bytes().to_vec();
+        frame.extend_from_slice(&body);
+
+        let mut input = Cursor::new(frame.clone());
+        let mut codec = ProofBlockCodec;
+        let response = block_on(codec.read_response(&PROOF_BLOCK_PROTOCOL, &mut input)).unwrap();
+        assert_eq!(response.as_bytes(), body, "decoded body length {length}");
+
+        let mut output = Cursor::new(Vec::new());
+        block_on(codec.write_response(&PROOF_BLOCK_PROTOCOL, &mut output, response)).unwrap();
+        assert_eq!(output.into_inner(), frame, "encoded body length {length}");
+    }
+}
+
+#[test]
 fn oversized_proof_block_response_stops_after_u16_prefix() {
     let mut codec = ProofBlockCodec;
     let oversized = u16::try_from(PROOF_BLOCK_RESPONSE_MAX_BYTES + 1).unwrap();
@@ -633,8 +658,8 @@ fn proof_chain_head_announcement_rejects_every_noncanonical_frame() {
 }
 
 #[test]
-fn canonical_161_byte_block_has_the_normative_found_frame() {
-    let mut block = Vec::with_capacity(161);
+fn canonical_128_byte_block_has_the_normative_found_frame() {
+    let mut block = Vec::with_capacity(PROOF_BLOCK_RESPONSE_MAX_BYTES);
     block.extend_from_slice(&[
         0x71, 0xca, 0x84, 0xdc, 0xea, 0xe5, 0x1f, 0xd2, 0x33, 0x11, 0xeb, 0x1d, 0x79, 0xfc, 0x97,
         0x22, 0x3d, 0xba, 0x62, 0x82, 0x1d, 0x60, 0x4c, 0xd6, 0xf4, 0xd5, 0x70, 0x10, 0x34, 0xc5,
@@ -642,12 +667,10 @@ fn canonical_161_byte_block_has_the_normative_found_frame() {
     ]);
     block.extend_from_slice(&[0x11; 32]);
     block.extend_from_slice(&[0x22; 32]);
-    block.push(0x02);
     block.extend_from_slice(&[0x33; 32]);
-    block.extend_from_slice(&[0x44; 32]);
-    assert_eq!(block.len(), 161);
+    assert_eq!(block.len(), PROOF_BLOCK_RESPONSE_MAX_BYTES);
 
-    let mut expected = vec![0x00, 0xa1];
+    let mut expected = vec![0x00, 0x80];
     expected.extend_from_slice(&block);
     let mut encoded = Cursor::new(Vec::new());
     block_on(ProofBlockCodec.write_response(

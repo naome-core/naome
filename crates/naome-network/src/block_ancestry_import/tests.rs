@@ -5,10 +5,8 @@ use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
 use naome::block_exchange::ProofBlockRequest;
 use naome::proof_exchange::{ProofRequest, ProofResponse};
-use naome_chain::{
-    ProofBlock, ProofBlockApplyError, ProofChainState, ProofDag, ProofTransitionApplyError,
-};
-use naome_ledger::{LedgerError, ProofBatchError};
+use naome_chain::{ProofBlock, ProofBlockApplyError, ProofChainState, ProofDag};
+use naome_ledger::LedgerError;
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
@@ -57,13 +55,8 @@ fn valid_extension(count: usize) -> (Vec<ProofBlock>, HashMap<ProofId, Vec<u8>>)
     for index in 0..count {
         let bytes = independent_proof_bytes(index + 1);
         let id = proof_id(&bytes);
-        let block = state.prepare_block(vec![id]).unwrap();
-        state
-            .apply_block(
-                &block,
-                vec![naome_chain::AddressedProofCandidate::new(id, bytes.clone())],
-            )
-            .unwrap();
+        let block = state.prepare_block(id).unwrap();
+        state.apply_block(&block, bytes.clone()).unwrap();
         payloads.insert(id, bytes);
         blocks.push(block);
     }
@@ -299,18 +292,10 @@ fn invalid_second_payload_reports_prefix_and_fresh_pull_retries_from_that_head()
             if matches!(
                 source.as_ref(),
                 ProofChainJournalError::BlockAdmission {
-                    source: ProofBlockApplyError::Transition {
-                        source: ProofTransitionApplyError::Batch {
-                            source: ProofBatchError::Candidate {
-                                expected: Some(expected),
-                                source: LedgerError::ProofIdMismatch { expected: nested, actual },
-                                ..
-                            }
-                        }
+                    source: ProofBlockApplyError::Admission {
+                        source: LedgerError::ProofIdMismatch { expected, actual },
                     }
-                } if *expected == expected_proof_id
-                    && *nested == expected_proof_id
-                    && *actual == actual_proof_id
+                } if *expected == expected_proof_id && *actual == actual_proof_id
             )
     ));
     assert_eq!(selected.head_block_id().unwrap(), ids[0]);
@@ -422,7 +407,7 @@ fn foreign_driver_is_rejected_without_selecting_the_current_block() {
 }
 
 #[test]
-fn selected_head_drift_during_proof_acquisition_rejects_the_current_block() {
+fn selected_head_drift_during_proof_request_rejects_the_current_block() {
     let directory = TestDirectory::new("ancestry-import-midflight-drift");
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
@@ -476,19 +461,15 @@ fn peer_mismatch_precedes_selected_head_drift() {
     assert_eq!(error.committed_block_count(), 0);
     assert!(matches!(
         error.block_import_error(),
-        ProofBlockImportError::ProofAcquisition { source, .. }
-            if matches!(
+        ProofBlockImportError::ProofRequestFailed {
+            peer_id,
+            source,
+            ..
+        } if *peer_id == expected_peer
+            && matches!(
                 source.as_ref(),
-                crate::DependencyAcquisitionError::RequestFailed {
-                    peer_id,
-                    source,
-                    ..
-                } if *peer_id == expected_peer
-                    && matches!(
-                        source.as_ref(),
-                        crate::OutboundProofFailure::PeerMismatch { expected, actual }
-                            if *expected == expected_peer && *actual == actual_peer
-                    )
+                crate::OutboundProofFailure::PeerMismatch { expected, actual }
+                    if *expected == expected_peer && *actual == actual_peer
             )
     ));
     assert_eq!(selected.head_block_id().unwrap(), drifted_head);
@@ -548,7 +529,7 @@ fn disconnected_source_prevents_next_block_start_after_acknowledged_prefix() {
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let (blocks, payloads) = valid_extension(2);
     let ids = blocks.iter().map(ProofBlock::id).collect::<Vec<_>>();
-    let next_root = blocks[1].transition().root_proof_id();
+    let next_root = blocks[1].proof_id();
     let target = ids[1];
     let mut network = test_network_for_peers(&[peer_id]);
     let import = network
@@ -571,12 +552,8 @@ fn disconnected_source_prevents_next_block_start_after_acknowledged_prefix() {
     assert_eq!(error.last_acknowledged_head_block_id(), ids[0]);
     assert!(matches!(
         error.block_import_error(),
-        ProofBlockImportError::ProofAcquisition { source, .. }
-            if matches!(
-                source.as_ref(),
-                crate::DependencyAcquisitionError::NoEligiblePeer { proof_id }
-                    if *proof_id == next_root
-            )
+        ProofBlockImportError::NoEligibleProofPeer { proof_id }
+            if *proof_id == next_root
     ));
     assert_eq!(selected.head_block_id().unwrap(), ids[0]);
     assert!(selected.block(ids[0]).unwrap().is_some());

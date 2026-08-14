@@ -1,12 +1,12 @@
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
 use naome::proof_exchange::{ProofRequest, ProofResponse};
-use naome_chain::{
-    ProofBlock, ProofBlockId, ProofDag, ProofSetRoot, ProofTransition, ProofTransitionError,
-};
+use naome_chain::{ProofBlock, ProofBlockApplyError, ProofBlockId, ProofDag, ProofSetRoot};
 use naome_foundation::FreeVariable;
+use naome_ledger::LedgerError;
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 
@@ -14,12 +14,9 @@ use super::*;
 use crate::codec::ProofBlockWireResponse;
 use crate::tests::{
     TestDirectory, apply_fresh_blocks, assert_snapshot, create_journal, pairing_bytes, snapshot,
-    test_chain_definition, test_network_for_peers, union_bytes,
+    test_network_for_peers, union_bytes,
 };
-use crate::{
-    DependencyAcquisitionError, ExchangeRequestId, Keypair, NetworkEvent, OutboundProofFailure,
-    PendingRequest,
-};
+use crate::{ExchangeRequestId, Keypair, NetworkEvent, OutboundProofFailure, PendingRequest};
 
 fn referenced_generalization_bytes(parent: ProofId) -> Vec<u8> {
     ProofCertificate::new(vec![
@@ -54,7 +51,7 @@ fn referenced_block(selected: &ProofChainJournal) -> (ProofBlock, Vec<(ProofId, 
         .apply_canonical_proof_bytes(root_bytes.clone())
         .unwrap()
         .proof_id();
-    let block = selected.prepare_block(vec![parent_id, root_id]).unwrap();
+    let block = selected.prepare_block(root_id).unwrap();
     (
         block,
         vec![(parent_id, parent_bytes), (root_id, root_bytes)],
@@ -100,8 +97,9 @@ fn pending_proof_request(
 fn block_response_event(
     network: &mut StaticProofNetwork,
     peer_id: PeerId,
-    bytes: Vec<u8>,
+    bytes: impl Into<Vec<u8>>,
 ) -> NetworkEvent {
+    let bytes = bytes.into();
     let request_id = pending_block_request(network, peer_id);
     network
         .handle_block_exchange_event(request_response::Event::Message {
@@ -142,6 +140,22 @@ fn proof_response_event_from(
         .expect("the retained proof request produces one terminal event")
 }
 
+fn proof_failure_event(
+    network: &mut StaticProofNetwork,
+    peer_id: PeerId,
+    error: request_response::OutboundFailure,
+) -> NetworkEvent {
+    let (request_id, _) = pending_proof_request(network, peer_id);
+    network
+        .handle_proof_exchange_event(request_response::Event::OutboundFailure {
+            peer: peer_id,
+            connection_id: ConnectionId::new_unchecked(903),
+            request_id,
+            error,
+        })
+        .expect("the retained proof request produces one terminal event")
+}
+
 fn start_import(
     network: &mut StaticProofNetwork,
     selected: &ProofChainJournal,
@@ -177,6 +191,41 @@ fn reject_block(
     );
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     error
+}
+
+fn reject_exact_payload_without_fallback(
+    fixture: &str,
+    payload: Vec<u8>,
+) -> (ProofChainJournalError, ProofId) {
+    let directory = TestDirectory::new(fixture);
+    let mut selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let bytes = pairing_bytes();
+    let expected = proof_id(&bytes);
+    let block = selected.prepare_block(expected).unwrap();
+    let preferred = Keypair::generate_ed25519().public().to_peer_id();
+    let fallback = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = test_network_for_peers(&[preferred, fallback]);
+    let import = start_import(&mut network, &selected, preferred, &block);
+    let block_event = block_response_event(&mut network, preferred, block.to_canonical_bytes());
+    let import = import
+        .on_event(&mut network, &mut selected, block_event)
+        .unwrap()
+        .expect("the exact block proof is requested");
+    assert_eq!(import.pending_peer_id(), preferred);
+
+    let event = proof_response_event(&mut network, preferred, payload);
+    let error = import
+        .on_event(&mut network, &mut selected, event)
+        .expect_err("an invalid exact payload is terminal");
+    assert_snapshot(&directory, &selected, &before);
+    assert!(network.pending.is_empty(), "no fallback request may start");
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+
+    let ProofBlockImportError::SelectedState { source } = error else {
+        panic!("invalid exact payload escaped journal admission: {error:?}")
+    };
+    (*source, expected)
 }
 
 #[test]
@@ -234,10 +283,10 @@ fn block_context_preflight_has_parent_then_previous_then_resulting_precedence() 
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let id = proof_id(&pairing_bytes());
-    let prepared = selected.prepare_block(vec![id]).unwrap();
+    let prepared = selected.prepare_block(id).unwrap();
     let parent = prepared.parent_block_id();
-    let previous = prepared.transition().previous_proof_set_root();
-    let resulting = prepared.transition().resulting_proof_set_root();
+    let previous = prepared.previous_proof_set_root();
+    let resulting = prepared.resulting_proof_set_root();
     let wrong_parent = ProofBlockId::from_bytes([0xa1; 32]);
     let wrong_previous = ProofSetRoot::from_bytes([0xa2; 32]);
     let wrong_resulting = ProofSetRoot::from_bytes([0xa3; 32]);
@@ -245,30 +294,21 @@ fn block_context_preflight_has_parent_then_previous_then_resulting_precedence() 
     assert_ne!(wrong_previous, previous);
     assert_ne!(wrong_resulting, resulting);
 
-    let all_wrong = ProofBlock::new(
-        wrong_parent,
-        ProofTransition::new(wrong_previous, wrong_resulting, vec![id]).unwrap(),
-    );
+    let all_wrong = ProofBlock::new(wrong_parent, wrong_previous, wrong_resulting, id);
     assert!(matches!(
         reject_block(&directory, &mut selected, peer_id, all_wrong),
         ProofBlockImportError::ParentBlockIdMismatch { expected, actual }
             if expected == parent && actual == wrong_parent
     ));
 
-    let wrong_roots = ProofBlock::new(
-        parent,
-        ProofTransition::new(wrong_previous, wrong_resulting, vec![id]).unwrap(),
-    );
+    let wrong_roots = ProofBlock::new(parent, wrong_previous, wrong_resulting, id);
     assert!(matches!(
         reject_block(&directory, &mut selected, peer_id, wrong_roots),
         ProofBlockImportError::PreviousProofSetRootMismatch { expected, actual }
             if expected == previous && actual == wrong_previous
     ));
 
-    let wrong_result = ProofBlock::new(
-        parent,
-        ProofTransition::new(previous, wrong_resulting, vec![id]).unwrap(),
-    );
+    let wrong_result = ProofBlock::new(parent, previous, wrong_resulting, id);
     assert!(matches!(
         reject_block(&directory, &mut selected, peer_id, wrong_result),
         ProofBlockImportError::ResultingProofSetRootMismatch { expected, actual }
@@ -277,18 +317,15 @@ fn block_context_preflight_has_parent_then_previous_then_resulting_precedence() 
 }
 
 #[test]
-fn already_selected_transition_fails_preparation_before_resulting_root_or_proof_traffic() {
-    let directory = TestDirectory::new("block-import-selected-transition");
+fn already_selected_proof_fails_preparation_before_resulting_root_or_proof_traffic() {
+    let directory = TestDirectory::new("block-import-selected-proof");
     let mut selected = create_journal(directory.path()).unwrap();
     let selected_id = apply_fresh_blocks(&mut selected, [pairing_bytes()])[0];
     let parent = selected.head_block_id().unwrap();
     let previous = selected.proof_set_root().unwrap();
     let wrong_resulting = ProofSetRoot::from_bytes([0xa4; 32]);
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let block = ProofBlock::new(
-        parent,
-        ProofTransition::new(previous, wrong_resulting, vec![selected_id]).unwrap(),
-    );
+    let block = ProofBlock::new(parent, previous, wrong_resulting, selected_id);
 
     assert!(matches!(
         reject_block(&directory, &mut selected, peer_id, block),
@@ -296,8 +333,7 @@ fn already_selected_transition_fails_preparation_before_resulting_root_or_proof_
             if matches!(
                 source.as_ref(),
                 ProofChainJournalError::Preparation {
-                    source: ProofTransitionError::AlreadySelectedProofId {
-                        index: 0,
+                    source: naome_chain::ProofBlockPrepareError::AlreadySelectedProofId {
                         proof_id,
                     },
                 } if *proof_id == selected_id
@@ -312,7 +348,7 @@ fn foreign_network_generation_is_rejected_before_block_interpretation() {
     let before = snapshot(&directory, &selected);
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let id = proof_id(&pairing_bytes());
-    let block = selected.prepare_block(vec![id]).unwrap();
+    let block = selected.prepare_block(id).unwrap();
     let mut first = test_network_for_peers(&[peer_id]);
     let mut second = test_network_for_peers(&[peer_id]);
     let first_import = start_import(&mut first, &selected, peer_id, &block);
@@ -352,7 +388,7 @@ fn block_phase_rejects_a_driver_network_that_did_not_start_the_ticket() {
     let before = snapshot(&directory, &selected);
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let id = proof_id(&pairing_bytes());
-    let block = selected.prepare_block(vec![id]).unwrap();
+    let block = selected.prepare_block(id).unwrap();
     let mut origin = test_network_for_peers(&[peer_id]);
     let mut wrong_driver = test_network_for_peers(&[peer_id]);
     let import = start_import(&mut origin, &selected, peer_id, &block);
@@ -374,13 +410,13 @@ fn block_phase_rejects_a_driver_network_that_did_not_start_the_ticket() {
 }
 
 #[test]
-fn proof_phase_rejects_a_driver_network_that_did_not_start_the_acquisition() {
+fn proof_phase_rejects_a_driver_network_that_did_not_start_the_request() {
     let directory = TestDirectory::new("block-import-proof-driver-network");
     let mut selected = create_journal(directory.path()).unwrap();
     let before = snapshot(&directory, &selected);
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let id = proof_id(&pairing_bytes());
-    let block = selected.prepare_block(vec![id]).unwrap();
+    let block = selected.prepare_block(id).unwrap();
     let mut origin = test_network_for_peers(&[peer_id]);
     let mut wrong_driver = test_network_for_peers(&[peer_id]);
     let import = start_import(&mut origin, &selected, peer_id, &block);
@@ -416,12 +452,9 @@ fn authenticated_peer_mismatch_precedes_block_decoding_and_context_checks() {
     let id = proof_id(&pairing_bytes());
     let block = ProofBlock::new(
         ProofBlockId::from_bytes([0xb1; 32]),
-        ProofTransition::new(
-            ProofSetRoot::from_bytes([0xb2; 32]),
-            ProofSetRoot::from_bytes([0xb3; 32]),
-            vec![id],
-        )
-        .unwrap(),
+        ProofSetRoot::from_bytes([0xb2; 32]),
+        ProofSetRoot::from_bytes([0xb3; 32]),
+        id,
     );
     let mut network = test_network_for_peers(&[expected_peer, actual_peer]);
     let import = start_import(&mut network, &selected, expected_peer, &block);
@@ -458,74 +491,46 @@ fn authenticated_peer_mismatch_precedes_block_decoding_and_context_checks() {
 }
 
 #[test]
-fn referenced_direct_child_import_is_unselected_until_one_atomic_commit() {
-    let directory = TestDirectory::new("block-import-success");
+fn missing_reference_fails_journal_admission_without_dependency_request() {
+    let directory = TestDirectory::new("block-import-missing-reference");
     let mut selected = create_journal(directory.path()).unwrap();
     let before = snapshot(&directory, &selected);
     let (block, payloads) = referenced_block(&selected);
     let block_id = block.id();
-    let root_id = block.transition().root_proof_id();
+    let root_id = block.proof_id();
+    let root_bytes = payloads[1].1.clone();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[peer_id]);
     let import = start_import(&mut network, &selected, peer_id, &block);
-    assert_eq!(import.target_block_id(), block_id);
-    assert_eq!(import.pending_peer_id(), peer_id);
 
     let block_event = block_response_event(&mut network, peer_id, block.to_canonical_bytes());
-    assert!(import.accepts_event(&block_event));
-    let mut import = import
+    let import = import
         .on_event(&mut network, &mut selected, block_event)
         .unwrap()
-        .expect("the block starts proof acquisition");
-    assert_snapshot(&directory, &selected, &before);
-    assert!(selected.block(block_id).unwrap().is_none());
+        .expect("the exact block proof is requested");
+    let (_, request) = pending_proof_request(&network, peer_id);
+    assert_eq!(request.proof_id(), root_id);
 
-    let (_, root_request) = pending_proof_request(&network, peer_id);
-    assert_eq!(root_request.proof_id(), root_id);
-    let root_bytes = payloads
-        .iter()
-        .find(|(proof_id, _)| *proof_id == root_id)
-        .unwrap()
-        .1
-        .clone();
     let root_event = proof_response_event(&mut network, peer_id, root_bytes);
-    assert!(import.accepts_event(&root_event));
-    import = import
-        .on_event(&mut network, &mut selected, root_event)
-        .unwrap()
-        .expect("the referenced parent remains absent");
+    assert!(matches!(
+        import.on_event(&mut network, &mut selected, root_event),
+        Err(ProofBlockImportError::SelectedState { source })
+            if matches!(
+                source.as_ref(),
+                ProofChainJournalError::BlockAdmission {
+                    source: ProofBlockApplyError::Admission {
+                        source: LedgerError::Check { .. },
+                    },
+                }
+            )
+    ));
     assert_snapshot(&directory, &selected, &before);
     assert!(selected.block(block_id).unwrap().is_none());
-
-    let (_, parent_request) = pending_proof_request(&network, peer_id);
-    let parent_bytes = payloads
-        .iter()
-        .find(|(proof_id, _)| *proof_id == parent_request.proof_id())
-        .unwrap()
-        .1
-        .clone();
-    let parent_event = proof_response_event(&mut network, peer_id, parent_bytes);
-    assert!(import.accepts_event(&parent_event));
     assert!(
-        import
-            .on_event(&mut network, &mut selected, parent_event)
-            .unwrap()
-            .is_none(),
-        "the exact block commit is the sole terminal success"
+        network.pending.is_empty(),
+        "no dependency request may start"
     );
-
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
-    assert_eq!(selected.head_block_id().unwrap(), block_id);
-    assert_eq!(selected.len().unwrap(), 2);
-    assert!(selected.block(block_id).unwrap().is_some());
-    assert_ne!(directory.journal_bytes(), before.bytes);
-
-    drop(selected);
-    let reopened =
-        ProofChainJournal::open_verified(directory.path(), test_chain_definition(), block_id)
-            .unwrap();
-    assert_eq!(reopened.len().unwrap(), 2);
-    assert!(reopened.proof(root_id).unwrap().is_some());
 }
 
 #[test]
@@ -535,7 +540,7 @@ fn unavailable_block_or_proof_never_selects_partial_state() {
     let before = snapshot(&directory, &selected);
     let (block, _) = referenced_block(&selected);
     let block_id = block.id();
-    let root_id = block.transition().root_proof_id();
+    let root_id = block.proof_id();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
 
     let mut block_network = test_network_for_peers(&[peer_id]);
@@ -562,17 +567,10 @@ fn unavailable_block_or_proof_never_selects_partial_state() {
     let unavailable = proof_response_event(&mut proof_network, peer_id, Vec::new());
     assert!(matches!(
         import.on_event(&mut proof_network, &mut selected, unavailable),
-        Err(ProofBlockImportError::ProofAcquisition {
-            block_id: target,
-            source,
-        }) if target == block_id
-            && matches!(
-                source.as_ref(),
-                DependencyAcquisitionError::Unavailable {
-                    peer_id: source_peer,
-                    proof_id,
-                } if *source_peer == peer_id && *proof_id == root_id
-            )
+        Err(ProofBlockImportError::ProofUnavailable {
+            peer_id: source_peer,
+            proof_id,
+        }) if source_peer == peer_id && proof_id == root_id
     ));
     assert_snapshot(&directory, &selected, &before);
     assert!(selected.block(block_id).unwrap().is_none());
@@ -580,6 +578,185 @@ fn unavailable_block_or_proof_never_selects_partial_state() {
         proof_network.pending_budget.active.load(Ordering::Relaxed),
         0
     );
+}
+
+#[test]
+fn ordinary_proof_transport_failure_falls_back_to_the_next_peer() {
+    let directory = TestDirectory::new("block-import-proof-transport-fallback");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let bytes = pairing_bytes();
+    let proof_id = proof_id(&bytes);
+    let block = selected.prepare_block(proof_id).unwrap();
+    let preferred = Keypair::generate_ed25519().public().to_peer_id();
+    let fallback = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = test_network_for_peers(&[preferred, fallback]);
+    let import = start_import(&mut network, &selected, preferred, &block);
+    let block_event = block_response_event(&mut network, preferred, block.to_canonical_bytes());
+    let import = import
+        .on_event(&mut network, &mut selected, block_event)
+        .unwrap()
+        .expect("the preferred peer receives the exact proof request");
+    assert_eq!(import.pending_peer_id(), preferred);
+
+    let failure = proof_failure_event(
+        &mut network,
+        preferred,
+        request_response::OutboundFailure::Timeout,
+    );
+    let import = import
+        .on_event(&mut network, &mut selected, failure)
+        .unwrap()
+        .expect("an ordinary transport failure retries the next peer");
+    assert_eq!(import.pending_peer_id(), fallback);
+    let (_, request) = pending_proof_request(&network, fallback);
+    assert_eq!(request.proof_id(), proof_id);
+
+    let response = proof_response_event(&mut network, fallback, bytes);
+    assert!(
+        import
+            .on_event(&mut network, &mut selected, response)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(selected.head_block_id().unwrap(), block.id());
+    assert!(network.pending.is_empty());
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn wrong_id_payload_is_terminal_without_peer_fallback() {
+    let bytes = union_bytes();
+    let actual = proof_id(&bytes);
+    let (source, expected) =
+        reject_exact_payload_without_fallback("block-import-wrong-proof-id", bytes);
+
+    assert!(matches!(
+        source,
+        ProofChainJournalError::BlockAdmission {
+            source: ProofBlockApplyError::Admission {
+                source: LedgerError::ProofIdMismatch {
+                    expected: error_expected,
+                    actual: error_actual,
+                },
+            },
+        } if error_expected == expected && error_actual == actual
+    ));
+}
+
+#[test]
+fn malformed_payload_is_terminal_without_peer_fallback() {
+    let (source, _) =
+        reject_exact_payload_without_fallback("block-import-malformed-proof", vec![0xff]);
+
+    assert!(matches!(
+        source,
+        ProofChainJournalError::BlockAdmission {
+            source: ProofBlockApplyError::Admission {
+                source: LedgerError::Decode { .. },
+            },
+        }
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn fallback_keeps_one_absolute_proof_import_deadline() {
+    let directory = TestDirectory::new("block-import-shared-proof-deadline");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let bytes = pairing_bytes();
+    let proof_id = proof_id(&bytes);
+    let block = selected.prepare_block(proof_id).unwrap();
+    let preferred = Keypair::generate_ed25519().public().to_peer_id();
+    let fallback = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = test_network_for_peers(&[preferred, fallback]);
+    let import = start_import(&mut network, &selected, preferred, &block);
+    let block_event = block_response_event(&mut network, preferred, block.to_canonical_bytes());
+    let import = import
+        .on_event(&mut network, &mut selected, block_event)
+        .unwrap()
+        .expect("the preferred peer receives the exact proof request");
+
+    let before_retry = PROOF_BLOCK_IMPORT_TIMEOUT - Duration::from_secs(30);
+    tokio::time::advance(before_retry).await;
+    let failure = proof_failure_event(
+        &mut network,
+        preferred,
+        request_response::OutboundFailure::Timeout,
+    );
+    let import = import
+        .on_event(&mut network, &mut selected, failure)
+        .unwrap()
+        .expect("the fallback starts within the original deadline");
+    assert_eq!(import.pending_peer_id(), fallback);
+
+    tokio::time::advance(Duration::from_secs(30)).await;
+    let deadline = network
+        .take_due_proof_request_deadline(tokio::time::Instant::now())
+        .expect("the original proof-import deadline expires during the fallback");
+    assert!(import.accepts_event(&deadline));
+    assert!(matches!(
+        import.on_event(&mut network, &mut selected, deadline),
+        Err(ProofBlockImportError::ProofDeadlineExceeded {
+            peer_id: deadline_peer,
+            proof_id: deadline_proof,
+        }) if deadline_peer == fallback && deadline_proof == proof_id
+    ));
+    assert_snapshot(&directory, &selected, &before);
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+
+    let drained = proof_response_event(&mut network, fallback, bytes);
+    assert!(matches!(
+        drained,
+        NetworkEvent::ProofCancellationDrained { .. }
+    ));
+    assert!(network.pending.is_empty());
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn exact_payload_retries_each_configured_peer_at_most_once() {
+    let directory = TestDirectory::new("block-import-eight-peer-retry");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let bytes = pairing_bytes();
+    let id = proof_id(&bytes);
+    let block = selected.prepare_block(id).unwrap();
+    let peers = (0..crate::MAX_STATIC_PEERS)
+        .map(|_| Keypair::generate_ed25519().public().to_peer_id())
+        .collect::<Vec<_>>();
+    let preferred = peers[3];
+    let mut network = test_network_for_peers(&peers);
+    let import = start_import(&mut network, &selected, preferred, &block);
+    let block_event = block_response_event(&mut network, preferred, block.to_canonical_bytes());
+    let mut import = import
+        .on_event(&mut network, &mut selected, block_event)
+        .unwrap()
+        .unwrap();
+    let mut attempted = Vec::new();
+
+    loop {
+        let peer_id = import.pending_peer_id();
+        assert!(!attempted.contains(&peer_id));
+        attempted.push(peer_id);
+        let unavailable = proof_response_event(&mut network, peer_id, Vec::new());
+        match import.on_event(&mut network, &mut selected, unavailable) {
+            Ok(Some(next)) => import = next,
+            Err(ProofBlockImportError::ProofUnavailable {
+                peer_id: final_peer,
+                proof_id,
+            }) => {
+                assert_eq!(final_peer, peer_id);
+                assert_eq!(proof_id, id);
+                break;
+            }
+            result => panic!("unexpected exact-payload retry result: {result:?}"),
+        }
+    }
+
+    assert_eq!(attempted.len(), crate::MAX_STATIC_PEERS);
+    assert_snapshot(&directory, &selected, &before);
+    assert!(network.pending.is_empty());
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -591,8 +768,8 @@ fn competing_sibling_loses_to_current_parent_before_proof_interpretation() {
     let union = union_bytes();
     let pairing_id = proof_id(&pairing);
     let union_id = proof_id(&union);
-    let first_block = selected.prepare_block(vec![pairing_id]).unwrap();
-    let second_block = selected.prepare_block(vec![union_id]).unwrap();
+    let first_block = selected.prepare_block(pairing_id).unwrap();
+    let second_block = selected.prepare_block(union_id).unwrap();
     assert_eq!(first_block.parent_block_id(), initial_head);
     assert_eq!(second_block.parent_block_id(), initial_head);
     assert_ne!(first_block.id(), second_block.id());
@@ -647,19 +824,15 @@ fn competing_sibling_loses_to_current_parent_before_proof_interpretation() {
     let third_proof = proof_response_event_from(&mut network, third_peer, first_peer, Vec::new());
     assert!(matches!(
         third.on_event(&mut network, &mut selected, third_proof),
-        Err(ProofBlockImportError::ProofAcquisition { source, .. })
-            if matches!(
+        Err(ProofBlockImportError::ProofRequestFailed {
+            peer_id,
+            source,
+            ..
+        }) if peer_id == third_peer
+            && matches!(
                 source.as_ref(),
-                DependencyAcquisitionError::RequestFailed {
-                    peer_id,
-                    source,
-                    ..
-                } if *peer_id == third_peer
-                    && matches!(
-                        source.as_ref(),
-                        OutboundProofFailure::PeerMismatch { expected, actual }
-                            if *expected == third_peer && *actual == first_peer
-                    )
+                OutboundProofFailure::PeerMismatch { expected, actual }
+                    if *expected == third_peer && *actual == first_peer
             )
     ));
     assert_eq!(selected.head_block_id().unwrap(), selected_head);
@@ -672,7 +845,7 @@ fn cancellation_preserves_each_physical_phase_until_its_exact_drain() {
     let mut selected = create_journal(directory.path()).unwrap();
     let before = snapshot(&directory, &selected);
     let id = proof_id(&pairing_bytes());
-    let block = selected.prepare_block(vec![id]).unwrap();
+    let block = selected.prepare_block(id).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
 
     let mut network = test_network_for_peers(&[peer_id]);

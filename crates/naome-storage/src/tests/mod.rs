@@ -5,17 +5,15 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
-    AppendPhase, BLOCK_LENGTH_BYTES, ENTRY_FIXED_BYTES, ENTRY_MAX_BODY_BYTES, ENTRY_MIN_BODY_BYTES,
-    JOURNAL_FILE_NAME, JOURNAL_HEADER, JOURNAL_PREFIX_BYTES, JournalCore, PROOF_BLOCK_MIN_BYTES,
-    ProofChainJournal, ProofChainJournalError,
+    AppendPhase, ENTRY_FIXED_BYTES, ENTRY_MAX_BODY_BYTES, ENTRY_MIN_BODY_BYTES, JOURNAL_FILE_NAME,
+    JOURNAL_HEADER, JOURNAL_PREFIX_BYTES, JournalCore, ProofChainJournal, ProofChainJournalError,
 };
 use naome_chain::{
-    AddressedProofCandidate, PROOF_BATCH_MAX_CANDIDATES, ProofBlock, ProofBlockApplyError,
-    ProofBlockId, ProofChainDefinition, ProofChainId, ProofChainState, ProofDag,
-    ProofSetMembership, ProofSetRoot, ProofTransitionApplyError,
+    PROOF_BLOCK_BYTES, ProofBlock, ProofBlockApplyError, ProofBlockId, ProofChainDefinition,
+    ProofChainId, ProofChainState, ProofDag, ProofSetMembership, ProofSetRoot,
 };
 use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
-use naome_ledger::{AcceptedProofRecord, LedgerError, ProofBatchError};
+use naome_ledger::{AcceptedProofRecord, LedgerError};
 use naome_proof::{
     CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, ProofCertificate, ProofCertificateError,
     ProofId, ProofStep,
@@ -28,7 +26,7 @@ mod replay;
 
 const CHAIN_BYTE: u8 = 0x11;
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
-type JournalEntryFixture = (ProofBlock, Vec<Vec<u8>>, Vec<ProofId>);
+type JournalEntryFixture = (ProofBlock, Vec<u8>, ProofId);
 
 struct TestDirectory {
     path: PathBuf,
@@ -135,47 +133,30 @@ fn independent_axioms() -> (Vec<Vec<u8>>, Vec<ProofId>) {
     (payloads, proof_ids)
 }
 
-fn addressed_candidates(
-    payloads: &[Vec<u8>],
-    proof_ids: &[ProofId],
-) -> Vec<AddressedProofCandidate> {
-    assert_eq!(payloads.len(), proof_ids.len());
-    payloads
-        .iter()
-        .cloned()
-        .zip(proof_ids.iter().copied())
-        .map(|(payload, proof_id)| AddressedProofCandidate::new(proof_id, payload))
-        .collect()
+fn proof_bytes(payload: &[u8]) -> Vec<u8> {
+    payload.to_vec()
 }
 
-fn prepared_block(state: &ProofChainState, proof_ids: &[ProofId]) -> ProofBlock {
-    state.prepare_block(proof_ids.to_vec()).unwrap()
+fn prepared_block(state: &ProofChainState, proof_id: ProofId) -> ProofBlock {
+    state.prepare_block(proof_id).unwrap()
 }
 
-fn one_block(
-    definition: ProofChainDefinition,
-    _payloads: &[Vec<u8>],
-    proof_ids: &[ProofId],
-) -> ProofBlock {
+fn one_block(definition: ProofChainDefinition, proof_id: ProofId) -> ProofBlock {
     let state = ProofChainState::new(definition);
-    prepared_block(&state, proof_ids)
+    prepared_block(&state, proof_id)
 }
 
 fn two_block_chain(definition: ProofChainDefinition) -> [JournalEntryFixture; 2] {
     let (payloads, proof_ids) = dependency_chain_with_len(2);
     let mut state = ProofChainState::new(definition);
-    let first_payloads = vec![payloads[0].clone()];
-    let first_ids = vec![proof_ids[0]];
-    let first = prepared_block(&state, &first_ids);
+    let first = prepared_block(&state, proof_ids[0]);
     state
-        .apply_block(&first, addressed_candidates(&first_payloads, &first_ids))
+        .apply_block(&first, proof_bytes(&payloads[0]))
         .unwrap();
-    let second_payloads = vec![payloads[1].clone()];
-    let second_ids = vec![proof_ids[1]];
-    let second = prepared_block(&state, &second_ids);
+    let second = prepared_block(&state, proof_ids[1]);
     [
-        (first, first_payloads, first_ids),
-        (second, second_payloads, second_ids),
+        (first, payloads[0].clone(), proof_ids[0]),
+        (second, payloads[1].clone(), proof_ids[1]),
     ]
 }
 
@@ -213,23 +194,14 @@ fn journal_prefix(id: ProofChainId) -> Vec<u8> {
     prefix
 }
 
-fn entry(block: &ProofBlock, payloads: &[Vec<u8>]) -> Vec<u8> {
-    assert_eq!(payloads.len(), block.transition().proof_ids().len());
+fn entry(block: &ProofBlock, payload: &[u8]) -> Vec<u8> {
     let block_bytes = block.to_canonical_bytes();
-    let body_length = BLOCK_LENGTH_BYTES
-        + block_bytes.len()
-        + payloads
-            .iter()
-            .map(|payload| 4 + payload.len())
-            .sum::<usize>();
+    assert_eq!(block_bytes.len(), PROOF_BLOCK_BYTES);
+    let body_length = block_bytes.len() + payload.len();
     let body_length_bytes = u32::try_from(body_length).unwrap().to_be_bytes();
     let mut body = Vec::with_capacity(body_length);
-    body.extend_from_slice(&u16::try_from(block_bytes.len()).unwrap().to_be_bytes());
     body.extend_from_slice(&block_bytes);
-    for payload in payloads {
-        body.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
-        body.extend_from_slice(payload);
-    }
+    body.extend_from_slice(payload);
     let mut encoded = Vec::with_capacity(ENTRY_FIXED_BYTES as usize + body.len());
     encoded.extend_from_slice(&body_length_bytes);
     encoded.extend_from_slice(&body);
@@ -248,8 +220,8 @@ fn raw_entry(body: &[u8], footer: ProofBlockId) -> Vec<u8> {
 
 fn journal_image(id: ProofChainId, entries: &[JournalEntryFixture]) -> Vec<u8> {
     let mut image = journal_prefix(id);
-    for (block, payloads, _) in entries {
-        image.extend_from_slice(&entry(block, payloads));
+    for (block, payload, _) in entries {
+        image.extend_from_slice(&entry(block, payload));
     }
     image
 }

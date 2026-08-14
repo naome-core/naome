@@ -12,13 +12,13 @@
 use std::error::Error;
 use std::fmt;
 
-use naome_chain::{PROOF_BLOCK_MAX_BYTES, ProofBlock, ProofBlockDecodeError, ProofBlockId};
+use naome_chain::{PROOF_BLOCK_BYTES, ProofBlock, ProofBlockDecodeError, ProofBlockId};
 
 /// Exact byte length of one proof-block request.
 pub const PROOF_BLOCK_REQUEST_BYTES: usize = ProofBlockId::BYTE_LENGTH;
 
 /// Maximum byte length of one proof-block response message.
-pub const PROOF_BLOCK_RESPONSE_MAX_BYTES: usize = PROOF_BLOCK_MAX_BYTES;
+pub const PROOF_BLOCK_RESPONSE_MAX_BYTES: usize = PROOF_BLOCK_BYTES;
 
 /// A request for one exact content-addressed proof block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -118,7 +118,7 @@ impl ProofBlockResponse {
     pub fn to_wire_bytes(&self) -> Vec<u8> {
         self.block
             .as_ref()
-            .map_or_else(Vec::new, ProofBlock::to_canonical_bytes)
+            .map_or_else(Vec::new, |block| block.to_canonical_bytes().to_vec())
     }
 }
 

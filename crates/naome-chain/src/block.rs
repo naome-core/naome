@@ -2,25 +2,24 @@ use std::error::Error;
 use std::fmt;
 
 use naome_foundation::FOUNDATION_ID;
-use naome_ledger::{AcceptedProofRecord, AddressedProofCandidate, ProofState};
+use naome_ledger::{AcceptedProofRecord, ProofState};
 use naome_proof::ProofId;
 use sha2::{Digest, Sha256};
 
-use crate::{
-    PROOF_TRANSITION_MAX_BYTES, ProofDag, ProofSetRoot, ProofTransition, ProofTransitionApplyError,
-    ProofTransitionError,
-};
+use crate::{ProofDag, ProofSetRoot};
 
 const PROOF_CHAIN_GENESIS_DOMAIN: &[u8] = b"naome:proof-chain-genesis\0";
-const PROOF_CHAIN_DEFINITION_DOMAIN: &[u8] = b"naome:proof-chain-definition\0";
+const PROOF_CHAIN_DEFINITION_DOMAIN: &[u8] = b"naome:proof-chain-definition:single-proof-v0\0";
 const PROOF_BLOCK_DOMAIN: &[u8] = b"naome:proof-block\0";
 const BLOCK_ID_BYTES: usize = ProofBlockId::BYTE_LENGTH;
+const PROOF_SET_ROOT_BYTES: usize = ProofSetRoot::BYTE_LENGTH;
+const PROOF_ID_BYTES: usize = ProofId::BYTE_LENGTH;
 const DEPLOYMENT_DISCRIMINATOR_BYTES: usize = 32;
 const FOUNDATION_ID_BYTES: usize = FOUNDATION_ID.len();
 const GENESIS_PROOF_SET_ROOT_BYTES: usize = ProofSetRoot::BYTE_LENGTH;
 
-/// Maximum length of one canonical linear proof block.
-pub const PROOF_BLOCK_MAX_BYTES: usize = BLOCK_ID_BYTES + PROOF_TRANSITION_MAX_BYTES;
+/// Exact length of one canonical linear single-proof block.
+pub const PROOF_BLOCK_BYTES: usize = BLOCK_ID_BYTES + PROOF_SET_ROOT_BYTES * 2 + PROOF_ID_BYTES;
 
 /// The canonical executable context from which one proof chain is derived.
 ///
@@ -201,57 +200,92 @@ impl ProofBlockId {
     }
 }
 
-/// One canonical parent-linked proof-state transition.
+/// One canonical parent-linked single-proof state transition.
 ///
 /// The parent is always present. The first block points to the virtual genesis
 /// parent derived from the chain context; later blocks point to the exact
-/// preceding [`ProofBlockId`]. Proof payloads remain separately supplied,
-/// content-addressed candidates and are not duplicated in this commitment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// preceding [`ProofBlockId`]. The block commits exactly one proof identity and
+/// the proof-set root before and after admitting it. Proof bytes remain one
+/// separately supplied canonical payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct ProofBlock {
     parent_block_id: ProofBlockId,
-    transition: ProofTransition,
+    previous_proof_set_root: ProofSetRoot,
+    resulting_proof_set_root: ProofSetRoot,
+    proof_id: ProofId,
 }
 
 impl ProofBlock {
-    /// Constructs one block from an exact parent and canonical transition.
-    pub const fn new(parent_block_id: ProofBlockId, transition: ProofTransition) -> Self {
+    /// Constructs one block from its four fixed-width commitment fields.
+    pub const fn new(
+        parent_block_id: ProofBlockId,
+        previous_proof_set_root: ProofSetRoot,
+        resulting_proof_set_root: ProofSetRoot,
+        proof_id: ProofId,
+    ) -> Self {
         Self {
             parent_block_id,
-            transition,
+            previous_proof_set_root,
+            resulting_proof_set_root,
+            proof_id,
         }
     }
 
     /// Decodes one complete canonical proof block.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ProofBlockDecodeError> {
-        if bytes.len() > PROOF_BLOCK_MAX_BYTES {
-            return Err(ProofBlockDecodeError::InputTooLong {
+        let bytes = <&[u8; PROOF_BLOCK_BYTES]>::try_from(bytes).map_err(|_| {
+            ProofBlockDecodeError::InvalidLength {
                 actual: bytes.len(),
-                maximum: PROOF_BLOCK_MAX_BYTES,
-            });
-        }
-        if bytes.len() < BLOCK_ID_BYTES {
-            return Err(ProofBlockDecodeError::UnexpectedEnd);
-        }
+                expected: PROOF_BLOCK_BYTES,
+            }
+        })?;
 
         let parent_block_id = ProofBlockId::from_bytes(
             bytes[..BLOCK_ID_BYTES]
                 .try_into()
-                .expect("the checked parent block-id slice has exactly 32 bytes"),
+                .expect("the fixed block prefix is one parent identity"),
         );
-        let transition = ProofTransition::from_canonical_bytes(&bytes[BLOCK_ID_BYTES..])
-            .map_err(|source| ProofBlockDecodeError::Transition { source })?;
+        let previous_root_start = BLOCK_ID_BYTES;
+        let resulting_root_start = previous_root_start + PROOF_SET_ROOT_BYTES;
+        let proof_id_start = resulting_root_start + PROOF_SET_ROOT_BYTES;
+        let previous_proof_set_root = ProofSetRoot::from_bytes(
+            bytes[previous_root_start..resulting_root_start]
+                .try_into()
+                .expect("the fixed second block field is one proof-set root"),
+        );
+        let resulting_proof_set_root = ProofSetRoot::from_bytes(
+            bytes[resulting_root_start..proof_id_start]
+                .try_into()
+                .expect("the fixed third block field is one proof-set root"),
+        );
+        let proof_id = ProofId::from_bytes(
+            bytes[proof_id_start..]
+                .try_into()
+                .expect("the fixed block suffix is one proof identity"),
+        );
 
-        Ok(Self::new(parent_block_id, transition))
+        Ok(Self::new(
+            parent_block_id,
+            previous_proof_set_root,
+            resulting_proof_set_root,
+            proof_id,
+        ))
     }
 
     /// Encodes this block in its sole canonical representation.
     #[must_use]
-    pub fn to_canonical_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(BLOCK_ID_BYTES + self.transition.canonical_byte_len());
-        bytes.extend_from_slice(self.parent_block_id.as_bytes());
-        self.transition.append_canonical_bytes(&mut bytes);
+    pub fn to_canonical_bytes(self) -> [u8; PROOF_BLOCK_BYTES] {
+        let mut bytes = [0_u8; PROOF_BLOCK_BYTES];
+        let previous_root_start = BLOCK_ID_BYTES;
+        let resulting_root_start = previous_root_start + PROOF_SET_ROOT_BYTES;
+        let proof_id_start = resulting_root_start + PROOF_SET_ROOT_BYTES;
+        bytes[..previous_root_start].copy_from_slice(self.parent_block_id.as_bytes());
+        bytes[previous_root_start..resulting_root_start]
+            .copy_from_slice(self.previous_proof_set_root.as_bytes());
+        bytes[resulting_root_start..proof_id_start]
+            .copy_from_slice(self.resulting_proof_set_root.as_bytes());
+        bytes[proof_id_start..].copy_from_slice(self.proof_id.as_bytes());
         bytes
     }
 
@@ -260,7 +294,9 @@ impl ProofBlock {
         let mut hasher = Sha256::new();
         hasher.update(PROOF_BLOCK_DOMAIN);
         hasher.update(self.parent_block_id.as_bytes());
-        self.transition.update_canonical_hasher(&mut hasher);
+        hasher.update(self.previous_proof_set_root.as_bytes());
+        hasher.update(self.resulting_proof_set_root.as_bytes());
+        hasher.update(self.proof_id.as_bytes());
         ProofBlockId(hasher.finalize().into())
     }
 
@@ -269,9 +305,19 @@ impl ProofBlock {
         self.parent_block_id
     }
 
-    /// Returns the committed proof-state transition.
-    pub const fn transition(&self) -> &ProofTransition {
-        &self.transition
+    /// Returns the selected proof-set root required before application.
+    pub const fn previous_proof_set_root(&self) -> ProofSetRoot {
+        self.previous_proof_set_root
+    }
+
+    /// Returns the selected proof-set root committed after application.
+    pub const fn resulting_proof_set_root(&self) -> ProofSetRoot {
+        self.resulting_proof_set_root
+    }
+
+    /// Returns the sole proof identity committed by this block.
+    pub const fn proof_id(&self) -> ProofId {
+        self.proof_id
     }
 }
 
@@ -279,40 +325,22 @@ impl ProofBlock {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProofBlockDecodeError {
-    /// The encoded block exceeds its deterministic byte limit.
-    InputTooLong { actual: usize, maximum: usize },
-    /// The encoded block ends before its complete parent address.
-    UnexpectedEnd,
-    /// The embedded canonical transition is malformed.
-    Transition { source: ProofTransitionError },
+    /// The input is not exactly one complete fixed-width block.
+    InvalidLength { actual: usize, expected: usize },
 }
 
 impl fmt::Display for ProofBlockDecodeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InputTooLong { actual, maximum } => write!(
+            Self::InvalidLength { actual, expected } => write!(
                 formatter,
-                "canonical proof block has {actual} bytes; the limit is {maximum}"
+                "canonical proof block length {actual} does not equal {expected} bytes"
             ),
-            Self::UnexpectedEnd => formatter.write_str("canonical proof block ended unexpectedly"),
-            Self::Transition { source } => {
-                write!(
-                    formatter,
-                    "canonical proof block transition is invalid: {source}"
-                )
-            }
         }
     }
 }
 
-impl Error for ProofBlockDecodeError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Transition { source } => Some(source),
-            _ => None,
-        }
-    }
-}
+impl Error for ProofBlockDecodeError {}
 
 /// An in-memory exact-tip execution chain for canonical proof blocks.
 ///
@@ -362,33 +390,40 @@ impl ProofChainState {
 
     /// Prepares one block against the exact current head and proof state.
     ///
-    /// Preparation is read-only. Proof identities remain in the exact
-    /// dependency-first, root-last order supplied to transition preparation.
-    pub fn prepare_block(
-        &self,
-        proof_ids: Vec<ProofId>,
-    ) -> Result<ProofBlock, ProofTransitionError> {
-        let transition = self.proof_dag.prepare_proof_transition(proof_ids)?;
-        Ok(ProofBlock::new(self.head_block_id, transition))
+    /// Preparation is read-only and rejects a proof already selected in this
+    /// chain. It does not inspect, retrieve, or check proof bytes.
+    pub fn prepare_block(&self, proof_id: ProofId) -> Result<ProofBlock, ProofBlockPrepareError> {
+        let previous_root = self.proof_dag.proof_set_root();
+        let (resulting_root, already_selected) = self.proof_dag.projected_proof_set_root(proof_id);
+        if already_selected {
+            return Err(ProofBlockPrepareError::AlreadySelectedProofId { proof_id });
+        }
+        Ok(ProofBlock::new(
+            self.head_block_id,
+            previous_root,
+            resulting_root,
+            proof_id,
+        ))
     }
 
     /// Atomically applies one exact-head canonical proof block.
     ///
-    /// Parent binding precedes all transition and proof work. After the
-    /// existing atomic transition commits, only an infallible head assignment
-    /// remains. Every error therefore preserves both linear and selected state.
+    /// Parent, current-root, already-selected, and projected-root checks precede
+    /// proof work. After the one-proof admission commits, only an
+    /// infallible head assignment remains. Every error therefore preserves both
+    /// linear and selected state.
     pub fn apply_block(
         &mut self,
         block: &ProofBlock,
-        candidates: Vec<AddressedProofCandidate>,
+        canonical_proof_bytes: Vec<u8>,
     ) -> Result<&AcceptedProofRecord, ProofBlockApplyError> {
-        self.ensure_parent(block)?;
+        self.preflight_block(block)?;
 
         let next_head = block.id();
         let record = self
             .proof_dag
-            .apply_proof_transition(block.transition(), candidates)
-            .map_err(|source| ProofBlockApplyError::Transition { source })?;
+            .apply_canonical_proof_bytes_with_expected_id(canonical_proof_bytes, block.proof_id())
+            .map_err(|source| ProofBlockApplyError::Admission { source })?;
         self.head_block_id = next_head;
         Ok(record)
     }
@@ -401,15 +436,18 @@ impl ProofChainState {
     pub fn validate_block(
         &self,
         block: &ProofBlock,
-        candidates: Vec<AddressedProofCandidate>,
+        canonical_proof_bytes: Vec<u8>,
     ) -> Result<(), ProofBlockApplyError> {
-        self.ensure_parent(block)?;
+        self.preflight_block(block)?;
         self.proof_dag
-            .validate_proof_transition(block.transition(), candidates)
-            .map_err(|source| ProofBlockApplyError::Transition { source })
+            .validate_canonical_proof_bytes_with_expected_id(
+                canonical_proof_bytes,
+                block.proof_id(),
+            )
+            .map_err(|source| ProofBlockApplyError::Admission { source })
     }
 
-    fn ensure_parent(&self, block: &ProofBlock) -> Result<(), ProofBlockApplyError> {
+    fn preflight_block(&self, block: &ProofBlock) -> Result<(), ProofBlockApplyError> {
         let actual = block.parent_block_id();
         if actual != self.head_block_id {
             return Err(ProofBlockApplyError::ParentBlockIdMismatch {
@@ -417,9 +455,48 @@ impl ProofChainState {
                 actual,
             });
         }
+
+        let expected = self.proof_dag.proof_set_root();
+        let actual = block.previous_proof_set_root();
+        if actual != expected {
+            return Err(ProofBlockApplyError::PreviousProofSetRootMismatch { expected, actual });
+        }
+
+        let (actual, already_selected) = self.proof_dag.projected_proof_set_root(block.proof_id());
+        if already_selected {
+            return Err(ProofBlockApplyError::AlreadySelectedProofId {
+                proof_id: block.proof_id(),
+            });
+        }
+        if actual != block.resulting_proof_set_root() {
+            return Err(ProofBlockApplyError::ResultingProofSetRootMismatch {
+                expected: block.resulting_proof_set_root(),
+                actual,
+            });
+        }
         Ok(())
     }
 }
+
+/// A rejected read-only single-proof block preparation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProofBlockPrepareError {
+    /// The proposed proof already belongs to the selected proof set.
+    AlreadySelectedProofId { proof_id: ProofId },
+}
+
+impl fmt::Display for ProofBlockPrepareError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadySelectedProofId { proof_id } => {
+                write!(formatter, "proof id {proof_id:?} is already selected")
+            }
+        }
+    }
+}
+
+impl Error for ProofBlockPrepareError {}
 
 /// A fail-closed linear proof-block application error.
 #[derive(Debug, PartialEq, Eq)]
@@ -430,8 +507,20 @@ pub enum ProofBlockApplyError {
         expected: ProofBlockId,
         actual: ProofBlockId,
     },
-    /// The embedded transition failed before the linear head changed.
-    Transition { source: ProofTransitionApplyError },
+    /// The block is bound to a different selected proof set.
+    PreviousProofSetRootMismatch {
+        expected: ProofSetRoot,
+        actual: ProofSetRoot,
+    },
+    /// The block attempts to admit a proof already in the selected proof set.
+    AlreadySelectedProofId { proof_id: ProofId },
+    /// Read-only insertion projection did not reproduce the committed root.
+    ResultingProofSetRootMismatch {
+        expected: ProofSetRoot,
+        actual: ProofSetRoot,
+    },
+    /// Strict single-proof admission rejected the supplied payload.
+    Admission { source: naome_ledger::LedgerError },
 }
 
 impl fmt::Display for ProofBlockApplyError {
@@ -441,8 +530,22 @@ impl fmt::Display for ProofBlockApplyError {
                 formatter,
                 "proof block parent mismatch: expected {expected:?}, actual {actual:?}"
             ),
-            Self::Transition { source } => {
-                write!(formatter, "proof block transition failed: {source}")
+            Self::PreviousProofSetRootMismatch { expected, actual } => write!(
+                formatter,
+                "proof block previous root mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::AlreadySelectedProofId { proof_id } => {
+                write!(
+                    formatter,
+                    "proof block proof id {proof_id:?} is already selected"
+                )
+            }
+            Self::ResultingProofSetRootMismatch { expected, actual } => write!(
+                formatter,
+                "proof block resulting root mismatch: expected {expected:?}, projected {actual:?}"
+            ),
+            Self::Admission { source } => {
+                write!(formatter, "proof block admission failed: {source}")
             }
         }
     }
@@ -451,7 +554,7 @@ impl fmt::Display for ProofBlockApplyError {
 impl Error for ProofBlockApplyError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Transition { source } => Some(source),
+            Self::Admission { source } => Some(source),
             _ => None,
         }
     }

@@ -6,7 +6,7 @@ use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
 use naome::block_exchange::ProofBlockRequest;
 use naome::proof_exchange::{ProofRequest, ProofResponse};
-use naome_chain::{AddressedProofCandidate, ProofBlock, ProofChainState, ProofDag};
+use naome_chain::{ProofBlock, ProofChainState, ProofDag};
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
 use naome_storage::ProofChainJournal;
@@ -15,13 +15,12 @@ use tokio::time::timeout;
 use super::*;
 use crate::codec::ProofBlockWireResponse;
 use crate::tests::{
-    TestDirectory, assert_snapshot, connected_pair, create_journal, snapshot,
+    TestDirectory, assert_snapshot, connected_pair, create_journal, pairing_bytes, snapshot,
     test_chain_definition, test_network_for_peers,
 };
 use crate::{
-    DependencyAcquisitionError, ExchangeRequestId, JournalServiceEvent, JournalServiceRequest,
-    Keypair, NetworkEvent, PendingRequest, ProofBlockAncestryPullError, ProofBlockImportError,
-    RequestStartError,
+    ExchangeRequestId, JournalServiceEvent, JournalServiceRequest, Keypair, NetworkEvent,
+    PendingRequest, ProofBlockAncestryPullError, ProofBlockImportError, RequestStartError,
 };
 
 fn independent_proof_bytes(index: usize) -> Vec<u8> {
@@ -48,6 +47,20 @@ fn proof_id(bytes: &[u8]) -> ProofId {
         .proof_id()
 }
 
+fn referenced_generalization_bytes(parent: ProofId) -> Vec<u8> {
+    ProofCertificate::new(vec![
+        ProofStep::ProofReference { proof_id: parent },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: FreeVariable::new(7),
+        },
+    ])
+    .unwrap()
+    .into_unchecked_normal_form()
+    .into_canonical_bytes()
+    .into_vec()
+}
+
 fn valid_extension(count: usize) -> (Vec<ProofBlock>, HashMap<ProofId, Vec<u8>>) {
     let mut state = ProofChainState::new(test_chain_definition());
     let mut blocks = Vec::with_capacity(count);
@@ -55,17 +68,41 @@ fn valid_extension(count: usize) -> (Vec<ProofBlock>, HashMap<ProofId, Vec<u8>>)
     for index in 0..count {
         let bytes = independent_proof_bytes(index + 1);
         let proof_id = proof_id(&bytes);
-        let block = state.prepare_block(vec![proof_id]).unwrap();
-        state
-            .apply_block(
-                &block,
-                vec![AddressedProofCandidate::new(proof_id, bytes.clone())],
-            )
-            .unwrap();
+        let block = state.prepare_block(proof_id).unwrap();
+        state.apply_block(&block, bytes.clone()).unwrap();
         payloads.insert(proof_id, bytes);
         blocks.push(block);
     }
     (blocks, payloads)
+}
+
+fn dependent_extension() -> (Vec<ProofBlock>, HashMap<ProofId, Vec<u8>>) {
+    let mut state = ProofChainState::new(test_chain_definition());
+    let mut identity = ProofDag::new();
+    let parent_bytes = pairing_bytes();
+    let parent_id = identity
+        .apply_canonical_proof_bytes(parent_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let parent_block = state.prepare_block(parent_id).unwrap();
+    state
+        .apply_block(&parent_block, parent_bytes.clone())
+        .unwrap();
+
+    let child_bytes = referenced_generalization_bytes(parent_id);
+    let child_id = identity
+        .apply_canonical_proof_bytes(child_bytes.clone())
+        .unwrap()
+        .proof_id();
+    let child_block = state.prepare_block(child_id).unwrap();
+    state
+        .apply_block(&child_block, child_bytes.clone())
+        .unwrap();
+
+    (
+        vec![parent_block, child_block],
+        HashMap::from([(parent_id, parent_bytes), (child_id, child_bytes)]),
+    )
 }
 
 fn pending_block_request(
@@ -107,8 +144,9 @@ fn pending_proof_request(
 fn block_response_event(
     network: &mut StaticProofNetwork,
     peer_id: PeerId,
-    bytes: Vec<u8>,
+    bytes: impl Into<Vec<u8>>,
 ) -> NetworkEvent {
+    let bytes = bytes.into();
     let (request_id, _) = pending_block_request(network, peer_id);
     network
         .handle_block_exchange_event(request_response::Event::Message {
@@ -223,11 +261,7 @@ fn drive_unit_success(count: usize) {
     assert_eq!(selected.head_block_id().unwrap(), target);
     assert_eq!(
         selected.proof_set_root().unwrap(),
-        blocks
-            .last()
-            .unwrap()
-            .transition()
-            .resulting_proof_set_root()
+        blocks.last().unwrap().resulting_proof_set_root()
     );
     assert_eq!(selected.len().unwrap(), count);
     assert!(network.pending.is_empty());
@@ -292,6 +326,51 @@ fn one_three_and_sixteen_block_catch_ups_commit_only_after_the_phase_bridge() {
 }
 
 #[test]
+fn referenced_child_catch_up_imports_its_parent_block_first() {
+    let directory = TestDirectory::new("catch-up-referenced-child");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+    let (blocks, payloads) = dependent_extension();
+    let [parent, child] = blocks.as_slice() else {
+        panic!("the dependent fixture has exactly two blocks")
+    };
+    assert_eq!(child.parent_block_id(), parent.id());
+    let mut network = test_network_for_peers(&[peer_id]);
+    let catch_up = network
+        .start_proof_block_catch_up(&selected, peer_id, child.id())
+        .unwrap();
+    let catch_up = pull_to_import(catch_up, &mut network, &mut selected, peer_id, &blocks);
+
+    assert_eq!(catch_up.pending_block_id(), parent.id());
+    let (_, request) = pending_proof_request(&network, peer_id);
+    assert_eq!(request.proof_id(), parent.proof_id());
+    let event = proof_response_event(&mut network, peer_id, payloads[&parent.proof_id()].clone());
+    let catch_up = catch_up
+        .on_event(&mut network, &mut selected, event)
+        .unwrap()
+        .expect("the referenced child remains after its parent commits");
+    assert_eq!(selected.head_block_id().unwrap(), parent.id());
+    assert_eq!(selected.len().unwrap(), 1);
+
+    assert_eq!(catch_up.pending_block_id(), child.id());
+    let (_, request) = pending_proof_request(&network, peer_id);
+    assert_eq!(request.proof_id(), child.proof_id());
+    let event = proof_response_event(&mut network, peer_id, payloads[&child.proof_id()].clone());
+    assert!(
+        catch_up
+            .on_event(&mut network, &mut selected, event)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(selected.head_block_id().unwrap(), child.id());
+    assert_eq!(selected.len().unwrap(), 2);
+    assert!(selected.proof(parent.proof_id()).unwrap().is_some());
+    assert!(selected.proof(child.proof_id()).unwrap().is_some());
+    assert!(network.pending.is_empty());
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn later_import_failure_reports_and_preserves_the_exact_acknowledged_prefix() {
     let directory = TestDirectory::new("catch-up-prefix-failure");
     let mut selected = create_journal(directory.path()).unwrap();
@@ -329,18 +408,8 @@ fn later_import_failure_reports_and_preserves_the_exact_acknowledged_prefix() {
     assert_eq!(selected.head_block_id().unwrap(), blocks[0].id());
     assert_ne!(selected.head_block_id().unwrap(), anchor);
     assert_eq!(selected.len().unwrap(), 1);
-    assert!(
-        selected
-            .proof(blocks[0].transition().root_proof_id())
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        selected
-            .proof(blocks[1].transition().root_proof_id())
-            .unwrap()
-            .is_none()
-    );
+    assert!(selected.proof(blocks[0].proof_id()).unwrap().is_some());
+    assert!(selected.proof(blocks[1].proof_id()).unwrap().is_none());
 }
 
 #[test]
@@ -376,8 +445,7 @@ fn pull_completion_preserves_the_import_start_failure_boundary() {
     assert_eq!(source.failed_block_id(), target);
     assert!(matches!(
         source.block_import_error(),
-        ProofBlockImportError::ProofAcquisition { source, .. }
-            if matches!(source.as_ref(), DependencyAcquisitionError::NoEligiblePeer { .. })
+        ProofBlockImportError::NoEligibleProofPeer { .. }
     ));
     assert_snapshot(&directory, &selected, &before);
     assert!(network.pending.is_empty());
@@ -451,7 +519,7 @@ fn routing_and_network_instance_correlation_delegate_across_both_phases() {
     assert!(!catch_up.accepts_event(&unrelated_event(peer_id)));
     let (_, request) = pending_proof_request(&origin, peer_id);
     let proof = proof_response_event(&mut origin, peer_id, independent_proof_bytes(1));
-    assert_eq!(request.proof_id(), blocks[0].transition().root_proof_id());
+    assert_eq!(request.proof_id(), blocks[0].proof_id());
     assert!(catch_up.accepts_event(&proof));
     assert!(matches!(
         catch_up.on_event(&mut wrong_driver, &mut selected, proof),
@@ -474,10 +542,8 @@ async fn real_two_node_catch_up_reaches_and_reopens_exact_three_block_target() {
     for index in 1..=3 {
         let bytes = independent_proof_bytes(index);
         let proof_id = proof_id(&bytes);
-        let block = source.prepare_block(vec![proof_id]).unwrap();
-        source
-            .apply_block(&block, vec![AddressedProofCandidate::new(proof_id, bytes)])
-            .unwrap();
+        let block = source.prepare_block(proof_id).unwrap();
+        source.apply_block(&block, bytes).unwrap();
         proof_ids.push(proof_id);
         block_ids.push(block.id());
     }

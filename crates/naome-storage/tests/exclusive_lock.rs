@@ -54,7 +54,7 @@ fn payload_limits() -> ProofPayloadStoreLimits {
 }
 
 fn candidate_limits() -> ProofBlockCandidateStoreLimits {
-    ProofBlockCandidateStoreLimits::new(1, 1).unwrap()
+    ProofBlockCandidateStoreLimits::new(1).unwrap()
 }
 
 #[test]

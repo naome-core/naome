@@ -23,15 +23,14 @@
 //! retains the private key, discovers addresses, or publishes by itself.
 //!
 //! The caller owns the Tokio runtime, drives every network event loop, routes
-//! correlated proof events through a bounded dependency acquisition, consumes
+//! correlated proof events through exact one-payload block imports, consumes
 //! exact-block terminals through their generation tickets, may pull, explicitly
 //! announce, broadcast, or survey source-bound untrusted chain heads across a
 //! bounded caller-selected peer set, may retrieve one bounded caller-selected
 //! and unselected block ancestry, imports either one exact child or one
 //! consumed ancestry, or composes retrieval and import into one exact-target
 //! catch-up. Every import target remains a separate caller decision. The caller
-//! also explicitly promotes a resulting opaque closure or admits a peer-record
-//! batch. The
+//! also explicitly admits a peer-record batch. The
 //! responder publication is not derived from the address store.
 //! [`StaticProofNetwork::next_journal_service_event`] serves authenticated
 //! proof, block, and head pulls from one borrowed journal while returning
@@ -40,7 +39,6 @@
 //! This crate starts no NAOME-owned background task and owns no
 //! [`ProofChainJournal`].
 
-mod acquisition;
 mod address_store;
 mod block_ancestry;
 mod block_ancestry_import;
@@ -84,7 +82,6 @@ use libp2p::{
 };
 use naome::proof_exchange::{PROOF_RESPONSE_MAX_BYTES, ProofRequest, ProofResponse};
 use naome_chain::ProofBlockId;
-use naome_ledger::PROOF_BATCH_MAX_CANDIDATES;
 use naome_storage::{ProofChainJournal, ProofChainJournalError};
 use session::Behaviour as SessionBehaviour;
 use tokio::time::Instant;
@@ -103,10 +100,6 @@ const DIAL_RETRY_DELAYS: [Duration; 7] = [
     Duration::from_secs(60),
 ];
 
-pub use acquisition::{
-    DependencyAcquisitionError, DependencyAcquisitionProgress, ProofDependencyAcquisition,
-    UnselectedProofClosure,
-};
 pub use address_store::{
     BootstrapConfigError, BootstrapPeer, BootstrapPeerError, DialCandidate,
     MAX_ADDRESSES_PER_PEER_RECORD, MAX_BOOTSTRAP_PEERS, MAX_DIAL_CANDIDATES,
@@ -183,9 +176,6 @@ pub const MAX_STATIC_PEERS: usize = 8;
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
 /// Maximum pending or caller-retained outbound proof, block, head, and announcement requests.
 pub const MAX_PENDING_REQUESTS: usize = 8;
-/// Maximum requests issued by one dependency acquisition across all peers.
-pub const MAX_DEPENDENCY_ACQUISITION_REQUESTS: usize =
-    PROOF_BATCH_MAX_CANDIDATES + MAX_STATIC_PEERS - 1;
 /// Maximum concurrent streams for each proof, block, or head-pull exchange.
 pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
 /// Maximum concurrent head-announcement streams on one connection.
@@ -201,8 +191,8 @@ pub const TCP_LISTEN_BACKLOG: u32 = 16;
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum duration of the negotiated request-response phase.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Absolute monotonic budget for one dependency acquisition.
-pub const DEPENDENCY_ACQUISITION_TIMEOUT: Duration = Duration::from_secs(120);
+/// Absolute monotonic budget for importing one block's exact proof payload.
+pub const PROOF_BLOCK_IMPORT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Initial delay after one failed managed-session dial.
 pub const DIAL_RETRY_BASE: Duration = DIAL_RETRY_DELAYS[0];
 /// Maximum delay between managed-session dial attempts.
@@ -259,7 +249,7 @@ struct Behaviour {
 struct PendingProofRequest {
     peer_index: usize,
     request: ProofRequest,
-    control: Arc<AcquisitionControl>,
+    control: Arc<ProofRequestControl>,
     _permit: PendingPermit,
 }
 
@@ -289,13 +279,13 @@ impl PendingRequest {
     }
 }
 
-struct AcquisitionControl {
+struct ProofRequestControl {
     network_budget: Arc<PendingBudget>,
     deadline: Instant,
     cancelled: AtomicBool,
 }
 
-impl AcquisitionControl {
+impl ProofRequestControl {
     fn new(network_budget: Arc<PendingBudget>, deadline: Instant) -> Self {
         Self {
             network_budget,
@@ -454,11 +444,11 @@ impl StaticProofNetwork {
         self.swarm.listen_on(address).map_err(ListenError)
     }
 
-    fn request_acquisition_proof(
+    fn request_controlled_proof(
         &mut self,
         peer_id: PeerId,
         request: ProofRequest,
-        control: &Arc<AcquisitionControl>,
+        control: &Arc<ProofRequestControl>,
     ) -> Result<request_response::OutboundRequestId, RequestStartError> {
         let transport_connected = self.swarm.behaviour().proof_exchange.is_connected(&peer_id);
         let (peer_index, permit) = self.acquire_request_permit(peer_id, transport_connected)?;
@@ -549,23 +539,23 @@ impl StaticProofNetwork {
         request: ProofRequest,
     ) -> Result<request_response::OutboundRequestId, RequestStartError> {
         let deadline = Instant::now()
-            .checked_add(DEPENDENCY_ACQUISITION_TIMEOUT)
-            .expect("the fixed acquisition timeout fits Tokio Instant");
-        let control = Arc::new(AcquisitionControl::new(
+            .checked_add(PROOF_BLOCK_IMPORT_TIMEOUT)
+            .expect("the fixed proof-request timeout fits Tokio Instant");
+        let control = Arc::new(ProofRequestControl::new(
             Arc::clone(&self.pending_budget),
             deadline,
         ));
-        self.request_acquisition_proof(peer_id, request, &control)
+        self.request_controlled_proof(peer_id, request, &control)
     }
 
     /// Waits for the next proof-network event.
     pub async fn next_event(&mut self) -> NetworkEvent {
         loop {
-            if let Some(event) = self.take_due_acquisition_deadline(Instant::now()) {
+            if let Some(event) = self.take_due_proof_request_deadline(Instant::now()) {
                 return event;
             }
 
-            let swarm_event = if let Some(deadline) = self.next_acquisition_deadline() {
+            let swarm_event = if let Some(deadline) = self.next_proof_request_deadline() {
                 tokio::select! {
                     biased;
                     _ = tokio::time::sleep_until(deadline) => continue,
@@ -621,7 +611,7 @@ impl StaticProofNetwork {
         }
     }
 
-    fn next_acquisition_deadline(&self) -> Option<Instant> {
+    fn next_proof_request_deadline(&self) -> Option<Instant> {
         self.pending
             .values()
             .filter_map(|pending| match pending {
@@ -636,7 +626,7 @@ impl StaticProofNetwork {
             .min()
     }
 
-    fn take_due_acquisition_deadline(&mut self, now: Instant) -> Option<NetworkEvent> {
+    fn take_due_proof_request_deadline(&mut self, now: Instant) -> Option<NetworkEvent> {
         let request_id = self
             .pending
             .iter()
@@ -840,25 +830,6 @@ impl StaticProofNetwork {
         Some(pending)
     }
 
-    #[cfg(test)]
-    fn pending_proof(
-        &self,
-        request_id: request_response::OutboundRequestId,
-    ) -> Option<&PendingProofRequest> {
-        match self.pending.get(&ExchangeRequestId::Proof(request_id))? {
-            PendingRequest::Proof(pending) => Some(pending),
-            PendingRequest::Block(_) => {
-                unreachable!("a proof request key always stores a proof request")
-            }
-            PendingRequest::Head(_) => {
-                unreachable!("a proof request key always stores a proof request")
-            }
-            PendingRequest::Announcement(_) => {
-                unreachable!("a proof request key always stores a proof request")
-            }
-        }
-    }
-
     /// Serves one authenticated request from the healthy local journal.
     ///
     /// One bounded proof-sized copy is required because rust-libp2p owns the
@@ -940,7 +911,7 @@ pub struct OutboundProofEvent {
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
     request: ProofRequest,
-    control: Arc<AcquisitionControl>,
+    control: Arc<ProofRequestControl>,
     outcome: OutboundProofOutcome,
 }
 
@@ -956,7 +927,7 @@ impl OutboundProofEvent {
     }
 
     /// Returns the terminal request failure, when this was not a response or
-    /// acquisition deadline.
+    /// proof-request deadline.
     pub fn failure(&self) -> Option<&OutboundProofFailure> {
         match &self.outcome {
             OutboundProofOutcome::Failure(error) => Some(error.as_ref()),
@@ -964,7 +935,7 @@ impl OutboundProofEvent {
         }
     }
 
-    /// Returns whether the absolute acquisition deadline caused this event.
+    /// Returns whether the absolute proof-request deadline caused this event.
     pub const fn is_deadline_exceeded(&self) -> bool {
         matches!(self.outcome, OutboundProofOutcome::DeadlineExceeded)
     }

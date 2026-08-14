@@ -1,6 +1,5 @@
 use naome_chain::{
     ProofBlock, ProofBlockId, ProofChainDefinition, ProofDag, ProofSetProof, ProofSetRoot,
-    ProofTransition,
 };
 use naome_foundation::{Formula, FreeVariable};
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
@@ -48,27 +47,25 @@ fn canonical_decoders_round_trip_deterministic_malformed_inputs() {
     }
 }
 
-fn canonical_seeds() -> [Vec<u8>; 6] {
+fn canonical_seeds() -> [Vec<u8>; 5] {
     let formula = Formula::equal(FreeVariable::new(0), FreeVariable::new(1));
     let certificate = ProofCertificate::new(vec![ProofStep::EqualityReflexivity {
         variable: FreeVariable::new(1),
     }])
     .unwrap();
-    let transition = ProofTransition::new(
+    let block = ProofBlock::new(
+        ProofBlockId::from_bytes([0x44; 32]),
         ProofSetRoot::from_bytes([0x11; 32]),
         ProofSetRoot::from_bytes([0x22; 32]),
-        vec![ProofId::from_bytes([0x33; 32])],
-    )
-    .unwrap();
-    let block = ProofBlock::new(ProofBlockId::from_bytes([0x44; 32]), transition.clone());
+        ProofId::from_bytes([0x33; 32]),
+    );
     let proof_set = ProofDag::new().proof_set_proof(ProofId::from_bytes([0x55; 32]));
     let definition = ProofChainDefinition::new([0x66; 32]);
 
     [
         formula.encode_canonical().unwrap(),
         certificate.to_canonical_bytes(),
-        transition.to_canonical_bytes(),
-        block.to_canonical_bytes(),
+        block.to_canonical_bytes().to_vec(),
         proof_set.to_canonical_bytes(),
         definition.to_canonical_bytes().to_vec(),
     ]
@@ -81,11 +78,8 @@ fn assert_accepted_values_reencode_exactly(bytes: &[u8]) {
     if let Ok(certificate) = ProofCertificate::from_canonical_bytes(bytes) {
         assert_eq!(certificate.to_canonical_bytes(), bytes);
     }
-    if let Ok(transition) = ProofTransition::from_canonical_bytes(bytes) {
-        assert_eq!(transition.to_canonical_bytes(), bytes);
-    }
     if let Ok(block) = ProofBlock::from_canonical_bytes(bytes) {
-        assert_eq!(block.to_canonical_bytes(), bytes);
+        assert_eq!(block.to_canonical_bytes().as_slice(), bytes);
     }
     if let Ok(proof) = ProofSetProof::from_canonical_bytes(bytes) {
         assert_eq!(proof.to_canonical_bytes(), bytes);

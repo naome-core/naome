@@ -89,8 +89,10 @@ be rejected before body allocation. A reset, timeout, absent response, or
 truncated declared message is a transport failure, never `Unavailable`.
 
 A nonempty response remains coupled to the immutable requested `ProofId` and is
-untrusted until strict promotion. No raw response-to-journal or incremental
-admission path exists.
+untrusted until strict single-proof journal admission decodes, checks, and
+correlates it for one exact block import. No raw response-to-journal,
+pre-admission decode, dependency discovery, or incremental admission path
+exists.
 
 ### Addressed proof block
 
@@ -108,16 +110,16 @@ One delimited response is:
 
 ~~~text
 Unavailable = empty message
-Found       = canonical_proof_block[129..=353]
+Found       = canonical_proof_block[128]
 ~~~
 
 The found value is exactly one canonical `ProofBlock`, with no wrapper, echoed
 identity, chain ID, height, payload count, proof payload, source, or signature.
-A response length above 353 is rejected before body allocation.
+A response length above 128 is rejected before body allocation.
 
 A nonempty response is validated in this exact order:
 
-1. reject more than 353 bytes as `ResponseTooLong`;
+1. reject more than 128 bytes as `ResponseTooLong`;
 2. strictly decode the complete slice as one canonical block, preserving
    `ProofBlockDecodeError` as `BlockDecode { source }`;
 3. compute the decoded block's `ProofBlockId` exactly once;
@@ -126,25 +128,23 @@ A nonempty response is validated in this exact order:
    the block.
 
 An empty response becomes `Unavailable` before found-response checks. Every
-nonempty malformed or sub-129-byte response is a decode error. A canonical
+nonempty response other than exactly 128 bytes is a decode error. A canonical
 block for another request is an identity mismatch.
 
-For the canonical 161-byte block golden from the `11` discriminator definition,
+For the canonical 128-byte block golden from the `11` discriminator definition,
 the request is:
 
 ~~~text
-474983a016ebf466488b634485b9e6e93f1629bf3d0afa5afa5618f2e04a70f4
+61443f12756d101185e9c28dcfa61b0f0e449649ae935cf3791da27dabc2b569
 ~~~
 
 The transport-neutral found response is the direct concatenation of:
 
 ~~~text
-71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
+11e721588dde6890ed9891c28243e3e1d6c6501b08b9dd2c683c1d801a11e0e4
 1111111111111111111111111111111111111111111111111111111111111111
 2222222222222222222222222222222222222222222222222222222222222222
-02
 3333333333333333333333333333333333333333333333333333333333333333
-4444444444444444444444444444444444444444444444444444444444444444
 ~~~
 
 Line breaks are presentation only; unavailable is zero bytes.
@@ -177,13 +177,13 @@ For the canonical chain ID derived from the `11` discriminator definition, the
 request is:
 
 ~~~text
-7174cae86b0cd18e2364805d1bb8da7a34262f3efa6f5e2b723ec6612a9ec15e
+33c98c37f2a2d480e79c106efc0fbeaa9e1179f4274e423033cc7775cf5f74b4
 ~~~
 
 A matching empty journal reports the domain-separated virtual genesis parent:
 
 ~~~text
-71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
+11e721588dde6890ed9891c28243e3e1d6c6501b08b9dd2c683c1d801a11e0e4
 ~~~
 
 A healthy journal under a different chain ID reports zero-byte `Unavailable`.
@@ -231,20 +231,17 @@ response:
     end of stream
 ~~~
 
-`response_length` is in `0..=353`. Zero is `Unavailable`; a nonzero
-body must ultimately be one canonical 129-through-353-byte block. The prefix is
-not part of block bytes or `ProofBlockId`. The complete response frame is
-2..=355 bytes.
+`response_length` is exactly `0` or `128`. Zero is `Unavailable`; a nonzero
+body must be one canonical fixed-width block. The prefix is not part of block
+bytes or `ProofBlockId`. The complete response frame is 2 or 130 bytes.
 
-The framed golden is the two-byte length `00a1` followed directly by:
+The framed golden is the two-byte length `0080` followed directly by:
 
 ~~~text
-71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
+11e721588dde6890ed9891c28243e3e1d6c6501b08b9dd2c683c1d801a11e0e4
 1111111111111111111111111111111111111111111111111111111111111111
 2222222222222222222222222222222222222222222222222222222222222222
-02
 3333333333333333333333333333333333333333333333333333333333333333
-4444444444444444444444444444444444444444444444444444444444444444
 ~~~
 
 The exact unavailable frame is `0000`.
@@ -270,7 +267,7 @@ For the chain golden above, a matching empty journal returns byte `20` followed
 by:
 
 ~~~text
-71ca84dceae51fd23311eb1d79fc97223dba62821d604cd6f4d5701034c5f62d
+11e721588dde6890ed9891c28243e3e1d6c6501b08b9dd2c683c1d801a11e0e4
 ~~~
 
 The exact mismatched-chain unavailable frame is `00`. Complete frames are one
@@ -326,7 +323,7 @@ Message sizes are:
 | Protocol | Request body | Response prefix | Response body | Complete response frame |
 | --- | ---: | ---: | ---: | ---: |
 | Proof | 32 bytes | 4 bytes | 0..=4_194_304 bytes | 4..=4_194_308 bytes |
-| Proof block | 32 bytes | 2 bytes | 0..=353 bytes; found is 129..=353 bytes | 2..=355 bytes |
+| Proof block | 32 bytes | 2 bytes | 0 or 128 bytes | 2 or 130 bytes |
 | Head pull | 32 bytes | 1 byte | 0 or 32 bytes | 1 or 33 bytes |
 | Head announcement | 64 bytes | none | exactly 1 byte, `0x01` | exactly 1 byte |
 
@@ -354,9 +351,10 @@ One network instance enforces:
 | Connection establishment timeout | 10 seconds |
 | Multistream protocol negotiation | 10 seconds |
 | Negotiated request/response phase timeout | 30 seconds |
-| Absolute dependency-acquisition deadline | 120 seconds, monotonic |
-| Requests issued by one dependency acquisition | 15 |
-| Candidate response bodies received by one acquisition | at most 60 MiB |
+| Absolute exact-payload retrieval deadline | 120 seconds, monotonic |
+| Requests issued by one exact-payload block import | 8, one per configured peer |
+| Candidate response bodies retained by one exact-payload block import | at most 1 |
+| Candidate response bytes read by one exact-payload block import | at most 32 MiB |
 | Managed-session idle expiry | effectively disabled; at most 8 idle sessions remain |
 | Outbound redial delay | 1, 2, 4, 8, 16, 32, then 60 seconds |
 | Stable-session threshold for backoff reset | 60 seconds |
@@ -385,30 +383,31 @@ work in 60 continuously driven seconds. This is an aggregate load bound, not
 per-IP fairness, upstream DDoS filtering, or Sybil resistance.
 
 The shared outbound permit is acquired before libp2p queues proof, block,
-head-pull, or announcement work. A proof permit follows a response into
-quarantine, a completed closure, and final synchronous promotion. A successful
-block, head, or announcement event retains its permit until its matching ticket
-consumes it or the event is dropped. Terminal failure releases its permit before
-the failure event is emitted.
+head-pull, or announcement work. An exact-import proof permit follows its one
+addressed response into quarantine and remains with that candidate through
+synchronous single-proof application. A successful block, head, or
+announcement event retains its permit until its matching ticket consumes it or
+the event is dropped. Terminal failure releases its permit before the failure
+event is emitted.
 
-The eight permits jointly bound pending requests, proof candidates, completed
-closures, decoded blocks, head responses, and announcement receipts. At most
+The eight permits jointly bound pending requests, proof candidates, decoded
+blocks, head responses, and announcement receipts. At most
 eight 4 MiB proof buffers are retained, for a 32 MiB concurrent payload-only
-bound. Mixing block responses of at most 353 bytes, heads of 32 bytes, or fixed
-receipts cannot raise it. Eight retained blocks can contain at most 64 proof
+bound. Mixing fixed 128-byte block responses, heads of 32 bytes, or fixed
+receipts cannot raise it. Eight retained blocks contain exactly eight proof
 identities. These are not bounds on transient decoder or checker memory.
 
-One dependency acquisition issues at most fifteen requests across all peers,
-allowing an eight-candidate closure after up to seven failed attempts. The count
-never resets on peer or address change. Declared proof-response body bytes read
-across those attempts, complete or partial, are at most 60 MiB. Structural
-decode and normalization run at most eight times. The 60 MiB ingress envelope
-and 32 MiB concurrent retained-payload bound are distinct.
+One exact-payload retrieval issues at most eight requests, one per configured
+peer, for one immutable `ProofId`. The count never resets on peer change.
+Declared proof-response body bytes read across those attempts, complete or
+partial, are at most 32 MiB. Retrieval does not decode, normalize, inspect, or
+follow references. The 32 MiB per-retrieval ingress envelope and 32 MiB
+network-wide concurrent retained-payload bound are distinct.
 
 Connection establishment includes TCP, Noise, and Yamux. The pinned libp2p
 version supplies the ten-second protocol-negotiation default; NAOME explicitly
 configures the 30-second negotiated request/response phase. The 120-second
-acquisition deadline is a separate total across sequential dependency requests.
+exact-payload deadline is a separate total across peer attempts for one address.
 None preempts synchronous proof work or durable journal admission, and all
 timers require continued caller polling. A libp2p upgrade must revalidate the
 negotiation row above because it is not a NAOME-owned constant.
@@ -468,7 +467,7 @@ failure is `Transport`. A complete body then preserves this order:
 
 Canonical decode or identity failure is `InvalidResponse { source }`. Raw bytes
 and partially decoded or wrong-address blocks are never exposed. The codec
-allocates at most one 353-byte response body; success retains the decoded block
+allocates at most one 128-byte response body; success retains the decoded block
 rather than a second copy of its input bytes.
 
 ### Head-pull terminal
@@ -509,99 +508,54 @@ Dropping or declining the inbound value sends no receipt and eventually becomes
 an ordinary sender-side transport failure. Acknowledgement reads no journal,
 compares no head, starts no retrieval, and mutates no selected state.
 
-## Proof dependency acquisition
+## Exact block-payload retrieval
 
-Every outbound proof request is correlated to its request generation,
-authenticated peer, immutable request, acquisition, originating network
-instance, and permit. A response or failure is accepted exactly once only when
-all correlation facts match. A late terminal cannot advance a newer request for
-the same address; callers must route opaque proof events through the
-acquisition's correlation check before consuming them.
+After one caller-selected block passes parent and root preflight, retrieval asks
+only for that block's immutable `proof_id`. Every outbound request is correlated
+to its request generation, authenticated peer, immutable address, retrieval,
+originating network instance, and permit. A response or failure is accepted
+exactly once only when all facts match; a late terminal cannot advance a newer
+request for the same address.
 
-An acquisition has one request in flight. The caller chooses an initial
-preferred configured peer. For each `ProofId`, it tries that peer first and then
-the remaining peers in raw `PeerId::to_bytes()` order, at most once per peer.
-Disconnected or already-busy peers are skipped without waiting or dialing. A
-peer that returns a canonical candidate becomes preferred for the next
-dependency. The requested root must be absent from the healthy selected journal
-before the first attempt.
-
-Each correlated nonempty response is processed in order:
-
-1. decode one complete structurally bounded `ProofCertificate`;
-2. derive its unchecked root-proof normal form and require exact equality with
-   the supplied bytes;
-3. inspect only normal-form `ProofReference` addresses in canonical step order;
-4. stop at dependencies already present in the selected journal;
-5. deduplicate exact addresses already discovered by this acquisition;
-6. reject before another request if the closure would exceed eight candidates;
-7. fetch the next missing dependency sequentially; and
-8. after all arrive, reject address-level cycles and produce unique candidates
-   in dependency-first, requested-root-last order.
-
-This stage is structural, not mathematical. A canonical but invalid or
-wrong-address candidate can reach the opaque completed closure because its
-actual `ProofId` may depend on checked referenced conclusions; it cannot reach
-selected state. The reader allocates one declared-length proof buffer and moves
-it through quarantine and promotion without another deliberate proof-sized
-clone.
-
-The non-cloneable closure exposes neither raw buffers nor an unbound candidate
-list and owns no block. Its sole promotion consumes it with a caller-selected
-`ProofBlock` and mutable journal. Promotion performs:
-
-1. journal health verification;
-2. exact-current-head comparison before candidate work;
-3. transition current-root, candidate-count, duplicate expected-address,
-   ordered identity, root-last, and projected-resulting-root checks;
-4. for each candidate in order, strict decode, canonicality, deterministic
-   checking against selected state plus earlier staged dependencies, checked
-   `ProofId` comparison with its immutable requested address, and staged
-   registration;
-5. requested-root reachability over all staged records; and
-6. atomic chain-state merge followed by one durable journal entry containing
-   the exact block and ordered accepted payloads.
-
-Promotion calls journal block application exactly once. It never prepares,
-substitutes, constructs, or selects a block, exposes or rewrites payload bytes,
-or falls back to unaddressed or incremental proof admission. Selected-state
-growth between acquisition and promotion is handled by complete revalidation;
-stale parent/root, existing proof, count, order, identity, or collision errors
-fail atomically. Nested journal, block, transition, batch, and ledger error
-precedence is preserved. Promotion may correlate opaque candidates by immutable
-requested ID into the block transition's exact order, but cannot change the
-block or candidate bytes.
-
-An ordinary correlated transport failure or `Unavailable` may rotate to the
-next unattempted usable peer for the same immutable address. The old response
-and permit are released before replacement. Decode failure, noncanonical bytes,
-peer mismatch, selected-state failure, candidate/cycle limit, deadline, and
-cancellation are terminal. Exhaustion reports the last correlated remote
-failure; a sixteenth issue attempt reports the request-limit error. Rotation
+Retrieval has one request in flight. It tries the authenticated block peer first
+and then the remaining configured peers in raw `PeerId::to_bytes()` order, at
+most once per peer. Disconnected or already-busy peers are skipped without
+waiting or dialing. An ordinary correlated transport failure or `Unavailable`
+may rotate to the next unattempted usable peer after releasing the old response
+and permit. Exhaustion reports the last correlated remote failure. Rotation
 creates no negative cache and proves no global absence.
 
-## Acquisition deadline and cancellation
+A correlated nonempty bounded response is retained unchanged as one opaque
+payload. Retrieval does not decode, normalize, mathematically check,
+inspect references, or issue a request for any cited `ProofId`. It completes
+with at most one payload and immediately hands that payload and the block to
+strict singular journal application. That application
+requires every reference to resolve from an earlier block in the current
+selected ancestry. A missing reference, noncanonical payload, invalid proof, or
+wrong checked identity is terminal and never triggers peer fallback or another
+dependency request.
 
-One 120-second monotonic deadline is created after selected-root preflight and
-before the root request. It is inherited unchanged by every dependency request,
-expires on equality, and includes protocol negotiation, response exchange, and
-in-process structural acquisition. It excludes earlier connection establishment
-and promotion of an already completed closure.
+## Exact-payload deadline and cancellation
 
-The event loop tracks the earliest of at most eight active acquisition
-deadlines. At expiry it emits one correlated deadline event and tombstones the
-exact pending request. A physical response or failure terminal at or after the
+One 120-second monotonic deadline is created after block preflight and before
+the first proof request. It is inherited unchanged by every peer attempt for the
+same immutable address, expires on equality, and includes protocol negotiation
+and response exchange. It excludes earlier connection establishment and
+synchronous journal application after a response completes.
+
+The event loop tracks the earliest of at most eight active retrieval deadlines.
+At expiry it emits one correlated deadline event and tombstones the exact
+pending request. A physical response or failure terminal at or after the
 deadline is reported as deadline rather than data or `Unavailable`.
 Peer-identity mismatch already processed before logical deadline delivery is
 not replaced; a later mismatched terminal remains visible in cancellation
-drain. Structural work rechecks the same deadline before issuing a follow-up or
-completed closure.
+drain. The same deadline is rechecked before issuing a fallback request.
 
-Explicit cancellation or dropping the acquisition immediately releases
-quarantined candidates and their permits, and tombstones its in-flight request.
-libp2p cannot cancel that physical request, so it retains one peer slot and one
-permit until the terminal response or failure. That terminal is discarded,
-cannot advance the acquisition, releases its resources, and is reported as
+Explicit cancellation or dropping the retrieval immediately releases its
+quarantined candidate, if any, and tombstones its in-flight request. libp2p
+cannot cancel that physical request, so it retains one peer slot and one permit
+until the terminal response or failure. That terminal is discarded, cannot
+advance retrieval, releases its resources, and is reported as
 `ProofCancellationDrained` without exposing response bytes; a typed terminal
 failure cause may remain visible. Cancellation does not close or redial the
 shared connection.
@@ -656,7 +610,7 @@ no proof-sized copy or block encoding. No failure becomes `Unavailable`.
 Proof lookup returns borrowed accepted canonical bytes or missing. Found serving
 makes exactly one bounded proof-sized copy for asynchronous ownership. Block
 lookup returns only a committed selected block; found serving encodes at most one
-353-byte buffer, while an unknown ID or virtual genesis anchor is unavailable.
+128-byte buffer, while an unknown ID or virtual genesis anchor is unavailable.
 Head serving checks journal health, then compares the immutable requested chain
 ID; mismatch is unavailable and match returns the exact head, including virtual
 genesis for an empty journal. Head serving is fixed-size and allocation-free at
@@ -709,3 +663,6 @@ fork choice, consensus, finality, or economic identity.
 The announcement contains no application signature beyond its live
 authenticated session, and its receipt cannot be replayed as evidence that the
 peer still observes, stores, or agrees with the same head.
+
+Definitions, a proof/definition artifact union, and rules for selecting other
+artifact kinds are outside this proof-only transport contract.

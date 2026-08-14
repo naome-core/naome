@@ -1,4 +1,4 @@
-use naome_chain::PROOF_BLOCK_MAX_BYTES;
+use naome_chain::PROOF_BLOCK_BYTES;
 use naome_checker::CheckError;
 
 use super::*;
@@ -10,8 +10,8 @@ use crate::{
 const CANDIDATE_STORE_FILE_NAME: &str = "proof-block-candidate-store.log";
 const PAYLOAD_STORE_FILE_NAME: &str = "proof-payload-store.log";
 
-fn candidate_limits(entries: usize, block_bytes: u64) -> ProofBlockCandidateStoreLimits {
-    ProofBlockCandidateStoreLimits::new(entries, block_bytes).unwrap()
+fn candidate_limits(entries: usize) -> ProofBlockCandidateStoreLimits {
+    ProofBlockCandidateStoreLimits::new(entries).unwrap()
 }
 
 fn payload_limits(entries: usize, payload_bytes: u64) -> ProofPayloadStoreLimits {
@@ -48,19 +48,10 @@ fn proof_ids(payloads: &[Vec<u8>]) -> Vec<ProofId> {
         .collect()
 }
 
-fn load_payloads(
-    store: &mut CanonicalProofPayloadStore,
-    proof_ids: &[ProofId],
-) -> Vec<AddressedProofCandidate> {
-    proof_ids
-        .iter()
-        .copied()
-        .map(|proof_id| {
-            let payload = store.get(proof_id).unwrap().unwrap();
-            assert_eq!(payload.proof_id(), proof_id);
-            AddressedProofCandidate::new(proof_id, payload.into_canonical_proof_bytes().into_vec())
-        })
-        .collect()
+fn load_payload(store: &mut CanonicalProofPayloadStore, proof_id: ProofId) -> Vec<u8> {
+    let payload = store.get(proof_id).unwrap().unwrap();
+    assert_eq!(payload.proof_id(), proof_id);
+    payload.into_canonical_proof_bytes().into_vec()
 }
 
 fn load_block(store: &mut ProofBlockCandidateStore, block_id: ProofBlockId) -> ProofBlock {
@@ -96,30 +87,24 @@ fn assert_empty_journal_unchanged(
 }
 
 #[test]
-fn maximum_stored_candidate_validation_is_repeatable_and_changes_no_store() {
+fn stored_single_proof_candidate_validation_is_repeatable_and_changes_no_store() {
     let directory = TestDirectory::new();
     let definition = chain_definition(CHAIN_BYTE);
-    let (payloads, proof_ids) = dependency_chain_with_len(PROOF_BATCH_MAX_CANDIDATES);
+    let (payloads, proof_ids) = dependency_chain_with_len(1);
     let total_payload_bytes = payloads.iter().map(Vec::len).sum::<usize>() as u64;
     let journal = ProofChainJournal::create(&directory.path, definition).unwrap();
-    let block = journal.prepare_block(proof_ids.clone()).unwrap();
-    assert_eq!(block.to_canonical_bytes().len(), PROOF_BLOCK_MAX_BYTES);
+    let block = journal.prepare_block(proof_ids[0]).unwrap();
+    assert_eq!(block.to_canonical_bytes().len(), PROOF_BLOCK_BYTES);
 
-    let mut candidate_store = ProofBlockCandidateStore::create(
-        &directory.path,
-        definition,
-        candidate_limits(1, PROOF_BLOCK_MAX_BYTES as u64),
-    )
-    .unwrap();
+    let mut candidate_store =
+        ProofBlockCandidateStore::create(&directory.path, definition, candidate_limits(1)).unwrap();
     assert_eq!(
         candidate_store.insert(&block).unwrap(),
         ProofBlockCandidateInsertOutcome::Inserted
     );
-    let mut payload_store = CanonicalProofPayloadStore::create(
-        &directory.path,
-        payload_limits(PROOF_BATCH_MAX_CANDIDATES, total_payload_bytes),
-    )
-    .unwrap();
+    let mut payload_store =
+        CanonicalProofPayloadStore::create(&directory.path, payload_limits(1, total_payload_bytes))
+            .unwrap();
     archive_payloads(&mut payload_store, &payloads, &proof_ids);
 
     let journal_image = fs::read(directory.journal_path()).unwrap();
@@ -140,7 +125,10 @@ fn maximum_stored_candidate_validation_is_repeatable_and_changes_no_store() {
     for _ in 0..2 {
         let loaded_block = load_block(&mut candidate_store, block.id());
         journal
-            .validate_block(&loaded_block, load_payloads(&mut payload_store, &proof_ids))
+            .validate_block(
+                &loaded_block,
+                load_payload(&mut payload_store, proof_ids[0]),
+            )
             .unwrap();
         assert_empty_journal_unchanged(
             &journal,
@@ -154,11 +142,7 @@ fn maximum_stored_candidate_validation_is_repeatable_and_changes_no_store() {
     }
 
     assert_eq!(candidate_store.len().unwrap(), 1);
-    assert_eq!(
-        candidate_store.total_block_bytes().unwrap(),
-        PROOF_BLOCK_MAX_BYTES as u64
-    );
-    assert_eq!(payload_store.len().unwrap(), PROOF_BATCH_MAX_CANDIDATES);
+    assert_eq!(payload_store.len().unwrap(), 1);
     assert_eq!(
         payload_store.total_payload_bytes().unwrap(),
         total_payload_bytes
@@ -184,30 +168,20 @@ fn stored_siblings_validate_independently_then_fail_as_stale_direct_children() {
     ];
     let proof_ids = proof_ids(&payloads);
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
-    let sibling_a = journal.prepare_block(vec![proof_ids[0]]).unwrap();
-    let sibling_b = journal.prepare_block(vec![proof_ids[1]]).unwrap();
+    let sibling_a = journal.prepare_block(proof_ids[0]).unwrap();
+    let sibling_b = journal.prepare_block(proof_ids[1]).unwrap();
 
     let mut branch_b = ProofChainState::new(definition);
     branch_b
-        .apply_block(
-            &sibling_b,
-            vec![AddressedProofCandidate::new(
-                proof_ids[1],
-                payloads[1].clone(),
-            )],
-        )
+        .apply_block(&sibling_b, payloads[1].clone())
         .unwrap();
-    let child_of_b = branch_b.prepare_block(vec![proof_ids[2]]).unwrap();
+    let child_of_b = branch_b.prepare_block(proof_ids[2]).unwrap();
 
     let blocks = [&sibling_a, &sibling_b, &child_of_b];
-    let total_block_bytes = blocks
-        .iter()
-        .map(|block| block.to_canonical_bytes().len())
-        .sum::<usize>() as u64;
     let mut candidate_store = ProofBlockCandidateStore::create(
         &directory.path,
         definition,
-        candidate_limits(blocks.len(), total_block_bytes),
+        candidate_limits(blocks.len()),
     )
     .unwrap();
     for block in blocks {
@@ -236,7 +210,7 @@ fn stored_siblings_validate_independently_then_fail_as_stale_direct_children() {
         journal
             .validate_block(
                 &load_block(&mut candidate_store, block.id()),
-                load_payloads(&mut payload_store, &[proof_id]),
+                load_payload(&mut payload_store, proof_id),
             )
             .unwrap();
         assert_eq!(journal.head_block_id().unwrap(), genesis);
@@ -250,7 +224,7 @@ fn stored_siblings_validate_independently_then_fail_as_stale_direct_children() {
     assert!(matches!(
         journal.validate_block(
             &load_block(&mut candidate_store, child_of_b.id()),
-            load_payloads(&mut payload_store, &[proof_ids[2]]),
+            load_payload(&mut payload_store, proof_ids[2]),
         ),
         Err(ProofChainJournalError::BlockAdmission {
             source: ProofBlockApplyError::ParentBlockIdMismatch {
@@ -265,23 +239,14 @@ fn stored_siblings_validate_independently_then_fail_as_stale_direct_children() {
     );
 
     journal
-        .apply_block(
-            &sibling_a,
-            load_payloads(&mut payload_store, &[proof_ids[0]]),
-        )
+        .apply_block(&sibling_a, load_payload(&mut payload_store, proof_ids[0]))
         .unwrap();
     let selected_image = fs::read(directory.journal_path()).unwrap();
     let selected_root = journal.proof_set_root().unwrap();
 
     for stale in [&sibling_a, &sibling_b, &child_of_b] {
         assert!(matches!(
-            journal.validate_block(
-                &load_block(&mut candidate_store, stale.id()),
-                vec![AddressedProofCandidate::new(
-                    ProofId::from_bytes([0xff; ProofId::BYTE_LENGTH]),
-                    vec![0],
-                )],
-            ),
+            journal.validate_block(&load_block(&mut candidate_store, stale.id()), vec![0]),
             Err(ProofChainJournalError::BlockAdmission {
                 source: ProofBlockApplyError::ParentBlockIdMismatch {
                     expected,
@@ -314,23 +279,13 @@ fn archived_payload_is_revalidated_against_the_selected_proof_context() {
     let dependency_id = proof_ids[0];
     let child_id = proof_ids[1];
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
-    let child_only = journal.prepare_block(vec![child_id]).unwrap();
-    let complete_closure = journal.prepare_block(proof_ids.clone()).unwrap();
-    let total_block_bytes = child_only.to_canonical_bytes().len()
-        + complete_closure.to_canonical_bytes().len()
-        + PROOF_BLOCK_MAX_BYTES;
-    let mut candidate_store = ProofBlockCandidateStore::create(
-        &directory.path,
-        definition,
-        candidate_limits(3, total_block_bytes as u64),
-    )
-    .unwrap();
-    for block in [&child_only, &complete_closure] {
-        assert_eq!(
-            candidate_store.insert(block).unwrap(),
-            ProofBlockCandidateInsertOutcome::Inserted
-        );
-    }
+    let child_only = journal.prepare_block(child_id).unwrap();
+    let mut candidate_store =
+        ProofBlockCandidateStore::create(&directory.path, definition, candidate_limits(2)).unwrap();
+    assert_eq!(
+        candidate_store.insert(&child_only).unwrap(),
+        ProofBlockCandidateInsertOutcome::Inserted
+    );
     let mut payload_store = CanonicalProofPayloadStore::create(
         &directory.path,
         payload_limits(
@@ -345,45 +300,30 @@ fn archived_payload_is_revalidated_against_the_selected_proof_context() {
     assert!(matches!(
         journal.validate_block(
             &load_block(&mut candidate_store, child_only.id()),
-            load_payloads(&mut payload_store, &[child_id]),
+            load_payload(&mut payload_store, child_id),
         ),
         Err(ProofChainJournalError::BlockAdmission {
-            source: ProofBlockApplyError::Transition {
-                source: ProofTransitionApplyError::Batch {
-                    source: ProofBatchError::Candidate {
-                        index: 0,
-                        expected: Some(actual_child),
-                        source: LedgerError::Check {
-                            source: CheckError::UnknownProofReference {
-                                step: 0,
-                                proof_id: actual_dependency,
-                            },
-                        },
+            source: ProofBlockApplyError::Admission {
+                source: LedgerError::Check {
+                    source: CheckError::UnknownProofReference {
+                        step: 0,
+                        proof_id: actual_dependency,
                     },
                 },
             },
-        }) if actual_child == child_id && actual_dependency == dependency_id
+        }) if actual_dependency == dependency_id
     ));
     assert_eq!(fs::read(directory.journal_path()).unwrap(), initial_image);
     assert!(journal.is_empty().unwrap());
 
-    journal
-        .validate_block(
-            &load_block(&mut candidate_store, complete_closure.id()),
-            load_payloads(&mut payload_store, &proof_ids),
-        )
-        .unwrap();
-    assert_eq!(fs::read(directory.journal_path()).unwrap(), initial_image);
-    assert!(journal.is_empty().unwrap());
-
-    let dependency_block = journal.prepare_block(vec![dependency_id]).unwrap();
+    let dependency_block = journal.prepare_block(dependency_id).unwrap();
     journal
         .apply_block(
             &dependency_block,
-            load_payloads(&mut payload_store, &[dependency_id]),
+            load_payload(&mut payload_store, dependency_id),
         )
         .unwrap();
-    let child_after_dependency = journal.prepare_block(vec![child_id]).unwrap();
+    let child_after_dependency = journal.prepare_block(child_id).unwrap();
     assert_eq!(
         candidate_store.insert(&child_after_dependency).unwrap(),
         ProofBlockCandidateInsertOutcome::Inserted
@@ -394,7 +334,7 @@ fn archived_payload_is_revalidated_against_the_selected_proof_context() {
     journal
         .validate_block(
             &load_block(&mut candidate_store, child_after_dependency.id()),
-            load_payloads(&mut payload_store, &[child_id]),
+            load_payload(&mut payload_store, child_id),
         )
         .unwrap();
     assert_eq!(journal.head_block_id().unwrap(), dependency_block.id());
@@ -406,7 +346,7 @@ fn archived_payload_is_revalidated_against_the_selected_proof_context() {
     assert!(matches!(
         journal.validate_block(
             &load_block(&mut candidate_store, child_only.id()),
-            load_payloads(&mut payload_store, &[child_id]),
+            load_payload(&mut payload_store, child_id),
         ),
         Err(ProofChainJournalError::BlockAdmission {
             source: ProofBlockApplyError::ParentBlockIdMismatch { .. },
@@ -426,21 +366,15 @@ fn journal_validation_matches_apply_errors_and_remains_retryable() {
         ProofChainJournal::create(&validation_directory.path, definition).unwrap();
     let mut application_journal =
         ProofChainJournal::create(&application_directory.path, definition).unwrap();
-    let block = validation_journal.prepare_block(vec![proof_id]).unwrap();
+    let block = validation_journal.prepare_block(proof_id).unwrap();
     let validation_image = fs::read(validation_directory.journal_path()).unwrap();
     let application_image = fs::read(application_directory.journal_path()).unwrap();
 
     let validation_error = validation_journal
-        .validate_block(
-            &block,
-            vec![AddressedProofCandidate::new(proof_id, vec![0])],
-        )
+        .validate_block(&block, vec![0])
         .unwrap_err();
     let application_error = application_journal
-        .apply_block(
-            &block,
-            vec![AddressedProofCandidate::new(proof_id, vec![0])],
-        )
+        .apply_block(&block, vec![0])
         .unwrap_err();
     let unwrap_admission = |error| match error {
         ProofChainJournalError::BlockAdmission { source } => source,
@@ -460,22 +394,14 @@ fn journal_validation_matches_apply_errors_and_remains_retryable() {
     );
 
     validation_journal
-        .validate_block(
-            &block,
-            vec![AddressedProofCandidate::new(proof_id, payload.clone())],
-        )
+        .validate_block(&block, payload.clone())
         .unwrap();
     assert!(validation_journal.is_empty().unwrap());
     assert_eq!(
         fs::read(validation_directory.journal_path()).unwrap(),
         validation_image
     );
-    application_journal
-        .apply_block(
-            &block,
-            vec![AddressedProofCandidate::new(proof_id, payload)],
-        )
-        .unwrap();
+    application_journal.apply_block(&block, payload).unwrap();
     assert_eq!(application_journal.head_block_id().unwrap(), block.id());
 }
 
@@ -486,18 +412,12 @@ fn poisoned_journal_rejects_validation_before_candidate_work() {
     let payload = axiom_bytes(ZfcAxiom::Pairing);
     let proof_id = proof_ids(std::slice::from_ref(&payload))[0];
     let mut journal = ProofChainJournal::create(&directory.path, definition).unwrap();
-    let block = journal.prepare_block(vec![proof_id]).unwrap();
+    let block = journal.prepare_block(proof_id).unwrap();
     let image = fs::read(directory.journal_path()).unwrap();
     journal.core.poisoned = true;
 
     assert!(matches!(
-        journal.validate_block(
-            &block,
-            vec![AddressedProofCandidate::new(
-                ProofId::from_bytes([0xff; ProofId::BYTE_LENGTH]),
-                vec![0],
-            )],
-        ),
+        journal.validate_block(&block, vec![0]),
         Err(ProofChainJournalError::Poisoned)
     ));
     assert_eq!(fs::read(directory.journal_path()).unwrap(), image);
