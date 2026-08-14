@@ -1,18 +1,12 @@
 # Derive forall y, y = y by instantiating an earlier universal theorem.
-foundation "naome:zfc";
+foundation = "naome:zfc"
 
-theorem universal_equality_is_usable {
-  statement (forall y (equal y y));
+statement = forall(y, equal(y, y))
 
-  proof {
-    step reflexive_at_x = (equality-reflexivity x);
-    step universal_at_x = (generalization reflexive_at_x x);
-    step instantiate_at_y =
-      (universal-instantiation x y (equal x x));
-    step reflexive_at_y =
-      (modus-ponens universal_at_x instantiate_at_y);
-    step universal_at_y = (generalization reflexive_at_y y);
-
-    result universal_at_y;
-  }
-}
+proof:
+    p0 = equality_reflexivity(x)
+    p1 = generalization(p0, x)
+    p2 = universal_instantiation(x, y, equal(x, x))
+    p3 = modus_ponens(p1, p2)
+    p4 = generalization(p3, y)
+    return p4

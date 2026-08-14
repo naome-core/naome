@@ -130,7 +130,7 @@ fn proof_command_emits_exact_identities_from_primitive_and_derived_sources() {
 
 #[test]
 fn compile_failure_is_nonzero_and_emits_no_partial_identity_output() {
-    let source = TemporarySource::new("foundation \"wrong\";");
+    let source = TemporarySource::new("foundation = \"wrong\"");
     let output = Command::new(env!("CARGO_BIN_EXE_naome"))
         .arg("proof")
         .arg(&source.path)
@@ -151,10 +151,7 @@ fn invalid_modus_ponens_is_nonzero_and_emits_no_partial_identity_output() {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/implication-identity.nao"),
         )
         .unwrap()
-        .replace(
-            "(modus-ponens keep_implication distribute)",
-            "(modus-ponens distribute keep_implication)",
-        ),
+        .replace("modus_ponens(p1, p2)", "modus_ponens(p2, p1)"),
     );
     let output = Command::new(env!("CARGO_BIN_EXE_naome"))
         .arg("proof")
@@ -170,9 +167,9 @@ fn invalid_modus_ponens_is_nonzero_and_emits_no_partial_identity_output() {
 }
 
 #[test]
-fn proof_command_has_no_hidden_proof_reference_state() {
+fn proof_command_has_no_hidden_citation_state() {
     let source = TemporarySource::new(&format!(
-        "foundation \"naome:zfc\"; theorem cited {{ statement (forall x (equal x x)); proof {{ step known = (proof-reference {PROOF_ID}); result known; }} }}"
+        "foundation = \"naome:zfc\" statement = forall(x, equal(x, x)) proof: p0 = cite(\"{PROOF_ID}\") return p0"
     ));
     let output = Command::new(env!("CARGO_BIN_EXE_naome"))
         .arg("proof")
@@ -185,6 +182,24 @@ fn proof_command_has_no_hidden_proof_reference_state() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.starts_with("naome: "));
     assert!(stderr.contains("references an unknown proof"));
+}
+
+#[test]
+fn legacy_source_syntax_is_rejected_without_a_compatibility_parser() {
+    let source = TemporarySource::new(
+        "foundation \"naome:zfc\"; theorem old { statement (forall x (equal x x)); proof { step p0 = (equality-reflexivity x); result p0; } }",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+        .arg("proof")
+        .arg(&source.path)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("naome: "));
+    assert!(stderr.contains("`=`"));
 }
 
 #[test]

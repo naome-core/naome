@@ -1,4 +1,4 @@
-//! Prerelease `.nao` source lowering for one checked Foundation theorem.
+//! Prerelease `.nao` proof-source lowering for one checked Foundation proof.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -18,7 +18,7 @@ use naome_storage::{ProofChainJournal, ProofChainJournalError};
 /// Maximum UTF-8 bytes accepted in one `.nao` source value.
 pub const AUTHORING_SOURCE_MAX_BYTES: usize = CERTIFICATE_MAX_BYTES;
 
-/// Compiles one complete, dependency-free `.nao` theorem.
+/// Compiles one complete, dependency-free `.nao` proof source.
 ///
 /// Reachable proof references fail because this entry point uses an empty
 /// checked-proof state. Use [`compile_against_selected_chain`] when references
@@ -27,7 +27,7 @@ pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
     compile_with_proof_state(source, &ProofState::new())
 }
 
-/// Compiles one `.nao` theorem against a selected proof-chain journal.
+/// Compiles one `.nao` proof source against a selected proof-chain journal.
 ///
 /// Journal health is checked before source compilation. Root-reachable
 /// references resolve only from proofs strictly applied or replayed into
@@ -151,7 +151,7 @@ pub enum CompileError {
     DuplicateStep { offset: usize, name: String },
     /// A proof step refers to a step that has not already been declared.
     UnknownStep { offset: usize, name: String },
-    /// The result does not name the final declared proof step.
+    /// The return does not name the final declared proof step.
     ResultNotFinal { offset: usize },
     /// Formula parsing exceeded the executable Foundation depth limit.
     FormulaDepthLimitExceeded { offset: usize, maximum: u32 },
@@ -193,7 +193,7 @@ impl fmt::Display for CompileError {
             Self::ResultNotFinal { offset } => {
                 write!(
                     formatter,
-                    "result does not name the final step at byte {offset}"
+                    "return does not name the final step at byte {offset}"
                 )
             }
             Self::FormulaDepthLimitExceeded { offset, maximum } => write!(
@@ -256,26 +256,23 @@ impl<'source> Parser<'source> {
 
     fn compile(mut self, proof_state: &ProofState) -> Result<CompiledProof, CompileError> {
         self.keyword("foundation")?;
+        self.punctuation('=')?;
         let foundation_offset = self.next_offset();
-        let foundation = self.string()?;
+        let foundation = self.string("a quoted Foundation identifier")?;
         if foundation != FOUNDATION_ID {
             return Err(CompileError::FoundationMismatch {
                 offset: foundation_offset,
             });
         }
-        self.punctuation(';')?;
-        self.keyword("theorem")?;
-        self.name()?;
-        self.punctuation('{')?;
         self.keyword("statement")?;
+        self.punctuation('=')?;
         let statement = self.formula(1, FormulaContext::Statement)?;
-        self.punctuation(';')?;
         self.keyword("proof")?;
-        self.punctuation('{')?;
+        self.punctuation(':')?;
 
         let mut proof_steps = Vec::new();
         let mut last_step_name = None;
-        while self.peek_word("step") {
+        while !self.peek_word("return") {
             if proof_steps.len() == CERTIFICATE_MAX_STEPS {
                 return Err(CompileError::Certificate {
                     source: ProofCertificateError::TooManySteps {
@@ -284,7 +281,6 @@ impl<'source> Parser<'source> {
                     },
                 });
             }
-            self.keyword("step")?;
             let name_offset = self.next_offset();
             let name = self.name()?;
             if self.steps.contains_key(name) {
@@ -295,19 +291,15 @@ impl<'source> Parser<'source> {
             }
             self.punctuation('=')?;
             let step = self.proof_step()?;
-            self.punctuation(';')?;
             let position = u32::try_from(proof_steps.len())
                 .expect("the certificate step limit fits one local step index");
             self.steps.insert(name, position);
             proof_steps.push(step);
             last_step_name = Some(name);
         }
-        self.keyword("result")?;
+        self.keyword("return")?;
         let result_offset = self.next_offset();
         let result = self.name()?;
-        self.punctuation(';')?;
-        self.punctuation('}')?;
-        self.punctuation('}')?;
         self.end()?;
 
         if last_step_name != Some(result) {
@@ -336,12 +328,13 @@ impl<'source> Parser<'source> {
     }
 
     fn proof_step(&mut self) -> Result<ProofStep, CompileError> {
-        self.punctuation('(')?;
         let rule_offset = self.next_offset();
         let rule = self.name()?;
+        self.punctuation('(')?;
         let step = match rule {
             "simplification" => {
                 let antecedent = self.formula(1, FormulaContext::Certificate)?;
+                self.punctuation(',')?;
                 let consequent = self.formula(1, FormulaContext::Certificate)?;
                 ProofStep::Simplification {
                     antecedent,
@@ -350,7 +343,9 @@ impl<'source> Parser<'source> {
             }
             "frege" => {
                 let first = self.formula(1, FormulaContext::Certificate)?;
+                self.punctuation(',')?;
                 let second = self.formula(1, FormulaContext::Certificate)?;
+                self.punctuation(',')?;
                 let third = self.formula(1, FormulaContext::Certificate)?;
                 ProofStep::Frege {
                     first,
@@ -358,17 +353,20 @@ impl<'source> Parser<'source> {
                     third,
                 }
             }
-            "classical-contraposition" => {
+            "classical_contraposition" => {
                 let antecedent = self.formula(1, FormulaContext::Certificate)?;
+                self.punctuation(',')?;
                 let consequent = self.formula(1, FormulaContext::Certificate)?;
                 ProofStep::ClassicalContraposition {
                     antecedent,
                     consequent,
                 }
             }
-            "universal-distribution" => {
+            "universal_distribution" => {
                 let variable = self.variable()?;
+                self.punctuation(',')?;
                 let antecedent = self.formula(1, FormulaContext::Certificate)?;
+                self.punctuation(',')?;
                 let consequent = self.formula(1, FormulaContext::Certificate)?;
                 ProofStep::UniversalDistribution {
                     variable,
@@ -376,13 +374,15 @@ impl<'source> Parser<'source> {
                     consequent,
                 }
             }
-            "vacuous-universal" => {
+            "vacuous_universal" => {
                 let formula = self.formula(1, FormulaContext::Certificate)?;
                 ProofStep::VacuousUniversal { formula }
             }
-            "universal-instantiation" => {
+            "universal_instantiation" => {
                 let variable = self.variable()?;
+                self.punctuation(',')?;
                 let replacement = self.variable()?;
+                self.punctuation(',')?;
                 let body = self.formula(1, FormulaContext::Certificate)?;
                 ProofStep::UniversalInstantiation {
                     variable,
@@ -390,46 +390,80 @@ impl<'source> Parser<'source> {
                     body,
                 }
             }
-            "modus-ponens" => {
+            "modus_ponens" => {
                 let premise = self.earlier_step()?;
+                self.punctuation(',')?;
                 let implication = self.earlier_step()?;
                 ProofStep::ModusPonens {
                     premise,
                     implication,
                 }
             }
-            "equality-reflexivity" => {
+            "equality_reflexivity" => {
                 let variable = self.variable()?;
                 ProofStep::EqualityReflexivity { variable }
             }
-            "equality-substitution" => {
+            "equality_substitution" => {
                 let from = self.variable()?;
+                self.punctuation(',')?;
                 let to = self.variable()?;
+                self.punctuation(',')?;
                 let body = self.formula(1, FormulaContext::Certificate)?;
                 ProofStep::EqualitySubstitution { from, to, body }
             }
-            "zfc-axiom" => ProofStep::ZfcAxiom(self.zfc_axiom()?),
+            "zfc_axiom" => ProofStep::ZfcAxiom(self.zfc_axiom()?),
             "separation" => ProofStep::Separation(Separation {
                 predicate: self.formula(1, FormulaContext::Certificate)?,
-                element: self.variable()?,
-                source: self.variable()?,
-                result: self.variable()?,
-                parameters: self.schema_parameters()?,
+                element: {
+                    self.punctuation(',')?;
+                    self.variable()?
+                },
+                source: {
+                    self.punctuation(',')?;
+                    self.variable()?
+                },
+                result: {
+                    self.punctuation(',')?;
+                    self.variable()?
+                },
+                parameters: {
+                    self.punctuation(',')?;
+                    self.schema_parameters()?
+                },
             }),
             "replacement" => ProofStep::Replacement(Replacement {
                 predicate: self.formula(1, FormulaContext::Certificate)?,
-                input: self.variable()?,
-                output: self.variable()?,
-                uniqueness_witness: self.variable()?,
-                source: self.variable()?,
-                result: self.variable()?,
-                parameters: self.schema_parameters()?,
+                input: {
+                    self.punctuation(',')?;
+                    self.variable()?
+                },
+                output: {
+                    self.punctuation(',')?;
+                    self.variable()?
+                },
+                uniqueness_witness: {
+                    self.punctuation(',')?;
+                    self.variable()?
+                },
+                source: {
+                    self.punctuation(',')?;
+                    self.variable()?
+                },
+                result: {
+                    self.punctuation(',')?;
+                    self.variable()?
+                },
+                parameters: {
+                    self.punctuation(',')?;
+                    self.schema_parameters()?
+                },
             }),
-            "proof-reference" => ProofStep::ProofReference {
+            "cite" => ProofStep::ProofReference {
                 proof_id: self.proof_id()?,
             },
             "generalization" => {
                 let premise = self.earlier_step()?;
+                self.punctuation(',')?;
                 let variable = self.variable()?;
                 ProofStep::Generalization { premise, variable }
             }
@@ -440,21 +474,18 @@ impl<'source> Parser<'source> {
                 });
             }
         };
-        self.punctuation(')')?;
+        self.call_end()?;
         Ok(step)
     }
 
     fn zfc_axiom(&mut self) -> Result<ZfcAxiom, CompileError> {
         let offset = self.next_offset();
-        let name = self.name().map_err(|_| CompileError::Syntax {
-            offset,
-            expected: "a fixed ZFC axiom",
-        })?;
+        let name = self.string("a quoted ZFC axiom selector")?;
         match name {
             "extensionality" => Ok(ZfcAxiom::Extensionality),
             "pairing" => Ok(ZfcAxiom::Pairing),
             "union" => Ok(ZfcAxiom::Union),
-            "power-set" => Ok(ZfcAxiom::PowerSet),
+            "power_set" => Ok(ZfcAxiom::PowerSet),
             "infinity" => Ok(ZfcAxiom::Infinity),
             "foundation" => Ok(ZfcAxiom::Foundation),
             "choice" => Ok(ZfcAxiom::Choice),
@@ -466,16 +497,28 @@ impl<'source> Parser<'source> {
     }
 
     fn schema_parameters(&mut self) -> Result<Vec<FreeVariable>, CompileError> {
-        self.punctuation('(')?;
         self.keyword("parameters")?;
+        self.punctuation('=')?;
+        self.punctuation('[')?;
         let mut parameters = Vec::new();
+        self.skip_trivia();
+        if self.byte() == Some(b']') {
+            self.offset += 1;
+            return Ok(parameters);
+        }
         loop {
+            parameters.push(self.variable()?);
             self.skip_trivia();
-            if self.byte() == Some(b')') {
+            if self.byte() == Some(b']') {
                 self.offset += 1;
                 return Ok(parameters);
             }
-            parameters.push(self.variable()?);
+            self.punctuation(',')?;
+            self.skip_trivia();
+            if self.byte() == Some(b']') {
+                self.offset += 1;
+                return Ok(parameters);
+            }
         }
     }
 
@@ -496,6 +539,14 @@ impl<'source> Parser<'source> {
         const EXPECTED: &str = "a 64-digit lowercase hexadecimal ProofId";
 
         self.skip_trivia();
+        let quote_offset = self.offset;
+        if self.byte() != Some(b'"') {
+            return Err(CompileError::Syntax {
+                offset: quote_offset,
+                expected: EXPECTED,
+            });
+        }
+        self.offset += 1;
         let offset = self.offset;
         let Some(encoded) = self.source.as_bytes().get(offset..offset + HEX_LENGTH) else {
             return Err(CompileError::Syntax {
@@ -524,6 +575,13 @@ impl<'source> Parser<'source> {
             *byte = (high << 4) | low;
         }
         self.offset += HEX_LENGTH;
+        if self.byte() != Some(b'"') {
+            return Err(CompileError::Syntax {
+                offset: self.offset,
+                expected: "a closing quote after the ProofId",
+            });
+        }
+        self.offset += 1;
         Ok(ProofId::from_bytes(bytes))
     }
 
@@ -545,12 +603,13 @@ impl<'source> Parser<'source> {
                 maximum: FORMULA_MAX_DEPTH,
             });
         }
-        self.punctuation('(')?;
-        let operator_offset = self.next_offset();
+        let operator_offset = formula_offset;
         let operator = self.name()?;
+        self.punctuation('(')?;
         let parsed = match operator {
             "equal" => {
                 let left = self.variable()?;
+                self.punctuation(',')?;
                 let right = self.variable()?;
                 ParsedFormula {
                     formula: Formula::equal(left, right),
@@ -560,6 +619,7 @@ impl<'source> Parser<'source> {
             }
             "member" => {
                 let element = self.variable()?;
+                self.punctuation(',')?;
                 let set = self.variable()?;
                 ParsedFormula {
                     formula: Formula::member(element, set),
@@ -567,8 +627,9 @@ impl<'source> Parser<'source> {
                     expanded_depth: 1,
                 }
             }
-            "not-equal" => {
+            "not_equal" => {
                 let left = self.variable()?;
+                self.punctuation(',')?;
                 let right = self.variable()?;
                 self.check_derived_expansion(operator_offset, depth, context, 2, 1)?;
                 ParsedFormula {
@@ -577,11 +638,11 @@ impl<'source> Parser<'source> {
                     expanded_depth: 2,
                 }
             }
-            "not" => self.parse_not(operator_offset, depth, context)?,
+            "not_" => self.parse_not(operator_offset, depth, context)?,
             "implies" => self.parse_implies(operator_offset, depth, context)?,
             "forall" => self.parse_for_all(operator_offset, depth, context)?,
-            "and" => self.parse_conjunction(operator_offset, depth, context)?,
-            "or" => self.parse_disjunction(operator_offset, depth, context)?,
+            "and_" => self.parse_conjunction(operator_offset, depth, context)?,
+            "or_" => self.parse_disjunction(operator_offset, depth, context)?,
             "iff" => self.parse_biconditional(operator_offset, depth, context)?,
             "exists" => self.parse_exists(operator_offset, depth, context)?,
             _ => {
@@ -591,7 +652,7 @@ impl<'source> Parser<'source> {
                 });
             }
         };
-        self.punctuation(')')?;
+        self.call_end()?;
         Ok(parsed)
     }
 
@@ -619,6 +680,7 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
         let antecedent = self.parsed_formula(depth + 1, context)?;
+        self.punctuation(',')?;
         let consequent = self.parsed_formula(depth + 1, context)?;
         let expanded_nodes = self.checked_node_sum(
             context,
@@ -644,6 +706,7 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
         let variable = self.variable()?;
+        self.punctuation(',')?;
         let body = self.parsed_formula(depth + 1, context)?;
         let expanded_nodes = self.checked_node_sum(context, &[1, body.expanded_nodes])?;
         let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 1)?;
@@ -662,6 +725,7 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
         let left = self.parsed_formula(depth + 1, context)?;
+        self.punctuation(',')?;
         let right = self.parsed_formula(depth + 1, context)?;
         let expanded_nodes =
             self.checked_node_sum(context, &[3, left.expanded_nodes, right.expanded_nodes])?;
@@ -683,6 +747,7 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
         let left = self.parsed_formula(depth + 1, context)?;
+        self.punctuation(',')?;
         let right = self.parsed_formula(depth + 1, context)?;
         let expanded_nodes =
             self.checked_node_sum(context, &[2, left.expanded_nodes, right.expanded_nodes])?;
@@ -704,6 +769,7 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
         let left = self.parsed_formula(depth + 1, context)?;
+        self.punctuation(',')?;
         let right = self.parsed_formula(depth + 1, context)?;
         let expanded_nodes = self.checked_node_sum(
             context,
@@ -734,6 +800,7 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
         let variable = self.variable()?;
+        self.punctuation(',')?;
         let body = self.parsed_formula(depth + 1, context)?;
         let expanded_nodes = self.checked_node_sum(context, &[3, body.expanded_nodes])?;
         let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 3)?;
@@ -879,7 +946,7 @@ impl<'source> Parser<'source> {
         }
         let mut end = start + first.len_utf8();
         for (relative, character) in characters {
-            if !character.is_ascii_alphanumeric() && character != '_' && character != '-' {
+            if !character.is_ascii_alphanumeric() && character != '_' {
                 break;
             }
             end = start + relative + character.len_utf8();
@@ -888,13 +955,13 @@ impl<'source> Parser<'source> {
         Ok(&self.source[start..end])
     }
 
-    fn string(&mut self) -> Result<&'source str, CompileError> {
+    fn string(&mut self, expected: &'static str) -> Result<&'source str, CompileError> {
         self.skip_trivia();
         let start = self.offset;
         if self.byte() != Some(b'"') {
             return Err(CompileError::Syntax {
                 offset: start,
-                expected: "a quoted Foundation identifier",
+                expected,
             });
         }
         self.offset += 1;
@@ -920,12 +987,12 @@ impl<'source> Parser<'source> {
             Err(CompileError::Syntax {
                 offset,
                 expected: match expected {
-                    ';' => "`;`",
-                    '{' => "`{`",
-                    '}' => "`}`",
+                    ':' => "`:`",
                     '(' => "`(`",
                     ')' => "`)`",
                     '=' => "`=`",
+                    ',' => "`,`",
+                    '[' => "`[`",
                     _ => "punctuation",
                 },
             })
@@ -951,9 +1018,15 @@ impl<'source> Parser<'source> {
             && remainder[expected.len()..]
                 .chars()
                 .next()
-                .is_none_or(|character| {
-                    !character.is_ascii_alphanumeric() && character != '_' && character != '-'
-                })
+                .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
+    }
+
+    fn call_end(&mut self) -> Result<(), CompileError> {
+        self.skip_trivia();
+        if self.byte() == Some(b',') {
+            self.offset += 1;
+        }
+        self.punctuation(')')
     }
 
     fn next_offset(&mut self) -> usize {
@@ -990,7 +1063,10 @@ const fn lowercase_hex_nibble(byte: u8) -> Option<u8> {
 }
 
 const fn proof_id_error_offset(start: usize, offset: usize, byte: u8) -> usize {
-    if matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'#' | b')') {
+    if matches!(
+        byte,
+        b' ' | b'\t' | b'\r' | b'\n' | b'#' | b'"' | b',' | b')'
+    ) {
         start
     } else {
         offset

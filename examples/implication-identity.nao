@@ -1,31 +1,20 @@
 # A complete Hilbert derivation of forall x, (x = x) -> (x = x).
-foundation "naome:zfc";
+foundation = "naome:zfc"
 
-theorem implication_identity {
-  statement (forall x (implies (equal x x) (equal x x)));
+statement = forall(x, implies(equal(x, x), equal(x, x)))
 
-  proof {
-    step keep_left =
-      (simplification (equal x x) (equal x x));
-
-    step keep_implication =
-      (simplification
-        (equal x x)
-        (implies (equal x x) (equal x x)));
-
-    step distribute =
-      (frege
-        (equal x x)
-        (implies (equal x x) (equal x x))
-        (equal x x));
-
-    step lifted_identity =
-      (modus-ponens keep_implication distribute);
-    step identity =
-      (modus-ponens keep_left lifted_identity);
-    step universally_identity =
-      (generalization identity x);
-
-    result universally_identity;
-  }
-}
+proof:
+    p0 = simplification(equal(x, x), equal(x, x))
+    p1 = simplification(
+        equal(x, x),
+        implies(equal(x, x), equal(x, x)),
+    )
+    p2 = frege(
+        equal(x, x),
+        implies(equal(x, x), equal(x, x)),
+        equal(x, x),
+    )
+    p3 = modus_ponens(p1, p2)
+    p4 = modus_ponens(p0, p3)
+    p5 = generalization(p4, x)
+    return p5
