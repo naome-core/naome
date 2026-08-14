@@ -36,13 +36,12 @@ impl ArtifactPayload {
     /// Encodes the typed payload with its canonical one-byte tag.
     #[must_use]
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
-        let (tag, payload) = match self {
+        let (tag, mut bytes) = match self {
             Self::Proof(proof) => (PROOF, proof.to_canonical_bytes()),
             Self::Definition(definition) => (DEFINITION, definition.to_canonical_bytes()),
         };
-        let mut bytes = Vec::with_capacity(1 + payload.len());
-        bytes.push(tag);
-        bytes.extend_from_slice(&payload);
+        bytes.reserve(1);
+        bytes.insert(0, tag);
         bytes
     }
 
