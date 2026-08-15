@@ -3,38 +3,35 @@
 use std::error::Error;
 use std::fmt;
 
-use naome_foundation::FOUNDATION_ID;
+use naome_foundation::{FORMULA_MAX_BYTES, FOUNDATION_ID};
 use sha2::{Digest, Sha256};
 
-use crate::{DefinedFormula, DefinedFormulaCodecError, DefinitionId, ProofId};
+use crate::{DefinedFormula, DefinedFormulaCodecError, DefinitionId};
 
 const RELATION: u8 = 0x00;
-const CONSTANT: u8 = 0x01;
 const FUNCTION: u8 = 0x02;
-const DEFINITION_ID_DOMAIN: &[u8] = b"naome:definition:v0\0";
+const DEFINITION_ID_DOMAIN: &[u8] = b"naome:definition:v1\0";
+
+/// Maximum number of formal graph arguments admitted by one definition.
+pub const DEFINITION_MAX_GRAPH_ARITY: u32 = 256;
 
 /// Maximum encoded byte length admitted for one definition certificate.
-pub const DEFINITION_MAX_BYTES: usize = 4_194_304;
+pub const DEFINITION_MAX_BYTES: usize = 1 + 4 + 4 + FORMULA_MAX_BYTES;
 
-/// The conservative interface and exact selected proof obligation of a definition.
+/// The conservative graph interface of a definition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DefinitionKind {
     /// An eliminable relation abbreviation with the declared arity.
     Relation { arity: u32 },
-    /// A zero-argument term represented by a uniquely satisfied unary graph.
-    Constant { unique_existence_proof: ProofId },
     /// A term constructor represented by a total-unique graph.
-    Function {
-        input_arity: u32,
-        total_unique_proof: ProofId,
-    },
+    Function { input_arity: u32 },
 }
 
 /// One canonical conservative definition over Foundation formulas.
 ///
 /// The body uses canonical formal free variables. Relation arguments are
-/// `0..arity`; a constant value is variable `0`; function inputs are
-/// `0..input_arity` and its output is variable `input_arity`.
+/// `0..arity`; function inputs are `0..input_arity` and its output is
+/// variable `input_arity`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct DefinitionCertificate {
@@ -58,35 +55,15 @@ impl DefinitionCertificate {
         Self::new(DefinitionKind::Relation { arity }, body)
     }
 
-    /// Constructs a constant graph definition.
-    pub fn constant(
-        body: DefinedFormula,
-        unique_existence_proof: ProofId,
-    ) -> Result<Self, DefinitionCertificateError> {
-        Self::new(
-            DefinitionKind::Constant {
-                unique_existence_proof,
-            },
-            body,
-        )
-    }
-
     /// Constructs a positive-arity function graph definition.
     pub fn function(
         input_arity: u32,
         body: DefinedFormula,
-        total_unique_proof: ProofId,
     ) -> Result<Self, DefinitionCertificateError> {
-        Self::new(
-            DefinitionKind::Function {
-                input_arity,
-                total_unique_proof,
-            },
-            body,
-        )
+        Self::new(DefinitionKind::Function { input_arity }, body)
     }
 
-    /// Returns the definition kind and exact proof obligation, if any.
+    /// Returns the conservative graph kind.
     #[must_use]
     pub const fn kind(&self) -> DefinitionKind {
         self.kind
@@ -98,33 +75,12 @@ impl DefinitionCertificate {
         &self.body
     }
 
-    /// Returns cited definitions in canonical body-prefix order.
-    #[must_use]
-    pub fn definition_references(&self) -> Vec<DefinitionId> {
-        self.body.definition_references()
-    }
-
     /// Returns the graph relation arity used by canonical formula applications.
     #[must_use]
     pub const fn relation_arity(&self) -> u32 {
         match self.kind {
             DefinitionKind::Relation { arity } => arity,
-            DefinitionKind::Constant { .. } => 1,
-            DefinitionKind::Function { input_arity, .. } => input_arity + 1,
-        }
-    }
-
-    /// Returns the exact selected proof required by a constant or function.
-    #[must_use]
-    pub const fn obligation_proof_id(&self) -> Option<ProofId> {
-        match self.kind {
-            DefinitionKind::Relation { .. } => None,
-            DefinitionKind::Constant {
-                unique_existence_proof,
-            } => Some(unique_existence_proof),
-            DefinitionKind::Function {
-                total_unique_proof, ..
-            } => Some(total_unique_proof),
+            DefinitionKind::Function { input_arity } => input_arity + 1,
         }
     }
 
@@ -135,14 +91,13 @@ impl DefinitionCertificate {
             .body
             .encode_canonical()
             .expect("DefinitionCertificate validates its body encoding");
-        let mut output = Vec::with_capacity(1 + 8 + body.len() + ProofId::BYTE_LENGTH);
+        let mut output = Vec::with_capacity(1 + 8 + body.len());
         match self.kind {
             DefinitionKind::Relation { arity } => {
                 output.push(RELATION);
                 output.extend_from_slice(&arity.to_be_bytes());
             }
-            DefinitionKind::Constant { .. } => output.push(CONSTANT),
-            DefinitionKind::Function { input_arity, .. } => {
+            DefinitionKind::Function { input_arity } => {
                 output.push(FUNCTION);
                 output.extend_from_slice(&input_arity.to_be_bytes());
             }
@@ -151,17 +106,6 @@ impl DefinitionCertificate {
             u32::try_from(body.len()).expect("the formula byte limit is smaller than u32::MAX");
         output.extend_from_slice(&body_length.to_be_bytes());
         output.extend_from_slice(&body);
-        match self.kind {
-            DefinitionKind::Relation { .. } => {}
-            DefinitionKind::Constant {
-                unique_existence_proof,
-            } => {
-                output.extend_from_slice(unique_existence_proof.as_bytes());
-            }
-            DefinitionKind::Function {
-                total_unique_proof, ..
-            } => output.extend_from_slice(total_unique_proof.as_bytes()),
-        }
         output
     }
 
@@ -180,53 +124,9 @@ impl DefinitionCertificate {
                 let arity = cursor.read_u32()?;
                 (DefinitionKind::Relation { arity }, cursor.read_u32()?)
             }
-            CONSTANT => {
-                let body_length = cursor.read_u32()?;
-                let body_bytes = cursor.take(body_length as usize)?;
-                let unique_existence_proof = ProofId::from_bytes(
-                    cursor
-                        .take(ProofId::BYTE_LENGTH)?
-                        .try_into()
-                        .expect("the checked slice has one ProofId"),
-                );
-                if cursor.remaining() != 0 {
-                    return Err(DefinitionCertificateError::TrailingBytes {
-                        remaining: cursor.remaining(),
-                    });
-                }
-                let body = DefinedFormula::decode_canonical(body_bytes)
-                    .map_err(DefinitionCertificateError::Formula)?;
-                return Self::new(
-                    DefinitionKind::Constant {
-                        unique_existence_proof,
-                    },
-                    body,
-                );
-            }
             FUNCTION => {
                 let input_arity = cursor.read_u32()?;
-                let body_length = cursor.read_u32()?;
-                let body_bytes = cursor.take(body_length as usize)?;
-                let total_unique_proof = ProofId::from_bytes(
-                    cursor
-                        .take(ProofId::BYTE_LENGTH)?
-                        .try_into()
-                        .expect("the checked slice has one ProofId"),
-                );
-                if cursor.remaining() != 0 {
-                    return Err(DefinitionCertificateError::TrailingBytes {
-                        remaining: cursor.remaining(),
-                    });
-                }
-                let body = DefinedFormula::decode_canonical(body_bytes)
-                    .map_err(DefinitionCertificateError::Formula)?;
-                return Self::new(
-                    DefinitionKind::Function {
-                        input_arity,
-                        total_unique_proof,
-                    },
-                    body,
-                );
+                (DefinitionKind::Function { input_arity }, cursor.read_u32()?)
             }
             tag => return Err(DefinitionCertificateError::UnknownKindTag(tag)),
         };
@@ -252,23 +152,34 @@ impl DefinitionCertificate {
     }
 
     fn validate(&self) -> Result<(), DefinitionCertificateError> {
-        if let DefinitionKind::Function { input_arity: 0, .. } = self.kind {
-            return Err(DefinitionCertificateError::ZeroFunctionArity);
+        let graph_arity = match self.kind {
+            DefinitionKind::Relation { arity: 0 } => {
+                return Err(DefinitionCertificateError::ZeroRelationArity);
+            }
+            DefinitionKind::Relation { arity } => u64::from(arity),
+            DefinitionKind::Function { input_arity: 0 } => {
+                return Err(DefinitionCertificateError::ZeroFunctionArity);
+            }
+            DefinitionKind::Function { input_arity } => u64::from(input_arity) + 1,
+        };
+        if graph_arity > u64::from(DEFINITION_MAX_GRAPH_ARITY) {
+            return Err(DefinitionCertificateError::ArityTooLarge {
+                actual: graph_arity,
+                maximum: DEFINITION_MAX_GRAPH_ARITY,
+            });
         }
-        if let DefinitionKind::Function { input_arity, .. } = self.kind {
-            input_arity
-                .checked_add(1)
-                .ok_or(DefinitionCertificateError::ArityOverflow)?;
-        }
+        let arity =
+            u32::try_from(graph_arity).expect("the checked definition graph-arity limit fits u32");
         let body = self
             .body
             .encode_canonical()
             .map_err(DefinitionCertificateError::Formula)?;
-        let arity = self.relation_arity();
-        if let Some(variable) = self
-            .body
-            .free_variables()
-            .into_iter()
+        if let Some(definition_id) = self.body.first_definition_reference() {
+            return Err(DefinitionCertificateError::DefinitionReference { definition_id });
+        }
+        let free_variables = self.body.free_variables();
+        if let Some(variable) = free_variables
+            .iter()
             .find(|variable| variable.identifier() >= arity)
         {
             return Err(DefinitionCertificateError::UndeclaredFormalVariable {
@@ -276,12 +187,18 @@ impl DefinitionCertificate {
                 arity,
             });
         }
-        let fixed_bytes = match self.kind {
-            DefinitionKind::Relation { .. } => 1 + 4 + 4,
-            DefinitionKind::Constant { .. } => 1 + 4 + ProofId::BYTE_LENGTH,
-            DefinitionKind::Function { .. } => 1 + 4 + 4 + ProofId::BYTE_LENGTH,
-        };
-        let actual = fixed_bytes + body.len();
+        for identifier in 0..arity {
+            if !free_variables
+                .iter()
+                .any(|variable| variable.identifier() == identifier)
+            {
+                return Err(DefinitionCertificateError::MissingFormalVariable {
+                    identifier,
+                    arity,
+                });
+            }
+        }
+        let actual = 1 + 4 + 4 + body.len();
         if actual > DEFINITION_MAX_BYTES {
             return Err(DefinitionCertificateError::InputTooLong {
                 actual,
@@ -352,12 +269,18 @@ pub enum DefinitionCertificateError {
     UnexpectedEnd,
     /// The certificate uses an unknown definition-kind tag.
     UnknownKindTag(u8),
-    /// Zero-input function graphs must use the distinct constant kind.
+    /// Relations require at least one formal argument.
+    ZeroRelationArity,
+    /// A function graph must declare at least one input.
     ZeroFunctionArity,
-    /// The function input and output arities do not fit the canonical count.
-    ArityOverflow,
+    /// The graph interface exceeds the definition-specific arity limit.
+    ArityTooLarge { actual: u64, maximum: u32 },
+    /// Canonical definition bodies must contain only primitive Foundation nodes.
+    DefinitionReference { definition_id: DefinitionId },
     /// The canonical body uses a free variable outside its formal interface.
     UndeclaredFormalVariable { identifier: u32, arity: u32 },
+    /// The canonical body omits one declared formal variable.
+    MissingFormalVariable { identifier: u32, arity: u32 },
     /// The definition body is not a canonical definition-aware formula.
     Formula(DefinedFormulaCodecError),
     /// A complete certificate was followed by additional bytes.
@@ -373,13 +296,27 @@ impl fmt::Display for DefinitionCertificateError {
             ),
             Self::UnexpectedEnd => formatter.write_str("definition certificate ended unexpectedly"),
             Self::UnknownKindTag(tag) => write!(formatter, "unknown definition kind {tag:#04x}"),
-            Self::ZeroFunctionArity => {
-                formatter.write_str("a zero-input function must be encoded as a constant")
+            Self::ZeroRelationArity => {
+                formatter.write_str("a relation definition must have at least one argument")
             }
-            Self::ArityOverflow => formatter.write_str("definition graph arity overflows u32"),
+            Self::ZeroFunctionArity => {
+                formatter.write_str("a function definition must have at least one input")
+            }
+            Self::ArityTooLarge { actual, maximum } => write!(
+                formatter,
+                "definition graph arity {actual} exceeds the limit {maximum}"
+            ),
+            Self::DefinitionReference { definition_id } => write!(
+                formatter,
+                "canonical definition body contains selected definition {definition_id:?}"
+            ),
             Self::UndeclaredFormalVariable { identifier, arity } => write!(
                 formatter,
                 "definition body uses formal variable {identifier} outside arity {arity}"
+            ),
+            Self::MissingFormalVariable { identifier, arity } => write!(
+                formatter,
+                "definition body omits formal variable {identifier} from arity {arity}"
             ),
             Self::Formula(source) => write!(formatter, "invalid definition body: {source}"),
             Self::TrailingBytes { remaining } => {
@@ -411,13 +348,24 @@ mod tests {
         DefinedFormula::equal(value, value)
     }
 
+    fn identity_body() -> DefinedFormula {
+        DefinedFormula::equal(FreeVariable::new(1), FreeVariable::new(0))
+    }
+
+    fn body_using_all(arity: u32) -> DefinedFormula {
+        let mut body = equality_body();
+        for identifier in 1..arity {
+            let variable = FreeVariable::new(identifier);
+            body = DefinedFormula::implies(body, DefinedFormula::equal(variable, variable));
+        }
+        body
+    }
+
     #[test]
-    fn every_definition_kind_round_trips_and_retains_exact_obligation() {
-        let proof = ProofId::from_bytes([0x55; 32]);
+    fn every_definition_kind_round_trips_without_an_obligation_address() {
         let definitions = [
             DefinitionCertificate::relation(1, equality_body()).unwrap(),
-            DefinitionCertificate::constant(equality_body(), proof).unwrap(),
-            DefinitionCertificate::function(1, equality_body(), proof).unwrap(),
+            DefinitionCertificate::function(1, identity_body()).unwrap(),
         ];
         for definition in &definitions {
             let bytes = definition.to_canonical_bytes();
@@ -426,14 +374,12 @@ mod tests {
                 definition
             );
         }
-        assert_eq!(definitions[0].obligation_proof_id(), None);
-        assert_eq!(definitions[1].obligation_proof_id(), Some(proof));
-        assert_eq!(definitions[2].relation_arity(), 2);
+        assert_eq!(definitions[0].relation_arity(), 1);
+        assert_eq!(definitions[1].relation_arity(), 2);
     }
 
     #[test]
-    fn interface_validation_rejects_undeclared_and_redundant_function_forms() {
-        let proof = ProofId::from_bytes([0x66; 32]);
+    fn interface_validation_requires_exact_used_bounded_formals() {
         assert_eq!(
             DefinitionCertificate::relation(
                 1,
@@ -445,26 +391,78 @@ mod tests {
             })
         );
         assert_eq!(
-            DefinitionCertificate::function(0, equality_body(), proof),
+            DefinitionCertificate::relation(2, equality_body()),
+            Err(DefinitionCertificateError::MissingFormalVariable {
+                identifier: 1,
+                arity: 2,
+            })
+        );
+        assert_eq!(
+            DefinitionCertificate::relation(0, equality_body()),
+            Err(DefinitionCertificateError::ZeroRelationArity)
+        );
+        assert_eq!(
+            DefinitionCertificate::function(0, equality_body()),
             Err(DefinitionCertificateError::ZeroFunctionArity)
         );
         assert_eq!(
-            DefinitionCertificate::function(u32::MAX, equality_body(), proof),
-            Err(DefinitionCertificateError::ArityOverflow)
+            DefinitionCertificate::relation(DEFINITION_MAX_GRAPH_ARITY + 1, equality_body()),
+            Err(DefinitionCertificateError::ArityTooLarge {
+                actual: u64::from(DEFINITION_MAX_GRAPH_ARITY) + 1,
+                maximum: DEFINITION_MAX_GRAPH_ARITY,
+            })
         );
+        assert_eq!(
+            DefinitionCertificate::function(DEFINITION_MAX_GRAPH_ARITY, identity_body()),
+            Err(DefinitionCertificateError::ArityTooLarge {
+                actual: u64::from(DEFINITION_MAX_GRAPH_ARITY) + 1,
+                maximum: DEFINITION_MAX_GRAPH_ARITY,
+            })
+        );
+        assert_eq!(
+            DefinitionCertificate::function(u32::MAX, equality_body()),
+            Err(DefinitionCertificateError::ArityTooLarge {
+                actual: u64::from(u32::MAX) + 1,
+                maximum: DEFINITION_MAX_GRAPH_ARITY,
+            })
+        );
+        let _ = DefinitionCertificate::relation(
+            DEFINITION_MAX_GRAPH_ARITY,
+            body_using_all(DEFINITION_MAX_GRAPH_ARITY),
+        )
+        .unwrap();
+        let _ = DefinitionCertificate::function(
+            DEFINITION_MAX_GRAPH_ARITY - 1,
+            body_using_all(DEFINITION_MAX_GRAPH_ARITY),
+        )
+        .unwrap();
     }
 
     #[test]
-    fn kind_body_arity_and_obligation_are_identity_bearing() {
-        let first = ProofId::from_bytes([0x77; 32]);
-        let second = ProofId::from_bytes([0x78; 32]);
+    fn kind_body_and_arity_are_identity_bearing() {
         let relation = DefinitionCertificate::relation(1, equality_body()).unwrap();
-        let wider = DefinitionCertificate::relation(2, equality_body()).unwrap();
-        let constant = DefinitionCertificate::constant(equality_body(), first).unwrap();
-        let alternate = DefinitionCertificate::constant(equality_body(), second).unwrap();
+        let wider = DefinitionCertificate::relation(2, identity_body()).unwrap();
+        let function = DefinitionCertificate::function(1, identity_body()).unwrap();
+        let alternate = DefinitionCertificate::relation(
+            1,
+            DefinedFormula::member(FreeVariable::new(0), FreeVariable::new(0)),
+        )
+        .unwrap();
         assert_ne!(relation.definition_id(), wider.definition_id());
-        assert_ne!(relation.definition_id(), constant.definition_id());
-        assert_ne!(constant.definition_id(), alternate.definition_id());
+        assert_ne!(wider.definition_id(), function.definition_id());
+        assert_ne!(relation.definition_id(), alternate.definition_id());
+    }
+
+    #[test]
+    fn canonical_definition_body_rejects_selected_definition_applications() {
+        let definition_id = DefinitionId::from_bytes([0x77; 32]);
+        assert_eq!(
+            DefinitionCertificate::relation(
+                1,
+                DefinedFormula::defined_relation(definition_id, [FreeVariable::new(0)]),
+            ),
+            Err(DefinitionCertificateError::DefinitionReference { definition_id })
+        );
     }
 
     #[test]
@@ -473,22 +471,24 @@ mod tests {
         assert_eq!(
             definition.definition_id().as_bytes(),
             &[
-                0x8f, 0x45, 0x06, 0x22, 0x29, 0x01, 0xbb, 0x6e, 0x08, 0x76, 0x15, 0x06, 0x3e, 0x7d,
-                0x1d, 0xb4, 0x9b, 0xe6, 0x84, 0x2d, 0x96, 0xe7, 0xe1, 0xad, 0xfb, 0xcd, 0x01, 0xc8,
-                0x4f, 0xf2, 0x80, 0x18,
+                0x01, 0x96, 0xe7, 0x6e, 0xe0, 0xec, 0xab, 0xbe, 0x9e, 0x86, 0x3a, 0x19, 0xf1, 0x91,
+                0xde, 0xd8, 0x7b, 0x59, 0x9a, 0x4b, 0x15, 0x8c, 0x52, 0xf7, 0x5d, 0x8e, 0xce, 0x35,
+                0xba, 0x79, 0x60, 0x35,
             ]
         );
     }
 
     #[test]
     fn strict_decoder_rejects_every_truncation_unknown_tag_and_trailing_byte() {
-        let definition =
-            DefinitionCertificate::constant(equality_body(), ProofId::from_bytes([0x88; 32]))
-                .unwrap();
+        let definition = DefinitionCertificate::function(1, identity_body()).unwrap();
         let bytes = definition.to_canonical_bytes();
         for end in 0..bytes.len() {
             assert!(DefinitionCertificate::from_canonical_bytes(&bytes[..end]).is_err());
         }
+        assert_eq!(
+            DefinitionCertificate::from_canonical_bytes(&[0x01]),
+            Err(DefinitionCertificateError::UnknownKindTag(0x01))
+        );
         assert_eq!(
             DefinitionCertificate::from_canonical_bytes(&[0xff]),
             Err(DefinitionCertificateError::UnknownKindTag(0xff))
@@ -502,39 +502,8 @@ mod tests {
     }
 
     #[test]
-    fn formula_and_complete_certificate_byte_limits_are_enforced_in_precedence_order() {
-        const ARGUMENT_COUNT: usize = 78_635;
-
-        let definition_id = DefinitionId::from_bytes([0x91; 32]);
-        let formal = FreeVariable::new(0);
-        let body = |negations| {
-            let mut formula = DefinedFormula::defined_relation(
-                definition_id,
-                std::iter::repeat_n(formal, ARGUMENT_COUNT),
-            );
-            for _ in 0..negations {
-                formula = DefinedFormula::negate(formula);
-            }
-            formula
-        };
-
-        let exact = DefinitionCertificate::relation(1, body(4)).unwrap();
-        assert_eq!(
-            exact.body().encode_canonical().unwrap().len(),
-            FORMULA_MAX_BYTES
-        );
-        assert_eq!(exact.to_canonical_bytes().len(), FORMULA_MAX_BYTES + 9);
-        drop(exact);
-
-        assert_eq!(
-            DefinitionCertificate::relation(1, body(5)),
-            Err(DefinitionCertificateError::Formula(
-                DefinedFormulaCodecError::InputTooLong {
-                    actual: FORMULA_MAX_BYTES + 1,
-                    maximum: FORMULA_MAX_BYTES,
-                }
-            ))
-        );
+    fn complete_certificate_byte_limit_is_derived_from_the_formula_limit() {
+        assert_eq!(DEFINITION_MAX_BYTES, FORMULA_MAX_BYTES + 9);
         assert_eq!(
             DefinitionCertificate::from_canonical_bytes(&vec![0; DEFINITION_MAX_BYTES + 1]),
             Err(DefinitionCertificateError::InputTooLong {

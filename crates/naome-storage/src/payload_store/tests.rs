@@ -297,12 +297,12 @@ fn exact_format_golden_binds_foundation_address_payload_and_digest() {
     assert_eq!(
         fs::read(directory.store_path()).unwrap(),
         hex_bytes(
-            "6e616f6d653a61727469666163742d7061796c6f61642d73746f72653a763000\
+            "6e616f6d653a61727469666163742d7061796c6f61642d73746f72653a763100\
              6e616f6d653a7a6663\
              00000013\
              c0de06fa90f5d8ba27cf4d97779d2614a3eb819695ac8ac13751df9e1b062798\
              00000000020600000000210000000000000000\
-             914172c49bf1fe534508318924b95336211a3761176766075e78447aa56011f2"
+             af6f242f1cfec001cc3b2632e883b5f353812d2175df739c0ff9543f94382108"
                 .replace([' ', '\n'], "")
                 .as_str(),
         )

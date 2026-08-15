@@ -10,11 +10,12 @@ and provenance; it must not redefine mathematical truth.
 
 Definitions let large proofs use ordinary mathematical vocabulary without
 replacing it with primitive ZFC at every citation. Relations are eliminable
-formula abbreviations. Constants and functions are graph definitions backed by
-exact earlier selected proofs of unique or total-unique existence. Proofs and
-definitions may use only dependencies selected by earlier blocks in the same
-chain ancestry. Local files, archives, candidates, network responses, the same
-block, and forward references never authorize resolution.
+formula abbreviations. Functions are graph definitions backed by an exact
+earlier selected total-and-unique existence statement; the particular proof is
+not part of the function's identity. Standalone constants are deliberately not
+definition artifacts. Proofs may use only dependencies selected by earlier
+blocks in the same chain ancestry. Local files, archives, candidates, network
+responses, the same block, and forward references never authorize resolution.
 
 ## Why NAOME
 
@@ -41,10 +42,10 @@ The prerelease reference implementation provides:
 Consensus, fork choice, finality, reorganization, incentives, and recursive
 definitions are not implemented.
 
-The `single-artifact-v0` chain, journal, archive, and network formats replace
-their proof-only predecessors cleanly. Old local data must be recreated;
-existing primitive proof bytes and `ProofId`, `DerivationId`, and `StatementId`
-values remain unchanged.
+The `canonical-definition-v1` chain, journal, archive, and network context
+replaces the earlier prerelease artifact context cleanly. Old local data must be
+recreated; existing primitive proof bytes and `ProofId`, `DerivationId`, and
+`StatementId` values remain unchanged.
 
 ## Authoring
 
@@ -78,10 +79,12 @@ Compilation never fetches, selects, registers, or mutates artifacts. The
 standalone CLI therefore accepts dependency-free sources; selected dependencies
 require the immutable selected-state compiler adapter. See the compact
 [definition-and-citation proof](examples/definitions-long-proof.nao), the real
-[identity-function definition](examples/identity-function.nao), and the
-[empty-set definition](examples/empty-set.nao) backed by its independently
-checked existence-and-uniqueness proof. Exact source grammar, output fields, and
-diagnostics are specified in [Proof Authoring](specs/proof-authoring.md).
+[identity-function definition](examples/identity-function.nao) backed by its
+independently checked total-and-unique existence theorem, and the large
+[empty-set theorem](examples/empty-set-obligation.nao), which remains a proof
+rather than a standalone constant artifact. Exact source grammar, output
+fields, and diagnostics are specified in
+[Proof Authoring](specs/proof-authoring.md).
 
 ## Architecture
 
@@ -121,7 +124,8 @@ Invariant boundaries are:
 - [Foundation](specs/foundation.md) defines primitive mathematical syntax,
   axioms, schemas, and inference rules.
 - [Mathematical Definitions](specs/mathematical-definitions.md) defines graph
-  definitions, exact obligations, expansion, and typed artifact identity.
+  novelty, canonical graph meaning, exact function obligations, and typed
+  artifact identity.
 - [Proof Protocol](specs/proof-protocol.md) defines canonical proof semantics,
   identities, artifact admission, authenticated state, and blocks.
 - [Proof Authoring](specs/proof-authoring.md) defines `.nao` source and its

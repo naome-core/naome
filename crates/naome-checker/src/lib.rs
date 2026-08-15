@@ -33,6 +33,8 @@ pub use state::{ArtifactState, ArtifactStateError};
 const STATEMENT_ID_DOMAIN: &[u8] = b"naome:statement\0";
 const PROOF_ID_DOMAIN: &[u8] = b"naome:proof\0";
 const DERIVATION_NODE_ID_DOMAIN: &[u8] = b"naome:derivation-node\0";
+const FUNCTION_OBLIGATION_FIXED_NODES: usize = 9;
+const FUNCTION_OBLIGATION_FIXED_DEPTH: u32 = 8;
 
 /// Maximum cumulative canonical formula work admitted by Checker.
 ///
@@ -62,15 +64,21 @@ pub struct CheckedProof {
 
 /// A conservative definition accepted against one selected-artifact state.
 ///
-/// The original certificate determines [`DefinitionId`]. A private,
-/// definition-free expansion cache is retained separately so later proof
-/// expansion does not repeat transitive definition work.
+/// The canonical certificate is already fully expanded and determines
+/// [`DefinitionId`]. Functions additionally retain the exact computed
+/// obligation statement used during checking so registration can revalidate it.
 #[derive(Debug, PartialEq, Eq)]
 #[must_use]
 pub struct CheckedDefinition {
     certificate: DefinitionCertificate,
     definition_id: DefinitionId,
-    expansion_cache: DefinitionCertificate,
+    obligation: Option<CheckedDefinitionObligation>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CheckedDefinitionObligation {
+    statement_id: StatementId,
+    conclusion: Formula,
 }
 
 impl CheckedDefinition {
@@ -89,9 +97,11 @@ impl CheckedDefinition {
         self.definition_id
     }
 
-    /// Returns the fully expanded primitive graph body.
-    pub fn expanded_body(&self) -> &DefinedFormula {
-        self.expansion_cache.body()
+    /// Returns the computed selected statement required by a function definition.
+    pub fn obligation_statement_id(&self) -> Option<StatementId> {
+        self.obligation
+            .as_ref()
+            .map(|obligation| obligation.statement_id)
     }
 }
 
@@ -292,83 +302,128 @@ pub fn check_normal_form_with_state(
     check_normal_form_with_resolver(normal_form, artifact_state)
 }
 
-/// Checks one conservative definition against immutable selected state.
+/// Expands an authoring definition body and checks its canonical certificate.
 ///
-/// Direct definition dependencies are required first and expanded within the
-/// Foundation formula limits. Constants and functions then require their exact
-/// declared selected proof and its exact generated total-unique conclusion.
+/// Selected definition applications are authoring conveniences only. They are
+/// eliminated before the strict self-contained certificate is constructed, so
+/// they cannot affect [`DefinitionId`].
+pub fn normalize_and_check_definition_with_state(
+    kind: DefinitionKind,
+    body: DefinedFormula,
+    artifact_state: &ArtifactState,
+) -> Result<CheckedDefinition, DefinitionCheckError> {
+    let expanded_body = body
+        .expand_with_node_limit(artifact_state, FORMULA_MAX_NODES)
+        .map(|value| value.0)
+        .map_err(DefinitionCheckError::Expansion)?;
+    let expanded_body = DefinedFormula::from_primitive(&expanded_body)
+        .map_err(DefinitionCheckError::CanonicalBody)?;
+    let certificate = DefinitionCertificate::new(kind, expanded_body)
+        .map_err(DefinitionCheckError::Certificate)?;
+    check_definition_with_state(certificate, artifact_state)
+}
+
+/// Checks one self-contained conservative definition against selected state.
+///
+/// Definition-certificate construction has already guaranteed a fully expanded
+/// primitive body and an exact minimal interface. Functions require their exact
+/// checker-derived total-unique statement to exist in earlier selected state.
 /// The state is never mutated; register the returned value separately.
 pub fn check_definition_with_state(
     certificate: DefinitionCertificate,
     artifact_state: &ArtifactState,
 ) -> Result<CheckedDefinition, DefinitionCheckError> {
-    for definition_id in certificate.body().definition_references() {
-        if !artifact_state.contains_definition(definition_id) {
-            return Err(DefinitionCheckError::UnknownDefinitionDependency { definition_id });
+    let obligation = match certificate.kind() {
+        DefinitionKind::Relation { .. } => None,
+        DefinitionKind::Function { input_arity } => {
+            let maximum_body_nodes = maximum_function_body_nodes(input_arity);
+            let Some(maximum_body_depth) = maximum_function_body_depth(input_arity) else {
+                return Err(DefinitionCheckError::ObligationFormula(
+                    FormulaCodecError::DepthLimitExceeded {
+                        maximum: FORMULA_MAX_DEPTH,
+                    },
+                ));
+            };
+            let body_bytes = match certificate
+                .body()
+                .encode_canonical_with_limits(maximum_body_nodes, maximum_body_depth)
+            {
+                Ok((bytes, _)) => bytes,
+                Err(DefinedFormulaCodecError::NodeLimitExceeded { .. }) => {
+                    return Err(DefinitionCheckError::ObligationFormula(
+                        FormulaCodecError::NodeLimitExceeded {
+                            maximum: FORMULA_MAX_NODES,
+                        },
+                    ));
+                }
+                Err(DefinedFormulaCodecError::DepthLimitExceeded { .. }) => {
+                    return Err(DefinitionCheckError::ObligationFormula(
+                        FormulaCodecError::DepthLimitExceeded {
+                            maximum: FORMULA_MAX_DEPTH,
+                        },
+                    ));
+                }
+                Err(source) => return Err(DefinitionCheckError::CanonicalBody(source)),
+            };
+            let body = Formula::decode_canonical(&body_bytes).map_err(|source| {
+                DefinitionCheckError::CanonicalBody(DefinedFormulaCodecError::Primitive(source))
+            })?;
+            let conclusion = function_obligation(input_arity, body);
+            let canonical = conclusion
+                .encode_canonical()
+                .map_err(DefinitionCheckError::ObligationFormula)?;
+            let statement_id = statement_id(&canonical);
+            let selected = artifact_state
+                .resolve_statement(statement_id)
+                .ok_or(DefinitionCheckError::UnknownObligationStatement { statement_id })?;
+            if selected != &conclusion {
+                return Err(DefinitionCheckError::ObligationConclusionMismatch { statement_id });
+            }
+            Some(CheckedDefinitionObligation {
+                statement_id,
+                conclusion,
+            })
         }
-    }
-
-    let expanded_body = certificate
-        .body()
-        .expand_with_node_limit(artifact_state, FORMULA_MAX_NODES)
-        .map(|value| value.0)
-        .map_err(DefinitionCheckError::Expansion)?;
-
-    if let Some(proof_id) = certificate.obligation_proof_id() {
-        let obligation = artifact_state
-            .resolve_proof(proof_id)
-            .ok_or(DefinitionCheckError::UnknownObligationProof { proof_id })?;
-        let expected = definition_obligation(certificate.kind(), &expanded_body)
-            .map_err(DefinitionCheckError::ObligationFormula)?
-            .expect("proof-bearing definitions always have an obligation");
-        if obligation.conclusion != &expected {
-            return Err(DefinitionCheckError::ObligationConclusionMismatch { proof_id });
-        }
-    }
-
-    let expanded_body = DefinedFormula::from_primitive(&expanded_body)
-        .map_err(DefinitionCheckError::ExpandedBody)?;
-    let expansion_cache = DefinitionCertificate::new(certificate.kind(), expanded_body)
-        .map_err(DefinitionCheckError::ExpansionCache)?;
+    };
     let definition_id = certificate.definition_id();
     Ok(CheckedDefinition {
         certificate,
         definition_id,
-        expansion_cache,
+        obligation,
     })
 }
 
-fn definition_obligation(
-    kind: DefinitionKind,
-    body: &Formula,
-) -> Result<Option<Formula>, FormulaCodecError> {
-    let input_arity = match kind {
-        DefinitionKind::Relation { .. } => return Ok(None),
-        DefinitionKind::Constant { .. } => 0,
-        DefinitionKind::Function { input_arity, .. } => input_arity,
-    };
-    if input_arity >= FORMULA_MAX_DEPTH {
-        return Err(FormulaCodecError::DepthLimitExceeded {
-            maximum: FORMULA_MAX_DEPTH,
-        });
-    }
+fn maximum_function_body_nodes(input_arity: u32) -> usize {
+    let obligation_overhead = usize::try_from(input_arity)
+        .expect("DefinitionCertificate bounds function input arity")
+        + FUNCTION_OBLIGATION_FIXED_NODES;
+    (FORMULA_MAX_NODES - obligation_overhead) / 2
+}
+
+fn maximum_function_body_depth(input_arity: u32) -> Option<u32> {
+    input_arity
+        .checked_add(FUNCTION_OBLIGATION_FIXED_DEPTH)
+        .and_then(|overhead| FORMULA_MAX_DEPTH.checked_sub(overhead))
+        .filter(|maximum| *maximum > 0)
+}
+
+fn function_obligation(input_arity: u32, body: Formula) -> Formula {
     let output = FreeVariable::new(input_arity);
     let uniqueness_witness = FreeVariable::new(
         input_arity
             .checked_add(1)
-            .expect("DefinitionCertificate rejects function arity overflow"),
+            .expect("DefinitionCertificate bounds function graph arity"),
     );
     let witness_body = body.clone().substitute_free(output, uniqueness_witness);
     let uniqueness = Formula::for_all(
         uniqueness_witness,
         Formula::implies(witness_body, Formula::equal(uniqueness_witness, output)),
     );
-    let mut obligation = Formula::exists(output, Formula::conjunction(body.clone(), uniqueness));
+    let mut obligation = Formula::exists(output, Formula::conjunction(body, uniqueness));
     for identifier in (0..input_arity).rev() {
         obligation = Formula::for_all(FreeVariable::new(identifier), obligation);
     }
-    obligation.encode_canonical()?;
-    Ok(Some(obligation))
+    obligation
 }
 
 fn check_normal_form_with_resolver(
@@ -787,54 +842,53 @@ impl Error for CheckError {
     }
 }
 
-/// A selected dependency, expansion, or proof-obligation definition failure.
+/// A normalization or computed function-obligation definition failure.
 ///
-/// Error precedence is direct selected-definition availability, bounded body
-/// expansion, exact selected obligation availability, exact conclusion match,
-/// and finally construction of the definition-free expansion cache.
+/// Authoring normalization expands selected aliases before certificate
+/// construction. Strict checking then constructs the exact obligation, derives
+/// its statement identity, requires it from selected state, and compares the
+/// complete conclusion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DefinitionCheckError {
-    /// A direct definition dependency is absent from selected state.
-    UnknownDefinitionDependency { definition_id: DefinitionId },
-    /// Conservative body expansion failed.
+    /// Authoring-only conservative body expansion failed.
     Expansion(DefinitionExpansionError),
-    /// The exact proof declared by a constant or function is not selected.
-    UnknownObligationProof { proof_id: ProofId },
-    /// The exact selected proof concludes something other than the generated obligation.
-    ObligationConclusionMismatch { proof_id: ProofId },
+    /// The expanded body could not be represented in the canonical formula format.
+    CanonicalBody(DefinedFormulaCodecError),
+    /// The expanded body could not form a strict canonical definition certificate.
+    Certificate(DefinitionCertificateError),
+    /// No earlier selected proof establishes the computed obligation statement.
+    UnknownObligationStatement { statement_id: StatementId },
+    /// The selected statement identity resolves to a conflicting conclusion.
+    ObligationConclusionMismatch { statement_id: StatementId },
     /// The generated total-unique formula exceeds Foundation limits.
     ObligationFormula(FormulaCodecError),
-    /// The expanded primitive body could not be represented canonically.
-    ExpandedBody(DefinedFormulaCodecError),
-    /// The definition-free expansion cache could not be constructed.
-    ExpansionCache(DefinitionCertificateError),
 }
 
 impl fmt::Display for DefinitionCheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownDefinitionDependency { .. } => {
-                formatter.write_str("definition cites a definition absent from selected state")
-            }
             Self::Expansion(source) => write!(formatter, "definition body cannot expand: {source}"),
-            Self::UnknownObligationProof { .. } => {
-                formatter.write_str("definition obligation proof is absent from selected state")
+            Self::CanonicalBody(source) => {
+                write!(formatter, "canonical definition body is invalid: {source}")
+            }
+            Self::Certificate(source) => {
+                write!(
+                    formatter,
+                    "canonical definition certificate is invalid: {source}"
+                )
+            }
+            Self::UnknownObligationStatement { .. } => {
+                formatter.write_str("definition obligation statement is absent from selected state")
             }
             Self::ObligationConclusionMismatch { .. } => {
-                formatter.write_str("selected definition obligation proof has the wrong conclusion")
+                formatter.write_str("definition obligation statement has a conflicting conclusion")
             }
             Self::ObligationFormula(source) => {
                 write!(
                     formatter,
                     "definition obligation is outside Formula limits: {source}"
                 )
-            }
-            Self::ExpandedBody(source) => {
-                write!(formatter, "expanded definition body is invalid: {source}")
-            }
-            Self::ExpansionCache(source) => {
-                write!(formatter, "expanded definition cache is invalid: {source}")
             }
         }
     }
@@ -844,12 +898,12 @@ impl Error for DefinitionCheckError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Expansion(source) => Some(source),
+            Self::CanonicalBody(source) => Some(source),
+            Self::Certificate(source) => Some(source),
             Self::ObligationFormula(source) => Some(source),
-            Self::ExpandedBody(source) => Some(source),
-            Self::ExpansionCache(source) => Some(source),
-            Self::UnknownDefinitionDependency { .. }
-            | Self::UnknownObligationProof { .. }
-            | Self::ObligationConclusionMismatch { .. } => None,
+            Self::UnknownObligationStatement { .. } | Self::ObligationConclusionMismatch { .. } => {
+                None
+            }
         }
     }
 }

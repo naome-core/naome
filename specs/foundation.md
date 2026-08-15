@@ -218,15 +218,15 @@ The input, output, uniqueness witness, source, result, and parameter variables m
 Foundation contains no definition rule or defined mathematical symbol. The
 separate [Mathematical Definitions](mathematical-definitions.md) protocol may
 admit selected conservative graph abbreviations: relations expand to existing
-formulas, constants name an exact selected proof of unique existence, and
-positive-arity functions name an exact selected proof of total unique
-existence. Every application is eliminated before a Foundation operation or
+formulas, and positive-arity functions require an exact earlier selected
+total-and-unique existence statement. The particular proof is not part of the
+definition. Every application is eliminated before a Foundation operation or
 primitive result identity is computed.
 
 These definition artifacts do not change `naome:zfc`. No defined symbol,
-definition certificate, constant term, or function term is a primitive value
-under this Foundation identity. Recursive definitions are not admitted by the
-current selected-prior-block definition protocol.
+definition certificate, or function term is a primitive value under this
+Foundation identity. Standalone constants and recursive definitions are not
+admitted by the current protocol.
 
 ## Verification boundary
 

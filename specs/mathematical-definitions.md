@@ -44,13 +44,14 @@ exact prior bytes and identities.
 
 ## Canonical graph definitions
 
-A `DefinitionCertificate` has one kind and one definition-aware body. Its free
-variables are positional formal parameters; presentation names are absent.
+A `DefinitionCertificate` has one kind and one primitive Foundation body. Its
+free variables are positional formal parameters; presentation names and
+definition applications are absent. Source authoring may use selected
+definition aliases, but must fully expand them before constructing these bytes.
 
 | Kind | Tag | Formal graph interface | Proof obligation |
 | --- | --- | --- | --- |
 | relation | `00` | arguments `0 .. arity - 1` | none |
-| constant | `01` | output `0` | unique existence |
 | function | `02` | inputs `0 .. input_arity - 1`, output `input_arity` | total unique existence |
 
 The exact certificate encodings are:
@@ -59,56 +60,45 @@ The exact certificate encodings are:
 relation =
   00 | arity u32 | body_length u32 | body
 
-constant =
-  01 | body_length u32 | body | unique_existence_proof ProofId[32]
-
 function =
   02 | input_arity u32 | body_length u32 | body
-     | total_unique_proof ProofId[32]
 ```
 
 All integers are unsigned big-endian. `body_length` covers only `body`; the
-decoder requires exact end-of-input after the kind-specific suffix. One
-certificate is at most 4,194,304 bytes.
+decoder requires exact end-of-input. Tag `01`, formerly used by prerelease
+constant certificates, is invalid and is not reinterpreted. One certificate is
+at most 393,225 bytes: a nine-byte header plus one maximum Foundation formula.
 
-Relation arity may be zero. Function input arity must be positive because a
-zero-input graph is canonically a constant. `input_arity + 1` must fit `u32`.
-Every body free-variable identifier must be smaller than the graph arity: the
-declared relation arity, `1` for a constant, or `input_arity + 1` for a
-function. An unused formal is permitted; an undeclared formal is rejected.
+Relation graph arity is `1..=256`. Function input arity is `1..=255`, so its
+input-plus-output graph arity is at most 256. The body's free-variable set must
+equal the complete positional interface `{0, ..., graph_arity - 1}`. A missing,
+unused, or undeclared formal is rejected by certificate construction; duplicate
+source parameter names are rejected earlier by authoring. These rules prevent
+identity variation through empty or unused interfaces and make the encoded
+interface minimal.
 
 ## Conservative expansion
 
 Resolving `R(a0, ..., an)` first requires the exact `DefinitionId` to be selected.
-Expansion then consumes only a non-identity-bearing graph view: its arity and a
-cached expanded body. That view exposes neither a `DefinitionId` nor canonical
-certificate bytes, so it cannot masquerade as the selected artifact whose ID
-authorized the lookup. Expansion requires the graph arity to equal the argument
-count and capture-safely substitutes each formal free variable with the
-corresponding argument. Bound variables are shifted when substitution crosses a
-quantifier. The result contains only Foundation nodes.
+Expansion consumes the selected certificate's already primitive graph body.
+It requires the graph arity to equal the argument count and capture-safely
+substitutes each formal free variable with the corresponding argument. Bound
+variables are shifted when substitution crosses a quantifier. The result
+contains only Foundation nodes.
 
 Expansion is deterministic and fail-closed. It rejects:
 
 - a definition absent from immutable selected state;
 - an arity mismatch;
-- an undeclared formal variable;
-- a dependency cycle exposed by a resolver; or
+- an out-of-range formal that cannot occur in an admitted selected
+  certificate; or
 - work beyond 65,536 visited compact nodes or depth 256.
 
-The node budget includes compact nodes visited inside cited definition bodies,
-including definition-application nodes that disappear from the primitive
-result. Selected state retains the exact certificate separately for identity,
-kind, dependency, and obligation checks, and stores a definition-free expanded
-body for graph resolution. This avoids repeated transitive traversal while
-preserving the same primitive result without assigning the cache a second
-artifact identity.
-
-Definition dependencies are resolved only from earlier selected blocks in the
-same artifact chain. A local definition, same-block definition, forward
-reference, candidate block, payload archive, network response, or unselected
-fork cannot satisfy resolution. This selected-prior-block rule makes recursive
-and mutually recursive definitions unavailable in this protocol version.
+The node budget charges each compact definition-application node and each
+visited graph-body node once, before recursion or allocation. Selected state
+retains one exact self-contained certificate for both identity and graph
+resolution; there is no second expansion cache or canonical
+definition-dependency edge. Alias boundaries are authoring presentation only.
 
 ## Exact proof obligations
 
@@ -125,29 +115,35 @@ exists_unique(P, o, w) = ∃o (P ∧ unique(P, o, w))
 
 - A relation definition has no proof obligation because it is only an
   eliminable formula abbreviation.
-- A constant with body `P(0)` must name an already selected `ProofId` whose
-  checked conclusion is exactly `exists_unique(P, 0, 1)`.
-- A function with inputs `0 .. n - 1`, output `n`, and witness `n + 1` must name
-  an already selected `ProofId` whose checked conclusion is exactly:
+- A function with inputs `0 .. n - 1`, output `n`, and witness `n + 1` requires
+  an already selected statement whose checked conclusion is exactly:
 
 ```text
 ∀0 ∀1 ... ∀(n - 1) exists_unique(P, n, n + 1)
 ```
 
-The checker expands direct definition dependencies first, then requires the
-named proof, constructs the expected obligation, and compares the complete
-primitive conclusion structurally. A theorem that is merely equivalent, a
-different proof address, or a proof unavailable from selected state does not
-satisfy the declared obligation. The obligation `ProofId` is part of definition
-identity.
+The checker constructs this obligation from the primitive body, derives its
+exact `StatementId`, resolves that statement from earlier selected state, and
+compares the complete primitive conclusion structurally. A theorem that is
+merely equivalent, a candidate or archived proof, or a statement unavailable
+from selected state does not satisfy the obligation. The particular proof and
+derivation that selected the statement are neither serialized nor
+definition-identity-bearing.
+
+Before duplicating the graph body, the checker enforces the exact derived work
+bounds `2 * body_nodes + input_arity + 9 <= 65,536` and
+`body_depth + input_arity + 8 < 256`. The fixed additions are the primitive
+expansions of uniqueness, conjunction, existence, and their deepest branch.
+Oversized obligations therefore fail before allocating their derived formula
+trees.
 
 ## Definition identity
 
-`DefinitionId` is the SHA-256 digest of the complete kind, arity, body, and
-obligation reference under the exact Foundation context:
+`DefinitionId` is the SHA-256 digest of the complete minimal interface and
+fully expanded primitive graph under the exact Foundation context:
 
 ```text
-definition_domain = "naome:definition:v0\0"
+definition_domain = "naome:definition:v1\0"
 foundation        = "naome:zfc"
 
 DefinitionId = SHA256(
@@ -157,23 +153,31 @@ DefinitionId = SHA256(
 )
 ```
 
-The relation definition of arity one with body `free(0) = free(0)` has:
+The golden `DefinitionId` for the relation of arity one with body
+`free(0) = free(0)` is
+`0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035`.
 
-```text
-DefinitionId = 8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018
-```
+Source aliases are fully expanded and parameter names are absent before this
+identity is computed. Therefore an alias-authored graph and its direct
+canonical graph have the same `DefinitionId` and typed `ArtifactId`; selected
+state rejects the second occurrence as a duplicate. This is exact canonical
+graph deduplication, not logical-equivalence search: structurally different but
+provably equivalent formulas remain different definitions.
 
 Constructing an identity from 32 bytes creates an address only. It does not
-establish that the definition exists, is selected, expands, or satisfies its
-proof obligation.
+establish that the definition exists, is selected, or has a selected function
+obligation statement.
 
 ## Use inside proofs
 
 Every formula-valued proof-step field may contain selected definition
 applications. Before the primitive axiom, schema, or inference operation runs,
 the checker expands that field through immutable selected state. A missing
-definition, wrong arity, cycle, or expansion-limit failure rejects the proof at
-that step. Primitive formula fields take the zero-conversion path.
+definition, wrong arity, or expansion-limit failure rejects the proof at that
+step. The generic resolver also rejects cycles defensively, although admitted
+canonical definitions contain no definition references and therefore cannot
+form a selected-state cycle. Primitive formula fields take the zero-conversion
+path.
 
 Proof normal form retains the compact `DefinitionId` applications. Therefore
 `ProofId` identifies the concrete compact certificate and its exact definition
@@ -185,10 +189,9 @@ expanded primitive formulas. This gives the intended split:
 - the same primitive inference DAG retains its `DerivationId` when the rule and
   ordered primitive dependencies are unchanged.
 
-Definitions can themselves cite earlier selected definitions in their bodies.
 Proofs can cite earlier selected `ProofId` values and use earlier selected
-`DefinitionId` values in the same certificate. All direct dependencies are
-recorded on admission and revalidated before registration.
+`DefinitionId` values in the same certificate. Definitions are self-contained;
+source aliases used to author them are expanded before identity and admission.
 
 ## Typed artifact envelope
 
@@ -209,7 +212,7 @@ parallel proof and definition roots:
 
 ```text
 proof_artifact_domain      = "naome:artifact:proof:v0\0"
-definition_artifact_domain = "naome:artifact:definition:v0\0"
+definition_artifact_domain = "naome:artifact:definition:v1\0"
 
 ArtifactId(proof)      = SHA256(proof_artifact_domain || ProofId)
 ArtifactId(definition) = SHA256(definition_artifact_domain || DefinitionId)
@@ -249,8 +252,10 @@ This version does not define:
 
 - consensus, fork choice, finality, incentives, or theorem importance;
 - recursive or mutually recursive definitions;
-- primitive constants, function symbols, or native Foundation term trees;
+- standalone constants, zero-input functions, zero-arity relations, primitive
+  function symbols, or native Foundation term trees;
 - implicit dependency discovery, fetching, or same-block dependency batches;
-- logical-equivalence search or automatic proof-obligation synthesis; or
+- logical-equivalence search or automatic search/construction of an obligation
+  proof; or
 - a claim that Foundation is consistent or every mathematical truth is
   decidable.

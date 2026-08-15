@@ -45,7 +45,7 @@ of the parent directory entry remains the caller's provisioning responsibility.
 The exact prefix is:
 
 ```text
-"naome:artifact-chain-journal:v0\0"[32]
+"naome:artifact-chain-journal:v1\0"[32]
 ArtifactChainId[32]
 ```
 
@@ -168,9 +168,9 @@ reopen is the only recovery path.
 
 ## Compatibility and non-goals
 
-The `v0` header and `single-artifact-v0` chain identity are a clean prerelease
-cutover. Proof-only journals have no legacy reader or migration; remove and
-recreate local data.
+The `v1` header and `canonical-definition-v1` chain identity are a clean
+prerelease cutover. Earlier journals have no legacy reader or migration; remove
+and recreate local data.
 
 The journal does not define branch storage, rollback, reorganization, pruning,
 compaction, discovery, networking, consensus, finality, proposer authority,

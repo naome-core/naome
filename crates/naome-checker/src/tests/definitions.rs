@@ -79,17 +79,29 @@ fn select_definition(
 }
 
 #[test]
-fn relation_definitions_expand_only_from_selected_state_and_cache_dependencies() {
+fn authoring_alias_expands_to_the_exact_existing_definition_identity() {
     let mut state = ArtifactState::new();
-    let base_id = select_definition(&mut state, self_relation());
+    let base = self_relation();
+    let base_id = select_definition(&mut state, base.clone());
     let parameter = FreeVariable::new(0);
-    let alias =
-        DefinitionCertificate::relation(1, DefinedFormula::defined_relation(base_id, [parameter]))
-            .unwrap();
-    let alias_id = select_definition(&mut state, alias);
+    let alias = DefinedFormula::defined_relation(base_id, [parameter]);
+    let checked = normalize_and_check_definition_with_state(
+        DefinitionKind::Relation { arity: 1 },
+        alias,
+        &state,
+    )
+    .unwrap();
+    assert_eq!(checked.certificate(), &base);
+    assert_eq!(checked.definition_id(), base_id);
+    assert_eq!(
+        state.register_definition(checked),
+        Err(ArtifactStateError::DuplicateDefinition {
+            definition_id: base_id,
+        })
+    );
 
     let x = FreeVariable::new(8);
-    let compact = DefinedFormula::defined_relation(alias_id, [x]);
+    let compact = DefinedFormula::defined_relation(base_id, [x]);
     let proof = certificate(vec![
         ProofStep::Simplification {
             antecedent: proof_formula(compact.clone()),
@@ -112,28 +124,12 @@ fn relation_definitions_expand_only_from_selected_state_and_cache_dependencies()
             ),
         )
     );
-}
-
-#[test]
-fn dependent_definition_resolution_exposes_graph_data_without_a_second_identity() {
-    let mut state = ArtifactState::new();
-    let base_id = select_definition(&mut state, self_relation());
-    let parameter = FreeVariable::new(0);
-    let alias =
-        DefinitionCertificate::relation(1, DefinedFormula::defined_relation(base_id, [parameter]))
-            .unwrap();
-    let alias_id = alias.definition_id();
-    let expanded_cache =
-        DefinitionCertificate::relation(1, DefinedFormula::equal(parameter, parameter)).unwrap();
-    assert_ne!(alias_id, expanded_cache.definition_id());
-
-    assert_eq!(select_definition(&mut state, alias), alias_id);
-    let resolution = DefinitionResolver::resolve_definition(&state, alias_id).unwrap();
+    let resolution = DefinitionResolver::resolve_definition(&state, base_id).unwrap();
 
     assert_eq!(resolution.relation_arity(), 1);
-    assert_eq!(resolution.body(), expanded_cache.body());
+    assert_eq!(resolution.body(), base.body());
     assert_eq!(
-        state.definition_kind(alias_id),
+        state.definition_kind(base_id),
         Some(DefinitionKind::Relation { arity: 1 })
     );
 }
@@ -250,70 +246,70 @@ fn missing_and_wrong_arity_definition_references_fail_at_the_rule_step() {
 }
 
 #[test]
-fn definition_check_error_precedence_is_dependency_expansion_then_obligation() {
+fn definition_normalization_expands_before_computed_obligation_lookup() {
     let missing_definition = DefinitionId::from_bytes([0x51; 32]);
-    let missing_proof = ProofId::from_bytes([0x52; 32]);
     let body = DefinedFormula::defined_relation(missing_definition, [FreeVariable::new(1)]);
-    let certificate = DefinitionCertificate::function(1, body, missing_proof).unwrap();
     assert_eq!(
-        check_definition_with_state(certificate, &ArtifactState::new()),
-        Err(DefinitionCheckError::UnknownDefinitionDependency {
-            definition_id: missing_definition,
-        })
+        normalize_and_check_definition_with_state(
+            DefinitionKind::Function { input_arity: 1 },
+            body,
+            &ArtifactState::new(),
+        ),
+        Err(DefinitionCheckError::Expansion(
+            DefinitionExpansionError::UnknownDefinition {
+                definition_id: missing_definition,
+            }
+        ))
     );
 
     let body = DefinedFormula::equal(FreeVariable::new(1), FreeVariable::new(0));
-    let certificate = DefinitionCertificate::function(1, body, missing_proof).unwrap();
+    let certificate = DefinitionCertificate::function(1, body).unwrap();
+    let obligation = identity_obligation();
+    let statement_id = statement_id(&obligation.encode_canonical().unwrap());
     assert_eq!(
         check_definition_with_state(certificate, &ArtifactState::new()),
-        Err(DefinitionCheckError::UnknownObligationProof {
-            proof_id: missing_proof,
-        })
+        Err(DefinitionCheckError::UnknownObligationStatement { statement_id })
     );
 }
 
 #[test]
-fn constants_and_functions_require_the_exact_selected_obligation_conclusion() {
+fn an_unrelated_selected_statement_cannot_satisfy_a_function_obligation() {
     let wrong = normalize_and_check(certificate(vec![ProofStep::ZfcAxiom(
         ZfcAxiom::Extensionality,
     )]))
     .unwrap();
-    let wrong_id = wrong.proof_id();
     let mut state = ArtifactState::new();
     state.register_proof(wrong).unwrap();
-
-    let constant = DefinitionCertificate::constant(
-        DefinedFormula::equal(FreeVariable::new(0), FreeVariable::new(0)),
-        wrong_id,
-    )
-    .unwrap();
-    assert_eq!(
-        check_definition_with_state(constant, &state),
-        Err(DefinitionCheckError::ObligationConclusionMismatch { proof_id: wrong_id })
-    );
 
     let function = DefinitionCertificate::function(
         1,
         DefinedFormula::equal(FreeVariable::new(1), FreeVariable::new(0)),
-        wrong_id,
     )
     .unwrap();
+    let statement_id = statement_id(&identity_obligation().encode_canonical().unwrap());
     assert_eq!(
         check_definition_with_state(function, &state),
-        Err(DefinitionCheckError::ObligationConclusionMismatch { proof_id: wrong_id })
+        Err(DefinitionCheckError::UnknownObligationStatement { statement_id })
     );
 }
 
 #[test]
 fn real_identity_proof_admits_a_function_definition_and_use_in_a_proof() {
     let mut state = ArtifactState::new();
-    let obligation_id = select_identity_obligation(&mut state);
+    let _ = select_identity_obligation(&mut state);
     let input = FreeVariable::new(0);
     let output = FreeVariable::new(1);
     let definition =
-        DefinitionCertificate::function(1, DefinedFormula::equal(output, input), obligation_id)
-            .unwrap();
-    let definition_id = select_definition(&mut state, definition);
+        DefinitionCertificate::function(1, DefinedFormula::equal(output, input)).unwrap();
+    let checked_definition = check_definition_with_state(definition, &state).unwrap();
+    assert_eq!(
+        checked_definition.obligation_statement_id(),
+        Some(statement_id(
+            &identity_obligation().encode_canonical().unwrap()
+        ))
+    );
+    let definition_id = checked_definition.definition_id();
+    state.register_definition(checked_definition).unwrap();
 
     let graph = DefinedFormula::defined_relation(definition_id, [input, output]);
     let checked = normalize_and_check_with_state(
@@ -339,21 +335,57 @@ fn real_identity_proof_admits_a_function_definition_and_use_in_a_proof() {
 }
 
 #[test]
-fn registration_revalidates_proof_definition_and_obligation_dependencies() {
+fn differing_selected_proof_witnesses_leave_function_identity_unchanged() {
+    let mut state = ArtifactState::new();
+    let original_proof_id = select_identity_obligation(&mut state);
+    let obligation = DefinedFormula::from_primitive(&identity_obligation()).unwrap();
+    let alternate = normalize_and_check_with_state(
+        certificate(vec![
+            ProofStep::ProofReference {
+                proof_id: original_proof_id,
+            },
+            ProofStep::Simplification {
+                antecedent: proof_formula(obligation.clone()),
+                consequent: proof_formula(obligation),
+            },
+            ProofStep::ModusPonens {
+                premise: 0,
+                implication: 1,
+            },
+            ProofStep::ModusPonens {
+                premise: 0,
+                implication: 2,
+            },
+        ]),
+        &state,
+    )
+    .unwrap();
+    assert_ne!(alternate.proof_id(), original_proof_id);
+    let alternate_proof_id = alternate.proof_id();
+
+    let definition = DefinitionCertificate::function(
+        1,
+        DefinedFormula::equal(FreeVariable::new(1), FreeVariable::new(0)),
+    )
+    .unwrap();
+    let before = check_definition_with_state(definition.clone(), &state).unwrap();
+    state.register_proof(alternate).unwrap();
+    assert!(state.contains_proof(alternate_proof_id));
+    let after = check_definition_with_state(definition, &state).unwrap();
+
+    assert_eq!(before.definition_id(), after.definition_id());
+    assert_eq!(before.certificate(), after.certificate());
+    assert_eq!(
+        before.obligation_statement_id(),
+        after.obligation_statement_id()
+    );
+}
+
+#[test]
+fn registration_revalidates_proof_and_function_statement_dependencies() {
     let mut source = ArtifactState::new();
     let base_id = select_definition(&mut source, self_relation());
     let parameter = FreeVariable::new(0);
-    let alias =
-        DefinitionCertificate::relation(1, DefinedFormula::defined_relation(base_id, [parameter]))
-            .unwrap();
-    let checked_alias = check_definition_with_state(alias, &source).unwrap();
-    assert_eq!(
-        ArtifactState::new().register_definition(checked_alias),
-        Err(ArtifactStateError::MissingDefinitionDependency {
-            definition_id: base_id,
-        })
-    );
-
     let compact = DefinedFormula::defined_relation(base_id, [parameter]);
     let checked_proof = normalize_and_check_with_state(
         certificate(vec![
@@ -376,42 +408,85 @@ fn registration_revalidates_proof_definition_and_obligation_dependencies() {
         })
     );
 
-    let obligation_id = select_identity_obligation(&mut source);
+    let _ = select_identity_obligation(&mut source);
     let function = DefinitionCertificate::function(
         1,
         DefinedFormula::equal(FreeVariable::new(1), FreeVariable::new(0)),
-        obligation_id,
     )
     .unwrap();
     let checked_function = check_definition_with_state(function, &source).unwrap();
+    let statement_id = checked_function.obligation_statement_id().unwrap();
     assert_eq!(
         ArtifactState::new().register_definition(checked_function),
-        Err(ArtifactStateError::MissingDefinitionObligation {
-            proof_id: obligation_id,
-        })
+        Err(ArtifactStateError::MissingDefinitionObligation { statement_id })
     );
 }
 
 #[test]
-fn generated_obligation_arity_is_bounded_before_large_construction() {
-    let wrong =
-        normalize_and_check(certificate(vec![ProofStep::ZfcAxiom(ZfcAxiom::Pairing)])).unwrap();
-    let proof_id = wrong.proof_id();
-    let mut state = ArtifactState::new();
-    state.register_proof(wrong).unwrap();
-    let function = DefinitionCertificate::new(
-        DefinitionKind::Function {
-            input_arity: u32::MAX - 1,
-            total_unique_proof: proof_id,
-        },
-        DefinedFormula::equal(FreeVariable::new(0), FreeVariable::new(0)),
-    )
-    .unwrap();
+fn generated_obligation_still_obeys_formula_depth_after_graph_arity_validation() {
+    assert_eq!(crate::maximum_function_body_depth(247), Some(1));
+    assert_eq!(crate::maximum_function_body_depth(248), None);
+    let mut formulas = (0..256)
+        .map(|identifier| {
+            let variable = FreeVariable::new(identifier);
+            DefinedFormula::equal(variable, variable)
+        })
+        .collect::<Vec<_>>();
+    while formulas.len() > 1 {
+        formulas = formulas
+            .chunks(2)
+            .map(|pair| match pair {
+                [left, right] => DefinedFormula::implies(left.clone(), right.clone()),
+                [last] => last.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+    }
+    let function = DefinitionCertificate::function(255, formulas.pop().unwrap()).unwrap();
     assert_eq!(
-        check_definition_with_state(function, &state),
+        check_definition_with_state(function, &ArtifactState::new()),
         Err(DefinitionCheckError::ObligationFormula(
             FormulaCodecError::DepthLimitExceeded {
                 maximum: FORMULA_MAX_DEPTH,
+            },
+        ))
+    );
+}
+
+#[test]
+fn function_obligation_node_work_is_preflighted_before_tree_duplication() {
+    let maximum_body_nodes = crate::maximum_function_body_nodes(1);
+    assert_eq!(maximum_body_nodes, 32_763);
+    assert_eq!(
+        2 * maximum_body_nodes + 1 + crate::FUNCTION_OBLIGATION_FIXED_NODES,
+        FORMULA_MAX_NODES
+    );
+
+    let input = FreeVariable::new(0);
+    let output = FreeVariable::new(1);
+    let mut formulas = (0..16_383)
+        .map(|index| {
+            let variable = if index % 2 == 0 { input } else { output };
+            DefinedFormula::equal(variable, variable)
+        })
+        .collect::<Vec<_>>();
+    while formulas.len() > 1 {
+        let mut next = Vec::with_capacity(formulas.len().div_ceil(2));
+        let mut current = formulas.into_iter();
+        while let Some(left) = current.next() {
+            next.push(match current.next() {
+                Some(right) => DefinedFormula::implies(left, right),
+                None => left,
+            });
+        }
+        formulas = next;
+    }
+    let function = DefinitionCertificate::function(1, formulas.pop().unwrap()).unwrap();
+    assert_eq!(
+        check_definition_with_state(function, &ArtifactState::new()),
+        Err(DefinitionCheckError::ObligationFormula(
+            FormulaCodecError::NodeLimitExceeded {
+                maximum: FORMULA_MAX_NODES,
             },
         ))
     );
@@ -468,15 +543,26 @@ fn unreachable_definition_references_are_pruned_before_check_and_registration() 
 }
 
 #[test]
-fn repeated_selected_definition_dependencies_are_admissible() {
+fn repeated_selected_authoring_aliases_expand_before_definition_selection() {
     let mut state = ArtifactState::new();
     let base_id = select_definition(&mut state, self_relation());
     let parameter = FreeVariable::new(0);
     let use_base = || DefinedFormula::defined_relation(base_id, [parameter]);
-    let alias =
-        DefinitionCertificate::relation(1, DefinedFormula::conjunction(use_base(), use_base()))
-            .unwrap();
-    let alias_id = select_definition(&mut state, alias);
+    let alias = normalize_and_check_definition_with_state(
+        DefinitionKind::Relation { arity: 1 },
+        DefinedFormula::conjunction(use_base(), use_base()),
+        &state,
+    )
+    .unwrap();
+    assert!(
+        alias
+            .certificate()
+            .body()
+            .definition_references()
+            .is_empty()
+    );
+    let alias_id = alias.definition_id();
+    state.register_definition(alias).unwrap();
 
     let repeated = DefinedFormula::conjunction(
         DefinedFormula::defined_relation(alias_id, [parameter]),
@@ -503,14 +589,19 @@ fn repeated_selected_definition_dependencies_are_admissible() {
 fn every_formula_bearing_foundation_rule_expands_before_rule_execution() {
     let variable = FreeVariable::new(11);
     let replacement = FreeVariable::new(12);
+    let formal = FreeVariable::new(0);
     let primitive = closed_equality(variable);
     let mut state = ArtifactState::new();
     let definition_id = select_definition(
         &mut state,
-        DefinitionCertificate::relation(0, DefinedFormula::from_primitive(&primitive).unwrap())
-            .unwrap(),
+        DefinitionCertificate::relation(1, DefinedFormula::equal(formal, formal)).unwrap(),
     );
-    let defined = || DefinedFormula::defined_relation(definition_id, []);
+    let defined = || {
+        DefinedFormula::for_all(
+            variable,
+            DefinedFormula::defined_relation(definition_id, [variable]),
+        )
+    };
     let cases = [
         (
             ProofStep::Simplification {

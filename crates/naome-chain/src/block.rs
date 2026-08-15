@@ -10,7 +10,7 @@ use crate::{ArtifactDag, ArtifactSetRoot};
 
 const ARTIFACT_CHAIN_GENESIS_DOMAIN: &[u8] = b"naome:artifact-chain-genesis:v0\0";
 const ARTIFACT_CHAIN_DEFINITION_DOMAIN: &[u8] =
-    b"naome:artifact-chain-definition:single-artifact-v0\0";
+    b"naome:artifact-chain-definition:canonical-definition-v1\0";
 const ARTIFACT_BLOCK_DOMAIN: &[u8] = b"naome:artifact-block:v0\0";
 const BLOCK_ID_BYTES: usize = ArtifactBlockId::BYTE_LENGTH;
 const ARTIFACT_SET_ROOT_BYTES: usize = ArtifactSetRoot::BYTE_LENGTH;

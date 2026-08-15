@@ -17,15 +17,15 @@ fn journal_prefix_and_entry_encoding_are_exact() {
     assert_eq!(
         expected,
         hex_bytes(
-            "6e616f6d653a61727469666163742d636861696e2d6a6f75726e616c3a763000\
-             1007f212015cb2d5bd3e58e93fb0941e6dbb8496bf3669093303cf65d3895de0\
+            "6e616f6d653a61727469666163742d636861696e2d6a6f75726e616c3a763100\
+             72ba0843747f3fdd503c77827c726f5bf428258ac7eec0fe57716e400cd54c40\
              00000087\
-             31ca052e8c2660d98d4eb0586adc388702841cf31a924c4c3563dfc920d2850\
-             c976e576ec6145d57b5e192d1c37a0938bb5c76663532d0354fcd98ba3fbf597\
-             a689e27706ea99f45e7988e6fd9b144ef3a8582b3bfefb645369e5a8a8a0aa\
-             89fbca9828587bc6c94c243dc078329163d64de54becc1bacc7bc9ca136f3908ce0\
+             9754a99788a5a44e8d4e2fd6e385970d3ce0120c624de04e3250a9e8d0f64c2e\
+             976e576ec6145d57b5e192d1c37a0938bb5c76663532d0354fcd98ba3fbf597a\
+             689e27706ea99f45e7988e6fd9b144ef3a8582b3bfefb645369e5a8a8a0aa89f\
+             bca9828587bc6c94c243dc078329163d64de54becc1bacc7bc9ca136f3908ce0\
              00000000011001\
-             017bd0c6ed92afb89c5dbc8876dfd6b646c59a8fc1218714be91881d8fc57475"
+             ea2edf358da8bde9a3c5525bb7d706b08973437c6700b894bbcdba65b6e4a179"
                 .replace([' ', '\n'], "")
                 .as_str(),
         )

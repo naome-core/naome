@@ -449,8 +449,8 @@ Selected in-memory `ArtifactState` contains:
 - `DerivationId -> StatementId` for every selected inference DAG;
 - one canonical primitive conclusion and encoded length for every selected
   statement; and
-- one exact checked definition and one non-identity-bearing, fully expanded
-  graph view for every selected `DefinitionId`.
+- one exact checked, primitive, self-contained graph for every selected
+  `DefinitionId`.
 
 Only strict proof or definition admission may add entries. Existing identities
 are never replaced. State grows monotonically but is not an order-free CRDT:
@@ -499,9 +499,9 @@ An accepted proof record contains the exact tagged canonical payload; its
 `ArtifactId`, `ProofId`, `DerivationId`, and `StatementId`; directly cited
 `ProofId` values in normal-form step order; and unique direct `DefinitionId`
 values in canonical occurrence order. An accepted definition record contains
-the exact tagged payload; its `ArtifactId` and `DefinitionId`; unique direct
-definition dependencies in body-prefix order; and its optional exact obligation
-`ProofId`.
+the exact tagged payload; its `ArtifactId` and `DefinitionId`; and its optional
+derived obligation `StatementId`. Definition certificates contain no selected
+definition or proof address.
 
 Dependencies are direct, not transitive. Accepted bytes and dependency lists are
 immutable. Callers cannot insert unchecked records, identities, edges, or set
@@ -646,9 +646,9 @@ artifact_id:                ArtifactId
 
 There is no subordinate change object, artifact list, count, or dependency
 closure. Each block selects exactly one proof or one definition. Every proof
-reference, definition application, and definition obligation used by that
-artifact must already be available from earlier selected blocks in the same
-ancestry.
+reference and definition application used by a proof, and every
+function-obligation statement required by a definition, must already be
+available from earlier selected blocks in the same ancestry.
 
 ### Chain definition and virtual genesis
 
@@ -668,7 +668,7 @@ accepts no caller-supplied Foundation or genesis semantics.
 
 ```text
 ArtifactChainId = SHA256(
-  "naome:artifact-chain-definition:single-artifact-v0\0"
+  "naome:artifact-chain-definition:canonical-definition-v1\0"
   || canonical_definition[73]
 )
 
@@ -680,8 +680,8 @@ virtual_genesis = SHA256(
 For a deployment discriminator of 32 bytes `11`:
 
 ```text
-ArtifactChainId = 1007f212015cb2d5bd3e58e93fb0941e6dbb8496bf3669093303cf65d3895de0
-virtual_genesis = 31ca052e8c2660d98d4eb0586adc388702841cf31a924c4c3563dfc920d2850c
+ArtifactChainId = 72ba0843747f3fdd503c77827c726f5bf428258ac7eec0fe57716e400cd54c40
+virtual_genesis = 9754a99788a5a44e8d4e2fd6e385970d3ce0120c624de04e3250a9e8d0f64c2e
 ```
 
 The deployment discriminator separates intentional deployments; it is not a
@@ -717,7 +717,7 @@ For the preceding `11` definition, its virtual genesis parent, previous root
 `44` repeated 32 bytes, the block ID is:
 
 ```text
-13d756593fe06f15e22f7e0b55d6037f38af7304aa5ce06acc9b8f833c86707d
+2d5b1570acc98fd873426f4f5148f8aa4c625997324c69cf96a108cc1b2e076d
 ```
 
 Changing any committed byte changes the block identity under SHA-256 collision
@@ -764,8 +764,9 @@ finality.
 Block bytes contain an `ArtifactId` but no typed payload. Possessing a block
 does not establish payload availability. Exact import requests only that
 artifact payload and never fetches a dependency implicitly. If application
-finds an unselected proof or definition dependency, it rejects the block;
-catch-up must apply the dependency's earlier block first.
+finds an unselected proof or definition application, or a missing
+function-obligation statement, it rejects the block; catch-up must apply the
+required earlier block first.
 
 Only successful application or verified journal replay supplies selected
 resolver authority. Candidate stores, payload archives, fetched responses,
@@ -778,8 +779,9 @@ commitments assume SHA-256 collision and second-preimage resistance. They do
 not establish proposer identity, data availability, mathematical novelty,
 reward, fee, consensus selection, or finality.
 
-This is a clean prerelease cutover to `single-artifact-v0`. There is no legacy
-reader, compatibility alias, or local migration. Proof-only journals,
-candidate stores, payload archives, and network protocol data must be removed
-and recreated. Existing primitive canonical proof certificates and their
-`ProofId`, `DerivationId`, and `StatementId` values remain byte-identical.
+This is a clean prerelease cutover to `canonical-definition-v1`. There is no
+legacy reader, compatibility alias, or local migration. Earlier definition
+payloads, journals, candidate stores, payload archives, and network protocol
+data must be removed and recreated. Existing primitive canonical proof
+certificates and their `ProofId`, `DerivationId`, and `StatementId` values remain
+byte-identical.

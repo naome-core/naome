@@ -55,7 +55,7 @@ impl ArtifactState {
         self.definitions.contains_key(&definition_id)
     }
 
-    /// Returns the kind and proof obligation from the exact selected certificate.
+    /// Returns the graph kind from the exact selected certificate.
     pub fn definition_kind(&self, definition_id: DefinitionId) -> Option<DefinitionKind> {
         self.definitions
             .get(&definition_id)
@@ -171,8 +171,7 @@ impl ArtifactState {
 
     /// Registers one checked definition without replacing selected state.
     ///
-    /// The resolver retains a definition-free expansion cache, preventing
-    /// repeated transitive expansion during every later proof step.
+    /// The retained canonical certificate already contains a definition-free body.
     pub fn register_definition(
         &mut self,
         definition: CheckedDefinition,
@@ -181,23 +180,17 @@ impl ArtifactState {
         let CheckedDefinition {
             certificate,
             definition_id,
-            expansion_cache,
+            obligation: _,
         } = definition;
-        self.definitions.insert(
-            definition_id,
-            StoredDefinition {
-                certificate,
-                expansion_cache,
-            },
-        );
+        self.definitions
+            .insert(definition_id, StoredDefinition { certificate });
         Ok(())
     }
 
     /// Applies the exact definition registration checks without mutating state.
     ///
-    /// Duplicate/collision checks precede dependency checks. Direct definition
-    /// references are checked in canonical prefix order, followed by the exact
-    /// selected proof obligation for constants and functions.
+    /// Duplicate/collision checks precede the exact computed function-obligation
+    /// statement check.
     pub fn validate_definition_registration(
         &self,
         definition: &CheckedDefinition,
@@ -213,17 +206,17 @@ impl ArtifactState {
                 })
             };
         }
-        for dependency_id in definition.certificate.body().definition_references() {
-            if !self.definitions.contains_key(&dependency_id) {
-                return Err(ArtifactStateError::MissingDefinitionDependency {
-                    definition_id: dependency_id,
+        if let Some(obligation) = &definition.obligation {
+            let Some(selected) = self.statements.get(&obligation.statement_id) else {
+                return Err(ArtifactStateError::MissingDefinitionObligation {
+                    statement_id: obligation.statement_id,
+                });
+            };
+            if selected.conclusion != obligation.conclusion {
+                return Err(ArtifactStateError::StatementIdentityCollision {
+                    statement_id: obligation.statement_id,
                 });
             }
-        }
-        if let Some(proof_id) = definition.certificate.obligation_proof_id()
-            && !self.proofs.contains_key(&proof_id)
-        {
-            return Err(ArtifactStateError::MissingDefinitionObligation { proof_id });
         }
         Ok(())
     }
@@ -244,6 +237,12 @@ impl ArtifactState {
             derivation_id,
         })
     }
+
+    pub(crate) fn resolve_statement(&self, statement_id: StatementId) -> Option<&Formula> {
+        self.statements
+            .get(&statement_id)
+            .map(|statement| &statement.conclusion)
+    }
 }
 
 struct StoredStatement {
@@ -253,7 +252,6 @@ struct StoredStatement {
 
 struct StoredDefinition {
     certificate: DefinitionCertificate,
-    expansion_cache: DefinitionCertificate,
 }
 
 pub(crate) struct ResolvedProof<'a> {
@@ -266,8 +264,8 @@ impl DefinitionResolver for ArtifactState {
     fn resolve_definition(&self, definition_id: DefinitionId) -> Option<DefinitionResolution<'_>> {
         self.definitions.get(&definition_id).map(|definition| {
             DefinitionResolution::new(
-                definition.expansion_cache.relation_arity(),
-                definition.expansion_cache.body(),
+                definition.certificate.relation_arity(),
+                definition.certificate.body(),
             )
         })
     }
@@ -295,8 +293,8 @@ pub enum ArtifactStateError {
     MissingProofDependency { proof_id: ProofId },
     /// A cited definition is absent from selected state.
     MissingDefinitionDependency { definition_id: DefinitionId },
-    /// A definition's exact proof obligation is absent from selected state.
-    MissingDefinitionObligation { proof_id: ProofId },
+    /// A function's computed obligation statement is absent from selected state.
+    MissingDefinitionObligation { statement_id: StatementId },
 }
 
 impl fmt::Display for ArtifactStateError {
@@ -329,7 +327,7 @@ impl fmt::Display for ArtifactStateError {
             Self::MissingDefinitionDependency { .. } => formatter
                 .write_str("checked artifact cites a definition absent from selected state"),
             Self::MissingDefinitionObligation { .. } => formatter
-                .write_str("checked definition requires a proof absent from selected state"),
+                .write_str("checked definition requires a statement absent from selected state"),
         }
     }
 }
