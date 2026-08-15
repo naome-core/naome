@@ -1,0 +1,406 @@
+- META-001 [DECIDED] [IMPLEMENTED] Every nonempty line in this file contains one atomic rule or one unresolved decision point; evidence: this file.
+- META-002 [DECIDED] [IMPLEMENTED] The `DECIDED` marker means the normative choice is frozen until this list is explicitly revised; evidence: this file.
+- META-003 [DECIDED] [IMPLEMENTED] The `OPEN` marker means no normative choice has been made; evidence: this file.
+- META-004 [DECIDED] [IMPLEMENTED] The `IMPLEMENTED` marker requires current repository evidence named in the same bullet; evidence: this file.
+- META-005 [DECIDED] [IMPLEMENTED] The `NOT_IMPLEMENTED` marker means the normative rule is frozen but its implementation is incomplete; evidence: this file.
+- META-006 [DECIDED] [IMPLEMENTED] The `BLOCKED` marker means implementation must not begin before the decision point is resolved; evidence: this file.
+- META-007 [DECIDED] [IMPLEMENTED] The `AFTER` marker names prerequisite bullets that must be resolved before the current bullet; evidence: this file.
+- BASE-001 [DECIDED] [IMPLEMENTED] The deterministic mathematical checker alone decides whether a proof is mathematically valid; evidence: `crates/naome-checker/src/lib.rs`.
+- BASE-002 [DECIDED] [IMPLEMENTED] Strict local artifact admission cannot accept a mathematically invalid proof; evidence: `crates/naome-ledger/src/lib.rs`.
+- BASE-003 [DECIDED] [IMPLEMENTED] Current exact-head local selection admits artifacts only through strict canonical admission; evidence: `crates/naome-chain/src/block.rs`.
+- BASE-004 [DECIDED] [IMPLEMENTED] An already selected `ProofId` is rejected as a duplicate; evidence: `crates/naome-checker/src/state.rs`.
+- BASE-005 [DECIDED] [IMPLEMENTED] An already selected `DerivationId` is rejected as a duplicate; evidence: `crates/naome-checker/src/state.rs`.
+- BASE-006 [DECIDED] [IMPLEMENTED] A new `DerivationId` proving an existing `StatementId` remains independently citable; evidence: `crates/naome-checker/src/state/tests.rs`.
+- BASE-007 [DECIDED] [IMPLEMENTED] An already selected `DefinitionId` is rejected as a duplicate; evidence: `crates/naome-checker/src/state.rs`.
+- BASE-008 [DECIDED] [IMPLEMENTED] Every `ArtifactBlock` commits exactly one `ArtifactId`; evidence: `crates/naome-chain/src/block.rs`.
+- BASE-009 [DECIDED] [IMPLEMENTED] Current exact-head local selection resolves every artifact dependency from its selected parent state; evidence: `crates/naome-checker/src/state.rs`.
+- BASE-010 [DECIDED] [IMPLEMENTED] Current exact-head artifact-block application changes selected state atomically or leaves it unchanged; evidence: `crates/naome-chain/src/block.rs`.
+- BASE-011 [DECIDED] [IMPLEMENTED] An artifact-block identifier is an ancestry address rather than independent evidence of mathematical validity; evidence: `specs/proof-protocol.md`.
+- SEC-001 [OPEN] [BLOCKED] Confirm whether block production must be permissionless.
+- SEC-002 [OPEN] [BLOCKED] Confirm whether artifact submission must be permissionless.
+- SEC-003 [OPEN] [BLOCKED] Confirm whether full verification must be permissionless.
+- SEC-004 [OPEN] [BLOCKED] Decide whether any trusted sequencer is permitted.
+- SEC-005 [OPEN] [BLOCKED] Decide whether any trusted checkpoint is permitted.
+- SEC-006 [OPEN] [BLOCKED] Select the Sybil-resistance mechanism.
+- SEC-007 [OPEN] [BLOCKED] Define the exact consensus safety property.
+- SEC-008 [OPEN] [BLOCKED] Define the exact consensus liveness property.
+- SEC-009 [OPEN] [BLOCKED] Select the maximum adversarial consensus power tolerated by the safety proof.
+- SEC-010 [OPEN] [BLOCKED] Select the network synchrony assumptions used by the safety proof.
+- SEC-011 [OPEN] [BLOCKED] Select the network synchrony assumptions used by the liveness proof.
+- SEC-012 [OPEN] [BLOCKED] Define the required safety behavior during a network partition.
+- SEC-013 [OPEN] [BLOCKED] Define the required recovery behavior after a network partition heals.
+- SEC-014 [DECIDED] [NOT_IMPLEMENTED] Creating valid artifacts grants no consensus power.
+- SEC-015 [DECIDED] [NOT_IMPLEMENTED] `ArtifactId` count contributes zero consensus security weight.
+- SEC-016 [DECIDED] [NOT_IMPLEMENTED] `ProofId` count contributes zero consensus security weight.
+- SEC-017 [DECIDED] [NOT_IMPLEMENTED] `DerivationId` count contributes zero consensus security weight.
+- SEC-018 [DECIDED] [NOT_IMPLEMENTED] `StatementId` count contributes zero consensus security weight.
+- SEC-019 [DECIDED] [NOT_IMPLEMENTED] Claimed mathematical importance contributes zero consensus security weight.
+- SEC-020 [DECIDED] [NOT_IMPLEMENTED] Claimed mathematical novelty contributes zero consensus security weight.
+- SEC-021 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical numeric calculations use exact deterministic arithmetic.
+- SEC-022 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical numeric calculations forbid floating-point arithmetic.
+- SEC-023 [DECIDED] [NOT_IMPLEMENTED] Consensus safety does not depend on local execution speed.
+- SEC-024 [DECIDED] [NOT_IMPLEMENTED] A timeout cannot make an invalid block valid.
+- SEC-025 [OPEN] [BLOCKED] Decide whether the chosen consensus family uses control messages distinct from consensus blocks; AFTER: `SEC-006`.
+- SEC-026 [OPEN] [BLOCKED] Define whether an admissible artifact is eventually included under the selected liveness assumptions.
+- SEC-027 [OPEN] [BLOCKED] Define whether empty consensus progress satisfies liveness while an admissible artifact awaits inclusion.
+- SAFE-001 [DECIDED] [NOT_IMPLEMENTED] A conforming full node independently verifies every artifact before treating its block as canonical.
+- SAFE-002 [DECIDED] [NOT_IMPLEMENTED] If the selected finality model exposes irreversible checkpoints, no two honest conforming nodes accept conflicting irreversible checkpoints under the selected adversary assumptions.
+- SAFE-003 [DECIDED] [NOT_IMPLEMENTED] If the selected finality model exposes irreversible checkpoints, every irreversible checkpoint has passed strict canonical artifact validation.
+- SAFE-004 [DECIDED] [NOT_IMPLEMENTED] If the selected finality model exposes irreversible checkpoints, every irreversible checkpoint has satisfied the selected data-availability rule.
+- SAFE-005 [DECIDED] [NOT_IMPLEMENTED] If the selected finality model exposes irreversible checkpoints, every irreversible checkpoint descends from the prior irreversible checkpoint.
+- SAFE-006 [DECIDED] [NOT_IMPLEMENTED] Honest conforming nodes eventually converge under the selected liveness assumptions.
+- SAFE-007 [DECIDED] [NOT_IMPLEMENTED] Honest conforming nodes eventually make progress under the selected liveness assumptions.
+- SAFE-008 [DECIDED] [NOT_IMPLEMENTED] Fork choice considers only fully validated candidates.
+- SAFE-009 [DECIDED] [NOT_IMPLEMENTED] Fork choice considers only candidates satisfying the selected data-availability rule.
+- SAFE-010 [DECIDED] [NOT_IMPLEMENTED] Each candidate artifact is validated against state derived from its exact parent ancestry.
+- SAFE-011 [DECIDED] [NOT_IMPLEMENTED] Evaluating a noncanonical branch does not mutate canonical selected state.
+- SAFE-012 [DECIDED] [NOT_IMPLEMENTED] Switching canonical branches changes selected state atomically or leaves it unchanged.
+- CODEC-001 [OPEN] [BLOCKED] Decide whether consensus wraps `ArtifactBlock` in a separate envelope; AFTER: `SEC-006`.
+- CODEC-002 [OPEN] [BLOCKED] Decide whether consensus changes the canonical `ArtifactBlock` format; AFTER: `SEC-006`.
+- CODEC-003 [OPEN] [BLOCKED] Decide whether one consensus transition commits zero or one `ArtifactBlock`; AFTER: `CODEC-001`, `CODEC-002`.
+- CODEC-004 [OPEN] [BLOCKED] Specify the canonical consensus-block byte encoding; AFTER: `CODEC-001`, `CODEC-002`.
+- CODEC-006 [OPEN] [BLOCKED] Specify the consensus chain-context identity; AFTER: `SEC-006`.
+- CODEC-008 [OPEN] [BLOCKED] Decide whether a consensus block carries a post-consensus-state commitment; AFTER: `CODEC-004`.
+- CODEC-009 [OPEN] [BLOCKED] Decide whether a consensus block carries a post-artifact-state commitment; AFTER: `CODEC-004`.
+- CODEC-010 [OPEN] [BLOCKED] Decide whether a consensus block carries a height; AFTER: `SEC-006`.
+- CODEC-011 [OPEN] [BLOCKED] Decide whether a consensus block carries a slot or round coordinate; AFTER: `SEC-006`.
+- CODEC-012 [OPEN] [BLOCKED] Decide whether a consensus block carries consensus time; AFTER: `SEC-006`.
+- CODEC-013 [OPEN] [BLOCKED] Specify the protocol-version commitment carried by consensus data; AFTER: `CODEC-004`.
+- CODEC-014 [OPEN] [BLOCKED] Specify the producer-authorization evidence carried by a consensus block; AFTER: `SEC-006`.
+- CODEC-015 [OPEN] [BLOCKED] Decide whether a consensus block carries separate agreement evidence; AFTER: `SEC-006`.
+- CODEC-018 [OPEN] [BLOCKED] Specify the exact bytes authenticated by each producer-authorization proof; AFTER: `CODEC-014`.
+- CODEC-019 [OPEN] [BLOCKED] Specify the exact bytes authenticated by agreement evidence if `CODEC-015` selects separate evidence; AFTER: `CODEC-015`.
+- CODEC-020 [OPEN] [BLOCKED] Specify the consensus-control-message byte encoding if `SEC-025` selects separate messages; AFTER: `SEC-025`.
+- CODEC-021 [OPEN] [BLOCKED] Specify the consensus-control-message identity derivation if `SEC-025` selects separate messages; AFTER: `CODEC-020`.
+- CODEC-022 [OPEN] [BLOCKED] Specify the chain domain bound by consensus-control messages if `SEC-025` selects separate messages; AFTER: `CODEC-006`, `CODEC-020`.
+- CODEC-024 [OPEN] [BLOCKED] Specify the protocol-version domain bound by consensus-control messages if `SEC-025` selects separate messages; AFTER: `CODEC-013`, `CODEC-020`.
+- CODEC-025 [OPEN] [BLOCKED] Select the maximum canonical consensus-block size; AFTER: `CODEC-004`.
+- CODEC-026 [OPEN] [BLOCKED] Select the maximum canonical consensus-control-message size if `SEC-025` selects separate messages; AFTER: `CODEC-020`.
+- CODEC-027 [OPEN] [BLOCKED] Specify the post-consensus-state commitment if `CODEC-008` selects one; AFTER: `CODEC-008`.
+- CODEC-028 [OPEN] [BLOCKED] Specify the post-artifact-state commitment if `CODEC-009` selects one; AFTER: `CODEC-009`.
+- CODEC-029 [DECIDED] [NOT_IMPLEMENTED] Consensus-ancestry identity binds the exact chain context.
+- CODEC-030 [DECIDED] [NOT_IMPLEMENTED] Consensus-ancestry identity binds the exact genesis context.
+- CODEC-031 [DECIDED] [NOT_IMPLEMENTED] Consensus-ancestry identity binds the exact protocol version.
+- CODEC-032 [DECIDED] [NOT_IMPLEMENTED] Producer authorization binds the exact chain context.
+- CODEC-033 [DECIDED] [NOT_IMPLEMENTED] Producer authorization binds the exact genesis context.
+- CODEC-034 [DECIDED] [NOT_IMPLEMENTED] Producer authorization binds the exact protocol version.
+- CODEC-035 [DECIDED] [NOT_IMPLEMENTED] Producer authorization binds the producer-authorization message role.
+- CODEC-036 [DECIDED] [NOT_IMPLEMENTED] Producer authorization binds the exact consensus position required by the chosen family.
+- CODEC-037 [DECIDED] [NOT_IMPLEMENTED] Producer authorization binds the exact evidence-free proposal signing root.
+- CODEC-038 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence binds the exact chain context if the chosen family uses agreement evidence.
+- CODEC-039 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence binds the exact genesis context if the chosen family uses agreement evidence.
+- CODEC-040 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence binds the exact protocol version if the chosen family uses agreement evidence.
+- CODEC-041 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence binds the agreement-evidence message role if the chosen family uses agreement evidence.
+- CODEC-042 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence binds the exact consensus position if the chosen family uses agreement evidence.
+- CODEC-043 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence binds the exact evidence-free proposal signing root if the chosen family uses agreement evidence.
+- CODEC-044 [OPEN] [BLOCKED] Specify the evidence-free proposal signing-root derivation; AFTER: `CODEC-004`, `CODEC-014`, `CODEC-015`.
+- CODEC-005 [OPEN] [BLOCKED] Specify the evidence-invariant consensus-ancestry identity derivation; AFTER: `CODEC-004`, `CODEC-044`.
+- CODEC-007 [OPEN] [BLOCKED] Specify the parent commitment to the exact consensus-ancestry identity; AFTER: `CODEC-005`.
+- CODEC-045 [DECIDED] [NOT_IMPLEMENTED] Canonical consensus-envelope identity commits every canonical consensus-block byte including producer authorization and agreement evidence.
+- CODEC-046 [DECIDED] [NOT_IMPLEMENTED] The proposal signing root excludes producer-authorization evidence bytes.
+- CODEC-047 [DECIDED] [NOT_IMPLEMENTED] The proposal signing root excludes agreement-evidence bytes.
+- CODEC-048 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message binds the exact chain context if the chosen family uses signed consensus-control messages.
+- CODEC-049 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message binds the exact genesis context if the chosen family uses signed consensus-control messages.
+- CODEC-050 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message binds the exact protocol version if the chosen family uses signed consensus-control messages.
+- CODEC-051 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message binds its exact message role if the chosen family uses signed consensus-control messages.
+- CODEC-052 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message binds the exact consensus position required by its role if the chosen family uses signed consensus-control messages.
+- CODEC-053 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message binds the exact protocol target required by its role if the chosen family uses signed consensus-control messages.
+- CODEC-054 [OPEN] [BLOCKED] Specify the canonical consensus-envelope identity derivation; AFTER: `CODEC-004`.
+- CODEC-055 [DECIDED] [NOT_IMPLEMENTED] Valid evidence variants for one proposal signing root address one consensus-ancestry node.
+- CODEC-056 [OPEN] [BLOCKED] Specify deterministic storage of multiple valid evidence variants for one proposal signing root; AFTER: `CODEC-014`, `CODEC-015`, `CODEC-044`.
+- CODEC-057 [OPEN] [BLOCKED] Specify deterministic preferred-evidence selection for one proposal signing root; AFTER: `CODEC-056`.
+- CODEC-058 [OPEN] [BLOCKED] Specify the evidence-invariant semantic key for each signed consensus-control-message role; AFTER: `CODEC-020`, `CODEC-051`, `CODEC-052`, `CODEC-053`.
+- CODEC-059 [DECIDED] [NOT_IMPLEMENTED] Valid signature variants for one consensus-control-message semantic key address one logical message.
+- CODEC-060 [OPEN] [BLOCKED] Specify deterministic storage of valid signature variants for one consensus-control-message semantic key; AFTER: `CODEC-058`.
+- CODEC-061 [OPEN] [BLOCKED] Specify deterministic preferred-signature selection for one consensus-control-message semantic key; AFTER: `CODEC-060`.
+- FORK-001 [OPEN] [BLOCKED] Specify how competing branches are represented in memory; AFTER: `CODEC-005`.
+- FORK-002 [OPEN] [BLOCKED] Specify how competing branches are represented durably; AFTER: `FORK-001`.
+- FORK-003 [OPEN] [BLOCKED] Select the fork-choice rule; AFTER: `SEC-006`, `SEC-007`.
+- FORK-004 [OPEN] [BLOCKED] Select the deterministic fork-choice tie breaker; AFTER: `FORK-003`.
+- FORK-005 [OPEN] [BLOCKED] Specify when canonical state switches to another branch; AFTER: `FORK-003`.
+- FORK-006 [OPEN] [BLOCKED] Specify how branch-local artifact state is reconstructed; AFTER: `FORK-001`.
+- FORK-007 [OPEN] [BLOCKED] Specify how a reorganization rolls back canonical artifact state; AFTER: `FORK-005`.
+- FORK-008 [OPEN] [BLOCKED] Specify how a reorganization applies replacement artifact state; AFTER: `FORK-005`.
+- FORK-009 [OPEN] [BLOCKED] Specify the status of citations whose proof leaves the canonical branch; AFTER: `FORK-007`.
+- FORK-010 [OPEN] [BLOCKED] Select the finality model; AFTER: `SEC-006`, `SEC-007`.
+- FORK-011 [OPEN] [BLOCKED] Define the exact confidence or irreversibility semantics exposed by the selected finality model; AFTER: `FORK-010`.
+- FORK-012 [OPEN] [BLOCKED] Decide whether an unfinalized reorganization bound exists; AFTER: `FORK-003`, `FORK-010`.
+- FORK-013 [OPEN] [BLOCKED] Specify when competing branches may be pruned; AFTER: `FORK-010`.
+- FORK-014 [OPEN] [BLOCKED] Specify the crash-atomic branch-selection transition; AFTER: `FORK-002`, `FORK-005`.
+- FORK-016 [OPEN] [BLOCKED] Specify how consensus ancestry maps to `ArtifactBlock` ancestry; AFTER: `CODEC-003`, `FORK-001`.
+- FORK-017 [DECIDED] [NOT_IMPLEMENTED] A consensus transition without an `ArtifactBlock` leaves the artifact head unchanged if empty consensus transitions are permitted.
+- FORK-018 [DECIDED] [NOT_IMPLEMENTED] A consensus transition without an `ArtifactBlock` leaves the artifact-set root unchanged if empty consensus transitions are permitted.
+- FORK-019 [DECIDED] [NOT_IMPLEMENTED] A consensus transition containing an `ArtifactBlock` requires its artifact parent to equal the artifact head derived from the consensus parent.
+- FORK-020 [DECIDED] [NOT_IMPLEMENTED] A consensus transition containing an `ArtifactBlock` requires its previous artifact-set root to equal the artifact root derived from the consensus parent.
+- FORK-021 [DECIDED] [NOT_IMPLEMENTED] A consensus transition containing an `ArtifactBlock` commits the resulting artifact-set root into the derived child consensus state.
+- PROD-001 [OPEN] [BLOCKED] Select the block-production authorization mechanism; AFTER: `SEC-006`.
+- PROD-002 [OPEN] [BLOCKED] Select the block-producer selection mechanism; AFTER: `SEC-006`.
+- PROD-003 [OPEN] [BLOCKED] Select the target block interval or slot duration; AFTER: `SEC-006`.
+- PROD-004 [OPEN] [BLOCKED] Specify the treatment of missed production opportunities if the chosen consensus family defines production opportunities; AFTER: `PROD-003`.
+- PROD-005 [OPEN] [BLOCKED] Select the participant-admission mechanism required by the chosen consensus family; AFTER: `SEC-006`.
+- PROD-006 [OPEN] [BLOCKED] Select the participant-exit mechanism required by the chosen consensus family; AFTER: `SEC-006`.
+- PROD-007 [OPEN] [BLOCKED] Select the participant-weight representation required by the chosen consensus family; AFTER: `SEC-006`.
+- PROD-008 [OPEN] [BLOCKED] Select the participant-set transition rule required by the chosen consensus family; AFTER: `PROD-005`, `PROD-006`.
+- PROD-009 [OPEN] [BLOCKED] Select the participant-set activation delay required by the chosen consensus family; AFTER: `PROD-008`.
+- PROD-010 [OPEN] [BLOCKED] Select the participant-key rotation rule required by the chosen consensus family; AFTER: `PROD-005`.
+- PROD-011 [OPEN] [BLOCKED] Select the participant-key compromise recovery rule required by the chosen consensus family; AFTER: `PROD-010`.
+- PROD-012 [OPEN] [BLOCKED] Decide whether separate consensus-control messages are signed agreement messages; AFTER: `SEC-025`.
+- PROD-013 [OPEN] [BLOCKED] Specify the agreement threshold required by the chosen consensus family; AFTER: `PROD-012`.
+- PROD-014 [OPEN] [BLOCKED] Specify the proposal-validity rule required by the chosen consensus family; AFTER: `SEC-006`.
+- PROD-015 [OPEN] [BLOCKED] Specify the equivocation rule required by the chosen consensus family; AFTER: `PROD-012`.
+- PROD-016 [OPEN] [BLOCKED] Select the consensus signature scheme if the chosen consensus family requires signatures; AFTER: `SEC-006`.
+- PROD-017 [OPEN] [BLOCKED] Select the randomness source if the chosen consensus family requires randomness; AFTER: `SEC-006`.
+- PROD-018 [OPEN] [BLOCKED] Specify the timestamp-validity rule if the chosen consensus family uses timestamps; AFTER: `SEC-006`.
+- PROD-019 [OPEN] [BLOCKED] Specify the clock-drift tolerance if the chosen consensus family uses timestamps; AFTER: `PROD-018`.
+- PROD-020 [OPEN] [BLOCKED] Specify the anti-equivocation state that becomes durable before any safety-critical signature is created or released; AFTER: `PROD-012`, `PROD-016`.
+- PROD-021 [DECIDED] [NOT_IMPLEMENTED] Ambiguous persistence of safety-critical signing state fails closed if the chosen family uses safety-critical signatures.
+- PROD-022 [OPEN] [BLOCKED] Specify rollback protection if the chosen consensus family uses safety-critical signing state; AFTER: `PROD-020`.
+- PROD-023 [OPEN] [BLOCKED] Specify remote-signer replay protection if safety-critical remote signers are supported; AFTER: `PROD-020`.
+- RES-001 [DECIDED] [NOT_IMPLEMENTED] Every attacker-controlled validation path has a deterministic pre-allocation bound.
+- RES-002 [DECIDED] [NOT_IMPLEMENTED] Every attacker-controlled validation path has a deterministic pre-execution bound.
+- RES-003 [DECIDED] [NOT_IMPLEMENTED] Ability to pay a fee does not bypass a hard resource bound.
+- RES-004 [OPEN] [BLOCKED] Select the deterministic resource-weight formula for one artifact; AFTER: `SEC-006`.
+- RES-005 [OPEN] [BLOCKED] Decide whether artifact weight includes canonical payload bytes; AFTER: `RES-004`.
+- RES-006 [OPEN] [BLOCKED] Decide whether artifact weight includes mathematical checker work units; AFTER: `RES-004`.
+- RES-007 [OPEN] [BLOCKED] Decide whether artifact weight includes selected dependency reads; AFTER: `RES-004`.
+- RES-008 [OPEN] [BLOCKED] Decide whether artifact weight includes permanent state growth; AFTER: `RES-004`.
+- RES-009 [OPEN] [BLOCKED] Select the fixed minimum weight for one artifact; AFTER: `RES-004`.
+- RES-010 [OPEN] [BLOCKED] Select the maximum artifact weight; AFTER: `RES-004`.
+- RES-011 [OPEN] [BLOCKED] Select the maximum consensus verification work per block; AFTER: `CODEC-003`, `RES-004`.
+- RES-012 [OPEN] [BLOCKED] Select the maximum consensus-control-message verification work if `SEC-025` selects separate messages; AFTER: `CODEC-020`.
+- RES-013 [OPEN] [BLOCKED] Select the maximum dependency reads per artifact; AFTER: `RES-004`.
+- RES-014 [OPEN] [BLOCKED] Select the maximum branch-validation work per consensus transition; AFTER: `FORK-001`.
+- RES-016 [OPEN] [BLOCKED] Specify the cheap prechecks required before mathematical verification; AFTER: `RES-001`, `RES-002`.
+- RES-017 [DECIDED] [NOT_IMPLEMENTED] Resource weight uses consensus-versioned integer arithmetic.
+- RES-018 [DECIDED] [NOT_IMPLEMENTED] Resource weight upper-bounds protocol work rather than measuring elapsed time.
+- RES-019 [DECIDED] [NOT_IMPLEMENTED] A compact artifact does not receive a lower resource charge when its verification work is expensive.
+- RES-020 [DECIDED] [NOT_IMPLEMENTED] Artifact traffic cannot consume capacity reserved for consensus-control traffic.
+- RES-021 [DECIDED] [NOT_IMPLEMENTED] Every consensus transition has a deterministic maximum retained-state increase.
+- RES-022 [OPEN] [BLOCKED] Select the maximum retained-state increase per consensus transition; AFTER: `CODEC-003`.
+- RES-023 [OPEN] [BLOCKED] Decide whether a hard retained competing-branch count bound is compatible with the selected fork-choice and finality rules; AFTER: `FORK-003`, `FORK-010`, `FORK-012`, `FORK-013`.
+- RES-024 [OPEN] [BLOCKED] Select the maximum retained competing-branch count if `RES-023` selects a hard count bound; AFTER: `RES-023`.
+- RES-025 [OPEN] [BLOCKED] Decide whether a hard retained competing-branch depth bound is compatible with the selected fork-choice and finality rules; AFTER: `FORK-003`, `FORK-010`, `FORK-012`, `FORK-013`.
+- RES-026 [OPEN] [BLOCKED] Select the maximum retained competing-branch depth if `RES-025` selects a hard depth bound; AFTER: `RES-025`.
+- RES-027 [OPEN] [BLOCKED] Decide whether a hard retained competing-branch byte bound is compatible with the selected fork-choice and finality rules; AFTER: `FORK-002`, `FORK-003`, `FORK-010`, `FORK-012`, `FORK-013`.
+- RES-028 [OPEN] [BLOCKED] Select the maximum retained competing-branch bytes if `RES-027` selects a hard byte bound; AFTER: `RES-027`.
+- RES-029 [OPEN] [BLOCKED] Specify deterministic crash-safe behavior when a retained competing-branch bound is reached; AFTER: `FORK-002`, `FORK-003`, `FORK-010`, `FORK-013`, `RES-024`, `RES-026`, `RES-028`.
+- RES-030 [DECIDED] [NOT_IMPLEMENTED] Competing-branch retention preserves every branch required by the selected fork-choice, finality, reorganization, and safety rules.
+- RES-031 [DECIDED] [NOT_IMPLEMENTED] Competing-branch retention preserves every evidence item required by the selected fork-choice, finality, reorganization, and safety rules.
+- RES-032 [DECIDED] [NOT_IMPLEMENTED] Arrival order alone never determines competing-branch retention or eviction.
+- RES-033 [OPEN] [BLOCKED] Select the maximum retained consensus-envelope variant count per consensus-ancestry identity; AFTER: `CODEC-056`.
+- RES-034 [OPEN] [BLOCKED] Select the maximum retained consensus-envelope variant bytes per consensus-ancestry identity; AFTER: `CODEC-056`.
+- RES-035 [OPEN] [BLOCKED] Select the maximum evidence-variant verification work per consensus-ancestry identity; AFTER: `CODEC-056`.
+- RES-036 [DECIDED] [NOT_IMPLEMENTED] Durable consensus-envelope variants obey the selected per-ancestry count bound.
+- RES-037 [DECIDED] [NOT_IMPLEMENTED] Durable consensus-envelope variants obey the selected per-ancestry byte bound.
+- RES-038 [OPEN] [BLOCKED] Select the maximum retained signature-variant count per consensus-control-message semantic key if the chosen family uses signed consensus-control messages; AFTER: `CODEC-060`.
+- RES-039 [OPEN] [BLOCKED] Select the maximum retained signature-variant bytes per consensus-control-message semantic key if the chosen family uses signed consensus-control messages; AFTER: `CODEC-060`.
+- RES-040 [OPEN] [BLOCKED] Select the maximum signature-variant verification work per consensus-control-message semantic key if the chosen family uses signed consensus-control messages; AFTER: `CODEC-060`.
+- RES-041 [DECIDED] [NOT_IMPLEMENTED] Durable signed consensus-control-message variants obey the selected per-key count bound if the chosen family uses signed consensus-control messages.
+- RES-042 [DECIDED] [NOT_IMPLEMENTED] Durable signed consensus-control-message variants obey the selected per-key byte bound if the chosen family uses signed consensus-control messages.
+- RES-043 [DECIDED] [NOT_IMPLEMENTED] Exceeding an evidence-equivalence resource bound cannot create a new consensus-ancestry node.
+- RES-044 [DECIDED] [NOT_IMPLEMENTED] Exceeding a signature-equivalence resource bound cannot create a new logical consensus-control message.
+- ECON-001 [OPEN] [BLOCKED] Decide whether the protocol uses a fee asset; AFTER: `SEC-006`.
+- ECON-002 [OPEN] [BLOCKED] Select the exact fee asset if `ECON-001` selects a fee asset; AFTER: `ECON-001`.
+- ECON-027 [OPEN] [BLOCKED] Select the balance or ownership accounting model if `ECON-001` selects a fee asset; AFTER: `ECON-002`.
+- ECON-003 [OPEN] [BLOCKED] Specify fee-payer authorization if `ECON-001` selects a fee asset; AFTER: `ECON-027`.
+- ECON-004 [OPEN] [BLOCKED] Specify fee-payment replay protection if `ECON-001` selects a fee asset; AFTER: `ECON-003`.
+- ECON-005 [OPEN] [BLOCKED] Specify the monetary supply invariant if `ECON-001` selects a fee asset; AFTER: `ECON-001`.
+- ECON-006 [OPEN] [BLOCKED] Specify the issuance rule if `ECON-001` selects a fee asset; AFTER: `ECON-005`.
+- ECON-007 [OPEN] [BLOCKED] Specify the monetary conservation checks if `ECON-001` selects a fee asset; AFTER: `ECON-005`, `ECON-006`.
+- ECON-008 [OPEN] [BLOCKED] Decide whether the protocol uses a base fee; AFTER: `RES-004`, `ECON-001`.
+- ECON-009 [OPEN] [BLOCKED] Select the protocol base-fee formula if `ECON-008` selects a base fee; AFTER: `ECON-008`.
+- ECON-010 [OPEN] [BLOCKED] Decide whether the base fee is burned if `ECON-008` selects a base fee; AFTER: `ECON-008`.
+- ECON-011 [OPEN] [BLOCKED] Decide whether the base fee is otherwise non-refundable to the producer if `ECON-008` selects a base fee; AFTER: `ECON-008`.
+- ECON-012 [OPEN] [BLOCKED] Select the producer reward mechanism; AFTER: `SEC-006`, `ECON-001`.
+- ECON-013 [OPEN] [BLOCKED] Select the participant penalty mechanism; AFTER: `SEC-006`, `ECON-001`.
+- ECON-014 [OPEN] [BLOCKED] Select the objectively punishable behaviors; AFTER: `SEC-006`.
+- ECON-015 [OPEN] [BLOCKED] Specify the punishment evidence state transition; AFTER: `ECON-014`.
+- ECON-016 [OPEN] [BLOCKED] Decide whether permanent artifact storage requires an upfront storage charge; AFTER: `ECON-001`, `RES-008`.
+- ECON-017 [OPEN] [BLOCKED] Decide whether permanent artifact storage requires recurring rent; AFTER: `ECON-001`, `RES-008`.
+- ECON-018 [OPEN] [BLOCKED] Decide whether alternative proofs of one `StatementId` pay any charge beyond general resource cost; AFTER: `RES-004`, `ECON-008`.
+- ECON-019 [DECIDED] [NOT_IMPLEMENTED] A new `ProofId` alone earns no protocol reward.
+- ECON-020 [DECIDED] [NOT_IMPLEMENTED] A new `DerivationId` alone earns no protocol reward.
+- ECON-021 [DECIDED] [NOT_IMPLEMENTED] Citation count does not directly determine consensus weight.
+- ECON-022 [DECIDED] [NOT_IMPLEMENTED] Proof length does not determine mathematical importance.
+- ECON-023 [DECIDED] [NOT_IMPLEMENTED] Proof length may affect resource weight only through an explicitly selected resource formula.
+- ECON-024 [OPEN] [BLOCKED] Specify the economic state commitment carried by a consensus block if `ECON-001` selects a fee asset; AFTER: `CODEC-004`, `ECON-027`.
+- ECON-025 [OPEN] [BLOCKED] Specify the fee-payer commitment carried by a consensus block if `ECON-001` selects a fee asset; AFTER: `CODEC-004`, `ECON-003`, `ECON-027`.
+- ECON-026 [OPEN] [BLOCKED] Decide whether producers receive a user-selected inclusion bid or tip if `ECON-001` selects a fee asset; AFTER: `ECON-001`.
+- NET-001 [DECIDED] [NOT_IMPLEMENTED] Peer authentication alone grants no consensus power.
+- NET-002 [DECIDED] [NOT_IMPLEMENTED] Receiving an artifact from a peer does not select it.
+- NET-003 [DECIDED] [NOT_IMPLEMENTED] Receiving a block from a peer does not select it.
+- NET-004 [DECIDED] [NOT_IMPLEMENTED] Relay policy remains separate from consensus validity.
+- NET-005 [DECIDED] [NOT_IMPLEMENTED] Candidate availability remains separate from consensus selection.
+- NET-006 [OPEN] [BLOCKED] Select the peer-discovery protocol.
+- NET-007 [OPEN] [BLOCKED] Select the bootstrap protocol; AFTER: `NET-006`.
+- NET-008 [OPEN] [BLOCKED] Select the consensus-block gossip protocol; AFTER: `CODEC-004`.
+- NET-009 [OPEN] [BLOCKED] Select the consensus-control-message gossip protocol if `SEC-025` selects separate messages; AFTER: `CODEC-020`.
+- NET-010 [OPEN] [BLOCKED] Select the bounded unconfirmed-artifact pool policy; AFTER: `RES-004`.
+- NET-011 [OPEN] [BLOCKED] Select the bounded unconfirmed-block pool policy; AFTER: `CODEC-025`.
+- NET-012 [OPEN] [BLOCKED] Select the bounded unconfirmed-control-message pool policy if `SEC-025` selects separate messages; AFTER: `CODEC-026`.
+- NET-013 [OPEN] [BLOCKED] Select the peer-relay admission policy; AFTER: `NET-008`, `NET-009`.
+- NET-014 [OPEN] [BLOCKED] Select the peer-relay eviction policy; AFTER: `NET-013`.
+- NET-015 [OPEN] [BLOCKED] Select the per-peer resource limits; AFTER: `NET-006`.
+- NET-016 [OPEN] [BLOCKED] Select the global network resource limits; AFTER: `NET-006`.
+- NET-017 [OPEN] [BLOCKED] Specify peer-diversity requirements; AFTER: `NET-006`.
+- NET-018 [OPEN] [BLOCKED] Specify eclipse-resistance requirements; AFTER: `NET-006`.
+- NET-019 [OPEN] [BLOCKED] Specify the data-availability requirement before block acceptance; AFTER: `CODEC-003`.
+- NET-020 [OPEN] [BLOCKED] Specify the data-availability requirement before agreement participation if the chosen consensus family uses agreement messages; AFTER: `PROD-012`.
+- NET-021 [OPEN] [BLOCKED] Select the capacity reserved for consensus-control traffic if `SEC-025` selects separate messages; AFTER: `CODEC-020`, `RES-020`.
+- NET-022 [OPEN] [BLOCKED] Select the maximum relayed consensus-envelope variants per consensus-ancestry identity; AFTER: `CODEC-056`, `RES-033`, `RES-034`.
+- NET-023 [OPEN] [BLOCKED] Select the maximum relayed signature variants per consensus-control-message semantic key if the chosen family uses signed consensus-control messages; AFTER: `CODEC-060`, `RES-038`, `RES-039`.
+- SYNC-001 [OPEN] [BLOCKED] Select the historical artifact-retention requirement for full nodes; AFTER: `FORK-010`.
+- SYNC-002 [OPEN] [BLOCKED] Select the historical consensus-control-message retention requirement if `SEC-025` selects separate messages; AFTER: `CODEC-020`, `FORK-010`.
+- SYNC-004 [OPEN] [BLOCKED] Select the fast synchronization protocol; AFTER: `CODEC-008`, `CODEC-009`.
+- SYNC-005 [OPEN] [BLOCKED] Select the complete consensus-state snapshot format; AFTER: `CODEC-008`.
+- SYNC-006 [OPEN] [BLOCKED] Select the complete artifact-state snapshot format; AFTER: `CODEC-009`.
+- SYNC-007 [OPEN] [BLOCKED] Select the checkpoint trust or proof model; AFTER: `SYNC-005`, `SYNC-006`.
+- SYNC-003 [OPEN] [BLOCKED] Select the pruning rule for consensus data under the chosen finality-confidence and checkpoint-admissibility semantics; AFTER: `FORK-011`, `SYNC-007`.
+- SYNC-008 [OPEN] [BLOCKED] Select the light-client protocol; AFTER: `FORK-003`, `SYNC-007`.
+- SYNC-009 [OPEN] [BLOCKED] Specify deterministic consensus-state replay after restart; AFTER: `CODEC-004`.
+- SYNC-010 [OPEN] [BLOCKED] Specify deterministic artifact-state replay after restart; AFTER: `CODEC-003`.
+- SYNC-011 [OPEN] [BLOCKED] Specify the fail-closed rule for committed durable-state corruption; AFTER: `SYNC-009`, `SYNC-010`.
+- SYNC-012 [OPEN] [BLOCKED] Specify deterministic recovery of a provably uncommitted torn write; AFTER: `SYNC-009`, `SYNC-010`.
+- SYNC-013 [OPEN] [BLOCKED] Specify the crash-atomic consensus commit protocol; AFTER: `SYNC-009`, `SYNC-010`.
+- SYNC-014 [OPEN] [BLOCKED] Specify the weak-subjectivity requirement if the chosen consensus family requires it; AFTER: `SEC-006`, `FORK-010`.
+- SYNC-015 [OPEN] [BLOCKED] Specify the proof carried by a light client for fork choice; AFTER: `FORK-003`, `SYNC-007`.
+- SYNC-016 [OPEN] [BLOCKED] Select the maximum catch-up work per synchronization request; AFTER: `SYNC-004`.
+- SYNC-017 [OPEN] [BLOCKED] Specify one authenticated snapshot manifest binding the complete consensus and artifact snapshots; AFTER: `SYNC-005`, `SYNC-006`.
+- SYNC-018 [DECIDED] [NOT_IMPLEMENTED] The snapshot manifest binds the exact chain context.
+- SYNC-019 [DECIDED] [NOT_IMPLEMENTED] The snapshot manifest binds the exact genesis context.
+- SYNC-020 [DECIDED] [NOT_IMPLEMENTED] The snapshot manifest binds the exact protocol version.
+- SYNC-021 [DECIDED] [NOT_IMPLEMENTED] The snapshot manifest binds the exact checkpoint consensus-ancestry identity.
+- SYNC-022 [DECIDED] [NOT_IMPLEMENTED] The snapshot manifest binds the complete consensus-state commitment.
+- SYNC-023 [DECIDED] [NOT_IMPLEMENTED] The snapshot manifest binds the complete artifact-state commitment.
+- SYNC-024 [OPEN] [BLOCKED] Specify the authorization or proof for a snapshot manifest; AFTER: `SYNC-007`, `SYNC-017`.
+- SYNC-025 [OPEN] [BLOCKED] Specify crash-atomic snapshot installation; AFTER: `SYNC-017`, `SYNC-024`.
+- SYNC-026 [OPEN] [BLOCKED] Specify the monotonic snapshot anti-rollback rule under the chosen finality-confidence and checkpoint-admissibility semantics; AFTER: `FORK-011`, `SYNC-007`.
+- SYNC-027 [DECIDED] [NOT_IMPLEMENTED] Failed snapshot installation leaves either the complete old state or the complete new state.
+- GOV-001 [OPEN] [BLOCKED] Specify the genesis consensus state; AFTER: `SEC-006`, `CODEC-004`.
+- GOV-002 [OPEN] [BLOCKED] Specify the genesis economic state if `ECON-001` selects a fee asset; AFTER: `ECON-027`.
+- GOV-003 [OPEN] [BLOCKED] Specify the genesis participant state required by the chosen consensus family; AFTER: `PROD-005`.
+- GOV-004 [DECIDED] [NOT_IMPLEMENTED] Every protocol upgrade is explicitly versioned.
+- GOV-005 [DECIDED] [NOT_IMPLEMENTED] Every identity-changing protocol upgrade uses a distinct domain.
+- GOV-006 [OPEN] [BLOCKED] Select the protocol-upgrade authorization rule; AFTER: `SEC-006`.
+- GOV-007 [OPEN] [BLOCKED] Select the protocol-upgrade activation coordinate; AFTER: `CODEC-010`, `CODEC-011`.
+- GOV-008 [OPEN] [BLOCKED] Specify the exact pre-upgrade state transformation; AFTER: `GOV-006`, `GOV-007`.
+- GOV-009 [OPEN] [BLOCKED] Specify the exact post-upgrade state invariant; AFTER: `GOV-008`.
+- GOV-010 [OPEN] [BLOCKED] Specify unknown-version rejection; AFTER: `CODEC-013`.
+- GOV-011 [OPEN] [BLOCKED] Specify downgrade rejection; AFTER: `CODEC-013`.
+- GOV-012 [OPEN] [BLOCKED] Select the emergency recovery rule; AFTER: `FORK-010`.
+- GOV-013 [OPEN] [BLOCKED] Select the emergency recovery authorization rule; AFTER: `GOV-012`.
+- GOV-014 [DECIDED] [NOT_IMPLEMENTED] Any emergency recovery that rewrites history protected by the selected finality-confidence or irreversibility semantics creates an explicit new trust boundary.
+- GOV-015 [OPEN] [BLOCKED] Specify the genesis domain bound by consensus-control messages if `SEC-025` selects separate messages; AFTER: `CODEC-020`, `GOV-001`.
+- TEST-001 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical codecs have fixed cross-platform conformance vectors.
+- TEST-002 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical state transitions have fixed cross-platform conformance vectors.
+- TEST-003 [DECIDED] [NOT_IMPLEMENTED] Every codec input accepted during fuzzing re-encodes byte-identically to the accepted input.
+- TEST-004 [DECIDED] [NOT_IMPLEMENTED] Every differential state-transition case matches the independent model's acceptance result and resulting state.
+- TEST-005 [DECIDED] [NOT_IMPLEMENTED] Model checking finds no counterexample to the selected safety property within its documented bounds before live-network claims.
+- TEST-006 [DECIDED] [NOT_IMPLEMENTED] Duplicated messages preserve safety in deterministic simulation.
+- TEST-007 [DECIDED] [NOT_IMPLEMENTED] Reordered messages preserve safety in deterministic simulation.
+- TEST-008 [DECIDED] [NOT_IMPLEMENTED] Delayed messages preserve safety in deterministic simulation.
+- TEST-009 [DECIDED] [NOT_IMPLEMENTED] Dropped messages preserve safety in deterministic simulation.
+- TEST-010 [DECIDED] [NOT_IMPLEMENTED] Network partitions preserve the selected partition-safety property in deterministic simulation.
+- TEST-011 [DECIDED] [NOT_IMPLEMENTED] Honest nodes reconverge after a healed partition under the selected liveness assumptions.
+- TEST-012 [DECIDED] [NOT_IMPLEMENTED] Conflicting authorized messages preserve the selected safety property in deterministic simulation.
+- TEST-013 [DECIDED] [NOT_IMPLEMENTED] Participant crashes preserve the selected safety property in deterministic simulation.
+- TEST-014 [DECIDED] [NOT_IMPLEMENTED] Participant restarts do not produce conflicting authorized messages in deterministic simulation.
+- TEST-015 [DECIDED] [NOT_IMPLEMENTED] Durable-state corruption never advances canonical state in deterministic simulation.
+- TEST-016 [DECIDED] [NOT_IMPLEMENTED] Competing valid forks resolve according to the selected fork-choice rule in deterministic simulation.
+- TEST-017 [DECIDED] [NOT_IMPLEMENTED] Mathematically invalid artifacts never advance canonical state in deterministic simulation.
+- TEST-018 [DECIDED] [NOT_IMPLEMENTED] Resource-exhaustion artifacts fail within deterministic bounds in simulation.
+- TEST-019 [DECIDED] [NOT_IMPLEMENTED] Every required deterministic multi-node scenario satisfies its stated outcome oracle before live multi-node testing begins.
+- TEST-020 [DECIDED] [NOT_IMPLEMENTED] Every required live multi-node scenario satisfies its stated outcome oracle under documented conditions before any production-network claim is made.
+- TEST-021 [DECIDED] [NOT_IMPLEMENTED] Honest nodes make progress under the selected liveness assumptions in deterministic simulation.
+- TEST-022 [DECIDED] [NOT_IMPLEMENTED] Admissible artifacts satisfy the selected inclusion-liveness rule in deterministic simulation.
+- TEST-023 [DECIDED] [NOT_IMPLEMENTED] Cross-chain consensus blocks fail before state mutation in deterministic tests.
+- TEST-024 [DECIDED] [NOT_IMPLEMENTED] Cross-genesis consensus blocks fail before state mutation in deterministic tests.
+- TEST-025 [DECIDED] [NOT_IMPLEMENTED] Cross-version consensus blocks fail before state mutation in deterministic tests.
+- TEST-026 [DECIDED] [NOT_IMPLEMENTED] Safety-critical signer crash injection never releases conflicting signatures.
+- TEST-027 [DECIDED] [NOT_IMPLEMENTED] Mixed consensus and artifact snapshots fail before installation.
+- TEST-028 [DECIDED] [NOT_IMPLEMENTED] Stale snapshots fail before installation.
+- TEST-029 [DECIDED] [NOT_IMPLEMENTED] Snapshot-installation crashes recover the complete old state or the complete new state.
+- TEST-030 [DECIDED] [NOT_IMPLEMENTED] A proof selected only on a sibling branch cannot satisfy a candidate dependency.
+- TEST-031 [DECIDED] [NOT_IMPLEMENTED] Protocol upgrades activate only at the selected activation coordinate.
+- TEST-032 [DECIDED] [NOT_IMPLEMENTED] Pre-activation nodes reject premature upgraded consensus data.
+- TEST-033 [DECIDED] [NOT_IMPLEMENTED] Post-activation nodes reject downgraded consensus data.
+- TEST-034 [DECIDED] [NOT_IMPLEMENTED] One consensus transition's complete retained-state increase cannot exceed the selected per-transition bound.
+- TEST-035 [DECIDED] [NOT_IMPLEMENTED] Valid competing-fork churn cannot exceed the retained branch-count bound if a hard count bound is selected.
+- TEST-036 [DECIDED] [NOT_IMPLEMENTED] Every resource-bound rejection leaves canonical state unchanged.
+- TEST-037 [DECIDED] [NOT_IMPLEMENTED] Valid competing-fork churn cannot exceed the retained branch-depth bound if a hard depth bound is selected.
+- TEST-038 [DECIDED] [NOT_IMPLEMENTED] Valid competing-fork churn cannot exceed the retained branch-byte bound if a hard byte bound is selected.
+- TEST-039 [DECIDED] [NOT_IMPLEMENTED] Producer authorization from another chain context fails before state mutation.
+- TEST-040 [DECIDED] [NOT_IMPLEMENTED] Producer authorization from another genesis context fails before state mutation.
+- TEST-041 [DECIDED] [NOT_IMPLEMENTED] Producer authorization from another protocol version fails before state mutation.
+- TEST-042 [DECIDED] [NOT_IMPLEMENTED] Producer authorization for another message role fails before state mutation.
+- TEST-043 [DECIDED] [NOT_IMPLEMENTED] Producer authorization for another consensus position fails before state mutation.
+- TEST-044 [DECIDED] [NOT_IMPLEMENTED] Producer authorization for another proposal signing root fails before state mutation.
+- TEST-045 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence from another chain context fails before state mutation if the chosen family uses agreement evidence.
+- TEST-046 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence from another genesis context fails before state mutation if the chosen family uses agreement evidence.
+- TEST-047 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence from another protocol version fails before state mutation if the chosen family uses agreement evidence.
+- TEST-048 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence for another message role fails before state mutation if the chosen family uses agreement evidence.
+- TEST-049 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence for another consensus position fails before state mutation if the chosen family uses agreement evidence.
+- TEST-050 [DECIDED] [NOT_IMPLEMENTED] Agreement evidence for another proposal signing root fails before state mutation if the chosen family uses agreement evidence.
+- TEST-051 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message from another chain context fails before state mutation if the chosen family uses signed consensus-control messages.
+- TEST-052 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message from another genesis context fails before state mutation if the chosen family uses signed consensus-control messages.
+- TEST-053 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message from another protocol version fails before state mutation if the chosen family uses signed consensus-control messages.
+- TEST-054 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message for another message role fails before state mutation if the chosen family uses signed consensus-control messages.
+- TEST-055 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message for another consensus position fails before state mutation if the chosen family uses signed consensus-control messages.
+- TEST-056 [DECIDED] [NOT_IMPLEMENTED] A signed consensus-control message for another protocol target fails before state mutation if the chosen family uses signed consensus-control messages.
+- TEST-057 [DECIDED] [NOT_IMPLEMENTED] Unavailable artifact data prevents consensus-block acceptance in deterministic tests.
+- TEST-058 [DECIDED] [NOT_IMPLEMENTED] Unavailable artifact data prevents agreement participation in deterministic tests if the chosen family uses agreement messages.
+- TEST-059 [DECIDED] [NOT_IMPLEMENTED] Unavailable artifact data prevents fork-choice eligibility in deterministic tests.
+- TEST-060 [DECIDED] [NOT_IMPLEMENTED] Unavailable artifact data prevents irreversible checkpointing in deterministic tests if the selected finality model exposes irreversible checkpoints.
+- TEST-061 [DECIDED] [NOT_IMPLEMENTED] Invalid artifact data prevents consensus-block acceptance in deterministic tests.
+- TEST-062 [DECIDED] [NOT_IMPLEMENTED] Invalid artifact data prevents agreement participation in deterministic tests if the chosen family uses agreement messages.
+- TEST-063 [DECIDED] [NOT_IMPLEMENTED] Invalid artifact data prevents fork-choice eligibility in deterministic tests.
+- TEST-064 [DECIDED] [NOT_IMPLEMENTED] Invalid artifact data prevents irreversible checkpointing in deterministic tests if the selected finality model exposes irreversible checkpoints.
+- TEST-065 [DECIDED] [NOT_IMPLEMENTED] Every data-availability rejection leaves canonical consensus state unchanged.
+- TEST-066 [DECIDED] [NOT_IMPLEMENTED] Every data-availability rejection leaves canonical artifact state unchanged.
+- TEST-067 [DECIDED] [NOT_IMPLEMENTED] Changing only producer-authorization evidence leaves the proposal signing root unchanged.
+- TEST-068 [DECIDED] [NOT_IMPLEMENTED] Changing canonical producer-authorization evidence bytes changes the consensus-envelope identity.
+- TEST-069 [DECIDED] [NOT_IMPLEMENTED] Changing only agreement evidence leaves the proposal signing root unchanged if the chosen family uses agreement evidence.
+- TEST-070 [DECIDED] [NOT_IMPLEMENTED] Changing canonical agreement-evidence bytes changes the consensus-envelope identity if the chosen family uses agreement evidence.
+- TEST-071 [DECIDED] [NOT_IMPLEMENTED] Valid evidence variants for one proposal signing root cannot create distinct fork-choice candidates.
+- TEST-072 [DECIDED] [NOT_IMPLEMENTED] Permuting arrival order for one saturated fork set yields the same complete retained branch set.
+- TEST-073 [DECIDED] [NOT_IMPLEMENTED] Permuting arrival order for one saturated fork set yields the same complete retained evidence set.
+- TEST-074 [DECIDED] [NOT_IMPLEMENTED] Fork saturation preserves or deterministically recovers every branch required before any fork-choice, finality, reorganization, or safety decision.
+- TEST-075 [DECIDED] [NOT_IMPLEMENTED] Fork saturation preserves or deterministically recovers every evidence item required before any fork-choice, finality, reorganization, or safety decision.
+- TEST-076 [DECIDED] [NOT_IMPLEMENTED] Crash recovery at fork saturation reproduces the same bounded-retention result.
+- TEST-077 [DECIDED] [NOT_IMPLEMENTED] A snapshot manifest from another chain context fails before installation.
+- TEST-078 [DECIDED] [NOT_IMPLEMENTED] A snapshot manifest from another genesis context fails before installation.
+- TEST-079 [DECIDED] [NOT_IMPLEMENTED] A snapshot manifest from another protocol version fails before installation.
+- TEST-080 [DECIDED] [NOT_IMPLEMENTED] A snapshot manifest with forged authorization or proof fails before installation.
+- TEST-081 [DECIDED] [NOT_IMPLEMENTED] Consensus-state snapshot bytes mismatching their manifest commitment fail before installation.
+- TEST-082 [DECIDED] [NOT_IMPLEMENTED] Artifact-state snapshot bytes mismatching their manifest commitment fail before installation.
+- TEST-083 [DECIDED] [NOT_IMPLEMENTED] Every rejected snapshot leaves the previously installed state unchanged.
+- TEST-084 [DECIDED] [NOT_IMPLEMENTED] A crash during canonical branch switching recovers either the complete old branch state or the complete new branch state.
+- TEST-085 [DECIDED] [NOT_IMPLEMENTED] A reorganization crossing history protected by the selected finality-confidence or irreversibility semantics is rejected.
+- TEST-086 [DECIDED] [NOT_IMPLEMENTED] A reorganization exceeding the selected unfinalized reorganization bound is rejected if such a bound exists.
+- TEST-087 [DECIDED] [NOT_IMPLEMENTED] Successful reorganization installs the exact artifact state derived from the replacement branch.
+- TEST-088 [DECIDED] [NOT_IMPLEMENTED] A citation selected only on the displaced branch cannot satisfy a post-reorganization dependency.
+- TEST-089 [DECIDED] [NOT_IMPLEMENTED] Every invalid-artifact-data rejection leaves canonical consensus state unchanged.
+- TEST-090 [DECIDED] [NOT_IMPLEMENTED] Every invalid-artifact-data rejection leaves canonical artifact state unchanged.
+- TEST-091 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical codec fuzzing produces no process panic.
+- TEST-092 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical codec fuzzing stays within deterministic resource bounds.
+- TEST-093 [DECIDED] [NOT_IMPLEMENTED] Permuting arrival order for one saturated fork set yields the same fork-choice winner.
+- TEST-094 [DECIDED] [NOT_IMPLEMENTED] Permuting valid evidence variants for one proposal signing root yields the same retained representative set.
+- TEST-095 [DECIDED] [NOT_IMPLEMENTED] Permuting valid evidence variants for one proposal signing root yields the same preferred evidence.
+- TEST-096 [DECIDED] [NOT_IMPLEMENTED] Evidence-variant flooding cannot exceed the selected per-ancestry retained-count bound.
+- TEST-097 [DECIDED] [NOT_IMPLEMENTED] Evidence-variant flooding cannot exceed the selected per-ancestry retained-byte bound.
+- TEST-098 [DECIDED] [NOT_IMPLEMENTED] Evidence-variant flooding cannot exceed the selected per-ancestry verification-work bound.
+- TEST-099 [DECIDED] [NOT_IMPLEMENTED] Crash recovery after evidence-variant flooding preserves the selected bounded representative set.
+- TEST-100 [DECIDED] [NOT_IMPLEMENTED] Consensus-envelope relay cannot exceed the selected per-ancestry variant limit.
+- TEST-101 [DECIDED] [NOT_IMPLEMENTED] Permuting valid signature variants for one consensus-control-message semantic key yields the same retained representative set if the chosen family uses signed consensus-control messages.
+- TEST-102 [DECIDED] [NOT_IMPLEMENTED] Permuting valid signature variants for one consensus-control-message semantic key yields the same preferred signature if the chosen family uses signed consensus-control messages.
+- TEST-103 [DECIDED] [NOT_IMPLEMENTED] Signature-variant flooding cannot exceed the selected per-key retained-count bound if the chosen family uses signed consensus-control messages.
+- TEST-104 [DECIDED] [NOT_IMPLEMENTED] Signature-variant flooding cannot exceed the selected per-key retained-byte bound if the chosen family uses signed consensus-control messages.
+- TEST-105 [DECIDED] [NOT_IMPLEMENTED] Signature-variant flooding cannot exceed the selected per-key verification-work bound if the chosen family uses signed consensus-control messages.
+- TEST-106 [DECIDED] [NOT_IMPLEMENTED] Crash recovery after signature-variant flooding preserves the selected bounded representative set if the chosen family uses signed consensus-control messages.
+- TEST-107 [DECIDED] [NOT_IMPLEMENTED] Signed consensus-control-message relay cannot exceed the selected per-key variant limit if the chosen family uses signed consensus-control messages.
+- TEST-108 [DECIDED] [NOT_IMPLEMENTED] An otherwise valid snapshot manifest anchored to a non-admissible checkpoint fails before installation.
+- TEST-109 [DECIDED] [NOT_IMPLEMENTED] A failed replacement-branch validation leaves the complete prior consensus state unchanged.
+- TEST-110 [DECIDED] [NOT_IMPLEMENTED] A failed replacement-branch validation leaves the complete prior artifact state unchanged.
+- TEST-111 [DECIDED] [NOT_IMPLEMENTED] Valid signature variants for one consensus-control-message semantic key contribute at most one logical message to every consensus decision if the chosen family uses signed consensus-control messages.
+- TEST-112 [DECIDED] [NOT_IMPLEMENTED] Changing only producer-authorization evidence leaves the exact consensus-ancestry identity unchanged.
+- TEST-113 [DECIDED] [NOT_IMPLEMENTED] Changing only agreement evidence leaves the exact consensus-ancestry identity unchanged if the chosen family uses agreement evidence.
