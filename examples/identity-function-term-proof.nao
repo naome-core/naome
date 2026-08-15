@@ -1,7 +1,7 @@
 foundation = "naome:zfc"
 
 definitions:
-    identity = "57736bb0906c06fbba28be90eb7a15f7c4b0292d9e36a9c669a905fdde5a905e"
+    identity = "1b976399f4226292fdea6b89c496e976cbcd86eb1458bc265cdd14e04d1cf854"
 
 statement = forall(x,
     implies(

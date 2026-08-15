@@ -55,9 +55,9 @@ const REPLACEMENT_PROOF_ID: &str =
 const REPLACEMENT_PROOF_BYTES: &str =
     "00000001120000000b0000000000000000000001000000000000000100000002000000030000000400000000";
 const SELF_EQUAL_DEFINITION_ID: &str =
-    "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018";
+    "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035";
 const SELF_EQUAL_ARTIFACT_ID: &str =
-    "c33fbda7b0401160cfed57b2fc2915ecc39f39f8793518a73d57544e0771e351";
+    "c4c4e0c00f0df475ae34fe8cff4d2cbe78ecb20c6c7b91ae9509ca537876f796";
 const SELF_EQUAL_DEFINITION_BYTES: &str = "00000000010000000b0000000000000000000000";
 
 static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
@@ -222,12 +222,12 @@ fn proof_command_has_no_hidden_citation_state() {
 fn standalone_command_cannot_authorize_definition_dependencies_from_local_files() {
     for (file, position, diagnostic) in [
         (
-            "empty-set.nao",
+            "identity-function.nao",
             "3:1",
-            "error[NAO0021]: definition checking failed: definition obligation proof is absent from selected state",
+            "error[NAO0021]: definition obligation statement 31a017582bf7e6314670d35aeb7d206d060a12bc4df139163297a139161e01a1 is absent from selected state",
         ),
         (
-            "empty-set-term-proof.nao",
+            "reflexive-relation-alias.nao",
             "4:5",
             "error[NAO0018]: definition alias is absent from selected chain state",
         ),

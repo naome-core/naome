@@ -32,21 +32,17 @@ selected-definitions := "definitions" ":" selected-definition+
 selected-definition  := alias "=" quoted-definition-id
 
 definition := relation-definition
-            | constant-definition
             | function-definition
 
 relation-definition :=
-  "definition" name "=" "relation" "(" parameter-list? ")" ":" formula EOF
-
-constant-definition :=
-  "definition" name "=" "constant" "(" output ","
-  "obligation" "=" quoted-proof-id ")" ":" formula EOF
+  "definition" name "=" "relation" "(" parameter-list ")" ":" formula EOF
 
 function-definition :=
-  "definition" name "=" "function" "(" input-list "," output ","
-  "obligation" "=" quoted-proof-id ")" ":" formula EOF
+  "definition" name "=" "function" "(" input-list "," output ")" ":" formula EOF
 
 input-list := input ("," input)*
+parameter-list := name ("," name)*
+term-list := term ("," term)*
 
 proof := formula-bindings?
          "statement" "=" formula
@@ -56,11 +52,12 @@ formula-bindings := "formulas" ":" formula-binding+
 formula-binding  := binding-name "=" formula
 ```
 
-The function production means one or more inputs followed by one output; all
-definition parameters must be unique. Relation arity may be zero. A source
-contains only one definition or one proof, never both and never a batch. A
-`formulas:` block is proof-only and follows `definitions:` when both are
-present.
+The function production means one or more inputs followed by one output. A
+relation has 1 through 256 parameters; a function has 1 through 255 inputs and
+one output. Every parameter must be unique and must occur in the graph body.
+A source contains only one definition or one proof, never both and never a
+batch. A `formulas:` block is proof-only and follows `definitions:` when both
+are present.
 
 `quoted-proof-id` and `quoted-definition-id` contain exactly 64 lowercase
 hexadecimal characters. Strings have no escape syntax. Names begin with an
@@ -68,10 +65,16 @@ ASCII letter or underscore and continue with ASCII letters, digits, or
 underscores. Keywords and operators are case-sensitive.
 
 ASCII space, tab, carriage return, and line feed may occur between tokens. `#`
-outside a quoted ID starts a comment through line end. Indentation and line
+outside a quoted string starts a comment through line end. Indentation and line
 boundaries are presentation-only. Commas between operands are mandatory; one
 comma immediately before `)` or `]` is optional. The complete source must end
 after its one artifact.
+
+Selected-definition aliases and formula-binding names may not reuse any
+keyword, formula operator, or proof-expression name shown by this grammar, nor
+the schema field name `parameters`. A definition declaration name is
+presentation-only, but it may not collide with a selected-definition alias in
+the same file.
 
 ## Formula and term grammar
 
@@ -90,26 +93,26 @@ formula := "equal" "(" term "," term ")"
          | formula-binding-name
 
 term := name
-      | constant-alias "(" ")"
       | function-alias "(" term-list ")"
 ```
 
 An alias is declared only in `definitions:`. The compiler immediately resolves
 its exact `DefinitionId` from immutable selected state and retains its checked
 kind and arity. Therefore every declared alias, even an unused one, must already
-be selected. Alias names are source-only; the exact `DefinitionId` remains in
-canonical formula bytes.
+be selected. Alias names are source-only. Proof certificates retain the exact
+`DefinitionId` in canonical formula bytes; definition compilation instead
+expands aliases into the certificate's self-contained primitive graph.
 
 A relation alias is valid only in formula position and receives its graph
-arity. A constant or function alias is valid only in a term operand and receives
-zero or its declared input arity. Kind or arity mismatch is rejected. The name
+arity. A function alias is valid only in a term operand and receives its
+declared input arity. Kind or arity mismatch is rejected. The name
 being defined is not an alias, so a definition cannot cite itself; forward and
 same-file definition references are unavailable by construction.
 
-Primitive terms remain variables. A constant or function call is source sugar
-for an existential graph witness. For an atom `A(t1, ..., tk)`, nested term
-calls are traversed left-to-right. Each call allocates one fresh witness and
-appends its selected graph application. If traversal yields witnesses
+Primitive terms remain variables. A function call is source sugar for an
+existential graph witness. For an atom `A(t1, ..., tk)`, nested term calls are
+traversed left-to-right. Each call allocates one fresh witness and appends its
+selected graph application. If traversal yields witnesses
 `w1 ... wn` and graph constraints `G1 ... Gn`, lowering is exactly:
 
 ```text
@@ -146,31 +149,27 @@ Definition parameters map by declared order to canonical formal free variables:
 definition self_equal = relation(value):
     equal(value, value)
 
-definition empty = constant(
-    value,
-    obligation = "<ProofId of exact unique-existence theorem>",
-):
-    forall(member_value, not_(member(member_value, value)))
-
 definition identity = function(
     input,
     output,
-    obligation = "<ProofId of exact total-unique theorem>",
 ):
     equal(output, input)
 ```
 
-The declaration name is presentation-only. Relation bodies require no proof
-obligation. Constant and function obligation IDs are identity-bearing and must
-already select a proof with the exact checker-generated unique or total-unique
-conclusion. Definition bodies may call only earlier selected aliases from the
+The declaration name is presentation-only. A relation requires no proof
+obligation. For a function, the checker derives the exact total-and-unique
+existence statement from its graph. Selected state must already contain that
+`StatementId`; no particular `ProofId` is part of the definition or its
+identity. Definition bodies may call only earlier selected aliases from the
 optional `definitions:` block.
 
-Compilation constructs one canonical `DefinitionCertificate`, validates the
-formal interface, expands selected definition dependencies within deterministic
-limits, checks the exact obligation where required, and returns
-`DefinitionId`, typed `ArtifactId`, and canonical definition bytes. It does not
-admit the result or make its source name available to another file.
+Compilation fully expands selected aliases within deterministic limits, then
+constructs and validates one canonical `DefinitionCertificate` from the
+resulting primitive graph. It checks the exact function obligation where
+required and returns `DefinitionId`, typed `ArtifactId`, and canonical
+definition bytes. Therefore an alias-written body and the same inline graph
+have exactly the same bytes and identity. Compilation does not admit the result
+or make its source name available to another file.
 
 ## Proof construction
 
@@ -230,9 +229,9 @@ Compilation executes:
 1. require at most 4,194,304 UTF-8 source bytes;
 2. require exact Foundation `naome:zfc`;
 3. resolve every optional definition alias from immutable selected state;
-4. for a definition, parse its one kind and body, build the canonical
-   certificate, check dependencies and exact obligation, and return typed
-   output;
+4. for a definition, parse its one kind and body, fully expand every selected
+   alias, build the canonical self-contained certificate, check the exact
+   function obligation where required, and return typed output;
 5. for a proof, expand optional formula bindings left-to-right, parse and fully
    expand the declared statement, lower proof steps in source order, require
    final `return` and EOF, and construct one certificate;
@@ -252,15 +251,18 @@ or selected aliases together with their uses changes no canonical identity.
 Comments, whitespace, indentation, line breaks, optional trailing commas, an
 exact formula binding inline/out-of-line boundary, and exact derived-form
 expansion are likewise presentation-neutral. Changing a selected `ProofId`,
-`DefinitionId`, obligation, schema parameter order, proof rule, or dependency
-structure is not neutral.
+schema parameter order, proof rule, or proof dependency structure is not
+neutral. Changing a proof's selected `DefinitionId` is not neutral even if two
+definitions expand alike. In definition source, replacing an alias with another
+alias that has the exact same expanded primitive graph is neutral because only
+that graph enters the certificate.
 
 ## Public API and CLI
 
 `compile_artifact(&str)` compiles one proof or definition against empty
 `ArtifactState`. It can compile a dependency-free relation definition or proof,
-but it cannot authorize a definition alias, proof citation, constant obligation,
-or function obligation.
+but it cannot authorize a definition alias, proof citation, or function
+obligation statement.
 
 `compile_artifact_against_selected_chain(&str, &ArtifactChainJournal)` first
 borrows the healthy journal's immutable selected state and then compiles. Journal
@@ -306,10 +308,26 @@ Usage errors exit `2`; file, UTF-8, compilation, and output errors exit `1`;
 success exits `0`. The command reads at most the source limit plus one byte and
 never echoes an unbounded source line.
 
-Diagnostics use stable classes `NAO0001` through `NAO0023`. Source-local
-failures carry half-open UTF-8 byte spans and derived one-based line and column
-positions. Diagnostic names are bounded for rendering. Codes and spans are
-authoring metadata and never canonical artifact content.
+Diagnostics use these stable classes:
+
+| Code | Class | Code | Class |
+| --- | --- | --- | --- |
+| `NAO0001` | source too long | `NAO0013` | unknown formula binding |
+| `NAO0002` | syntax | `NAO0014` | formula-binding node limit |
+| `NAO0003` | Foundation mismatch | `NAO0015` | expected proof |
+| `NAO0004` | duplicate step | `NAO0016` | duplicate definition alias |
+| `NAO0005` | unknown step | `NAO0017` | unknown definition alias |
+| `NAO0006` | return not final | `NAO0018` | definition not selected |
+| `NAO0007` | formula depth limit | `NAO0019` | definition arity mismatch |
+| `NAO0008` | statement | `NAO0020` | definition structure |
+| `NAO0009` | certificate | `NAO0021` | definition check |
+| `NAO0010` | proof check | `NAO0022` | definition formula |
+| `NAO0011` | statement mismatch | `NAO0023` | definition expansion |
+| `NAO0012` | duplicate formula binding |  |  |
+
+Source-local failures carry half-open UTF-8 byte spans and derived one-based
+line and column positions. Diagnostic names are bounded for rendering. Codes
+and spans are authoring metadata and never canonical artifact content.
 
 ## Selected-state example
 
@@ -325,7 +343,7 @@ definition self_equal = relation(value):
 Its `DefinitionId` is:
 
 ```text
-8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018
+0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035
 ```
 
 A later proof can give it a short source-only name while retaining the exact
@@ -335,7 +353,7 @@ chain identity:
 foundation = "naome:zfc"
 
 definitions:
-    self_equal = "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018"
+    self_equal = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
 
 statement = forall(
     x,
@@ -358,6 +376,7 @@ CLI.
 
 The source language does not provide hypotheses, tactic search, implicit
 inference, automatic obligation proofs, dependency fetching, multiple artifacts
-per file or block, recursion, native Foundation constant/function terms,
+per file or block, recursion, standalone constants, zero-input functions,
+zero-arity relations, native Foundation constant/function terms,
 arbitrary user-defined macros, modules, imports, filesystem citation lookup,
 admission, chain selection, consensus, or finality.

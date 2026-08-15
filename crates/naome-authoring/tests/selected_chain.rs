@@ -8,7 +8,7 @@ use naome_authoring::{
     CompileError, CompiledArtifact, CompiledProof, SelectedChainCompileError, compile,
     compile_against_selected_chain, compile_artifact, compile_artifact_against_selected_chain,
 };
-use naome_chain::{ArtifactChainDefinition, ArtifactDag};
+use naome_chain::{ArtifactBlockPrepareError, ArtifactChainDefinition, ArtifactDag};
 use naome_checker::CheckError;
 use naome_proof::{
     ArtifactId, ArtifactPayload, DefinitionId, DerivationId, ProofCertificate, ProofId, ProofStep,
@@ -16,8 +16,8 @@ use naome_proof::{
 };
 use naome_storage::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
-    ArtifactBlockCandidateStoreLimits, ArtifactChainJournal, ArtifactPayloadInsertOutcome,
-    ArtifactPayloadStoreLimits, CanonicalArtifactPayloadStore,
+    ArtifactBlockCandidateStoreLimits, ArtifactChainJournal, ArtifactChainJournalError,
+    ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits, CanonicalArtifactPayloadStore,
 };
 
 const SELF_EQUALITY: &str = r#"
@@ -492,13 +492,17 @@ fn candidate_and_archive_definition_bytes_never_authorize_source_aliases() {
         )
         .unwrap();
     let compiled = compile_artifact_against_selected_chain(source, &journal).unwrap();
-    assert_eq!(
-        compiled_definition_id(&compiled),
-        DefinitionId::from_bytes(hex32(
-            "7b24fa5223b987195fcdb94acd67c9519ba2b8d2fb1727150937e42c8bcc3e1c"
-        ))
-    );
+    assert_eq!(compiled, definition);
+    assert_eq!(compiled_definition_id(&compiled), definition_id);
     assert_eq!(journal.len().unwrap(), 1);
+    assert!(matches!(
+        journal.prepare_block(compiled.artifact_id()),
+        Err(ArtifactChainJournalError::Preparation {
+            source: ArtifactBlockPrepareError::AlreadySelectedArtifactId {
+                artifact_id,
+            },
+        }) if artifact_id == compiled.artifact_id()
+    ));
     assert_eq!(
         directory.read("artifact-block-candidate-store.log"),
         candidate_image
@@ -540,13 +544,13 @@ fn definitions_and_term_sugar_resolve_only_from_selected_ancestry() {
     assert_eq!(
         first_id,
         DefinitionId::from_bytes(hex32(
-            "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018"
+            "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
         ))
     );
     let colliding_name = r#"
 foundation = "naome:zfc"
 definitions:
-    self_equal = "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018"
+    self_equal = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
 definition self_equal = relation(x):
     self_equal(x)
 "#;
@@ -571,7 +575,7 @@ definition self_equal = relation(x):
     assert_eq!(
         second_id,
         DefinitionId::from_bytes(hex32(
-            "70c732d536e51e376e42fbc60ddcc581bec6aec75aeb3917c7055fd1fb7c3004"
+            "4165ac271695531751ada582517549ab2e53d286a820b03de7ac3a0ddc372d19"
         ))
     );
 
@@ -583,14 +587,14 @@ definition self_equal = relation(x):
     assert_eq!(
         third_id,
         DefinitionId::from_bytes(hex32(
-            "1a787bc02cf38f5743535b38749b486a4c038998e8e8338d2aa66ed19f4d7634"
+            "29b9cbdea19bdc3ee48f3f4cdebbd4deb07aaf4669564c4440163a857fcbf548"
         ))
     );
     let presentation_variant = r#"
 foundation = "naome:zfc"
 definitions:
-    unused = "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018"
-    membership = "70c732d536e51e376e42fbc60ddcc581bec6aec75aeb3917c7055fd1fb7c3004"
+    unused = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
+    membership = "4165ac271695531751ada582517549ab2e53d286a820b03de7ac3a0ddc372d19"
 definition presentation_only = relation(a, b):
     forall(candidate, iff(membership(candidate, a), membership(candidate, b)))
 "#;
@@ -619,7 +623,7 @@ definition presentation_only = relation(a, b):
     assert_eq!(
         identity_id,
         DefinitionId::from_bytes(hex32(
-            "57736bb0906c06fbba28be90eb7a15f7c4b0292d9e36a9c669a905fdde5a905e"
+            "1b976399f4226292fdea6b89c496e976cbcd86eb1458bc265cdd14e04d1cf854"
         ))
     );
 
@@ -649,7 +653,7 @@ definition presentation_only = relation(a, b):
     assert_eq!(
         long.proof_id(),
         ProofId::from_bytes(hex32(
-            "802eafd3f7c045b955758d1e26d5cf11546aed00ec2941a07474523cc211fd6b"
+            "5ae5159ffe11909977f7033ad5d7b9364a3182a207427faccc67b63d6effc099"
         ))
     );
     let certificate = ProofCertificate::from_canonical_bytes(long.canonical_proof_bytes()).unwrap();
@@ -684,7 +688,7 @@ definition presentation_only = relation(a, b):
     assert_eq!(
         term.proof_id(),
         ProofId::from_bytes(hex32(
-            "403726d7b0b7e0d06bb2d8165557ca5c79325128776413250d686fd9c88746b2"
+            "4ac90b298802d2f4373d3df41b1107bd8fd21cf8dde35a122cc5637432fd65c7"
         ))
     );
     let certificate = ProofCertificate::from_canonical_bytes(term.canonical_proof_bytes()).unwrap();
@@ -771,148 +775,60 @@ definition presentation_only = relation(a, b):
 }
 
 #[test]
-fn empty_set_constant_and_term_proof_are_three_selected_one_artifact_blocks() {
-    const OBLIGATION_SOURCE: &str = include_str!("../../../examples/empty-set-obligation.nao");
-    const CONSTANT_SOURCE: &str = include_str!("../../../examples/empty-set.nao");
-    const TERM_SOURCE: &str = include_str!("../../../examples/empty-set-term-proof.nao");
+fn empty_set_existence_remains_a_standalone_selected_proof() {
+    const SOURCE: &str = include_str!("../../../examples/empty-set-obligation.nao");
 
     let directory = TestDirectory::new();
     let chain_definition = ArtifactChainDefinition::new([0x32; 32]);
     let mut journal = ArtifactChainJournal::create(&directory.path, chain_definition).unwrap();
 
-    assert_eq!(OBLIGATION_SOURCE.len(), 390_826);
-    assert!(matches!(
-        compile_artifact(CONSTANT_SOURCE),
-        Err(CompileError::DefinitionCheck { .. })
-    ));
-    assert!(matches!(
-        compile_artifact(TERM_SOURCE),
-        Err(CompileError::DefinitionNotSelected { .. })
-    ));
-
-    let obligation = compile_artifact_against_selected_chain(OBLIGATION_SOURCE, &journal).unwrap();
-    let obligation = compiled_proof(&obligation);
-    assert_eq!(obligation.canonical_proof_bytes().len(), 110_196);
+    assert_eq!(SOURCE.len(), 390_826);
+    let standalone = compile_artifact(SOURCE).unwrap();
+    let standalone = compiled_proof(&standalone);
+    assert_eq!(standalone.canonical_proof_bytes().len(), 110_196);
     assert_eq!(
-        obligation.statement_id(),
+        standalone.statement_id(),
         StatementId::from_bytes(hex32(
             "31e258a893b84df8abbfc30b99d74e2a610b23145dbfd66de054dc91d6a3472e"
         ))
     );
     assert_eq!(
-        obligation.derivation_id(),
+        standalone.derivation_id(),
         DerivationId::from_bytes(hex32(
             "06967b3b8f22d2424593ad3aa2b68cec5bff8f4e81f92b958b78703191fc0d6d"
         ))
     );
     assert_eq!(
-        obligation.proof_id(),
+        standalone.proof_id(),
         ProofId::from_bytes(hex32(
             "0919162ae0dc2bf2f95966473aba97f22a072e26074ab5f92b55d043d730bfde"
         ))
     );
-    let obligation_artifact_id = ArtifactId::from_proof_id(obligation.proof_id());
-    let obligation_bytes = proof_artifact_bytes(obligation);
-    let obligation_block = journal.prepare_block(obligation_artifact_id).unwrap();
-    journal
-        .apply_block(&obligation_block, obligation_bytes)
-        .unwrap();
-    assert_eq!(journal.len().unwrap(), 1);
-
-    let constant = compile_artifact_against_selected_chain(CONSTANT_SOURCE, &journal).unwrap();
-    assert_eq!(
-        compiled_definition_id(&constant),
-        DefinitionId::from_bytes(hex32(
-            "3d1289681291c49de8738a873ba9cb1514bad08ec671774d9861437635982fc8"
-        ))
-    );
-    assert_eq!(
-        constant.artifact_id(),
-        ArtifactId::from_bytes(hex32(
-            "b2fe98972b4081e400188b96547da336aa82f668b7408ba616153c8473e2323f"
-        ))
-    );
-    let CompiledArtifact::Definition(compiled_constant) = &constant else {
-        panic!("expected a compiled constant definition");
-    };
-    assert_eq!(compiled_constant.canonical_definition_bytes().len(), 50);
-    let obligation_head = journal.head_block_id().unwrap();
-    let obligation_root = journal.artifact_set_root().unwrap();
-    assert_eq!(journal.len().unwrap(), 1);
-    assert!(matches!(
-        compile_artifact_against_selected_chain(TERM_SOURCE, &journal),
-        Err(SelectedChainCompileError::Compilation {
-            source: CompileError::DefinitionNotSelected { .. }
-        })
-    ));
-    assert_eq!(journal.head_block_id().unwrap(), obligation_head);
-    assert_eq!(journal.artifact_set_root().unwrap(), obligation_root);
-    assert_eq!(journal.len().unwrap(), 1);
-
-    select_compiled(&mut journal, &constant);
-    assert_eq!(journal.len().unwrap(), 2);
-    let constant_head = journal.head_block_id().unwrap();
-    let constant_root = journal.artifact_set_root().unwrap();
-
-    let term = compile_artifact_against_selected_chain(TERM_SOURCE, &journal).unwrap();
-    let term_proof = compiled_proof(&term);
-    assert_eq!(term_proof.canonical_proof_bytes().len(), 227);
-    assert_eq!(
-        term_proof.statement_id(),
-        StatementId::from_bytes(hex32(
-            "1e251a4d2aea705528b67dcac70ca9be2e09bb69dede18cd9aef88a172586bc7"
-        ))
-    );
-    assert_eq!(
-        term_proof.derivation_id(),
-        DerivationId::from_bytes(hex32(
-            "d3911710a5a7949678ba088cf52dc240933f7a77b27355c4f533f5071c46329b"
-        ))
-    );
-    assert_eq!(
-        term_proof.proof_id(),
-        ProofId::from_bytes(hex32(
-            "ab3701e64921096d72e692cd9bf1ca05fd54c581534489e1fc254ae5b05ca937"
-        ))
-    );
-    let certificate =
-        ProofCertificate::from_canonical_bytes(term_proof.canonical_proof_bytes()).unwrap();
-    assert_eq!(certificate.steps().len(), 1);
-    assert_eq!(certificate.steps()[0].definition_references().len(), 4);
-    assert_eq!(journal.head_block_id().unwrap(), constant_head);
-    assert_eq!(journal.artifact_set_root().unwrap(), constant_root);
-    assert_eq!(journal.len().unwrap(), 2);
-
-    let term_artifact_id = term.artifact_id();
-    select_compiled(&mut journal, &term);
+    let selected = select_source(&mut journal, SOURCE);
+    assert_eq!(compiled_proof(&selected), standalone);
+    let artifact_id = selected.artifact_id();
     let final_head = journal.head_block_id().unwrap();
-    assert_eq!(journal.len().unwrap(), 3);
+    assert_eq!(journal.len().unwrap(), 1);
     drop(journal);
 
     let reopened =
         ArtifactChainJournal::open_verified(&directory.path, chain_definition, final_head).unwrap();
-    assert_eq!(reopened.len().unwrap(), 3);
+    assert_eq!(reopened.len().unwrap(), 1);
     assert!(
         reopened
             .artifact_state()
             .unwrap()
-            .contains_proof(obligation.proof_id())
-    );
-    assert!(
-        reopened
-            .artifact_state()
-            .unwrap()
-            .contains_definition(compiled_definition_id(&constant))
+            .contains_proof(standalone.proof_id())
     );
     assert_eq!(
         reopened
-            .artifact(term_artifact_id)
+            .artifact(artifact_id)
             .unwrap()
             .unwrap()
             .as_proof()
             .unwrap()
             .proof_id(),
-        term_proof.proof_id()
+        standalone.proof_id()
     );
 }
 
@@ -930,7 +846,7 @@ fn selected_definition_use_composes_through_a_cited_proof_and_dependent_inferenc
     let proof_source = r#"
 foundation = "naome:zfc"
 definitions:
-    self_equal = "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018"
+    self_equal = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
 statement = forall(x,
     implies(self_equal(x,), implies(self_equal(x), self_equal(x)))
 )
@@ -957,7 +873,7 @@ proof:
     assert_eq!(
         proof_output.proof_id(),
         ProofId::from_bytes(hex32(
-            "cac0dfc073964fa92cfe421b957fc2cd09023beb5291d2eab042a515ea1cdb8f"
+            "c4f94a3296bb92551a6f6c74042565e1b1ed870338a4ccc039e7117c28aefbdd"
         ))
     );
     let proof_id = proof_output.proof_id();
@@ -967,7 +883,7 @@ proof:
         r#"
 foundation = "naome:zfc"
 definitions:
-    self_equal = "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018"
+    self_equal = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
 statement = forall(y,
     implies(self_equal(y), implies(self_equal(y), self_equal(y)))
 )
@@ -997,7 +913,7 @@ proof:
     assert_eq!(
         cited_output.proof_id(),
         ProofId::from_bytes(hex32(
-            "512528fe732234a8d9679d9d5fa6ddf3cb29eba9e855d8da495f1e2f9bae5c09"
+            "2f7195742ff24f09d4dc90a2366fbc5e3866c6637015e0293193b1a4fd293187"
         ))
     );
     let cited_id = cited_output.proof_id();

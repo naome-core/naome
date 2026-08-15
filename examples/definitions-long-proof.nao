@@ -1,9 +1,9 @@
 foundation = "naome:zfc"
 
 definitions:
-    self_equal = "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018"
-    holds = "70c732d536e51e376e42fbc60ddcc581bec6aec75aeb3917c7055fd1fb7c3004"
-    same_members = "1a787bc02cf38f5743535b38749b486a4c038998e8e8338d2aa66ed19f4d7634"
+    self_equal = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
+    holds = "4165ac271695531751ada582517549ab2e53d286a820b03de7ac3a0ddc372d19"
+    same_members = "29b9cbdea19bdc3ee48f3f4cdebbd4deb07aaf4669564c4440163a857fcbf548"
 
 statement = forall(a, forall(set,
     implies(holds(a, set), holds(a, set))

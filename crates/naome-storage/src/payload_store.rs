@@ -14,8 +14,8 @@ use crate::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
 const LOCK_FILE_NAME: &str = "artifact-payload-store.lock";
 const STORE_FILE_NAME: &str = "artifact-payload-store.log";
-const STORE_HEADER: &[u8] = b"naome:artifact-payload-store:v0\0";
-const ENTRY_DOMAIN: &[u8] = b"naome:artifact-payload-store-entry:v0\0";
+const STORE_HEADER: &[u8] = b"naome:artifact-payload-store:v1\0";
+const ENTRY_DOMAIN: &[u8] = b"naome:artifact-payload-store-entry:v1\0";
 const PAYLOAD_LENGTH_BYTES: u64 = 4;
 const ARTIFACT_ID_BYTES: u64 = ArtifactId::BYTE_LENGTH as u64;
 const DIGEST_BYTES: u64 = 32;

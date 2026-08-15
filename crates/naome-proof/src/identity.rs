@@ -73,8 +73,8 @@ impl ProofId {
 
 /// The SHA-256 identity of one canonical conservative definition artifact.
 ///
-/// This value is an address, not evidence that the definition exists, that
-/// its dependencies are selected, or that its proof obligation is valid.
+/// This value is an address, not evidence that the definition exists or has
+/// passed semantic checking against selected state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
 pub struct DefinitionId([u8; 32]);
@@ -124,7 +124,7 @@ impl ArtifactId {
 
     /// Derives the artifact address for one exact checked definition identity.
     pub fn from_definition_id(definition_id: DefinitionId) -> Self {
-        Self::from_typed_id(b"naome:artifact:definition:v0\0", definition_id.as_bytes())
+        Self::from_typed_id(b"naome:artifact:definition:v1\0", definition_id.as_bytes())
     }
 
     fn from_typed_id(domain: &[u8], identity: &[u8; 32]) -> Self {

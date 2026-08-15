@@ -3,6 +3,5 @@ foundation = "naome:zfc"
 definition identity = function(
     input,
     output,
-    obligation = "298a101556461ae89f891c928d4e5e0290709452d93dea6019c7568e89a10970",
 ):
     equal(output, input)

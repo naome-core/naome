@@ -2,8 +2,9 @@
 //!
 //! Each strict admission accepts exactly one canonically tagged proof or
 //! conservative definition. Proofs must already be canonical root normal
-//! forms; definitions must be canonical certificates whose dependencies and
-//! exact proof obligations resolve from the immutable pre-admission state.
+//! forms; definitions must be self-contained canonical certificates whose
+//! computed function-obligation statements resolve from immutable pre-admission
+//! state.
 //! Applying mutates selected state only after decoding, canonicality, semantic
 //! checking, content-address verification, and registration preflight succeed.
 //! Blocks, persistence, consensus, networking, and source parsing remain
@@ -108,8 +109,7 @@ impl fmt::Debug for AcceptedProofRecord {
 #[must_use]
 pub struct AcceptedDefinitionRecord {
     canonical_artifact_bytes: Box<[u8]>,
-    direct_definition_dependencies: Box<[DefinitionId]>,
-    obligation_proof_id: Option<ProofId>,
+    obligation_statement_id: Option<StatementId>,
     artifact_id: ArtifactId,
     definition_id: DefinitionId,
 }
@@ -125,14 +125,9 @@ impl AcceptedDefinitionRecord {
         &self.canonical_artifact_bytes[1..]
     }
 
-    /// Returns directly cited definition identities in canonical body order.
-    pub const fn direct_definition_dependencies(&self) -> &[DefinitionId] {
-        &self.direct_definition_dependencies
-    }
-
-    /// Returns the exact proof obligation of a constant or function definition.
-    pub const fn obligation_proof_id(&self) -> Option<ProofId> {
-        self.obligation_proof_id
+    /// Returns the computed selected statement required by a function definition.
+    pub const fn obligation_statement_id(&self) -> Option<StatementId> {
+        self.obligation_statement_id
     }
 
     /// Returns the typed artifact address committed by a block.
@@ -154,11 +149,7 @@ impl fmt::Debug for AcceptedDefinitionRecord {
                 "canonical_artifact_bytes_len",
                 &self.canonical_artifact_bytes.len(),
             )
-            .field(
-                "direct_definition_dependencies_len",
-                &self.direct_definition_dependencies.len(),
-            )
-            .field("obligation_proof_id", &self.obligation_proof_id)
+            .field("obligation_statement_id", &self.obligation_statement_id)
             .field("artifact_id", &self.artifact_id)
             .field("definition_id", &self.definition_id)
             .finish()
@@ -482,26 +473,16 @@ impl ProofRecordMetadata {
 }
 
 struct DefinitionRecordMetadata {
-    direct_definition_dependencies: Box<[DefinitionId]>,
-    obligation_proof_id: Option<ProofId>,
+    obligation_statement_id: Option<StatementId>,
     artifact_id: ArtifactId,
     definition_id: DefinitionId,
 }
 
 impl DefinitionRecordMetadata {
     fn from_checked(checked: &CheckedDefinition) -> Self {
-        let certificate = checked.certificate();
         let definition_id = checked.definition_id();
-        let mut seen_definitions = BTreeSet::new();
-        let mut direct_definition_dependencies = Vec::new();
-        for dependency in certificate.definition_references() {
-            if seen_definitions.insert(dependency) {
-                direct_definition_dependencies.push(dependency);
-            }
-        }
         Self {
-            direct_definition_dependencies: direct_definition_dependencies.into_boxed_slice(),
-            obligation_proof_id: certificate.obligation_proof_id(),
+            obligation_statement_id: checked.obligation_statement_id(),
             artifact_id: ArtifactId::from_definition_id(definition_id),
             definition_id,
         }
@@ -510,8 +491,7 @@ impl DefinitionRecordMetadata {
     fn into_record(self, canonical_artifact_bytes: Box<[u8]>) -> AcceptedDefinitionRecord {
         AcceptedDefinitionRecord {
             canonical_artifact_bytes,
-            direct_definition_dependencies: self.direct_definition_dependencies,
-            obligation_proof_id: self.obligation_proof_id,
+            obligation_statement_id: self.obligation_statement_id,
             artifact_id: self.artifact_id,
             definition_id: self.definition_id,
         }

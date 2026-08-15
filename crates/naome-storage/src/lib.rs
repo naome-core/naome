@@ -51,7 +51,7 @@ use naome_proof::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId};
 
 const LOCK_FILE_NAME: &str = "artifact-chain.lock";
 const JOURNAL_FILE_NAME: &str = "artifact-chain.journal";
-const JOURNAL_HEADER: &[u8] = b"naome:artifact-chain-journal:v0\0";
+const JOURNAL_HEADER: &[u8] = b"naome:artifact-chain-journal:v1\0";
 const CHAIN_ID_BYTES: usize = ArtifactChainId::BYTE_LENGTH;
 const BLOCK_ID_BYTES: u64 = ArtifactBlockId::BYTE_LENGTH as u64;
 const ENTRY_FIXED_BYTES: u64 = 4 + BLOCK_ID_BYTES;

@@ -13,10 +13,10 @@ definition.
 
 Loading those bytes does not recreate the original checked context. Before use
 in another branch or chain state, a consumer must decode the typed payload,
-require canonical bytes, resolve every proof and definition dependency from
-that target's selected state, repeat mathematical checking, derive the typed
-`ArtifactId`, compare it with the archive address, and register only through
-normal block admission.
+require canonical bytes, resolve every proof dependency and function-obligation
+statement from that target's selected state, repeat mathematical checking,
+derive the typed `ArtifactId`, compare it with the archive address, and register
+only through normal block admission.
 
 The archive cannot resolve citations and is not searched implicitly by the
 checker, authoring compiler, journal, or network importer.
@@ -37,7 +37,7 @@ remains the caller's responsibility.
 The exact prefix is:
 
 ```text
-"naome:artifact-payload-store:v0\0"[32]
+"naome:artifact-payload-store:v1\0"[32]
 "naome:zfc"[9]
 ```
 
@@ -65,7 +65,7 @@ digest           SHA256[32]
 
 ```text
 SHA256(
-  "naome:artifact-payload-store-entry:v0\0"
+  "naome:artifact-payload-store-entry:v1\0"
   || u32be(length("naome:zfc")) || "naome:zfc"
   || payload_length_u32_bytes
   || ArtifactId[32]
@@ -121,9 +121,8 @@ acceptance, consensus, or finality.
 
 ## Compatibility and non-goals
 
-This `v0` tagged-artifact archive is a clean prerelease cutover. The proof-only
-payload archive has no legacy reader or migration and must be removed and
-recreated.
+This `v1` tagged-artifact archive is a clean prerelease cutover. Earlier payload
+archives have no legacy reader or migration and must be removed and recreated.
 
 The store does not select or execute blocks, cache reusable checked records,
 resolve dependencies, fetch content, compact or prune, synchronize peers,

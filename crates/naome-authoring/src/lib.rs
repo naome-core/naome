@@ -5,15 +5,15 @@ use std::error::Error;
 use std::fmt::{self, Write as _};
 
 use naome_checker::{
-    ArtifactState, CheckError, DefinitionCheckError, check_definition_with_state,
-    check_normal_form_with_state,
+    ArtifactState, CheckError, DefinitionCheckError, check_normal_form_with_state,
+    normalize_and_check_definition_with_state,
 };
 use naome_foundation::{
     FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, FormulaCodecError, FreeVariable, ZfcAxiom,
 };
 use naome_proof::{
     ArtifactId, ArtifactPayload, CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES,
-    CERTIFICATE_MAX_STEPS, DefinedFormula, DefinedFormulaCodecError, DefinitionCertificate,
+    CERTIFICATE_MAX_STEPS, DEFINITION_MAX_GRAPH_ARITY, DefinedFormula, DefinedFormulaCodecError,
     DefinitionCertificateError, DefinitionExpansionError, DefinitionId, DefinitionKind,
     DerivationId, ProofCertificate, ProofCertificateError, ProofFormula, ProofId, ProofReplacement,
     ProofSeparation, ProofStep, StatementId,
@@ -41,7 +41,7 @@ pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
 /// Compiles one complete `.nao` proof or definition against empty selected state.
 ///
 /// The empty state can compile dependency-free relation definitions and proofs,
-/// but it cannot authorize citations, definition aliases, or obligations.
+/// but it cannot authorize citations, definition aliases, or function obligations.
 pub fn compile_artifact(source: &str) -> Result<CompiledArtifact, CompileError> {
     compile_with_artifact_state(source, &ArtifactState::new())
 }
@@ -645,9 +645,7 @@ impl CompileError {
             Self::Definition { source, .. } => {
                 format!("invalid definition structure: {source}")
             }
-            Self::DefinitionCheck { source, .. } => {
-                format!("definition checking failed: {source}")
-            }
+            Self::DefinitionCheck { source, .. } => definition_check_diagnostic_message(source),
             Self::DefinitionFormula { source, .. } => {
                 format!("invalid definition-aware formula: {source}")
             }
@@ -751,7 +749,7 @@ impl fmt::Display for CompileError {
                 write!(formatter, "invalid definition structure: {source}")
             }
             Self::DefinitionCheck { source, .. } => {
-                write!(formatter, "definition checking failed: {source}")
+                formatter.write_str(&definition_check_diagnostic_message(source))
             }
             Self::DefinitionFormula { source, .. } => {
                 write!(formatter, "invalid definition-aware formula: {source}")
@@ -803,6 +801,28 @@ fn check_diagnostic_message(step_name: &str, error: &CheckError) -> String {
         }
         _ => format!("step {step_name} failed proof checking: {error}"),
     }
+}
+
+fn definition_check_diagnostic_message(error: &DefinitionCheckError) -> String {
+    match error {
+        DefinitionCheckError::UnknownObligationStatement { statement_id } => format!(
+            "definition obligation statement {} is absent from selected state",
+            lowercase_hex(statement_id.as_bytes())
+        ),
+        DefinitionCheckError::ObligationConclusionMismatch { statement_id } => format!(
+            "definition obligation statement {} has a conflicting conclusion",
+            lowercase_hex(statement_id.as_bytes())
+        ),
+        _ => format!("definition checking failed: {error}"),
+    }
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 fn diagnostic_name(name: &str) -> DiagnosticName<'_> {
@@ -1182,23 +1202,20 @@ impl<'source> Parser<'source> {
         self.punctuation('(')?;
         let kind = match kind_name {
             "relation" => {
-                let parameters = self.definition_parameters(false)?;
+                let parameters = self.definition_parameters()?;
+                if parameters.is_empty() {
+                    return Err(CompileError::Definition {
+                        offset: kind_offset,
+                        source: DefinitionCertificateError::ZeroRelationArity,
+                    });
+                }
                 DefinitionKind::Relation {
                     arity: u32::try_from(parameters.len())
                         .expect("the source byte limit bounds definition arity"),
                 }
             }
-            "constant" => {
-                self.definition_variable()?;
-                self.punctuation(',')?;
-                self.keyword("obligation")?;
-                self.punctuation('=')?;
-                DefinitionKind::Constant {
-                    unique_existence_proof: self.proof_id()?,
-                }
-            }
             "function" => {
-                let parameters = self.definition_parameters(true)?;
+                let parameters = self.definition_parameters()?;
                 let input_arity = parameters
                     .len()
                     .checked_sub(1)
@@ -1210,13 +1227,12 @@ impl<'source> Parser<'source> {
                 DefinitionKind::Function {
                     input_arity: u32::try_from(input_arity)
                         .expect("the source byte limit bounds definition arity"),
-                    total_unique_proof: self.proof_id()?,
                 }
             }
             _ => {
                 return Err(CompileError::Syntax {
                     offset: kind_offset,
-                    expected: "`relation`, `constant`, or `function`",
+                    expected: "`relation` or `function`",
                 });
             }
         };
@@ -1225,18 +1241,24 @@ impl<'source> Parser<'source> {
         let body_offset = self.next_offset();
         let body = self.formula(1, FormulaContext::Statement)?;
         self.end()?;
-
-        let certificate =
-            DefinitionCertificate::new(kind, body).map_err(|source| CompileError::Definition {
-                offset: body_offset,
-                source,
-            })?;
-        let checked =
-            check_definition_with_state(certificate, artifact_state).map_err(|source| {
-                CompileError::DefinitionCheck {
+        let checked = normalize_and_check_definition_with_state(kind, body, artifact_state)
+            .map_err(|source| match source {
+                DefinitionCheckError::Expansion(source) => CompileError::DefinitionExpansion {
+                    offset: body_offset,
+                    source,
+                },
+                DefinitionCheckError::CanonicalBody(source) => CompileError::DefinitionFormula {
+                    offset: body_offset,
+                    source,
+                },
+                DefinitionCheckError::Certificate(source) => CompileError::Definition {
+                    offset: body_offset,
+                    source,
+                },
+                source => CompileError::DefinitionCheck {
                     span: SourceSpan::new(definition_offset, self.offset.max(name_offset)),
                     source: Box::new(source),
-                }
+                },
             })?;
         let definition_id = checked.definition_id();
         let artifact_id = ArtifactId::from_definition_id(definition_id);
@@ -1251,16 +1273,25 @@ impl<'source> Parser<'source> {
         }))
     }
 
-    fn definition_parameters(
-        &mut self,
-        obligation_follows: bool,
-    ) -> Result<Vec<FreeVariable>, CompileError> {
+    fn definition_parameters(&mut self) -> Result<Vec<FreeVariable>, CompileError> {
         let mut parameters = Vec::new();
         self.skip_trivia();
         if self.byte() == Some(b')') {
             return Ok(parameters);
         }
         loop {
+            if parameters.len()
+                == usize::try_from(DEFINITION_MAX_GRAPH_ARITY)
+                    .expect("the definition graph-arity limit fits usize")
+            {
+                return Err(CompileError::Definition {
+                    offset: self.next_offset(),
+                    source: DefinitionCertificateError::ArityTooLarge {
+                        actual: u64::from(DEFINITION_MAX_GRAPH_ARITY) + 1,
+                        maximum: DEFINITION_MAX_GRAPH_ARITY,
+                    },
+                });
+            }
             parameters.push(self.definition_variable()?);
             self.skip_trivia();
             if self.byte() == Some(b')') {
@@ -1269,11 +1300,6 @@ impl<'source> Parser<'source> {
             self.punctuation(',')?;
             self.skip_trivia();
             if self.byte() == Some(b')') {
-                return Ok(parameters);
-            }
-            if obligation_follows && self.peek_word("obligation") {
-                self.keyword("obligation")?;
-                self.punctuation('=')?;
                 return Ok(parameters);
             }
         }
@@ -1735,12 +1761,11 @@ impl<'source> Parser<'source> {
             }
         })?;
         let expected = match alias.kind {
-            DefinitionKind::Constant { .. } => 0,
-            DefinitionKind::Function { input_arity, .. } => input_arity,
+            DefinitionKind::Function { input_arity } => input_arity,
             DefinitionKind::Relation { .. } => {
                 return Err(CompileError::Syntax {
                     offset,
-                    expected: "a constant or function definition alias in term position",
+                    expected: "a function definition alias in term position",
                 });
             }
         };
@@ -2351,9 +2376,7 @@ fn is_reserved_formula_binding_name(name: &str) -> bool {
                 | "definitions"
                 | "definition"
                 | "relation"
-                | "constant"
                 | "function"
-                | "obligation"
                 | "formulas"
                 | "statement"
                 | "proof"

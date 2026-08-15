@@ -1980,7 +1980,7 @@ fn definition_source_names_are_identity_neutral_and_source_helpers_are_rejected(
     ));
     for duplicate in [
         "foundation = \"naome:zfc\" definition bad = relation(x, x): equal(x, x)",
-        "foundation = \"naome:zfc\" definition bad = function(x, x, obligation = \"0000000000000000000000000000000000000000000000000000000000000000\"): equal(x, x)",
+        "foundation = \"naome:zfc\" definition bad = function(x, x): equal(x, x)",
     ] {
         assert!(matches!(
             compile_artifact(duplicate),
@@ -1999,15 +1999,63 @@ fn all_definition_declarations_reach_the_typed_semantic_boundary() {
             .unwrap();
     assert!(matches!(relation, CompiledArtifact::Definition(_)));
 
-    for source in [
-        "foundation = \"naome:zfc\" definition c = constant(value, obligation = \"0000000000000000000000000000000000000000000000000000000000000000\"): equal(value, value)",
-        "foundation = \"naome:zfc\" definition f = function(input, output, obligation = \"0000000000000000000000000000000000000000000000000000000000000000\",): equal(output, input)",
+    let function = compile_artifact(
+        "foundation = \"naome:zfc\" definition f = function(input, output): equal(output, input)",
+    )
+    .unwrap_err();
+    assert!(matches!(
+        function,
+        CompileError::DefinitionCheck { source, .. }
+            if matches!(
+                source.as_ref(),
+                DefinitionCheckError::UnknownObligationStatement { statement_id }
+                    if *statement_id == StatementId::from_bytes(hex32(
+                        "31a017582bf7e6314670d35aeb7d206d060a12bc4df139163297a139161e01a1"
+                    ))
+            )
+    ));
+
+    for removed in [
+        "foundation = \"naome:zfc\" definition c = constant(value): equal(value, value)",
+        "foundation = \"naome:zfc\" definition f = function(input, output, obligation = \"0000000000000000000000000000000000000000000000000000000000000000\"): equal(output, input)",
     ] {
         assert!(matches!(
-            compile_artifact(source),
-            Err(CompileError::DefinitionCheck { .. })
+            compile_artifact(removed),
+            Err(CompileError::Syntax { .. })
         ));
     }
+}
+
+#[test]
+fn definition_parameter_lists_stop_at_the_canonical_graph_arity_bound() {
+    assert!(matches!(
+        compile_artifact("foundation = \"naome:zfc\" definition empty = relation(): equal(x, x)"),
+        Err(CompileError::Definition {
+            source: DefinitionCertificateError::ZeroRelationArity,
+            ..
+        })
+    ));
+
+    let parameters = (0..=DEFINITION_MAX_GRAPH_ARITY)
+        .map(|identifier| format!("p{identifier}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "foundation = \"naome:zfc\" definition too_wide = relation({parameters}): equal(p0, p0)"
+    );
+    let error = compile_artifact(&source).unwrap_err();
+    assert!(matches!(
+        &error,
+        CompileError::Definition {
+            source: DefinitionCertificateError::ArityTooLarge {
+                actual,
+                maximum: DEFINITION_MAX_GRAPH_ARITY,
+            },
+            ..
+        } if *actual == u64::from(DEFINITION_MAX_GRAPH_ARITY) + 1
+    ));
+    let span = error.diagnostic(&source).primary_span().unwrap();
+    assert_eq!(&source[span.start()..span.end()], "p256");
 }
 
 #[test]
@@ -2028,7 +2076,6 @@ fn definition_names_cannot_create_self_or_forward_authority() {
 
 #[test]
 fn term_sugar_relationalizes_unary_nested_and_multi_input_calls_exactly_once() {
-    let obligation = ProofId::from_bytes([0x41; 32]);
     let identity_id = DefinitionId::from_bytes([0x51; 32]);
     let binary_id = DefinitionId::from_bytes([0x52; 32]);
 
@@ -2038,20 +2085,14 @@ fn term_sugar_relationalizes_unary_nested_and_multi_input_calls_exactly_once() {
             "identity",
             DefinitionAlias {
                 definition_id: identity_id,
-                kind: DefinitionKind::Function {
-                    input_arity: 1,
-                    total_unique_proof: obligation,
-                },
+                kind: DefinitionKind::Function { input_arity: 1 },
             },
         );
         parser.definition_aliases.insert(
             "binary",
             DefinitionAlias {
                 definition_id: binary_id,
-                kind: DefinitionKind::Function {
-                    input_arity: 2,
-                    total_unique_proof: obligation,
-                },
+                kind: DefinitionKind::Function { input_arity: 2 },
             },
         );
         let formula = parser

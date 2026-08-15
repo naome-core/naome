@@ -25,8 +25,9 @@ const BOUND_VARIABLE: u8 = 0x01;
 ///
 /// Equality and membership retain Foundation's variable-only term boundary.
 /// A defined application is an eliminable relation atom whose arguments are
-/// likewise variables. Constants and functions use unary and `(n + 1)`-ary
-/// graph definitions rather than adding term constructors to Foundation.
+/// likewise variables. Functions use `(n + 1)`-ary graph definitions rather
+/// than adding term constructors to Foundation; standalone constants are not
+/// represented.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DefinedFormula(Node);
 
@@ -160,6 +161,10 @@ impl DefinedFormula {
         references
     }
 
+    pub(crate) fn first_definition_reference(&self) -> Option<DefinitionId> {
+        first_definition_reference(&self.0)
+    }
+
     pub(crate) fn contains_definition(&self) -> bool {
         contains_definition(&self.0)
     }
@@ -195,6 +200,25 @@ impl DefinedFormula {
         maximum_nodes: usize,
     ) -> Result<(Vec<u8>, usize), DefinedFormulaCodecError> {
         encode_with_limit(&self.0, FreeVariableEncoding::Preserve, true, maximum_nodes)
+    }
+
+    /// Encodes within caller-supplied cumulative node and depth limits.
+    ///
+    /// Both effective limits are capped by the canonical Formula limits. This
+    /// lets a containing derived formula reserve its fixed structural headroom
+    /// before duplicating this tree.
+    pub fn encode_canonical_with_limits(
+        &self,
+        maximum_nodes: usize,
+        maximum_depth: u32,
+    ) -> Result<(Vec<u8>, usize), DefinedFormulaCodecError> {
+        encode_with_limits(
+            &self.0,
+            FreeVariableEncoding::Preserve,
+            true,
+            maximum_nodes,
+            maximum_depth,
+        )
     }
 
     /// Encodes after canonicalizing free-variable identifiers by first occurrence.
@@ -432,6 +456,16 @@ fn collect_definition_references(node: &Node, references: &mut Vec<DefinitionId>
     }
 }
 
+fn first_definition_reference(node: &Node) -> Option<DefinitionId> {
+    match node {
+        Node::DefinedRelation { definition_id, .. } => Some(*definition_id),
+        Node::Not(formula) | Node::ForAll(formula) => first_definition_reference(formula),
+        Node::Implies(antecedent, consequent) => first_definition_reference(antecedent)
+            .or_else(|| first_definition_reference(consequent)),
+        Node::Equal(..) | Node::Member(..) => None,
+    }
+}
+
 fn contains_definition(node: &Node) -> bool {
     match node {
         Node::DefinedRelation { .. } => true,
@@ -453,9 +487,25 @@ fn encode(
 
 fn encode_with_limit(
     node: &Node,
+    variables: FreeVariableEncoding,
+    allow_definitions: bool,
+    maximum_nodes: usize,
+) -> Result<(Vec<u8>, usize), DefinedFormulaCodecError> {
+    encode_with_limits(
+        node,
+        variables,
+        allow_definitions,
+        maximum_nodes,
+        FORMULA_MAX_DEPTH,
+    )
+}
+
+fn encode_with_limits(
+    node: &Node,
     mut variables: FreeVariableEncoding,
     allow_definitions: bool,
     maximum_nodes: usize,
+    maximum_depth: u32,
 ) -> Result<(Vec<u8>, usize), DefinedFormulaCodecError> {
     let mut output = Vec::new();
     let mut nodes = NodeBudget::new(maximum_nodes);
@@ -465,6 +515,7 @@ fn encode_with_limit(
         &mut nodes,
         &mut variables,
         allow_definitions,
+        maximum_depth.min(FORMULA_MAX_DEPTH),
         &mut output,
     )?;
     Ok((output, nodes.used()))
@@ -476,9 +527,10 @@ fn encode_node(
     nodes: &mut NodeBudget,
     variables: &mut FreeVariableEncoding,
     allow_definitions: bool,
+    maximum_depth: u32,
     output: &mut Vec<u8>,
 ) -> Result<(), DefinedFormulaCodecError> {
-    check_depth(depth)?;
+    check_depth_limit(depth, maximum_depth)?;
     nodes.charge()?;
     match node {
         Node::Equal(left, right) => {
@@ -499,6 +551,7 @@ fn encode_node(
                 nodes,
                 variables,
                 allow_definitions,
+                maximum_depth,
                 output,
             )?;
         }
@@ -510,6 +563,7 @@ fn encode_node(
                 nodes,
                 variables,
                 allow_definitions,
+                maximum_depth,
                 output,
             )?;
             encode_node(
@@ -518,12 +572,21 @@ fn encode_node(
                 nodes,
                 variables,
                 allow_definitions,
+                maximum_depth,
                 output,
             )?;
         }
         Node::ForAll(body) => {
             output.push(FOR_ALL);
-            encode_node(body, depth + 1, nodes, variables, allow_definitions, output)?;
+            encode_node(
+                body,
+                depth + 1,
+                nodes,
+                variables,
+                allow_definitions,
+                maximum_depth,
+                output,
+            )?;
         }
         Node::DefinedRelation {
             definition_id,
@@ -671,10 +734,12 @@ fn decode_variable(
 }
 
 fn check_depth(depth: u32) -> Result<(), DefinedFormulaCodecError> {
-    if depth >= FORMULA_MAX_DEPTH {
-        return Err(DefinedFormulaCodecError::DepthLimitExceeded {
-            maximum: FORMULA_MAX_DEPTH,
-        });
+    check_depth_limit(depth, FORMULA_MAX_DEPTH)
+}
+
+fn check_depth_limit(depth: u32, maximum: u32) -> Result<(), DefinedFormulaCodecError> {
+    if depth >= maximum {
+        return Err(DefinedFormulaCodecError::DepthLimitExceeded { maximum });
     }
     Ok(())
 }
@@ -1059,11 +1124,12 @@ impl Error for DefinitionExpansionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DefinitionCertificate, ProofId};
+    use crate::ProofId;
 
     struct OneDefinition {
         id: DefinitionId,
-        definition: DefinitionCertificate,
+        arity: u32,
+        body: DefinedFormula,
     }
 
     impl DefinitionResolver for OneDefinition {
@@ -1071,9 +1137,7 @@ mod tests {
             &self,
             definition_id: DefinitionId,
         ) -> Option<DefinitionResolution<'_>> {
-            (definition_id == self.id).then(|| {
-                DefinitionResolution::new(self.definition.relation_arity(), self.definition.body())
-            })
+            (definition_id == self.id).then(|| DefinitionResolution::new(self.arity, &self.body))
         }
     }
 
@@ -1112,9 +1176,8 @@ mod tests {
         let inner = FreeVariable::new(1);
         let outer = FreeVariable::new(7);
         let body = DefinedFormula::for_all(inner, DefinedFormula::member(formal, inner));
-        let definition = DefinitionCertificate::relation(1, body).unwrap();
-        let id = definition.definition_id();
-        let resolver = OneDefinition { id, definition };
+        let id = DefinitionId::from_bytes([0x12; 32]);
+        let resolver = OneDefinition { id, arity: 1, body };
         let compact = DefinedFormula::for_all(outer, DefinedFormula::defined_relation(id, [outer]));
         let expanded = compact.expand_with(&resolver).unwrap();
         let expected = Formula::for_all(
@@ -1140,8 +1203,11 @@ mod tests {
             Err(DefinitionExpansionError::UnknownDefinition { definition_id: id })
         );
 
-        let definition = DefinitionCertificate::relation(1, DefinedFormula::equal(x, x)).unwrap();
-        let resolver = OneDefinition { id, definition };
+        let resolver = OneDefinition {
+            id,
+            arity: 1,
+            body: DefinedFormula::equal(x, x),
+        };
         let wrong = DefinedFormula::defined_relation(id, []);
         assert_eq!(
             wrong.expand_with(&resolver),
@@ -1156,11 +1222,10 @@ mod tests {
             Err(DefinitionExpansionError::NodeLimitExceeded { maximum: 1 })
         );
 
-        let cyclic =
-            DefinitionCertificate::relation(1, DefinedFormula::defined_relation(id, [x])).unwrap();
         let resolver = OneDefinition {
             id,
-            definition: cyclic,
+            arity: 1,
+            body: DefinedFormula::defined_relation(id, [x]),
         };
         assert_eq!(
             missing.expand_with(&resolver),

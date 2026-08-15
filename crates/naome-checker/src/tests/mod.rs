@@ -15,7 +15,7 @@ use super::{
     ArtifactState, ArtifactStateError, CHECKER_MAX_FORMULA_WORK_BYTES, CheckError,
     DefinitionCheckError, IdentityMode, charge_formula_work, check, check_definition_with_state,
     check_with_canonical_conclusion, last_uses, normalize_and_check,
-    normalize_and_check_with_state,
+    normalize_and_check_definition_with_state, normalize_and_check_with_state, statement_id,
 };
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {

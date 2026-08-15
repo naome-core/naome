@@ -69,8 +69,7 @@ fn tagged_definition_and_dependent_proof_admit_in_selected_order() {
         record.canonical_definition_bytes(),
         definition.to_canonical_bytes()
     );
-    assert!(record.direct_definition_dependencies().is_empty());
-    assert_eq!(record.obligation_proof_id(), None);
+    assert_eq!(record.obligation_statement_id(), None);
 
     let proof_id = normalize_and_check_with_state(
         selected_definition_proof(definition_id),

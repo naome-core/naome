@@ -26,7 +26,8 @@ pub use defined_formula::{
     DefinitionResolver,
 };
 pub use definition::{
-    DEFINITION_MAX_BYTES, DefinitionCertificate, DefinitionCertificateError, DefinitionKind,
+    DEFINITION_MAX_BYTES, DEFINITION_MAX_GRAPH_ARITY, DefinitionCertificate,
+    DefinitionCertificateError, DefinitionKind,
 };
 pub use identity::{ArtifactId, DefinitionId, DerivationId, ProofId, StatementId};
 pub use proof_formula::ProofFormula;
