@@ -1,53 +1,53 @@
-//! Caller-selected acquisition of one bounded proof-block ancestry.
+//! Caller-selected acquisition of one bounded artifact-block ancestry.
 
 use std::error::Error;
 use std::fmt;
 
-use naome::block_exchange::ProofBlockRequest;
-use naome_chain::{ProofBlock, ProofBlockId, ProofSetRoot};
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
+use naome::block_exchange::ArtifactBlockRequest;
+use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactSetRoot};
+use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 use super::{
-    BlockRequestTicket, NetworkEvent, OutboundProofBlockFailure, PeerId, RequestStartError,
-    StaticProofNetwork, selected_context_contains_block,
+    BlockRequestTicket, NetworkEvent, OutboundArtifactBlockFailure, PeerId, RequestStartError,
+    StaticArtifactNetwork, selected_context_contains_block,
 };
 
 /// Maximum number of blocks retained by one ancestry pull.
-pub const MAX_PROOF_BLOCK_ANCESTRY_BLOCKS: usize = 16;
+pub const MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS: usize = 16;
 
-/// One bounded caller-selected proof-block ancestry pull in progress.
+/// One bounded caller-selected artifact-block ancestry pull in progress.
 ///
 /// The caller supplies the exact target identity and one statically authorized
 /// peer. Blocks are requested one at a time from the target toward the
-/// snapshotted selected head. The pull never acquires proof payloads or mutates
+/// snapshotted selected head. The pull never acquires artifact payloads or mutates
 /// selected state.
 #[derive(Debug)]
 #[must_use]
-pub struct ProofBlockAncestryPull {
-    anchor_block_id: ProofBlockId,
-    anchor_proof_set_root: ProofSetRoot,
-    virtual_genesis_block_id: ProofBlockId,
-    target_block_id: ProofBlockId,
-    blocks: Vec<ProofBlock>,
+pub struct ArtifactBlockAncestryPull {
+    anchor_block_id: ArtifactBlockId,
+    anchor_artifact_set_root: ArtifactSetRoot,
+    virtual_genesis_block_id: ArtifactBlockId,
+    target_block_id: ArtifactBlockId,
+    blocks: Vec<ArtifactBlock>,
     ticket: BlockRequestTicket,
 }
 
-impl StaticProofNetwork {
+impl StaticArtifactNetwork {
     /// Starts one bounded ancestry pull for an exact caller-selected target.
     ///
     /// The selected journal supplies only the immutable local anchor snapshot
     /// and divergence checks. The returned workflow is retrieval-only and
     /// must be advanced with exact events accepted by
-    /// [`ProofBlockAncestryPull::accepts_event`].
-    pub fn start_proof_block_ancestry_pull(
+    /// [`ArtifactBlockAncestryPull::accepts_event`].
+    pub fn start_artifact_block_ancestry_pull(
         &mut self,
-        selected: &ProofChainJournal,
+        selected: &ArtifactChainJournal,
         peer_id: PeerId,
-        target_block_id: ProofBlockId,
-    ) -> Result<ProofBlockAncestryPull, ProofBlockAncestryPullError> {
+        target_block_id: ArtifactBlockId,
+    ) -> Result<ArtifactBlockAncestryPull, ArtifactBlockAncestryPullError> {
         let anchor_block_id = selected
             .head_block_id()
-            .map_err(ProofBlockAncestryPullError::selected_state)?;
+            .map_err(ArtifactBlockAncestryPullError::selected_state)?;
         let virtual_genesis_block_id = selected.chain_id().virtual_genesis_block_id();
         if selected_context_contains_block(
             selected,
@@ -55,25 +55,25 @@ impl StaticProofNetwork {
             virtual_genesis_block_id,
             target_block_id,
         )
-        .map_err(ProofBlockAncestryPullError::selected_state)?
+        .map_err(ArtifactBlockAncestryPullError::selected_state)?
         {
-            return Err(ProofBlockAncestryPullError::TargetAlreadySelected {
+            return Err(ArtifactBlockAncestryPullError::TargetAlreadySelected {
                 block_id: target_block_id,
             });
         }
-        let anchor_proof_set_root = selected
-            .proof_set_root()
-            .map_err(ProofBlockAncestryPullError::selected_state)?;
+        let anchor_artifact_set_root = selected
+            .artifact_set_root()
+            .map_err(ArtifactBlockAncestryPullError::selected_state)?;
         let ticket = self
-            .request_block(peer_id, ProofBlockRequest::new(target_block_id))
-            .map_err(|source| ProofBlockAncestryPullError::RequestStart {
+            .request_block(peer_id, ArtifactBlockRequest::new(target_block_id))
+            .map_err(|source| ArtifactBlockAncestryPullError::RequestStart {
                 block_id: target_block_id,
                 source,
             })?;
 
-        Ok(ProofBlockAncestryPull {
+        Ok(ArtifactBlockAncestryPull {
             anchor_block_id,
-            anchor_proof_set_root,
+            anchor_artifact_set_root,
             virtual_genesis_block_id,
             target_block_id,
             blocks: Vec::new(),
@@ -82,19 +82,19 @@ impl StaticProofNetwork {
     }
 }
 
-impl ProofBlockAncestryPull {
+impl ArtifactBlockAncestryPull {
     /// Returns the selected head captured when this pull started.
-    pub const fn anchor_block_id(&self) -> ProofBlockId {
+    pub const fn anchor_block_id(&self) -> ArtifactBlockId {
         self.anchor_block_id
     }
 
     /// Returns the exact target identity selected by the caller.
-    pub const fn target_block_id(&self) -> ProofBlockId {
+    pub const fn target_block_id(&self) -> ArtifactBlockId {
         self.target_block_id
     }
 
     /// Returns the exact block identity awaited by the active request.
-    pub const fn pending_block_id(&self) -> ProofBlockId {
+    pub const fn pending_block_id(&self) -> ArtifactBlockId {
         self.ticket.request().block_id()
     }
 
@@ -119,20 +119,20 @@ impl ProofBlockAncestryPull {
     ///
     /// `network` must be the same instance that started the active request.
     /// The selected journal is read only; every outcome leaves its bytes,
-    /// selected head, proof set, and records unchanged.
+    /// selected head, artifact set, and records unchanged.
     pub fn on_event(
         self,
-        network: &mut StaticProofNetwork,
-        selected: &ProofChainJournal,
+        network: &mut StaticArtifactNetwork,
+        selected: &ArtifactChainJournal,
         event: NetworkEvent,
-    ) -> Result<ProofBlockAncestryPullProgress, ProofBlockAncestryPullError> {
+    ) -> Result<ArtifactBlockAncestryPullProgress, ArtifactBlockAncestryPullError> {
         if !self.accepts_event(&event) {
-            return Err(ProofBlockAncestryPullError::UnexpectedEvent);
+            return Err(ArtifactBlockAncestryPullError::UnexpectedEvent);
         }
 
         let Self {
             anchor_block_id,
-            anchor_proof_set_root,
+            anchor_artifact_set_root,
             virtual_genesis_block_id,
             target_block_id,
             mut blocks,
@@ -142,7 +142,7 @@ impl ProofBlockAncestryPull {
             unreachable!("an accepted ancestry event is an outbound block terminal")
         };
         if !ticket.belongs_to_network(network) {
-            return Err(ProofBlockAncestryPullError::UnexpectedEvent);
+            return Err(ArtifactBlockAncestryPullError::UnexpectedEvent);
         }
 
         let peer_id = ticket.peer_id();
@@ -150,20 +150,22 @@ impl ProofBlockAncestryPull {
         let response = ticket
             .complete(event)
             .expect("the accepted block event matches its ancestry ticket")
-            .map_err(|source| ProofBlockAncestryPullError::BlockRequestFailed {
-                peer_id,
-                block_id,
-                source,
-            })?;
+            .map_err(
+                |source| ArtifactBlockAncestryPullError::BlockRequestFailed {
+                    peer_id,
+                    block_id,
+                    source,
+                },
+            )?;
         let block = response
             .into_block()
-            .ok_or(ProofBlockAncestryPullError::BlockUnavailable { peer_id, block_id })?;
+            .ok_or(ArtifactBlockAncestryPullError::BlockUnavailable { peer_id, block_id })?;
 
         let actual_head = selected
             .head_block_id()
-            .map_err(ProofBlockAncestryPullError::selected_state)?;
+            .map_err(ArtifactBlockAncestryPullError::selected_state)?;
         if actual_head != anchor_block_id {
-            return Err(ProofBlockAncestryPullError::SelectedHeadChanged {
+            return Err(ArtifactBlockAncestryPullError::SelectedHeadChanged {
                 expected: anchor_block_id,
                 actual: actual_head,
             });
@@ -172,8 +174,8 @@ impl ProofBlockAncestryPull {
         if let Some(child) = blocks.last() {
             Self::require_root_continuity(
                 block_id,
-                block.resulting_proof_set_root(),
-                child.previous_proof_set_root(),
+                block.resulting_artifact_set_root(),
+                child.previous_artifact_set_root(),
             )?;
         }
 
@@ -181,13 +183,13 @@ impl ProofBlockAncestryPull {
         if parent_block_id == anchor_block_id {
             Self::require_root_continuity(
                 anchor_block_id,
-                anchor_proof_set_root,
-                block.previous_proof_set_root(),
+                anchor_artifact_set_root,
+                block.previous_artifact_set_root(),
             )?;
             blocks.push(block);
             blocks.reverse();
-            return Ok(ProofBlockAncestryPullProgress::Complete(
-                UnselectedProofBlockAncestry {
+            return Ok(ArtifactBlockAncestryPullProgress::Complete(
+                UnselectedArtifactBlockAncestry {
                     peer_id,
                     anchor_block_id,
                     target_block_id,
@@ -197,41 +199,41 @@ impl ProofBlockAncestryPull {
         }
 
         if Self::was_already_requested(target_block_id, &blocks, parent_block_id) {
-            return Err(ProofBlockAncestryPullError::RepeatedBlockId {
+            return Err(ArtifactBlockAncestryPullError::RepeatedBlockId {
                 block_id: parent_block_id,
             });
         }
         if parent_block_id == virtual_genesis_block_id
             || selected
                 .block(parent_block_id)
-                .map_err(ProofBlockAncestryPullError::selected_state)?
+                .map_err(ArtifactBlockAncestryPullError::selected_state)?
                 .is_some()
         {
-            return Err(ProofBlockAncestryPullError::DivergentAncestry {
+            return Err(ArtifactBlockAncestryPullError::DivergentAncestry {
                 expected_anchor: anchor_block_id,
                 encountered: parent_block_id,
             });
         }
 
         let retained = blocks.len() + 1;
-        if retained == MAX_PROOF_BLOCK_ANCESTRY_BLOCKS {
-            return Err(ProofBlockAncestryPullError::AncestryLimitExceeded {
-                maximum: MAX_PROOF_BLOCK_ANCESTRY_BLOCKS,
+        if retained == MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS {
+            return Err(ArtifactBlockAncestryPullError::AncestryLimitExceeded {
+                maximum: MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS,
                 next_block_id: parent_block_id,
             });
         }
 
         let ticket = network
-            .request_block(peer_id, ProofBlockRequest::new(parent_block_id))
-            .map_err(|source| ProofBlockAncestryPullError::RequestStart {
+            .request_block(peer_id, ArtifactBlockRequest::new(parent_block_id))
+            .map_err(|source| ArtifactBlockAncestryPullError::RequestStart {
                 block_id: parent_block_id,
                 source,
             })?;
         blocks.push(block);
-        Ok(ProofBlockAncestryPullProgress::AwaitingResponse(
-            ProofBlockAncestryPull {
+        Ok(ArtifactBlockAncestryPullProgress::AwaitingResponse(
+            ArtifactBlockAncestryPull {
                 anchor_block_id,
-                anchor_proof_set_root,
+                anchor_artifact_set_root,
                 virtual_genesis_block_id,
                 target_block_id,
                 blocks,
@@ -241,12 +243,12 @@ impl ProofBlockAncestryPull {
     }
 
     fn require_root_continuity(
-        preceding_block_id: ProofBlockId,
-        expected: ProofSetRoot,
-        actual: ProofSetRoot,
-    ) -> Result<(), ProofBlockAncestryPullError> {
+        preceding_block_id: ArtifactBlockId,
+        expected: ArtifactSetRoot,
+        actual: ArtifactSetRoot,
+    ) -> Result<(), ArtifactBlockAncestryPullError> {
         if expected != actual {
-            return Err(ProofBlockAncestryPullError::ProofSetRootMismatch {
+            return Err(ArtifactBlockAncestryPullError::ArtifactSetRootMismatch {
                 preceding_block_id,
                 expected,
                 actual,
@@ -256,9 +258,9 @@ impl ProofBlockAncestryPull {
     }
 
     fn was_already_requested(
-        target_block_id: ProofBlockId,
-        blocks: &[ProofBlock],
-        candidate: ProofBlockId,
+        target_block_id: ArtifactBlockId,
+        blocks: &[ArtifactBlock],
+        candidate: ArtifactBlockId,
     ) -> bool {
         candidate == target_block_id
             || blocks
@@ -270,45 +272,45 @@ impl ProofBlockAncestryPull {
 /// Progress after one exact ancestry block terminal.
 #[derive(Debug)]
 #[must_use]
-pub enum ProofBlockAncestryPullProgress {
+pub enum ArtifactBlockAncestryPullProgress {
     /// Another exact parent request is active.
-    AwaitingResponse(ProofBlockAncestryPull),
+    AwaitingResponse(ArtifactBlockAncestryPull),
     /// The bounded path reached the snapshotted selected head.
-    Complete(UnselectedProofBlockAncestry),
+    Complete(UnselectedArtifactBlockAncestry),
 }
 
 /// One authenticated, structurally continuous, but unselected block ancestry.
 ///
 /// Blocks are ordered from the anchor's direct child through the exact target.
-/// Exact content identities, parent links, and proof-set-root equality do not
-/// establish proof validity, payload availability, selection, consensus, or
+/// Exact content identities, parent links, and artifact-set-root equality do not
+/// establish artifact validity, payload availability, selection, consensus, or
 /// finality.
 #[derive(Debug)]
 #[must_use]
-pub struct UnselectedProofBlockAncestry {
+pub struct UnselectedArtifactBlockAncestry {
     peer_id: PeerId,
-    anchor_block_id: ProofBlockId,
-    target_block_id: ProofBlockId,
-    blocks: Vec<ProofBlock>,
+    anchor_block_id: ArtifactBlockId,
+    target_block_id: ArtifactBlockId,
+    blocks: Vec<ArtifactBlock>,
 }
 
-impl UnselectedProofBlockAncestry {
+impl UnselectedArtifactBlockAncestry {
     #[cfg(test)]
     pub(super) fn from_parts_for_test(
         peer_id: PeerId,
-        anchor_block_id: ProofBlockId,
-        target_block_id: ProofBlockId,
-        blocks: Vec<ProofBlock>,
+        anchor_block_id: ArtifactBlockId,
+        target_block_id: ArtifactBlockId,
+        blocks: Vec<ArtifactBlock>,
     ) -> Self {
         assert!(!blocks.is_empty());
-        assert!(blocks.len() <= MAX_PROOF_BLOCK_ANCESTRY_BLOCKS);
+        assert!(blocks.len() <= MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS);
         assert_eq!(blocks.first().unwrap().parent_block_id(), anchor_block_id);
         assert_eq!(blocks.last().unwrap().id(), target_block_id);
         for adjacent in blocks.windows(2) {
             assert_eq!(adjacent[1].parent_block_id(), adjacent[0].id());
             assert_eq!(
-                adjacent[1].previous_proof_set_root(),
-                adjacent[0].resulting_proof_set_root()
+                adjacent[1].previous_artifact_set_root(),
+                adjacent[0].resulting_artifact_set_root()
             );
         }
         Self {
@@ -325,26 +327,28 @@ impl UnselectedProofBlockAncestry {
     }
 
     /// Returns the selected head against which the path was checked.
-    pub const fn anchor_block_id(&self) -> ProofBlockId {
+    pub const fn anchor_block_id(&self) -> ArtifactBlockId {
         self.anchor_block_id
     }
 
     /// Returns the exact caller-selected target at the path tip.
-    pub const fn target_block_id(&self) -> ProofBlockId {
+    pub const fn target_block_id(&self) -> ArtifactBlockId {
         self.target_block_id
     }
 
     /// Returns blocks in forward application order.
-    pub fn blocks(&self) -> &[ProofBlock] {
+    pub fn blocks(&self) -> &[ArtifactBlock] {
         &self.blocks
     }
 
     /// Consumes this path and returns its forward-ordered blocks.
-    pub fn into_blocks(self) -> Vec<ProofBlock> {
+    pub fn into_blocks(self) -> Vec<ArtifactBlock> {
         self.blocks
     }
 
-    pub(super) fn into_parts(self) -> (PeerId, ProofBlockId, ProofBlockId, Vec<ProofBlock>) {
+    pub(super) fn into_parts(
+        self,
+    ) -> (PeerId, ArtifactBlockId, ArtifactBlockId, Vec<ArtifactBlock>) {
         (
             self.peer_id,
             self.anchor_block_id,
@@ -354,17 +358,19 @@ impl UnselectedProofBlockAncestry {
     }
 }
 
-/// A fail-closed caller-selected proof-block ancestry pull error.
+/// A fail-closed caller-selected artifact-block ancestry pull error.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum ProofBlockAncestryPullError {
+pub enum ArtifactBlockAncestryPullError {
     /// The selected journal failed a required read.
-    SelectedState { source: Box<ProofChainJournalError> },
+    SelectedState {
+        source: Box<ArtifactChainJournalError>,
+    },
     /// The target is the current head, virtual genesis, or a committed block.
-    TargetAlreadySelected { block_id: ProofBlockId },
+    TargetAlreadySelected { block_id: ArtifactBlockId },
     /// One exact block request could not be started.
     RequestStart {
-        block_id: ProofBlockId,
+        block_id: ArtifactBlockId,
         source: RequestStartError,
     },
     /// The supplied event or driver did not belong to this pull generation.
@@ -372,60 +378,60 @@ pub enum ProofBlockAncestryPullError {
     /// One exact block request failed before yielding a usable response.
     BlockRequestFailed {
         peer_id: PeerId,
-        block_id: ProofBlockId,
-        source: Box<OutboundProofBlockFailure>,
+        block_id: ArtifactBlockId,
+        source: Box<OutboundArtifactBlockFailure>,
     },
     /// The authenticated peer reported no block for an exact path address.
     BlockUnavailable {
         peer_id: PeerId,
-        block_id: ProofBlockId,
+        block_id: ArtifactBlockId,
     },
     /// The selected head changed after this pull captured its anchor.
     SelectedHeadChanged {
-        expected: ProofBlockId,
-        actual: ProofBlockId,
+        expected: ArtifactBlockId,
+        actual: ArtifactBlockId,
     },
-    /// One child block did not start at its parent's resulting proof-set root.
-    ProofSetRootMismatch {
-        preceding_block_id: ProofBlockId,
-        expected: ProofSetRoot,
-        actual: ProofSetRoot,
+    /// One child block did not start at its parent's resulting artifact-set root.
+    ArtifactSetRootMismatch {
+        preceding_block_id: ArtifactBlockId,
+        expected: ArtifactSetRoot,
+        actual: ArtifactSetRoot,
     },
     /// The path met selected history other than its captured head.
     DivergentAncestry {
-        expected_anchor: ProofBlockId,
-        encountered: ProofBlockId,
+        expected_anchor: ArtifactBlockId,
+        encountered: ArtifactBlockId,
     },
     /// A parent address repeated within this pull.
-    RepeatedBlockId { block_id: ProofBlockId },
+    RepeatedBlockId { block_id: ArtifactBlockId },
     /// The path did not reach its anchor within the fixed block bound.
     AncestryLimitExceeded {
         maximum: usize,
-        next_block_id: ProofBlockId,
+        next_block_id: ArtifactBlockId,
     },
 }
 
-impl ProofBlockAncestryPullError {
-    fn selected_state(source: ProofChainJournalError) -> Self {
+impl ArtifactBlockAncestryPullError {
+    fn selected_state(source: ArtifactChainJournalError) -> Self {
         Self::SelectedState {
             source: Box::new(source),
         }
     }
 }
 
-impl fmt::Display for ProofBlockAncestryPullError {
+impl fmt::Display for ArtifactBlockAncestryPullError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SelectedState { source } => {
                 write!(
                     formatter,
-                    "proof-block ancestry cannot use selected state: {source}"
+                    "artifact-block ancestry cannot use selected state: {source}"
                 )
             }
             Self::TargetAlreadySelected { block_id } => {
                 write!(
                     formatter,
-                    "proof-block ancestry target {block_id:?} is already selected"
+                    "artifact-block ancestry target {block_id:?} is already selected"
                 )
             }
             Self::RequestStart { block_id, source } => {
@@ -435,7 +441,7 @@ impl fmt::Display for ProofBlockAncestryPullError {
                 )
             }
             Self::UnexpectedEvent => formatter.write_str(
-                "network event or driver does not belong to this proof-block ancestry pull",
+                "network event or driver does not belong to this artifact-block ancestry pull",
             ),
             Self::BlockRequestFailed {
                 peer_id,
@@ -453,36 +459,39 @@ impl fmt::Display for ProofBlockAncestryPullError {
                 formatter,
                 "selected head changed during ancestry pull: expected {expected:?}, actual {actual:?}"
             ),
-            Self::ProofSetRootMismatch {
+            Self::ArtifactSetRootMismatch {
                 preceding_block_id,
                 expected,
                 actual,
             } => write!(
                 formatter,
-                "ancestry predecessor {preceding_block_id:?} ends at proof-set root {expected:?}, but its child starts at {actual:?}"
+                "ancestry predecessor {preceding_block_id:?} ends at artifact-set root {expected:?}, but its child starts at {actual:?}"
             ),
             Self::DivergentAncestry {
                 expected_anchor,
                 encountered,
             } => write!(
                 formatter,
-                "proof-block ancestry expected anchor {expected_anchor:?} but encountered selected-chain context {encountered:?}"
+                "artifact-block ancestry expected anchor {expected_anchor:?} but encountered selected-chain context {encountered:?}"
             ),
             Self::RepeatedBlockId { block_id } => {
-                write!(formatter, "proof-block ancestry repeats block {block_id:?}")
+                write!(
+                    formatter,
+                    "artifact-block ancestry repeats block {block_id:?}"
+                )
             }
             Self::AncestryLimitExceeded {
                 maximum,
                 next_block_id,
             } => write!(
                 formatter,
-                "proof-block ancestry did not reach its anchor within {maximum} blocks; next parent is {next_block_id:?}"
+                "artifact-block ancestry did not reach its anchor within {maximum} blocks; next parent is {next_block_id:?}"
             ),
         }
     }
 }
 
-impl Error for ProofBlockAncestryPullError {
+impl Error for ArtifactBlockAncestryPullError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::SelectedState { source } => Some(source.as_ref()),
@@ -492,7 +501,7 @@ impl Error for ProofBlockAncestryPullError {
             | Self::UnexpectedEvent
             | Self::BlockUnavailable { .. }
             | Self::SelectedHeadChanged { .. }
-            | Self::ProofSetRootMismatch { .. }
+            | Self::ArtifactSetRootMismatch { .. }
             | Self::DivergentAncestry { .. }
             | Self::RepeatedBlockId { .. }
             | Self::AncestryLimitExceeded { .. } => None,

@@ -2,60 +2,86 @@
 
 [![CI](https://github.com/naome-core/naome/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/naome-core/naome/actions/workflows/ci.yml)
 
-NAOME is a protocol for a blockchain of machine-verifiable mathematical proofs.
-Deterministic checking decides mathematical validity. Blockchain consensus will
-govern ordering, inclusion, and provenance; it must not redefine proof truth.
+NAOME is a protocol for a blockchain of machine-verifiable mathematics. One
+fixed block selects exactly one typed artifact: either a checked proof or a
+conservative mathematical definition. Deterministic checking decides
+Foundation-relative validity. Future consensus may decide ordering, inclusion,
+and provenance; it must not redefine mathematical truth.
 
-The repository implements deterministic proof identity and checking, one
-crash-consistent selected proof chain, a chain-scoped durable store of canonical
-structural block candidates, a separate durable archive of canonical payloads
-admitted from accepted proof records, and bounded caller-driven exchange,
-multi-peer head surveys, and caller-selected proof-chain catch-up among
-statically authorized peers. Stored candidates, archived payloads, peer-reported
-heads, and fetched ancestry remain inputs that require explicit target-context
-validation before selection. Every canonical block commits exactly one
-`ProofId`; all of that proof's dependencies must already occur in earlier
-selected ancestry blocks. One exact direct-child block and its exact addressed
-proof payload can be validated against current selected state without changing
-that state; durable application repeats the complete validation.
+Definitions let large proofs use ordinary mathematical vocabulary without
+replacing it with primitive ZFC at every citation. Relations are eliminable
+formula abbreviations. Constants and functions are graph definitions backed by
+exact earlier selected proofs of unique or total-unique existence. Proofs and
+definitions may use only dependencies selected by earlier blocks in the same
+chain ancestry. Local files, archives, candidates, network responses, the same
+block, and forward references never authorize resolution.
 
-A prerelease `.nao` compiler provides a bounded, complete source-authoring path
-from one closed statement through every Foundation axiom, schema, and explicit
-inference rule to checked canonical proof bytes and IDs. Its Python-shaped call
-syntax uses one spelling per form, short SSA-style proof names, and no theorem
-wrapper, braces, semicolons, or step markers. An optional `formulas:` block gives
-repeated formulas backward-only presentation names; every use expands to the
-same primitive formula and cannot change canonical proof bytes or identities.
-`and_`/`or_`/`iff`/`exists`/`not_equal` likewise reduce nesting before primitive
-expansion:
+## Why NAOME
+
+Mathematical results are easy to publish but difficult to verify, identify, and
+reuse across independent systems. NAOME makes each checked theorem or
+conservative definition a content-addressed artifact with deterministic
+validation and explicit ancestry. It is intended for formal-mathematics tools,
+researchers, and protocol builders that need independently reproducible results
+rather than trust in a publisher or validator majority.
+
+## Current status
+
+The prerelease reference implementation provides:
+
+- canonical proof, definition, and tagged-artifact codecs and identities;
+- deterministic proof checking and bounded conservative definition expansion;
+- atomic mixed-artifact admission and an authenticated `ArtifactId` set;
+- one exact-parent, fixed 128-byte artifact block per selected transition;
+- crash-consistent mixed proof/definition journal replay;
+- separate non-authoritative block-candidate and payload stores;
+- bounded caller-selected static-peer exchange, ancestry, and catch-up; and
+- a Python-shaped prerelease `.nao` authoring language.
+
+Consensus, fork choice, finality, reorganization, incentives, and recursive
+definitions are not implemented.
+
+The `single-artifact-v0` chain, journal, archive, and network formats replace
+their proof-only predecessors cleanly. Old local data must be recreated;
+existing primitive proof bytes and `ProofId`, `DerivationId`, and `StatementId`
+values remain unchanged.
+
+## Authoring
+
+The single CLI command compiles either a proof or a definition:
 
 ```sh
-cargo run -p naome-authoring --bin naome -- proof examples/separation.nao
+cargo run -p naome-authoring --bin naome -- proof examples/reflexive-relation.nao
 ```
 
-Agent-authored proofs may cite an exact selected `ProofId` with
-`cite("<64 lowercase hex characters>")`. The protocol-facing
-`compile_against_selected_chain` adapter resolves citations only from the
-immutable state built by strict block application or replay in a healthy
-selected-chain journal. Candidate blocks, archived or fetched payloads, and
-other local checked proofs never resolve implicitly. Compilation does not
-fetch, select, register, or mutate proofs; the CLI deliberately uses an empty
-state and rejects reachable references. The normative authoring specification
-includes the full source form and selected-state boundary.
+A dependency-free relation definition is compact:
 
-Compilation failures expose stable `NAO0001`-`NAO0014` classes; source-local
-failures also carry UTF-8 spans and one-based line and column positions for
-deterministic agent repair.
-The CLI renders one compact diagnostic line and never echoes an unbounded
-source line; successful identity and canonical-proof output is unchanged.
+```python
+foundation = "naome:zfc"
 
-Each local chain begins from a canonical definition that binds its deployment,
-the current Foundation identity, and the empty authenticated proof state before
-deriving the chain address and virtual genesis.
-The `single-proof-v0` chain-identity domain is an intentional prerelease
-cutover: journals and block-candidate stores created under the earlier block
-model must be recreated rather than migrated or accepted through a legacy
-reader.
+definition self_equal = relation(value):
+    equal(value, value)
+```
+
+The end-to-end model is deliberately small:
+
+1. Author one proof or definition in prerelease, source-first `.nao`.
+2. Lower it to canonical bytes and check it deterministically against the
+   Foundation and already selected dependencies.
+3. Derive its typed content identity and admit exactly that artifact in one
+   selected block.
+4. Replay the selected chain to reconstruct the same checked artifact state.
+5. Later definitions use its exact `DefinitionId`; later proofs cite its exact
+   `ProofId` or use selected definitions by exact ID.
+
+Compilation never fetches, selects, registers, or mutates artifacts. The
+standalone CLI therefore accepts dependency-free sources; selected dependencies
+require the immutable selected-state compiler adapter. See the compact
+[definition-and-citation proof](examples/definitions-long-proof.nao), the real
+[identity-function definition](examples/identity-function.nao), and the
+[empty-set definition](examples/empty-set.nao) backed by its independently
+checked existence-and-uniqueness proof. Exact source grammar, output fields, and
+diagnostics are specified in [Proof Authoring](specs/proof-authoring.md).
 
 ## Architecture
 
@@ -69,69 +95,57 @@ foundation -> proof -> checker -> ledger -> chain
 storage -> authoring
 ```
 
-`A -> B` means that `B` builds on `A`. The layers own, respectively: Foundation
-syntax and rules; canonical proofs and identities; deterministic checking;
-atomic proof admission; authenticated proof state and single-proof blocks;
-the selected-chain journal, chain-scoped structural-candidate store, and
-Foundation-scoped canonical-payload archive; transport-neutral messages; and
-bounded libp2p transport, orchestration, and peer-address management. The
-authoring layer owns prerelease source lowering and borrows healthy selected
-state from storage for exact proof references. A crate may also depend directly
-on an earlier contract it uses.
+The layers own, respectively: primitive ZFC syntax and rules; canonical proof,
+definition, and artifact representations; deterministic checking; atomic
+artifact admission; authenticated selected state and single-artifact blocks;
+selected persistence plus non-authoritative archives; transport-neutral
+messages; bounded libp2p transport and caller orchestration; and source
+authoring.
 
-The following boundaries are invariant:
+Invariant boundaries are:
 
-- external proof admission is decode, canonicality, checking, expected-address
-  comparison, then registration;
-- the journal is the sole durable selected-state owner;
-- one selected block admits exactly one proof, and its dependencies must already
-  be selected by earlier blocks;
-- reference-aware protocol authoring borrows only the healthy journal's
-  selected proof state and never searches candidate, archive, or network data;
-- the block-candidate store preserves canonical structural blocks but confers
-  no ancestry, proof-validity, execution, or selection authority;
-- the payload archive preserves accepted canonical bytes but confers no reusable
-  checking or selection authority;
-- successful read-only block validation is local and state-relative; it creates
-  no durable, transferable, selection, or consensus authority;
-- peer heads, blocks, ancestry, records, and receipts confer no consensus or
-  selection authority; and
-- learned address records never authorize proof sessions.
+- external admission is exact tagged decode, canonicality, checking, typed
+  identity comparison, then atomic registration;
+- one selected block admits exactly one proof or definition;
+- every dependency must be selected by an earlier ancestry block;
+- only successful block application or verified journal replay supplies proof
+  and definition resolution authority;
+- candidate and payload stores retain bytes without execution or selection;
+- peer heads, blocks, ancestry, payloads, records, and receipts confer no
+  consensus or selection authority; and
+- read-only validation is local and state-relative and creates no transferable
+  authority.
 
 ## Protocol contracts
 
-- [Foundation](specs/foundation.md) defines the mathematical language, axioms,
-  schemas, and inference rules.
-- [Proof Authoring](specs/proof-authoring.md) defines the deliberately small,
-  prerelease `.nao` source compiler and its non-authoritative output boundary.
-- [Proof Protocol](specs/proof-protocol.md) defines canonical proofs,
-  identities, selected proof state, and single-proof blocks.
-- [Proof Chain Journal](specs/proof-chain-journal.md) defines durable selected
-  state, replay, recovery, and corruption handling.
-- [Proof Block Candidate Store](specs/proof-block-candidate-store.md) defines
-  chain-scoped structural block retention without execution or selection.
-- [Canonical Proof Payload Store](specs/canonical-proof-payload-store.md)
-  defines the separate Foundation-scoped payload archive, integrity checks,
-  recovery, and revalidation boundary.
-- [Proof Network Transport](specs/proof-network-transport.md) defines proof,
-  block, and head messages plus authenticated transport and serving limits.
+- [Foundation](specs/foundation.md) defines primitive mathematical syntax,
+  axioms, schemas, and inference rules.
+- [Mathematical Definitions](specs/mathematical-definitions.md) defines graph
+  definitions, exact obligations, expansion, and typed artifact identity.
+- [Proof Protocol](specs/proof-protocol.md) defines canonical proof semantics,
+  identities, artifact admission, authenticated state, and blocks.
+- [Proof Authoring](specs/proof-authoring.md) defines `.nao` source and its
+  non-authoritative compilation boundary.
+- [Artifact Chain Journal](specs/artifact-chain-journal.md) defines durable
+  selected state, strict mixed replay, recovery, and poisoning.
+- [Artifact Block Candidate Store](specs/artifact-block-candidate-store.md)
+  defines structural block retention without execution or selection.
+- [Canonical Artifact Payload Store](specs/canonical-artifact-payload-store.md)
+  defines the separate Foundation-scoped byte archive.
+- [Artifact Network Transport](specs/artifact-network-transport.md) defines
+  artifact, block, head, and announcement messages and bounded transport.
 - [Caller-Selected Orchestration](specs/caller-selected-orchestration.md)
-  defines explicit head survey, head broadcast, direct-child import, ancestry
-  pull, ancestry import, and catch-up workflows.
+  defines survey, broadcast, direct import, ancestry, and catch-up.
 - [Peer Addressing](specs/peer-addressing.md) defines signed peer records,
-  address storage, issuance, and authenticated exchange.
+  address persistence, issuance, and authenticated exchange.
 
-Specifications are normative for mathematical, authoring, protocol, wire, and
-storage semantics. Rustdoc owns the Rust API surface; the crates are executable
-reference implementations. This README is non-normative.
-
-The repository is prerelease. An incompatible change replaces its identifier,
-protocol, or local format cleanly; it does not add a compatibility parser unless
-a stable compatibility commitment exists.
+Specifications are normative for mathematical, source, codec, storage, and wire
+semantics. Rustdoc owns exact Rust APIs; crates are executable references. This
+README is non-normative.
 
 ## Local validation
 
-The repository pins its Rust toolchain in `rust-toolchain.toml`.
+The Rust toolchain is pinned in `rust-toolchain.toml`.
 
 ```sh
 cargo fmt --all -- --check

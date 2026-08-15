@@ -118,10 +118,10 @@ fn certificate_formula_node_budget_spans_steps_and_fields() {
     let leaf = Formula::equal(FreeVariable::new(9), FreeVariable::new(9));
     let exact = ProofCertificate::new(vec![
         ProofStep::VacuousUniversal {
-            formula: half_limit.clone(),
+            formula: (half_limit.clone()).into(),
         },
         ProofStep::VacuousUniversal {
-            formula: half_limit.clone(),
+            formula: (half_limit.clone()).into(),
         },
     ])
     .unwrap();
@@ -135,13 +135,13 @@ fn certificate_formula_node_budget_spans_steps_and_fields() {
 
     let across_steps = vec![
         ProofStep::VacuousUniversal {
-            formula: half_limit.clone(),
+            formula: (half_limit.clone()).into(),
         },
         ProofStep::VacuousUniversal {
-            formula: half_limit.clone(),
+            formula: (half_limit.clone()).into(),
         },
         ProofStep::VacuousUniversal {
-            formula: leaf.clone(),
+            formula: (leaf.clone()).into(),
         },
     ];
     assert_eq!(
@@ -166,9 +166,9 @@ fn certificate_formula_node_budget_spans_steps_and_fields() {
     );
 
     let across_fields = ProofStep::Frege {
-        first: half_limit.clone(),
-        second: half_limit,
-        third: leaf,
+        first: (half_limit.clone()).into(),
+        second: (half_limit).into(),
+        third: (leaf).into(),
     };
     assert_eq!(
         ProofCertificate::new(vec![across_fields]),
@@ -208,37 +208,37 @@ fn every_formula_step_field_uses_the_shared_node_budget() {
     let cases = [
         (
             ProofStep::Simplification {
-                antecedent: leaf.clone(),
-                consequent: leaf.clone(),
+                antecedent: (leaf.clone()).into(),
+                consequent: (leaf.clone()).into(),
             },
             2,
         ),
         (
             ProofStep::Frege {
-                first: leaf.clone(),
-                second: leaf.clone(),
-                third: leaf.clone(),
+                first: (leaf.clone()).into(),
+                second: (leaf.clone()).into(),
+                third: (leaf.clone()).into(),
             },
             3,
         ),
         (
             ProofStep::ClassicalContraposition {
-                antecedent: leaf.clone(),
-                consequent: leaf.clone(),
+                antecedent: (leaf.clone()).into(),
+                consequent: (leaf.clone()).into(),
             },
             2,
         ),
         (
             ProofStep::UniversalDistribution {
                 variable: x,
-                antecedent: leaf.clone(),
-                consequent: leaf.clone(),
+                antecedent: (leaf.clone()).into(),
+                consequent: (leaf.clone()).into(),
             },
             2,
         ),
         (
             ProofStep::VacuousUniversal {
-                formula: leaf.clone(),
+                formula: (leaf.clone()).into(),
             },
             1,
         ),
@@ -246,7 +246,7 @@ fn every_formula_step_field_uses_the_shared_node_budget() {
             ProofStep::UniversalInstantiation {
                 variable: x,
                 replacement: y,
-                body: leaf.clone(),
+                body: (leaf.clone()).into(),
             },
             1,
         ),
@@ -254,13 +254,13 @@ fn every_formula_step_field_uses_the_shared_node_budget() {
             ProofStep::EqualitySubstitution {
                 from: x,
                 to: y,
-                body: leaf.clone(),
+                body: (leaf.clone()).into(),
             },
             1,
         ),
         (
-            ProofStep::Separation(Separation {
-                predicate: leaf.clone(),
+            ProofStep::Separation(ProofSeparation {
+                predicate: (leaf.clone()).into(),
                 element: x,
                 source: y,
                 result: x,
@@ -269,8 +269,8 @@ fn every_formula_step_field_uses_the_shared_node_budget() {
             1,
         ),
         (
-            ProofStep::Replacement(Replacement {
-                predicate: leaf,
+            ProofStep::Replacement(ProofReplacement {
+                predicate: (leaf).into(),
                 input: x,
                 output: y,
                 uniqueness_witness: x,

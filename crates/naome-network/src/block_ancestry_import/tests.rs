@@ -3,29 +3,31 @@ use std::sync::atomic::Ordering;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::block_exchange::ProofBlockRequest;
-use naome::proof_exchange::{ProofRequest, ProofResponse};
-use naome_chain::{ProofBlock, ProofBlockApplyError, ProofChainState, ProofDag};
+use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
+use naome::block_exchange::ArtifactBlockRequest;
+use naome_chain::{ArtifactBlock, ArtifactBlockApplyError, ArtifactChainState, ArtifactDag};
 use naome_ledger::LedgerError;
-use naome_proof::{ProofCertificate, ProofId, ProofStep};
-use naome_storage::{ProofChainJournal, ProofChainJournalError};
+use naome_proof::{
+    ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate, DefinitionId,
+    ProofCertificate, ProofFormula, ProofStep,
+};
+use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 use super::*;
-use crate::codec::ProofBlockWireResponse;
+use crate::codec::ArtifactBlockWireResponse;
 use crate::tests::{
     TestDirectory, create_journal, pairing_bytes, test_chain_definition, test_network_for_peers,
 };
 use crate::{
-    ExchangeRequestId, Keypair, MAX_PROOF_BLOCK_ANCESTRY_BLOCKS, NetworkEvent, PendingRequest,
-    ProofBlockAncestryPullProgress, ProofBlockImportError,
+    ArtifactBlockAncestryPullProgress, ArtifactBlockImportError, ExchangeRequestId, Keypair,
+    MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS, NetworkEvent, PendingRequest,
 };
 
 fn canonical_bytes(steps: Vec<ProofStep>) -> Vec<u8> {
-    ProofCertificate::new(steps)
+    let normal = ProofCertificate::new(steps)
         .unwrap()
-        .into_unchecked_normal_form()
-        .into_canonical_bytes()
-        .into_vec()
+        .into_unchecked_normal_form();
+    ArtifactPayload::Proof(normal.certificate().clone()).to_canonical_bytes()
 }
 
 fn independent_proof_bytes(index: usize) -> Vec<u8> {
@@ -41,20 +43,20 @@ fn independent_proof_bytes(index: usize) -> Vec<u8> {
     canonical_bytes(steps)
 }
 
-fn proof_id(bytes: &[u8]) -> ProofId {
-    ProofDag::new()
-        .apply_canonical_proof_bytes(bytes.to_vec())
+fn artifact_id(bytes: &[u8]) -> ArtifactId {
+    ArtifactDag::new()
+        .apply_canonical_artifact_bytes(bytes.to_vec())
         .unwrap()
-        .proof_id()
+        .artifact_id()
 }
 
-fn valid_extension(count: usize) -> (Vec<ProofBlock>, HashMap<ProofId, Vec<u8>>) {
-    let mut state = ProofChainState::new(test_chain_definition());
+fn valid_extension(count: usize) -> (Vec<ArtifactBlock>, HashMap<ArtifactId, Vec<u8>>) {
+    let mut state = ArtifactChainState::new(test_chain_definition());
     let mut blocks = Vec::with_capacity(count);
     let mut payloads = HashMap::with_capacity(count);
     for index in 0..count {
         let bytes = independent_proof_bytes(index + 1);
-        let id = proof_id(&bytes);
+        let id = artifact_id(&bytes);
         let block = state.prepare_block(id).unwrap();
         state.apply_block(&block, bytes.clone()).unwrap();
         payloads.insert(id, bytes);
@@ -63,14 +65,77 @@ fn valid_extension(count: usize) -> (Vec<ProofBlock>, HashMap<ProofId, Vec<u8>>)
     (blocks, payloads)
 }
 
+fn definition_and_dependent_proof_extension() -> (
+    Vec<ArtifactBlock>,
+    HashMap<ArtifactId, Vec<u8>>,
+    DefinitionId,
+) {
+    let value = naome_foundation::FreeVariable::new(0);
+    let definition =
+        DefinitionCertificate::relation(1, DefinedFormula::equal(value, value)).unwrap();
+    let definition_id = definition.definition_id();
+    let definition_bytes = ArtifactPayload::Definition(definition).to_canonical_bytes();
+    let application =
+        ProofFormula::from_defined(DefinedFormula::defined_relation(definition_id, [value]))
+            .unwrap();
+    let proof_bytes = canonical_bytes(vec![
+        ProofStep::EqualityReflexivity { variable: value },
+        ProofStep::Simplification {
+            antecedent: application.clone(),
+            consequent: application,
+        },
+        ProofStep::ModusPonens {
+            premise: 0,
+            implication: 1,
+        },
+        ProofStep::ModusPonens {
+            premise: 0,
+            implication: 2,
+        },
+        ProofStep::Generalization {
+            premise: 3,
+            variable: value,
+        },
+    ]);
+
+    let mut identity = ArtifactDag::new();
+    let definition_artifact_id = identity
+        .apply_canonical_artifact_bytes(definition_bytes.clone())
+        .unwrap()
+        .artifact_id();
+    let proof_artifact_id = identity
+        .apply_canonical_artifact_bytes(proof_bytes.clone())
+        .unwrap()
+        .artifact_id();
+
+    let mut state = ArtifactChainState::new(test_chain_definition());
+    let definition_block = state.prepare_block(definition_artifact_id).unwrap();
+    state
+        .apply_block(&definition_block, definition_bytes.clone())
+        .unwrap();
+    let proof_block = state.prepare_block(proof_artifact_id).unwrap();
+    state
+        .apply_block(&proof_block, proof_bytes.clone())
+        .unwrap();
+
+    (
+        vec![definition_block, proof_block],
+        HashMap::from([
+            (definition_artifact_id, definition_bytes),
+            (proof_artifact_id, proof_bytes),
+        ]),
+        definition_id,
+    )
+}
+
 fn ancestry(
-    selected: &ProofChainJournal,
+    selected: &ArtifactChainJournal,
     peer_id: PeerId,
-    blocks: Vec<ProofBlock>,
-) -> UnselectedProofBlockAncestry {
+    blocks: Vec<ArtifactBlock>,
+) -> UnselectedArtifactBlockAncestry {
     let anchor_block_id = selected.head_block_id().unwrap();
     let target_block_id = blocks.last().unwrap().id();
-    UnselectedProofBlockAncestry::from_parts_for_test(
+    UnselectedArtifactBlockAncestry::from_parts_for_test(
         peer_id,
         anchor_block_id,
         target_block_id,
@@ -78,15 +143,15 @@ fn ancestry(
     )
 }
 
-fn pending_proof_request(
-    network: &StaticProofNetwork,
+fn pending_artifact_request(
+    network: &StaticArtifactNetwork,
     peer_id: PeerId,
-) -> (request_response::OutboundRequestId, ProofRequest) {
+) -> (request_response::OutboundRequestId, ArtifactRequest) {
     network
         .pending
         .iter()
         .find_map(|(request_id, pending)| match (request_id, pending) {
-            (ExchangeRequestId::Proof(request_id), PendingRequest::Proof(pending))
+            (ExchangeRequestId::Artifact(request_id), PendingRequest::Artifact(pending))
                 if network.pending_peer_id(pending.peer_index) == peer_id =>
             {
                 Some((*request_id, pending.request))
@@ -97,9 +162,9 @@ fn pending_proof_request(
 }
 
 fn pending_block_request(
-    network: &StaticProofNetwork,
+    network: &StaticArtifactNetwork,
     peer_id: PeerId,
-) -> (request_response::OutboundRequestId, ProofBlockRequest) {
+) -> (request_response::OutboundRequestId, ArtifactBlockRequest) {
     network
         .pending
         .iter()
@@ -115,9 +180,9 @@ fn pending_block_request(
 }
 
 fn block_response_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     peer_id: PeerId,
-    block: &ProofBlock,
+    block: &ArtifactBlock,
 ) -> NetworkEvent {
     let (request_id, request) = pending_block_request(network, peer_id);
     assert_eq!(request.block_id(), block.id());
@@ -127,29 +192,29 @@ fn block_response_event(
             connection_id: ConnectionId::new_unchecked(1_101),
             message: request_response::Message::Response {
                 request_id,
-                response: ProofBlockWireResponse::new(block.to_canonical_bytes()),
+                response: ArtifactBlockWireResponse::new(block.to_canonical_bytes()),
             },
         })
         .expect("the retained block request produces one terminal event")
 }
 
 fn pull_ancestry(
-    network: &mut StaticProofNetwork,
-    selected: &ProofChainJournal,
+    network: &mut StaticArtifactNetwork,
+    selected: &ArtifactChainJournal,
     peer_id: PeerId,
-    blocks: &[ProofBlock],
-) -> UnselectedProofBlockAncestry {
+    blocks: &[ArtifactBlock],
+) -> UnselectedArtifactBlockAncestry {
     let mut pull = network
-        .start_proof_block_ancestry_pull(selected, peer_id, blocks.last().unwrap().id())
+        .start_artifact_block_ancestry_pull(selected, peer_id, blocks.last().unwrap().id())
         .unwrap();
     for (index, block) in blocks.iter().rev().enumerate() {
         let event = block_response_event(network, peer_id, block);
         match pull.on_event(network, selected, event).unwrap() {
-            ProofBlockAncestryPullProgress::AwaitingResponse(next) => {
+            ArtifactBlockAncestryPullProgress::AwaitingResponse(next) => {
                 assert!(index + 1 < blocks.len());
                 pull = next;
             }
-            ProofBlockAncestryPullProgress::Complete(ancestry) => {
+            ArtifactBlockAncestryPullProgress::Complete(ancestry) => {
                 assert_eq!(index + 1, blocks.len());
                 return ancestry;
             }
@@ -158,38 +223,38 @@ fn pull_ancestry(
     unreachable!("the nonempty path completes at its anchor")
 }
 
-fn proof_response_event_from(
-    network: &mut StaticProofNetwork,
+fn artifact_response_event_from(
+    network: &mut StaticArtifactNetwork,
     expected_peer_id: PeerId,
     actual_peer_id: PeerId,
     bytes: Vec<u8>,
 ) -> NetworkEvent {
-    let (request_id, _) = pending_proof_request(network, expected_peer_id);
+    let (request_id, _) = pending_artifact_request(network, expected_peer_id);
     network
-        .handle_proof_exchange_event(request_response::Event::Message {
+        .handle_artifact_exchange_event(request_response::Event::Message {
             peer: actual_peer_id,
             connection_id: ConnectionId::new_unchecked(1_100),
             message: request_response::Message::Response {
                 request_id,
-                response: ProofResponse::from_wire_bytes(bytes).unwrap(),
+                response: ArtifactResponse::from_wire_bytes(bytes).unwrap(),
             },
         })
         .expect("the retained proof request produces one terminal event")
 }
 
-fn proof_response_event(
-    network: &mut StaticProofNetwork,
+fn artifact_response_event(
+    network: &mut StaticArtifactNetwork,
     peer_id: PeerId,
     bytes: Vec<u8>,
 ) -> NetworkEvent {
-    proof_response_event_from(network, peer_id, peer_id, bytes)
+    artifact_response_event_from(network, peer_id, peer_id, bytes)
 }
 
 fn drive_success(
-    network: &mut StaticProofNetwork,
-    selected: &mut ProofChainJournal,
-    mut import: ProofBlockAncestryImport,
-    payloads: &HashMap<ProofId, Vec<u8>>,
+    network: &mut StaticArtifactNetwork,
+    selected: &mut ArtifactChainJournal,
+    mut import: ArtifactBlockAncestryImport,
+    payloads: &HashMap<ArtifactId, Vec<u8>>,
 ) {
     loop {
         assert!(
@@ -200,9 +265,9 @@ fn drive_success(
             "retained ancestry blocks must never be fetched again"
         );
         let peer_id = import.pending_peer_id();
-        let (_, request) = pending_proof_request(network, peer_id);
-        let bytes = payloads.get(&request.proof_id()).unwrap().clone();
-        let event = proof_response_event(network, peer_id, bytes);
+        let (_, request) = pending_artifact_request(network, peer_id);
+        let bytes = payloads.get(&request.artifact_id()).unwrap().clone();
+        let event = artifact_response_event(network, peer_id, bytes);
         assert!(import.accepts_event(&event));
         match import.on_event(network, selected, event).unwrap() {
             Some(next) => import = next,
@@ -213,18 +278,18 @@ fn drive_success(
 
 #[test]
 fn one_three_and_sixteen_block_paths_commit_forward_without_block_refetch() {
-    for count in [1, 3, MAX_PROOF_BLOCK_ANCESTRY_BLOCKS] {
+    for count in [1, 3, MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS] {
         let directory = TestDirectory::new("ancestry-import-success");
         let mut selected = create_journal(directory.path()).unwrap();
         let anchor = selected.head_block_id().unwrap();
         let peer_id = Keypair::generate_ed25519().public().to_peer_id();
         let (blocks, payloads) = valid_extension(count);
         let target = blocks.last().unwrap().id();
-        let expected_ids = blocks.iter().map(ProofBlock::id).collect::<Vec<_>>();
+        let expected_ids = blocks.iter().map(ArtifactBlock::id).collect::<Vec<_>>();
         let mut network = test_network_for_peers(&[peer_id]);
 
         let import = network
-            .start_proof_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
+            .start_artifact_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
             .unwrap();
         assert_eq!(import.anchor_block_id(), anchor);
         assert_eq!(import.target_block_id(), target);
@@ -241,10 +306,65 @@ fn one_three_and_sixteen_block_paths_commit_forward_without_block_refetch() {
         }
         drop(selected);
         let reopened =
-            ProofChainJournal::open_verified(directory.path(), test_chain_definition(), target)
+            ArtifactChainJournal::open_verified(directory.path(), test_chain_definition(), target)
                 .unwrap();
         assert_eq!(reopened.len().unwrap(), count);
     }
+}
+
+#[test]
+fn definition_then_dependent_proof_import_as_two_selected_artifacts() {
+    let directory = TestDirectory::new("ancestry-import-definition-proof");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+    let (blocks, payloads, definition_id) = definition_and_dependent_proof_extension();
+    let definition_artifact_id = blocks[0].artifact_id();
+    let proof_artifact_id = blocks[1].artifact_id();
+    let target = blocks[1].id();
+    let mut network = test_network_for_peers(&[peer_id]);
+
+    let import = network
+        .start_artifact_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
+        .unwrap();
+    let (_, definition_request) = pending_artifact_request(&network, peer_id);
+    assert_eq!(definition_request.artifact_id(), definition_artifact_id);
+    let definition_event = artifact_response_event(
+        &mut network,
+        peer_id,
+        payloads[&definition_artifact_id].clone(),
+    );
+    let import = import
+        .on_event(&mut network, &mut selected, definition_event)
+        .unwrap()
+        .unwrap();
+    assert!(
+        selected
+            .artifact_state()
+            .unwrap()
+            .contains_definition(definition_id)
+    );
+
+    let (_, proof_request) = pending_artifact_request(&network, peer_id);
+    assert_eq!(proof_request.artifact_id(), proof_artifact_id);
+    let proof_event =
+        artifact_response_event(&mut network, peer_id, payloads[&proof_artifact_id].clone());
+    assert!(
+        import
+            .on_event(&mut network, &mut selected, proof_event)
+            .unwrap()
+            .is_none()
+    );
+
+    let proof = selected
+        .artifact(proof_artifact_id)
+        .unwrap()
+        .unwrap()
+        .as_proof()
+        .unwrap();
+    assert_eq!(proof.direct_definition_dependencies(), [definition_id]);
+    assert_eq!(selected.head_block_id().unwrap(), target);
+    assert_eq!(selected.len().unwrap(), 2);
+    assert!(network.pending.is_empty());
 }
 
 #[test]
@@ -253,18 +373,21 @@ fn invalid_second_payload_reports_prefix_and_fresh_pull_retries_from_that_head()
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let (blocks, payloads) = valid_extension(3);
-    let ids = blocks.iter().map(ProofBlock::id).collect::<Vec<_>>();
+    let ids = blocks.iter().map(ArtifactBlock::id).collect::<Vec<_>>();
     let target = ids[2];
     let mut network = test_network_for_peers(&[peer_id]);
     let import = network
-        .start_proof_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks.clone()))
+        .start_artifact_block_ancestry_import(
+            &selected,
+            ancestry(&selected, peer_id, blocks.clone()),
+        )
         .unwrap();
 
-    let (_, first_request) = pending_proof_request(&network, peer_id);
-    let first_event = proof_response_event(
+    let (_, first_request) = pending_artifact_request(&network, peer_id);
+    let first_event = artifact_response_event(
         &mut network,
         peer_id,
-        payloads[&first_request.proof_id()].clone(),
+        payloads[&first_request.artifact_id()].clone(),
     );
     let import = import
         .on_event(&mut network, &mut selected, first_event)
@@ -274,11 +397,11 @@ fn invalid_second_payload_reports_prefix_and_fresh_pull_retries_from_that_head()
     assert_eq!(import.last_acknowledged_head_block_id(), ids[0]);
     assert_eq!(import.pending_block_id(), ids[1]);
 
-    let expected_proof_id = pending_proof_request(&network, peer_id).1.proof_id();
+    let expected_artifact_id = pending_artifact_request(&network, peer_id).1.artifact_id();
     let wrong = pairing_bytes();
-    let actual_proof_id = proof_id(&wrong);
-    assert_ne!(actual_proof_id, expected_proof_id);
-    let event = proof_response_event(&mut network, peer_id, wrong);
+    let actual_artifact_id = artifact_id(&wrong);
+    assert_ne!(actual_artifact_id, expected_artifact_id);
+    let event = artifact_response_event(&mut network, peer_id, wrong);
     let error = import
         .on_event(&mut network, &mut selected, event)
         .unwrap_err();
@@ -288,14 +411,14 @@ fn invalid_second_payload_reports_prefix_and_fresh_pull_retries_from_that_head()
     assert_eq!(error.last_acknowledged_head_block_id(), ids[0]);
     assert!(matches!(
         error.block_import_error(),
-        ProofBlockImportError::SelectedState { source }
+        ArtifactBlockImportError::SelectedState { source }
             if matches!(
                 source.as_ref(),
-                ProofChainJournalError::BlockAdmission {
-                    source: ProofBlockApplyError::Admission {
-                        source: LedgerError::ProofIdMismatch { expected, actual },
+                ArtifactChainJournalError::BlockAdmission {
+                    source: ArtifactBlockApplyError::Admission {
+                        source: LedgerError::ArtifactIdMismatch { expected, actual },
                     }
-                } if *expected == expected_proof_id && *actual == actual_proof_id
+                } if *expected == expected_artifact_id && *actual == actual_artifact_id
             )
     ));
     assert_eq!(selected.head_block_id().unwrap(), ids[0]);
@@ -309,7 +432,7 @@ fn invalid_second_payload_reports_prefix_and_fresh_pull_retries_from_that_head()
     assert_eq!(fresh.anchor_block_id(), ids[0]);
     assert_eq!(fresh.target_block_id(), target);
     let import = network
-        .start_proof_block_ancestry_import(&selected, fresh)
+        .start_artifact_block_ancestry_import(&selected, fresh)
         .unwrap();
     drive_success(&mut network, &mut selected, import, &payloads);
     assert_eq!(selected.head_block_id().unwrap(), target);
@@ -331,7 +454,7 @@ fn start_rejects_head_drift_before_proof_traffic_with_zero_prefix() {
     let mut network = test_network_for_peers(&[peer_id]);
 
     let error = network
-        .start_proof_block_ancestry_import(&selected, ancestry)
+        .start_artifact_block_ancestry_import(&selected, ancestry)
         .unwrap_err();
     assert_eq!(error.target_block_id(), target);
     assert_eq!(error.failed_block_id(), target);
@@ -339,14 +462,14 @@ fn start_rejects_head_drift_before_proof_traffic_with_zero_prefix() {
     assert_eq!(error.last_acknowledged_head_block_id(), anchor);
     assert!(matches!(
         error.block_import_error(),
-        ProofBlockImportError::ParentBlockIdMismatch { expected, actual: parent }
+        ArtifactBlockImportError::ParentBlockIdMismatch { expected, actual: parent }
             if *expected == actual && *parent != actual
     ));
     assert!(network.pending.is_empty());
 }
 
 #[test]
-fn cancellation_before_first_acknowledgement_drains_only_the_active_proof_request() {
+fn cancellation_before_first_acknowledgement_drains_only_the_active_artifact_request() {
     let directory = TestDirectory::new("ancestry-import-cancel");
     let selected = create_journal(directory.path()).unwrap();
     let anchor = selected.head_block_id().unwrap();
@@ -354,17 +477,20 @@ fn cancellation_before_first_acknowledgement_drains_only_the_active_proof_reques
     let (blocks, payloads) = valid_extension(3);
     let mut network = test_network_for_peers(&[peer_id]);
     let import = network
-        .start_proof_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
+        .start_artifact_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
         .unwrap();
-    let (_, request) = pending_proof_request(&network, peer_id);
+    let (_, request) = pending_artifact_request(&network, peer_id);
 
     import.cancel();
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
-    let drained =
-        proof_response_event(&mut network, peer_id, payloads[&request.proof_id()].clone());
+    let drained = artifact_response_event(
+        &mut network,
+        peer_id,
+        payloads[&request.artifact_id()].clone(),
+    );
     assert!(matches!(
         drained,
-        NetworkEvent::ProofCancellationDrained { .. }
+        NetworkEvent::ArtifactCancellationDrained { .. }
     ));
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert_eq!(selected.head_block_id().unwrap(), anchor);
@@ -381,10 +507,14 @@ fn foreign_driver_is_rejected_without_selecting_the_current_block() {
     let mut origin = test_network_for_peers(&[peer_id]);
     let mut wrong_driver = test_network_for_peers(&[peer_id]);
     let import = origin
-        .start_proof_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
+        .start_artifact_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
         .unwrap();
-    let (_, request) = pending_proof_request(&origin, peer_id);
-    let event = proof_response_event(&mut origin, peer_id, payloads[&request.proof_id()].clone());
+    let (_, request) = pending_artifact_request(&origin, peer_id);
+    let event = artifact_response_event(
+        &mut origin,
+        peer_id,
+        payloads[&request.artifact_id()].clone(),
+    );
     assert!(import.accepts_event(&event));
 
     let error = import
@@ -394,7 +524,7 @@ fn foreign_driver_is_rejected_without_selecting_the_current_block() {
     assert_eq!(error.last_acknowledged_head_block_id(), anchor);
     assert!(matches!(
         error.block_import_error(),
-        ProofBlockImportError::UnexpectedEvent
+        ArtifactBlockImportError::UnexpectedEvent
     ));
     assert_eq!(selected.head_block_id().unwrap(), anchor);
     assert!(origin.pending.is_empty());
@@ -407,7 +537,7 @@ fn foreign_driver_is_rejected_without_selecting_the_current_block() {
 }
 
 #[test]
-fn selected_head_drift_during_proof_request_rejects_the_current_block() {
+fn selected_head_drift_during_artifact_request_rejects_the_current_block() {
     let directory = TestDirectory::new("ancestry-import-midflight-drift");
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
@@ -415,13 +545,17 @@ fn selected_head_drift_during_proof_request_rejects_the_current_block() {
     let target = blocks[0].id();
     let mut network = test_network_for_peers(&[peer_id]);
     let import = network
-        .start_proof_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
+        .start_artifact_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
         .unwrap();
-    let (_, request) = pending_proof_request(&network, peer_id);
+    let (_, request) = pending_artifact_request(&network, peer_id);
     crate::tests::apply_fresh_blocks(&mut selected, [pairing_bytes()]);
     let drifted_head = selected.head_block_id().unwrap();
 
-    let event = proof_response_event(&mut network, peer_id, payloads[&request.proof_id()].clone());
+    let event = artifact_response_event(
+        &mut network,
+        peer_id,
+        payloads[&request.artifact_id()].clone(),
+    );
     let error = import
         .on_event(&mut network, &mut selected, event)
         .unwrap_err();
@@ -429,7 +563,7 @@ fn selected_head_drift_during_proof_request_rejects_the_current_block() {
     assert_eq!(error.committed_block_count(), 0);
     assert!(matches!(
         error.block_import_error(),
-        ProofBlockImportError::ParentBlockIdMismatch { expected, actual }
+        ArtifactBlockImportError::ParentBlockIdMismatch { expected, actual }
             if *expected == drifted_head && *actual != drifted_head
     ));
     assert_eq!(selected.head_block_id().unwrap(), drifted_head);
@@ -448,12 +582,12 @@ fn peer_mismatch_precedes_selected_head_drift() {
     let target = blocks[0].id();
     let mut network = test_network_for_peers(&[expected_peer, actual_peer]);
     let import = network
-        .start_proof_block_ancestry_import(&selected, ancestry(&selected, expected_peer, blocks))
+        .start_artifact_block_ancestry_import(&selected, ancestry(&selected, expected_peer, blocks))
         .unwrap();
     crate::tests::apply_fresh_blocks(&mut selected, [pairing_bytes()]);
     let drifted_head = selected.head_block_id().unwrap();
 
-    let event = proof_response_event_from(&mut network, expected_peer, actual_peer, Vec::new());
+    let event = artifact_response_event_from(&mut network, expected_peer, actual_peer, Vec::new());
     let error = import
         .on_event(&mut network, &mut selected, event)
         .unwrap_err();
@@ -461,14 +595,14 @@ fn peer_mismatch_precedes_selected_head_drift() {
     assert_eq!(error.committed_block_count(), 0);
     assert!(matches!(
         error.block_import_error(),
-        ProofBlockImportError::ProofRequestFailed {
+        ArtifactBlockImportError::ArtifactRequestFailed {
             peer_id,
             source,
             ..
         } if *peer_id == expected_peer
             && matches!(
                 source.as_ref(),
-                crate::OutboundProofFailure::PeerMismatch { expected, actual }
+                crate::OutboundArtifactFailure::PeerMismatch { expected, actual }
                     if *expected == expected_peer && *actual == actual_peer
             )
     ));
@@ -484,36 +618,36 @@ fn cancellation_after_one_acknowledgement_retains_only_that_prefix() {
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let (blocks, payloads) = valid_extension(3);
-    let ids = blocks.iter().map(ProofBlock::id).collect::<Vec<_>>();
+    let ids = blocks.iter().map(ArtifactBlock::id).collect::<Vec<_>>();
     let mut network = test_network_for_peers(&[peer_id]);
     let import = network
-        .start_proof_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
+        .start_artifact_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
         .unwrap();
-    let (_, first_request) = pending_proof_request(&network, peer_id);
-    let first = proof_response_event(
+    let (_, first_request) = pending_artifact_request(&network, peer_id);
+    let first = artifact_response_event(
         &mut network,
         peer_id,
-        payloads[&first_request.proof_id()].clone(),
+        payloads[&first_request.artifact_id()].clone(),
     );
     let import = import
         .on_event(&mut network, &mut selected, first)
         .unwrap()
         .unwrap();
-    let (_, second_request) = pending_proof_request(&network, peer_id);
+    let (_, second_request) = pending_artifact_request(&network, peer_id);
     assert_eq!(import.committed_block_count(), 1);
     assert_eq!(import.last_acknowledged_head_block_id(), ids[0]);
 
     import.cancel();
     assert_eq!(selected.head_block_id().unwrap(), ids[0]);
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
-    let drained = proof_response_event(
+    let drained = artifact_response_event(
         &mut network,
         peer_id,
-        payloads[&second_request.proof_id()].clone(),
+        payloads[&second_request.artifact_id()].clone(),
     );
     assert!(matches!(
         drained,
-        NetworkEvent::ProofCancellationDrained { .. }
+        NetworkEvent::ArtifactCancellationDrained { .. }
     ));
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert!(selected.block(ids[0]).unwrap().is_some());
@@ -528,21 +662,25 @@ fn disconnected_source_prevents_next_block_start_after_acknowledged_prefix() {
     let mut selected = create_journal(directory.path()).unwrap();
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let (blocks, payloads) = valid_extension(2);
-    let ids = blocks.iter().map(ProofBlock::id).collect::<Vec<_>>();
-    let next_root = blocks[1].proof_id();
+    let ids = blocks.iter().map(ArtifactBlock::id).collect::<Vec<_>>();
+    let next_root = blocks[1].artifact_id();
     let target = ids[1];
     let mut network = test_network_for_peers(&[peer_id]);
     let import = network
-        .start_proof_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
+        .start_artifact_block_ancestry_import(&selected, ancestry(&selected, peer_id, blocks))
         .unwrap();
-    let (_, request) = pending_proof_request(&network, peer_id);
+    let (_, request) = pending_artifact_request(&network, peer_id);
     network
         .swarm
         .behaviour_mut()
         .sessions
         .mark_disconnected_for_test(peer_id);
 
-    let event = proof_response_event(&mut network, peer_id, payloads[&request.proof_id()].clone());
+    let event = artifact_response_event(
+        &mut network,
+        peer_id,
+        payloads[&request.artifact_id()].clone(),
+    );
     let error = import
         .on_event(&mut network, &mut selected, event)
         .unwrap_err();
@@ -552,8 +690,8 @@ fn disconnected_source_prevents_next_block_start_after_acknowledged_prefix() {
     assert_eq!(error.last_acknowledged_head_block_id(), ids[0]);
     assert!(matches!(
         error.block_import_error(),
-        ProofBlockImportError::NoEligibleProofPeer { proof_id }
-            if *proof_id == next_root
+        ArtifactBlockImportError::NoEligibleArtifactPeer { artifact_id }
+            if *artifact_id == next_root
     ));
     assert_eq!(selected.head_block_id().unwrap(), ids[0]);
     assert!(selected.block(ids[0]).unwrap().is_some());

@@ -1,7 +1,7 @@
 use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 use naome_proof::{ProofCertificate, ProofStep};
 
-use super::{ProofState, ProofStateError};
+use super::{ArtifactState, ArtifactStateError};
 use crate::normalize_and_check;
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
@@ -31,8 +31,8 @@ fn alternative_proofs_share_one_stored_conclusion() {
     let detour = normalize_and_check(certificate(vec![
         ProofStep::EqualityReflexivity { variable: x },
         ProofStep::Simplification {
-            antecedent: formula.clone(),
-            consequent: formula,
+            antecedent: formula.clone().into(),
+            consequent: formula.into(),
         },
         ProofStep::ModusPonens {
             premise: 0,
@@ -54,9 +54,9 @@ fn alternative_proofs_share_one_stored_conclusion() {
     let direct_derivation_id = direct.derivation_id;
     let detour_derivation_id = detour.derivation_id;
 
-    let mut state = ProofState::new();
-    state.register(direct).unwrap();
-    state.register(detour).unwrap();
+    let mut state = ArtifactState::new();
+    state.register_proof(direct).unwrap();
+    state.register_proof(detour).unwrap();
 
     assert!(state.contains_derivation(direct_derivation_id));
     assert!(state.contains_derivation(detour_derivation_id));
@@ -72,8 +72,8 @@ fn identity_collisions_fail_closed_without_mutating_state() {
     let original_proof_id = original.proof_id;
     let original_statement_id = original.statement_id;
     let original_derivation_id = original.derivation_id;
-    let mut state = ProofState::new();
-    state.register(original).unwrap();
+    let mut state = ArtifactState::new();
+    state.register_proof(original).unwrap();
     let different_conclusion = || {
         normalize_and_check(certificate(vec![ProofStep::ZfcAxiom(
             naome_foundation::ZfcAxiom::Pairing,
@@ -95,8 +95,8 @@ fn identity_collisions_fail_closed_without_mutating_state() {
     .unwrap();
     conflicting_proof.proof_id = original_proof_id;
     assert_eq!(
-        state.register(conflicting_proof),
-        Err(ProofStateError::ProofIdentityCollision {
+        state.register_proof(conflicting_proof),
+        Err(ArtifactStateError::ProofIdentityCollision {
             proof_id: original_proof_id,
         })
     );
@@ -106,8 +106,8 @@ fn identity_collisions_fail_closed_without_mutating_state() {
     forged_duplicate.derivation_id = original_derivation_id;
     forged_duplicate.statement_id = original_statement_id;
     assert_eq!(
-        state.register(forged_duplicate),
-        Err(ProofStateError::StatementIdentityCollision {
+        state.register_proof(forged_duplicate),
+        Err(ArtifactStateError::StatementIdentityCollision {
             statement_id: original_statement_id,
         })
     );
@@ -115,8 +115,8 @@ fn identity_collisions_fail_closed_without_mutating_state() {
     let mut duplicate_derivation = normalize_and_check(certificate(vec![
         ProofStep::EqualityReflexivity { variable: x },
         ProofStep::Simplification {
-            antecedent: Formula::equal(x, x),
-            consequent: Formula::equal(x, x),
+            antecedent: Formula::equal(x, x).into(),
+            consequent: Formula::equal(x, x).into(),
         },
         ProofStep::ModusPonens {
             premise: 0,
@@ -135,8 +135,8 @@ fn identity_collisions_fail_closed_without_mutating_state() {
     let duplicate_derivation_proof_id = duplicate_derivation.proof_id;
     duplicate_derivation.derivation_id = original_derivation_id;
     assert_eq!(
-        state.register(duplicate_derivation),
-        Err(ProofStateError::DuplicateDerivation {
+        state.register_proof(duplicate_derivation),
+        Err(ArtifactStateError::DuplicateDerivation {
             derivation_id: original_derivation_id,
         })
     );
@@ -146,8 +146,8 @@ fn identity_collisions_fail_closed_without_mutating_state() {
     forged_derivation.derivation_id = original_derivation_id;
     forged_derivation.statement_id = original_statement_id;
     assert_eq!(
-        state.register(forged_derivation),
-        Err(ProofStateError::StatementIdentityCollision {
+        state.register_proof(forged_derivation),
+        Err(ArtifactStateError::StatementIdentityCollision {
             statement_id: original_statement_id,
         })
     );
@@ -156,8 +156,8 @@ fn identity_collisions_fail_closed_without_mutating_state() {
     let conflicting_derivation_proof_id = conflicting_derivation.proof_id;
     conflicting_derivation.derivation_id = original_derivation_id;
     assert_eq!(
-        state.register(conflicting_derivation),
-        Err(ProofStateError::DerivationIdentityCollision {
+        state.register_proof(conflicting_derivation),
+        Err(ArtifactStateError::DerivationIdentityCollision {
             derivation_id: original_derivation_id,
         })
     );
@@ -169,8 +169,8 @@ fn identity_collisions_fail_closed_without_mutating_state() {
     let conflicting_proof_id = conflicting_statement.proof_id;
     conflicting_statement.statement_id = original_statement_id;
     assert_eq!(
-        state.register(conflicting_statement),
-        Err(ProofStateError::StatementIdentityCollision {
+        state.register_proof(conflicting_statement),
+        Err(ArtifactStateError::StatementIdentityCollision {
             statement_id: original_statement_id,
         })
     );
@@ -190,18 +190,18 @@ fn single_registration_validation_matches_registration_without_mutating() {
     let proof_id = proof.proof_id();
     let derivation_id = proof.derivation_id();
     let statement_id = proof.statement_id();
-    let mut state = ProofState::new();
+    let mut state = ArtifactState::new();
 
-    state.validate_registration(&proof).unwrap();
-    state.validate_registration(&proof).unwrap();
+    state.validate_proof_registration(&proof).unwrap();
+    state.validate_proof_registration(&proof).unwrap();
     assert!(!state.contains_proof(proof_id));
     assert!(!state.contains_derivation(derivation_id));
     assert!(!state.contains_statement(statement_id));
 
-    state.register(proof).unwrap();
+    state.register_proof(proof).unwrap();
     let duplicate = axiom(ZfcAxiom::Pairing);
-    let expected = Err(ProofStateError::DuplicateProof { proof_id });
-    assert_eq!(state.validate_registration(&duplicate), expected);
+    let expected = Err(ArtifactStateError::DuplicateProof { proof_id });
+    assert_eq!(state.validate_proof_registration(&duplicate), expected);
     assert!(state.contains_proof(proof_id));
     assert!(state.contains_derivation(derivation_id));
     assert!(state.contains_statement(statement_id));

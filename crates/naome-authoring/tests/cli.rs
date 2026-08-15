@@ -4,6 +4,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use naome_authoring::{AUTHORING_SOURCE_MAX_BYTES, compile};
+use naome_proof::{ArtifactId, ProofId};
 
 const STATEMENT_ID: &str = "f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19";
 const DERIVATION_ID: &str = "59219d63c7c2353dcb6ffd1e604153143380ae6602e04215703bc0ea043243fb";
@@ -53,6 +54,11 @@ const REPLACEMENT_PROOF_ID: &str =
     "7c5a06a3e764c6b6e372334645050bd314f8a7e64c96633e3d3aff90ca2bd156";
 const REPLACEMENT_PROOF_BYTES: &str =
     "00000001120000000b0000000000000000000001000000000000000100000002000000030000000400000000";
+const SELF_EQUAL_DEFINITION_ID: &str =
+    "8f4506222901bb6e087615063e7d1db49be6842d96e7e1adfbcd01c84ff28018";
+const SELF_EQUAL_ARTIFACT_ID: &str =
+    "c33fbda7b0401160cfed57b2fc2915ecc39f39f8793518a73d57544e0771e351";
+const SELF_EQUAL_DEFINITION_BYTES: &str = "00000000010000000b0000000000000000000000";
 
 static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -120,14 +126,35 @@ fn proof_command_emits_exact_identities_from_primitive_derived_and_bound_sources
 
         assert!(output.status.success(), "{file}: {output:?}");
         assert!(output.stderr.is_empty(), "{file}: {output:?}");
+        let artifact_id = proof_artifact_id_hex(proof_id);
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
             format!(
-                "statement_id {statement_id}\nderivation_id {derivation_id}\nproof_id {proof_id}\ncanonical_proof {proof_bytes}\n"
+                "statement_id {statement_id}\nderivation_id {derivation_id}\nproof_id {proof_id}\nartifact_id {artifact_id}\ncanonical_proof {proof_bytes}\n"
             ),
             "{file}"
         );
     }
+}
+
+#[test]
+fn proof_command_emits_the_exact_typed_definition_output() {
+    let example =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/reflexive-relation.nao");
+    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+        .arg("proof")
+        .arg(example)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "definition_id {SELF_EQUAL_DEFINITION_ID}\nartifact_id {SELF_EQUAL_ARTIFACT_ID}\ncanonical_definition {SELF_EQUAL_DEFINITION_BYTES}\n"
+        )
+    );
 }
 
 #[test]
@@ -189,6 +216,35 @@ fn proof_command_has_no_hidden_citation_state() {
             source.path.display(),
         )
     );
+}
+
+#[test]
+fn standalone_command_cannot_authorize_definition_dependencies_from_local_files() {
+    for (file, position, diagnostic) in [
+        (
+            "empty-set.nao",
+            "3:1",
+            "error[NAO0021]: definition checking failed: definition obligation proof is absent from selected state",
+        ),
+        (
+            "empty-set-term-proof.nao",
+            "4:5",
+            "error[NAO0018]: definition alias is absent from selected chain state",
+        ),
+    ] {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples")
+            .join(file);
+        let output = run_proof(&example);
+
+        assert_eq!(output.status.code(), Some(1), "{file}: {output:?}");
+        assert!(output.stdout.is_empty(), "{file}: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!("naome: {}:{position}: {diagnostic}\n", example.display()),
+            "{file}"
+        );
+    }
 }
 
 #[test]
@@ -348,7 +404,8 @@ fn proof_path_is_opaque_even_when_it_matches_a_command_word() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         format!(
-            "statement_id {STATEMENT_ID}\nderivation_id {DERIVATION_ID}\nproof_id {PROOF_ID}\ncanonical_proof {PROOF_BYTES}\n"
+            "statement_id {STATEMENT_ID}\nderivation_id {DERIVATION_ID}\nproof_id {PROOF_ID}\nartifact_id {}\ncanonical_proof {PROOF_BYTES}\n",
+            proof_artifact_id_hex(PROOF_ID),
         )
     );
 }
@@ -381,6 +438,32 @@ fn run_proof(path: &Path) -> std::process::Output {
         .arg(path)
         .output()
         .unwrap()
+}
+
+fn proof_artifact_id_hex(proof_id: &str) -> String {
+    let proof_id = ProofId::from_bytes(hex32(proof_id));
+    hex_string(ArtifactId::from_proof_id(proof_id).as_bytes())
+}
+
+fn hex32(encoded: &str) -> [u8; 32] {
+    assert_eq!(encoded.len(), 64);
+    let mut bytes = [0_u8; 32];
+    for (pair, byte) in encoded.as_bytes().chunks_exact(2).zip(&mut bytes) {
+        let high = char::from(pair[0]).to_digit(16).unwrap();
+        let low = char::from(pair[1]).to_digit(16).unwrap();
+        *byte = u8::try_from((high << 4) | low).unwrap();
+    }
+    bytes
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").unwrap();
+    }
+    encoded
 }
 
 impl TemporarySource {

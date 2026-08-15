@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::block_exchange::ProofBlockRequest;
-use naome::chain_head_exchange::{ProofChainHeadRequest, ProofChainHeadResponse};
-use naome::proof_exchange::ProofRequest;
-use naome_chain::{ProofBlockId, ProofChainId};
+use naome::artifact_exchange::ArtifactRequest;
+use naome::block_exchange::ArtifactBlockRequest;
+use naome::chain_head_exchange::{ArtifactChainHeadRequest, ArtifactChainHeadResponse};
+use naome_chain::{ArtifactBlockId, ArtifactChainId};
 use tokio::time::timeout;
 
 use super::*;
@@ -22,31 +22,31 @@ use crate::{
     PendingBudget, RequestStartError,
 };
 
-fn chain_id(byte: u8) -> ProofChainId {
-    ProofChainId::from_bytes([byte; 32])
+fn chain_id(byte: u8) -> ArtifactChainId {
+    ArtifactChainId::from_bytes([byte; 32])
 }
 
-fn block_id(byte: u8) -> ProofBlockId {
-    ProofBlockId::from_bytes([byte; 32])
+fn block_id(byte: u8) -> ArtifactBlockId {
+    ArtifactBlockId::from_bytes([byte; 32])
 }
 
-fn proof_request(byte: u8) -> ProofRequest {
-    ProofRequest::from_wire_bytes(&[byte; 32]).unwrap()
+fn artifact_request(byte: u8) -> ArtifactRequest {
+    ArtifactRequest::from_wire_bytes(&[byte; 32]).unwrap()
 }
 
 fn head_response_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
     bytes: &[u8],
-) -> OutboundProofChainHeadEvent {
+) -> OutboundArtifactChainHeadEvent {
     let event = network
         .handle_head_exchange_event(request_response::Event::Message {
             peer: peer_id,
             connection_id: ConnectionId::new_unchecked(900),
             message: request_response::Message::Response {
                 request_id,
-                response: ProofChainHeadResponse::from_wire_bytes(bytes).unwrap(),
+                response: ArtifactChainHeadResponse::from_wire_bytes(bytes).unwrap(),
             },
         })
         .expect("the retained chain-head request produces one terminal event");
@@ -57,11 +57,11 @@ fn head_response_event(
 }
 
 fn head_failure_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
     error: request_response::OutboundFailure,
-) -> OutboundProofChainHeadEvent {
+) -> OutboundArtifactChainHeadEvent {
     let event = network
         .handle_head_exchange_event(request_response::Event::OutboundFailure {
             peer: peer_id,
@@ -85,29 +85,29 @@ fn four_exchange_stream_budgets_fit_below_the_yamux_cap() {
 }
 
 #[test]
-fn tagged_request_ids_isolate_head_block_and_proof_namespaces() {
+fn tagged_request_ids_isolate_head_block_and_artifact_namespaces() {
     let proof_peer = Keypair::generate_ed25519().public().to_peer_id();
     let block_peer = Keypair::generate_ed25519().public().to_peer_id();
     let head_peer = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[proof_peer, block_peer, head_peer]);
 
     let proof_id = network
-        .request_proof(proof_peer, proof_request(0x11))
+        .request_artifact(proof_peer, artifact_request(0x11))
         .unwrap();
     let _block_ticket = network
-        .request_block(block_peer, ProofBlockRequest::new(block_id(0x22)))
+        .request_block(block_peer, ArtifactBlockRequest::new(block_id(0x22)))
         .unwrap();
     let block_request_id = network
         .pending
         .keys()
         .find_map(|request_id| match request_id {
             ExchangeRequestId::Block(request_id) => Some(*request_id),
-            ExchangeRequestId::Proof(_)
+            ExchangeRequestId::Artifact(_)
             | ExchangeRequestId::Head(_)
             | ExchangeRequestId::Announcement(_) => None,
         })
         .unwrap();
-    let request = ProofChainHeadRequest::new(chain_id(0x33));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x33));
     let head_ticket = network.request_chain_head(head_peer, request).unwrap();
 
     assert_eq!(proof_id, block_request_id);
@@ -115,7 +115,7 @@ fn tagged_request_ids_isolate_head_block_and_proof_namespaces() {
     assert!(
         network
             .pending
-            .contains_key(&ExchangeRequestId::Proof(proof_id))
+            .contains_key(&ExchangeRequestId::Artifact(proof_id))
     );
     assert!(
         network
@@ -131,13 +131,13 @@ fn tagged_request_ids_isolate_head_block_and_proof_namespaces() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 3);
 
     assert_eq!(
-        network.request_proof(head_peer, proof_request(0x44)),
+        network.request_artifact(head_peer, artifact_request(0x44)),
         Err(RequestStartError::AlreadyPending(head_peer))
     );
     assert!(matches!(
         network.request_chain_head(
             block_peer,
-            ProofChainHeadRequest::new(chain_id(0x45)),
+            ArtifactChainHeadRequest::new(chain_id(0x45)),
         ),
         Err(RequestStartError::AlreadyPending(peer_id)) if peer_id == block_peer
     ));
@@ -154,7 +154,7 @@ fn tagged_request_ids_isolate_head_block_and_proof_namespaces() {
     drop(
         network
             .pending
-            .remove(&ExchangeRequestId::Proof(proof_id))
+            .remove(&ExchangeRequestId::Artifact(proof_id))
             .unwrap(),
     );
     drop(
@@ -169,7 +169,7 @@ fn tagged_request_ids_isolate_head_block_and_proof_namespaces() {
 #[test]
 fn ticket_rejects_other_network_and_later_generation_without_losing_values() {
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let request = ProofChainHeadRequest::new(chain_id(0x51));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x51));
     let mut first = test_network_for_peers(&[peer_id]);
     let mut second = test_network_for_peers(&[peer_id]);
     let first_ticket = first.request_chain_head(peer_id, request).unwrap();
@@ -228,7 +228,7 @@ fn ticket_rejects_other_network_and_later_generation_without_losing_values() {
 #[test]
 fn late_terminals_cannot_consume_a_new_head_request_generation() {
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let request = ProofChainHeadRequest::new(chain_id(0x59));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x59));
     let mut network = test_network_for_peers(&[peer_id]);
 
     let old_ticket = network.request_chain_head(peer_id, request).unwrap();
@@ -251,7 +251,7 @@ fn late_terminals_cannot_consume_a_new_head_request_generation() {
         connection_id: ConnectionId::new_unchecked(902),
         message: request_response::Message::Response {
             request_id: old_request_id,
-            response: ProofChainHeadResponse::from_wire_bytes(&[]).unwrap(),
+            response: ArtifactChainHeadResponse::from_wire_bytes(&[]).unwrap(),
         },
     });
     assert!(late_response.is_none());
@@ -292,14 +292,14 @@ fn peer_mismatch_precedes_response_and_failures_release_immediately() {
     let expected = Keypair::generate_ed25519().public().to_peer_id();
     let actual = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[expected, actual]);
-    let request = ProofChainHeadRequest::new(chain_id(0x61));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x61));
 
     let ticket = network.request_chain_head(expected, request).unwrap();
     let event = head_response_event(&mut network, ticket.request_id, actual, &[]);
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert!(matches!(
         ticket.complete(event).unwrap().unwrap_err().as_ref(),
-        OutboundProofChainHeadFailure::PeerMismatch {
+        OutboundArtifactChainHeadFailure::PeerMismatch {
             expected: retained,
             actual: received,
         } if *retained == expected && *received == actual
@@ -315,7 +315,7 @@ fn peer_mismatch_precedes_response_and_failures_release_immediately() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert!(matches!(
         ticket.complete(event).unwrap().unwrap_err().as_ref(),
-        OutboundProofChainHeadFailure::PeerMismatch {
+        OutboundArtifactChainHeadFailure::PeerMismatch {
             expected: retained,
             actual: received,
         } if *retained == expected && *received == actual
@@ -331,7 +331,7 @@ fn peer_mismatch_precedes_response_and_failures_release_immediately() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert!(matches!(
         ticket.complete(event).unwrap().unwrap_err().as_ref(),
-        OutboundProofChainHeadFailure::Transport(request_response::OutboundFailure::Timeout)
+        OutboundArtifactChainHeadFailure::Transport(request_response::OutboundFailure::Timeout)
     ));
 }
 
@@ -340,7 +340,7 @@ fn successful_event_holds_permit_until_ticket_completion_or_drop() {
     let head_peer = Keypair::generate_ed25519().public().to_peer_id();
     let other_peer = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[head_peer, other_peer]);
-    let request = ProofChainHeadRequest::new(chain_id(0x71));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x71));
     let ticket = network.request_chain_head(head_peer, request).unwrap();
     let budget = Arc::clone(&network.pending_budget);
     let other_permits = (1..MAX_PENDING_REQUESTS)
@@ -377,7 +377,7 @@ fn successful_event_holds_permit_until_ticket_completion_or_drop() {
 fn start_precedence_and_ticket_drop_preserve_the_physical_request() {
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let unknown = Keypair::generate_ed25519().public().to_peer_id();
-    let request = ProofChainHeadRequest::new(chain_id(0x81));
+    let request = ArtifactChainHeadRequest::new(chain_id(0x81));
     let mut network = test_network_for_peers(&[peer_id]);
     let budget = Arc::clone(&network.pending_budget);
     let permits = (0..MAX_PENDING_REQUESTS)
@@ -429,10 +429,10 @@ fn start_precedence_and_ticket_drop_preserve_the_physical_request() {
 }
 
 async fn receive_head(
-    client: &mut StaticProofNetwork,
-    server: &mut StaticProofNetwork,
-    server_journal: &ProofChainJournal,
-) -> OutboundProofChainHeadEvent {
+    client: &mut StaticArtifactNetwork,
+    server: &mut StaticArtifactNetwork,
+    server_journal: &ArtifactChainJournal,
+) -> OutboundArtifactChainHeadEvent {
     timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
@@ -456,7 +456,7 @@ async fn receive_head(
         }
     })
     .await
-    .expect("proof-chain-head exchange timed out")
+    .expect("artifact-chain-head exchange timed out")
 }
 
 #[tokio::test]
@@ -468,7 +468,7 @@ async fn source_bound_head_observations_never_mutate_either_journal() {
     let client_journal = create_journal(client_directory.path()).unwrap();
     let client_bytes = client_directory.journal_bytes();
     let client_head = client_journal.head_block_id().unwrap();
-    let matching = ProofChainHeadRequest::new(server_journal.chain_id());
+    let matching = ArtifactChainHeadRequest::new(server_journal.chain_id());
 
     let server_bytes = server_directory.journal_bytes();
     let virtual_genesis = server_journal.head_block_id().unwrap();
@@ -494,7 +494,7 @@ async fn source_bound_head_observations_never_mutate_either_journal() {
     assert_eq!(server_directory.journal_bytes(), committed_server_bytes);
     assert_eq!(client_directory.journal_bytes(), client_bytes);
 
-    let mismatched = ProofChainHeadRequest::new(chain_id(0xff));
+    let mismatched = ArtifactChainHeadRequest::new(chain_id(0xff));
     assert_ne!(mismatched.chain_id(), server_journal.chain_id());
     let ticket = client
         .request_chain_head(server_peer_id, mismatched)
@@ -521,10 +521,10 @@ async fn head_and_block_exchanges_progress_bidirectionally_on_one_session() {
     let journal_b = create_journal(directory_b.path()).unwrap();
     let expected_head_b = journal_b.head_block_id().unwrap();
 
-    let head_request = ProofChainHeadRequest::new(journal_b.chain_id());
+    let head_request = ArtifactChainHeadRequest::new(journal_b.chain_id());
     let head_ticket = network_a.request_chain_head(peer_b, head_request).unwrap();
     let block_ticket = network_b
-        .request_block(peer_a, ProofBlockRequest::new(block_a_id))
+        .request_block(peer_a, ArtifactBlockRequest::new(block_a_id))
         .unwrap();
     let mut head_event = None;
     let mut block_event = None;

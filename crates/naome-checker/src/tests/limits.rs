@@ -46,9 +46,9 @@ fn checker_enforces_derived_depth_and_node_limits() {
 
     let large = balanced_closed_formula(12, x);
     let node_proof = certificate(vec![ProofStep::Frege {
-        first: large.clone(),
-        second: large.clone(),
-        third: large,
+        first: large.clone().into(),
+        second: large.clone().into(),
+        third: large.into(),
     }]);
 
     assert_eq!(
@@ -73,13 +73,16 @@ fn schema_depth_preflight_has_an_exact_boundary_and_precedes_schema_errors() {
     let below_limit = parameters[..parameters.len() - 1].to_vec();
 
     assert_eq!(
-        check(&certificate(vec![ProofStep::Separation(Separation {
-            predicate: Formula::equal(result, result),
-            element,
-            source,
-            result,
-            parameters: below_limit,
-        })])),
+        check(&certificate(vec![ProofStep::Separation(
+            Separation {
+                predicate: Formula::equal(result, result),
+                element,
+                source,
+                result,
+                parameters: below_limit,
+            }
+            .into()
+        )])),
         Err(CheckError::Schema {
             step: 0,
             source: SchemaError::ForbiddenPredicateVariable(result),
@@ -94,27 +97,33 @@ fn schema_depth_preflight_has_an_exact_boundary_and_precedes_schema_errors() {
     });
 
     assert_eq!(
-        check(&certificate(vec![ProofStep::Separation(Separation {
-            predicate: Formula::equal(result, result),
-            element,
-            source,
-            result,
-            parameters: parameters.clone(),
-        })])),
+        check(&certificate(vec![ProofStep::Separation(
+            Separation {
+                predicate: Formula::equal(result, result),
+                element,
+                source,
+                result,
+                parameters: parameters.clone(),
+            }
+            .into()
+        )])),
         depth_error
     );
 
     let uniqueness_witness = FreeVariable::new(4);
     assert_eq!(
-        check(&certificate(vec![ProofStep::Replacement(Replacement {
-            predicate: Formula::equal(uniqueness_witness, source),
-            input: element,
-            output: source,
-            uniqueness_witness,
-            source: FreeVariable::new(5),
-            result: FreeVariable::new(6),
-            parameters,
-        })])),
+        check(&certificate(vec![ProofStep::Replacement(
+            Replacement {
+                predicate: Formula::equal(uniqueness_witness, source),
+                input: element,
+                output: source,
+                uniqueness_witness,
+                source: FreeVariable::new(5),
+                result: FreeVariable::new(6),
+                parameters,
+            }
+            .into()
+        )])),
         depth_error
     );
 }
@@ -194,9 +203,9 @@ fn formula_work_budget_enforces_result_and_error_precedence() {
     let large = balanced_closed_formula(12, x);
     let mut invalid_derived = fillers;
     invalid_derived.push(ProofStep::Frege {
-        first: large.clone(),
-        second: large.clone(),
-        third: large,
+        first: large.clone().into(),
+        second: large.clone().into(),
+        third: large.into(),
     });
     assert_eq!(
         check(&certificate(invalid_derived)),
@@ -227,8 +236,8 @@ fn repeated_large_antecedent_modus_ponens_charges_both_operands() {
         ProofStep::ZfcAxiom(ZfcAxiom::Extensionality),
         ProofStep::ZfcAxiom(ZfcAxiom::Choice),
         ProofStep::Simplification {
-            antecedent: small,
-            consequent: large,
+            antecedent: small.into(),
+            consequent: large.into(),
         },
         ProofStep::ModusPonens {
             premise: 0,
@@ -298,8 +307,8 @@ fn proof_reference_result_charge_is_exact() {
     let filler_count = CHECKER_MAX_FORMULA_WORK_BYTES / referenced_length;
     let used = filler_count * referenced_length;
     let expected_step = u32::try_from(filler_count).unwrap();
-    let mut state = ProofState::new();
-    state.register(source).unwrap();
+    let mut state = ArtifactState::new();
+    state.register_proof(source).unwrap();
     let mut steps = vec![ProofStep::ZfcAxiom(ZfcAxiom::Choice); filler_count];
     steps.push(ProofStep::ProofReference { proof_id });
 

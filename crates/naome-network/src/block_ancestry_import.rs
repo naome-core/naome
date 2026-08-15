@@ -1,52 +1,52 @@
-//! Caller-selected import of one bounded retained proof-block ancestry.
+//! Caller-selected import of one bounded retained artifact-block ancestry.
 
 use std::error::Error;
 use std::fmt;
 use std::vec::IntoIter;
 
-use naome_chain::{ProofBlock, ProofBlockId};
-use naome_storage::ProofChainJournal;
+use naome_chain::{ArtifactBlock, ArtifactBlockId};
+use naome_storage::ArtifactChainJournal;
 
 use super::{
-    NetworkEvent, PeerId, ProofBlockImport, ProofBlockImportError, StaticProofNetwork,
-    UnselectedProofBlockAncestry,
+    ArtifactBlockImport, ArtifactBlockImportError, NetworkEvent, PeerId, StaticArtifactNetwork,
+    UnselectedArtifactBlockAncestry,
 };
 
 /// One bounded caller-selected ancestry import in progress.
 ///
 /// Blocks are consumed in their retained forward order. Each block acquires
-/// and commits exactly its one proof payload before the next block starts. A later
+/// and commits exactly its one artifact payload before the next block starts. A later
 /// failure preserves the prefix already acknowledged by the journal.
 #[derive(Debug)]
 #[must_use]
-pub struct ProofBlockAncestryImport {
-    anchor_block_id: ProofBlockId,
-    target_block_id: ProofBlockId,
+pub struct ArtifactBlockAncestryImport {
+    anchor_block_id: ArtifactBlockId,
+    target_block_id: ArtifactBlockId,
     source_peer_id: PeerId,
     committed_block_count: usize,
-    last_acknowledged_head_block_id: ProofBlockId,
-    remaining_blocks: IntoIter<ProofBlock>,
-    current: ProofBlockImport,
+    last_acknowledged_head_block_id: ArtifactBlockId,
+    remaining_blocks: IntoIter<ArtifactBlock>,
+    current: ArtifactBlockImport,
 }
 
-impl StaticProofNetwork {
+impl StaticArtifactNetwork {
     /// Starts importing one caller-selected, already retrieved ancestry.
     ///
     /// The ancestry is consumed, so its retained blocks cannot be reused by a
     /// competing workflow. No block request is issued. The first block is
-    /// preflighted against `selected` before proof traffic starts.
-    pub fn start_proof_block_ancestry_import(
+    /// preflighted against `selected` before artifact traffic starts.
+    pub fn start_artifact_block_ancestry_import(
         &mut self,
-        selected: &ProofChainJournal,
-        ancestry: UnselectedProofBlockAncestry,
-    ) -> Result<ProofBlockAncestryImport, ProofBlockAncestryImportError> {
+        selected: &ArtifactChainJournal,
+        ancestry: UnselectedArtifactBlockAncestry,
+    ) -> Result<ArtifactBlockAncestryImport, ArtifactBlockAncestryImportError> {
         let (peer_id, anchor_block_id, target_block_id, blocks) = ancestry.into_parts();
         let mut remaining_blocks = blocks.into_iter();
         let first = remaining_blocks
             .next()
             .expect("a completed ancestry always contains its target block");
         let first_block_id = first.id();
-        let current = ProofBlockImport::start_from_retained_block(
+        let current = ArtifactBlockImport::start_from_retained_block(
             self,
             selected,
             peer_id,
@@ -54,7 +54,7 @@ impl StaticProofNetwork {
             first,
         )
         .map_err(|source| {
-            ProofBlockAncestryImportError::new(
+            ArtifactBlockAncestryImportError::new(
                 target_block_id,
                 first_block_id,
                 0,
@@ -63,7 +63,7 @@ impl StaticProofNetwork {
             )
         })?;
 
-        Ok(ProofBlockAncestryImport {
+        Ok(ArtifactBlockAncestryImport {
             anchor_block_id,
             target_block_id,
             source_peer_id: peer_id,
@@ -75,14 +75,14 @@ impl StaticProofNetwork {
     }
 }
 
-impl ProofBlockAncestryImport {
+impl ArtifactBlockAncestryImport {
     /// Returns the selected head captured by the consumed ancestry pull.
-    pub const fn anchor_block_id(&self) -> ProofBlockId {
+    pub const fn anchor_block_id(&self) -> ArtifactBlockId {
         self.anchor_block_id
     }
 
     /// Returns the exact ancestry target originally selected by the caller.
-    pub const fn target_block_id(&self) -> ProofBlockId {
+    pub const fn target_block_id(&self) -> ArtifactBlockId {
         self.target_block_id
     }
 
@@ -92,16 +92,16 @@ impl ProofBlockAncestryImport {
     }
 
     /// Returns the last head whose commit this workflow observed succeeding.
-    pub const fn last_acknowledged_head_block_id(&self) -> ProofBlockId {
+    pub const fn last_acknowledged_head_block_id(&self) -> ArtifactBlockId {
         self.last_acknowledged_head_block_id
     }
 
-    /// Returns the retained block currently acquiring its proof payload.
-    pub const fn pending_block_id(&self) -> ProofBlockId {
+    /// Returns the retained block currently acquiring its artifact payload.
+    pub const fn pending_block_id(&self) -> ArtifactBlockId {
         self.current.target_block_id()
     }
 
-    /// Returns the authenticated peer serving the current proof request.
+    /// Returns the authenticated peer serving the current artifact request.
     pub const fn pending_peer_id(&self) -> PeerId {
         self.current.pending_peer_id()
     }
@@ -113,11 +113,11 @@ impl ProofBlockAncestryImport {
 
     /// Cancels this workflow without rolling back its acknowledged prefix.
     ///
-    /// The active proof request retains its existing physical drain
+    /// The active artifact request retains its existing physical drain
     /// semantics. Every unprocessed retained block is released immediately.
     pub fn cancel(self) {}
 
-    /// Advances this import with its exact correlated proof terminal.
+    /// Advances this import with its exact correlated artifact terminal.
     ///
     /// Ordinary failure of the current block performs no mutation for that
     /// block. Blocks previously acknowledged by the journal remain committed.
@@ -125,10 +125,10 @@ impl ProofBlockAncestryImport {
     /// prefix metadata and leaves recovery to journal reopen.
     pub fn on_event(
         self,
-        network: &mut StaticProofNetwork,
-        selected: &mut ProofChainJournal,
+        network: &mut StaticArtifactNetwork,
+        selected: &mut ArtifactChainJournal,
         event: NetworkEvent,
-    ) -> Result<ProofBlockAncestryImportProgress, ProofBlockAncestryImportError> {
+    ) -> Result<ArtifactBlockAncestryImportProgress, ArtifactBlockAncestryImportError> {
         let Self {
             anchor_block_id,
             target_block_id,
@@ -142,7 +142,7 @@ impl ProofBlockAncestryImport {
         let progress = current
             .on_event(network, selected, event)
             .map_err(|source| {
-                ProofBlockAncestryImportError::new(
+                ArtifactBlockAncestryImportError::new(
                     target_block_id,
                     current_block_id,
                     committed_block_count,
@@ -170,7 +170,7 @@ impl ProofBlockAncestryImport {
             return Ok(None);
         };
         let next_block_id = next.id();
-        let current = ProofBlockImport::start_from_retained_block(
+        let current = ArtifactBlockImport::start_from_retained_block(
             network,
             selected,
             source_peer_id,
@@ -178,7 +178,7 @@ impl ProofBlockAncestryImport {
             next,
         )
         .map_err(|source| {
-            ProofBlockAncestryImportError::new(
+            ArtifactBlockAncestryImportError::new(
                 target_block_id,
                 next_block_id,
                 committed_block_count,
@@ -199,29 +199,29 @@ impl ProofBlockAncestryImport {
     }
 }
 
-/// Allocation-free progress after one exact proof terminal.
+/// Allocation-free progress after one exact artifact terminal.
 ///
-/// `Some(import)` means one proof request remains active. `None` means every
+/// `Some(import)` means one artifact request remains active. `None` means every
 /// retained block through the exact target was durably acknowledged.
-pub type ProofBlockAncestryImportProgress = Option<ProofBlockAncestryImport>;
+pub type ArtifactBlockAncestryImportProgress = Option<ArtifactBlockAncestryImport>;
 
 /// One ancestry-import failure plus its last acknowledged durable prefix.
 #[derive(Debug)]
-pub struct ProofBlockAncestryImportError {
-    target_block_id: ProofBlockId,
-    failed_block_id: ProofBlockId,
+pub struct ArtifactBlockAncestryImportError {
+    target_block_id: ArtifactBlockId,
+    failed_block_id: ArtifactBlockId,
     committed_block_count: usize,
-    last_acknowledged_head_block_id: ProofBlockId,
-    source: Box<ProofBlockImportError>,
+    last_acknowledged_head_block_id: ArtifactBlockId,
+    source: Box<ArtifactBlockImportError>,
 }
 
-impl ProofBlockAncestryImportError {
+impl ArtifactBlockAncestryImportError {
     fn new(
-        target_block_id: ProofBlockId,
-        failed_block_id: ProofBlockId,
+        target_block_id: ArtifactBlockId,
+        failed_block_id: ArtifactBlockId,
         committed_block_count: usize,
-        last_acknowledged_head_block_id: ProofBlockId,
-        source: ProofBlockImportError,
+        last_acknowledged_head_block_id: ArtifactBlockId,
+        source: ArtifactBlockImportError,
     ) -> Self {
         Self {
             target_block_id,
@@ -233,12 +233,12 @@ impl ProofBlockAncestryImportError {
     }
 
     /// Returns the exact caller-selected ancestry target.
-    pub const fn target_block_id(&self) -> ProofBlockId {
+    pub const fn target_block_id(&self) -> ArtifactBlockId {
         self.target_block_id
     }
 
     /// Returns the block that could not be acknowledged by this workflow.
-    pub const fn failed_block_id(&self) -> ProofBlockId {
+    pub const fn failed_block_id(&self) -> ArtifactBlockId {
         self.failed_block_id
     }
 
@@ -248,17 +248,17 @@ impl ProofBlockAncestryImportError {
     }
 
     /// Returns the last head whose commit this workflow observed succeeding.
-    pub const fn last_acknowledged_head_block_id(&self) -> ProofBlockId {
+    pub const fn last_acknowledged_head_block_id(&self) -> ArtifactBlockId {
         self.last_acknowledged_head_block_id
     }
 
     /// Returns the underlying single-block import failure.
-    pub fn block_import_error(&self) -> &ProofBlockImportError {
+    pub fn block_import_error(&self) -> &ArtifactBlockImportError {
         &self.source
     }
 }
 
-impl fmt::Display for ProofBlockAncestryImportError {
+impl fmt::Display for ArtifactBlockAncestryImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -271,7 +271,7 @@ impl fmt::Display for ProofBlockAncestryImportError {
     }
 }
 
-impl Error for ProofBlockAncestryImportError {
+impl Error for ArtifactBlockAncestryImportError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(self.source.as_ref())
     }

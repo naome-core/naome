@@ -1,30 +1,30 @@
-//! Caller-driven journal serving for one static proof-network event loop.
+//! Caller-driven journal serving for one static artifact-network event loop.
 
-use naome::block_exchange::ProofBlockRequest;
-use naome::chain_head_exchange::ProofChainHeadRequest;
-use naome::proof_exchange::ProofRequest;
-use naome_storage::ProofChainJournal;
+use naome::artifact_exchange::ArtifactRequest;
+use naome::block_exchange::ArtifactBlockRequest;
+use naome::chain_head_exchange::ArtifactChainHeadRequest;
+use naome_storage::ArtifactChainJournal;
 
-use super::{NetworkEvent, PeerId, RespondError, StaticProofNetwork};
+use super::{NetworkEvent, PeerId, RespondError, StaticArtifactNetwork};
 
 /// One authenticated journal-read request handled by the service boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 pub enum JournalServiceRequest {
-    /// One exact proof request.
-    Proof {
+    /// One exact artifact request.
+    Artifact {
         peer_id: PeerId,
-        request: ProofRequest,
+        request: ArtifactRequest,
     },
-    /// One exact proof-block request.
+    /// One exact artifact-block request.
     Block {
         peer_id: PeerId,
-        request: ProofBlockRequest,
+        request: ArtifactBlockRequest,
     },
-    /// One exact proof-chain-head request.
+    /// One exact artifact-chain-head request.
     ChainHead {
         peer_id: PeerId,
-        request: ProofChainHeadRequest,
+        request: ArtifactChainHeadRequest,
     },
 }
 
@@ -44,17 +44,17 @@ pub enum JournalServiceEvent {
     Network(NetworkEvent),
 }
 
-impl StaticProofNetwork {
+impl StaticArtifactNetwork {
     /// Waits for and observably handles one journal-backed network event.
     ///
-    /// Authenticated proof, block, and chain-head requests are served through
+    /// Authenticated artifact, block, and chain-head requests are served through
     /// their existing bounded response paths. Every other event, including a
     /// chain-head announcement, is returned unchanged for explicit caller
     /// policy. This method owns no task, queue, retry, or selected-state
     /// mutation.
     pub async fn next_journal_service_event(
         &mut self,
-        journal: &ProofChainJournal,
+        journal: &ArtifactChainJournal,
     ) -> JournalServiceEvent {
         let event = self.next_event().await;
         self.handle_journal_service_event(event, journal)
@@ -63,15 +63,18 @@ impl StaticProofNetwork {
     fn handle_journal_service_event(
         &mut self,
         event: NetworkEvent,
-        journal: &ProofChainJournal,
+        journal: &ArtifactChainJournal,
     ) -> JournalServiceEvent {
         let (request, result) = match event {
-            NetworkEvent::InboundProofRequest(inbound) => {
-                let request = JournalServiceRequest::Proof {
+            NetworkEvent::InboundArtifactRequest(inbound) => {
+                let request = JournalServiceRequest::Artifact {
                     peer_id: inbound.peer_id(),
                     request: inbound.request(),
                 };
-                (request, self.respond_proof_from_journal(inbound, journal))
+                (
+                    request,
+                    self.respond_artifact_from_journal(inbound, journal),
+                )
             }
             NetworkEvent::InboundBlockRequest(inbound) => {
                 let request = JournalServiceRequest::Block {

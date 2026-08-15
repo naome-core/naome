@@ -5,16 +5,16 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use naome_chain::ProofChainDefinition;
+use naome_chain::ArtifactChainDefinition;
 use naome_storage::{
-    CanonicalProofPayloadStore, CanonicalProofPayloadStoreError, ProofBlockCandidateStore,
-    ProofBlockCandidateStoreError, ProofBlockCandidateStoreLimits, ProofChainJournal,
-    ProofChainJournalError, ProofPayloadStoreLimits,
+    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError,
+    ArtifactBlockCandidateStoreLimits, ArtifactChainJournal, ArtifactChainJournalError,
+    ArtifactPayloadStoreLimits, CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError,
 };
 
-const LOCK_PROBE_ENV: &str = "NAOME_PROOF_CHAIN_JOURNAL_LOCK_PROBE";
-const PAYLOAD_LOCK_PROBE_ENV: &str = "NAOME_PROOF_PAYLOAD_STORE_LOCK_PROBE";
-const CANDIDATE_LOCK_PROBE_ENV: &str = "NAOME_PROOF_BLOCK_CANDIDATE_STORE_LOCK_PROBE";
+const LOCK_PROBE_ENV: &str = "NAOME_ARTIFACT_CHAIN_JOURNAL_LOCK_PROBE";
+const PAYLOAD_LOCK_PROBE_ENV: &str = "NAOME_ARTIFACT_PAYLOAD_STORE_LOCK_PROBE";
+const CANDIDATE_LOCK_PROBE_ENV: &str = "NAOME_ARTIFACT_BLOCK_CANDIDATE_STORE_LOCK_PROBE";
 const CHAIN_ID_BYTE: u8 = 0x11;
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -27,7 +27,7 @@ impl TestDirectory {
         loop {
             let sequence = TEMP_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = env::temp_dir().join(format!(
-                "naome-proof-chain-storage-lock-{}-{sequence}",
+                "naome-artifact-chain-storage-lock-{}-{sequence}",
                 std::process::id()
             ));
             match fs::create_dir(&path) {
@@ -45,16 +45,16 @@ impl Drop for TestDirectory {
     }
 }
 
-fn chain_definition() -> ProofChainDefinition {
-    ProofChainDefinition::new([CHAIN_ID_BYTE; 32])
+fn chain_definition() -> ArtifactChainDefinition {
+    ArtifactChainDefinition::new([CHAIN_ID_BYTE; 32])
 }
 
-fn payload_limits() -> ProofPayloadStoreLimits {
-    ProofPayloadStoreLimits::new(1, 1).unwrap()
+fn payload_limits() -> ArtifactPayloadStoreLimits {
+    ArtifactPayloadStoreLimits::new(1, 1).unwrap()
 }
 
-fn candidate_limits() -> ProofBlockCandidateStoreLimits {
-    ProofBlockCandidateStoreLimits::new(1).unwrap()
+fn candidate_limits() -> ArtifactBlockCandidateStoreLimits {
+    ArtifactBlockCandidateStoreLimits::new(1).unwrap()
 }
 
 #[test]
@@ -63,16 +63,16 @@ fn exclusive_lock_child_probe() {
         return;
     };
     assert!(matches!(
-        ProofChainJournal::open_recovering_unverified(PathBuf::from(path), chain_definition()),
-        Err(ProofChainJournalError::Locked)
+        ArtifactChainJournal::open_recovering_unverified(PathBuf::from(path), chain_definition()),
+        Err(ArtifactChainJournalError::Locked)
     ));
-    println!("NAOME_PROOF_CHAIN_JOURNAL_LOCK_PROBE_OK");
+    println!("NAOME_ARTIFACT_CHAIN_JOURNAL_LOCK_PROBE_OK");
 }
 
 #[test]
 fn exclusive_lock_is_enforced_across_processes() {
     let directory = TestDirectory::new();
-    let journal = ProofChainJournal::create(&directory.path, chain_definition()).unwrap();
+    let journal = ArtifactChainJournal::create(&directory.path, chain_definition()).unwrap();
     let output = Command::new(env::current_exe().unwrap())
         .arg("--exact")
         .arg("exclusive_lock_child_probe")
@@ -87,14 +87,16 @@ fn exclusive_lock_is_enforced_across_processes() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("NAOME_PROOF_CHAIN_JOURNAL_LOCK_PROBE_OK"),
+        String::from_utf8_lossy(&output.stdout)
+            .contains("NAOME_ARTIFACT_CHAIN_JOURNAL_LOCK_PROBE_OK"),
         "child lock probe did not execute: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     drop(journal);
     assert!(
-        ProofChainJournal::open_recovering_unverified(&directory.path, chain_definition()).is_ok()
+        ArtifactChainJournal::open_recovering_unverified(&directory.path, chain_definition())
+            .is_ok()
     );
 }
 
@@ -104,16 +106,16 @@ fn payload_store_lock_child_probe() {
         return;
     };
     assert!(matches!(
-        CanonicalProofPayloadStore::open(PathBuf::from(path), payload_limits()),
-        Err(CanonicalProofPayloadStoreError::Locked)
+        CanonicalArtifactPayloadStore::open(PathBuf::from(path), payload_limits()),
+        Err(CanonicalArtifactPayloadStoreError::Locked)
     ));
-    println!("NAOME_PROOF_PAYLOAD_STORE_LOCK_PROBE_OK");
+    println!("NAOME_ARTIFACT_PAYLOAD_STORE_LOCK_PROBE_OK");
 }
 
 #[test]
 fn payload_store_lock_is_enforced_across_processes() {
     let directory = TestDirectory::new();
-    let store = CanonicalProofPayloadStore::create(&directory.path, payload_limits()).unwrap();
+    let store = CanonicalArtifactPayloadStore::create(&directory.path, payload_limits()).unwrap();
     let output = Command::new(env::current_exe().unwrap())
         .arg("--exact")
         .arg("payload_store_lock_child_probe")
@@ -128,13 +130,14 @@ fn payload_store_lock_is_enforced_across_processes() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("NAOME_PROOF_PAYLOAD_STORE_LOCK_PROBE_OK"),
+        String::from_utf8_lossy(&output.stdout)
+            .contains("NAOME_ARTIFACT_PAYLOAD_STORE_LOCK_PROBE_OK"),
         "child lock probe did not execute: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     drop(store);
-    assert!(CanonicalProofPayloadStore::open(&directory.path, payload_limits()).is_ok());
+    assert!(CanonicalArtifactPayloadStore::open(&directory.path, payload_limits()).is_ok());
 }
 
 #[test]
@@ -143,18 +146,25 @@ fn candidate_store_lock_child_probe() {
         return;
     };
     assert!(matches!(
-        ProofBlockCandidateStore::open(PathBuf::from(path), chain_definition(), candidate_limits(),),
-        Err(ProofBlockCandidateStoreError::Locked)
+        ArtifactBlockCandidateStore::open(
+            PathBuf::from(path),
+            chain_definition(),
+            candidate_limits(),
+        ),
+        Err(ArtifactBlockCandidateStoreError::Locked)
     ));
-    println!("NAOME_PROOF_BLOCK_CANDIDATE_STORE_LOCK_PROBE_OK");
+    println!("NAOME_ARTIFACT_BLOCK_CANDIDATE_STORE_LOCK_PROBE_OK");
 }
 
 #[test]
 fn candidate_store_lock_is_enforced_across_processes() {
     let directory = TestDirectory::new();
-    let store =
-        ProofBlockCandidateStore::create(&directory.path, chain_definition(), candidate_limits())
-            .unwrap();
+    let store = ArtifactBlockCandidateStore::create(
+        &directory.path,
+        chain_definition(),
+        candidate_limits(),
+    )
+    .unwrap();
     let output = Command::new(env::current_exe().unwrap())
         .arg("--exact")
         .arg("candidate_store_lock_child_probe")
@@ -170,14 +180,14 @@ fn candidate_store_lock_is_enforced_across_processes() {
     );
     assert!(
         String::from_utf8_lossy(&output.stdout)
-            .contains("NAOME_PROOF_BLOCK_CANDIDATE_STORE_LOCK_PROBE_OK"),
+            .contains("NAOME_ARTIFACT_BLOCK_CANDIDATE_STORE_LOCK_PROBE_OK"),
         "child lock probe did not execute: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     drop(store);
     assert!(
-        ProofBlockCandidateStore::open(&directory.path, chain_definition(), candidate_limits(),)
+        ArtifactBlockCandidateStore::open(&directory.path, chain_definition(), candidate_limits(),)
             .is_ok()
     );
 }

@@ -6,19 +6,30 @@
 //! deterministically. Decoding establishes canonical structure and acyclic
 //! local references, not mathematical validity or external-proof existence.
 
+mod artifact;
 mod codec;
+mod defined_formula;
+mod definition;
 mod identity;
 mod normal_form;
+mod proof_formula;
 
 use std::error::Error;
 use std::fmt;
 use std::sync::OnceLock;
 
-use naome_foundation::{
-    FORMULA_MAX_NODES, Formula, FormulaCodecError, FreeVariable, Replacement, Separation, ZfcAxiom,
-};
+use naome_foundation::{FORMULA_MAX_NODES, FormulaCodecError, FreeVariable, ZfcAxiom};
 
-pub use identity::{DerivationId, ProofId, StatementId};
+pub use artifact::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactPayload, ArtifactPayloadError};
+pub use defined_formula::{
+    DefinedFormula, DefinedFormulaCodecError, DefinitionExpansionError, DefinitionResolution,
+    DefinitionResolver,
+};
+pub use definition::{
+    DEFINITION_MAX_BYTES, DefinitionCertificate, DefinitionCertificateError, DefinitionKind,
+};
+pub use identity::{ArtifactId, DefinitionId, DerivationId, ProofId, StatementId};
+pub use proof_formula::ProofFormula;
 
 /// Maximum encoded length admitted for one proof certificate.
 pub const CERTIFICATE_MAX_BYTES: usize = 4_194_304;
@@ -167,6 +178,66 @@ pub struct ProofNormalForm {
     canonical_bytes: OnceLock<Box<[u8]>>,
 }
 
+/// A Separation schema payload whose predicate may cite definitions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProofSeparation {
+    /// The formula selecting elements from `source`.
+    pub predicate: ProofFormula,
+    /// The free variable used for the candidate element.
+    pub element: FreeVariable,
+    /// The free variable used for the source set.
+    pub source: FreeVariable,
+    /// The fresh free variable used for the result set.
+    pub result: FreeVariable,
+    /// Explicit additional predicate parameters, in quantifier order.
+    pub parameters: Vec<FreeVariable>,
+}
+
+impl From<naome_foundation::Separation> for ProofSeparation {
+    fn from(value: naome_foundation::Separation) -> Self {
+        Self {
+            predicate: value.predicate.into(),
+            element: value.element,
+            source: value.source,
+            result: value.result,
+            parameters: value.parameters,
+        }
+    }
+}
+
+/// A Replacement schema payload whose predicate may cite definitions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProofReplacement {
+    /// The formula relating an input to its output.
+    pub predicate: ProofFormula,
+    /// The free variable used for an input element.
+    pub input: FreeVariable,
+    /// The free variable used for the related output.
+    pub output: FreeVariable,
+    /// A fresh variable used to express output uniqueness.
+    pub uniqueness_witness: FreeVariable,
+    /// The free variable used for the source set.
+    pub source: FreeVariable,
+    /// The fresh free variable used for the result set.
+    pub result: FreeVariable,
+    /// Explicit additional predicate parameters, in quantifier order.
+    pub parameters: Vec<FreeVariable>,
+}
+
+impl From<naome_foundation::Replacement> for ProofReplacement {
+    fn from(value: naome_foundation::Replacement) -> Self {
+        Self {
+            predicate: value.predicate.into(),
+            input: value.input,
+            output: value.output,
+            uniqueness_witness: value.uniqueness_witness,
+            source: value.source,
+            result: value.result,
+            parameters: value.parameters,
+        }
+    }
+}
+
 impl ProofNormalForm {
     /// Returns the canonical certificate carried by this normal form.
     pub const fn certificate(&self) -> &ProofCertificate {
@@ -235,36 +306,36 @@ impl fmt::Debug for ProofNormalForm {
 pub enum ProofStep {
     /// L1: instantiate `A → (B → A)`.
     Simplification {
-        antecedent: Formula,
-        consequent: Formula,
+        antecedent: ProofFormula,
+        consequent: ProofFormula,
     },
     /// L2: instantiate the Frege implication schema.
     Frege {
-        first: Formula,
-        second: Formula,
-        third: Formula,
+        first: ProofFormula,
+        second: ProofFormula,
+        third: ProofFormula,
     },
     /// L3: instantiate classical contraposition.
     ClassicalContraposition {
-        antecedent: Formula,
-        consequent: Formula,
+        antecedent: ProofFormula,
+        consequent: ProofFormula,
     },
     /// Q1: instantiate universal distribution.
     UniversalDistribution {
         variable: FreeVariable,
-        antecedent: Formula,
-        consequent: Formula,
+        antecedent: ProofFormula,
+        consequent: ProofFormula,
     },
     /// Q2: claim a vacuous universal instance.
     ///
     /// The unused binder is nameless, so the certificate stores no redundant
     /// free-variable identifier for it.
-    VacuousUniversal { formula: Formula },
+    VacuousUniversal { formula: ProofFormula },
     /// Q3: instantiate universal elimination with a free replacement variable.
     UniversalInstantiation {
         variable: FreeVariable,
         replacement: FreeVariable,
-        body: Formula,
+        body: ProofFormula,
     },
     /// E1: instantiate equality reflexivity.
     EqualityReflexivity { variable: FreeVariable },
@@ -272,14 +343,14 @@ pub enum ProofStep {
     EqualitySubstitution {
         from: FreeVariable,
         to: FreeVariable,
-        body: Formula,
+        body: ProofFormula,
     },
     /// Use one of the seven fixed ZFC axioms.
     ZfcAxiom(ZfcAxiom),
     /// Claim an instance of the Separation schema.
-    Separation(Separation),
+    Separation(ProofSeparation),
     /// Claim an instance of the Replacement schema.
-    Replacement(Replacement),
+    Replacement(ProofReplacement),
     /// Reuse the checked conclusion of one concrete registered proof.
     ProofReference { proof_id: ProofId },
     /// Derive a consequent from earlier `A` and `A → B` steps.
@@ -338,6 +409,54 @@ impl ProofStep {
             | Self::Replacement(_)
             | Self::ProofReference { .. } => [None, None],
         }
+    }
+
+    /// Returns embedded definition references in canonical field-prefix order.
+    #[must_use]
+    pub fn definition_references(&self) -> Vec<DefinitionId> {
+        let mut references = Vec::new();
+        let mut extend = |formula: &ProofFormula| {
+            references.extend(formula.definition_references());
+        };
+        match self {
+            Self::Simplification {
+                antecedent,
+                consequent,
+            }
+            | Self::ClassicalContraposition {
+                antecedent,
+                consequent,
+            }
+            | Self::UniversalDistribution {
+                antecedent,
+                consequent,
+                ..
+            } => {
+                extend(antecedent);
+                extend(consequent);
+            }
+            Self::Frege {
+                first,
+                second,
+                third,
+            } => {
+                extend(first);
+                extend(second);
+                extend(third);
+            }
+            Self::VacuousUniversal { formula } => extend(formula),
+            Self::UniversalInstantiation { body, .. } | Self::EqualitySubstitution { body, .. } => {
+                extend(body)
+            }
+            Self::Separation(instance) => extend(&instance.predicate),
+            Self::Replacement(instance) => extend(&instance.predicate),
+            Self::EqualityReflexivity { .. }
+            | Self::ZfcAxiom(_)
+            | Self::ProofReference { .. }
+            | Self::ModusPonens { .. }
+            | Self::Generalization { .. } => {}
+        }
+        references
     }
 }
 
@@ -399,6 +518,8 @@ pub enum ProofCertificateError {
     FormulaNodeLimitExceeded { maximum: usize },
     /// A canonical formula inside the certificate is malformed or unsupported.
     Formula(FormulaCodecError),
+    /// A definition-aware formula inside the certificate is malformed or unsupported.
+    DefinedFormula(DefinedFormulaCodecError),
     /// A complete certificate is followed by additional bytes.
     TrailingBytes { remaining: usize },
 }
@@ -431,6 +552,12 @@ impl fmt::Display for ProofCertificateError {
                 "proof certificate exceeds the cumulative limit of {maximum} formula nodes"
             ),
             Self::Formula(error) => write!(formatter, "invalid canonical formula: {error}"),
+            Self::DefinedFormula(error) => {
+                write!(
+                    formatter,
+                    "invalid canonical definition-aware formula: {error}"
+                )
+            }
             Self::TrailingBytes { remaining } => {
                 write!(
                     formatter,
@@ -445,6 +572,7 @@ impl Error for ProofCertificateError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Formula(error) => Some(error),
+            Self::DefinedFormula(error) => Some(error),
             _ => None,
         }
     }

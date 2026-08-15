@@ -8,17 +8,17 @@ fn checked_proof_couples_a_nontrivial_hilbert_derivation_to_its_conclusion() {
     let self_implication = Formula::implies(proposition.clone(), proposition.clone());
     let proof = certificate(vec![
         ProofStep::Simplification {
-            antecedent: proposition.clone(),
-            consequent: proposition.clone(),
+            antecedent: proposition.clone().into(),
+            consequent: proposition.clone().into(),
         },
         ProofStep::Simplification {
-            antecedent: proposition.clone(),
-            consequent: self_implication.clone(),
+            antecedent: proposition.clone().into(),
+            consequent: self_implication.clone().into(),
         },
         ProofStep::Frege {
-            first: proposition.clone(),
-            second: self_implication,
-            third: proposition.clone(),
+            first: proposition.clone().into(),
+            second: self_implication.into(),
+            third: proposition.clone().into(),
         },
         ProofStep::ModusPonens {
             premise: 1,
@@ -61,7 +61,7 @@ fn equality_substitution_closes_only_through_explicit_generalization() {
         ProofStep::EqualitySubstitution {
             from: x,
             to: y,
-            body,
+            body: body.into(),
         },
         ProofStep::Generalization {
             premise: 0,
@@ -121,7 +121,9 @@ fn valid_separation_and_replacement_reconstruct_exact_schema_formulas() {
         .expect("the Separation instance is valid");
 
     assert_eq!(
-        check(&certificate(vec![ProofStep::Separation(separation)])),
+        check(&certificate(vec![
+            ProofStep::Separation(separation.into(),)
+        ])),
         Ok(separation_formula)
     );
 
@@ -152,7 +154,9 @@ fn valid_separation_and_replacement_reconstruct_exact_schema_formulas() {
         .expect("the Replacement instance is valid");
 
     assert_eq!(
-        check(&certificate(vec![ProofStep::Replacement(replacement)])),
+        check(&certificate(vec![ProofStep::Replacement(
+            replacement.into(),
+        )])),
         Ok(replacement_formula)
     );
 }
@@ -164,8 +168,8 @@ fn modus_ponens_returns_the_exact_closed_consequent() {
     let proof = certificate(vec![
         ProofStep::ZfcAxiom(ZfcAxiom::Extensionality),
         ProofStep::Simplification {
-            antecedent: premise.clone(),
-            consequent: nested_antecedent.clone(),
+            antecedent: premise.clone().into(),
+            consequent: nested_antecedent.clone().into(),
         },
         ProofStep::ModusPonens {
             premise: 0,
@@ -186,8 +190,8 @@ fn results_remain_live_through_their_last_consumer() {
     let steps = vec![
         ProofStep::ZfcAxiom(ZfcAxiom::Extensionality),
         ProofStep::Simplification {
-            antecedent: premise.clone(),
-            consequent: nested_antecedent.clone(),
+            antecedent: premise.clone().into(),
+            consequent: nested_antecedent.clone().into(),
         },
         ProofStep::ModusPonens {
             premise: 0,
@@ -228,7 +232,7 @@ fn normalization_discards_invalid_unreachable_steps_before_checking() {
         parameters: Vec::new(),
     };
     let proof = certificate(vec![
-        ProofStep::Separation(invalid),
+        ProofStep::Separation(invalid.into()),
         ProofStep::EqualityReflexivity { variable: root },
         ProofStep::Generalization {
             premise: 1,
@@ -256,8 +260,8 @@ fn normalization_reports_reachable_errors_in_normalized_coordinates() {
         ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
         ProofStep::EqualityReflexivity { variable: x },
         ProofStep::Simplification {
-            antecedent: Formula::equal(y, y),
-            consequent: closed_equality(x),
+            antecedent: Formula::equal(y, y).into(),
+            consequent: closed_equality(x).into(),
         },
         ProofStep::ModusPonens {
             premise: 1,
@@ -276,13 +280,16 @@ fn normalization_reports_reachable_errors_in_normalized_coordinates() {
     let element = FreeVariable::new(40);
     let source = FreeVariable::new(50);
     let result = FreeVariable::new(60);
-    let proof = certificate(vec![ProofStep::Separation(Separation {
-        predicate: Formula::equal(result, result),
-        element,
-        source,
-        result,
-        parameters: Vec::new(),
-    })]);
+    let proof = certificate(vec![ProofStep::Separation(
+        Separation {
+            predicate: Formula::equal(result, result),
+            element,
+            source,
+            result,
+            parameters: Vec::new(),
+        }
+        .into(),
+    )]);
 
     assert_eq!(
         normalize_and_check(proof),
@@ -312,7 +319,7 @@ fn checker_localizes_invalid_replacement_and_modus_ponens() {
 
     assert_eq!(
         check(&certificate(vec![ProofStep::Replacement(
-            invalid_replacement
+            invalid_replacement.into()
         )])),
         Err(CheckError::Schema {
             step: 0,
@@ -325,8 +332,8 @@ fn checker_localizes_invalid_replacement_and_modus_ponens() {
     let proof = certificate(vec![
         ProofStep::EqualityReflexivity { variable: x },
         ProofStep::Simplification {
-            antecedent: Formula::equal(y, y),
-            consequent: closed_equality(x),
+            antecedent: Formula::equal(y, y).into(),
+            consequent: closed_equality(x).into(),
         },
         ProofStep::ModusPonens {
             premise: 0,

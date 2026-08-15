@@ -126,15 +126,15 @@ fn every_inline_reference_partition_has_one_derivation_identity() {
         assert!(proof_ids.insert(partitioned_proof_id));
 
         let inline = partitioned_weakening_proof(0).0;
-        state.register(inline).unwrap();
+        state.register_proof(inline).unwrap();
         let expected = if cuts == 0 {
-            ProofStateError::DuplicateProof {
+            ArtifactStateError::DuplicateProof {
                 proof_id: partitioned_proof_id,
             }
         } else {
-            ProofStateError::DuplicateDerivation { derivation_id }
+            ArtifactStateError::DuplicateDerivation { derivation_id }
         };
-        assert_eq!(state.register(partitioned), Err(expected));
+        assert_eq!(state.register_proof(partitioned), Err(expected));
         assert!(!state.contains_proof(partitioned_proof_id) || cuts == 0);
     }
 
@@ -161,16 +161,16 @@ fn closed_fragment_variable_names_do_not_cross_reference_boundaries() {
     let source_id = source.proof_id();
     let theorem = source.conclusion().clone();
     let outer = Formula::equal(distinct_outer, distinct_outer);
-    let mut state = ProofState::new();
-    state.register(source).unwrap();
+    let mut state = ArtifactState::new();
+    state.register_proof(source).unwrap();
     let referenced = normalize_and_check_with_state(
         certificate(vec![
             ProofStep::ProofReference {
                 proof_id: source_id,
             },
             ProofStep::Simplification {
-                antecedent: theorem,
-                consequent: outer,
+                antecedent: theorem.into(),
+                consequent: outer.into(),
             },
             ProofStep::ModusPonens {
                 premise: 0,
@@ -263,8 +263,8 @@ fn a_root_proof_reference_resolves_only_from_checked_state() {
         })
     );
 
-    let mut state = ProofState::new();
-    state.register(source).unwrap();
+    let mut state = ArtifactState::new();
+    state.register_proof(source).unwrap();
     let cited = normalize_and_check_with_state(reference(), &state).unwrap();
 
     assert_eq!(cited.conclusion(), &source_conclusion);
@@ -311,7 +311,7 @@ fn unreachable_references_are_pruned_but_direct_check_still_resolves_every_step(
             proof_id: missing,
         })
     );
-    let checked = normalize_and_check_with_state(proof(), &ProofState::new()).unwrap();
+    let checked = normalize_and_check_with_state(proof(), &ArtifactState::new()).unwrap();
     assert_eq!(checked.conclusion(), &closed_equality(x));
     assert_eq!(checked.normal_form().certificate().steps().len(), 2);
 }
@@ -330,8 +330,8 @@ fn referenced_theorems_participate_in_inference_without_rechecking_their_proof()
     let source_id = source.proof_id();
     let theorem = source.conclusion().clone();
     let expected = Formula::implies(theorem.clone(), theorem.clone());
-    let mut state = ProofState::new();
-    state.register(source).unwrap();
+    let mut state = ArtifactState::new();
+    state.register_proof(source).unwrap();
 
     let checked = normalize_and_check_with_state(
         certificate(vec![
@@ -339,8 +339,8 @@ fn referenced_theorems_participate_in_inference_without_rechecking_their_proof()
                 proof_id: source_id,
             },
             ProofStep::Simplification {
-                antecedent: theorem.clone(),
-                consequent: theorem,
+                antecedent: theorem.clone().into(),
+                consequent: theorem.into(),
             },
             ProofStep::ModusPonens {
                 premise: 0,
@@ -369,17 +369,17 @@ fn selected_alternative_citations_change_proof_identity_not_statement_identity()
     let direct_id = direct.proof_id();
     let detour_id = detour.proof_id();
     let theorem = direct.conclusion().clone();
-    let mut state = ProofState::new();
-    state.register(direct).unwrap();
-    state.register(detour).unwrap();
+    let mut state = ArtifactState::new();
+    state.register_proof(direct).unwrap();
+    state.register_proof(detour).unwrap();
 
     let dependent = |proof_id| {
         normalize_and_check_with_state(
             certificate(vec![
                 ProofStep::ProofReference { proof_id },
                 ProofStep::Simplification {
-                    antecedent: theorem.clone(),
-                    consequent: theorem.clone(),
+                    antecedent: theorem.clone().into(),
+                    consequent: theorem.clone().into(),
                 },
                 ProofStep::ModusPonens {
                     premise: 0,
@@ -400,7 +400,7 @@ fn selected_alternative_citations_change_proof_identity_not_statement_identity()
 }
 
 #[test]
-fn proof_state_rejects_duplicates_and_remains_dependency_closed() {
+fn artifact_state_rejects_duplicates_and_remains_dependency_closed() {
     let x = FreeVariable::new(3);
     let checked = || {
         normalize_and_check(certificate(vec![
@@ -415,11 +415,11 @@ fn proof_state_rejects_duplicates_and_remains_dependency_closed() {
     let first = checked();
     let proof_id = first.proof_id();
     let derivation_id = first.derivation_id();
-    let mut source_state = ProofState::new();
-    source_state.register(first).unwrap();
+    let mut source_state = ArtifactState::new();
+    source_state.register_proof(first).unwrap();
     assert_eq!(
-        source_state.register(checked()),
-        Err(ProofStateError::DuplicateProof { proof_id })
+        source_state.register_proof(checked()),
+        Err(ArtifactStateError::DuplicateProof { proof_id })
     );
 
     let dependent = normalize_and_check_with_state(
@@ -428,12 +428,12 @@ fn proof_state_rejects_duplicates_and_remains_dependency_closed() {
     )
     .unwrap();
     assert_eq!(
-        ProofState::new().register(dependent),
-        Err(ProofStateError::MissingProofDependency { proof_id })
+        ArtifactState::new().register_proof(dependent),
+        Err(ArtifactStateError::MissingProofDependency { proof_id })
     );
 
-    let mut target_state = ProofState::new();
-    target_state.register(checked()).unwrap();
+    let mut target_state = ArtifactState::new();
+    target_state.register_proof(checked()).unwrap();
     let cited_alias = normalize_and_check_with_state(
         certificate(vec![ProofStep::ProofReference { proof_id }]),
         &source_state,
@@ -442,8 +442,8 @@ fn proof_state_rejects_duplicates_and_remains_dependency_closed() {
     let cited_alias_id = cited_alias.proof_id();
     assert_eq!(cited_alias.derivation_id(), derivation_id);
     assert_eq!(
-        target_state.register(cited_alias),
-        Err(ProofStateError::DuplicateDerivation { derivation_id })
+        target_state.register_proof(cited_alias),
+        Err(ArtifactStateError::DuplicateDerivation { derivation_id })
     );
     assert!(!target_state.contains_proof(cited_alias_id));
     assert_eq!(
@@ -464,8 +464,8 @@ fn proof_state_rejects_duplicates_and_remains_dependency_closed() {
         certificate(vec![
             ProofStep::ProofReference { proof_id },
             ProofStep::Simplification {
-                antecedent: theorem.clone(),
-                consequent: theorem,
+                antecedent: theorem.clone().into(),
+                consequent: theorem.into(),
             },
             ProofStep::ModusPonens {
                 premise: 0,
@@ -476,6 +476,6 @@ fn proof_state_rejects_duplicates_and_remains_dependency_closed() {
     )
     .unwrap();
     let dependent_id = dependent.proof_id();
-    target_state.register(dependent).unwrap();
+    target_state.register_proof(dependent).unwrap();
     assert!(target_state.contains_proof(dependent_id));
 }

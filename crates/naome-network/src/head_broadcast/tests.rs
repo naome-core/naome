@@ -7,19 +7,19 @@ use libp2p::swarm::ConnectionId;
 use tokio::time::timeout;
 
 use super::*;
-use crate::codec::ProofChainHeadAnnouncementReceipt;
+use crate::codec::ArtifactChainHeadAnnouncementReceipt;
 use crate::tests::{
     TestDirectory, apply_fresh_blocks, assert_snapshot, create_journal, pairing_bytes, snapshot,
     test_network_for_peers, union_bytes,
 };
 use crate::{
-    ExchangeRequestId, InboundProofChainHeadAnnouncement, Keypair, MAX_PENDING_REQUESTS, Multiaddr,
-    NetworkEvent, OutboundProofChainHeadAnnouncementEvent, PeerSessionEvent, PendingBudget,
-    PendingRequest, RequestStartError, StaticPeer,
+    ExchangeRequestId, InboundArtifactChainHeadAnnouncement, Keypair, MAX_PENDING_REQUESTS,
+    Multiaddr, NetworkEvent, OutboundArtifactChainHeadAnnouncementEvent, PeerSessionEvent,
+    PendingBudget, PendingRequest, RequestStartError, StaticPeer,
 };
 
 fn announcement_request_id(
-    network: &StaticProofNetwork,
+    network: &StaticArtifactNetwork,
     peer_id: PeerId,
 ) -> request_response::OutboundRequestId {
     let peer_index = network
@@ -42,7 +42,7 @@ fn announcement_request_id(
 }
 
 fn receipt_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
 ) -> NetworkEvent {
@@ -52,14 +52,14 @@ fn receipt_event(
             connection_id: ConnectionId::new_unchecked(2_000),
             message: request_response::Message::Response {
                 request_id,
-                response: ProofChainHeadAnnouncementReceipt,
+                response: ArtifactChainHeadAnnouncementReceipt,
             },
         })
         .expect("the retained announcement produces one terminal event")
 }
 
 fn failure_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
     error: request_response::OutboundFailure,
@@ -74,21 +74,21 @@ fn failure_event(
         .expect("the retained announcement produces one failure terminal")
 }
 
-fn awaiting(progress: ProofChainHeadBroadcastProgress) -> ProofChainHeadBroadcast {
-    let ProofChainHeadBroadcastProgress::AwaitingReceipts(broadcast) = progress else {
+fn awaiting(progress: ArtifactChainHeadBroadcastProgress) -> ArtifactChainHeadBroadcast {
+    let ArtifactChainHeadBroadcastProgress::AwaitingReceipts(broadcast) = progress else {
         panic!("broadcast completed while selected peers remained pending")
     };
     broadcast
 }
 
-fn complete(progress: ProofChainHeadBroadcastProgress) -> CompletedProofChainHeadBroadcast {
-    let ProofChainHeadBroadcastProgress::Complete(completed) = progress else {
+fn complete(progress: ArtifactChainHeadBroadcastProgress) -> CompletedArtifactChainHeadBroadcast {
+    let ArtifactChainHeadBroadcastProgress::Complete(completed) = progress else {
         panic!("broadcast remained pending after every selected peer settled")
     };
     completed
 }
 
-fn into_announcement_event(event: NetworkEvent) -> OutboundProofChainHeadAnnouncementEvent {
+fn into_announcement_event(event: NetworkEvent) -> OutboundArtifactChainHeadAnnouncementEvent {
     let NetworkEvent::OutboundChainHeadAnnouncement(event) = event else {
         panic!("expected an outbound chain-head announcement terminal")
     };
@@ -99,7 +99,7 @@ fn loopback_address(port: u16) -> Multiaddr {
     format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()
 }
 
-async fn listening_address(network: &mut StaticProofNetwork) -> Multiaddr {
+async fn listening_address(network: &mut StaticArtifactNetwork) -> Multiaddr {
     network.listen_on(loopback_address(0)).unwrap();
     timeout(Duration::from_secs(10), async {
         loop {
@@ -120,9 +120,9 @@ async fn listening_address(network: &mut StaticProofNetwork) -> Multiaddr {
 }
 
 async fn acknowledge_and_receive_terminal(
-    broadcaster: &mut StaticProofNetwork,
-    receiver: &mut StaticProofNetwork,
-    inbound: InboundProofChainHeadAnnouncement,
+    broadcaster: &mut StaticArtifactNetwork,
+    receiver: &mut StaticArtifactNetwork,
+    inbound: InboundArtifactChainHeadAnnouncement,
     expected_peer_id: PeerId,
 ) -> NetworkEvent {
     receiver
@@ -151,7 +151,7 @@ async fn acknowledge_and_receive_terminal(
 
 #[test]
 fn peer_shape_precedence_is_bounded_and_starts_nothing() {
-    assert_eq!(MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS, MAX_STATIC_PEERS);
+    assert_eq!(MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS, MAX_STATIC_PEERS);
 
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[peer_id]);
@@ -161,21 +161,21 @@ fn peer_shape_precedence_is_bounded_and_starts_nothing() {
 
     assert!(matches!(
         network.start_chain_head_broadcast_from_journal(&[], &journal),
-        Err(ProofChainHeadBroadcastStartError::EmptyPeerSet)
+        Err(ArtifactChainHeadBroadcastStartError::EmptyPeerSet)
     ));
 
-    let oversized = vec![peer_id; MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS + 1];
+    let oversized = vec![peer_id; MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS + 1];
     assert!(matches!(
         network.start_chain_head_broadcast_from_journal(&oversized, &journal),
-        Err(ProofChainHeadBroadcastStartError::TooManyPeers {
+        Err(ArtifactChainHeadBroadcastStartError::TooManyPeers {
             actual,
-            maximum: MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS,
-        }) if actual == MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS + 1
+            maximum: MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS,
+        }) if actual == MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS + 1
     ));
 
     assert!(matches!(
         network.start_chain_head_broadcast_from_journal(&[peer_id, peer_id], &journal),
-        Err(ProofChainHeadBroadcastStartError::DuplicatePeer(actual)) if actual == peer_id
+        Err(ArtifactChainHeadBroadcastStartError::DuplicatePeer(actual)) if actual == peer_id
     ));
 
     assert!(network.pending.is_empty());
@@ -199,7 +199,7 @@ fn failed_group_start_does_not_advance_the_transport_request_generation() {
 
     assert!(matches!(
         after_failure.start_chain_head_broadcast_from_journal(&[peer_id, unknown], &journal),
-        Err(ProofChainHeadBroadcastStartError::RequestStart(
+        Err(ArtifactChainHeadBroadcastStartError::RequestStart(
             RequestStartError::UnknownPeer(actual)
         )) if actual == unknown
     ));
@@ -249,7 +249,7 @@ fn ordered_peer_preflight_rejects_the_group_without_a_queued_prefix() {
             &[first, unknown, second],
             &journal,
         ),
-        Err(ProofChainHeadBroadcastStartError::RequestStart(
+        Err(ArtifactChainHeadBroadcastStartError::RequestStart(
             RequestStartError::UnknownPeer(actual)
         )) if actual == unknown
     ));
@@ -271,7 +271,7 @@ fn ordered_peer_preflight_rejects_the_group_without_a_queued_prefix() {
     assert!(matches!(
         disconnected_network
             .start_chain_head_broadcast_from_journal(&[first, second], &journal),
-        Err(ProofChainHeadBroadcastStartError::RequestStart(
+        Err(ArtifactChainHeadBroadcastStartError::RequestStart(
             RequestStartError::PeerDisconnected(actual)
         )) if actual == second
     ));
@@ -291,7 +291,7 @@ fn ordered_peer_preflight_rejects_the_group_without_a_queued_prefix() {
     let occupied_request_id = announcement_request_id(&occupied_network, second);
     assert!(matches!(
         occupied_network.start_chain_head_broadcast_from_journal(&[first, second], &journal),
-        Err(ProofChainHeadBroadcastStartError::RequestStart(
+        Err(ArtifactChainHeadBroadcastStartError::RequestStart(
             RequestStartError::AlreadyPending(actual)
         )) if actual == second
     ));
@@ -335,7 +335,7 @@ fn capacity_reservation_is_atomic_and_follows_peer_preflight() {
 
     assert!(matches!(
         network.start_chain_head_broadcast_from_journal(&[first, unknown], &journal),
-        Err(ProofChainHeadBroadcastStartError::RequestStart(
+        Err(ArtifactChainHeadBroadcastStartError::RequestStart(
             RequestStartError::UnknownPeer(actual)
         )) if actual == unknown
     ));
@@ -344,7 +344,7 @@ fn capacity_reservation_is_atomic_and_follows_peer_preflight() {
 
     assert!(matches!(
         network.start_chain_head_broadcast_from_journal(&[first, second], &journal),
-        Err(ProofChainHeadBroadcastStartError::InsufficientCapacity {
+        Err(ArtifactChainHeadBroadcastStartError::InsufficientCapacity {
             requested: 2,
             available: 1,
             maximum: MAX_PENDING_REQUESTS,
@@ -438,7 +438,7 @@ fn reverse_order_mixed_terminals_preserve_snapshot_input_order_and_independence(
     );
     assert!(matches!(
         results[0].result(),
-        Err(OutboundProofChainHeadAnnouncementFailure::Transport(
+        Err(OutboundArtifactChainHeadAnnouncementFailure::Transport(
             request_response::OutboundFailure::Timeout
         ))
     ));
@@ -449,7 +449,7 @@ fn reverse_order_mixed_terminals_preserve_snapshot_input_order_and_independence(
         results.next().unwrap().into_result(),
         Err(failure) if matches!(
             *failure,
-            OutboundProofChainHeadAnnouncementFailure::Transport(
+            OutboundArtifactChainHeadAnnouncementFailure::Transport(
                 request_response::OutboundFailure::Timeout
             )
         )
@@ -547,7 +547,7 @@ fn wrong_authenticated_peer_is_a_source_bound_row_failure() {
     assert_eq!(result.peer_id(), expected);
     assert!(matches!(
         result.result(),
-        Err(OutboundProofChainHeadAnnouncementFailure::PeerMismatch {
+        Err(OutboundArtifactChainHeadAnnouncementFailure::PeerMismatch {
             expected: retained,
             actual: received,
         }) if *retained == expected && *received == actual
@@ -557,7 +557,7 @@ fn wrong_authenticated_peer_is_a_source_bound_row_failure() {
 
 #[test]
 fn cancellation_leaves_every_physical_request_bounded_until_its_own_drain() {
-    let peers = (0..MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS)
+    let peers = (0..MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS)
         .map(|_| Keypair::generate_ed25519().public().to_peer_id())
         .collect::<Vec<_>>();
     let mut network = test_network_for_peers(&peers);
@@ -572,26 +572,35 @@ fn cancellation_leaves_every_physical_request_bounded_until_its_own_drain() {
         .map(|&peer_id| announcement_request_id(&network, peer_id))
         .collect::<Vec<_>>();
 
-    assert_eq!(broadcast.peer_count(), MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS);
+    assert_eq!(
+        broadcast.peer_count(),
+        MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS
+    );
     assert_eq!(
         broadcast.pending_peer_count(),
-        MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS
+        MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS
     );
-    assert_eq!(network.pending.len(), MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS);
+    assert_eq!(
+        network.pending.len(),
+        MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS
+    );
     assert!(network.pending.values().all(|pending| matches!(
         pending,
         PendingRequest::Announcement(pending) if pending.announcement == announcement
     )));
     assert_eq!(
         network.pending_budget.active.load(Ordering::Relaxed),
-        MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS
+        MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS
     );
 
     broadcast.cancel();
-    assert_eq!(network.pending.len(), MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS);
+    assert_eq!(
+        network.pending.len(),
+        MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS
+    );
     assert_eq!(
         network.pending_budget.active.load(Ordering::Relaxed),
-        MAX_PROOF_CHAIN_HEAD_BROADCAST_PEERS
+        MAX_ARTIFACT_CHAIN_HEAD_BROADCAST_PEERS
     );
 
     for (settled, (&request_id, &peer_id)) in request_ids.iter().zip(&peers).enumerate() {
@@ -664,15 +673,15 @@ async fn three_authenticated_receivers_get_one_shared_snapshot_and_caller_ordere
     let receiver_c_peer_id = receiver_c_identity.public().to_peer_id();
     let passive_peer = StaticPeer::new(broadcaster_peer_id, loopback_address(1));
     let mut receiver_a =
-        StaticProofNetwork::new(receiver_a_identity, [passive_peer.clone()]).unwrap();
+        StaticArtifactNetwork::new(receiver_a_identity, [passive_peer.clone()]).unwrap();
     let mut receiver_b =
-        StaticProofNetwork::new(receiver_b_identity, [passive_peer.clone()]).unwrap();
-    let mut receiver_c = StaticProofNetwork::new(receiver_c_identity, [passive_peer]).unwrap();
+        StaticArtifactNetwork::new(receiver_b_identity, [passive_peer.clone()]).unwrap();
+    let mut receiver_c = StaticArtifactNetwork::new(receiver_c_identity, [passive_peer]).unwrap();
     let receiver_a_address = listening_address(&mut receiver_a).await;
     let receiver_b_address = listening_address(&mut receiver_b).await;
     let receiver_c_address = listening_address(&mut receiver_c).await;
 
-    let mut broadcaster = StaticProofNetwork::new(
+    let mut broadcaster = StaticArtifactNetwork::new(
         broadcaster_identity,
         [
             StaticPeer::new(receiver_a_peer_id, receiver_a_address),

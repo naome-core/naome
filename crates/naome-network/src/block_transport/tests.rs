@@ -4,45 +4,45 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
+use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome::block_exchange::{
-    PROOF_BLOCK_RESPONSE_MAX_BYTES, ProofBlockExchangeWireError, ProofBlockRequest,
+    ARTIFACT_BLOCK_RESPONSE_MAX_BYTES, ArtifactBlockExchangeWireError, ArtifactBlockRequest,
 };
-use naome::proof_exchange::{ProofRequest, ProofResponse};
-use naome_chain::{PROOF_BLOCK_BYTES, ProofBlockDecodeError, ProofBlockId};
+use naome_chain::{ARTIFACT_BLOCK_BYTES, ArtifactBlockDecodeError, ArtifactBlockId};
 use tokio::time::timeout;
 
 use super::*;
-use crate::codec::ProofBlockWireResponse;
+use crate::codec::ArtifactBlockWireResponse;
 use crate::tests::{
     TestDirectory, apply_fresh_blocks, connected_pair, create_journal, pairing_bytes,
-    test_network_for_peers,
+    test_network_for_peers, union_bytes,
 };
 use crate::{
     ExchangeRequestId, Keypair, MAX_PENDING_REQUESTS, NetworkEvent, PendingBudget,
     RequestStartError,
 };
 
-fn block_id(byte: u8) -> ProofBlockId {
-    ProofBlockId::from_bytes([byte; 32])
+fn block_id(byte: u8) -> ArtifactBlockId {
+    ArtifactBlockId::from_bytes([byte; 32])
 }
 
-fn proof_request(byte: u8) -> ProofRequest {
-    ProofRequest::from_wire_bytes(&[byte; 32]).unwrap()
+fn artifact_request(byte: u8) -> ArtifactRequest {
+    ArtifactRequest::from_wire_bytes(&[byte; 32]).unwrap()
 }
 
 fn block_response_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
     bytes: Vec<u8>,
-) -> OutboundProofBlockEvent {
+) -> OutboundArtifactBlockEvent {
     let event = network
         .handle_block_exchange_event(request_response::Event::Message {
             peer: peer_id,
             connection_id: ConnectionId::new_unchecked(800),
             message: request_response::Message::Response {
                 request_id,
-                response: ProofBlockWireResponse::new(bytes),
+                response: ArtifactBlockWireResponse::new(bytes),
             },
         })
         .expect("the retained block request produces one terminal event");
@@ -53,11 +53,11 @@ fn block_response_event(
 }
 
 fn block_failure_event(
-    network: &mut StaticProofNetwork,
+    network: &mut StaticArtifactNetwork,
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
     error: request_response::OutboundFailure,
-) -> OutboundProofBlockEvent {
+) -> OutboundArtifactBlockEvent {
     let event = network
         .handle_block_exchange_event(request_response::Event::OutboundFailure {
             peer: peer_id,
@@ -78,18 +78,18 @@ fn tagged_request_ids_prevent_cross_protocol_aliasing() {
     let block_peer = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[proof_peer, block_peer]);
 
-    let proof_request_id = network
-        .request_proof(proof_peer, proof_request(0x11))
+    let artifact_request_id = network
+        .request_artifact(proof_peer, artifact_request(0x11))
         .unwrap();
     let block_ticket = network
-        .request_block(block_peer, ProofBlockRequest::new(block_id(0x22)))
+        .request_block(block_peer, ArtifactBlockRequest::new(block_id(0x22)))
         .unwrap();
 
-    assert_eq!(proof_request_id, block_ticket.request_id);
+    assert_eq!(artifact_request_id, block_ticket.request_id);
     assert!(
         network
             .pending
-            .contains_key(&ExchangeRequestId::Proof(proof_request_id))
+            .contains_key(&ExchangeRequestId::Artifact(artifact_request_id))
     );
     assert!(
         network
@@ -100,19 +100,19 @@ fn tagged_request_ids_prevent_cross_protocol_aliasing() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 2);
 
     let proof_event = network
-        .handle_proof_exchange_event(request_response::Event::Message {
+        .handle_artifact_exchange_event(request_response::Event::Message {
             peer: proof_peer,
             connection_id: ConnectionId::new_unchecked(799),
             message: request_response::Message::Response {
-                request_id: proof_request_id,
-                response: ProofResponse::from_wire_bytes(pairing_bytes()).unwrap(),
+                request_id: artifact_request_id,
+                response: ArtifactResponse::from_wire_bytes(pairing_bytes()).unwrap(),
             },
         })
         .expect("the tagged proof terminal remains independently routable");
     assert!(
         !network
             .pending
-            .contains_key(&ExchangeRequestId::Proof(proof_request_id))
+            .contains_key(&ExchangeRequestId::Artifact(artifact_request_id))
     );
     assert!(
         network
@@ -145,7 +145,7 @@ fn tagged_request_ids_prevent_cross_protocol_aliasing() {
 #[test]
 fn ticket_rejects_another_network_even_when_every_wire_field_matches() {
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let request = ProofBlockRequest::new(block_id(0x31));
+    let request = ArtifactBlockRequest::new(block_id(0x31));
     let mut first = test_network_for_peers(&[peer_id]);
     let mut second = test_network_for_peers(&[peer_id]);
     let first_ticket = first.request_block(peer_id, request).unwrap();
@@ -176,7 +176,7 @@ fn ticket_rejects_another_network_even_when_every_wire_field_matches() {
 #[test]
 fn ticket_rejects_a_different_generation_on_the_same_network() {
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let request = ProofBlockRequest::new(block_id(0x32));
+    let request = ArtifactBlockRequest::new(block_id(0x32));
     let mut network = test_network_for_peers(&[peer_id]);
     let first_ticket = network.request_block(peer_id, request).unwrap();
     let first_event =
@@ -210,14 +210,14 @@ fn authenticated_peer_mismatch_precedes_response_decoding() {
     let actual = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[expected, actual]);
     let ticket = network
-        .request_block(expected, ProofBlockRequest::new(block_id(0x41)))
+        .request_block(expected, ArtifactBlockRequest::new(block_id(0x41)))
         .unwrap();
     let event = block_response_event(&mut network, ticket.request_id, actual, vec![0xff]);
 
     let failure = ticket.complete(event).unwrap().unwrap_err();
     assert!(matches!(
         failure.as_ref(),
-        OutboundProofBlockFailure::PeerMismatch {
+        OutboundArtifactBlockFailure::PeerMismatch {
             expected: retained,
             actual: received,
         } if *retained == expected && *received == actual
@@ -225,7 +225,7 @@ fn authenticated_peer_mismatch_precedes_response_decoding() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
 
     let failure_ticket = network
-        .request_block(expected, ProofBlockRequest::new(block_id(0x42)))
+        .request_block(expected, ArtifactBlockRequest::new(block_id(0x42)))
         .unwrap();
     let failure_event = block_failure_event(
         &mut network,
@@ -236,7 +236,7 @@ fn authenticated_peer_mismatch_precedes_response_decoding() {
     let failure = failure_ticket.complete(failure_event).unwrap().unwrap_err();
     assert!(matches!(
         failure.as_ref(),
-        OutboundProofBlockFailure::PeerMismatch {
+        OutboundArtifactBlockFailure::PeerMismatch {
             expected: retained,
             actual: received,
         } if *retained == expected && *received == actual
@@ -261,7 +261,7 @@ fn correlated_responses_distinguish_malformed_bytes_from_a_valid_wrong_id() {
 
     let requested_block_id = block_id(0x49);
     let wrong_id_ticket = network
-        .request_block(peer_id, ProofBlockRequest::new(requested_block_id))
+        .request_block(peer_id, ArtifactBlockRequest::new(requested_block_id))
         .unwrap();
     let wrong_id_event = block_response_event(
         &mut network,
@@ -275,14 +275,14 @@ fn correlated_responses_distinguish_malformed_bytes_from_a_valid_wrong_id() {
         .unwrap_err();
     assert!(matches!(
         wrong_id.as_ref(),
-        OutboundProofBlockFailure::InvalidResponse {
-            source: ProofBlockExchangeWireError::BlockIdMismatch { expected, actual },
+        OutboundArtifactBlockFailure::InvalidResponse {
+            source: ArtifactBlockExchangeWireError::BlockIdMismatch { expected, actual },
         } if *expected == requested_block_id && *actual == actual_block_id
     ));
 
-    for actual in 1..PROOF_BLOCK_RESPONSE_MAX_BYTES {
+    for actual in 1..ARTIFACT_BLOCK_RESPONSE_MAX_BYTES {
         let malformed_ticket = network
-            .request_block(peer_id, ProofBlockRequest::new(actual_block_id))
+            .request_block(peer_id, ArtifactBlockRequest::new(actual_block_id))
             .unwrap();
         let malformed_event = block_response_event(
             &mut network,
@@ -296,14 +296,14 @@ fn correlated_responses_distinguish_malformed_bytes_from_a_valid_wrong_id() {
             .unwrap_err();
         assert!(matches!(
             malformed.as_ref(),
-            OutboundProofBlockFailure::InvalidResponse {
-                source: ProofBlockExchangeWireError::BlockDecode {
-                    source: ProofBlockDecodeError::InvalidLength {
+            OutboundArtifactBlockFailure::InvalidResponse {
+                source: ArtifactBlockExchangeWireError::BlockDecode {
+                    source: ArtifactBlockDecodeError::InvalidLength {
                         actual: error_actual,
                         expected,
                     },
                 },
-            } if *error_actual == actual && *expected == PROOF_BLOCK_BYTES
+            } if *error_actual == actual && *expected == ARTIFACT_BLOCK_BYTES
         ));
     }
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
@@ -314,7 +314,7 @@ fn physical_failure_releases_the_permit_and_unknown_late_events_are_ignored() {
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[peer_id]);
     let ticket = network
-        .request_block(peer_id, ProofBlockRequest::new(block_id(0x4a)))
+        .request_block(peer_id, ArtifactBlockRequest::new(block_id(0x4a)))
         .unwrap();
     let request_id = ticket.request_id;
     let failure_event = block_failure_event(
@@ -330,7 +330,7 @@ fn physical_failure_releases_the_permit_and_unknown_late_events_are_ignored() {
             .unwrap()
             .unwrap_err()
             .as_ref(),
-        OutboundProofBlockFailure::Transport(request_response::OutboundFailure::Timeout)
+        OutboundArtifactBlockFailure::Transport(request_response::OutboundFailure::Timeout)
     ));
 
     assert!(
@@ -340,7 +340,7 @@ fn physical_failure_releases_the_permit_and_unknown_late_events_are_ignored() {
                 connection_id: ConnectionId::new_unchecked(802),
                 message: request_response::Message::Response {
                     request_id,
-                    response: ProofBlockWireResponse::new(Vec::new()),
+                    response: ArtifactBlockWireResponse::new(Vec::new()),
                 },
             })
             .is_none()
@@ -353,7 +353,7 @@ fn dropping_a_ticket_does_not_cancel_or_release_its_physical_request() {
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[peer_id]);
     let ticket = network
-        .request_block(peer_id, ProofBlockRequest::new(block_id(0x4b)))
+        .request_block(peer_id, ArtifactBlockRequest::new(block_id(0x4b)))
         .unwrap();
     let request_id = ticket.request_id;
     drop(ticket);
@@ -385,11 +385,11 @@ fn block_request_start_errors_have_stable_precedence() {
         .collect::<Vec<_>>();
 
     assert!(matches!(
-        network.request_block(unknown, ProofBlockRequest::new(block_id(0x4c))),
+        network.request_block(unknown, ArtifactBlockRequest::new(block_id(0x4c))),
         Err(RequestStartError::UnknownPeer(actual)) if actual == unknown
     ));
     assert!(matches!(
-        network.request_block(peer_id, ProofBlockRequest::new(block_id(0x4d))),
+        network.request_block(peer_id, ArtifactBlockRequest::new(block_id(0x4d))),
         Err(RequestStartError::GlobalLimit {
             maximum: MAX_PENDING_REQUESTS,
         })
@@ -397,7 +397,7 @@ fn block_request_start_errors_have_stable_precedence() {
     drop(permits);
 
     let ticket = network
-        .request_block(peer_id, ProofBlockRequest::new(block_id(0x4e)))
+        .request_block(peer_id, ArtifactBlockRequest::new(block_id(0x4e)))
         .unwrap();
     network
         .swarm
@@ -405,12 +405,12 @@ fn block_request_start_errors_have_stable_precedence() {
         .sessions
         .mark_disconnected_for_test(peer_id);
     assert!(matches!(
-        network.request_block(peer_id, ProofBlockRequest::new(block_id(0x4f))),
+        network.request_block(peer_id, ArtifactBlockRequest::new(block_id(0x4f))),
         Err(RequestStartError::AlreadyPending(actual)) if actual == peer_id
     ));
     drop(network.remove_pending_block(ticket.request_id).unwrap());
     assert!(matches!(
-        network.request_block(peer_id, ProofBlockRequest::new(block_id(0x50))),
+        network.request_block(peer_id, ArtifactBlockRequest::new(block_id(0x50))),
         Err(RequestStartError::PeerDisconnected(actual)) if actual == peer_id
     ));
 }
@@ -422,20 +422,20 @@ fn proof_and_block_requests_share_each_peer_slot() {
     let mut network = test_network_for_peers(&[block_peer, proof_peer]);
 
     let block_ticket = network
-        .request_block(block_peer, ProofBlockRequest::new(block_id(0x51)))
+        .request_block(block_peer, ArtifactBlockRequest::new(block_id(0x51)))
         .unwrap();
     assert_eq!(
-        network.request_proof(block_peer, proof_request(0x52)),
+        network.request_artifact(block_peer, artifact_request(0x52)),
         Err(RequestStartError::AlreadyPending(block_peer))
     );
 
-    let proof_request_id = network
-        .request_proof(proof_peer, proof_request(0x53))
+    let artifact_request_id = network
+        .request_artifact(proof_peer, artifact_request(0x53))
         .unwrap();
     assert!(matches!(
         network.request_block(
             proof_peer,
-            ProofBlockRequest::new(block_id(0x54)),
+            ArtifactBlockRequest::new(block_id(0x54)),
         ),
         Err(RequestStartError::AlreadyPending(peer_id)) if peer_id == proof_peer
     ));
@@ -450,7 +450,11 @@ fn proof_and_block_requests_share_each_peer_slot() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 2);
     drop(block_ticket.complete(event).unwrap().unwrap());
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
-    drop(network.remove_pending_proof(proof_request_id).unwrap());
+    drop(
+        network
+            .remove_pending_artifact(artifact_request_id)
+            .unwrap(),
+    );
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
 }
 
@@ -460,7 +464,7 @@ fn successful_block_event_holds_the_shared_global_permit_until_completion() {
     let proof_peer = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[block_peer, proof_peer]);
     let block_ticket = network
-        .request_block(block_peer, ProofBlockRequest::new(block_id(0x61)))
+        .request_block(block_peer, ArtifactBlockRequest::new(block_id(0x61)))
         .unwrap();
     let budget = Arc::clone(&network.pending_budget);
     let other_permits = (1..MAX_PENDING_REQUESTS)
@@ -476,7 +480,7 @@ fn successful_block_event_holds_the_shared_global_permit_until_completion() {
     );
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 8);
     assert_eq!(
-        network.request_proof(proof_peer, proof_request(0x62)),
+        network.request_artifact(proof_peer, artifact_request(0x62)),
         Err(RequestStartError::GlobalLimit {
             maximum: MAX_PENDING_REQUESTS,
         })
@@ -484,20 +488,24 @@ fn successful_block_event_holds_the_shared_global_permit_until_completion() {
 
     drop(block_ticket.complete(event).unwrap().unwrap());
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 7);
-    let proof_request_id = network
-        .request_proof(proof_peer, proof_request(0x63))
+    let artifact_request_id = network
+        .request_artifact(proof_peer, artifact_request(0x63))
         .unwrap();
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 8);
-    drop(network.remove_pending_proof(proof_request_id).unwrap());
+    drop(
+        network
+            .remove_pending_artifact(artifact_request_id)
+            .unwrap(),
+    );
     drop(other_permits);
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
 }
 
 async fn receive_block(
-    client: &mut StaticProofNetwork,
-    server: &mut StaticProofNetwork,
-    server_journal: &ProofChainJournal,
-) -> OutboundProofBlockEvent {
+    client: &mut StaticArtifactNetwork,
+    server: &mut StaticArtifactNetwork,
+    server_journal: &ArtifactChainJournal,
+) -> OutboundArtifactBlockEvent {
     timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
@@ -511,7 +519,7 @@ async fn receive_block(
                         server.respond_block_from_journal(inbound, server_journal).unwrap();
                     }
                     NetworkEvent::InboundBlockFailure { error, .. } => {
-                        panic!("inbound proof-block exchange failed: {error}");
+                        panic!("inbound artifact-block exchange failed: {error}");
                     }
                     _ => {}
                 }
@@ -519,7 +527,7 @@ async fn receive_block(
         }
     })
     .await
-    .expect("proof-block exchange timed out")
+    .expect("artifact-block exchange timed out")
 }
 
 #[tokio::test]
@@ -537,7 +545,7 @@ async fn committed_block_found_and_unavailable_round_trip_without_client_mutatio
     let client_bytes = client_directory.journal_bytes();
     let client_head = client_journal.head_block_id().unwrap();
 
-    let found_request = ProofBlockRequest::new(committed_block_id);
+    let found_request = ArtifactBlockRequest::new(committed_block_id);
     let found_ticket = client.request_block(server_peer_id, found_request).unwrap();
     let found_event = receive_block(&mut client, &mut server, &server_journal).await;
     assert!(found_ticket.accepts_event(&found_event));
@@ -547,7 +555,7 @@ async fn committed_block_found_and_unavailable_round_trip_without_client_mutatio
     assert_eq!(client_journal.head_block_id().unwrap(), client_head);
     assert_eq!(client_directory.journal_bytes(), client_bytes);
 
-    let unavailable_request = ProofBlockRequest::new(virtual_genesis);
+    let unavailable_request = ArtifactBlockRequest::new(virtual_genesis);
     let unavailable_ticket = client
         .request_block(server_peer_id, unavailable_request)
         .unwrap();
@@ -565,7 +573,7 @@ async fn committed_block_found_and_unavailable_round_trip_without_client_mutatio
     assert_eq!(client_directory.journal_bytes(), client_bytes);
 
     let reverse_ticket = server
-        .request_block(client_peer_id, ProofBlockRequest::new(client_head))
+        .request_block(client_peer_id, ArtifactBlockRequest::new(client_head))
         .unwrap();
     let reverse_event = receive_block(&mut server, &mut client, &client_journal).await;
     assert!(reverse_ticket.accepts_event(&reverse_event));
@@ -588,15 +596,15 @@ async fn simultaneous_bidirectional_block_requests_remain_exactly_correlated() {
     let block_a = *journal_a.block(block_a_id).unwrap().unwrap();
     let directory_b = TestDirectory::new("bidirectional-block-b");
     let mut journal_b = create_journal(directory_b.path()).unwrap();
-    apply_fresh_blocks(&mut journal_b, [vec![0x00, 0x00, 0x00, 0x01, 0x10, 0x02]]);
+    apply_fresh_blocks(&mut journal_b, [union_bytes()]);
     let block_b_id = journal_b.head_block_id().unwrap();
     let block_b = *journal_b.block(block_b_id).unwrap().unwrap();
 
     let ticket_a = network_a
-        .request_block(peer_b, ProofBlockRequest::new(block_b_id))
+        .request_block(peer_b, ArtifactBlockRequest::new(block_b_id))
         .unwrap();
     let ticket_b = network_b
-        .request_block(peer_a, ProofBlockRequest::new(block_a_id))
+        .request_block(peer_a, ArtifactBlockRequest::new(block_a_id))
         .unwrap();
     let mut outbound_a = None;
     let mut outbound_b = None;
@@ -654,7 +662,7 @@ async fn simultaneous_bidirectional_block_requests_remain_exactly_correlated() {
 }
 
 #[tokio::test]
-async fn proof_and_block_protocols_progress_concurrently_on_one_session() {
+async fn artifact_and_block_protocols_progress_concurrently_on_one_session() {
     let (mut network_a, mut network_b, peer_a, peer_b) = connected_pair().await;
     let directory_a = TestDirectory::new("mixed-exchange-a");
     let mut journal_a = create_journal(directory_a.path()).unwrap();
@@ -663,42 +671,42 @@ async fn proof_and_block_protocols_progress_concurrently_on_one_session() {
     let block_a = *journal_a.block(block_a_id).unwrap().unwrap();
     let directory_b = TestDirectory::new("mixed-exchange-b");
     let mut journal_b = create_journal(directory_b.path()).unwrap();
-    let proof_b = apply_fresh_blocks(&mut journal_b, [pairing_bytes()])[0];
+    let artifact_b = apply_fresh_blocks(&mut journal_b, [pairing_bytes()])[0];
 
     network_a
-        .request_proof(peer_b, ProofRequest::new(proof_b))
+        .request_artifact(peer_b, ArtifactRequest::new(artifact_b))
         .unwrap();
     let block_ticket = network_b
-        .request_block(peer_a, ProofBlockRequest::new(block_a_id))
+        .request_block(peer_a, ArtifactBlockRequest::new(block_a_id))
         .unwrap();
-    let mut proof_event = None;
+    let mut artifact_event = None;
     let mut block_event = None;
     let mut served_block = false;
-    let mut served_proof = false;
+    let mut served_artifact = false;
     timeout(Duration::from_secs(10), async {
-        while proof_event.is_none() || block_event.is_none() || !served_block || !served_proof {
+        while artifact_event.is_none() || block_event.is_none() || !served_block || !served_artifact {
             tokio::select! {
-                event = network_a.next_event(), if proof_event.is_none() || !served_block => match event {
+                event = network_a.next_event(), if artifact_event.is_none() || !served_block => match event {
                     NetworkEvent::InboundBlockRequest(inbound) => {
                         network_a.respond_block_from_journal(inbound, &journal_a).unwrap();
                         served_block = true;
                     }
-                    NetworkEvent::OutboundProof(event) => proof_event = Some(event),
+                    NetworkEvent::OutboundArtifact(event) => artifact_event = Some(event),
                     NetworkEvent::InboundBlockFailure { error, .. } => {
                         panic!("mixed inbound block exchange failed: {error}");
                     }
                     _ => {}
                 },
-                event = network_b.next_event(), if block_event.is_none() || !served_proof => match event {
-                    NetworkEvent::InboundProofRequest(inbound) => {
+                event = network_b.next_event(), if block_event.is_none() || !served_artifact => match event {
+                    NetworkEvent::InboundArtifactRequest(inbound) => {
                         network_b
-                            .respond_proof_from_journal(inbound, &journal_b)
+                            .respond_artifact_from_journal(inbound, &journal_b)
                             .unwrap();
-                        served_proof = true;
+                        served_artifact = true;
                     }
                     NetworkEvent::OutboundBlock(event) => block_event = Some(event),
-                    NetworkEvent::InboundProofFailure { error, .. } => {
-                        panic!("mixed inbound proof exchange failed: {error}");
+                    NetworkEvent::InboundArtifactFailure { error, .. } => {
+                        panic!("mixed inbound artifact exchange failed: {error}");
                     }
                     _ => {}
                 },
@@ -706,18 +714,18 @@ async fn proof_and_block_protocols_progress_concurrently_on_one_session() {
         }
     })
     .await
-    .expect("concurrent proof and block exchange timed out");
+    .expect("concurrent artifact and block exchange timed out");
 
-    let proof_event = proof_event.unwrap();
-    assert_eq!(proof_event.peer_id(), peer_b);
-    assert_eq!(proof_event.request(), ProofRequest::new(proof_b));
-    assert!(proof_event.failure().is_none());
-    assert!(!proof_event.is_deadline_exceeded());
-    let crate::OutboundProofOutcome::Response { response, .. } = &proof_event.outcome else {
-        panic!("proof exchange did not return a response");
+    let artifact_event = artifact_event.unwrap();
+    assert_eq!(artifact_event.peer_id(), peer_b);
+    assert_eq!(artifact_event.request(), ArtifactRequest::new(artifact_b));
+    assert!(artifact_event.failure().is_none());
+    assert!(!artifact_event.is_deadline_exceeded());
+    let crate::OutboundArtifactOutcome::Response { response, .. } = &artifact_event.outcome else {
+        panic!("artifact exchange did not return a response");
     };
     assert!(!response.is_unavailable());
-    drop(proof_event);
+    drop(artifact_event);
 
     assert_eq!(
         block_ticket

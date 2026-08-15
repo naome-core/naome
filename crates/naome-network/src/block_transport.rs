@@ -1,26 +1,28 @@
-//! Authenticated transport binding for exact proof-block retrieval.
+//! Authenticated transport binding for exact artifact-block retrieval.
 
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
 use libp2p::request_response;
-use naome::block_exchange::{ProofBlockExchangeWireError, ProofBlockRequest, ProofBlockResponse};
-use naome_storage::ProofChainJournal;
+use naome::block_exchange::{
+    ArtifactBlockExchangeWireError, ArtifactBlockRequest, ArtifactBlockResponse,
+};
+use naome_storage::ArtifactChainJournal;
 
-use super::codec::ProofBlockWireResponse;
+use super::codec::ArtifactBlockWireResponse;
 use super::{
     ExchangeRequestId, NetworkEvent, PeerId, PendingBudget, PendingPermit, PendingRequest,
-    RequestStartError, RespondError, StaticProofNetwork,
+    RequestStartError, RespondError, StaticArtifactNetwork,
 };
 
-pub(super) struct PendingProofBlockRequest {
+pub(super) struct PendingArtifactBlockRequest {
     pub(super) peer_index: usize,
-    pub(super) request: ProofBlockRequest,
+    pub(super) request: ArtifactBlockRequest,
     pub(super) _permit: PendingPermit,
 }
 
-/// One opaque generation of an outbound proof-block request.
+/// One opaque generation of an outbound artifact-block request.
 ///
 /// Dropping the ticket does not cancel its physical libp2p request. The
 /// transport retains the peer slot and global permit until the corresponding
@@ -29,12 +31,12 @@ pub(super) struct PendingProofBlockRequest {
 pub struct BlockRequestTicket {
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
-    request: ProofBlockRequest,
+    request: ArtifactBlockRequest,
     network_budget: Arc<PendingBudget>,
 }
 
 impl BlockRequestTicket {
-    pub(super) fn belongs_to_network(&self, network: &StaticProofNetwork) -> bool {
+    pub(super) fn belongs_to_network(&self, network: &StaticArtifactNetwork) -> bool {
         Arc::ptr_eq(&self.network_budget, &network.pending_budget)
     }
 
@@ -44,12 +46,12 @@ impl BlockRequestTicket {
     }
 
     /// Returns the immutable block request carried by this generation.
-    pub const fn request(&self) -> ProofBlockRequest {
+    pub const fn request(&self) -> ArtifactBlockRequest {
         self.request
     }
 
     /// Returns whether `event` is the exact terminal for this ticket.
-    pub fn accepts_event(&self, event: &OutboundProofBlockEvent) -> bool {
+    pub fn accepts_event(&self, event: &OutboundArtifactBlockEvent) -> bool {
         self.request_id == event.request_id
             && self.peer_id == event.peer_id
             && self.request == event.request
@@ -62,13 +64,13 @@ impl BlockRequestTicket {
     /// no response or failure can be extracted without generation correlation.
     pub fn complete(
         self,
-        event: OutboundProofBlockEvent,
+        event: OutboundArtifactBlockEvent,
     ) -> Result<
-        Result<ProofBlockResponse, Box<OutboundProofBlockFailure>>,
-        Box<ProofBlockRequestEventMismatch>,
+        Result<ArtifactBlockResponse, Box<OutboundArtifactBlockFailure>>,
+        Box<ArtifactBlockRequestEventMismatch>,
     > {
         if !self.accepts_event(&event) {
-            return Err(Box::new(ProofBlockRequestEventMismatch {
+            return Err(Box::new(ArtifactBlockRequestEventMismatch {
                 ticket: self,
                 event,
             }));
@@ -89,61 +91,61 @@ impl fmt::Debug for BlockRequestTicket {
 
 /// One ticket/event mismatch that preserves both values for routing.
 #[must_use]
-pub struct ProofBlockRequestEventMismatch {
+pub struct ArtifactBlockRequestEventMismatch {
     ticket: BlockRequestTicket,
-    event: OutboundProofBlockEvent,
+    event: OutboundArtifactBlockEvent,
 }
 
-impl ProofBlockRequestEventMismatch {
+impl ArtifactBlockRequestEventMismatch {
     /// Returns the unmatched ticket and terminal event.
-    pub fn into_parts(self) -> (BlockRequestTicket, OutboundProofBlockEvent) {
+    pub fn into_parts(self) -> (BlockRequestTicket, OutboundArtifactBlockEvent) {
         (self.ticket, self.event)
     }
 }
 
-impl fmt::Debug for ProofBlockRequestEventMismatch {
+impl fmt::Debug for ArtifactBlockRequestEventMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ProofBlockRequestEventMismatch")
+            .debug_struct("ArtifactBlockRequestEventMismatch")
             .field("ticket", &self.ticket)
             .field("event", &self.event)
             .finish()
     }
 }
 
-impl fmt::Display for ProofBlockRequestEventMismatch {
+impl fmt::Display for ArtifactBlockRequestEventMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("proof-block terminal event does not match its request ticket")
+        formatter.write_str("artifact-block terminal event does not match its request ticket")
     }
 }
 
-impl Error for ProofBlockRequestEventMismatch {}
+impl Error for ArtifactBlockRequestEventMismatch {}
 
 /// One request received from an authenticated, statically authorized peer.
 #[must_use]
-pub struct InboundProofBlockRequest {
+pub struct InboundArtifactBlockRequest {
     peer_id: PeerId,
     request_id: request_response::InboundRequestId,
-    request: ProofBlockRequest,
-    channel: request_response::ResponseChannel<ProofBlockWireResponse>,
+    request: ArtifactBlockRequest,
+    channel: request_response::ResponseChannel<ArtifactBlockWireResponse>,
 }
 
-impl InboundProofBlockRequest {
+impl InboundArtifactBlockRequest {
     /// Returns the authenticated sender.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
     /// Returns the exact requested block address.
-    pub const fn request(&self) -> ProofBlockRequest {
+    pub const fn request(&self) -> ArtifactBlockRequest {
         self.request
     }
 }
 
-impl fmt::Debug for InboundProofBlockRequest {
+impl fmt::Debug for InboundArtifactBlockRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("InboundProofBlockRequest")
+            .debug_struct("InboundArtifactBlockRequest")
             .field("peer_id", &self.peer_id)
             .field("request_id", &self.request_id)
             .field("request", &self.request)
@@ -153,41 +155,41 @@ impl fmt::Debug for InboundProofBlockRequest {
 
 /// One terminal block-request event awaiting its exact generation ticket.
 #[must_use]
-pub struct OutboundProofBlockEvent {
+pub struct OutboundArtifactBlockEvent {
     request_id: request_response::OutboundRequestId,
     peer_id: PeerId,
-    request: ProofBlockRequest,
+    request: ArtifactBlockRequest,
     network_budget: Arc<PendingBudget>,
-    outcome: OutboundProofBlockOutcome,
+    outcome: OutboundArtifactBlockOutcome,
 }
 
-impl OutboundProofBlockEvent {
+impl OutboundArtifactBlockEvent {
     /// Returns the expected authenticated peer.
     pub const fn peer_id(&self) -> PeerId {
         self.peer_id
     }
 
     /// Returns the immutable request that caused this terminal event.
-    pub const fn request(&self) -> ProofBlockRequest {
+    pub const fn request(&self) -> ArtifactBlockRequest {
         self.request
     }
 
-    fn into_result(self) -> Result<ProofBlockResponse, Box<OutboundProofBlockFailure>> {
+    fn into_result(self) -> Result<ArtifactBlockResponse, Box<OutboundArtifactBlockFailure>> {
         match self.outcome {
-            OutboundProofBlockOutcome::Response { response, .. } => Ok(response),
-            OutboundProofBlockOutcome::Failure(error) => Err(error),
+            OutboundArtifactBlockOutcome::Response { response, .. } => Ok(response),
+            OutboundArtifactBlockOutcome::Failure(error) => Err(error),
         }
     }
 }
 
-impl fmt::Debug for OutboundProofBlockEvent {
+impl fmt::Debug for OutboundArtifactBlockEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let outcome = match &self.outcome {
-            OutboundProofBlockOutcome::Response { .. } => "Response",
-            OutboundProofBlockOutcome::Failure(_) => "Failure",
+            OutboundArtifactBlockOutcome::Response { .. } => "Response",
+            OutboundArtifactBlockOutcome::Failure(_) => "Failure",
         };
         formatter
-            .debug_struct("OutboundProofBlockEvent")
+            .debug_struct("OutboundArtifactBlockEvent")
             .field("peer_id", &self.peer_id)
             .field("request", &self.request)
             .field("outcome", &outcome)
@@ -195,42 +197,44 @@ impl fmt::Debug for OutboundProofBlockEvent {
     }
 }
 
-enum OutboundProofBlockOutcome {
+enum OutboundArtifactBlockOutcome {
     Response {
-        response: ProofBlockResponse,
+        response: ArtifactBlockResponse,
         _permit: PendingPermit,
     },
-    Failure(Box<OutboundProofBlockFailure>),
+    Failure(Box<OutboundArtifactBlockFailure>),
 }
 
-/// A typed terminal failure for one exact outbound proof-block request.
+/// A typed terminal failure for one exact outbound artifact-block request.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum OutboundProofBlockFailure {
+pub enum OutboundArtifactBlockFailure {
     /// The request-response stream failed before a complete response arrived.
     Transport(request_response::OutboundFailure),
     /// A complete bounded response violated block framing or request identity.
-    InvalidResponse { source: ProofBlockExchangeWireError },
+    InvalidResponse {
+        source: ArtifactBlockExchangeWireError,
+    },
     /// A terminal event came from a peer other than the retained expectation.
     PeerMismatch { expected: PeerId, actual: PeerId },
 }
 
-impl fmt::Display for OutboundProofBlockFailure {
+impl fmt::Display for OutboundArtifactBlockFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Transport(source) => write!(formatter, "proof-block request failed: {source}"),
+            Self::Transport(source) => write!(formatter, "artifact-block request failed: {source}"),
             Self::InvalidResponse { source } => {
-                write!(formatter, "proof-block response is invalid: {source}")
+                write!(formatter, "artifact-block response is invalid: {source}")
             }
             Self::PeerMismatch { expected, actual } => write!(
                 formatter,
-                "proof-block terminal event came from {actual}, expected {expected}"
+                "artifact-block terminal event came from {actual}, expected {expected}"
             ),
         }
     }
 }
 
-impl Error for OutboundProofBlockFailure {
+impl Error for OutboundArtifactBlockFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Transport(source) => Some(source),
@@ -240,7 +244,7 @@ impl Error for OutboundProofBlockFailure {
     }
 }
 
-impl StaticProofNetwork {
+impl StaticArtifactNetwork {
     /// Starts one exact block request over an established managed session.
     ///
     /// The returned ticket is the only public path to the terminal outcome.
@@ -248,7 +252,7 @@ impl StaticProofNetwork {
     pub fn request_block(
         &mut self,
         peer_id: PeerId,
-        request: ProofBlockRequest,
+        request: ArtifactBlockRequest,
     ) -> Result<BlockRequestTicket, RequestStartError> {
         let transport_connected = self.swarm.behaviour().block_exchange.is_connected(&peer_id);
         let (peer_index, permit) = self.acquire_request_permit(peer_id, transport_connected)?;
@@ -265,7 +269,7 @@ impl StaticProofNetwork {
         };
         self.insert_pending(
             ExchangeRequestId::Block(request_id),
-            PendingRequest::Block(PendingProofBlockRequest {
+            PendingRequest::Block(PendingArtifactBlockRequest {
                 peer_index,
                 request,
                 _permit: permit,
@@ -276,7 +280,7 @@ impl StaticProofNetwork {
 
     pub(super) fn handle_block_exchange_event(
         &mut self,
-        event: request_response::Event<ProofBlockRequest, ProofBlockWireResponse>,
+        event: request_response::Event<ArtifactBlockRequest, ArtifactBlockWireResponse>,
     ) -> Option<NetworkEvent> {
         match event {
             request_response::Event::Message { peer, message, .. } => match message {
@@ -285,7 +289,7 @@ impl StaticProofNetwork {
                     request,
                     channel,
                 } => Some(NetworkEvent::InboundBlockRequest(
-                    InboundProofBlockRequest {
+                    InboundArtifactBlockRequest {
                         peer_id: peer,
                         request_id,
                         request,
@@ -303,14 +307,16 @@ impl StaticProofNetwork {
                             request_id,
                             expected,
                             pending,
-                            OutboundProofBlockFailure::PeerMismatch {
+                            OutboundArtifactBlockFailure::PeerMismatch {
                                 expected,
                                 actual: peer,
                             },
                         ));
                     }
-                    match ProofBlockResponse::from_wire_bytes(pending.request, response.as_bytes())
-                    {
+                    match ArtifactBlockResponse::from_wire_bytes(
+                        pending.request,
+                        response.as_bytes(),
+                    ) {
                         Ok(response) => Some(Self::finish_block_response(
                             request_id, expected, pending, response,
                         )),
@@ -318,7 +324,7 @@ impl StaticProofNetwork {
                             request_id,
                             expected,
                             pending,
-                            OutboundProofBlockFailure::InvalidResponse { source },
+                            OutboundArtifactBlockFailure::InvalidResponse { source },
                         )),
                     }
                 }
@@ -332,9 +338,9 @@ impl StaticProofNetwork {
                 let pending = self.remove_pending_block(request_id)?;
                 let expected = self.pending_peer_id(pending.peer_index);
                 let failure = if expected == peer {
-                    OutboundProofBlockFailure::Transport(error)
+                    OutboundArtifactBlockFailure::Transport(error)
                 } else {
-                    OutboundProofBlockFailure::PeerMismatch {
+                    OutboundArtifactBlockFailure::PeerMismatch {
                         expected,
                         actual: peer,
                     }
@@ -360,44 +366,44 @@ impl StaticProofNetwork {
     fn finish_block_response(
         request_id: request_response::OutboundRequestId,
         peer_id: PeerId,
-        pending: PendingProofBlockRequest,
-        response: ProofBlockResponse,
+        pending: PendingArtifactBlockRequest,
+        response: ArtifactBlockResponse,
     ) -> NetworkEvent {
-        let PendingProofBlockRequest {
+        let PendingArtifactBlockRequest {
             peer_index: _,
             request,
             _permit,
         } = pending;
         let network_budget = Arc::clone(&_permit.budget);
-        NetworkEvent::OutboundBlock(OutboundProofBlockEvent {
+        NetworkEvent::OutboundBlock(OutboundArtifactBlockEvent {
             request_id,
             peer_id,
             request,
             network_budget,
-            outcome: OutboundProofBlockOutcome::Response { response, _permit },
+            outcome: OutboundArtifactBlockOutcome::Response { response, _permit },
         })
     }
 
     fn finish_block_failure(
         request_id: request_response::OutboundRequestId,
         peer_id: PeerId,
-        pending: PendingProofBlockRequest,
-        failure: OutboundProofBlockFailure,
+        pending: PendingArtifactBlockRequest,
+        failure: OutboundArtifactBlockFailure,
     ) -> NetworkEvent {
         let network_budget = Arc::clone(&pending._permit.budget);
-        NetworkEvent::OutboundBlock(OutboundProofBlockEvent {
+        NetworkEvent::OutboundBlock(OutboundArtifactBlockEvent {
             request_id,
             peer_id,
             request: pending.request,
             network_budget,
-            outcome: OutboundProofBlockOutcome::Failure(Box::new(failure)),
+            outcome: OutboundArtifactBlockOutcome::Failure(Box::new(failure)),
         })
     }
 
     fn remove_pending_block(
         &mut self,
         request_id: request_response::OutboundRequestId,
-    ) -> Option<PendingProofBlockRequest> {
+    ) -> Option<PendingArtifactBlockRequest> {
         let pending = self.pending.remove(&ExchangeRequestId::Block(request_id))?;
         let PendingRequest::Block(pending) = pending else {
             unreachable!("a block request key always stores a block request")
@@ -411,8 +417,8 @@ impl StaticProofNetwork {
     /// rust-libp2p must own the response until its asynchronous write ends.
     pub fn respond_block_from_journal(
         &mut self,
-        inbound: InboundProofBlockRequest,
-        journal: &ProofChainJournal,
+        inbound: InboundArtifactBlockRequest,
+        journal: &ArtifactChainJournal,
     ) -> Result<(), RespondError> {
         let block = journal
             .block(inbound.request.block_id())
@@ -421,8 +427,8 @@ impl StaticProofNetwork {
             return Err(RespondError::ChannelClosed);
         }
         self.take_inbound_application_request()?;
-        let response = block.map_or_else(ProofBlockWireResponse::unavailable, |block| {
-            ProofBlockWireResponse::from_block_bytes(block.to_canonical_bytes())
+        let response = block.map_or_else(ArtifactBlockWireResponse::unavailable, |block| {
+            ArtifactBlockWireResponse::from_block_bytes(block.to_canonical_bytes())
         });
         self.swarm
             .behaviour_mut()

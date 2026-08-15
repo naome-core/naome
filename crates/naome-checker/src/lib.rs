@@ -3,7 +3,7 @@
 //! The checker reconstructs every certificate step through the executable
 //! Foundation rules, enforces deterministic formula-processing limits, and
 //! accepts only a closed final formula. External proof references resolve only
-//! through an explicitly supplied, already checked [`ProofState`]. The crate
+//! through an explicitly supplied, already checked [`ArtifactState`]. The crate
 //! remains deliberately in-memory and has no blocks, persistence, networking,
 //! or source parsing.
 //! Successful proof admission returns a [`CheckedProof`] that keeps the
@@ -12,20 +12,23 @@
 
 mod state;
 
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
 
 use naome_foundation::{
-    FORMULA_MAX_DEPTH, FOUNDATION_ID, Formula, FormulaCodecError, Logic, LogicError, SchemaError,
+    FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, Formula, FormulaCodecError, FreeVariable,
+    Logic, LogicError, Replacement, SchemaError, Separation,
 };
 use naome_proof::{
-    CERTIFICATE_MAX_BYTES, DerivationId, ProofCertificate, ProofId, ProofNormalForm, ProofStep,
-    StatementId,
+    CERTIFICATE_MAX_BYTES, DefinedFormula, DefinedFormulaCodecError, DefinitionCertificate,
+    DefinitionCertificateError, DefinitionExpansionError, DefinitionId, DefinitionKind,
+    DerivationId, ProofCertificate, ProofFormula, ProofId, ProofNormalForm, ProofReplacement,
+    ProofSeparation, ProofStep, StatementId,
 };
 use sha2::{Digest, Sha256};
 
-use state::ProofResolver;
-pub use state::{ProofState, ProofStateError};
+pub use state::{ArtifactState, ArtifactStateError};
 
 const STATEMENT_ID_DOMAIN: &[u8] = b"naome:statement\0";
 const PROOF_ID_DOMAIN: &[u8] = b"naome:proof\0";
@@ -55,6 +58,41 @@ pub struct CheckedProof {
     derivation_id: DerivationId,
     proof_id: ProofId,
     canonical_conclusion_length: usize,
+}
+
+/// A conservative definition accepted against one selected-artifact state.
+///
+/// The original certificate determines [`DefinitionId`]. A private,
+/// definition-free expansion cache is retained separately so later proof
+/// expansion does not repeat transitive definition work.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub struct CheckedDefinition {
+    certificate: DefinitionCertificate,
+    definition_id: DefinitionId,
+    expansion_cache: DefinitionCertificate,
+}
+
+impl CheckedDefinition {
+    /// Returns the exact checked definition certificate.
+    pub const fn certificate(&self) -> &DefinitionCertificate {
+        &self.certificate
+    }
+
+    /// Consumes the checked value and returns its original certificate.
+    pub fn into_certificate(self) -> DefinitionCertificate {
+        self.certificate
+    }
+
+    /// Returns the identity of the original definition certificate.
+    pub const fn definition_id(&self) -> DefinitionId {
+        self.definition_id
+    }
+
+    /// Returns the fully expanded primitive graph body.
+    pub fn expanded_body(&self) -> &DefinedFormula {
+        self.expansion_cache.body()
+    }
 }
 
 impl CheckedProof {
@@ -98,15 +136,15 @@ impl CheckedProof {
 pub fn check(certificate: &ProofCertificate) -> Result<Formula, CheckError> {
     check_with_canonical_conclusion(
         certificate,
-        &ProofState::new(),
+        &ArtifactState::new(),
         IdentityMode::OmitDerivation,
     )
     .map(|(conclusion, _, _)| conclusion)
 }
 
-fn check_with_canonical_conclusion<R: ProofResolver + ?Sized>(
+fn check_with_canonical_conclusion(
     certificate: &ProofCertificate,
-    proof_state: &R,
+    artifact_state: &ArtifactState,
     identity_mode: IdentityMode,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
     let steps = certificate.steps();
@@ -132,7 +170,7 @@ fn check_with_canonical_conclusion<R: ProofResolver + ?Sized>(
             step,
             &mut results,
             &last_uses,
-            proof_state,
+            artifact_state,
             &mut remaining_work,
         )?;
         let derivation_inputs = derivation_ids
@@ -225,23 +263,23 @@ enum IdentityMode {
 /// reconstructed from it. External proof references fail; use
 /// [`normalize_and_check_with_state`] when references are expected.
 pub fn normalize_and_check(certificate: ProofCertificate) -> Result<CheckedProof, CheckError> {
-    normalize_and_check_with_state(certificate, &ProofState::new())
+    normalize_and_check_with_state(certificate, &ArtifactState::new())
 }
 
-/// Normalizes and checks one proof against an immutable checked-proof state.
+/// Normalizes and checks one proof against immutable selected-artifact state.
 ///
 /// Only root-reachable references are resolved. Every requested [`ProofId`]
-/// must already be present in `proof_state`; the state is never mutated during
+/// must already be present in `artifact_state`; the state is never mutated during
 /// checking. On success, the returned proof may be registered afterward.
 pub fn normalize_and_check_with_state(
     certificate: ProofCertificate,
-    proof_state: &ProofState,
+    artifact_state: &ArtifactState,
 ) -> Result<CheckedProof, CheckError> {
     let normal_form = certificate.into_unchecked_normal_form();
-    check_normal_form_with_state(normal_form, proof_state)
+    check_normal_form_with_state(normal_form, artifact_state)
 }
 
-/// Checks one canonical proof normal form against an immutable checked-proof state.
+/// Checks one canonical proof normal form against immutable selected-artifact state.
 ///
 /// Unlike [`normalize_and_check_with_state`], this entry point performs no
 /// normalization. The [`ProofNormalForm`] type guarantees the structural
@@ -249,18 +287,97 @@ pub fn normalize_and_check_with_state(
 /// and content identities exactly once.
 pub fn check_normal_form_with_state(
     normal_form: ProofNormalForm,
-    proof_state: &ProofState,
+    artifact_state: &ArtifactState,
 ) -> Result<CheckedProof, CheckError> {
-    check_normal_form_with_resolver(normal_form, proof_state)
+    check_normal_form_with_resolver(normal_form, artifact_state)
+}
+
+/// Checks one conservative definition against immutable selected state.
+///
+/// Direct definition dependencies are required first and expanded within the
+/// Foundation formula limits. Constants and functions then require their exact
+/// declared selected proof and its exact generated total-unique conclusion.
+/// The state is never mutated; register the returned value separately.
+pub fn check_definition_with_state(
+    certificate: DefinitionCertificate,
+    artifact_state: &ArtifactState,
+) -> Result<CheckedDefinition, DefinitionCheckError> {
+    for definition_id in certificate.body().definition_references() {
+        if !artifact_state.contains_definition(definition_id) {
+            return Err(DefinitionCheckError::UnknownDefinitionDependency { definition_id });
+        }
+    }
+
+    let expanded_body = certificate
+        .body()
+        .expand_with_node_limit(artifact_state, FORMULA_MAX_NODES)
+        .map(|value| value.0)
+        .map_err(DefinitionCheckError::Expansion)?;
+
+    if let Some(proof_id) = certificate.obligation_proof_id() {
+        let obligation = artifact_state
+            .resolve_proof(proof_id)
+            .ok_or(DefinitionCheckError::UnknownObligationProof { proof_id })?;
+        let expected = definition_obligation(certificate.kind(), &expanded_body)
+            .map_err(DefinitionCheckError::ObligationFormula)?
+            .expect("proof-bearing definitions always have an obligation");
+        if obligation.conclusion != &expected {
+            return Err(DefinitionCheckError::ObligationConclusionMismatch { proof_id });
+        }
+    }
+
+    let expanded_body = DefinedFormula::from_primitive(&expanded_body)
+        .map_err(DefinitionCheckError::ExpandedBody)?;
+    let expansion_cache = DefinitionCertificate::new(certificate.kind(), expanded_body)
+        .map_err(DefinitionCheckError::ExpansionCache)?;
+    let definition_id = certificate.definition_id();
+    Ok(CheckedDefinition {
+        certificate,
+        definition_id,
+        expansion_cache,
+    })
+}
+
+fn definition_obligation(
+    kind: DefinitionKind,
+    body: &Formula,
+) -> Result<Option<Formula>, FormulaCodecError> {
+    let input_arity = match kind {
+        DefinitionKind::Relation { .. } => return Ok(None),
+        DefinitionKind::Constant { .. } => 0,
+        DefinitionKind::Function { input_arity, .. } => input_arity,
+    };
+    if input_arity >= FORMULA_MAX_DEPTH {
+        return Err(FormulaCodecError::DepthLimitExceeded {
+            maximum: FORMULA_MAX_DEPTH,
+        });
+    }
+    let output = FreeVariable::new(input_arity);
+    let uniqueness_witness = FreeVariable::new(
+        input_arity
+            .checked_add(1)
+            .expect("DefinitionCertificate rejects function arity overflow"),
+    );
+    let witness_body = body.clone().substitute_free(output, uniqueness_witness);
+    let uniqueness = Formula::for_all(
+        uniqueness_witness,
+        Formula::implies(witness_body, Formula::equal(uniqueness_witness, output)),
+    );
+    let mut obligation = Formula::exists(output, Formula::conjunction(body.clone(), uniqueness));
+    for identifier in (0..input_arity).rev() {
+        obligation = Formula::for_all(FreeVariable::new(identifier), obligation);
+    }
+    obligation.encode_canonical()?;
+    Ok(Some(obligation))
 }
 
 fn check_normal_form_with_resolver(
     normal_form: ProofNormalForm,
-    proof_state: &(impl ProofResolver + ?Sized),
+    artifact_state: &ArtifactState,
 ) -> Result<CheckedProof, CheckError> {
     let (conclusion, canonical_conclusion, derivation_id) = check_with_canonical_conclusion(
         normal_form.certificate(),
-        proof_state,
+        artifact_state,
         IdentityMode::Derive,
     )?;
     let derivation_id =
@@ -354,64 +471,87 @@ fn preflight_schema_depth(step: u32, parameter_count: usize) -> Result<(), Check
     Ok(())
 }
 
-fn derive_step<R: ProofResolver + ?Sized>(
+fn derive_step(
     step: u32,
     proof_step: &ProofStep,
     results: &mut [Option<CheckedStep>],
     last_uses: &[Option<u32>],
-    proof_state: &R,
+    artifact_state: &ArtifactState,
     remaining_work: &mut usize,
 ) -> Result<DerivedStep, CheckError> {
     let formula = match proof_step {
         ProofStep::Simplification {
             antecedent,
             consequent,
-        } => Logic::simplification(antecedent.clone(), consequent.clone()),
+        } => Logic::simplification(
+            primitive_formula(step, antecedent, artifact_state)?.into_owned(),
+            primitive_formula(step, consequent, artifact_state)?.into_owned(),
+        ),
         ProofStep::Frege {
             first,
             second,
             third,
-        } => Logic::frege(first.clone(), second.clone(), third.clone()),
+        } => Logic::frege(
+            primitive_formula(step, first, artifact_state)?.into_owned(),
+            primitive_formula(step, second, artifact_state)?.into_owned(),
+            primitive_formula(step, third, artifact_state)?.into_owned(),
+        ),
         ProofStep::ClassicalContraposition {
             antecedent,
             consequent,
-        } => Logic::classical_contraposition(antecedent.clone(), consequent.clone()),
+        } => Logic::classical_contraposition(
+            primitive_formula(step, antecedent, artifact_state)?.into_owned(),
+            primitive_formula(step, consequent, artifact_state)?.into_owned(),
+        ),
         ProofStep::UniversalDistribution {
             variable,
             antecedent,
             consequent,
-        } => Logic::universal_distribution(*variable, antecedent.clone(), consequent.clone()),
-        ProofStep::VacuousUniversal { formula } => Logic::vacuous_universal(formula.clone()),
+        } => Logic::universal_distribution(
+            *variable,
+            primitive_formula(step, antecedent, artifact_state)?.into_owned(),
+            primitive_formula(step, consequent, artifact_state)?.into_owned(),
+        ),
+        ProofStep::VacuousUniversal { formula } => {
+            Logic::vacuous_universal(primitive_formula(step, formula, artifact_state)?.into_owned())
+        }
         ProofStep::UniversalInstantiation {
             variable,
             replacement,
             body,
-        } => Logic::universal_instantiation(*variable, *replacement, body.clone()),
+        } => Logic::universal_instantiation(
+            *variable,
+            *replacement,
+            primitive_formula(step, body, artifact_state)?.into_owned(),
+        ),
         ProofStep::EqualityReflexivity { variable } => Logic::equality_reflexivity(*variable),
-        ProofStep::EqualitySubstitution { from, to, body } => {
-            Logic::equality_substitution(*from, *to, body.clone())
-        }
+        ProofStep::EqualitySubstitution { from, to, body } => Logic::equality_substitution(
+            *from,
+            *to,
+            primitive_formula(step, body, artifact_state)?.into_owned(),
+        ),
         ProofStep::ZfcAxiom(axiom) => axiom.formula(),
         ProofStep::Separation(schema) => {
             preflight_schema_depth(step, schema.parameters.len())?;
+            let schema = primitive_separation(step, schema, artifact_state)?;
             schema
                 .formula()
                 .map_err(|source| CheckError::Schema { step, source })?
         }
         ProofStep::Replacement(schema) => {
             preflight_schema_depth(step, schema.parameters.len())?;
+            let schema = primitive_replacement(step, schema, artifact_state)?;
             schema
                 .formula()
                 .map_err(|source| CheckError::Schema { step, source })?
         }
         ProofStep::ProofReference { proof_id } => {
-            let resolved =
-                proof_state
-                    .resolve(*proof_id)
-                    .ok_or(CheckError::UnknownProofReference {
-                        step,
-                        proof_id: *proof_id,
-                    })?;
+            let resolved = artifact_state.resolve_proof(*proof_id).ok_or(
+                CheckError::UnknownProofReference {
+                    step,
+                    proof_id: *proof_id,
+                },
+            )?;
             charge_formula_work(step, resolved.canonical_length, remaining_work)?;
             return Ok(DerivedStep {
                 formula: resolved.conclusion.clone(),
@@ -453,6 +593,53 @@ fn derive_step<R: ProofResolver + ?Sized>(
         formula,
         precharged_length: None,
         referenced_derivation_id: None,
+    })
+}
+
+fn primitive_formula<'a>(
+    step: u32,
+    formula: &'a ProofFormula,
+    artifact_state: &ArtifactState,
+) -> Result<Cow<'a, Formula>, CheckError> {
+    if let Some(formula) = formula.as_primitive() {
+        Ok(Cow::Borrowed(formula))
+    } else {
+        formula
+            .as_defined()
+            .expect("every non-primitive proof formula contains a definition")
+            .expand_with_node_limit(artifact_state, FORMULA_MAX_NODES)
+            .map(|value| Cow::Owned(value.0))
+            .map_err(|source| CheckError::DefinitionExpansion { step, source })
+    }
+}
+
+fn primitive_separation(
+    step: u32,
+    schema: &ProofSeparation,
+    artifact_state: &ArtifactState,
+) -> Result<Separation, CheckError> {
+    Ok(Separation {
+        predicate: primitive_formula(step, &schema.predicate, artifact_state)?.into_owned(),
+        element: schema.element,
+        source: schema.source,
+        result: schema.result,
+        parameters: schema.parameters.clone(),
+    })
+}
+
+fn primitive_replacement(
+    step: u32,
+    schema: &ProofReplacement,
+    artifact_state: &ArtifactState,
+) -> Result<Replacement, CheckError> {
+    Ok(Replacement {
+        predicate: primitive_formula(step, &schema.predicate, artifact_state)?.into_owned(),
+        input: schema.input,
+        output: schema.output,
+        uniqueness_witness: schema.uniqueness_witness,
+        source: schema.source,
+        result: schema.result,
+        parameters: schema.parameters.clone(),
     })
 }
 
@@ -502,8 +689,13 @@ fn charge_formula_work(step: u32, amount: usize, remaining: &mut usize) -> Resul
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CheckError {
-    /// A referenced proof is absent from the supplied checked-proof state.
+    /// A referenced proof is absent from the supplied selected-artifact state.
     UnknownProofReference { step: u32, proof_id: ProofId },
+    /// A definition-aware rule formula could not be conservatively expanded.
+    DefinitionExpansion {
+        step: u32,
+        source: DefinitionExpansionError,
+    },
     /// A primitive logical inference rule failed.
     Logic { step: u32, source: LogicError },
     /// A ZFC axiom-schema side condition failed.
@@ -528,6 +720,7 @@ impl CheckError {
     pub const fn step(&self) -> u32 {
         match self {
             Self::UnknownProofReference { step, .. }
+            | Self::DefinitionExpansion { step, .. }
             | Self::Logic { step, .. }
             | Self::Schema { step, .. }
             | Self::DerivedFormula { step, .. }
@@ -542,6 +735,12 @@ impl fmt::Display for CheckError {
         match self {
             Self::UnknownProofReference { step, .. } => {
                 write!(formatter, "proof step {step} references an unknown proof")
+            }
+            Self::DefinitionExpansion { step, source } => {
+                write!(
+                    formatter,
+                    "proof step {step} cannot expand definitions: {source}"
+                )
             }
             Self::Logic { step, source } => {
                 write!(
@@ -580,9 +779,77 @@ impl Error for CheckError {
             Self::Logic { source, .. } => Some(source),
             Self::Schema { source, .. } => Some(source),
             Self::DerivedFormula { source, .. } => Some(source),
+            Self::DefinitionExpansion { source, .. } => Some(source),
             Self::UnknownProofReference { .. }
             | Self::FormulaWorkLimitExceeded { .. }
             | Self::OpenConclusion { .. } => None,
+        }
+    }
+}
+
+/// A selected dependency, expansion, or proof-obligation definition failure.
+///
+/// Error precedence is direct selected-definition availability, bounded body
+/// expansion, exact selected obligation availability, exact conclusion match,
+/// and finally construction of the definition-free expansion cache.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DefinitionCheckError {
+    /// A direct definition dependency is absent from selected state.
+    UnknownDefinitionDependency { definition_id: DefinitionId },
+    /// Conservative body expansion failed.
+    Expansion(DefinitionExpansionError),
+    /// The exact proof declared by a constant or function is not selected.
+    UnknownObligationProof { proof_id: ProofId },
+    /// The exact selected proof concludes something other than the generated obligation.
+    ObligationConclusionMismatch { proof_id: ProofId },
+    /// The generated total-unique formula exceeds Foundation limits.
+    ObligationFormula(FormulaCodecError),
+    /// The expanded primitive body could not be represented canonically.
+    ExpandedBody(DefinedFormulaCodecError),
+    /// The definition-free expansion cache could not be constructed.
+    ExpansionCache(DefinitionCertificateError),
+}
+
+impl fmt::Display for DefinitionCheckError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownDefinitionDependency { .. } => {
+                formatter.write_str("definition cites a definition absent from selected state")
+            }
+            Self::Expansion(source) => write!(formatter, "definition body cannot expand: {source}"),
+            Self::UnknownObligationProof { .. } => {
+                formatter.write_str("definition obligation proof is absent from selected state")
+            }
+            Self::ObligationConclusionMismatch { .. } => {
+                formatter.write_str("selected definition obligation proof has the wrong conclusion")
+            }
+            Self::ObligationFormula(source) => {
+                write!(
+                    formatter,
+                    "definition obligation is outside Formula limits: {source}"
+                )
+            }
+            Self::ExpandedBody(source) => {
+                write!(formatter, "expanded definition body is invalid: {source}")
+            }
+            Self::ExpansionCache(source) => {
+                write!(formatter, "expanded definition cache is invalid: {source}")
+            }
+        }
+    }
+}
+
+impl Error for DefinitionCheckError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Expansion(source) => Some(source),
+            Self::ObligationFormula(source) => Some(source),
+            Self::ExpandedBody(source) => Some(source),
+            Self::ExpansionCache(source) => Some(source),
+            Self::UnknownDefinitionDependency { .. }
+            | Self::UnknownObligationProof { .. }
+            | Self::ObligationConclusionMismatch { .. } => None,
         }
     }
 }

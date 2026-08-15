@@ -128,7 +128,7 @@ impl Error for ResponderDenied {}
 /// Inbound-only server for one explicit immutable peer-record publication.
 ///
 /// The responder accepts Noise-authenticated requesters but grants them no
-/// proof authority. It never reads from a peer-address store, dials another
+/// artifact authority. It never reads from a peer-address store, dials another
 /// node, retries, or starts a background task. The caller must continuously
 /// poll [`Self::next_event`] for network progress and timeout delivery.
 pub struct PeerRecordBootstrapResponder {

@@ -1,34 +1,34 @@
 use std::error::Error;
 use std::fmt;
 
-use naome_ledger::AcceptedProofRecord;
-use naome_proof::ProofId;
+use naome_ledger::AcceptedArtifactRecord;
+use naome_proof::ArtifactId;
 use sha2::{Digest, Sha256};
 
 mod codec;
 
-pub use codec::PROOF_SET_PROOF_MAX_BYTES;
+pub use codec::ARTIFACT_SET_PROOF_MAX_BYTES;
 
-const PROOF_SET_DOMAIN: &[u8] = b"naome:proof-set\0";
+const ARTIFACT_SET_DOMAIN: &[u8] = b"naome:artifact-set:v0\0";
 const LEAF_TAG: u8 = 0x01;
 const BRANCH_TAG: u8 = 0x02;
 const KEY_BITS: usize = 256;
 const EMPTY_DIGEST: [u8; 32] = [
-    0xe9, 0xa9, 0x80, 0x28, 0x7e, 0x77, 0x0a, 0xc3, 0x89, 0xd3, 0x73, 0x5f, 0xf0, 0x64, 0xe7, 0x44,
-    0x7f, 0x11, 0xc9, 0x64, 0x0e, 0xfd, 0xb9, 0x0b, 0x91, 0x78, 0x17, 0x66, 0x49, 0x7f, 0x16, 0xca,
+    0x97, 0x6e, 0x57, 0x6e, 0xc6, 0x14, 0x5d, 0x57, 0xb5, 0xe1, 0x92, 0xd1, 0xc3, 0x7a, 0x09, 0x38,
+    0xbb, 0x5c, 0x76, 0x66, 0x35, 0x32, 0xd0, 0x35, 0x4f, 0xcd, 0x98, 0xba, 0x3f, 0xbf, 0x59, 0x7a,
 ];
 
-/// The SHA-256 commitment to one selected set of exact proof artifacts.
+/// The SHA-256 commitment to one selected set of exact artifacts.
 ///
 /// This value authenticates only set membership. [`Self::from_bytes`] creates
 /// an address and does not establish mathematical validity, consensus
 /// selection, or finality.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
-pub struct ProofSetRoot([u8; 32]);
+pub struct ArtifactSetRoot([u8; 32]);
 
-impl ProofSetRoot {
-    /// Exact width of one authenticated proof-set root.
+impl ArtifactSetRoot {
+    /// Exact width of one authenticated artifact-set root.
     pub const BYTE_LENGTH: usize = 32;
 
     /// Constructs a root address from raw digest bytes.
@@ -46,73 +46,73 @@ impl ProofSetRoot {
     }
 }
 
-/// The authenticated result of querying one [`ProofId`].
+/// The authenticated result of querying one [`ArtifactId`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
-pub enum ProofSetMembership {
-    /// The exact proof artifact belongs to the committed set.
+pub enum ArtifactSetMembership {
+    /// The exact artifact belongs to the committed set.
     Present,
-    /// The exact proof artifact does not belong to the committed set.
+    /// The exact artifact does not belong to the committed set.
     Absent,
 }
 
-/// A compact membership or non-membership proof for one [`ProofId`].
+/// A compact membership or non-membership proof for one [`ArtifactId`].
 ///
 /// The proof has no public constructor. It is derived from one selected
-/// [`crate::ProofDag`] or decoded from its strict canonical wire format and
+/// [`crate::ArtifactDag`] or decoded from its strict canonical wire format and
 /// must be verified against a trusted expected root before its membership
 /// result is used.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
-pub struct ProofSetProof {
-    terminal: ProofTerminal,
-    path: Box<[ProofPathStep]>,
+pub struct ArtifactSetProof {
+    terminal: ArtifactTerminal,
+    path: Box<[ArtifactPathStep]>,
 }
 
-impl ProofSetProof {
+impl ArtifactSetProof {
     /// Returns the number of authenticated branch siblings in this proof.
     pub const fn sibling_count(&self) -> usize {
         self.path.len()
     }
 
-    /// Verifies this proof for `proof_id` against `expected_root`.
+    /// Verifies this proof for `artifact_id` against `expected_root`.
     ///
     /// The returned status is available only after the complete proof shape
     /// and reconstructed root have both been validated.
     pub fn verify(
         &self,
-        expected_root: ProofSetRoot,
-        proof_id: ProofId,
-    ) -> Result<ProofSetMembership, ProofSetProofError> {
+        expected_root: ArtifactSetRoot,
+        artifact_id: ArtifactId,
+    ) -> Result<ArtifactSetMembership, ArtifactSetProofError> {
         self.validate_shape()?;
-        let empty = *ProofSetRoot::empty().as_bytes();
+        let empty = *ArtifactSetRoot::empty().as_bytes();
         let (membership, mut digest) = match self.terminal {
-            ProofTerminal::Empty => (ProofSetMembership::Absent, empty),
-            ProofTerminal::Member => (ProofSetMembership::Present, leaf_digest(proof_id)),
-            ProofTerminal::NonMember(terminal) => {
-                if terminal == proof_id {
-                    return Err(ProofSetProofError::NonMemberMatchesQuery);
+            ArtifactTerminal::Empty => (ArtifactSetMembership::Absent, empty),
+            ArtifactTerminal::Member => (ArtifactSetMembership::Present, leaf_digest(artifact_id)),
+            ArtifactTerminal::NonMember(terminal) => {
+                if terminal == artifact_id {
+                    return Err(ArtifactSetProofError::NonMemberMatchesQuery);
                 }
                 for step in &self.path {
-                    if key_bit(terminal, step.bit) != key_bit(proof_id, step.bit) {
-                        return Err(ProofSetProofError::TerminalPathMismatch { bit: step.bit });
+                    if key_bit(terminal, step.bit) != key_bit(artifact_id, step.bit) {
+                        return Err(ArtifactSetProofError::TerminalPathMismatch { bit: step.bit });
                     }
                 }
-                (ProofSetMembership::Absent, leaf_digest(terminal))
+                (ArtifactSetMembership::Absent, leaf_digest(terminal))
             }
         };
 
         for step in self.path.iter().rev() {
-            digest = if key_bit(proof_id, step.bit) {
+            digest = if key_bit(artifact_id, step.bit) {
                 branch_digest(step.bit, step.sibling, digest)
             } else {
                 branch_digest(step.bit, digest, step.sibling)
             };
         }
 
-        let actual_root = ProofSetRoot(digest);
+        let actual_root = ArtifactSetRoot(digest);
         if actual_root != expected_root {
-            return Err(ProofSetProofError::RootMismatch {
+            return Err(ArtifactSetProofError::RootMismatch {
                 expected: expected_root,
                 actual: actual_root,
             });
@@ -121,11 +121,12 @@ impl ProofSetProof {
         Ok(membership)
     }
 
-    fn validate_shape(&self) -> Result<(), ProofSetProofError> {
+    fn validate_shape(&self) -> Result<(), ArtifactSetProofError> {
         if self.path.len() > KEY_BITS
-            || matches!(self.terminal, ProofTerminal::NonMember(_)) && self.path.len() == KEY_BITS
+            || matches!(self.terminal, ArtifactTerminal::NonMember(_))
+                && self.path.len() == KEY_BITS
         {
-            return Err(ProofSetProofError::PathTooLong);
+            return Err(ArtifactSetProofError::PathTooLong);
         }
 
         let mut previous_bit = None;
@@ -133,29 +134,29 @@ impl ProofSetProof {
             if let Some(previous) = previous_bit
                 && step.bit <= previous
             {
-                return Err(ProofSetProofError::NonIncreasingBits {
+                return Err(ArtifactSetProofError::NonIncreasingBits {
                     previous,
                     actual: step.bit,
                 });
             }
             if step.sibling == EMPTY_DIGEST {
-                return Err(ProofSetProofError::EmptySibling { bit: step.bit });
+                return Err(ArtifactSetProofError::EmptySibling { bit: step.bit });
             }
             previous_bit = Some(step.bit);
         }
 
-        if matches!(self.terminal, ProofTerminal::Empty) && !self.path.is_empty() {
-            return Err(ProofSetProofError::EmptyTerminalHasPath);
+        if matches!(self.terminal, ArtifactTerminal::Empty) && !self.path.is_empty() {
+            return Err(ArtifactSetProofError::EmptyTerminalHasPath);
         }
 
         Ok(())
     }
 }
 
-/// A malformed proof-set witness, canonical encoding, or root mismatch.
+/// A malformed artifact-set witness, canonical encoding, or root mismatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ProofSetProofError {
+pub enum ArtifactSetProofError {
     /// The encoded proof exceeds the deterministic byte limit.
     InputTooLong { actual: usize, maximum: usize },
     /// The encoded proof ended before its terminal or path step was complete.
@@ -178,87 +179,92 @@ pub enum ProofSetProofError {
     TerminalPathMismatch { bit: u8 },
     /// The reconstructed root did not equal the trusted expected root.
     RootMismatch {
-        expected: ProofSetRoot,
-        actual: ProofSetRoot,
+        expected: ArtifactSetRoot,
+        actual: ArtifactSetRoot,
     },
 }
 
-impl fmt::Display for ProofSetProofError {
+impl fmt::Display for ArtifactSetProofError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InputTooLong { actual, maximum } => write!(
                 formatter,
-                "canonical proof-set proof has {actual} bytes; the limit is {maximum}"
+                "canonical artifact-set proof has {actual} bytes; the limit is {maximum}"
             ),
             Self::UnexpectedEnd => {
-                formatter.write_str("canonical proof-set proof ended unexpectedly")
+                formatter.write_str("canonical artifact-set proof ended unexpectedly")
             }
             Self::UnknownTerminalTag(tag) => {
-                write!(formatter, "unknown proof-set terminal tag 0x{tag:02x}")
+                write!(formatter, "unknown artifact-set terminal tag 0x{tag:02x}")
             }
             Self::TrailingBytes { remaining } => write!(
                 formatter,
-                "empty proof-set proof has {remaining} trailing bytes"
+                "empty artifact-set proof has {remaining} trailing bytes"
             ),
-            Self::PathTooLong => formatter.write_str("proof-set path exceeds its terminal limit"),
+            Self::PathTooLong => {
+                formatter.write_str("artifact-set path exceeds its terminal limit")
+            }
             Self::NonIncreasingBits { previous, actual } => write!(
                 formatter,
-                "proof-set branch bit {actual} does not follow bit {previous}"
+                "artifact-set branch bit {actual} does not follow bit {previous}"
             ),
             Self::EmptySibling { bit } => {
-                write!(formatter, "proof-set branch bit {bit} has an empty sibling")
+                write!(
+                    formatter,
+                    "artifact-set branch bit {bit} has an empty sibling"
+                )
             }
             Self::EmptyTerminalHasPath => {
-                formatter.write_str("empty proof-set terminal has a branch path")
+                formatter.write_str("empty artifact-set terminal has a branch path")
             }
             Self::NonMemberMatchesQuery => {
-                formatter.write_str("non-member terminal equals the queried proof id")
+                formatter.write_str("non-member terminal equals the queried artifact id")
             }
             Self::TerminalPathMismatch { bit } => write!(
                 formatter,
-                "queried proof id diverges from its terminal at branch bit {bit}"
+                "queried artifact id diverges from its terminal at branch bit {bit}"
             ),
             Self::RootMismatch { expected, actual } => write!(
                 formatter,
-                "proof-set root mismatch: expected {expected:?}, reconstructed {actual:?}"
+                "artifact-set root mismatch: expected {expected:?}, reconstructed {actual:?}"
             ),
         }
     }
 }
 
-impl Error for ProofSetProofError {}
+impl Error for ArtifactSetProofError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ProofTerminal {
+enum ArtifactTerminal {
     Empty,
     Member,
-    NonMember(ProofId),
+    NonMember(ArtifactId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ProofPathStep {
+struct ArtifactPathStep {
     sibling: [u8; 32],
     bit: u8,
 }
 
-pub(super) trait ProofSetValue {
-    fn proof_id(&self) -> ProofId;
+pub(super) trait ArtifactSetValue {
+    fn artifact_id(&self) -> ArtifactId;
 }
 
-impl ProofSetValue for AcceptedProofRecord {
-    fn proof_id(&self) -> ProofId {
-        self.proof_id()
+impl ArtifactSetValue for AcceptedArtifactRecord {
+    fn artifact_id(&self) -> ArtifactId {
+        self.artifact_id()
     }
 }
 
-pub(super) struct AuthenticatedProofSet<V> {
+pub(super) struct AuthenticatedArtifactSet<V> {
     root: Option<NodeRef>,
     leaves: Vec<V>,
     branches: Vec<Branch>,
     search_path: Vec<usize>,
 }
 
-impl<V> Default for AuthenticatedProofSet<V> {
+impl<V> Default for AuthenticatedArtifactSet<V> {
     fn default() -> Self {
         Self {
             root: None,
@@ -269,7 +275,7 @@ impl<V> Default for AuthenticatedProofSet<V> {
     }
 }
 
-impl<V: ProofSetValue> AuthenticatedProofSet<V> {
+impl<V: ArtifactSetValue> AuthenticatedArtifactSet<V> {
     pub(crate) const fn new() -> Self {
         Self {
             root: None,
@@ -287,15 +293,15 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
         self.root.is_none()
     }
 
-    pub(crate) fn root(&self) -> ProofSetRoot {
-        self.root.map_or_else(ProofSetRoot::empty, |root| {
-            ProofSetRoot(self.node_digest(root))
+    pub(crate) fn root(&self) -> ArtifactSetRoot {
+        self.root.map_or_else(ArtifactSetRoot::empty, |root| {
+            ArtifactSetRoot(self.node_digest(root))
         })
     }
 
-    pub(crate) fn projected_root(&self, proof_id: ProofId) -> (ProofSetRoot, bool) {
+    pub(crate) fn projected_root(&self, artifact_id: ArtifactId) -> (ArtifactSetRoot, bool) {
         let Some(mut node) = self.root else {
-            return (ProofSetRoot(leaf_digest(proof_id)), false);
+            return (ArtifactSetRoot(leaf_digest(artifact_id)), false);
         };
 
         let mut path = [0_usize; KEY_BITS];
@@ -305,19 +311,19 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
             path[path_len] = branch_index;
             path_len += 1;
             let branch = &self.branches[branch_index];
-            node = if key_bit(proof_id, branch.bit) {
+            node = if key_bit(artifact_id, branch.bit) {
                 branch.right
             } else {
                 branch.left
             };
         }
 
-        let terminal_id = self.leaves[node.index()].proof_id();
-        if terminal_id == proof_id {
+        let terminal_id = self.leaves[node.index()].artifact_id();
+        if terminal_id == artifact_id {
             return (self.root(), true);
         }
 
-        let differing_bit = first_differing_bit(proof_id, terminal_id);
+        let differing_bit = first_differing_bit(artifact_id, terminal_id);
         let insertion_position =
             path[..path_len].partition_point(|branch| self.branches[*branch].bit < differing_bit);
         let old_subtree = if insertion_position == path_len {
@@ -326,8 +332,8 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
             NodeRef::branch(path[insertion_position])
         };
         let old_digest = self.node_digest(old_subtree);
-        let new_digest = leaf_digest(proof_id);
-        let mut subtree = if key_bit(proof_id, differing_bit) {
+        let new_digest = leaf_digest(artifact_id);
+        let mut subtree = if key_bit(artifact_id, differing_bit) {
             branch_digest(differing_bit, old_digest, new_digest)
         } else {
             branch_digest(differing_bit, new_digest, old_digest)
@@ -335,36 +341,36 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
 
         for position in (0..insertion_position).rev() {
             let branch = &self.branches[path[position]];
-            subtree = if key_bit(proof_id, branch.bit) {
+            subtree = if key_bit(artifact_id, branch.bit) {
                 branch_digest(branch.bit, self.node_digest(branch.left), subtree)
             } else {
                 branch_digest(branch.bit, subtree, self.node_digest(branch.right))
             };
         }
-        (ProofSetRoot(subtree), false)
+        (ArtifactSetRoot(subtree), false)
     }
 
-    pub(crate) fn get(&self, proof_id: ProofId) -> Option<&V> {
+    pub(crate) fn get(&self, artifact_id: ArtifactId) -> Option<&V> {
         let mut node = self.root?;
         loop {
             if node.is_branch() {
                 let branch = &self.branches[node.index()];
-                node = if key_bit(proof_id, branch.bit) {
+                node = if key_bit(artifact_id, branch.bit) {
                     branch.right
                 } else {
                     branch.left
                 };
             } else {
                 let value = &self.leaves[node.index()];
-                return (value.proof_id() == proof_id).then_some(value);
+                return (value.artifact_id() == artifact_id).then_some(value);
             }
         }
     }
 
-    pub(crate) fn proof(&self, proof_id: ProofId) -> ProofSetProof {
+    pub(crate) fn proof(&self, artifact_id: ArtifactId) -> ArtifactSetProof {
         let Some(mut node) = self.root else {
-            return ProofSetProof {
-                terminal: ProofTerminal::Empty,
+            return ArtifactSetProof {
+                terminal: ArtifactTerminal::Empty,
                 path: Box::new([]),
             };
         };
@@ -372,13 +378,13 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
         let mut path = Vec::with_capacity(16);
         while node.is_branch() {
             let branch = &self.branches[node.index()];
-            let goes_right = key_bit(proof_id, branch.bit);
+            let goes_right = key_bit(artifact_id, branch.bit);
             let sibling = if goes_right {
                 branch.left
             } else {
                 branch.right
             };
-            path.push(ProofPathStep {
+            path.push(ArtifactPathStep {
                 sibling: self.node_digest(sibling),
                 bit: branch.bit,
             });
@@ -389,19 +395,19 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
             };
         }
 
-        let terminal = self.leaves[node.index()].proof_id();
-        ProofSetProof {
-            terminal: if terminal == proof_id {
-                ProofTerminal::Member
+        let terminal = self.leaves[node.index()].artifact_id();
+        ArtifactSetProof {
+            terminal: if terminal == artifact_id {
+                ArtifactTerminal::Member
             } else {
-                ProofTerminal::NonMember(terminal)
+                ArtifactTerminal::NonMember(terminal)
             },
             path: path.into_boxed_slice(),
         }
     }
 
     pub(crate) fn insert(&mut self, value: V) -> Option<&V> {
-        let proof_id = value.proof_id();
+        let artifact_id = value.artifact_id();
         let Some(mut node) = self.root else {
             self.leaves.push(value);
             self.root = Some(NodeRef::leaf(0));
@@ -412,7 +418,7 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
         while node.is_branch() {
             let branch_index = node.index();
             let branch = &self.branches[branch_index];
-            let goes_right = key_bit(proof_id, branch.bit);
+            let goes_right = key_bit(artifact_id, branch.bit);
             self.search_path.push(branch_index);
             node = if goes_right {
                 branch.right
@@ -421,11 +427,11 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
             };
         }
 
-        let terminal_id = self.leaves[node.index()].proof_id();
-        if terminal_id == proof_id {
+        let terminal_id = self.leaves[node.index()].artifact_id();
+        if terminal_id == artifact_id {
             return None;
         }
-        let differing_bit = first_differing_bit(proof_id, terminal_id);
+        let differing_bit = first_differing_bit(artifact_id, terminal_id);
         let insertion_position = self
             .search_path
             .partition_point(|branch| self.branches[*branch].bit < differing_bit);
@@ -442,7 +448,7 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
         let leaf_index = self.leaves.len();
         self.leaves.push(value);
         let new_leaf = NodeRef::leaf(leaf_index);
-        let (left, right) = if key_bit(proof_id, differing_bit) {
+        let (left, right) = if key_bit(artifact_id, differing_bit) {
             (old_subtree, new_leaf)
         } else {
             (new_leaf, old_subtree)
@@ -464,7 +470,7 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
             self.root = Some(new_branch);
         } else {
             let parent_index = self.search_path[insertion_position - 1];
-            let goes_right = key_bit(proof_id, self.branches[parent_index].bit);
+            let goes_right = key_bit(artifact_id, self.branches[parent_index].bit);
             let parent = &mut self.branches[parent_index];
             if goes_right {
                 parent.right = new_branch;
@@ -490,7 +496,7 @@ impl<V: ProofSetValue> AuthenticatedProofSet<V> {
         if node.is_branch() {
             self.branches[node.index()].digest
         } else {
-            leaf_digest(self.leaves[node.index()].proof_id())
+            leaf_digest(self.leaves[node.index()].artifact_id())
         }
     }
 }
@@ -505,7 +511,7 @@ impl NodeRef {
         Self(
             index
                 .checked_mul(2)
-                .expect("proof-set leaf arena cannot exhaust usize"),
+                .expect("artifact-set leaf arena cannot exhaust usize"),
         )
     }
 
@@ -514,7 +520,7 @@ impl NodeRef {
             index
                 .checked_mul(2)
                 .and_then(|value| value.checked_add(Self::BRANCH_BIT))
-                .expect("proof-set branch arena cannot exhaust usize"),
+                .expect("artifact-set branch arena cannot exhaust usize"),
         )
     }
 
@@ -534,25 +540,25 @@ struct Branch {
     digest: [u8; 32],
 }
 
-fn key_bit(proof_id: ProofId, bit: u8) -> bool {
+fn key_bit(artifact_id: ArtifactId, bit: u8) -> bool {
     let bit = bit as usize;
-    let byte = proof_id.as_bytes()[bit / 8];
+    let byte = artifact_id.as_bytes()[bit / 8];
     byte & (1 << (7 - bit % 8)) != 0
 }
 
-fn first_differing_bit(left: ProofId, right: ProofId) -> u8 {
+fn first_differing_bit(left: ArtifactId, right: ArtifactId) -> u8 {
     for (byte_index, (left, right)) in left.as_bytes().iter().zip(right.as_bytes()).enumerate() {
         let difference = left ^ right;
         if difference != 0 {
             return u8::try_from(byte_index * 8 + difference.leading_zeros() as usize)
-                .expect("ProofId bit positions fit u8");
+                .expect("ArtifactId bit positions fit u8");
         }
     }
-    unreachable!("callers compare ProofIds before finding their differing bit")
+    unreachable!("callers compare ArtifactIds before finding their differing bit")
 }
 
-fn leaf_digest(proof_id: ProofId) -> [u8; 32] {
-    tagged_digest(LEAF_TAG, &[proof_id.as_bytes()])
+fn leaf_digest(artifact_id: ArtifactId) -> [u8; 32] {
+    tagged_digest(LEAF_TAG, &[artifact_id.as_bytes()])
 }
 
 fn branch_digest(bit: u8, left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
@@ -561,7 +567,7 @@ fn branch_digest(bit: u8, left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
 
 fn tagged_digest(tag: u8, parts: &[&[u8]]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(PROOF_SET_DOMAIN);
+    hasher.update(ARTIFACT_SET_DOMAIN);
     hasher.update([tag]);
     for part in parts {
         hasher.update(part);

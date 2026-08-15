@@ -1,0 +1,9 @@
+foundation = "naome:zfc"
+
+definitions:
+    holds = "70c732d536e51e376e42fbc60ddcc581bec6aec75aeb3917c7055fd1fb7c3004"
+
+definition same_members = relation(left, right):
+    forall(element,
+        iff(holds(element, left), holds(element, right)),
+    )

@@ -1,0 +1,4 @@
+foundation = "naome:zfc"
+
+definition self_equal = relation(value,):
+    equal(value, value)

@@ -5,12 +5,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use naome_chain::{
-    PROOF_BLOCK_BYTES, ProofBlock, ProofBlockId, ProofChainDefinition, ProofSetRoot,
+    ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactSetRoot,
 };
-use naome_proof::ProofId;
+use naome_proof::ArtifactId;
 
 use super::*;
-use crate::ProofChainJournal;
+use crate::ArtifactChainJournal;
 use crate::fault_io::{Fault, ScriptedIo, Trace, all_append_faults};
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -40,7 +40,7 @@ impl TestDirectory {
     }
 
     fn journal_path(&self) -> PathBuf {
-        self.path.join("proof-chain.journal")
+        self.path.join("artifact-chain.journal")
     }
 
     fn write_image(&self, bytes: &[u8]) {
@@ -54,35 +54,35 @@ impl Drop for TestDirectory {
     }
 }
 
-fn chain_definition(byte: u8) -> ProofChainDefinition {
-    ProofChainDefinition::new([byte; 32])
+fn chain_definition(byte: u8) -> ArtifactChainDefinition {
+    ArtifactChainDefinition::new([byte; 32])
 }
 
-fn limits(max_entries: usize) -> ProofBlockCandidateStoreLimits {
-    ProofBlockCandidateStoreLimits::new(max_entries).unwrap()
+fn limits(max_entries: usize) -> ArtifactBlockCandidateStoreLimits {
+    ArtifactBlockCandidateStoreLimits::new(max_entries).unwrap()
 }
 
-fn proof_id(byte: u8) -> ProofId {
-    ProofId::from_bytes([byte; ProofId::BYTE_LENGTH])
+fn artifact_id(byte: u8) -> ArtifactId {
+    ArtifactId::from_bytes([byte; ArtifactId::BYTE_LENGTH])
 }
 
-fn block(parent: u8, proof: u8) -> ProofBlock {
-    ProofBlock::new(
-        ProofBlockId::from_bytes([parent; ProofBlockId::BYTE_LENGTH]),
-        ProofSetRoot::from_bytes([proof.wrapping_add(1); ProofSetRoot::BYTE_LENGTH]),
-        ProofSetRoot::from_bytes([proof.wrapping_add(2); ProofSetRoot::BYTE_LENGTH]),
-        proof_id(proof),
+fn block(parent: u8, proof: u8) -> ArtifactBlock {
+    ArtifactBlock::new(
+        ArtifactBlockId::from_bytes([parent; ArtifactBlockId::BYTE_LENGTH]),
+        ArtifactSetRoot::from_bytes([proof.wrapping_add(1); ArtifactSetRoot::BYTE_LENGTH]),
+        ArtifactSetRoot::from_bytes([proof.wrapping_add(2); ArtifactSetRoot::BYTE_LENGTH]),
+        artifact_id(proof),
     )
 }
 
-fn prefix(definition: ProofChainDefinition) -> Vec<u8> {
+fn prefix(definition: ArtifactChainDefinition) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(STORE_PREFIX_BYTES as usize);
     bytes.extend_from_slice(STORE_HEADER);
     bytes.extend_from_slice(definition.id().as_bytes());
     bytes
 }
 
-fn encoded_entry(block: &ProofBlock) -> Vec<u8> {
+fn encoded_entry(block: &ArtifactBlock) -> Vec<u8> {
     let canonical = block.to_canonical_bytes();
     let mut bytes = Vec::with_capacity(ENTRY_BYTES as usize);
     bytes.extend_from_slice(&canonical);
@@ -90,7 +90,7 @@ fn encoded_entry(block: &ProofBlock) -> Vec<u8> {
     bytes
 }
 
-fn image(definition: ProofChainDefinition, blocks: &[ProofBlock]) -> Vec<u8> {
+fn image(definition: ArtifactChainDefinition, blocks: &[ArtifactBlock]) -> Vec<u8> {
     let mut bytes = prefix(definition);
     for block in blocks {
         bytes.extend_from_slice(&encoded_entry(block));
@@ -101,8 +101,8 @@ fn image(definition: ProofChainDefinition, blocks: &[ProofBlock]) -> Vec<u8> {
 #[test]
 fn limits_round_trip_idempotence_and_create_without_replacement_are_exact() {
     assert_eq!(
-        ProofBlockCandidateStoreLimits::new(0),
-        Err(ProofBlockCandidateStoreLimitsError::ZeroMaxEntries)
+        ArtifactBlockCandidateStoreLimits::new(0),
+        Err(ArtifactBlockCandidateStoreLimitsError::ZeroMaxEntries)
     );
 
     let chain_definition = chain_definition(0x11);
@@ -112,19 +112,19 @@ fn limits_round_trip_idempotence_and_create_without_replacement_are_exact() {
 
     let directory = TestDirectory::new("basics");
     let mut store =
-        ProofBlockCandidateStore::create(&directory.path, chain_definition, policy).unwrap();
+        ArtifactBlockCandidateStore::create(&directory.path, chain_definition, policy).unwrap();
     assert_eq!(store.chain_id(), chain_definition.id());
     assert_eq!(store.limits(), policy);
     assert!(store.is_empty().unwrap());
     assert!(
         store
-            .get(ProofBlockId::from_bytes([0xff; 32]))
+            .get(ArtifactBlockId::from_bytes([0xff; 32]))
             .unwrap()
             .is_none()
     );
     assert_eq!(
         store.insert(&candidate).unwrap(),
-        ProofBlockCandidateInsertOutcome::Inserted
+        ArtifactBlockCandidateInsertOutcome::Inserted
     );
     let committed = fs::read(directory.store_path()).unwrap();
     assert_eq!(store.get(candidate.id()).unwrap(), Some(candidate));
@@ -132,51 +132,54 @@ fn limits_round_trip_idempotence_and_create_without_replacement_are_exact() {
     assert_eq!(store.len().unwrap(), 1);
     assert_eq!(
         store.insert(&candidate).unwrap(),
-        ProofBlockCandidateInsertOutcome::AlreadyPresent
+        ArtifactBlockCandidateInsertOutcome::AlreadyPresent
     );
     assert_eq!(fs::read(directory.store_path()).unwrap(), committed);
     assert!(matches!(
-        ProofBlockCandidateStore::create(&directory.path, chain_definition, policy),
-        Err(ProofBlockCandidateStoreError::Locked)
+        ArtifactBlockCandidateStore::create(&directory.path, chain_definition, policy),
+        Err(ArtifactBlockCandidateStoreError::Locked)
     ));
     drop(store);
     assert!(matches!(
-        ProofBlockCandidateStore::create(&directory.path, chain_definition, policy),
-        Err(ProofBlockCandidateStoreError::Create { .. })
+        ArtifactBlockCandidateStore::create(&directory.path, chain_definition, policy),
+        Err(ArtifactBlockCandidateStoreError::Create { .. })
     ));
 
     let mut reopened =
-        ProofBlockCandidateStore::open(&directory.path, chain_definition, limits(2)).unwrap();
+        ArtifactBlockCandidateStore::open(&directory.path, chain_definition, limits(2)).unwrap();
     assert_eq!(reopened.get(candidate.id()).unwrap(), Some(candidate));
     assert_eq!(reopened.len().unwrap(), 1);
 }
 
 #[test]
 fn exact_format_golden_binds_chain_block_and_footer() {
+    assert_eq!(STORE_HEADER, b"naome:artifact-block-candidate-store:v0\0");
+    assert_eq!(ARTIFACT_BLOCK_BYTES, 128);
+    assert_eq!(ENTRY_BYTES, 160);
     let definition = chain_definition(0x11);
-    let candidate = ProofBlock::new(
-        ProofBlockId::from_bytes([
+    let candidate = ArtifactBlock::new(
+        ArtifactBlockId::from_bytes([
             0x71, 0xca, 0x84, 0xdc, 0xea, 0xe5, 0x1f, 0xd2, 0x33, 0x11, 0xeb, 0x1d, 0x79, 0xfc,
             0x97, 0x22, 0x3d, 0xba, 0x62, 0x82, 0x1d, 0x60, 0x4c, 0xd6, 0xf4, 0xd5, 0x70, 0x10,
             0x34, 0xc5, 0xf6, 0x2d,
         ]),
-        ProofSetRoot::from_bytes([0x11; 32]),
-        ProofSetRoot::from_bytes([0x22; 32]),
-        proof_id(0x33),
+        ArtifactSetRoot::from_bytes([0x11; 32]),
+        ArtifactSetRoot::from_bytes([0x22; 32]),
+        artifact_id(0x33),
     );
-    let expected_id = ProofBlockId::from_bytes([
-        0x64, 0x1d, 0xa8, 0x6f, 0x08, 0x14, 0xc4, 0xeb, 0x26, 0x16, 0xc6, 0x66, 0x8d, 0x40, 0xc0,
-        0x02, 0x7b, 0x48, 0x94, 0x0f, 0x22, 0x82, 0x8c, 0xea, 0xbd, 0xc0, 0x9e, 0x2a, 0x5d, 0xe9,
-        0xab, 0xab,
+    let expected_id = ArtifactBlockId::from_bytes([
+        0xc7, 0x13, 0x2e, 0x96, 0x14, 0xc3, 0xf1, 0xbc, 0x96, 0x28, 0x86, 0x0e, 0xca, 0xf6, 0xb0,
+        0x81, 0x8c, 0x49, 0x57, 0x30, 0x93, 0xe7, 0xea, 0x01, 0x5c, 0x1d, 0xe6, 0x61, 0xc9, 0x3e,
+        0x24, 0x0e,
     ]);
     assert_eq!(candidate.id(), expected_id);
 
     let directory = TestDirectory::new("golden");
     let mut store =
-        ProofBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
+        ArtifactBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
     assert_eq!(
         store.insert(&candidate).unwrap(),
-        ProofBlockCandidateInsertOutcome::Inserted
+        ArtifactBlockCandidateInsertOutcome::Inserted
     );
 
     let bytes = fs::read(directory.store_path()).unwrap();
@@ -184,31 +187,36 @@ fn exact_format_golden_binds_chain_block_and_footer() {
     expected.extend_from_slice(&candidate.to_canonical_bytes());
     expected.extend_from_slice(expected_id.as_bytes());
     assert_eq!(bytes, expected);
-    assert_eq!(bytes.len(), 66 + PROOF_BLOCK_BYTES + 32);
+    assert_eq!(
+        bytes.len(),
+        STORE_PREFIX_BYTES as usize + ARTIFACT_BLOCK_BYTES + ArtifactBlockId::BYTE_LENGTH
+    );
 }
 
 #[test]
 fn fixed_canonical_block_round_trips_and_reopens() {
     let definition = chain_definition(0x11);
-    let candidate = ProofBlock::new(
-        ProofBlockId::from_bytes([0x22; ProofBlockId::BYTE_LENGTH]),
-        ProofSetRoot::from_bytes([0x31; ProofSetRoot::BYTE_LENGTH]),
-        ProofSetRoot::from_bytes([0x32; ProofSetRoot::BYTE_LENGTH]),
-        proof_id(0x40),
+    let candidate = ArtifactBlock::new(
+        ArtifactBlockId::from_bytes([0x22; ArtifactBlockId::BYTE_LENGTH]),
+        ArtifactSetRoot::from_bytes([0x31; ArtifactSetRoot::BYTE_LENGTH]),
+        ArtifactSetRoot::from_bytes([0x32; ArtifactSetRoot::BYTE_LENGTH]),
+        artifact_id(0x40),
     );
-    assert_eq!(candidate.to_canonical_bytes().len(), PROOF_BLOCK_BYTES);
+    assert_eq!(candidate.to_canonical_bytes().len(), ARTIFACT_BLOCK_BYTES);
 
     let directory = TestDirectory::new("maximum-block");
     let policy = limits(1);
-    let mut store = ProofBlockCandidateStore::create(&directory.path, definition, policy).unwrap();
+    let mut store =
+        ArtifactBlockCandidateStore::create(&directory.path, definition, policy).unwrap();
     assert_eq!(
         store.insert(&candidate).unwrap(),
-        ProofBlockCandidateInsertOutcome::Inserted
+        ArtifactBlockCandidateInsertOutcome::Inserted
     );
     assert_eq!(store.get(candidate.id()).unwrap(), Some(candidate));
     drop(store);
 
-    let mut reopened = ProofBlockCandidateStore::open(&directory.path, definition, policy).unwrap();
+    let mut reopened =
+        ArtifactBlockCandidateStore::open(&directory.path, definition, policy).unwrap();
     assert_eq!(reopened.get(candidate.id()).unwrap(), Some(candidate));
 }
 
@@ -216,27 +224,27 @@ fn fixed_canonical_block_round_trips_and_reopens() {
 fn siblings_and_orphans_are_retained_without_touching_selected_state() {
     let definition = chain_definition(0x11);
     let directory = TestDirectory::new("structural-only");
-    let journal = ProofChainJournal::create(&directory.path, definition).unwrap();
+    let journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
     let selected_before = fs::read(directory.journal_path()).unwrap();
     let head_before = journal.head_block_id().unwrap();
-    let root_before = journal.proof_set_root().unwrap();
+    let root_before = journal.artifact_set_root().unwrap();
     let len_before = journal.len().unwrap();
 
     let sibling_a = block(0x42, 0x51);
     let sibling_b = block(0x42, 0x52);
     let orphan = block(0xee, 0x53);
     let mut store =
-        ProofBlockCandidateStore::create(&directory.path, definition, limits(3)).unwrap();
+        ArtifactBlockCandidateStore::create(&directory.path, definition, limits(3)).unwrap();
     for candidate in [&sibling_a, &sibling_b, &orphan] {
         assert_eq!(
             store.insert(candidate).unwrap(),
-            ProofBlockCandidateInsertOutcome::Inserted
+            ArtifactBlockCandidateInsertOutcome::Inserted
         );
         assert_eq!(store.get(candidate.id()).unwrap(), Some(*candidate));
     }
     assert_eq!(store.len().unwrap(), 3);
     assert_eq!(journal.head_block_id().unwrap(), head_before);
-    assert_eq!(journal.proof_set_root().unwrap(), root_before);
+    assert_eq!(journal.artifact_set_root().unwrap(), root_before);
     assert_eq!(journal.len().unwrap(), len_before);
     assert_eq!(fs::read(directory.journal_path()).unwrap(), selected_before);
     assert!(matches!(journal.block(sibling_a.id()), Ok(None)));
@@ -254,13 +262,13 @@ fn wrong_chain_and_complete_corruption_precede_recovery_and_local_capacity() {
     directory.write_image(&corrupt);
 
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, chain_definition(0x12), limits(1)),
-        Err(ProofBlockCandidateStoreError::ChainIdMismatch { .. })
+        ArtifactBlockCandidateStore::open(&directory.path, chain_definition(0x12), limits(1)),
+        Err(ArtifactBlockCandidateStoreError::ChainIdMismatch { .. })
     ));
     assert_eq!(fs::read(directory.store_path()).unwrap(), corrupt);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(1)),
-        Err(ProofBlockCandidateStoreError::BlockIdMismatch { entry: 1, .. })
+        ArtifactBlockCandidateStore::open(&directory.path, definition, limits(1)),
+        Err(ArtifactBlockCandidateStoreError::BlockIdMismatch { entry: 1, .. })
     ));
     assert_eq!(fs::read(directory.store_path()).unwrap(), corrupt);
 }
@@ -273,8 +281,8 @@ fn invalid_prefixes_and_reopen_entry_capacity_fail_without_mutation() {
         let directory = TestDirectory::new("short-prefix");
         directory.write_image(&exact_prefix[..cut]);
         assert!(matches!(
-            ProofBlockCandidateStore::open(&directory.path, definition, limits(2)),
-            Err(ProofBlockCandidateStoreError::InvalidHeader)
+            ArtifactBlockCandidateStore::open(&directory.path, definition, limits(2)),
+            Err(ArtifactBlockCandidateStoreError::InvalidHeader)
         ));
         assert_eq!(
             fs::read(directory.store_path()).unwrap(),
@@ -287,8 +295,8 @@ fn invalid_prefixes_and_reopen_entry_capacity_fail_without_mutation() {
     wrong_magic[0] ^= 0x01;
     directory.write_image(&wrong_magic);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(2)),
-        Err(ProofBlockCandidateStoreError::InvalidHeader)
+        ArtifactBlockCandidateStore::open(&directory.path, definition, limits(2)),
+        Err(ArtifactBlockCandidateStoreError::InvalidHeader)
     ));
     assert_eq!(fs::read(directory.store_path()).unwrap(), wrong_magic);
 
@@ -298,8 +306,8 @@ fn invalid_prefixes_and_reopen_entry_capacity_fail_without_mutation() {
     let directory = TestDirectory::new("reopen-entry-limit");
     directory.write_image(&committed);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(1)),
-        Err(ProofBlockCandidateStoreError::EntryLimitExceeded {
+        ArtifactBlockCandidateStore::open(&directory.path, definition, limits(1)),
+        Err(ArtifactBlockCandidateStoreError::EntryLimitExceeded {
             actual: 2,
             maximum: 1,
         })
@@ -318,8 +326,8 @@ fn mismatched_footers_and_duplicate_entries_fail_closed() {
     let directory = TestDirectory::new("invalid-block");
     directory.write_image(&malformed);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(2)),
-        Err(ProofBlockCandidateStoreError::BlockIdMismatch { .. })
+        ArtifactBlockCandidateStore::open(&directory.path, definition, limits(2)),
+        Err(ArtifactBlockCandidateStoreError::BlockIdMismatch { .. })
     ));
 
     let entry = encoded_entry(&candidate);
@@ -329,8 +337,8 @@ fn mismatched_footers_and_duplicate_entries_fail_closed() {
     let directory = TestDirectory::new("duplicate");
     directory.write_image(&duplicate);
     assert!(matches!(
-        ProofBlockCandidateStore::open(&directory.path, definition, limits(2)),
-        Err(ProofBlockCandidateStoreError::DuplicateBlockId { entry: 1, .. })
+        ArtifactBlockCandidateStore::open(&directory.path, definition, limits(2)),
+        Err(ArtifactBlockCandidateStoreError::DuplicateBlockId { entry: 1, .. })
     ));
 }
 
@@ -348,7 +356,7 @@ fn every_incomplete_append_cut_recovers_only_the_committed_prefix() {
         visible.extend_from_slice(&second_entry[..cut]);
         directory.write_image(&visible);
         let mut store =
-            ProofBlockCandidateStore::open(&directory.path, definition, limits(2)).unwrap();
+            ArtifactBlockCandidateStore::open(&directory.path, definition, limits(2)).unwrap();
         assert_eq!(store.len().unwrap(), 1, "cut={cut}");
         assert_eq!(store.get(first.id()).unwrap(), Some(first), "cut={cut}");
         assert!(store.get(second.id()).unwrap().is_none(), "cut={cut}");
@@ -366,7 +374,8 @@ fn every_incomplete_append_cut_recovers_only_the_committed_prefix() {
         let mut visible = prefix(definition);
         visible.extend_from_slice(&first_entry[..cut]);
         directory.write_image(&visible);
-        let store = ProofBlockCandidateStore::open(&directory.path, definition, limits(1)).unwrap();
+        let store =
+            ArtifactBlockCandidateStore::open(&directory.path, definition, limits(1)).unwrap();
         assert!(store.is_empty().unwrap(), "cut={cut}");
         drop(store);
         assert_eq!(
@@ -383,19 +392,19 @@ fn entry_limit_applies_after_validity_but_exact_duplicates_stay_idempotent() {
     let second = block(0x22, 0x32);
     let directory = TestDirectory::new("limits");
     let mut store =
-        ProofBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
+        ArtifactBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
     assert_eq!(
         store.insert(&first).unwrap(),
-        ProofBlockCandidateInsertOutcome::Inserted
+        ArtifactBlockCandidateInsertOutcome::Inserted
     );
     let committed = fs::read(directory.store_path()).unwrap();
     assert_eq!(
         store.insert(&first).unwrap(),
-        ProofBlockCandidateInsertOutcome::AlreadyPresent
+        ArtifactBlockCandidateInsertOutcome::AlreadyPresent
     );
     assert!(matches!(
         store.insert(&second),
-        Err(ProofBlockCandidateStoreError::EntryLimitExceeded {
+        Err(ArtifactBlockCandidateStoreError::EntryLimitExceeded {
             actual: 2,
             maximum: 1,
         })
@@ -414,32 +423,32 @@ fn post_open_block_footer_and_truncation_changes_poison_the_handle() {
     for (label, offset) in [("block", block_offset), ("footer", footer_offset)] {
         let directory = TestDirectory::new(label);
         let mut store =
-            ProofBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
+            ArtifactBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
         assert_eq!(
             store.insert(&candidate).unwrap(),
-            ProofBlockCandidateInsertOutcome::Inserted
+            ArtifactBlockCandidateInsertOutcome::Inserted
         );
         let mut bytes = fs::read(directory.store_path()).unwrap();
         bytes[offset] ^= 0x01;
         fs::write(directory.store_path(), bytes).unwrap();
         assert!(matches!(
             store.get(candidate.id()),
-            Err(ProofBlockCandidateStoreError::StoredEntryChanged { .. })
-                | Err(ProofBlockCandidateStoreError::Read { .. })
+            Err(ArtifactBlockCandidateStoreError::StoredEntryChanged { .. })
+                | Err(ArtifactBlockCandidateStoreError::Read { .. })
         ));
         assert_eq!(store.chain_id(), definition.id());
         assert!(matches!(
             store.len(),
-            Err(ProofBlockCandidateStoreError::Poisoned)
+            Err(ArtifactBlockCandidateStoreError::Poisoned)
         ));
     }
 
     let directory = TestDirectory::new("truncate");
     let mut store =
-        ProofBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
+        ArtifactBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
     assert_eq!(
         store.insert(&candidate).unwrap(),
-        ProofBlockCandidateInsertOutcome::Inserted
+        ArtifactBlockCandidateInsertOutcome::Inserted
     );
     let file = OpenOptions::new()
         .write(true)
@@ -448,11 +457,11 @@ fn post_open_block_footer_and_truncation_changes_poison_the_handle() {
     file.set_len(STORE_PREFIX_BYTES + 4).unwrap();
     assert!(matches!(
         store.insert(&candidate),
-        Err(ProofBlockCandidateStoreError::Read { .. })
+        Err(ArtifactBlockCandidateStoreError::Read { .. })
     ));
     assert!(matches!(
         store.is_empty(),
-        Err(ProofBlockCandidateStoreError::Poisoned)
+        Err(ArtifactBlockCandidateStoreError::Poisoned)
     ));
 }
 
@@ -466,10 +475,10 @@ fn new_insert_detects_post_open_truncation_and_extension_before_writing() {
     for (label, extend) in [("new-insert-truncate", false), ("new-insert-extend", true)] {
         let directory = TestDirectory::new(label);
         let mut store =
-            ProofBlockCandidateStore::create(&directory.path, definition, policy).unwrap();
+            ArtifactBlockCandidateStore::create(&directory.path, definition, policy).unwrap();
         assert_eq!(
             store.insert(&first).unwrap(),
-            ProofBlockCandidateInsertOutcome::Inserted
+            ArtifactBlockCandidateInsertOutcome::Inserted
         );
         let expected = fs::read(directory.store_path()).unwrap();
         let expected_end = expected.len() as u64;
@@ -484,7 +493,7 @@ fn new_insert_detects_post_open_truncation_and_extension_before_writing() {
 
         assert!(matches!(
             store.insert(&second),
-            Err(ProofBlockCandidateStoreError::StoreLengthChanged {
+            Err(ArtifactBlockCandidateStoreError::StoreLengthChanged {
                 expected,
                 actual,
             }) if expected == expected_end && actual == mutated.len() as u64
@@ -492,12 +501,12 @@ fn new_insert_detects_post_open_truncation_and_extension_before_writing() {
         assert_eq!(fs::read(directory.store_path()).unwrap(), mutated);
         assert!(matches!(
             store.contains(first.id()),
-            Err(ProofBlockCandidateStoreError::Poisoned)
+            Err(ArtifactBlockCandidateStoreError::Poisoned)
         ));
     }
 }
 
-fn scripted_io(definition: ProofChainDefinition, fault: Option<Fault>) -> ScriptedIo {
+fn scripted_io(definition: ArtifactChainDefinition, fault: Option<Fault>) -> ScriptedIo {
     ScriptedIo::new(prefix(definition), fault)
 }
 
@@ -507,11 +516,14 @@ fn append_barriers_and_every_ambiguous_failure_reopen_to_old_or_new() {
     let candidate = block(0x21, 0x31);
     let canonical_len = candidate.to_canonical_bytes().len();
     let policy = limits(1);
-    let mut success =
-        ProofBlockCandidateStoreCore::empty(scripted_io(definition, None), definition.id(), policy);
+    let mut success = ArtifactBlockCandidateStoreCore::empty(
+        scripted_io(definition, None),
+        definition.id(),
+        policy,
+    );
     assert_eq!(
         success.insert(&candidate).unwrap(),
-        ProofBlockCandidateInsertOutcome::Inserted
+        ArtifactBlockCandidateInsertOutcome::Inserted
     );
     assert_eq!(
         success.file.trace,
@@ -527,7 +539,7 @@ fn append_barriers_and_every_ambiguous_failure_reopen_to_old_or_new() {
     let faults = all_append_faults(body_bytes, BLOCK_ID_BYTES as usize);
 
     for fault in faults {
-        let mut core = ProofBlockCandidateStoreCore::empty(
+        let mut core = ArtifactBlockCandidateStoreCore::empty(
             scripted_io(definition, Some(fault.clone())),
             definition.id(),
             policy,
@@ -535,7 +547,7 @@ fn append_barriers_and_every_ambiguous_failure_reopen_to_old_or_new() {
         assert!(
             matches!(
                 core.insert(&candidate),
-                Err(ProofBlockCandidateStoreError::Commit {
+                Err(ArtifactBlockCandidateStoreError::Commit {
                     block_id,
                     block_bytes,
                     ..
@@ -548,7 +560,7 @@ fn append_barriers_and_every_ambiguous_failure_reopen_to_old_or_new() {
         assert_eq!(core.committed_end, STORE_PREFIX_BYTES, "fault={fault:?}");
 
         let durable = core.file.durable.clone();
-        let mut reopened = ProofBlockCandidateStoreCore::replay(
+        let mut reopened = ArtifactBlockCandidateStoreCore::replay(
             ScriptedIo::from_images(durable.clone(), durable),
             definition.id(),
             policy,
@@ -569,8 +581,8 @@ fn recovery_and_stabilization_failures_return_no_handle() {
     let mut recovery_io = ScriptedIo::from_images(incomplete.clone(), incomplete);
     recovery_io.set_len_failure = true;
     assert!(matches!(
-        ProofBlockCandidateStoreCore::replay(recovery_io, definition.id(), limits(1)),
-        Err(ProofBlockCandidateStoreError::Recovery {
+        ArtifactBlockCandidateStoreCore::replay(recovery_io, definition.id(), limits(1)),
+        Err(ArtifactBlockCandidateStoreError::Recovery {
             offset: STORE_PREFIX_BYTES,
             ..
         })
@@ -581,15 +593,15 @@ fn recovery_and_stabilization_failures_return_no_handle() {
     let mut recovery_io = ScriptedIo::from_images(incomplete.clone(), incomplete);
     recovery_io.plain_sync_failure = true;
     assert!(matches!(
-        ProofBlockCandidateStoreCore::replay(recovery_io, definition.id(), limits(1)),
-        Err(ProofBlockCandidateStoreError::Recovery { .. })
+        ArtifactBlockCandidateStoreCore::replay(recovery_io, definition.id(), limits(1)),
+        Err(ArtifactBlockCandidateStoreError::Recovery { .. })
     ));
 
     let complete = prefix(definition);
     let mut stabilize_io = ScriptedIo::from_images(complete.clone(), complete);
     stabilize_io.plain_sync_failure = true;
     assert!(matches!(
-        ProofBlockCandidateStoreCore::replay(stabilize_io, definition.id(), limits(1)),
-        Err(ProofBlockCandidateStoreError::Stabilize { .. })
+        ArtifactBlockCandidateStoreCore::replay(stabilize_io, definition.id(), limits(1)),
+        Err(ArtifactBlockCandidateStoreError::Stabilize { .. })
     ));
 }

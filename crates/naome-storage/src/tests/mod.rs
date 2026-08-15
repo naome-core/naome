@@ -5,18 +5,21 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
-    AppendPhase, ENTRY_FIXED_BYTES, ENTRY_MAX_BODY_BYTES, ENTRY_MIN_BODY_BYTES, JOURNAL_FILE_NAME,
-    JOURNAL_HEADER, JOURNAL_PREFIX_BYTES, JournalCore, ProofChainJournal, ProofChainJournalError,
+    AppendPhase, ArtifactChainJournal, ArtifactChainJournalError, ENTRY_FIXED_BYTES,
+    ENTRY_MAX_BODY_BYTES, ENTRY_MIN_BODY_BYTES, JOURNAL_FILE_NAME, JOURNAL_HEADER,
+    JOURNAL_PREFIX_BYTES, JournalCore,
 };
 use naome_chain::{
-    PROOF_BLOCK_BYTES, ProofBlock, ProofBlockApplyError, ProofBlockId, ProofChainDefinition,
-    ProofChainId, ProofChainState, ProofDag, ProofSetMembership, ProofSetRoot,
+    ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockApplyError, ArtifactBlockId,
+    ArtifactChainDefinition, ArtifactChainId, ArtifactChainState, ArtifactDag,
+    ArtifactSetMembership, ArtifactSetRoot,
 };
 use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
-use naome_ledger::{AcceptedProofRecord, LedgerError};
+use naome_ledger::{AcceptedArtifactRecord, LedgerError};
 use naome_proof::{
-    CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, ProofCertificate, ProofCertificateError,
-    ProofId, ProofStep,
+    ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId, ArtifactPayload, ArtifactPayloadError,
+    CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, DefinedFormula, DefinitionCertificate,
+    ProofCertificate, ProofCertificateError, ProofId, ProofStep,
 };
 
 mod admission;
@@ -26,7 +29,7 @@ mod replay;
 
 const CHAIN_BYTE: u8 = 0x11;
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
-type JournalEntryFixture = (ProofBlock, Vec<u8>, ProofId);
+type JournalEntryFixture = (ArtifactBlock, Vec<u8>, ArtifactId);
 
 struct TestDirectory {
     path: PathBuf,
@@ -37,7 +40,7 @@ impl TestDirectory {
         loop {
             let sequence = TEMP_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = env::temp_dir().join(format!(
-                "naome-proof-chain-storage-{}-{sequence}",
+                "naome-artifact-chain-storage-{}-{sequence}",
                 std::process::id()
             ));
             match fs::create_dir(&path) {
@@ -63,8 +66,8 @@ impl Drop for TestDirectory {
     }
 }
 
-fn chain_definition(byte: u8) -> ProofChainDefinition {
-    ProofChainDefinition::new([byte; 32])
+fn chain_definition(byte: u8) -> ArtifactChainDefinition {
+    ArtifactChainDefinition::new([byte; 32])
 }
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
@@ -72,10 +75,11 @@ fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
 }
 
 fn canonical_bytes(steps: Vec<ProofStep>) -> Vec<u8> {
-    certificate(steps)
+    let certificate = certificate(steps)
         .into_unchecked_normal_form()
-        .canonical_bytes()
-        .to_vec()
+        .certificate()
+        .clone();
+    ArtifactPayload::Proof(certificate).to_canonical_bytes()
 }
 
 fn axiom_bytes(axiom: ZfcAxiom) -> Vec<u8> {
@@ -92,71 +96,75 @@ fn referenced_generalization(proof_id: ProofId, variable: FreeVariable) -> Vec<u
     ])
 }
 
-fn dependency_chain_with_len(length: usize) -> (Vec<Vec<u8>>, Vec<ProofId>) {
+fn relation_definition_bytes() -> Vec<u8> {
+    let variable = FreeVariable::new(0);
+    ArtifactPayload::Definition(
+        DefinitionCertificate::relation(1, DefinedFormula::equal(variable, variable)).unwrap(),
+    )
+    .to_canonical_bytes()
+}
+
+fn dependency_chain_with_len(length: usize) -> (Vec<Vec<u8>>, Vec<ArtifactId>) {
     assert!(length > 0);
-    let mut dag = ProofDag::new();
+    let mut dag = ArtifactDag::new();
     let root = axiom_bytes(ZfcAxiom::Pairing);
-    let root_id = dag
-        .apply_canonical_proof_bytes(root.clone())
-        .unwrap()
-        .proof_id();
+    let root_record = dag.apply_canonical_artifact_bytes(root.clone()).unwrap();
+    let mut previous_proof_id = root_record.as_proof().unwrap().proof_id();
     let mut payloads = Vec::with_capacity(length);
-    let mut proof_ids = Vec::with_capacity(length);
+    let mut artifact_ids = Vec::with_capacity(length);
     payloads.push(root);
-    proof_ids.push(root_id);
+    artifact_ids.push(root_record.artifact_id());
     for index in 1..length {
         let payload = referenced_generalization(
-            *proof_ids.last().unwrap(),
+            previous_proof_id,
             FreeVariable::new(u32::try_from(index).unwrap()),
         );
-        let proof_id = dag
-            .apply_canonical_proof_bytes(payload.clone())
-            .unwrap()
-            .proof_id();
+        let record = dag.apply_canonical_artifact_bytes(payload.clone()).unwrap();
+        previous_proof_id = record.as_proof().unwrap().proof_id();
         payloads.push(payload);
-        proof_ids.push(proof_id);
+        artifact_ids.push(record.artifact_id());
     }
-    (payloads, proof_ids)
+    (payloads, artifact_ids)
 }
 
-fn independent_axioms() -> (Vec<Vec<u8>>, Vec<ProofId>) {
+fn independent_axioms() -> (Vec<Vec<u8>>, Vec<ArtifactId>) {
     let payloads = vec![axiom_bytes(ZfcAxiom::Pairing), axiom_bytes(ZfcAxiom::Union)];
-    let proof_ids = payloads
+    let artifact_ids = payloads
         .iter()
         .map(|payload| {
-            ProofDag::new()
-                .apply_canonical_proof_bytes(payload.clone())
+            ArtifactDag::new()
+                .apply_canonical_artifact_bytes(payload.clone())
                 .unwrap()
-                .proof_id()
+                .artifact_id()
         })
         .collect();
-    (payloads, proof_ids)
+    (payloads, artifact_ids)
 }
 
-fn proof_bytes(payload: &[u8]) -> Vec<u8> {
+fn artifact_bytes(payload: &[u8]) -> Vec<u8> {
     payload.to_vec()
 }
 
-fn prepared_block(state: &ProofChainState, proof_id: ProofId) -> ProofBlock {
-    state.prepare_block(proof_id).unwrap()
+fn prepared_block(state: &ArtifactChainState, artifact_id: ArtifactId) -> ArtifactBlock {
+    state.prepare_block(artifact_id).unwrap()
 }
 
-fn one_block(definition: ProofChainDefinition, proof_id: ProofId) -> ProofBlock {
-    let state = ProofChainState::new(definition);
-    prepared_block(&state, proof_id)
+fn one_block(definition: ArtifactChainDefinition, artifact_id: ArtifactId) -> ArtifactBlock {
+    let state = ArtifactChainState::new(definition);
+    prepared_block(&state, artifact_id)
 }
 
-fn two_block_chain(definition: ProofChainDefinition) -> [JournalEntryFixture; 2] {
-    let (payloads, proof_ids) = dependency_chain_with_len(2);
-    let mut state = ProofChainState::new(definition);
-    let first = prepared_block(&state, proof_ids[0]);
+fn two_block_chain(definition: ArtifactChainDefinition) -> [JournalEntryFixture; 2] {
+    let (payloads, artifact_ids) = dependency_chain_with_len(2);
+    let mut state = ArtifactChainState::new(definition);
+    let first = prepared_block(&state, artifact_ids[0]);
     state
-        .apply_block(&first, proof_bytes(&payloads[0]))
+        .apply_block(&first, artifact_bytes(&payloads[0]))
         .unwrap();
-    let second = prepared_block(&state, proof_ids[1]);
+    let second = prepared_block(&state, artifact_ids[1]);
     [
-        (first, payloads[0].clone(), proof_ids[0]),
-        (second, payloads[1].clone(), proof_ids[1]),
+        (first, payloads[0].clone(), artifact_ids[0]),
+        (second, payloads[1].clone(), artifact_ids[1]),
     ]
 }
 
@@ -184,19 +192,23 @@ fn over_formula_node_budget_bytes() -> Vec<u8> {
         bytes.extend_from_slice(formula);
     }
     assert!(bytes.len() < CERTIFICATE_MAX_BYTES);
-    bytes
+    let mut artifact = Vec::with_capacity(bytes.len() + 1);
+    artifact.push(0x00);
+    artifact.extend(bytes);
+    assert!(artifact.len() <= ARTIFACT_PAYLOAD_MAX_BYTES);
+    artifact
 }
 
-fn journal_prefix(id: ProofChainId) -> Vec<u8> {
+fn journal_prefix(id: ArtifactChainId) -> Vec<u8> {
     let mut prefix = Vec::with_capacity(JOURNAL_PREFIX_BYTES);
     prefix.extend_from_slice(JOURNAL_HEADER);
     prefix.extend_from_slice(id.as_bytes());
     prefix
 }
 
-fn entry(block: &ProofBlock, payload: &[u8]) -> Vec<u8> {
+fn entry(block: &ArtifactBlock, payload: &[u8]) -> Vec<u8> {
     let block_bytes = block.to_canonical_bytes();
-    assert_eq!(block_bytes.len(), PROOF_BLOCK_BYTES);
+    assert_eq!(block_bytes.len(), ARTIFACT_BLOCK_BYTES);
     let body_length = block_bytes.len() + payload.len();
     let body_length_bytes = u32::try_from(body_length).unwrap().to_be_bytes();
     let mut body = Vec::with_capacity(body_length);
@@ -209,7 +221,7 @@ fn entry(block: &ProofBlock, payload: &[u8]) -> Vec<u8> {
     encoded
 }
 
-fn raw_entry(body: &[u8], footer: ProofBlockId) -> Vec<u8> {
+fn raw_entry(body: &[u8], footer: ArtifactBlockId) -> Vec<u8> {
     let body_length_bytes = u32::try_from(body.len()).unwrap().to_be_bytes();
     let mut encoded = Vec::with_capacity(ENTRY_FIXED_BYTES as usize + body.len());
     encoded.extend_from_slice(&body_length_bytes);
@@ -218,7 +230,7 @@ fn raw_entry(body: &[u8], footer: ProofBlockId) -> Vec<u8> {
     encoded
 }
 
-fn journal_image(id: ProofChainId, entries: &[JournalEntryFixture]) -> Vec<u8> {
+fn journal_image(id: ArtifactChainId, entries: &[JournalEntryFixture]) -> Vec<u8> {
     let mut image = journal_prefix(id);
     for (block, payload, _) in entries {
         image.extend_from_slice(&entry(block, payload));
@@ -240,14 +252,12 @@ fn hex_bytes(hex: &str) -> Vec<u8> {
 #[derive(Debug, PartialEq, Eq)]
 struct RecordSnapshot {
     bytes: Vec<u8>,
-    proof_id: ProofId,
-    dependencies: Vec<ProofId>,
+    artifact_id: ArtifactId,
 }
 
-fn snapshot(record: &AcceptedProofRecord) -> RecordSnapshot {
+fn snapshot(record: &AcceptedArtifactRecord) -> RecordSnapshot {
     RecordSnapshot {
-        bytes: record.canonical_proof_bytes().to_vec(),
-        proof_id: record.proof_id(),
-        dependencies: record.direct_dependencies().to_vec(),
+        bytes: record.canonical_artifact_bytes().to_vec(),
+        artifact_id: record.artifact_id(),
     }
 }

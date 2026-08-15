@@ -1,0 +1,19 @@
+foundation = "naome:zfc"
+
+definitions:
+    identity = "57736bb0906c06fbba28be90eb7a15f7c4b0292d9e36a9c669a905fdde5a905e"
+
+statement = forall(x,
+    implies(
+        equal(identity(x,), x),
+        implies(equal(identity(x,), x), equal(identity(x,), x)),
+    ),
+)
+
+proof:
+    p0 = simplification(
+        equal(identity(x,), x),
+        equal(identity(x,), x),
+    )
+    p1 = generalization(p0, x)
+    return p1

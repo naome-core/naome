@@ -1,5 +1,7 @@
-use naome_checker::{ProofState, ProofStateError, normalize_and_check};
-use naome_foundation::{Replacement, SchemaError, Separation};
+use naome_checker::{
+    ArtifactState as ProofState, ArtifactStateError as ProofStateError, normalize_and_check,
+};
+use naome_foundation::{Formula, SchemaError};
 use naome_proof::{DerivationId, ProofCertificate, ProofId, StatementId};
 
 use super::*;
@@ -70,8 +72,18 @@ fn checked_state(source: &str) -> (ProofState, CompiledProof) {
         ProofCertificate::from_canonical_bytes(compiled.canonical_proof_bytes()).unwrap();
     let checked = normalize_and_check(certificate).unwrap();
     let mut state = ProofState::new();
-    state.register(checked).unwrap();
+    state.register_proof(checked).unwrap();
     (state, compiled)
+}
+
+fn compile_with_proof_state(
+    source: &str,
+    state: &ProofState,
+) -> Result<CompiledProof, CompileError> {
+    match compile_with_artifact_state(source, state)? {
+        CompiledArtifact::Proof(proof) => Ok(proof),
+        CompiledArtifact::Definition(_) => Err(CompileError::ExpectedProof { offset: 0 }),
+    }
 }
 
 fn parse_formula(source: &str, context: FormulaContext) -> Result<ParsedFormula, CompileError> {
@@ -425,11 +437,11 @@ fn derived_operands_retain_order_and_exists_binds_capture_free() {
     let set = FreeVariable::new(1);
     assert_eq!(
         exists.formula,
-        Formula::exists(
+        DefinedFormula::exists(
             x,
-            Formula::conjunction(
-                Formula::member(x, set),
-                Formula::for_all(x, Formula::member(x, x)),
+            DefinedFormula::conjunction(
+                DefinedFormula::member(x, set),
+                DefinedFormula::for_all(x, DefinedFormula::member(x, x)),
             ),
         )
     );
@@ -533,37 +545,37 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
     assert_eq!(
         parse_step("simplification(equal(x, x), member(y, z))").unwrap(),
         ProofStep::Simplification {
-            antecedent: Formula::equal(x, x),
-            consequent: Formula::member(y, z),
+            antecedent: Formula::equal(x, x).into(),
+            consequent: Formula::member(y, z).into(),
         }
     );
     assert_eq!(
         parse_step("frege(equal(x, x), member(y, z), equal(z, y))").unwrap(),
         ProofStep::Frege {
-            first: Formula::equal(x, x),
-            second: Formula::member(y, z),
-            third: Formula::equal(z, y),
+            first: Formula::equal(x, x).into(),
+            second: Formula::member(y, z).into(),
+            third: Formula::equal(z, y).into(),
         }
     );
     assert_eq!(
         parse_step("classical_contraposition(equal(x, x), member(y, z))").unwrap(),
         ProofStep::ClassicalContraposition {
-            antecedent: Formula::equal(x, x),
-            consequent: Formula::member(y, z),
+            antecedent: Formula::equal(x, x).into(),
+            consequent: Formula::member(y, z).into(),
         }
     );
     assert_eq!(
         parse_step("universal_distribution(x, equal(x, x), member(y, z))").unwrap(),
         ProofStep::UniversalDistribution {
             variable: x,
-            antecedent: Formula::equal(x, x),
-            consequent: Formula::member(y, z),
+            antecedent: Formula::equal(x, x).into(),
+            consequent: Formula::member(y, z).into(),
         }
     );
     assert_eq!(
         parse_step("vacuous_universal(equal(x, x))").unwrap(),
         ProofStep::VacuousUniversal {
-            formula: Formula::equal(x, x),
+            formula: Formula::equal(x, x).into(),
         }
     );
     assert_eq!(
@@ -571,7 +583,7 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
         ProofStep::UniversalInstantiation {
             variable: x,
             replacement: y,
-            body: Formula::member(x, z),
+            body: Formula::member(x, z).into(),
         }
     );
     assert_eq!(
@@ -590,7 +602,7 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
         ProofStep::EqualitySubstitution {
             from: x,
             to: y,
-            body: Formula::member(x, z),
+            body: Formula::member(x, z).into(),
         }
     );
     assert_eq!(
@@ -598,8 +610,8 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
             "separation(member(element, filter), element, source, result, parameters=[filter])"
         )
         .unwrap(),
-        ProofStep::Separation(Separation {
-            predicate: Formula::member(FreeVariable::new(0), FreeVariable::new(1)),
+        ProofStep::Separation(ProofSeparation {
+            predicate: Formula::member(FreeVariable::new(0), FreeVariable::new(1)).into(),
             element: FreeVariable::new(0),
             source: FreeVariable::new(2),
             result: FreeVariable::new(3),
@@ -611,8 +623,8 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
             "replacement(equal(input, output), input, output, witness, source, result, parameters=[])"
         )
         .unwrap(),
-        ProofStep::Replacement(Replacement {
-            predicate: Formula::equal(FreeVariable::new(0), FreeVariable::new(1)),
+        ProofStep::Replacement(ProofReplacement {
+            predicate: Formula::equal(FreeVariable::new(0), FreeVariable::new(1)).into(),
             input: FreeVariable::new(0),
             output: FreeVariable::new(1),
             uniqueness_witness: FreeVariable::new(2),
@@ -659,7 +671,7 @@ proof:
         ProofStep::EqualitySubstitution {
             from: x,
             to: y,
-            body: Formula::for_all(y, Formula::member(x, y)),
+            body: Formula::for_all(y, Formula::member(x, y)).into(),
         }
     );
 
@@ -792,11 +804,12 @@ fn schema_parameter_lists_are_named_comma_delimited_and_trailing_comma_tolerant(
     .unwrap();
     assert_eq!(
         separation,
-        ProofStep::Separation(Separation {
+        ProofStep::Separation(ProofSeparation {
             predicate: Formula::implies(
                 Formula::member(FreeVariable::new(0), FreeVariable::new(1)),
                 Formula::equal(FreeVariable::new(2), FreeVariable::new(3)),
-            ),
+            )
+            .into(),
             element: FreeVariable::new(0),
             source: FreeVariable::new(1),
             result: FreeVariable::new(4),
@@ -810,11 +823,12 @@ fn schema_parameter_lists_are_named_comma_delimited_and_trailing_comma_tolerant(
     .unwrap();
     assert_eq!(
         replacement,
-        ProofStep::Replacement(Replacement {
+        ProofStep::Replacement(ProofReplacement {
             predicate: Formula::implies(
                 Formula::equal(FreeVariable::new(0), FreeVariable::new(1)),
                 Formula::member(FreeVariable::new(0), FreeVariable::new(2)),
-            ),
+            )
+            .into(),
             input: FreeVariable::new(0),
             output: FreeVariable::new(1),
             uniqueness_witness: FreeVariable::new(3),
@@ -1110,10 +1124,7 @@ fn fixed_names_and_call_shape_cannot_be_reinterpreted_as_bindings() {
     );
     assert!(matches!(
         compile(&unknown_call),
-        Err(CompileError::Syntax {
-            expected: "a supported formula",
-            ..
-        })
+        Err(CompileError::UnknownDefinitionAlias { name, .. }) if name == "missing"
     ));
 
     let unknown_bare = complete_source(
@@ -1365,7 +1376,7 @@ fn citation_is_identity_neutral_only_for_presentation_changes() {
     let checked = naome_checker::normalize_and_check_with_state(certificate, &state).unwrap();
     let alias_id = checked.proof_id();
     assert_eq!(
-        ProofState::new().register(checked),
+        ProofState::new().register_proof(checked),
         Err(ProofStateError::MissingProofDependency {
             proof_id: ProofId::from_bytes(hex32(SELF_EQUALITY_PROOF_ID_HEX)),
         })
@@ -1376,7 +1387,7 @@ fn citation_is_identity_neutral_only_for_presentation_changes() {
     let checked = naome_checker::normalize_and_check_with_state(certificate, &state).unwrap();
     let mut populated = state;
     assert_eq!(
-        populated.register(checked),
+        populated.register_proof(checked),
         Err(ProofStateError::DuplicateDerivation {
             derivation_id: DerivationId::from_bytes(hex32(SELF_EQUALITY_DERIVATION_ID_HEX)),
         })
@@ -1946,6 +1957,154 @@ fn consuming_bytes_returns_the_exact_owned_output() {
     let proof = compile(SOURCE).unwrap();
     let expected = proof.canonical_proof_bytes().to_vec();
     assert_eq!(proof.into_canonical_proof_bytes().into_vec(), expected);
+}
+
+#[test]
+fn definition_source_names_are_identity_neutral_and_source_helpers_are_rejected() {
+    let first =
+        compile_artifact("foundation = \"naome:zfc\" definition first = relation(x,): equal(x, x)")
+            .unwrap();
+    let renamed = compile_artifact(
+        "foundation = \"naome:zfc\" definition presentation_only = relation(value): equal(value, value)",
+    )
+    .unwrap();
+    assert_eq!(first, renamed);
+
+    let formulas = "foundation = \"naome:zfc\" formulas: helper = equal(x, x) definition relation_name = relation(x): equal(x, x)";
+    assert!(matches!(
+        compile_artifact(formulas),
+        Err(CompileError::Syntax {
+            expected: "a proof statement after formula bindings",
+            ..
+        })
+    ));
+    for duplicate in [
+        "foundation = \"naome:zfc\" definition bad = relation(x, x): equal(x, x)",
+        "foundation = \"naome:zfc\" definition bad = function(x, x, obligation = \"0000000000000000000000000000000000000000000000000000000000000000\"): equal(x, x)",
+    ] {
+        assert!(matches!(
+            compile_artifact(duplicate),
+            Err(CompileError::Syntax {
+                expected: "a unique definition parameter",
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn all_definition_declarations_reach_the_typed_semantic_boundary() {
+    let relation =
+        compile_artifact("foundation = \"naome:zfc\" definition r = relation(x, y): equal(x, y)")
+            .unwrap();
+    assert!(matches!(relation, CompiledArtifact::Definition(_)));
+
+    for source in [
+        "foundation = \"naome:zfc\" definition c = constant(value, obligation = \"0000000000000000000000000000000000000000000000000000000000000000\"): equal(value, value)",
+        "foundation = \"naome:zfc\" definition f = function(input, output, obligation = \"0000000000000000000000000000000000000000000000000000000000000000\",): equal(output, input)",
+    ] {
+        assert!(matches!(
+            compile_artifact(source),
+            Err(CompileError::DefinitionCheck { .. })
+        ));
+    }
+}
+
+#[test]
+fn definition_names_cannot_create_self_or_forward_authority() {
+    assert!(matches!(
+        compile_artifact(
+            "foundation = \"naome:zfc\" definition recursive = relation(x): recursive(x)"
+        ),
+        Err(CompileError::UnknownDefinitionAlias { name, .. }) if name == "recursive"
+    ));
+    assert!(matches!(
+        compile_artifact(
+            "foundation = \"naome:zfc\" definitions: future = \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\" definition current = relation(x): future(x)"
+        ),
+        Err(CompileError::DefinitionNotSelected { .. })
+    ));
+}
+
+#[test]
+fn term_sugar_relationalizes_unary_nested_and_multi_input_calls_exactly_once() {
+    let obligation = ProofId::from_bytes([0x41; 32]);
+    let identity_id = DefinitionId::from_bytes([0x51; 32]);
+    let binary_id = DefinitionId::from_bytes([0x52; 32]);
+
+    let parse = |source: &'static str| {
+        let mut parser = Parser::new(source);
+        parser.definition_aliases.insert(
+            "identity",
+            DefinitionAlias {
+                definition_id: identity_id,
+                kind: DefinitionKind::Function {
+                    input_arity: 1,
+                    total_unique_proof: obligation,
+                },
+            },
+        );
+        parser.definition_aliases.insert(
+            "binary",
+            DefinitionAlias {
+                definition_id: binary_id,
+                kind: DefinitionKind::Function {
+                    input_arity: 2,
+                    total_unique_proof: obligation,
+                },
+            },
+        );
+        let formula = parser
+            .parsed_formula(1, FormulaContext::Statement)
+            .unwrap()
+            .formula;
+        parser.end().unwrap();
+        formula
+    };
+
+    let x = FreeVariable::new(0);
+    let first = FreeVariable::new(1);
+    let second = FreeVariable::new(2);
+    let third = FreeVariable::new(3);
+
+    let unary = DefinedFormula::exists(
+        first,
+        DefinedFormula::conjunction(
+            DefinedFormula::defined_relation(identity_id, [x, first]),
+            DefinedFormula::equal(first, x),
+        ),
+    );
+    assert_eq!(parse("equal(identity(x), x)"), unary);
+
+    let nested = DefinedFormula::exists(
+        first,
+        DefinedFormula::exists(
+            second,
+            DefinedFormula::conjunction(
+                DefinedFormula::defined_relation(identity_id, [x, first]),
+                DefinedFormula::conjunction(
+                    DefinedFormula::defined_relation(identity_id, [first, second]),
+                    DefinedFormula::equal(second, x),
+                ),
+            ),
+        ),
+    );
+    assert_eq!(parse("equal(identity(identity(x)), x)"), nested);
+
+    let multi_input = DefinedFormula::exists(
+        second,
+        DefinedFormula::exists(
+            third,
+            DefinedFormula::conjunction(
+                DefinedFormula::defined_relation(identity_id, [first, second]),
+                DefinedFormula::conjunction(
+                    DefinedFormula::defined_relation(binary_id, [x, second, third]),
+                    DefinedFormula::equal(third, first),
+                ),
+            ),
+        ),
+    );
+    assert_eq!(parse("equal(binary(x, identity(y)), y)"), multi_input);
 }
 
 fn hex32(hex: &str) -> [u8; 32] {
