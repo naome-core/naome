@@ -1757,6 +1757,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-consensus"
+version = "0.1.0"
+
+[[package]]
 name = "naome-foundation"
 version = "0.1.0"
 

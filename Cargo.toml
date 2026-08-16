@@ -12,6 +12,7 @@ members = [
     "crates/naome-authoring",
     "crates/naome-chain",
     "crates/naome-checker",
+    "crates/naome-consensus",
     "crates/naome-foundation",
     "crates/naome-ledger",
     "crates/naome-network",
