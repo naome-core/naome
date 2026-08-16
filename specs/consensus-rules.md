@@ -4,7 +4,7 @@
 - META-004 [DECIDED] [IMPLEMENTED] The `IMPLEMENTED` marker requires current repository evidence named in the same bullet; evidence: this file.
 - META-005 [DECIDED] [IMPLEMENTED] The `NOT_IMPLEMENTED` marker means the normative rule is frozen but its implementation is incomplete; evidence: this file.
 - META-006 [DECIDED] [IMPLEMENTED] The `BLOCKED` marker means implementation must not begin before the decision point is resolved; evidence: this file.
-- META-007 [DECIDED] [IMPLEMENTED] The `AFTER` marker names prerequisite bullets that must be resolved before the current bullet; evidence: this file.
+- META-007 [DECIDED] [IMPLEMENTED] The `AFTER` marker names prerequisites that must be resolved and evidenced before the current bullet may be marked `IMPLEMENTED`; evidence: this file.
 - BASE-001 [DECIDED] [IMPLEMENTED] The deterministic mathematical checker alone decides whether a proof is mathematically valid; evidence: `crates/naome-checker/src/lib.rs`.
 - BASE-002 [DECIDED] [IMPLEMENTED] Strict local artifact admission cannot accept a mathematically invalid proof; evidence: `crates/naome-ledger/src/lib.rs`.
 - BASE-003 [DECIDED] [IMPLEMENTED] Current exact-head local selection admits artifacts only through strict canonical admission; evidence: `crates/naome-chain/src/block.rs`.
@@ -16,20 +16,20 @@
 - BASE-009 [DECIDED] [IMPLEMENTED] Current exact-head local selection resolves every artifact dependency from its selected parent state; evidence: `crates/naome-checker/src/state.rs`.
 - BASE-010 [DECIDED] [IMPLEMENTED] Current exact-head artifact-block application changes selected state atomically or leaves it unchanged; evidence: `crates/naome-chain/src/block.rs`.
 - BASE-011 [DECIDED] [IMPLEMENTED] An artifact-block identifier is an ancestry address rather than independent evidence of mathematical validity; evidence: `specs/proof-protocol.md`.
-- SEC-001 [OPEN] [BLOCKED] Confirm whether block production must be permissionless.
-- SEC-002 [OPEN] [BLOCKED] Confirm whether artifact submission must be permissionless.
-- SEC-003 [OPEN] [BLOCKED] Confirm whether full verification must be permissionless.
-- SEC-004 [OPEN] [BLOCKED] Decide whether any trusted sequencer is permitted.
-- SEC-005 [OPEN] [BLOCKED] Decide whether any trusted checkpoint is permitted.
-- SEC-006 [OPEN] [BLOCKED] Select the Sybil-resistance mechanism.
-- SEC-007 [OPEN] [BLOCKED] Define the exact consensus safety property.
-- SEC-008 [OPEN] [BLOCKED] Define the exact consensus liveness property.
-- SEC-009 [OPEN] [BLOCKED] Select the maximum adversarial consensus power tolerated by the safety proof.
-- SEC-010 [OPEN] [BLOCKED] Select the network synchrony assumptions used by the safety proof.
-- SEC-011 [OPEN] [BLOCKED] Select the network synchrony assumptions used by the liveness proof.
-- SEC-012 [OPEN] [BLOCKED] Define the required safety behavior during a network partition.
-- SEC-013 [OPEN] [BLOCKED] Define the required recovery behavior after a network partition heals.
-- SEC-014 [DECIDED] [NOT_IMPLEMENTED] Creating valid artifacts grants no consensus power.
+- SEC-001 [DECIDED] [NOT_IMPLEMENTED] Block production is restricted to the canonical active validator set while validator candidacy remains permissionless.
+- SEC-002 [DECIDED] [NOT_IMPLEMENTED] Any account that pays the required charges may submit a canonically valid artifact.
+- SEC-003 [DECIDED] [NOT_IMPLEMENTED] Anyone may run a full independently verifying node.
+- SEC-004 [DECIDED] [NOT_IMPLEMENTED] No trusted sequencer is permitted.
+- SEC-005 [DECIDED] [NOT_IMPLEMENTED] An explicitly user-selected recent finalized checkpoint may bootstrap synchronization but grants no consensus authority and is never selected silently by peers or project infrastructure.
+- SEC-006 [DECIDED] [NOT_IMPLEMENTED] The selected Sybil-resistance family is Proof of Cited Knowledge.
+- SEC-007 [DECIDED] [NOT_IMPLEMENTED] No two honest conforming nodes finalize different consensus blocks at one height while Byzantine active agreement weight is strictly less than one third.
+- SEC-008 [DECIDED] [NOT_IMPLEMENTED] Honest conforming nodes eventually finalize valid available proposals after eventual synchrony when strictly more than two thirds of active agreement weight follows the protocol and remains available.
+- SEC-009 [DECIDED] [NOT_IMPLEMENTED] The safety proof assumes Byzantine active agreement weight is strictly less than one third of the immutable position snapshot.
+- SEC-010 [DECIDED] [NOT_IMPLEMENTED] Consensus safety does not assume bounded message delay.
+- SEC-011 [DECIDED] [NOT_IMPLEMENTED] Consensus liveness assumes eventual synchrony and increasing round timeouts.
+- SEC-012 [DECIDED] [NOT_IMPLEMENTED] A partition without strict greater-than-two-thirds available agreement weight halts finality rather than relaxing quorum or producing conflicting finalized history.
+- SEC-013 [DECIDED] [NOT_IMPLEMENTED] After synchrony and strict greater-than-two-thirds availability return, validators resume round progression without rewriting finalized history.
+- SEC-014 [DECIDED] [NOT_IMPLEMENTED] Creating or selecting a valid artifact alone grants no consensus power.
 - SEC-015 [DECIDED] [NOT_IMPLEMENTED] `ArtifactId` count contributes zero consensus security weight.
 - SEC-016 [DECIDED] [NOT_IMPLEMENTED] `ProofId` count contributes zero consensus security weight.
 - SEC-017 [DECIDED] [NOT_IMPLEMENTED] `DerivationId` count contributes zero consensus security weight.
@@ -40,9 +40,17 @@
 - SEC-022 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical numeric calculations forbid floating-point arithmetic.
 - SEC-023 [DECIDED] [NOT_IMPLEMENTED] Consensus safety does not depend on local execution speed.
 - SEC-024 [DECIDED] [NOT_IMPLEMENTED] A timeout cannot make an invalid block valid.
-- SEC-025 [OPEN] [BLOCKED] Decide whether the chosen consensus family uses control messages distinct from consensus blocks; AFTER: `SEC-006`.
-- SEC-026 [OPEN] [BLOCKED] Define whether an admissible artifact is eventually included under the selected liveness assumptions.
-- SEC-027 [OPEN] [BLOCKED] Define whether empty consensus progress satisfies liveness while an admissible artifact awaits inclusion.
+- SEC-025 [DECIDED] [NOT_IMPLEMENTED] Weighted Tendermint consensus uses signed proposal, prevote, and precommit control messages distinct from consensus blocks; AFTER: `SEC-006`.
+- SEC-026 [DECIDED] [NOT_IMPLEMENTED] An artifact that remains admissible, fully available, and highest-ranked when an honest proposer begins proposal construction is included in that round's proposal.
+- SEC-027 [DECIDED] [NOT_IMPLEMENTED] Empty consensus progress does not satisfy liveness while an admissible artifact awaits inclusion.
+- SEC-028 [DECIDED] [NOT_IMPLEMENTED] Temporary genesis-validator bootstrap weight is the only permitted consensus weight not backed by matured protocol citation rewards.
+- SEC-029 [DECIDED] [NOT_IMPLEMENTED] Competitive hash mining contributes zero consensus weight.
+- SEC-030 [DECIDED] [NOT_IMPLEMENTED] Partitioning one fixed amount of economically backed Knowledge Weight across identities creates no additional Knowledge Weight and cannot make one live Knowledge Weight unit contribute more than once.
+- SEC-031 [DECIDED] [NOT_IMPLEMENTED] Post-bootstrap consensus power derives only from matured Knowledge Weight backed by protocol citation rewards.
+- SEC-032 [DECIDED] [NOT_IMPLEMENTED] The safety model counts adversary-controlled effective agreement weight in each immutable active-set snapshot regardless of how that weight was acquired or partitioned across validator keys.
+- SEC-033 [DECIDED] [NOT_IMPLEMENTED] An honest proposer with no lock-required valid value selects the fully validated available artifact candidate with the highest inclusion bid; AFTER: `SEC-008`, `SEC-011`, `SEC-026`.
+- SEC-040 [DECIDED] [NOT_IMPLEMENTED] Equal highest inclusion bids are ordered by ascending `ArtifactId`; AFTER: `SEC-033`.
+- SEC-041 [DECIDED] [NOT_IMPLEMENTED] V1 has no forced-inclusion queue, so its inclusion guarantee is conditional on the candidate remaining highest-ranked when an honest proposer begins construction; AFTER: `SEC-026`, `SEC-033`.
 - SAFE-001 [DECIDED] [NOT_IMPLEMENTED] A conforming full node independently verifies every artifact before treating its block as canonical.
 - SAFE-002 [DECIDED] [NOT_IMPLEMENTED] If the selected finality model exposes irreversible checkpoints, no two honest conforming nodes accept conflicting irreversible checkpoints under the selected adversary assumptions.
 - SAFE-003 [DECIDED] [NOT_IMPLEMENTED] If the selected finality model exposes irreversible checkpoints, every irreversible checkpoint has passed strict canonical artifact validation.
@@ -54,20 +62,20 @@
 - SAFE-009 [DECIDED] [NOT_IMPLEMENTED] Fork choice considers only candidates satisfying the selected data-availability rule.
 - SAFE-010 [DECIDED] [NOT_IMPLEMENTED] Each candidate artifact is validated against state derived from its exact parent ancestry.
 - SAFE-011 [DECIDED] [NOT_IMPLEMENTED] Evaluating a noncanonical branch does not mutate canonical selected state.
-- SAFE-012 [DECIDED] [NOT_IMPLEMENTED] Switching canonical branches changes selected state atomically or leaves it unchanged.
-- CODEC-001 [OPEN] [BLOCKED] Decide whether consensus wraps `ArtifactBlock` in a separate envelope; AFTER: `SEC-006`.
-- CODEC-002 [OPEN] [BLOCKED] Decide whether consensus changes the canonical `ArtifactBlock` format; AFTER: `SEC-006`.
-- CODEC-003 [OPEN] [BLOCKED] Decide whether one consensus transition commits zero or one `ArtifactBlock`; AFTER: `CODEC-001`, `CODEC-002`.
+- SAFE-012 [DECIDED] [NOT_IMPLEMENTED] Finalizing one unfinalized candidate installs its complete consensus and artifact state atomically or leaves the prior finalized state unchanged.
+- CODEC-001 [DECIDED] [NOT_IMPLEMENTED] Consensus wraps one `ArtifactBlock` in a separate canonical `ConsensusBlock` envelope; AFTER: `SEC-006`.
+- CODEC-002 [DECIDED] [NOT_IMPLEMENTED] Consensus preserves the existing canonical 128-byte `ArtifactBlock` format and identity unchanged; AFTER: `SEC-006`.
+- CODEC-003 [DECIDED] [NOT_IMPLEMENTED] Every non-genesis consensus transition commits exactly one `ArtifactBlock`.
 - CODEC-004 [OPEN] [BLOCKED] Specify the canonical consensus-block byte encoding; AFTER: `CODEC-001`, `CODEC-002`.
 - CODEC-006 [OPEN] [BLOCKED] Specify the consensus chain-context identity; AFTER: `SEC-006`.
-- CODEC-008 [OPEN] [BLOCKED] Decide whether a consensus block carries a post-consensus-state commitment; AFTER: `CODEC-004`.
-- CODEC-009 [OPEN] [BLOCKED] Decide whether a consensus block carries a post-artifact-state commitment; AFTER: `CODEC-004`.
-- CODEC-010 [OPEN] [BLOCKED] Decide whether a consensus block carries a height; AFTER: `SEC-006`.
-- CODEC-011 [OPEN] [BLOCKED] Decide whether a consensus block carries a slot or round coordinate; AFTER: `SEC-006`.
-- CODEC-012 [OPEN] [BLOCKED] Decide whether a consensus block carries consensus time; AFTER: `SEC-006`.
+- CODEC-008 [DECIDED] [NOT_IMPLEMENTED] Every consensus block carries the post-consensus-state commitment; AFTER: `CODEC-004`.
+- CODEC-009 [DECIDED] [NOT_IMPLEMENTED] Every consensus block carries the post-artifact-state commitment; AFTER: `CODEC-004`.
+- CODEC-010 [DECIDED] [NOT_IMPLEMENTED] Every consensus block carries its exact finalized-height coordinate; AFTER: `SEC-006`.
+- CODEC-011 [DECIDED] [NOT_IMPLEMENTED] Every proposal and agreement message carries the exact Tendermint round coordinate required by its role; AFTER: `SEC-006`.
+- CODEC-012 [DECIDED] [NOT_IMPLEMENTED] Consensus validity, rewards, vesting, decay, and deadlines use heights, rounds, epochs, or ancestry depth and never wall-clock time; AFTER: `SEC-006`.
 - CODEC-013 [OPEN] [BLOCKED] Specify the protocol-version commitment carried by consensus data; AFTER: `CODEC-004`.
-- CODEC-014 [OPEN] [BLOCKED] Specify the producer-authorization evidence carried by a consensus block; AFTER: `SEC-006`.
-- CODEC-015 [OPEN] [BLOCKED] Decide whether a consensus block carries separate agreement evidence; AFTER: `SEC-006`.
+- CODEC-014 [DECIDED] [NOT_IMPLEMENTED] A consensus block carries the selected proposer authorization for its evidence-free proposal signing root; AFTER: `SEC-006`.
+- CODEC-015 [DECIDED] [NOT_IMPLEMENTED] A finalized consensus block carries separately verifiable strict greater-than-two-thirds precommit evidence; AFTER: `SEC-006`.
 - CODEC-018 [OPEN] [BLOCKED] Specify the exact bytes authenticated by each producer-authorization proof; AFTER: `CODEC-014`.
 - CODEC-019 [OPEN] [BLOCKED] Specify the exact bytes authenticated by agreement evidence if `CODEC-015` selects separate evidence; AFTER: `CODEC-015`.
 - CODEC-020 [OPEN] [BLOCKED] Specify the consensus-control-message byte encoding if `SEC-025` selects separate messages; AFTER: `SEC-025`.
@@ -115,55 +123,65 @@
 - CODEC-061 [OPEN] [BLOCKED] Specify deterministic preferred-signature selection for one consensus-control-message semantic key; AFTER: `CODEC-060`.
 - FORK-001 [OPEN] [BLOCKED] Specify how competing branches are represented in memory; AFTER: `CODEC-005`.
 - FORK-002 [OPEN] [BLOCKED] Specify how competing branches are represented durably; AFTER: `FORK-001`.
-- FORK-003 [OPEN] [BLOCKED] Select the fork-choice rule; AFTER: `SEC-006`, `SEC-007`.
-- FORK-004 [OPEN] [BLOCKED] Select the deterministic fork-choice tie breaker; AFTER: `FORK-003`.
-- FORK-005 [OPEN] [BLOCKED] Specify when canonical state switches to another branch; AFTER: `FORK-003`.
+- FORK-003 [DECIDED] [NOT_IMPLEMENTED] Consensus has no cumulative-work or artifact-count fork choice; one height becomes canonical only through the Tendermint locking and strict greater-than-two-thirds precommit rule; AFTER: `SEC-006`, `SEC-007`.
+- FORK-004 [DECIDED] [NOT_IMPLEMENTED] No tie breaker may choose between conflicting finalized blocks because observing such certificates is a safety failure that halts the chain; AFTER: `FORK-003`.
+- FORK-005 [DECIDED] [NOT_IMPLEMENTED] Canonical state advances only when one valid available proposal obtains a strict greater-than-two-thirds precommit certificate for its height and round; AFTER: `FORK-003`.
 - FORK-006 [OPEN] [BLOCKED] Specify how branch-local artifact state is reconstructed; AFTER: `FORK-001`.
-- FORK-007 [OPEN] [BLOCKED] Specify how a reorganization rolls back canonical artifact state; AFTER: `FORK-005`.
-- FORK-008 [OPEN] [BLOCKED] Specify how a reorganization applies replacement artifact state; AFTER: `FORK-005`.
-- FORK-009 [OPEN] [BLOCKED] Specify the status of citations whose proof leaves the canonical branch; AFTER: `FORK-007`.
-- FORK-010 [OPEN] [BLOCKED] Select the finality model; AFTER: `SEC-006`, `SEC-007`.
-- FORK-011 [OPEN] [BLOCKED] Define the exact confidence or irreversibility semantics exposed by the selected finality model; AFTER: `FORK-010`.
-- FORK-012 [OPEN] [BLOCKED] Decide whether an unfinalized reorganization bound exists; AFTER: `FORK-003`, `FORK-010`.
-- FORK-013 [OPEN] [BLOCKED] Specify when competing branches may be pruned; AFTER: `FORK-010`.
+- FORK-007 [DECIDED] [NOT_IMPLEMENTED] Unfinalized candidate evaluation never mutates canonical artifact state and therefore requires no canonical rollback; AFTER: `FORK-005`.
+- FORK-008 [DECIDED] [NOT_IMPLEMENTED] Finalizing one proposal installs its consensus and artifact state atomically or leaves the prior finalized state unchanged; AFTER: `FORK-005`.
+- FORK-009 [DECIDED] [NOT_IMPLEMENTED] An artifact or citation on an unfinalized candidate branch grants no selected dependency authority, reward, balance, or Knowledge Weight; AFTER: `FORK-007`.
+- FORK-010 [DECIDED] [NOT_IMPLEMENTED] The finality model is immediate deterministic weighted-BFT finality; AFTER: `SEC-006`, `SEC-007`.
+- FORK-011 [DECIDED] [NOT_IMPLEMENTED] A valid strict greater-than-two-thirds precommit certificate makes its consensus block irreversible inside the same genesis context; AFTER: `FORK-010`.
+- FORK-012 [DECIDED] [NOT_IMPLEMENTED] There is no finalized reorganization and no Bitcoin-style confirmation depth; bounds apply only to unfinalized candidate retention; AFTER: `FORK-003`, `FORK-010`.
+- FORK-013 [DECIDED] [NOT_IMPLEMENTED] Competing unfinalized candidates may be pruned after one block finalizes only after preserving every still-liable equivocation evidence item; AFTER: `FORK-010`.
 - FORK-014 [OPEN] [BLOCKED] Specify the crash-atomic branch-selection transition; AFTER: `FORK-002`, `FORK-005`.
 - FORK-016 [OPEN] [BLOCKED] Specify how consensus ancestry maps to `ArtifactBlock` ancestry; AFTER: `CODEC-003`, `FORK-001`.
-- FORK-017 [DECIDED] [NOT_IMPLEMENTED] A consensus transition without an `ArtifactBlock` leaves the artifact head unchanged if empty consensus transitions are permitted.
-- FORK-018 [DECIDED] [NOT_IMPLEMENTED] A consensus transition without an `ArtifactBlock` leaves the artifact-set root unchanged if empty consensus transitions are permitted.
 - FORK-019 [DECIDED] [NOT_IMPLEMENTED] A consensus transition containing an `ArtifactBlock` requires its artifact parent to equal the artifact head derived from the consensus parent.
 - FORK-020 [DECIDED] [NOT_IMPLEMENTED] A consensus transition containing an `ArtifactBlock` requires its previous artifact-set root to equal the artifact root derived from the consensus parent.
 - FORK-021 [DECIDED] [NOT_IMPLEMENTED] A consensus transition containing an `ArtifactBlock` commits the resulting artifact-set root into the derived child consensus state.
-- PROD-001 [OPEN] [BLOCKED] Select the block-production authorization mechanism; AFTER: `SEC-006`.
-- PROD-002 [OPEN] [BLOCKED] Select the block-producer selection mechanism; AFTER: `SEC-006`.
-- PROD-003 [OPEN] [BLOCKED] Select the target block interval or slot duration; AFTER: `SEC-006`.
-- PROD-004 [OPEN] [BLOCKED] Specify the treatment of missed production opportunities if the chosen consensus family defines production opportunities; AFTER: `PROD-003`.
-- PROD-005 [OPEN] [BLOCKED] Select the participant-admission mechanism required by the chosen consensus family; AFTER: `SEC-006`.
-- PROD-006 [OPEN] [BLOCKED] Select the participant-exit mechanism required by the chosen consensus family; AFTER: `SEC-006`.
-- PROD-007 [OPEN] [BLOCKED] Select the participant-weight representation required by the chosen consensus family; AFTER: `SEC-006`.
-- PROD-008 [OPEN] [BLOCKED] Select the participant-set transition rule required by the chosen consensus family; AFTER: `PROD-005`, `PROD-006`.
-- PROD-009 [OPEN] [BLOCKED] Select the participant-set activation delay required by the chosen consensus family; AFTER: `PROD-008`.
-- PROD-010 [OPEN] [BLOCKED] Select the participant-key rotation rule required by the chosen consensus family; AFTER: `PROD-005`.
-- PROD-011 [OPEN] [BLOCKED] Select the participant-key compromise recovery rule required by the chosen consensus family; AFTER: `PROD-010`.
-- PROD-012 [OPEN] [BLOCKED] Decide whether separate consensus-control messages are signed agreement messages; AFTER: `SEC-025`.
-- PROD-013 [OPEN] [BLOCKED] Specify the agreement threshold required by the chosen consensus family; AFTER: `PROD-012`.
-- PROD-014 [OPEN] [BLOCKED] Specify the proposal-validity rule required by the chosen consensus family; AFTER: `SEC-006`.
-- PROD-015 [OPEN] [BLOCKED] Specify the equivocation rule required by the chosen consensus family; AFTER: `PROD-012`.
-- PROD-016 [OPEN] [BLOCKED] Select the consensus signature scheme if the chosen consensus family requires signatures; AFTER: `SEC-006`.
-- PROD-017 [OPEN] [BLOCKED] Select the randomness source if the chosen consensus family requires randomness; AFTER: `SEC-006`.
-- PROD-018 [OPEN] [BLOCKED] Specify the timestamp-validity rule if the chosen consensus family uses timestamps; AFTER: `SEC-006`.
-- PROD-019 [OPEN] [BLOCKED] Specify the clock-drift tolerance if the chosen consensus family uses timestamps; AFTER: `PROD-018`.
+- FORK-022 [DECIDED] [NOT_IMPLEMENTED] Citation rewards remain branch-local before completing the selected settlement rule.
+- FORK-023 [DECIDED] [NOT_IMPLEMENTED] Replacing a branch atomically removes every citation reward derived only from the displaced branch.
+- FORK-024 [DECIDED] [NOT_IMPLEMENTED] Newly derived Knowledge Weight remains branch-local before completing the selected maturation rule.
+- FORK-025 [DECIDED] [NOT_IMPLEMENTED] Replacing a branch atomically removes every unit of Knowledge Weight derived only from the displaced branch.
+- PROD-001 [DECIDED] [NOT_IMPLEMENTED] Only the canonical active validator selected for one Tendermint height and round may propose that round's consensus block; AFTER: `SEC-006`.
+- PROD-002 [DECIDED] [NOT_IMPLEMENTED] Each Tendermint round selects its proposer through deterministic weighted round-robin over the immutable active agreement-weight snapshot.
+- PROD-003 [DECIDED] [NOT_IMPLEMENTED] The healthy-network target is one finalized artifact block approximately every ten seconds and is not a validity deadline; AFTER: `SEC-006`.
+- PROD-004 [DECIDED] [NOT_IMPLEMENTED] A missed or invalid proposal advances the same height to a later Tendermint round with increasing local timeouts and never creates an empty canonical block; AFTER: `PROD-003`.
+- PROD-005 [DECIDED] [NOT_IMPLEMENTED] Any account may register a validator candidate by satisfying the canonical key, bond, and authorization rules; AFTER: `SEC-006`.
+- PROD-006 [DECIDED] [NOT_IMPLEMENTED] An authenticated validator exit becomes effective only through the epoch-delayed active-set transition and leaves its bond and historical delegation snapshots offense-liable through the selected liability window; AFTER: `SEC-006`.
+- PROD-007 [DECIDED] [NOT_IMPLEMENTED] Agreement and proposer weight use exact nonnegative integer Knowledge Weight units after bootstrap, delegation, bond-cap, decay, and penalty rules are applied; AFTER: `SEC-006`.
+- PROD-008 [DECIDED] [NOT_IMPLEMENTED] Each epoch selects exactly the minimum of 256 and the number of eligible independently bonded validator registrations by descending effective agreement weight; AFTER: `PROD-005`, `PROD-006`.
+- PROD-009 [DECIDED] [NOT_IMPLEMENTED] A validator-set, delegation, or commission increase finalized in epoch E is excluded throughout E and E+1 and first eligible in E+2; AFTER: `PROD-008`.
+- PROD-010 [DECIDED] [NOT_IMPLEMENTED] A validator operator may authorize one-to-one consensus-key rotation that preserves its registration, weight provenance, liability, and tombstone lineage; AFTER: `PROD-005`.
+- PROD-089 [DECIDED] [NOT_IMPLEMENTED] A validator consensus-key rotation finalized in epoch E leaves the old key active through E+1 and first activates its sole replacement key in E+2; AFTER: `PROD-009`, `PROD-010`.
+- PROD-011 [DECIDED] [NOT_IMPLEMENTED] A lost validator authorization key has no privileged recovery path beyond a recovery policy already committed by its account; AFTER: `PROD-010`.
+- PROD-012 [DECIDED] [NOT_IMPLEMENTED] Tendermint proposals, prevotes, and precommits are separately signed consensus-control messages; AFTER: `SEC-025`.
+- PROD-013 [DECIDED] [NOT_IMPLEMENTED] Agreement requires `signed_weight * 3 > total_active_weight * 2` for one immutable position snapshot and never renormalizes away offline weight; AFTER: `PROD-012`.
+- PROD-014 [DECIDED] [NOT_IMPLEMENTED] A validator proposes or votes for a block only after obtaining and strictly validating its complete artifact and consensus-operation data against the exact parent state; AFTER: `SEC-006`.
+- PROD-015 [DECIDED] [NOT_IMPLEMENTED] Signing conflicting proposals, prevotes, or precommits for one chain, genesis, version, height, round, and message role is objective equivocation; AFTER: `PROD-012`.
+- PROD-016 [DECIDED] [NOT_IMPLEMENTED] V1 uses individual Ed25519 signatures for validator consensus keys and no aggregate-signature scheme; AFTER: `SEC-006`.
+- PROD-017 [DECIDED] [NOT_IMPLEMENTED] Ongoing Tendermint proposer selection uses no randomness source; AFTER: `SEC-006`.
+- PROD-018 [DECIDED] [NOT_IMPLEMENTED] Wall-clock timestamps have no consensus-validity role; AFTER: `SEC-006`.
+- PROD-019 [DECIDED] [NOT_IMPLEMENTED] No clock-drift tolerance can change consensus validity; AFTER: `PROD-018`.
 - PROD-020 [OPEN] [BLOCKED] Specify the anti-equivocation state that becomes durable before any safety-critical signature is created or released; AFTER: `PROD-012`, `PROD-016`.
 - PROD-021 [DECIDED] [NOT_IMPLEMENTED] Ambiguous persistence of safety-critical signing state fails closed if the chosen family uses safety-critical signatures.
-- PROD-022 [OPEN] [BLOCKED] Specify rollback protection if the chosen consensus family uses safety-critical signing state; AFTER: `PROD-020`.
-- PROD-023 [OPEN] [BLOCKED] Specify remote-signer replay protection if safety-critical remote signers are supported; AFTER: `PROD-020`.
+- PROD-022 [OPEN] [BLOCKED] Specify rollback protection for safety-critical signing state; AFTER: `PROD-020`.
+- PROD-023 [DECIDED] [NOT_IMPLEMENTED] The V1 protocol and reference node do not support a remote consensus-signer service; AFTER: `PROD-020`.
+- PROD-024 [DECIDED] [NOT_IMPLEMENTED] Producer authorization for one consensus position uses one immutable participant-weight snapshot derived strictly before that position.
+- PROD-025 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight created by one consensus position cannot authorize production at that same position.
+- PROD-026 [DECIDED] [NOT_IMPLEMENTED] Participant key rotation preserves total participant weight.
+- PROD-027 [DECIDED] [NOT_IMPLEMENTED] Splitting or merging separately bonded validator registrations cannot create Knowledge Weight or count one live Knowledge Weight unit more than once.
+- PROD-030 [DECIDED] [NOT_IMPLEMENTED] One controller's agreement weight is the exact sum of its effective key weights present in the immutable active-set snapshot, so partitioning fixed Knowledge Weight may change its selected share without creating Knowledge Weight.
+- PROD-032 [DECIDED] [NOT_IMPLEMENTED] Agreement authorization for one consensus position uses one immutable participant-weight snapshot derived strictly before that position if the chosen family uses agreement authorization.
+- PROD-033 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight created by one consensus position cannot authorize agreement at that same position.
 - RES-001 [DECIDED] [NOT_IMPLEMENTED] Every attacker-controlled validation path has a deterministic pre-allocation bound.
 - RES-002 [DECIDED] [NOT_IMPLEMENTED] Every attacker-controlled validation path has a deterministic pre-execution bound.
 - RES-003 [DECIDED] [NOT_IMPLEMENTED] Ability to pay a fee does not bypass a hard resource bound.
-- RES-004 [OPEN] [BLOCKED] Select the deterministic resource-weight formula for one artifact; AFTER: `SEC-006`.
-- RES-005 [OPEN] [BLOCKED] Decide whether artifact weight includes canonical payload bytes; AFTER: `RES-004`.
-- RES-006 [OPEN] [BLOCKED] Decide whether artifact weight includes mathematical checker work units; AFTER: `RES-004`.
-- RES-007 [OPEN] [BLOCKED] Decide whether artifact weight includes selected dependency reads; AFTER: `RES-004`.
-- RES-008 [OPEN] [BLOCKED] Decide whether artifact weight includes permanent state growth; AFTER: `RES-004`.
+- RES-004 [DECIDED] [NOT_IMPLEMENTED] One artifact publication's deterministic resource weight is the consensus-versioned exact-integer sum of bounded canonical artifact and proposal-input bytes, mathematical checker work units, selected dependency reads, and permanent artifact-state growth; AFTER: `SEC-006`.
+- RES-005 [DECIDED] [NOT_IMPLEMENTED] Artifact resource weight includes canonical payload bytes; AFTER: `RES-004`.
+- RES-006 [DECIDED] [NOT_IMPLEMENTED] Artifact resource weight includes mathematical checker work units; AFTER: `RES-004`.
+- RES-007 [DECIDED] [NOT_IMPLEMENTED] Artifact resource weight includes selected dependency reads; AFTER: `RES-004`.
+- RES-008 [DECIDED] [NOT_IMPLEMENTED] Artifact resource weight includes permanent state growth because full nodes retain canonical artifacts permanently; AFTER: `RES-004`.
 - RES-009 [OPEN] [BLOCKED] Select the fixed minimum weight for one artifact; AFTER: `RES-004`.
 - RES-010 [OPEN] [BLOCKED] Select the maximum artifact weight; AFTER: `RES-004`.
 - RES-011 [OPEN] [BLOCKED] Select the maximum consensus verification work per block; AFTER: `CODEC-003`, `RES-004`.
@@ -177,11 +195,11 @@
 - RES-020 [DECIDED] [NOT_IMPLEMENTED] Artifact traffic cannot consume capacity reserved for consensus-control traffic.
 - RES-021 [DECIDED] [NOT_IMPLEMENTED] Every consensus transition has a deterministic maximum retained-state increase.
 - RES-022 [OPEN] [BLOCKED] Select the maximum retained-state increase per consensus transition; AFTER: `CODEC-003`.
-- RES-023 [OPEN] [BLOCKED] Decide whether a hard retained competing-branch count bound is compatible with the selected fork-choice and finality rules; AFTER: `FORK-003`, `FORK-010`, `FORK-012`, `FORK-013`.
+- RES-023 [DECIDED] [NOT_IMPLEMENTED] Unfinalized competing-candidate retention has a hard count bound that preserves every candidate and evidence item still required by Tendermint safety; AFTER: `FORK-003`, `FORK-010`, `FORK-012`, `FORK-013`.
 - RES-024 [OPEN] [BLOCKED] Select the maximum retained competing-branch count if `RES-023` selects a hard count bound; AFTER: `RES-023`.
-- RES-025 [OPEN] [BLOCKED] Decide whether a hard retained competing-branch depth bound is compatible with the selected fork-choice and finality rules; AFTER: `FORK-003`, `FORK-010`, `FORK-012`, `FORK-013`.
+- RES-025 [DECIDED] [NOT_IMPLEMENTED] Unfinalized competing-candidate retention has a hard depth bound that preserves every candidate and evidence item still required by Tendermint safety; AFTER: `FORK-003`, `FORK-010`, `FORK-012`, `FORK-013`.
 - RES-026 [OPEN] [BLOCKED] Select the maximum retained competing-branch depth if `RES-025` selects a hard depth bound; AFTER: `RES-025`.
-- RES-027 [OPEN] [BLOCKED] Decide whether a hard retained competing-branch byte bound is compatible with the selected fork-choice and finality rules; AFTER: `FORK-002`, `FORK-003`, `FORK-010`, `FORK-012`, `FORK-013`.
+- RES-027 [DECIDED] [NOT_IMPLEMENTED] Unfinalized competing-candidate retention has a hard byte bound that preserves every candidate and evidence item still required by Tendermint safety; AFTER: `FORK-002`, `FORK-003`, `FORK-010`, `FORK-012`, `FORK-013`.
 - RES-028 [OPEN] [BLOCKED] Select the maximum retained competing-branch bytes if `RES-027` selects a hard byte bound; AFTER: `RES-027`.
 - RES-029 [OPEN] [BLOCKED] Specify deterministic crash-safe behavior when a retained competing-branch bound is reached; AFTER: `FORK-002`, `FORK-003`, `FORK-010`, `FORK-013`, `RES-024`, `RES-026`, `RES-028`.
 - RES-030 [DECIDED] [NOT_IMPLEMENTED] Competing-branch retention preserves every branch required by the selected fork-choice, finality, reorganization, and safety rules.
@@ -199,40 +217,76 @@
 - RES-042 [DECIDED] [NOT_IMPLEMENTED] Durable signed consensus-control-message variants obey the selected per-key byte bound if the chosen family uses signed consensus-control messages.
 - RES-043 [DECIDED] [NOT_IMPLEMENTED] Exceeding an evidence-equivalence resource bound cannot create a new consensus-ancestry node.
 - RES-044 [DECIDED] [NOT_IMPLEMENTED] Exceeding a signature-equivalence resource bound cannot create a new logical consensus-control message.
-- ECON-001 [OPEN] [BLOCKED] Decide whether the protocol uses a fee asset; AFTER: `SEC-006`.
-- ECON-002 [OPEN] [BLOCKED] Select the exact fee asset if `ECON-001` selects a fee asset; AFTER: `ECON-001`.
-- ECON-027 [OPEN] [BLOCKED] Select the balance or ownership accounting model if `ECON-001` selects a fee asset; AFTER: `ECON-002`.
-- ECON-003 [OPEN] [BLOCKED] Specify fee-payer authorization if `ECON-001` selects a fee asset; AFTER: `ECON-027`.
-- ECON-004 [OPEN] [BLOCKED] Specify fee-payment replay protection if `ECON-001` selects a fee asset; AFTER: `ECON-003`.
-- ECON-005 [OPEN] [BLOCKED] Specify the monetary supply invariant if `ECON-001` selects a fee asset; AFTER: `ECON-001`.
-- ECON-006 [OPEN] [BLOCKED] Specify the issuance rule if `ECON-001` selects a fee asset; AFTER: `ECON-005`.
-- ECON-007 [OPEN] [BLOCKED] Specify the monetary conservation checks if `ECON-001` selects a fee asset; AFTER: `ECON-005`, `ECON-006`.
-- ECON-008 [OPEN] [BLOCKED] Decide whether the protocol uses a base fee; AFTER: `RES-004`, `ECON-001`.
-- ECON-009 [OPEN] [BLOCKED] Select the protocol base-fee formula if `ECON-008` selects a base fee; AFTER: `ECON-008`.
-- ECON-010 [OPEN] [BLOCKED] Decide whether the base fee is burned if `ECON-008` selects a base fee; AFTER: `ECON-008`.
-- ECON-011 [OPEN] [BLOCKED] Decide whether the base fee is otherwise non-refundable to the producer if `ECON-008` selects a base fee; AFTER: `ECON-008`.
-- ECON-012 [OPEN] [BLOCKED] Select the producer reward mechanism; AFTER: `SEC-006`, `ECON-001`.
-- ECON-013 [OPEN] [BLOCKED] Select the participant penalty mechanism; AFTER: `SEC-006`, `ECON-001`.
-- ECON-014 [OPEN] [BLOCKED] Select the objectively punishable behaviors; AFTER: `SEC-006`.
-- ECON-015 [OPEN] [BLOCKED] Specify the punishment evidence state transition; AFTER: `ECON-014`.
-- ECON-016 [OPEN] [BLOCKED] Decide whether permanent artifact storage requires an upfront storage charge; AFTER: `ECON-001`, `RES-008`.
-- ECON-017 [OPEN] [BLOCKED] Decide whether permanent artifact storage requires recurring rent; AFTER: `ECON-001`, `RES-008`.
-- ECON-018 [OPEN] [BLOCKED] Decide whether alternative proofs of one `StatementId` pay any charge beyond general resource cost; AFTER: `RES-004`, `ECON-008`.
+- ECON-001 [DECIDED] [NOT_IMPLEMENTED] The protocol uses a fee asset.
+- ECON-002 [DECIDED] [NOT_IMPLEMENTED] The native fee asset is NAOME with ticker `NAO`, nine decimal places, and exactly 1,000,000,000 indivisible atoms per NAO; AFTER: `ECON-001`.
+- ECON-027 [DECIDED] [NOT_IMPLEMENTED] NAO uses integer account balances with monotonically increasing account nonces; AFTER: `ECON-002`.
+- ECON-003 [DECIDED] [NOT_IMPLEMENTED] A fee payer authorizes an exact operation and nonce with either one Ed25519 account key or one bounded canonical M-of-N Ed25519 multisig policy; AFTER: `ECON-027`.
+- ECON-004 [DECIDED] [NOT_IMPLEMENTED] Every accepted economic operation consumes its exact account nonce once and cross-account, cross-chain, cross-genesis, cross-version, and cross-role replay fails before mutation; AFTER: `ECON-003`.
+- ECON-005 [DECIDED] [NOT_IMPLEMENTED] Gross genesis issuance is exactly 1,000,000,000 NAO or 10^18 NAO atoms before explicit genesis burns; AFTER: `ECON-001`.
+- ECON-006 [DECIDED] [NOT_IMPLEMENTED] No post-genesis transition issues NAO; AFTER: `ECON-005`.
+- ECON-007 [DECIDED] [NOT_IMPLEMENTED] Every transition proves exact atom conservation across prior balances, transfers, escrows, rewards, refunds, and explicit burns; AFTER: `ECON-005`, `ECON-006`.
+- ECON-008 [DECIDED] [NOT_IMPLEMENTED] Every included `ArtifactBlock` pays a mandatory protocol base fee.
+- ECON-009 [DECIDED] [NOT_IMPLEMENTED] The mandatory base fee equals a versioned exact-integer resource schedule whose coefficients are fixed from measured worst-case work and change only through the protocol-upgrade process; AFTER: `RES-004`, `ECON-008`.
+- ECON-010 [DECIDED] [NOT_IMPLEMENTED] Every included `ArtifactBlock` causes a strictly positive irrecoverable fee-asset loss.
+- ECON-011 [DECIDED] [NOT_IMPLEMENTED] Irrecoverable NAO loss is an explicit protocol burn that credits no account or treasury; AFTER: `ECON-008`, `ECON-010`.
+- ECON-012 [DECIDED] [NOT_IMPLEMENTED] Producers receive their normal valid-precommit signer share plus the complete optional inclusion bid for a block they propose; AFTER: `SEC-006`, `ECON-001`.
+- ECON-013 [DECIDED] [NOT_IMPLEMENTED] Objective equivocation is eligible to trigger the canonical destructive validator-penalty transition only for a validator rotation lineage without a permanent penalty marker; AFTER: `SEC-006`, `ECON-001`.
+- ECON-014 [DECIDED] [NOT_IMPLEMENTED] Only cryptographically proven conflicting safety-critical signatures are destructively slashable; missed votes alone are not; AFTER: `SEC-006`.
+- ECON-015 [DECIDED] [NOT_IMPLEMENTED] A canonical domain-separated offense identifier makes processing one evidence item idempotent, does not authorize a second destructive transition for a penalized rotation lineage, and leaves state unchanged on rejection; AFTER: `ECON-014`.
+- ECON-016 [DECIDED] [NOT_IMPLEMENTED] Permanent canonical artifact storage is charged upfront through permanent-state-growth resource weight; AFTER: `ECON-001`, `RES-008`.
+- ECON-017 [DECIDED] [NOT_IMPLEMENTED] Canonical artifacts pay no recurring storage rent and cannot be evicted for later nonpayment; AFTER: `ECON-001`, `RES-008`.
+- ECON-018 [DECIDED] [NOT_IMPLEMENTED] An alternative proof of an existing `StatementId` pays only the same general resource-based fees as any other artifact and receives no statement-novelty discount or surcharge; AFTER: `RES-004`, `ECON-008`.
 - ECON-019 [DECIDED] [NOT_IMPLEMENTED] A new `ProofId` alone earns no protocol reward.
 - ECON-020 [DECIDED] [NOT_IMPLEMENTED] A new `DerivationId` alone earns no protocol reward.
-- ECON-021 [DECIDED] [NOT_IMPLEMENTED] Citation count does not directly determine consensus weight.
+- ECON-021 [DECIDED] [NOT_IMPLEMENTED] Raw citation count alone contributes zero consensus weight.
 - ECON-022 [DECIDED] [NOT_IMPLEMENTED] Proof length does not determine mathematical importance.
 - ECON-023 [DECIDED] [NOT_IMPLEMENTED] Proof length may affect resource weight only through an explicitly selected resource formula.
 - ECON-024 [OPEN] [BLOCKED] Specify the economic state commitment carried by a consensus block if `ECON-001` selects a fee asset; AFTER: `CODEC-004`, `ECON-027`.
 - ECON-025 [OPEN] [BLOCKED] Specify the fee-payer commitment carried by a consensus block if `ECON-001` selects a fee asset; AFTER: `CODEC-004`, `ECON-003`, `ECON-027`.
-- ECON-026 [OPEN] [BLOCKED] Decide whether producers receive a user-selected inclusion bid or tip if `ECON-001` selects a fee asset; AFTER: `ECON-001`.
+- ECON-026 [DECIDED] [NOT_IMPLEMENTED] An artifact fee payer may add an optional inclusion bid paid completely to the finalized proposer and excluded from citation rewards and Knowledge Weight; AFTER: `ECON-001`.
+- ECON-028 [DECIDED] [NOT_IMPLEMENTED] The first valid finalized attribution claim binds one immutable beneficiary account to an `ArtifactId`, while later authorized account-key rotation may change control of that account; AFTER: `CODEC-003`, `PROD-005`, `ECON-027`.
+- ECON-029 [DECIDED] [NOT_IMPLEMENTED] Post-genesis citation-reward attribution uses a commit-and-reveal claim that binds the exact artifact, definition-supporting `ProofId` or null, beneficiary, fee payer, nonce, chain, genesis, and protocol version; AFTER: `ECON-028`.
+- ECON-072 [DECIDED] [NOT_IMPLEMENTED] Citation-reward attribution registrations are bounded canonical economic operations carried by the consensus envelope; AFTER: `CODEC-004`, `ECON-029`.
+- ECON-073 [OPEN] [BLOCKED] Specify the canonical citation-reward attribution-registration byte encoding; AFTER: `ECON-072`.
+- ECON-075 [OPEN] [BLOCKED] Specify the chain-context domain separation for citation-reward attribution registration; AFTER: `CODEC-006`, `ECON-073`.
+- ECON-080 [OPEN] [BLOCKED] Specify the protocol-version domain separation for citation-reward attribution registration; AFTER: `CODEC-013`, `ECON-073`.
+- ECON-030 [DECIDED] [NOT_IMPLEMENTED] Only distinct direct `ArtifactId` dependencies proven by the accepted strict artifact-admission trace are ordinary citation-reward targets; transitive ancestors are ineligible unless admitted as direct targets; AFTER: `BASE-009`, `ECON-028`.
+- ECON-031 [DECIDED] [NOT_IMPLEMENTED] An eligible artifact dependency receives protocol citation value only when strict validation proves it root-reachable from the included artifact.
+- ECON-032 [DECIDED] [NOT_IMPLEMENTED] Repeated or aliased references to one eligible artifact dependency contribute at most one target to one citation-reward allocation.
+- ECON-033 [DECIDED] [NOT_IMPLEMENTED] The aggregate protocol citation-reward pool created by one artifact inclusion is funded only from the fee charged for that inclusion.
+- ECON-034 [DECIDED] [NOT_IMPLEMENTED] The aggregate protocol citation-reward pool created by one artifact inclusion cannot exceed one protocol-defined fraction of the fee charged for that inclusion.
+- ECON-035 [DECIDED] [NOT_IMPLEMENTED] Exactly 40% of one artifact-publication base fee forms its maximum citation-reward pool before indivisible-atom rounding; AFTER: `ECON-008`.
+- ECON-036 [DECIDED] [NOT_IMPLEMENTED] One citation-reward pool is split equally among distinct eligible direct dependency targets with every recipient rounded down and every remainder burned; AFTER: `ECON-030`, `ECON-031`, `ECON-032`, `ECON-035`.
+- ECON-037 [DECIDED] [NOT_IMPLEMENTED] If an artifact has no eligible direct dependency target, its complete 40% citation share is burned; AFTER: `ECON-036`.
+- ECON-038 [DECIDED] [NOT_IMPLEMENTED] Every canonical citation of a `StatementId` names one exact proof selected in the parent state whose conclusion matches that statement, and only that proof artifact is the statement-citation target; AFTER: `ECON-030`, `ECON-036`.
+- ECON-039 [DECIDED] [NOT_IMPLEMENTED] Only protocol citation-reward value that completes the selected maturation rule can create post-bootstrap Knowledge Weight.
+- ECON-040 [DECIDED] [NOT_IMPLEMENTED] Citation reward earned in epoch E first creates active Knowledge Weight in E+2 after one complete intervening epoch; AFTER: `FORK-011`, `ECON-036`.
+- ECON-041 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight belongs to the cited artifact's immutable beneficiary account and consensus delegation never transfers that ownership; AFTER: `PROD-005`, `ECON-028`, `ECON-040`.
+- ECON-042 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight has no balance-transfer operation, but an authenticated owner-account key rotation changes its control and off-chain key sales cannot be prevented or detected; AFTER: `ECON-041`.
+- ECON-043 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight has no per-owner, per-validator, or aggregate identity cap because such caps are Sybil-bypassable; AFTER: `ECON-041`.
+- ECON-044 [DECIDED] [NOT_IMPLEMENTED] Each immutable Knowledge Weight origin batch decays linearly from full activation weight to exactly zero after 730 epochs and cannot be refreshed by aggregation, delegation, or key rotation; AFTER: `ECON-040`, `ECON-041`.
+- ECON-057 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight created from matured citation-reward value is bounded above by a finite protocol-defined weight-per-value ratio.
+- ECON-058 [DECIDED] [NOT_IMPLEMENTED] Creating any positive amount of Knowledge Weight requires a strictly positive amount of matured citation-reward value.
+- ECON-059 [DECIDED] [NOT_IMPLEMENTED] One matured citation-reward NAO atom creates exactly one initial Knowledge Weight unit; AFTER: `PROD-007`, `ECON-002`, `ECON-040`.
+- ECON-045 [DECIDED] [NOT_IMPLEMENTED] Matured citation-reward value converts linearly at one atom to one origin-batch Knowledge Weight unit before age decay; AFTER: `ECON-002`, `ECON-040`, `ECON-041`, `ECON-057`, `ECON-058`, `ECON-059`.
+- ECON-046 [DECIDED] [NOT_IMPLEMENTED] Each unit of funded citation value contributes at most once to protocol rewards.
+- ECON-047 [DECIDED] [NOT_IMPLEMENTED] The sum of every payout funded from one artifact's mandatory base fee remains strictly less than that base fee even when one actor controls every payer and recipient account.
+- ECON-048 [DECIDED] [NOT_IMPLEMENTED] Every artifact-publication base fee burns at least 40% of its atoms after every payout even when one actor controls all payer and recipient accounts; AFTER: `ECON-006`, `ECON-009`, `ECON-012`, `ECON-035`, `ECON-036`.
+- ECON-049 [DECIDED] [NOT_IMPLEMENTED] The canonical destructive equivocation transition destroys exactly 10% of the validator's effective delegated ordinary Knowledge Weight at the offense snapshot, computed once over the aggregate before deterministic pro-rata batch allocation; AFTER: `ECON-013`, `ECON-014`, `ECON-015`, `ECON-041`, `ECON-045`.
+- ECON-050 [DECIDED] [NOT_IMPLEMENTED] Unmatured citation-reward value grants zero proposer probability.
+- ECON-051 [DECIDED] [NOT_IMPLEMENTED] Unmatured citation-reward value grants zero agreement weight.
+- ECON-052 [DECIDED] [NOT_IMPLEMENTED] Each unit of funded citation value contributes at most once to Knowledge Weight.
+- ECON-053 [DECIDED] [NOT_IMPLEMENTED] An artifact inclusion with at least one eligible citation target creates a strictly positive aggregate citation-reward pool.
+- ECON-054 [DECIDED] [NOT_IMPLEMENTED] Protocol citation rewards are paid only to eligible citation targets.
+- ECON-055 [DECIDED] [NOT_IMPLEMENTED] Selecting an artifact alone pays no protocol citation reward to that artifact's beneficiary.
+- ECON-056 [DECIDED] [NOT_IMPLEMENTED] Citation-reward NAO becomes spendable in the artifact block's finalized state transition independently of later Knowledge Weight maturation; AFTER: `FORK-011`, `ECON-036`.
 - NET-001 [DECIDED] [NOT_IMPLEMENTED] Peer authentication alone grants no consensus power.
 - NET-002 [DECIDED] [NOT_IMPLEMENTED] Receiving an artifact from a peer does not select it.
 - NET-003 [DECIDED] [NOT_IMPLEMENTED] Receiving a block from a peer does not select it.
 - NET-004 [DECIDED] [NOT_IMPLEMENTED] Relay policy remains separate from consensus validity.
 - NET-005 [DECIDED] [NOT_IMPLEMENTED] Candidate availability remains separate from consensus selection.
-- NET-006 [OPEN] [BLOCKED] Select the peer-discovery protocol.
-- NET-007 [OPEN] [BLOCKED] Select the bootstrap protocol; AFTER: `NET-006`.
+- NET-006 [DECIDED] [NOT_IMPLEMENTED] V1 peer discovery uses multiple operator-configured seed addresses followed by authenticated learned-peer gossip and persistence.
+- NET-007 [DECIDED] [NOT_IMPLEMENTED] The official V1 configuration contains at least eight seed nodes with eight distinct disclosed controllers, and no seed grants block, checkpoint, or state authority; AFTER: `NET-006`.
 - NET-008 [OPEN] [BLOCKED] Select the consensus-block gossip protocol; AFTER: `CODEC-004`.
 - NET-009 [OPEN] [BLOCKED] Select the consensus-control-message gossip protocol if `SEC-025` selects separate messages; AFTER: `CODEC-020`.
 - NET-010 [OPEN] [BLOCKED] Select the bounded unconfirmed-artifact pool policy; AFTER: `RES-004`.
@@ -242,27 +296,27 @@
 - NET-014 [OPEN] [BLOCKED] Select the peer-relay eviction policy; AFTER: `NET-013`.
 - NET-015 [OPEN] [BLOCKED] Select the per-peer resource limits; AFTER: `NET-006`.
 - NET-016 [OPEN] [BLOCKED] Select the global network resource limits; AFTER: `NET-006`.
-- NET-017 [OPEN] [BLOCKED] Specify peer-diversity requirements; AFTER: `NET-006`.
-- NET-018 [OPEN] [BLOCKED] Specify eclipse-resistance requirements; AFTER: `NET-006`.
-- NET-019 [OPEN] [BLOCKED] Specify the data-availability requirement before block acceptance; AFTER: `CODEC-003`.
-- NET-020 [OPEN] [BLOCKED] Specify the data-availability requirement before agreement participation if the chosen consensus family uses agreement messages; AFTER: `PROD-012`.
+- NET-017 [DECIDED] [NOT_IMPLEMENTED] Peer selection enforces bounded controller, address-prefix, and connection-direction diversity independently of the eight-seed controller rule; AFTER: `NET-006`.
+- NET-018 [DECIDED] [NOT_IMPLEMENTED] Nodes maintain bounded independently discovered peer paths and never treat peer majority as validation authority; AFTER: `NET-006`.
+- NET-019 [DECIDED] [NOT_IMPLEMENTED] A node accepts a consensus block only after obtaining and structurally validating every canonical byte required by its embedded artifact and operations; AFTER: `CODEC-003`.
+- NET-020 [DECIDED] [NOT_IMPLEMENTED] A validator may prevote or precommit a block only after obtaining and strictly validating every canonical byte required by its artifact and operations; AFTER: `PROD-012`.
 - NET-021 [OPEN] [BLOCKED] Select the capacity reserved for consensus-control traffic if `SEC-025` selects separate messages; AFTER: `CODEC-020`, `RES-020`.
 - NET-022 [OPEN] [BLOCKED] Select the maximum relayed consensus-envelope variants per consensus-ancestry identity; AFTER: `CODEC-056`, `RES-033`, `RES-034`.
 - NET-023 [OPEN] [BLOCKED] Select the maximum relayed signature variants per consensus-control-message semantic key if the chosen family uses signed consensus-control messages; AFTER: `CODEC-060`, `RES-038`, `RES-039`.
-- SYNC-001 [OPEN] [BLOCKED] Select the historical artifact-retention requirement for full nodes; AFTER: `FORK-010`.
-- SYNC-002 [OPEN] [BLOCKED] Select the historical consensus-control-message retention requirement if `SEC-025` selects separate messages; AFTER: `CODEC-020`, `FORK-010`.
-- SYNC-004 [OPEN] [BLOCKED] Select the fast synchronization protocol; AFTER: `CODEC-008`, `CODEC-009`.
+- SYNC-001 [DECIDED] [NOT_IMPLEMENTED] Every conforming full node permanently retains and serves every canonical `ArtifactBlock` and canonical artifact payload from genesis; AFTER: `FORK-010`.
+- SYNC-002 [DECIDED] [NOT_IMPLEMENTED] Full nodes permanently retain finalized consensus blocks and commit certificates, retain slashable consensus evidence through its liability window, and may prune other finalized-height control-message variants after they are no longer safety-relevant; AFTER: `CODEC-020`, `FORK-010`.
+- SYNC-004 [DECIDED] [NOT_IMPLEMENTED] Full nodes support complete genesis replay and optional authenticated snapshot synchronization from an explicitly user-supplied recent finalized checkpoint; AFTER: `CODEC-008`, `CODEC-009`.
 - SYNC-005 [OPEN] [BLOCKED] Select the complete consensus-state snapshot format; AFTER: `CODEC-008`.
 - SYNC-006 [OPEN] [BLOCKED] Select the complete artifact-state snapshot format; AFTER: `CODEC-009`.
-- SYNC-007 [OPEN] [BLOCKED] Select the checkpoint trust or proof model; AFTER: `SYNC-005`, `SYNC-006`.
-- SYNC-003 [OPEN] [BLOCKED] Select the pruning rule for consensus data under the chosen finality-confidence and checkpoint-admissibility semantics; AFTER: `FORK-011`, `SYNC-007`.
-- SYNC-008 [OPEN] [BLOCKED] Select the light-client protocol; AFTER: `FORK-003`, `SYNC-007`.
+- SYNC-007 [DECIDED] [NOT_IMPLEMENTED] Checkpoint-assisted bootstrap requires an explicit user-selected checkpoint strictly less than 30 complete epochs old and then verifies its exact chain, genesis, version, finality certificate, and snapshot commitments; AFTER: `SYNC-005`, `SYNC-006`.
+- SYNC-003 [DECIDED] [NOT_IMPLEMENTED] Pruning may remove only noncanonical candidates and consensus-control data that is no longer required for finality verification, replay, offense liability, or the selected checkpoint model; AFTER: `FORK-011`, `SYNC-007`.
+- SYNC-008 [DECIDED] [NOT_IMPLEMENTED] V1 consensus formats must support a trust-minimized light-client proof path, while delivery of a production light-client implementation is deferred until after the full-node consensus implementation; AFTER: `FORK-003`, `SYNC-007`.
 - SYNC-009 [OPEN] [BLOCKED] Specify deterministic consensus-state replay after restart; AFTER: `CODEC-004`.
 - SYNC-010 [OPEN] [BLOCKED] Specify deterministic artifact-state replay after restart; AFTER: `CODEC-003`.
 - SYNC-011 [OPEN] [BLOCKED] Specify the fail-closed rule for committed durable-state corruption; AFTER: `SYNC-009`, `SYNC-010`.
 - SYNC-012 [OPEN] [BLOCKED] Specify deterministic recovery of a provably uncommitted torn write; AFTER: `SYNC-009`, `SYNC-010`.
 - SYNC-013 [OPEN] [BLOCKED] Specify the crash-atomic consensus commit protocol; AFTER: `SYNC-009`, `SYNC-010`.
-- SYNC-014 [OPEN] [BLOCKED] Specify the weak-subjectivity requirement if the chosen consensus family requires it; AFTER: `SEC-006`, `FORK-010`.
+- SYNC-014 [DECIDED] [NOT_IMPLEMENTED] An unanchored node refuses to install any history extending beyond the 30-epoch liability window as canonical without an operator-authenticated checkpoint strictly inside that window, even when peers expose only one internally valid history; AFTER: `SEC-006`, `FORK-010`.
 - SYNC-015 [OPEN] [BLOCKED] Specify the proof carried by a light client for fork choice; AFTER: `FORK-003`, `SYNC-007`.
 - SYNC-016 [OPEN] [BLOCKED] Select the maximum catch-up work per synchronization request; AFTER: `SYNC-004`.
 - SYNC-017 [OPEN] [BLOCKED] Specify one authenticated snapshot manifest binding the complete consensus and artifact snapshots; AFTER: `SYNC-005`, `SYNC-006`.
@@ -277,20 +331,367 @@
 - SYNC-026 [OPEN] [BLOCKED] Specify the monotonic snapshot anti-rollback rule under the chosen finality-confidence and checkpoint-admissibility semantics; AFTER: `FORK-011`, `SYNC-007`.
 - SYNC-027 [DECIDED] [NOT_IMPLEMENTED] Failed snapshot installation leaves either the complete old state or the complete new state.
 - GOV-001 [OPEN] [BLOCKED] Specify the genesis consensus state; AFTER: `SEC-006`, `CODEC-004`.
-- GOV-002 [OPEN] [BLOCKED] Specify the genesis economic state if `ECON-001` selects a fee asset; AFTER: `ECON-027`.
-- GOV-003 [OPEN] [BLOCKED] Specify the genesis participant state required by the chosen consensus family; AFTER: `PROD-005`.
+- GOV-002 [DECIDED] [NOT_IMPLEMENTED] Genesis reserves exactly 800,000,000 NAO for the audited public auction before buyer allocation and the explicit unsold-pool burn; AFTER: `ECON-005`, `ECON-006`, `ECON-027`.
+- GOV-030 [DECIDED] [NOT_IMPLEMENTED] Genesis uses 32 public verified-controller validator applicants selected by a reproducible multiparty commit-and-reveal lottery after a 30-calendar-day public challenge period; AFTER: `SEC-001`, `PROD-005`.
+- GOV-038 [DECIDED] [NOT_IMPLEMENTED] Five publicly named genesis-qualification auditors selected through a foundation public tender apply published rules, and at least three threshold-sign each qualified controller, key, and final applicant ledger; AFTER: `PROD-005`, `GOV-030`.
+- GOV-003 [OPEN] [BLOCKED] Specify the exact genesis-validator public keys; AFTER: `PROD-005`, `GOV-030`, `GOV-038`.
+- GOV-040 [DECIDED] [NOT_IMPLEMENTED] Aggregate initial bootstrap weight is exactly 10,000,000,000,000,000 Knowledge Weight units, divided equally into 312,500,000,000,000 units for each of 32 genesis validators; AFTER: `PROD-007`, `GOV-003`.
 - GOV-004 [DECIDED] [NOT_IMPLEMENTED] Every protocol upgrade is explicitly versioned.
 - GOV-005 [DECIDED] [NOT_IMPLEMENTED] Every identity-changing protocol upgrade uses a distinct domain.
-- GOV-006 [OPEN] [BLOCKED] Select the protocol-upgrade authorization rule; AFTER: `SEC-006`.
-- GOV-007 [OPEN] [BLOCKED] Select the protocol-upgrade activation coordinate; AFTER: `CODEC-010`, `CODEC-011`.
+- GOV-006 [DECIDED] [NOT_IMPLEMENTED] An exact-version protocol upgrade requires a readiness certificate signed by strict greater-than-two-thirds current active agreement weight and no administrator may authorize it; AFTER: `SEC-006`.
+- GOV-007 [DECIDED] [NOT_IMPLEMENTED] A readiness certificate formed in epoch E activates no earlier than E+15 after 14 complete intervening epochs unless strict greater-than-one-third current active agreement weight cancels that exact version and activation; AFTER: `CODEC-010`, `CODEC-011`.
 - GOV-008 [OPEN] [BLOCKED] Specify the exact pre-upgrade state transformation; AFTER: `GOV-006`, `GOV-007`.
 - GOV-009 [OPEN] [BLOCKED] Specify the exact post-upgrade state invariant; AFTER: `GOV-008`.
 - GOV-010 [OPEN] [BLOCKED] Specify unknown-version rejection; AFTER: `CODEC-013`.
 - GOV-011 [OPEN] [BLOCKED] Specify downgrade rejection; AFTER: `CODEC-013`.
-- GOV-012 [OPEN] [BLOCKED] Select the emergency recovery rule; AFTER: `FORK-010`.
-- GOV-013 [OPEN] [BLOCKED] Select the emergency recovery authorization rule; AFTER: `GOV-012`.
+- GOV-012 [DECIDED] [NOT_IMPLEMENTED] No recovery action may rewrite finalized history inside the same genesis context; a chain that observes conflicting finality halts; AFTER: `FORK-010`.
+- GOV-013 [DECIDED] [NOT_IMPLEMENTED] Recovery from a finalized-history catastrophe requires a new public genesis ceremony and explicit user installation of the new genesis hash, while old-validator or foundation endorsements remain non-authoritative; AFTER: `GOV-012`.
 - GOV-014 [DECIDED] [NOT_IMPLEMENTED] Any emergency recovery that rewrites history protected by the selected finality-confidence or irreversibility semantics creates an explicit new trust boundary.
 - GOV-015 [OPEN] [BLOCKED] Specify the genesis domain bound by consensus-control messages if `SEC-025` selects separate messages; AFTER: `CODEC-020`, `GOV-001`.
+- GOV-016 [DECIDED] [NOT_IMPLEMENTED] The genesis state commits every temporary genesis-validator public key.
+- GOV-017 [DECIDED] [NOT_IMPLEMENTED] The genesis state commits each temporary genesis validator's initial bootstrap weight.
+- GOV-018 [DECIDED] [NOT_IMPLEMENTED] Temporary genesis-validator bootstrap weight grants no exception to deterministic mathematical validation.
+- GOV-019 [DECIDED] [NOT_IMPLEMENTED] Temporary genesis-validator bootstrap weight remains distinctly tagged from ordinary Knowledge Weight.
+- GOV-020 [DECIDED] [NOT_IMPLEMENTED] Genesis fee-asset balances create zero ordinary Knowledge Weight.
+- GOV-021 [DECIDED] [NOT_IMPLEMENTED] The genesis-bootstrap weight transition is a deterministic consensus-state function with no discretionary validator or governance override.
+- GOV-022 [DECIDED] [NOT_IMPLEMENTED] Aggregate genesis-validator bootstrap weight is monotonically non-increasing.
+- GOV-023 [DECIDED] [NOT_IMPLEMENTED] The genesis-bootstrap transition includes a deterministic pre-sunset reduction driven by matured ordinary Knowledge Weight.
+- GOV-039 [DECIDED] [NOT_IMPLEMENTED] A monotonic accumulator counts each unit of ordinary Knowledge Weight when it first matures and never decreases after later decay, slash, delegation, or key rotation; AFTER: `ECON-042`, `ECON-043`, `ECON-044`, `ECON-045`, `ECON-049`.
+- GOV-033 [DECIDED] [NOT_IMPLEMENTED] Before epoch 730, the target aggregate bootstrap weight is the lower of the independent linear cap and 10,000,000,000,000,000 minus cumulative first-matured ordinary Knowledge Weight; AFTER: `PROD-007`, `GOV-023`, `GOV-039`, `GOV-040`.
+- GOV-024 [DECIDED] [NOT_IMPLEMENTED] Every genesis-bootstrap allocation becomes exactly zero at the first height of epoch 730; AFTER: `CODEC-010`, `CODEC-011`, `GOV-040`.
+- GOV-025 [DECIDED] [NOT_IMPLEMENTED] The first canonical state at the terminal genesis-bootstrap sunset sets every genesis-validator bootstrap weight to zero regardless of ordinary Knowledge Weight growth.
+- GOV-026 [DECIDED] [NOT_IMPLEMENTED] Every later state in the same chain context keeps every genesis-validator bootstrap weight at zero.
+- GOV-027 [DECIDED] [NOT_IMPLEMENTED] A post-sunset producer authorization receives no weight from a genesis-validator bootstrap allocation.
+- GOV-028 [DECIDED] [NOT_IMPLEMENTED] Restoring expired genesis-validator bootstrap weight requires a distinct genesis context.
+- GOV-029 [DECIDED] [NOT_IMPLEMENTED] The genesis state commits the complete initial fee-asset distribution.
+- GOV-031 [DECIDED] [NOT_IMPLEMENTED] A post-sunset consensus decision receives no agreement weight from a genesis-validator bootstrap allocation.
+- GOV-032 [DECIDED] [NOT_IMPLEMENTED] Genesis authority creates zero ordinary Knowledge Weight.
+- GOV-034 [DECIDED] [NOT_IMPLEMENTED] Each tagged genesis-validator bootstrap allocation is independently non-increasing.
+- GOV-035 [DECIDED] [NOT_IMPLEMENTED] A genesis-validator bootstrap allocation cannot transfer to a different genesis participant.
+- GOV-036 [DECIDED] [NOT_IMPLEMENTED] Distinct genesis-validator bootstrap allocations cannot merge.
+- GOV-037 [DECIDED] [NOT_IMPLEMENTED] An authenticated one-to-one pre-sunset genesis-validator consensus-key rotation is permitted and preserves the exact bootstrap allocation identity, bootstrap tag, current weight, verified controller, liability, and tombstone lineage through `PROD-089`'s activation delay; AFTER: `PROD-010`, `PROD-089`, `GOV-034`, `GOV-035`, `GOV-036`.
+- CODEC-062 [DECIDED] [NOT_IMPLEMENTED] A consensus block may carry a bounded canonical sequence of economic operations; AFTER: `CODEC-004`, `ECON-027`.
+- CODEC-063 [DECIDED] [NOT_IMPLEMENTED] A consensus block may carry a bounded canonical sequence of validator operations; AFTER: `CODEC-004`, `PROD-005`.
+- CODEC-064 [OPEN] [BLOCKED] Select the maximum economic-operation count per consensus block from measured worst-case work; AFTER: `CODEC-025`, `CODEC-062`, `RES-022`.
+- CODEC-065 [OPEN] [BLOCKED] Select the maximum canonical economic-operation bytes per consensus block from measured worst-case work; AFTER: `CODEC-025`, `CODEC-062`, `RES-022`.
+- PROD-036 [DECIDED] [NOT_IMPLEMENTED] One epoch contains exactly 8,192 consecutive finalized non-genesis consensus heights; AFTER: `CODEC-010`, `FORK-011`.
+- PROD-037 [DECIDED] [NOT_IMPLEMENTED] The genesis consensus block has height zero; AFTER: `CODEC-010`, `GOV-001`.
+- PROD-038 [DECIDED] [NOT_IMPLEMENTED] Epoch E contains non-genesis heights from `E * 8192 + 1` through `(E + 1) * 8192`; AFTER: `PROD-036`, `PROD-037`.
+- PROD-039 [DECIDED] [NOT_IMPLEMENTED] Voluntary scheduled active-set changes may alter at most 10% of the prior epoch's total active agreement weight in one epoch; AFTER: `PROD-036`.
+- PROD-040 [OPEN] [BLOCKED] Specify canonical ordering of voluntary active-set changes queued beyond the 10% epoch churn bound; AFTER: `PROD-039`.
+- PROD-041 [DECIDED] [NOT_IMPLEMENTED] Equivocation penalties, Knowledge Weight decay, and terminal bootstrap sunset are never delayed by the voluntary churn bound; AFTER: `PROD-039`, `ECON-013`, `ECON-044`, `GOV-024`.
+- PROD-042 [DECIDED] [NOT_IMPLEMENTED] Growth-driven bootstrap replacement above the voluntary churn bound queues without delaying the independent linear bootstrap cap; AFTER: `PROD-039`, `GOV-033`.
+- PROD-043 [DECIDED] [NOT_IMPLEMENTED] Validator epoch participation counts only signatures in canonical next-block settlement certificates for finalized non-genesis heights in that epoch; AFTER: `PROD-012`, `PROD-036`.
+- PROD-044 [DECIDED] [NOT_IMPLEMENTED] Certificate-participation counts are public metrics and reward inputs only and never change validator eligibility, agreement weight, or proposer weight; AFTER: `PROD-043`.
+- PROD-045 [DECIDED] [NOT_IMPLEMENTED] V1 has no downtime jail, suspension, reactivation, or destructive penalty; AFTER: `PROD-044`.
+- PROD-046 [DECIDED] [NOT_IMPLEMENTED] Low certificate participation can reduce only rewards proven by canonical settlement certificates; AFTER: `PROD-043`, `PROD-044`.
+- PROD-047 [DECIDED] [NOT_IMPLEMENTED] Equal effective validator weights are ordered first by earlier finalized registration and then by ascending Ed25519 consensus-key bytes; AFTER: `PROD-005`, `PROD-016`.
+- PROD-048 [DECIDED] [NOT_IMPLEMENTED] Temporary bootstrap validators and ordinary validators share one 256-key active-set cap; AFTER: `PROD-008`, `GOV-040`.
+- PROD-049 [DECIDED] [NOT_IMPLEMENTED] Temporary bootstrap validators receive no reserved active-set slots; AFTER: `PROD-048`.
+- ECON-081 [DECIDED] [NOT_IMPLEMENTED] For artifact base fee F, the citation pool is `floor(2 * F / 5)`, the validator pool is `floor(F / 5)`, and every remaining atom is burned; AFTER: `ECON-007`, `ECON-035`, `ECON-048`.
+- ECON-082 [DECIDED] [NOT_IMPLEMENTED] A non-artifact economic-operation or validator-operation fee assigns `floor(F / 5)` atoms to the validator pool and burns every remaining atom; AFTER: `CODEC-062`, `CODEC-063`, `ECON-007`.
+- ECON-083 [DECIDED] [NOT_IMPLEMENTED] Each valid precommit proven in the canonical next-block settlement certificate creates one validator-reward entitlement for the prior height; AFTER: `PROD-013`, `ECON-081`, `ECON-082`.
+- ECON-084 [DECIDED] [NOT_IMPLEMENTED] Each signer entitlement equals `floor(pool * signer_weight / total_active_agreement_weight)` at the prior height, and every validator-pool atom not assigned by that formula is burned in the same settlement; AFTER: `PROD-032`, `ECON-083`.
+- ECON-085 [DECIDED] [NOT_IMPLEMENTED] Validator and delegator rewards use a cumulative reward-per-effective-weight accumulator with lazy claims rather than per-block writes to every delegator; AFTER: `ECON-084`.
+- ECON-086 [DECIDED] [NOT_IMPLEMENTED] A validator's declared commission rate cannot exceed 20%; AFTER: `ECON-085`.
+- ECON-087 [DECIDED] [NOT_IMPLEMENTED] A validator cannot increase its declared commission by more than five percentage points in one epoch; AFTER: `PROD-036`, `ECON-086`.
+- ECON-088 [DECIDED] [NOT_IMPLEMENTED] A commission decrease finalized in epoch E first applies in E+1; AFTER: `PROD-038`, `ECON-086`.
+- ECON-089 [DECIDED] [NOT_IMPLEMENTED] A commission increase finalized in epoch E first applies in E+2; AFTER: `PROD-038`, `ECON-087`.
+- ECON-090 [DECIDED] [NOT_IMPLEMENTED] A Knowledge Weight owner may split direct consensus delegation across multiple validator candidates; AFTER: `ECON-041`.
+- ECON-091 [DECIDED] [NOT_IMPLEMENTED] Consensus delegation cannot recursively delegate Knowledge Weight; AFTER: `ECON-090`.
+- ECON-092 [DECIDED] [NOT_IMPLEMENTED] One live Knowledge Weight unit contributes to at most one validator in one immutable active-set snapshot; AFTER: `ECON-090`, `ECON-091`.
+- ECON-093 [OPEN] [BLOCKED] Specify exact pro-rata arithmetic and deterministic remainder ordering when requested delegations exceed an owner's live Knowledge Weight; AFTER: `PROD-016`, `ECON-090`, `ECON-092`.
+- ECON-094 [DECIDED] [NOT_IMPLEMENTED] Consensus delegation grants no ecosystem-grant voting authority; AFTER: `ECON-090`.
+- ECON-095 [DECIDED] [NOT_IMPLEMENTED] Ecosystem-grant voting delegation requires a distinct direct owner authorization; AFTER: `ECON-041`, `ECON-094`.
+- ECON-096 [DECIDED] [NOT_IMPLEMENTED] A validator candidate must escrow at least 10,000 NAO as an offense-liable bond; AFTER: `ECON-002`, `ECON-027`.
+- ECON-097 [DECIDED] [NOT_IMPLEMENTED] One escrowed bond atom supports at most 20 units of effective active agreement weight; AFTER: `PROD-007`, `ECON-096`.
+- ECON-098 [DECIDED] [NOT_IMPLEMENTED] A validator's effective active agreement weight cannot exceed 20 times its escrowed bond atoms; AFTER: `ECON-097`.
+- PROD-081 [DECIDED] [NOT_IMPLEMENTED] Every validator registration created by partitioning one controller's Knowledge Weight independently satisfies the canonical authorization and complete bond rules and ranks independently for the bounded active set; AFTER: `PROD-005`, `ECON-096`, `ECON-098`.
+- ECON-099 [DECIDED] [NOT_IMPLEMENTED] A bond deficit reduces effective delegated agreement weight before the next immutable active-set snapshot; AFTER: `PROD-024`, `ECON-098`.
+- ECON-100 [DECIDED] [NOT_IMPLEMENTED] The offense-liable bond remains escrowed through the complete liability window after validator exit or bond reduction; AFTER: `PROD-006`, `ECON-096`.
+- ECON-101 [DECIDED] [NOT_IMPLEMENTED] The canonical destructive equivocation transition forfeits the validator's complete offense-liable bond; AFTER: `ECON-013`, `ECON-100`.
+- ECON-102 [DECIDED] [NOT_IMPLEMENTED] Exactly 90% of a forfeited equivocation bond is burned; AFTER: `ECON-101`.
+- ECON-103 [DECIDED] [NOT_IMPLEMENTED] Exactly 10% of the forfeited equivocation bond is credited to the reporter of the evidence operation that applies the canonical destructive transition; AFTER: `ECON-101`.
+- ECON-104 [DECIDED] [NOT_IMPLEMENTED] The adversarial economic model assumes an equivocator may recover the reporter share through another account; AFTER: `ECON-103`.
+- ECON-105 [OPEN] [BLOCKED] Specify deterministic integer rounding and pro-rata origin-batch allocation for the 10% delegated Knowledge Weight equivocation penalty; AFTER: `ECON-049`, `ECON-093`.
+- ECON-106 [DECIDED] [NOT_IMPLEMENTED] Applying the canonical destructive equivocation transition permanently tombstones the validator registration and every consensus-key rotation in its lineage within the same genesis context; AFTER: `PROD-010`, `ECON-015`, `ECON-101`.
+- ECON-107 [DECIDED] [NOT_IMPLEMENTED] Low or absent certificate participation causes no NAO slash; AFTER: `PROD-044`, `PROD-045`.
+- ECON-108 [DECIDED] [NOT_IMPLEMENTED] Low or absent certificate participation causes no Knowledge Weight slash; AFTER: `PROD-044`, `PROD-045`.
+- ECON-109 [DECIDED] [NOT_IMPLEMENTED] A validator's bond and offense-position delegation snapshot remain slashable through 30 complete epochs after its last effective active epoch; AFTER: `PROD-036`, `ECON-100`.
+- ECON-110 [DECIDED] [NOT_IMPLEMENTED] Bond value above the current requirement becomes withdrawable only after the 30-complete-epoch liability window; AFTER: `ECON-098`, `ECON-109`.
+- ECON-111 [DECIDED] [NOT_IMPLEMENTED] At Knowledge Weight batch age A below 730 epochs, live weight is `floor(original_weight * (730 - A) / 730)`; AFTER: `ECON-044`, `ECON-045`.
+- ECON-112 [DECIDED] [NOT_IMPLEMENTED] A Knowledge Weight batch has zero live weight at every age of at least 730 epochs; AFTER: `ECON-111`.
+- GOV-041 [DECIDED] [NOT_IMPLEMENTED] Genesis allocates exactly 100,000,000 NAO to the vested development reserve; AFTER: `GOV-002`.
+- GOV-042 [DECIDED] [NOT_IMPLEMENTED] Genesis allocates exactly 100,000,000 NAO to the ecosystem-grant reserve; AFTER: `GOV-041`.
+- GOV-043 [DECIDED] [NOT_IMPLEMENTED] Every auction-pool NAO not sold in the accepted genesis auction is burned before genesis finalization; AFTER: `GOV-002`, `GOV-042`.
+- GOV-044 [DECIDED] [NOT_IMPLEMENTED] The development reserve unlocks zero NAO before epoch 365; AFTER: `PROD-038`, `GOV-041`.
+- GOV-045 [DECIDED] [NOT_IMPLEMENTED] The development reserve unlocks linearly from epoch 365 through complete unlock at epoch 1460; AFTER: `GOV-044`.
+- GOV-046 [OPEN] [BLOCKED] Specify exact development-vesting atom rounding at every epoch boundary; AFTER: `GOV-045`.
+- GOV-047 [DECIDED] [NOT_IMPLEMENTED] Development-reserve spending requires an audited foundation three-of-five multisig account; AFTER: `ECON-003`, `GOV-041`.
+- GOV-048 [DECIDED] [NOT_IMPLEMENTED] The development-reserve multisig grants no consensus, mathematical-validation, upgrade, or grant-treasury authority; AFTER: `GOV-047`.
+- GOV-049 [DECIDED] [NOT_IMPLEMENTED] An independent public audit of development-reserve balances and spending occurs at least once every 365 epochs; AFTER: `PROD-036`, `GOV-047`.
+- GOV-050 [DECIDED] [NOT_IMPLEMENTED] An ecosystem-grant proposal uses one immutable snapshot of all live matured ordinary Knowledge Weight at proposal opening; AFTER: `ECON-041`, `ECON-044`, `ECON-049`, `GOV-042`.
+- GOV-051 [DECIDED] [NOT_IMPLEMENTED] A grant proposal passes only when yes weight is strictly greater than two thirds of the complete eligible snapshot weight; AFTER: `GOV-050`.
+- GOV-052 [DECIDED] [NOT_IMPLEMENTED] Abstention and nonparticipation remain in the grant-vote threshold denominator; AFTER: `GOV-051`.
+- GOV-053 [DECIDED] [NOT_IMPLEMENTED] One grant voting window lasts exactly seven epochs; AFTER: `PROD-036`, `GOV-050`.
+- GOV-054 [DECIDED] [NOT_IMPLEMENTED] A grant approved in epoch E executes no earlier than E+2 after one complete intervening epoch; AFTER: `PROD-038`, `GOV-051`, `GOV-053`.
+- GOV-055 [DECIDED] [NOT_IMPLEMENTED] Ecosystem-grant disbursements total at most 20,000,000 NAO in every rolling 365-epoch window; AFTER: `PROD-036`, `GOV-042`.
+- GOV-056 [DECIDED] [NOT_IMPLEMENTED] The public allocation uses one uniform-price sealed-bid batch auction conducted through an audited off-chain ceremony; AFTER: `GOV-002`.
+- GOV-057 [DECIDED] [NOT_IMPLEMENTED] The auction reserve price is supported by at least two independent valuations; AFTER: `GOV-056`.
+- GOV-058 [DECIDED] [NOT_IMPLEMENTED] The reserve price and supporting valuation summaries are published at least 30 calendar days before bidding opens; AFTER: `GOV-057`.
+- GOV-059 [DECIDED] [NOT_IMPLEMENTED] The sealed-bid window lasts exactly 30 calendar days; AFTER: `GOV-058`.
+- GOV-060 [DECIDED] [NOT_IMPLEMENTED] Auction bids and settlement are denominated in United States dollars; AFTER: `GOV-056`.
+- GOV-061 [DECIDED] [NOT_IMPLEMENTED] Every auction bid is fully prefunded through an independent regulated escrow before it becomes eligible; AFTER: `GOV-060`.
+- GOV-062 [DECIDED] [NOT_IMPLEMENTED] An invalid or defaulted winning bid is removed and the uniform-price result is recomputed deterministically from the remaining valid bids; AFTER: `GOV-056`, `GOV-061`.
+- GOV-063 [DECIDED] [NOT_IMPLEMENTED] One verified beneficial controller may receive at most 10,000,000 NAO from the public auction; AFTER: `GOV-002`, `GOV-056`.
+- GOV-064 [DECIDED] [NOT_IMPLEMENTED] Genesis requires the accepted auction to sell at least 400,000,000 NAO; AFTER: `GOV-002`, `GOV-056`.
+- GOV-065 [DECIDED] [NOT_IMPLEMENTED] Failure to sell at least 400,000,000 NAO prevents genesis and requires a new valuation, notice period, and auction ceremony; AFTER: `GOV-058`, `GOV-064`.
+- GOV-066 [DECIDED] [NOT_IMPLEMENTED] A five-member buyer-audit panel privately aggregates auction bids by verified beneficial controller; AFTER: `GOV-063`.
+- GOV-067 [DECIDED] [NOT_IMPLEMENTED] At least three buyer-audit panel members must attest the final beneficial-controller cap result; AFTER: `GOV-066`.
+- GOV-068 [DECIDED] [NOT_IMPLEMENTED] Public genesis data exposes pseudonymous auction allocations rather than buyer identities; AFTER: `GOV-066`, `GOV-067`.
+- GOV-069 [DECIDED] [NOT_IMPLEMENTED] Accepted auction proceeds go to an independent nonprofit foundation with no consensus authority; AFTER: `GOV-056`.
+- GOV-070 [DECIDED] [NOT_IMPLEMENTED] The foundation appoints the buyer-audit panel through a public tender with published applications, conflicts, and selection rationales; AFTER: `GOV-066`.
+- GOV-071 [DECIDED] [NOT_IMPLEMENTED] The foundation appoints the genesis-qualification panel through a separate public tender with published applications, conflicts, and selection rationales; AFTER: `GOV-038`.
+- GOV-072 [DECIDED] [NOT_IMPLEMENTED] No person may serve on both the buyer-audit panel and the genesis-qualification panel; AFTER: `GOV-070`, `GOV-071`.
+- GOV-073 [DECIDED] [NOT_IMPLEMENTED] Foundation-appointed audit panels are not described as institutionally independent from the foundation; AFTER: `GOV-070`, `GOV-071`.
+- GOV-074 [DECIDED] [NOT_IMPLEMENTED] One verified controller may enter the genesis-validator applicant lottery at most once; AFTER: `GOV-030`, `GOV-038`.
+- GOV-075 [DECIDED] [NOT_IMPLEMENTED] Every genesis-validator applicant proves control of its Ed25519 consensus key; AFTER: `PROD-016`, `GOV-038`.
+- GOV-076 [DECIDED] [NOT_IMPLEMENTED] Every genesis-validator applicant completes a 30-calendar-day public testnet before the lottery; AFTER: `GOV-030`.
+- GOV-077 [DECIDED] [NOT_IMPLEMENTED] A genesis-validator applicant must validly precommit at least 95% of finalized testnet heights to qualify; AFTER: `GOV-076`.
+- GOV-078 [DECIDED] [NOT_IMPLEMENTED] Each lottery winner purchases and escrows exactly 15,625 NAO from the auction allocation at the clearing price as its initial bond; AFTER: `ECON-096`, `GOV-040`, `GOV-056`.
+- GOV-079 [DECIDED] [NOT_IMPLEMENTED] A qualified nonwinner's contingent bond purchase is refunded; AFTER: `GOV-078`.
+- GOV-089 [DECIDED] [NOT_IMPLEMENTED] Genesis commits the accepted auction transcript identity and every resulting pseudonymous NAO allocation; AFTER: `GOV-056`, `GOV-067`, `GOV-068`.
+- GOV-080 [DECIDED] [NOT_IMPLEMENTED] The genesis-validator lottery seed derives from every valid multiparty reveal and the accepted auction transcript; AFTER: `GOV-030`, `GOV-089`.
+- GOV-081 [DECIDED] [NOT_IMPLEMENTED] A missing lottery reveal permanently excludes its verified controller from that genesis attempt and restarts the ceremony after a fresh public delay; AFTER: `GOV-080`.
+- GOV-082 [OPEN] [BLOCKED] Specify the canonical genesis-lottery commitment format; AFTER: `GOV-030`, `GOV-080`, `GOV-081`.
+- GOV-090 [DECIDED] [NOT_IMPLEMENTED] Genesis commits the threshold-attested qualified-applicant ledger and final lottery transcript; AFTER: `GOV-038`, `GOV-082`.
+- GOV-083 [OPEN] [BLOCKED] Specify deterministic per-allocation bootstrap-reduction remainder ordering across the 32 tagged allocations; AFTER: `PROD-016`, `GOV-033`, `GOV-034`.
+- PROD-029 [DECIDED] [NOT_IMPLEMENTED] Each consensus position uses one immutable snapshot of the top 256 eligible validator keys after delegation, bond cap, bootstrap reduction, Knowledge Weight decay, and penalty rules; AFTER: `PROD-008`, `PROD-024`, `PROD-047`, `PROD-048`, `PROD-081`, `ECON-092`, `ECON-098`, `ECON-111`, `GOV-033`, `GOV-083`.
+- PROD-082 [DECIDED] [NOT_IMPLEMENTED] The selected weighted-round-robin transition exposes deterministic finite-window proposer-count discrepancy and maximum-consecutive-run bounds for every validator subset of one immutable active snapshot; AFTER: `PROD-002`, `PROD-029`.
+- PROD-028 [OPEN] [BLOCKED] Specify the exact cross-platform weighted-round-robin accumulator transition satisfying the finite-window subset bounds; AFTER: `PROD-002`, `PROD-017`, `PROD-029`, `PROD-082`.
+- PROD-083 [OPEN] [BLOCKED] Specify and prove the exact finite-window proposer-count discrepancy and maximum-consecutive-run formulas in Tendermint proposer positions and rounds for the transition selected by `PROD-028`; AFTER: `PROD-028`, `PROD-029`, `PROD-082`.
+- PROD-090 [DECIDED] [NOT_IMPLEMENTED] Every deadline service guarantee that spans an activation boundary uses a finite proposer-gap bound over every reachable sequence of immutable active snapshots and weighted-round-robin accumulator states until that deadline; AFTER: `PROD-009`, `PROD-029`, `PROD-041`, `PROD-083`.
+- PROD-091 [OPEN] [BLOCKED] Specify and prove the exact cross-snapshot proposer-gap composition across every reachable active-set and weighted-round-robin accumulator transition until one deadline; AFTER: `PROD-028`, `PROD-083`, `PROD-090`.
+- PROD-031 [DECIDED] [NOT_IMPLEMENTED] Producer selection ranks combined effective bootstrap and delegated ordinary Knowledge Weight under the one shared active-set cap; AFTER: `PROD-028`, `PROD-029`, `PROD-048`, `PROD-049`, `PROD-083`.
+- PROD-035 [DECIDED] [NOT_IMPLEMENTED] Agreement weight equals the same combined effective bootstrap and delegated ordinary Knowledge Weight in the immutable position snapshot; AFTER: `PROD-013`, `PROD-029`, `PROD-031`.
+- SEC-042 [DECIDED] [NOT_IMPLEMENTED] Under bonded top-256 selection, partitioning fixed Knowledge Weight across independently bonded validator registrations may change active membership, total active agreement weight, and the controller's active proposer or agreement share; AFTER: `PROD-008`, `PROD-029`, `PROD-035`, `PROD-047`, `PROD-081`, `ECON-090`, `ECON-092`, `ECON-096`, `ECON-098`.
+- SEC-043 [DECIDED] [NOT_IMPLEMENTED] Honest-proposer service calculations use the selected finite worst-case proposer gap for every validator subset with strictly less than one-third of the actual immutable active-snapshot weight rather than average or long-run proposer share; AFTER: `SEC-009`, `SEC-032`, `PROD-083`.
+- PROD-034 [DECIDED] [NOT_IMPLEMENTED] Zero total eligible active agreement weight halts consensus without fallback weight, quorum relaxation, or bootstrap extension; AFTER: `PROD-002`, `PROD-029`, `PROD-031`, `PROD-035`, `GOV-024`.
+- ECON-079 [OPEN] [BLOCKED] Specify the genesis-context domain separation bytes for citation-reward attribution registration; AFTER: `CODEC-030`, `ECON-073`, `GOV-001`.
+- ECON-074 [OPEN] [BLOCKED] Specify the canonical citation-reward attribution-registration identity derivation; AFTER: `ECON-073`, `ECON-075`, `ECON-079`, `ECON-080`.
+- ECON-076 [OPEN] [BLOCKED] Specify deterministic citation-reward attribution-registration admission and state transition; AFTER: `ECON-028`, `ECON-072`, `ECON-073`, `ECON-074`, `ECON-075`, `ECON-079`, `ECON-080`.
+- ECON-060 [DECIDED] [NOT_IMPLEMENTED] A prepublication commitment binds the exact citation-reward beneficiary account; AFTER: `ECON-029`, `ECON-076`.
+- ECON-061 [DECIDED] [NOT_IMPLEMENTED] A prepublication commitment binds the exact `ArtifactId` and a secret nonce; AFTER: `ECON-029`, `ECON-076`.
+- ECON-062 [DECIDED] [NOT_IMPLEMENTED] Every post-genesis prepublication commitment binds the exact chain context; AFTER: `CODEC-006`, `ECON-029`, `ECON-076`.
+- ECON-063 [DECIDED] [NOT_IMPLEMENTED] Every post-genesis prepublication commitment binds the exact installed final genesis context; AFTER: `ECON-029`, `ECON-076`, `GOV-001`.
+- ECON-175 [DECIDED] [NOT_IMPLEMENTED] The single genesis-bootstrap prepublication commitment binds a unique canonical bootstrap-attribution domain fixed before unsigned genesis-root derivation instead of the installed chain and final genesis contexts; AFTER: `ECON-029`, `ECON-076`, `GOV-001`.
+- ECON-064 [DECIDED] [NOT_IMPLEMENTED] A prepublication commitment binds the exact protocol version; AFTER: `CODEC-013`, `ECON-029`, `ECON-076`.
+- ECON-065 [DECIDED] [NOT_IMPLEMENTED] The commitment fee payer authorizes the exact commitment operation and nonce; AFTER: `ECON-003`, `ECON-029`, `ECON-076`.
+- ECON-066 [DECIDED] [NOT_IMPLEMENTED] Duplicate commitments and duplicate reveals cannot reserve or apply attribution state twice; AFTER: `ECON-029`, `ECON-060`, `ECON-061`, `ECON-062`, `ECON-063`, `ECON-064`, `ECON-175`.
+- ECON-078 [DECIDED] [NOT_IMPLEMENTED] Prepublication reveal eligibility uses finalized consensus ancestry and finalized height rather than wall-clock time; AFTER: `CODEC-010`, `CODEC-012`, `ECON-029`.
+- ECON-113 [DECIDED] [NOT_IMPLEMENTED] A reveal may reference only a commitment finalized in a strict ancestor consensus block; AFTER: `ECON-066`, `ECON-078`.
+- ECON-114 [DECIDED] [NOT_IMPLEMENTED] A commitment and its reveal cannot finalize in the same consensus block; AFTER: `ECON-113`.
+- ECON-067 [DECIDED] [NOT_IMPLEMENTED] An unrevealed commitment expires exactly one epoch after its finalization height; AFTER: `PROD-038`, `ECON-078`.
+- ECON-068 [OPEN] [BLOCKED] Select the deterministic count and byte bounds for retained unrevealed commitments from measured storage and validation limits; AFTER: `RES-021`, `ECON-029`, `ECON-076`.
+- ECON-069 [DECIDED] [NOT_IMPLEMENTED] An expired unrevealed commitment is removed from active attribution state; AFTER: `ECON-067`, `ECON-068`.
+- ECON-070 [DECIDED] [NOT_IMPLEMENTED] Reserving commitment state pays a nonrefundable resource fee and escrows a refundable deposit; AFTER: `ECON-003`, `ECON-004`, `ECON-027`, `ECON-029`, `ECON-076`.
+- ECON-115 [OPEN] [BLOCKED] Select the commitment resource fee and refundable deposit from benchmarked retained-state and verification costs; AFTER: `ECON-068`, `ECON-070`.
+- ECON-077 [DECIDED] [NOT_IMPLEMENTED] A timely valid reveal refunds the exact commitment deposit to its authorized payer; AFTER: `ECON-004`, `ECON-067`, `ECON-070`.
+- ECON-116 [DECIDED] [NOT_IMPLEMENTED] Commitment expiry or a payer-authorized reveal that violates its committed claim burns the exact escrowed commitment deposit; AFTER: `ECON-069`, `ECON-070`, `ECON-077`.
+- ECON-117 [DECIDED] [NOT_IMPLEMENTED] The earliest finalized eligible commitment wins immutable attribution for one `ArtifactId`; AFTER: `ECON-028`, `ECON-113`.
+- ECON-118 [DECIDED] [NOT_IMPLEMENTED] Equal-height eligible commitments for one future `ArtifactId` are ordered by ascending canonical commitment identity; AFTER: `ECON-074`, `ECON-117`.
+- ECON-182 [DECIDED] [NOT_IMPLEMENTED] The immutable definition beneficiary chooses the exact supporting `ProofId` or null value carried by the winning attribution commitment and reveal; AFTER: `ECON-029`, `ECON-117`, `ECON-118`.
+- ECON-183 [DECIDED] [NOT_IMPLEMENTED] The definition beneficiary's attribution authorization binds the exact supporting `ProofId` or null value; AFTER: `ECON-182`.
+- ECON-184 [DECIDED] [NOT_IMPLEMENTED] Any distinct artifact-publication fee payer's authorization binds the same exact supporting `ProofId` or null value; AFTER: `ECON-003`, `ECON-025`, `ECON-182`.
+- ECON-185 [DECIDED] [NOT_IMPLEMENTED] A definition proposal whose supporting `ProofId` or null value differs from its winning revealed attribution value is invalid before artifact or economic-state mutation even if the proposer signs the changed proposal; AFTER: `ECON-182`, `ECON-183`, `ECON-184`.
+- ECON-186 [DECIDED] [NOT_IMPLEMENTED] Definition supporting-proof selection requires and carries no authorization from the supporting proof's owner; AFTER: `ECON-182`, `ECON-183`.
+- ECON-071 [DECIDED] [NOT_IMPLEMENTED] A full unrevealed-commitment pool rejects a new reservation without evicting any unexpired valid commitment; AFTER: `ECON-068`, `ECON-069`, `ECON-070`.
+- NET-024 [DECIDED] [NOT_IMPLEMENTED] The official V1 configuration contains exactly eight bootstrap seed addresses; AFTER: `NET-006`, `NET-007`.
+- NET-025 [DECIDED] [NOT_IMPLEMENTED] Each official bootstrap seed has a different publicly disclosed controller; AFTER: `NET-024`.
+- NET-026 [DECIDED] [NOT_IMPLEMENTED] V1 imposes no country or autonomous-system quota on the eight official seed controllers; AFTER: `NET-025`.
+- SYNC-028 [DECIDED] [NOT_IMPLEMENTED] Complete replay from the exact genesis context verifies historical data but cannot by itself establish post-liability-window canonicality for an unanchored node; AFTER: `SYNC-004`, `SYNC-014`.
+- SYNC-029 [DECIDED] [NOT_IMPLEMENTED] Checkpoint-assisted synchronization never selects a checkpoint automatically from peer or seed reports; AFTER: `SYNC-007`.
+- SYNC-030 [DECIDED] [NOT_IMPLEMENTED] A checkpoint at least 30 complete epochs behind the operator-supplied minimum acceptable epoch is ineligible for checkpoint-assisted bootstrap; AFTER: `PROD-038`, `SYNC-007`.
+- GOV-084 [DECIDED] [NOT_IMPLEMENTED] Tombstoning a genesis validator sets its current tagged bootstrap allocation to zero without redistribution; AFTER: `ECON-106`, `GOV-034`.
+- GOV-085 [DECIDED] [NOT_IMPLEMENTED] The 32 initial genesis-validator bonds escrow exactly 500,000 NAO in aggregate; AFTER: `GOV-078`.
+- GOV-086 [DECIDED] [NOT_IMPLEMENTED] At epoch E below 730, the independent linear aggregate-bootstrap cap is `floor(10,000,000,000,000,000 * (730 - E) / 730)` Knowledge Weight units; AFTER: `PROD-038`, `GOV-040`.
+- GOV-087 [DECIDED] [NOT_IMPLEMENTED] Only an accepted protocol grant vote may authorize spending from the ecosystem-grant reserve; AFTER: `GOV-042`, `GOV-051`.
+- GOV-088 [DECIDED] [NOT_IMPLEMENTED] Calendar-day deadlines used by pre-genesis ceremonies are off-chain ceremony constraints and never consensus time; AFTER: `CODEC-012`, `GOV-058`, `GOV-059`, `GOV-076`.
+- ECON-119 [DECIDED] [NOT_IMPLEMENTED] V1 economic accounts support no programmable script or virtual-machine execution path; AFTER: `ECON-003`.
+- ECON-120 [DECIDED] [NOT_IMPLEMENTED] A validator operator receives its declared commission from the validator's reward share and the remainder belongs pro rata to that validator's effective delegators; AFTER: `ECON-084`, `ECON-085`, `ECON-086`.
+- ECON-121 [DECIDED] [NOT_IMPLEMENTED] A commission change cannot alter rewards finalized before its activation epoch; AFTER: `ECON-088`, `ECON-089`, `ECON-120`.
+- ECON-122 [DECIDED] [NOT_IMPLEMENTED] Non-artifact operation fees create no citation reward and no Knowledge Weight; AFTER: `ECON-082`.
+- ECON-123 [DECIDED] [NOT_IMPLEMENTED] Ecosystem-grant voting delegation is direct and cannot recursively delegate voting weight; AFTER: `ECON-095`, `GOV-050`.
+- ECON-124 [DECIDED] [IMPLEMENTED] A mathematical definition's canonical identity remains independent of any supporting `ProofId`; evidence: `crates/naome-proof/src/definition.rs`, `crates/naome-checker/src/tests/definitions.rs`; AFTER: `BASE-007`.
+- CODEC-082 [DECIDED] [NOT_IMPLEMENTED] A proposal carrying a function definition with a checker-derived proof obligation carries exactly one supporting `ProofId`, and every proposal without such an obligation carries no supporting-proof input; AFTER: `CODEC-003`, `ECON-124`.
+- CODEC-084 [DECIDED] [NOT_IMPLEMENTED] Definition supporting-proof input remains outside `DefinitionCertificate`, `DefinitionId`, `ArtifactId`, and the unchanged 128-byte `ArtifactBlock` while remaining inside the evidence-free proposal signing root and canonical consensus-envelope identity; AFTER: `CODEC-002`, `CODEC-044`, `CODEC-045`, `CODEC-082`, `ECON-124`.
+- CODEC-083 [OPEN] [BLOCKED] Specify the exact canonical consensus-envelope field bytes, placement, strict decoding, and admission rules for definition supporting-proof proposal input; AFTER: `CODEC-004`, `CODEC-044`, `CODEC-082`, `CODEC-084`.
+- ECON-125 [DECIDED] [NOT_IMPLEMENTED] Every function-definition proposal for which strict checking computes a proof obligation carries exactly one supporting `ProofId` as canonical proposal input while that proof remains excluded from `DefinitionId` and `ArtifactId`; AFTER: `CODEC-082`, `CODEC-083`, `CODEC-084`, `ECON-038`, `ECON-124`, `ECON-182`, `ECON-185`.
+- ECON-176 [DECIDED] [NOT_IMPLEMENTED] A proposal for a proof artifact, relation definition, or any other artifact without a checker-derived proof obligation carries no supporting-proof input, and a nonempty input makes it invalid before artifact or economic-state mutation; AFTER: `CODEC-082`, `CODEC-083`, `ECON-124`.
+- ECON-177 [DECIDED] [NOT_IMPLEMENTED] Strict definition admission accepts supporting-proof input only when the named `ProofId` is selected in the exact parent artifact state and its stored statement and conclusion equal the checker-computed function obligation; every mismatch fails before artifact or economic-state mutation; AFTER: `BASE-009`, `CODEC-083`, `ECON-125`, `ECON-176`.
+- ECON-178 [DECIDED] [NOT_IMPLEMENTED] An accepted function-definition supporting `ProofId` contributes exactly its proof `ArtifactId` as the sole direct obligation-citation target while the obligation `StatementId`, every alternate proof, and the supporting proof's transitive dependencies remain ineligible; AFTER: `ECON-030`, `ECON-036`, `ECON-177`.
+- ECON-126 [DECIDED] [NOT_IMPLEMENTED] When requested consensus delegations exceed an owner's live Knowledge Weight, effective delegations are reduced pro rata before deterministic remainder allocation; AFTER: `ECON-090`, `ECON-092`, `ECON-093`.
+- ECON-127 [DECIDED] [NOT_IMPLEMENTED] A Knowledge Weight owner may split direct ecosystem-grant delegation across multiple delegate accounts; AFTER: `ECON-095`, `ECON-123`.
+- ECON-128 [DECIDED] [NOT_IMPLEMENTED] Validator rewards, validator operation, and consensus participation create zero Knowledge Weight; AFTER: `SEC-031`, `ECON-083`, `ECON-122`.
+- GOV-091 [OPEN] [BLOCKED] Record the actual publicly selected buyer-audit and genesis-qualification panel members; AFTER: `GOV-070`, `GOV-071`, `GOV-072`.
+- GOV-092 [OPEN] [BLOCKED] Record the exact development-reserve three-of-five multisig keys selected before genesis; AFTER: `GOV-047`.
+- GOV-093 [OPEN] [BLOCKED] Record the accepted auction transcript identity and exact resulting allocation table; AFTER: `GOV-089`.
+- NET-027 [OPEN] [BLOCKED] Record the exact eight official bootstrap seed addresses and disclosed controllers for V1; AFTER: `NET-024`, `NET-025`.
+- CODEC-066 [OPEN] [BLOCKED] Select the maximum validator-operation count per consensus block from measured worst-case work; AFTER: `CODEC-025`, `CODEC-063`, `RES-022`.
+- CODEC-067 [OPEN] [BLOCKED] Select the maximum canonical validator-operation bytes per consensus block from measured worst-case work; AFTER: `CODEC-025`, `CODEC-063`, `RES-022`.
+- CODEC-068 [OPEN] [BLOCKED] Specify canonical ordering across artifact execution, economic operations, and validator operations; AFTER: `CODEC-062`, `CODEC-063`.
+- CODEC-069 [OPEN] [BLOCKED] Specify duplicate-operation-key rejection within one consensus block; AFTER: `CODEC-062`, `CODEC-063`.
+- CODEC-070 [DECIDED] [NOT_IMPLEMENTED] Every proposal at height H greater than one carries one canonical valid precommit certificate settling height H minus one; AFTER: `CODEC-004`, `CODEC-015`, `FORK-011`.
+- CODEC-071 [DECIDED] [NOT_IMPLEMENTED] The proposal at first non-genesis height carries one canonical genesis-commit sentinel instead of a prior-height precommit certificate; AFTER: `CODEC-070`, `GOV-001`.
+- PROD-050 [DECIDED] [NOT_IMPLEMENTED] A proposer with a previously valid value re-proposes that exact value and names the latest earlier round whose strict-greater-than-two-thirds prevote certificate made it valid; AFTER: `PROD-012`, `PROD-013`.
+- PROD-051 [DECIDED] [NOT_IMPLEMENTED] Before prevoting in round R, a validator locked at round L unlocks for a proposed value only after verifying that value's strict-greater-than-two-thirds prevote certificate at round P with `L < P < R`; AFTER: `PROD-013`, `PROD-050`.
+- PROD-052 [DECIDED] [NOT_IMPLEMENTED] A validator that remains locked prevotes its locked proposal value; AFTER: `PROD-051`.
+- PROD-053 [DECIDED] [NOT_IMPLEMENTED] An unlocked validator prevotes the complete valid available proposal or prevotes nil when no such proposal is available before the propose timeout; AFTER: `PROD-014`, `PROD-051`.
+- PROD-054 [DECIDED] [NOT_IMPLEMENTED] Strict greater-than-two-thirds prevotes for one block in the current round make a validator lock or relock that block and precommit it; AFTER: `PROD-013`, `PROD-052`, `PROD-053`.
+- PROD-055 [DECIDED] [NOT_IMPLEMENTED] Strict greater-than-two-thirds prevotes for nil in the current round make a validator clear its lock and precommit nil; AFTER: `PROD-013`, `PROD-054`.
+- PROD-056 [DECIDED] [NOT_IMPLEMENTED] Without a current-round strict-greater-than-two-thirds prevote certificate for a block or nil, a validator preserves its existing lock and precommits nil; AFTER: `PROD-054`, `PROD-055`.
+- PROD-057 [DECIDED] [NOT_IMPLEMENTED] Strict greater-than-two-thirds precommits for one valid block at one height and round finalize that block; AFTER: `PROD-013`, `PROD-054`.
+- PROD-058 [DECIDED] [NOT_IMPLEMENTED] A nil precommit quorum or expired precommit timeout advances the same height to the next round without finalization; AFTER: `PROD-004`, `PROD-055`, `PROD-056`, `PROD-057`.
+- PROD-059 [OPEN] [BLOCKED] Select benchmarked propose, prevote, and precommit base timeouts and per-round backoff values that meet the healthy ten-second target; AFTER: `PROD-003`, `PROD-004`, `PROD-058`, `RES-011`.
+- PROD-063 [DECIDED] [NOT_IMPLEMENTED] A voluntary weight change larger than the available epoch churn budget applies in deterministic partial increments across later epochs; AFTER: `PROD-039`, `PROD-040`.
+- PROD-064 [DECIDED] [NOT_IMPLEMENTED] Every nonempty queued voluntary change makes the maximum canonical progress permitted by the available churn budget in each epoch; AFTER: `PROD-040`, `PROD-063`.
+- RES-045 [DECIDED] [NOT_IMPLEMENTED] Each economic operation and validator operation has its own deterministic consensus-versioned exact-integer resource weight; AFTER: `RES-017`, `CODEC-062`, `CODEC-063`.
+- RES-046 [DECIDED] [NOT_IMPLEMENTED] Total block work is bounded by the artifact-publication resource weight, including any definition supporting-proof input, plus each operation weight with no work unit charged to two payers; AFTER: `RES-004`, `RES-011`, `RES-045`.
+- RES-047 [OPEN] [BLOCKED] Select exact operation-resource coefficients from measured worst-case canonical bytes, verification work, reads, and state growth; AFTER: `RES-018`, `RES-045`.
+- RES-048 [OPEN] [BLOCKED] Specify the exact deterministic contribution of definition supporting-proof field bytes, parent-state lookup, obligation comparison, and admission work to the artifact-publication resource weight so no work is unmetered or charged twice; AFTER: `CODEC-083`, `ECON-177`, `RES-004`.
+- ECON-187 [DECIDED] [NOT_IMPLEMENTED] The artifact-publication payer pays the definition supporting-proof resource contribution exactly once through the mandatory artifact base fee, and that contribution creates no separate operation fee; AFTER: `ECON-008`, `ECON-009`, `ECON-025`, `RES-048`.
+- ECON-129 [DECIDED] [NOT_IMPLEMENTED] Every artifact-publication base fee is at least five NAO atoms; AFTER: `ECON-008`, `ECON-009`, `ECON-081`.
+- ECON-130 [DECIDED] [NOT_IMPLEMENTED] Every accepted economic operation and validator operation pays a strictly positive resource fee; AFTER: `RES-045`, `ECON-082`.
+- ECON-131 [DECIDED] [NOT_IMPLEMENTED] Artifact admission requires its exact `ArtifactId` to have a valid attribution reveal in parent state or earlier canonical operation order in the same block; AFTER: `CODEC-068`, `ECON-076`, `ECON-113`.
+- ECON-132 [DECIDED] [NOT_IMPLEMENTED] Every selected non-genesis artifact therefore has exactly one immutable citation-reward beneficiary account; AFTER: `ECON-028`, `ECON-117`, `ECON-131`.
+- ECON-133 [DECIDED] [NOT_IMPLEMENTED] A reveal operation proves authorization by the committed beneficiary or fee payer, proves the committed secret nonce, and reproduces the committed definition-supporting `ProofId` or null value; AFTER: `ECON-060`, `ECON-061`, `ECON-065`, `ECON-182`, `ECON-183`.
+- ECON-134 [DECIDED] [NOT_IMPLEMENTED] An unauthorized or malformed reveal attempt leaves the commitment deposit and every consensus-state commitment unchanged; AFTER: `ECON-116`, `ECON-133`.
+- ECON-135 [OPEN] [BLOCKED] Record the exact versioned artifact base-fee coefficients and integer units, including definition supporting-proof resource work, after worst-case resource benchmarks pass; AFTER: `RES-009`, `RES-010`, `RES-048`, `ECON-009`, `ECON-129`.
+- ECON-136 [OPEN] [BLOCKED] Record the exact versioned operation-fee coefficients and integer units after worst-case resource benchmarks pass; AFTER: `RES-047`, `ECON-130`.
+- ECON-137 [DECIDED] [NOT_IMPLEMENTED] Height H validator-reward entitlements and participation accrue when H's canonical certificate is finalized in the proposal at height H plus one; AFTER: `CODEC-070`, `ECON-083`.
+- ECON-138 [DECIDED] [NOT_IMPLEMENTED] A validator-reward entitlement becomes spendable only after an authorized lazy claim credits the validator or delegator account balance; AFTER: `ECON-085`, `ECON-120`, `ECON-137`.
+- ECON-139 [OPEN] [BLOCKED] Specify the exact cumulative reward-per-effective-weight accumulator scale; AFTER: `ECON-085`, `ECON-120`, `ECON-138`.
+- ECON-152 [OPEN] [BLOCKED] Specify exact fractional-carry and remainder arithmetic for the validator-reward accumulator; AFTER: `ECON-139`.
+- ECON-153 [OPEN] [BLOCKED] Specify authorization and replay protection for lazy validator-reward claims; AFTER: `ECON-003`, `ECON-138`.
+- ECON-154 [OPEN] [BLOCKED] Specify the exact accumulator boundary at which a validator commission change takes effect; AFTER: `ECON-089`, `ECON-090`, `ECON-139`.
+- ECON-155 [OPEN] [BLOCKED] Specify the exact delegation-weight checkpoint used by each validator-reward accumulator update; AFTER: `ECON-084`, `ECON-093`, `ECON-139`.
+- ECON-140 [DECIDED] [NOT_IMPLEMENTED] Before one canonical next-block settlement certificate finalizes, current-height evidence variants cannot change consensus state, rewards, participation, or active-set input; AFTER: `CODEC-047`, `CODEC-055`, `CODEC-070`, `ECON-137`.
+- ECON-141 [OPEN] [BLOCKED] Specify exact pro-rata arithmetic and deterministic remainder ordering when requested ecosystem-grant delegations exceed live Knowledge Weight; AFTER: `ECON-123`, `ECON-127`.
+- ECON-142 [OPEN] [BLOCKED] Specify the exact authorization required for a current owner-account key rotation; AFTER: `ECON-003`, `ECON-042`.
+- ECON-156 [OPEN] [BLOCKED] Select the activation delay for an authorized owner-account key rotation; AFTER: `ECON-142`.
+- ECON-157 [OPEN] [BLOCKED] Specify the chain, genesis, protocol-version, account, and operation-role domains bound by an owner-account key rotation; AFTER: `CODEC-006`, `CODEC-013`, `ECON-142`.
+- ECON-158 [OPEN] [BLOCKED] Specify nonce consumption and duplicate rejection for an owner-account key rotation; AFTER: `ECON-004`, `ECON-142`.
+- ECON-159 [OPEN] [BLOCKED] Specify the exact authorization policy for precommitted owner-account recovery; AFTER: `ECON-003`, `ECON-042`.
+- ECON-160 [OPEN] [BLOCKED] Select the activation delay for precommitted owner-account recovery; AFTER: `ECON-159`.
+- ECON-161 [OPEN] [BLOCKED] Specify the chain, genesis, protocol-version, account, and operation-role domains bound by precommitted owner-account recovery; AFTER: `CODEC-006`, `CODEC-013`, `ECON-159`.
+- ECON-162 [OPEN] [BLOCKED] Specify nonce consumption and duplicate rejection for precommitted owner-account recovery; AFTER: `ECON-004`, `ECON-159`.
+- ECON-143 [DECIDED] [NOT_IMPLEMENTED] Validator operator authorization, consensus signing, reward receipt, and bond escrow are distinct protocol roles; AFTER: `PROD-005`, `PROD-016`, `ECON-027`.
+- PROD-084 [OPEN] [BLOCKED] Specify the canonical validator consensus-key-rotation operation byte encoding and operation identity; AFTER: `CODEC-063`, `ECON-143`.
+- PROD-085 [OPEN] [BLOCKED] Specify the exact validator-operator authorization evidence required for one consensus-key rotation; AFTER: `PROD-016`, `PROD-084`.
+- PROD-086 [OPEN] [BLOCKED] Specify the chain, genesis, protocol-version, validator-lineage, old-key, new-key, and operation-role domains bound by consensus-key-rotation authorization; AFTER: `CODEC-006`, `CODEC-013`, `PROD-084`, `PROD-085`.
+- PROD-087 [OPEN] [BLOCKED] Specify nonce consumption and duplicate rejection for validator consensus-key rotation; AFTER: `ECON-004`, `PROD-084`, `PROD-085`, `PROD-086`.
+- PROD-088 [DECIDED] [NOT_IMPLEMENTED] Canonical validator rotation admission accepts exactly one successor key only after verifying the selected operation encoding, operator authorization, replay domains, nonce, unchanged lineage, and `PROD-089` activation coordinate; AFTER: `PROD-010`, `PROD-084`, `PROD-085`, `PROD-086`, `PROD-087`, `PROD-089`.
+- ECON-144 [OPEN] [BLOCKED] Specify the canonical validator registration that binds each role key or account and its rotation lineage; AFTER: `PROD-010`, `PROD-088`, `ECON-142`, `ECON-156`, `ECON-157`, `ECON-158`, `ECON-159`, `ECON-160`, `ECON-161`, `ECON-162`, `ECON-143`.
+- ECON-145 [DECIDED] [NOT_IMPLEMENTED] Until the canonical destructive equivocation transition is applied, delayed evidence preserves deterministic liability for 10% of the offense-snapshot delegated ordinary Knowledge Weight even after later decay or redelegation; AFTER: `ECON-049`, `ECON-109`.
+- ECON-179 [DECIDED] [NOT_IMPLEMENTED] The first canonically executed valid equivocation-evidence operation for one unpenalized validator rotation lineage applies that lineage's sole destructive transition and records its permanent penalty marker atomically; AFTER: `CODEC-068`, `ECON-013`, `ECON-015`, `ECON-049`, `ECON-101`, `ECON-103`, `ECON-106`, `ECON-145`.
+- ECON-180 [DECIDED] [NOT_IMPLEMENTED] Later cryptographically valid equivocation evidence for a lineage with a penalty marker causes no second bond forfeiture, NAO or Knowledge Weight destruction, reporter payout, or tombstone transition; AFTER: `ECON-179`.
+- ECON-188 [DECIDED] [NOT_IMPLEMENTED] Later distinct valid equivocation evidence for a penalized rotation lineage remains admissible subject to the selected bounded pending-evidence rules and produces no second destructive or reporter-reward economics; AFTER: `ECON-180`.
+- RES-049 [OPEN] [BLOCKED] Select deterministic pre-finalization pending equivocation-evidence admission count, byte, and verification-work bounds per lineage and globally from active-set, lineage-turnover, liability-window, and non-penalizing-evidence limits; AFTER: `PROD-008`, `PROD-039`, `PROD-041`, `ECON-109`, `ECON-188`.
+- RES-050 [OPEN] [BLOCKED] Select deterministic auxiliary finalized-equivocation-evidence index retention duration and size bounds; AFTER: `ECON-109`, `ECON-188`, `RES-049`.
+- RES-051 [DECIDED] [NOT_IMPLEMENTED] Pending-pool and auxiliary-index bounds cannot authorize pruning equivocation-evidence bytes from finalized consensus blocks retained under `SYNC-002`; AFTER: `SYNC-002`, `RES-049`, `RES-050`.
+- ECON-181 [OPEN] [BLOCKED] Specify exact deadline-indexed first-penalty evidence admission accounting from reserved validator-operation count, bytes, verification work, lineage turnover, liability deadlines, and the cross-snapshot finite honest-proposer-gap bound; AFTER: `CODEC-066`, `CODEC-067`, `PROD-091`, `ECON-109`, `RES-049`.
+- ECON-146 [OPEN] [BLOCKED] Specify which implicated Knowledge Weight batches remain encumbered during delayed equivocation liability; AFTER: `ECON-105`, `ECON-145`.
+- ECON-163 [OPEN] [BLOCKED] Specify the deterministic order for destroying remaining implicated Knowledge Weight after delayed equivocation evidence; AFTER: `ECON-146`.
+- ECON-164 [OPEN] [BLOCKED] Specify deterministic shortfall accounting when remaining implicated Knowledge Weight cannot satisfy the offense-snapshot liability; AFTER: `ECON-145`, `ECON-163`.
+- ECON-147 [OPEN] [BLOCKED] Select the maximum M-of-N account policy size from canonical-byte and signature-verification benchmarks; AFTER: `ECON-003`, `RES-011`.
+- NET-028 [OPEN] [BLOCKED] Select the minimum number of independent peer paths maintained by a node; AFTER: `NET-015`, `NET-018`.
+- NET-029 [OPEN] [BLOCKED] Select the maximum admitted peer connections per disclosed controller; AFTER: `NET-015`, `NET-017`.
+- NET-030 [OPEN] [BLOCKED] Select the maximum admitted peer connections per network-address prefix; AFTER: `NET-015`, `NET-017`.
+- NET-031 [OPEN] [BLOCKED] Select inbound and outbound connection-direction caps; AFTER: `NET-015`, `NET-017`.
+- SYNC-031 [DECIDED] [NOT_IMPLEMENTED] A checkpoint-bootstrapped node is not a conforming archival full node until it backfills and independently verifies all canonical history from genesis; AFTER: `SAFE-001`, `SYNC-001`, `SYNC-007`.
+- SYNC-032 [DECIDED] [NOT_IMPLEMENTED] Historical backfill strictly verifies every canonical artifact and finality certificate before storing it as archival history; AFTER: `SYNC-031`.
+- SYNC-033 [DECIDED] [NOT_IMPLEMENTED] Checkpoint freshness uses an operator-supplied monotonic minimum acceptable epoch that peers cannot lower; AFTER: `SYNC-029`, `SYNC-030`.
+- SYNC-034 [DECIDED] [NOT_IMPLEMENTED] Bare-genesis replay encountering conflicting otherwise-valid finalized histories halts until the operator supplies an admissible checkpoint or installs a new genesis; AFTER: `FORK-004`, `SYNC-014`, `SYNC-028`.
+- SYNC-035 [DECIDED] [NOT_IMPLEMENTED] A node with a previously authenticated recent checkpoint may replay and install only descendants verified against that stored anchor; AFTER: `SYNC-014`, `SYNC-028`, `SYNC-033`.
+- GOV-094 [OPEN] [BLOCKED] Specify the canonical genesis-lottery reveal format; AFTER: `GOV-082`.
+- GOV-095 [OPEN] [BLOCKED] Specify the genesis-lottery seed derivation from the frozen contributor set, accepted auction transcript, commitments, and valid reveals; AFTER: `GOV-080`, `GOV-082`, `GOV-094`.
+- GOV-096 [OPEN] [BLOCKED] Specify unbiased deterministic sampling of 32 unique winners from the qualified applicant ledger and lottery seed; AFTER: `GOV-074`, `GOV-090`, `GOV-095`.
+- GOV-097 [OPEN] [BLOCKED] Specify the canonical final genesis-lottery transcript format; AFTER: `GOV-095`, `GOV-096`.
+- GOV-098 [OPEN] [BLOCKED] Specify the canonical auction bid and escrow-eligibility record format; AFTER: `GOV-056`, `GOV-061`.
+- GOV-099 [OPEN] [BLOCKED] Specify the exact uniform clearing-price calculation; AFTER: `GOV-056`, `GOV-098`.
+- GOV-100 [OPEN] [BLOCKED] Specify deterministic oversubscription and equal-price tie allocation under the beneficial-controller cap; AFTER: `GOV-063`, `GOV-099`.
+- GOV-101 [OPEN] [BLOCKED] Specify the refund transition for each valid losing auction bid; AFTER: `GOV-098`, `GOV-100`.
+- GOV-124 [OPEN] [BLOCKED] Specify refund or forfeiture for each removed, invalid, or defaulted auction bid; AFTER: `GOV-062`, `GOV-098`.
+- GOV-125 [OPEN] [BLOCKED] Specify settlement of accepted bid escrow not consumed by its final allocation; AFTER: `GOV-098`, `GOV-100`, `GOV-101`.
+- GOV-102 [OPEN] [BLOCKED] Specify the public audit acceptance procedure for the auction transcript and allocation result; AFTER: `GOV-067`, `GOV-089`, `GOV-098`, `GOV-099`, `GOV-100`, `GOV-101`, `GOV-124`, `GOV-125`.
+- GOV-103 [OPEN] [BLOCKED] Specify the upgrade-readiness message codec binding chain, genesis, target version, immutable snapshot, and activation coordinate; AFTER: `CODEC-006`, `CODEC-013`, `PROD-038`, `GOV-006`.
+- GOV-114 [OPEN] [BLOCKED] Specify the upgrade-cancellation message codec binding chain, genesis, scheduled version, activation coordinate, readiness certificate, and immutable cancellation snapshot; AFTER: `CODEC-006`, `CODEC-013`, `PROD-038`, `GOV-007`, `GOV-103`.
+- GOV-104 [DECIDED] [NOT_IMPLEMENTED] Every upgrade-readiness certificate uses one immutable active agreement-weight snapshot at one finalized epoch boundary; AFTER: `PROD-029`, `PROD-038`, `GOV-006`, `GOV-103`.
+- GOV-105 [DECIDED] [NOT_IMPLEMENTED] An upgrade cancellation binds the exact scheduled version, activation coordinate, readiness certificate, and current immutable weight snapshot; AFTER: `GOV-007`, `GOV-103`, `GOV-114`, `GOV-104`.
+- GOV-106 [OPEN] [BLOCKED] Specify the exact queued ordinary-replacement transition from target bootstrap weight to applied per-allocation bootstrap weight without delaying the linear cap; AFTER: `PROD-039`, `PROD-042`, `GOV-033`, `GOV-083`, `GOV-086`.
+- GOV-107 [DECIDED] [NOT_IMPLEMENTED] The genesis lottery accepts the finite bias that each verified controller can abort at most once by sacrificing its eligibility; AFTER: `GOV-074`, `GOV-081`.
+- GOV-108 [OPEN] [BLOCKED] Select the fresh public delay before restarting a genesis lottery after one controller is permanently excluded; AFTER: `GOV-081`, `GOV-107`.
+- GOV-109 [DECIDED] [NOT_IMPLEMENTED] If fewer than 32 qualified controllers remain after exclusions, that genesis attempt fails and requires a new applicant ceremony; AFTER: `GOV-074`, `GOV-081`, `GOV-107`.
+- GOV-110 [DECIDED] [NOT_IMPLEMENTED] An audit-panel member cannot attest a buyer, applicant, controller, or result in which that member or an affiliate has a disclosed interest; AFTER: `GOV-070`, `GOV-071`, `GOV-073`.
+- GOV-111 [DECIDED] [NOT_IMPLEMENTED] Foundation controllers and affiliates disclose any auction bid or genesis-validator application before the relevant panel freezes eligibility; AFTER: `GOV-069`, `GOV-070`, `GOV-071`.
+- GOV-112 [DECIDED] [NOT_IMPLEMENTED] A panel attestation remains valid only when three nonconflicted eligible panel members sign it; AFTER: `GOV-067`, `GOV-038`, `GOV-110`, `GOV-111`.
+- CODEC-072 [DECIDED] [NOT_IMPLEMENTED] A conforming non-genesis consensus-block format permits at least one economic operation in addition to its artifact; AFTER: `CODEC-062`, `CODEC-064`.
+- CODEC-081 [DECIDED] [NOT_IMPLEMENTED] A conforming non-genesis consensus-block format permits at least one validator or evidence operation in addition to its artifact; AFTER: `CODEC-063`, `CODEC-066`.
+- CODEC-073 [DECIDED] [NOT_IMPLEMENTED] The proposal post-state commitment excludes every signature and certificate produced for the proposal's current height; AFTER: `CODEC-008`, `CODEC-044`, `CODEC-047`, `CODEC-070`.
+- ECON-173 [DECIDED] [NOT_IMPLEMENTED] A new attribution commitment is admissible only when the deadline-indexed reserved reveal capacity can service every then-admitted commitment before expiry under the selected liveness assumptions; AFTER: `ECON-068`, `ECON-071`, `ECON-113`.
+- ECON-174 [OPEN] [BLOCKED] Specify exact deadline-indexed attribution-commitment admission accounting from reserved reveal count, byte, verification-work, and the cross-snapshot finite honest-proposer-gap bound; AFTER: `CODEC-064`, `PROD-091`, `SEC-043`, `ECON-068`, `ECON-173`, `RES-011`.
+- SEC-034 [DECIDED] [NOT_IMPLEMENTED] Honest-proposer economic-operation capacity is sufficient to service every admitted valid attribution reveal before its deadline under the selected cross-snapshot finite proposer-gap and liveness assumptions; AFTER: `CODEC-072`, `PROD-091`, `SEC-043`, `ECON-113`, `ECON-173`, `ECON-174`.
+- SEC-035 [DECIDED] [NOT_IMPLEMENTED] Honest-proposer validator-operation capacity is sufficient to service every admitted first-penalty equivocation-evidence operation before its liability deadline under the selected cross-snapshot finite proposer-gap and liveness assumptions; AFTER: `CODEC-081`, `PROD-091`, `SEC-043`, `ECON-179`, `ECON-181`.
+- SEC-036 [DECIDED] [NOT_IMPLEMENTED] An honest proposer orders valid deadline-bearing operations by earliest consensus deadline and then ascending canonical operation identity; AFTER: `CODEC-068`, `ECON-067`, `ECON-109`, `SEC-034`, `SEC-035`.
+- SEC-037 [DECIDED] [NOT_IMPLEMENTED] A valid deadline-bearing operation that remains within its reserved class capacity when an honest proposer starts construction is included in that proposal; AFTER: `SEC-036`.
+- CODEC-074 [DECIDED] [NOT_IMPLEMENTED] Distinct valid prior-height certificates create distinct next-height proposal signing roots rather than alternate executions of one proposal; AFTER: `CODEC-044`, `CODEC-070`, `CODEC-073`.
+- SEC-038 [DECIDED] [NOT_IMPLEMENTED] An honest next-height proposer includes every valid prior-height precommit signature available when it constructs the canonical settlement certificate; AFTER: `CODEC-070`, `CODEC-074`.
+- ECON-148 [DECIDED] [NOT_IMPLEMENTED] An unpaid or underpaid economic operation or validator operation is rejected before state mutation; AFTER: `ECON-130`, `ECON-135`, `ECON-136`.
+- ECON-149 [DECIDED] [NOT_IMPLEMENTED] An artifact whose attribution reveal is neither finalized in parent state nor ordered before artifact execution in the same proposal is rejected before state mutation; AFTER: `ECON-131`.
+- ECON-150 [DECIDED] [NOT_IMPLEMENTED] A commitment or reveal attempting to claim an already selected `ArtifactId` is rejected before attribution or deposit mutation; AFTER: `BASE-004`, `BASE-007`, `ECON-066`, `ECON-117`.
+- GOV-113 [OPEN] [BLOCKED] Specify evidence proving panel-member and foundation-affiliate disclosures; AFTER: `GOV-110`, `GOV-111`.
+- GOV-116 [OPEN] [BLOCKED] Specify canonical panel-member recusal records; AFTER: `GOV-110`, `GOV-111`, `GOV-113`.
+- GOV-117 [OPEN] [BLOCKED] Specify the public conflict challenge and adjudication procedure; AFTER: `GOV-112`, `GOV-113`, `GOV-116`.
+- GOV-140 [DECIDED] [NOT_IMPLEMENTED] The public genesis ceremony freezes one unique canonical bootstrap-attribution domain before deriving the unsigned genesis signing root; AFTER: `ECON-175`, `GOV-001`.
+- GOV-141 [DECIDED] [NOT_IMPLEMENTED] The bootstrap-attribution domain depends on neither the unsigned genesis signing root, the final genesis identity, nor any pre-finalization authorization or signature field; AFTER: `GOV-140`.
+- GOV-142 [OPEN] [BLOCKED] Specify the reusable canonical bootstrap-attribution-domain derivation and byte encoding without selecting one ceremony instance; AFTER: `GOV-140`, `GOV-141`.
+- GOV-145 [OPEN] [BLOCKED] Record the exact canonical V1 bootstrap-attribution-domain instance bytes and derivation inputs frozen by the public genesis ceremony before unsigned-root derivation; AFTER: `GOV-142`.
+- GOV-129 [DECIDED] [NOT_IMPLEMENTED] Genesis exposes one canonical unsigned genesis signing root for every authorization created before genesis finalization; AFTER: `GOV-001`, `GOV-140`, `GOV-142`.
+- GOV-130 [DECIDED] [NOT_IMPLEMENTED] The unsigned genesis signing root commits the exact bootstrap-attribution domain, chain-context input, and protocol version fixed before authorization plus every other semantic genesis field and unsigned operation field while excluding every authorization or signature field whose value depends on that root; AFTER: `CODEC-006`, `CODEC-013`, `GOV-129`, `GOV-140`, `GOV-142`.
+- GOV-131 [DECIDED] [NOT_IMPLEMENTED] Every authorization created before genesis finalization binds the exact unsigned genesis signing root and operation role and uses that root as its genesis domain rather than the final genesis identity; AFTER: `GOV-129`, `GOV-130`.
+- GOV-143 [DECIDED] [NOT_IMPLEMENTED] The unsigned genesis attribution commitment binds the pre-root bootstrap-attribution domain while its payer and reveal authorizations bind the later unsigned genesis signing root; AFTER: `ECON-175`, `GOV-131`, `GOV-140`, `GOV-142`.
+- GOV-135 [DECIDED] [NOT_IMPLEMENTED] The public genesis ceremony freezes one exact canonical ordered set of every pre-finalization authorization and signature over the unsigned genesis signing root before deriving the final genesis identity; AFTER: `GOV-129`, `GOV-130`, `GOV-131`.
+- GOV-132 [DECIDED] [NOT_IMPLEMENTED] The final genesis identity commits the complete canonical genesis bytes including the exact frozen pre-finalization authorization and signature set; AFTER: `GOV-129`, `GOV-130`, `GOV-131`, `GOV-135`.
+- GOV-136 [DECIDED] [NOT_IMPLEMENTED] The exact user-installed final genesis identity is the chain's genesis context while the unsigned genesis signing root is only its non-self-referential authorization target; AFTER: `GOV-132`.
+- GOV-137 [DECIDED] [NOT_IMPLEMENTED] Any alternate valid authorization or signature variant over one frozen unsigned genesis signing root is a noncanonical genesis envelope and fails before genesis installation; AFTER: `GOV-135`, `GOV-136`.
+- GOV-138 [DECIDED] [NOT_IMPLEMENTED] A distinct conforming genesis context requires a distinct unsigned genesis signing root and freshly authorized pre-finalization operations; AFTER: `GOV-131`, `GOV-136`, `GOV-137`.
+- GOV-144 [DECIDED] [NOT_IMPLEMENTED] A distinct conforming genesis context requires a distinct bootstrap-attribution domain; AFTER: `GOV-138`, `GOV-140`, `GOV-141`.
+- GOV-133 [OPEN] [BLOCKED] Specify the exact canonical unsigned genesis signing-root derivation and excluded-field encodings; AFTER: `GOV-129`, `GOV-130`, `GOV-131`, `GOV-142`, `GOV-143`.
+- GOV-134 [OPEN] [BLOCKED] Specify the exact final genesis-identity derivation over the complete canonical genesis bytes; AFTER: `GOV-132`, `GOV-133`, `GOV-135`, `GOV-136`, `GOV-137`.
+- GOV-139 [OPEN] [BLOCKED] Record the exact canonical ordered pre-finalization authorization and signature set frozen by the public genesis ceremony; AFTER: `GOV-133`, `GOV-134`, `GOV-135`, `GOV-145`.
+- GOV-115 [DECIDED] [NOT_IMPLEMENTED] Genesis registers one canonical attribution commitment for the exact first non-genesis `ArtifactId`, definition-supporting `ProofId` or null value, beneficiary, fee payer, nonce, deposit, and bootstrap-attribution domain; AFTER: `CODEC-003`, `ECON-029`, `ECON-113`, `ECON-131`, `ECON-175`, `ECON-182`, `GOV-001`, `GOV-131`, `GOV-133`, `GOV-143`, `GOV-145`.
+- GOV-118 [DECIDED] [NOT_IMPLEMENTED] The first artifact's exact canonical payload is publicly available and strictly validated before genesis finalization, after its genesis attribution commitment is fixed; AFTER: `SAFE-001`, `GOV-115`.
+- GOV-120 [DECIDED] [NOT_IMPLEMENTED] The genesis attribution commitment satisfies the post-genesis canonical validation, fee, escrow, reveal, refund, expiry, and burn rules after substituting its bootstrap-attribution domain for the post-genesis chain and final-genesis domains; AFTER: `ECON-067`, `ECON-070`, `ECON-077`, `ECON-116`, `ECON-175`, `GOV-115`.
+- GOV-121 [DECIDED] [NOT_IMPLEMENTED] The exact preauthorized height-one reveal bytes, definition-supporting `ProofId` or null value, and committed secret are publicly validated and relayable before genesis finalization so height one does not depend on either principal remaining online; AFTER: `ECON-113`, `ECON-133`, `ECON-182`, `GOV-115`, `GOV-118`, `GOV-131`, `GOV-133`.
+- GOV-123 [DECIDED] [NOT_IMPLEMENTED] The validator-pool fraction of the genesis attribution-commitment fee is burned because the genesis sentinel has no prior-height precommit signer; AFTER: `CODEC-071`, `ECON-082`, `GOV-120`.
+- GOV-119 [OPEN] [BLOCKED] Record the exact canonical first artifact payload; AFTER: `GOV-115`, `GOV-118`.
+- GOV-126 [DECIDED] [NOT_IMPLEMENTED] The genesis bootstrap includes one payer-authorized height-one artifact-publication fee operation that satisfies the normal authorization, nonce, replay-protection, and computed base-fee rules for the exact first `ArtifactId` and definition-supporting `ProofId` or null value; AFTER: `ECON-003`, `ECON-004`, `ECON-025`, `ECON-135`, `ECON-184`, `GOV-115`, `GOV-119`, `GOV-131`, `GOV-133`.
+- GOV-127 [DECIDED] [NOT_IMPLEMENTED] The exact canonical height-one artifact-publication fee authorization is publicly validated and relayable before genesis finalization so height one does not depend on its payer remaining online; AFTER: `GOV-126`.
+- GOV-128 [OPEN] [BLOCKED] Record the exact height-one artifact-publication fee authorization bytes, definition-supporting `ProofId` or null value, payer, nonce order relative to the genesis commitment and reveal, computed fee amount, optional bid, and chain, genesis, version, and operation-role domains; AFTER: `GOV-126`, `GOV-127`.
+- GOV-122 [OPEN] [BLOCKED] Record the exact genesis attribution commitment, preauthorized reveal, beneficiary, payer, nonce, deposit, and bootstrap-attribution-domain instance fields; AFTER: `GOV-115`, `GOV-120`, `GOV-121`, `GOV-123`, `GOV-143`, `GOV-145`.
+- PROD-066 [OPEN] [BLOCKED] Specify exact integer rounding for the 10% voluntary active-weight churn budget and deterministic partial-change remainders; AFTER: `PROD-039`, `PROD-063`, `PROD-064`.
+- PROD-067 [DECIDED] [NOT_IMPLEMENTED] Certificate participation measures canonical settlement inclusion rather than wall-clock signing or broadcast time and makes no stronger timeliness claim; AFTER: `PROD-043`.
+- PROD-068 [DECIDED] [NOT_IMPLEMENTED] A precommit absent from its canonical next-block settlement certificate cannot later change participation or reward accounting; AFTER: `PROD-043`, `ECON-137`.
+- SEC-039 [DECIDED] [NOT_IMPLEMENTED] Omitting valid precommits from a settlement certificate cannot increase any included signer's validator-reward entitlement because every entitlement uses total active agreement weight as its denominator; AFTER: `ECON-084`, `PROD-068`.
+- ECON-170 [DECIDED] [NOT_IMPLEMENTED] Omitting valid precommits from a settlement certificate cannot increase any actor's total validator reward or fee income; AFTER: `ECON-084`, `SEC-039`.
+- ECON-151 [DECIDED] [NOT_IMPLEMENTED] V1 awards the certificate-inclusion reward to a valid included precommit even though consensus cannot prove that signature existed before the prior height finalized; AFTER: `ECON-083`, `PROD-067`.
+- PROD-069 [DECIDED] [NOT_IMPLEMENTED] The public certificate-participation metric for epoch E freezes when the canonical certificate for E's final height is settled, and later signatures or claims cannot change it; AFTER: `PROD-038`, `PROD-043`, `PROD-068`.
+- ECON-171 [DECIDED] [NOT_IMPLEMENTED] A beneficiary-authorized reveal that violates its committed claim fails before deposit mutation; AFTER: `ECON-116`, `ECON-133`, `ECON-134`.
+- PROD-074 [DECIDED] [NOT_IMPLEMENTED] Observing strict-greater-than-two-thirds valid prevotes for one proposal at round R updates durable valid-value state to that proposal and valid round R when R exceeds the stored valid round; AFTER: `PROD-013`, `PROD-050`, `PROD-054`.
+- PROD-075 [DECIDED] [NOT_IMPLEMENTED] Nil prevotes, nil precommits, and round timeouts do not clear a stored valid value or valid round; AFTER: `PROD-055`, `PROD-056`, `PROD-058`, `PROD-074`.
+- PROD-076 [DECIDED] [NOT_IMPLEMENTED] A strict-greater-than-two-thirds higher-round prevote or precommit certificate advances a validator directly to the corresponding phase of that higher round without signing any later message for a lower round; AFTER: `PROD-051`, `PROD-054`, `PROD-057`, `PROD-058`.
+- PROD-080 [DECIDED] [NOT_IMPLEMENTED] A higher-round proposal without the required higher-round vote certificate is buffered and cannot by itself advance a validator's round or phase; AFTER: `PROD-050`, `PROD-076`.
+- PROD-077 [DECIDED] [NOT_IMPLEMENTED] Before releasing a signature in an advanced round, a validator durably persists its new round, phase, lock, and valid-value state; AFTER: `PROD-020`, `PROD-074`, `PROD-075`, `PROD-076`, `PROD-080`.
 - TEST-001 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical codecs have fixed cross-platform conformance vectors.
 - TEST-002 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical state transitions have fixed cross-platform conformance vectors.
 - TEST-003 [DECIDED] [NOT_IMPLEMENTED] Every codec input accepted during fuzzing re-encodes byte-identically to the accepted input.
@@ -306,13 +707,13 @@
 - TEST-013 [DECIDED] [NOT_IMPLEMENTED] Participant crashes preserve the selected safety property in deterministic simulation.
 - TEST-014 [DECIDED] [NOT_IMPLEMENTED] Participant restarts do not produce conflicting authorized messages in deterministic simulation.
 - TEST-015 [DECIDED] [NOT_IMPLEMENTED] Durable-state corruption never advances canonical state in deterministic simulation.
-- TEST-016 [DECIDED] [NOT_IMPLEMENTED] Competing valid forks resolve according to the selected fork-choice rule in deterministic simulation.
+- TEST-016 [DECIDED] [NOT_IMPLEMENTED] Competing valid unfinalized proposals resolve through the selected locking and precommit rules in deterministic simulation.
 - TEST-017 [DECIDED] [NOT_IMPLEMENTED] Mathematically invalid artifacts never advance canonical state in deterministic simulation.
 - TEST-018 [DECIDED] [NOT_IMPLEMENTED] Resource-exhaustion artifacts fail within deterministic bounds in simulation.
 - TEST-019 [DECIDED] [NOT_IMPLEMENTED] Every required deterministic multi-node scenario satisfies its stated outcome oracle before live multi-node testing begins.
 - TEST-020 [DECIDED] [NOT_IMPLEMENTED] Every required live multi-node scenario satisfies its stated outcome oracle under documented conditions before any production-network claim is made.
 - TEST-021 [DECIDED] [NOT_IMPLEMENTED] Honest nodes make progress under the selected liveness assumptions in deterministic simulation.
-- TEST-022 [DECIDED] [NOT_IMPLEMENTED] Admissible artifacts satisfy the selected inclusion-liveness rule in deterministic simulation.
+- TEST-022 [DECIDED] [NOT_IMPLEMENTED] An artifact that remains admissible, available, and highest-ranked when an honest proposer starts proposal construction appears in that proposal.
 - TEST-023 [DECIDED] [NOT_IMPLEMENTED] Cross-chain consensus blocks fail before state mutation in deterministic tests.
 - TEST-024 [DECIDED] [NOT_IMPLEMENTED] Cross-genesis consensus blocks fail before state mutation in deterministic tests.
 - TEST-025 [DECIDED] [NOT_IMPLEMENTED] Cross-version consensus blocks fail before state mutation in deterministic tests.
@@ -377,13 +778,13 @@
 - TEST-084 [DECIDED] [NOT_IMPLEMENTED] A crash during canonical branch switching recovers either the complete old branch state or the complete new branch state.
 - TEST-085 [DECIDED] [NOT_IMPLEMENTED] A reorganization crossing history protected by the selected finality-confidence or irreversibility semantics is rejected.
 - TEST-086 [DECIDED] [NOT_IMPLEMENTED] A reorganization exceeding the selected unfinalized reorganization bound is rejected if such a bound exists.
-- TEST-087 [DECIDED] [NOT_IMPLEMENTED] Successful reorganization installs the exact artifact state derived from the replacement branch.
-- TEST-088 [DECIDED] [NOT_IMPLEMENTED] A citation selected only on the displaced branch cannot satisfy a post-reorganization dependency.
+- TEST-087 [DECIDED] [NOT_IMPLEMENTED] Finalizing one unfinalized candidate installs the exact artifact state derived from that candidate.
+- TEST-088 [DECIDED] [NOT_IMPLEMENTED] A citation present only on a losing unfinalized candidate cannot satisfy a later finalized dependency.
 - TEST-089 [DECIDED] [NOT_IMPLEMENTED] Every invalid-artifact-data rejection leaves canonical consensus state unchanged.
 - TEST-090 [DECIDED] [NOT_IMPLEMENTED] Every invalid-artifact-data rejection leaves canonical artifact state unchanged.
 - TEST-091 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical codec fuzzing produces no process panic.
 - TEST-092 [DECIDED] [NOT_IMPLEMENTED] Consensus-critical codec fuzzing stays within deterministic resource bounds.
-- TEST-093 [DECIDED] [NOT_IMPLEMENTED] Permuting arrival order for one saturated fork set yields the same fork-choice winner.
+- TEST-093 [DECIDED] [NOT_IMPLEMENTED] An independent exact-weight certificate oracle produces no finalized result when no proposal has one valid strict-greater-than-two-thirds precommit certificate; AFTER: `SEC-007`, `FORK-003`, `FORK-005`, `PROD-013`, `PROD-057`.
 - TEST-094 [DECIDED] [NOT_IMPLEMENTED] Permuting valid evidence variants for one proposal signing root yields the same retained representative set.
 - TEST-095 [DECIDED] [NOT_IMPLEMENTED] Permuting valid evidence variants for one proposal signing root yields the same preferred evidence.
 - TEST-096 [DECIDED] [NOT_IMPLEMENTED] Evidence-variant flooding cannot exceed the selected per-ancestry retained-count bound.
@@ -404,3 +805,221 @@
 - TEST-111 [DECIDED] [NOT_IMPLEMENTED] Valid signature variants for one consensus-control-message semantic key contribute at most one logical message to every consensus decision if the chosen family uses signed consensus-control messages.
 - TEST-112 [DECIDED] [NOT_IMPLEMENTED] Changing only producer-authorization evidence leaves the exact consensus-ancestry identity unchanged.
 - TEST-113 [DECIDED] [NOT_IMPLEMENTED] Changing only agreement evidence leaves the exact consensus-ancestry identity unchanged if the chosen family uses agreement evidence.
+- TEST-114 [DECIDED] [NOT_IMPLEMENTED] Changing raw citation count alone does not change any Knowledge Weight in deterministic tests.
+- TEST-115 [DECIDED] [NOT_IMPLEMENTED] Citation-reward value that has not completed the selected maturation rule creates zero Knowledge Weight in deterministic tests.
+- TEST-116 [DECIDED] [NOT_IMPLEMENTED] A citation that strict validation does not prove root-reachable receives zero protocol citation reward in deterministic tests.
+- TEST-117 [DECIDED] [NOT_IMPLEMENTED] Repeated or aliased references to one eligible artifact dependency cannot enlarge one citation-reward pool in deterministic tests.
+- TEST-118 [DECIDED] [NOT_IMPLEMENTED] Actor-controlled self-citation through any number of consensus keys cannot violate the per-inclusion economic-loss invariant in deterministic tests.
+- TEST-119 [DECIDED] [NOT_IMPLEMENTED] Equal funded citation value creates equal aggregate Knowledge Weight regardless of how one actor splits identities in deterministic tests.
+- TEST-120 [DECIDED] [NOT_IMPLEMENTED] Every artifact inclusion's aggregate citation reward remains within the selected citation-reward fraction in deterministic tests.
+- TEST-121 [DECIDED] [NOT_IMPLEMENTED] An independent exact-arithmetic model reproduces the possibly changed aggregate proposer share after fixed Knowledge Weight is partitioned across independently bonded validator registrations while total Knowledge Weight remains unchanged; AFTER: `SEC-030`, `SEC-042`, `PROD-027`, `PROD-081`.
+- TEST-122 [DECIDED] [NOT_IMPLEMENTED] Top-256 split vectors reproduce exact capped membership and adversarial active-snapshot weight, count no Knowledge Weight unit twice, and make no equality claim about pre-split and post-split agreement shares; AFTER: `SEC-032`, `SEC-042`, `PROD-030`, `ECON-092`.
+- TEST-123 [DECIDED] [NOT_IMPLEMENTED] Equal active-set state and weighted-round-robin accumulator state select the same proposer on every conforming implementation.
+- TEST-124 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight created at one consensus position cannot authorize production at that position in deterministic tests.
+- TEST-125 [DECIDED] [NOT_IMPLEMENTED] Unanimous genesis-validator producer authorization cannot make a mathematically invalid artifact valid in deterministic tests.
+- TEST-126 [DECIDED] [NOT_IMPLEMENTED] Genesis conformance vectors commit the exact temporary validator keys.
+- TEST-127 [DECIDED] [NOT_IMPLEMENTED] Genesis fee-asset balances create zero ordinary Knowledge Weight in deterministic tests.
+- TEST-128 [DECIDED] [NOT_IMPLEMENTED] Every selected genesis-bootstrap reduction boundary produces the exact specified validator weights in deterministic tests.
+- TEST-129 [DECIDED] [NOT_IMPLEMENTED] The terminal genesis-bootstrap sunset sets every genesis-validator bootstrap weight to zero even when ordinary Knowledge Weight has not grown.
+- TEST-130 [DECIDED] [NOT_IMPLEMENTED] No later canonical state in the same chain context restores genesis-validator bootstrap weight.
+- TEST-131 [DECIDED] [NOT_IMPLEMENTED] Restart after genesis-bootstrap sunset preserves zero genesis-validator bootstrap weight.
+- TEST-132 [DECIDED] [NOT_IMPLEMENTED] Snapshot installation after genesis-bootstrap sunset preserves zero genesis-validator bootstrap weight.
+- TEST-133 [DECIDED] [NOT_IMPLEMENTED] Participant key rotation after genesis-bootstrap sunset preserves permanent zero genesis-validator bootstrap weight; AFTER: `PROD-088`, `GOV-024`, `GOV-037`.
+- TEST-134 [DECIDED] [NOT_IMPLEMENTED] The bootstrap-to-ordinary transition preserves the selected safety threshold using one immutable participant-weight snapshot per consensus position.
+- TEST-135 [DECIDED] [NOT_IMPLEMENTED] A non-genesis consensus transition without exactly one `ArtifactBlock` is rejected before canonical state mutation.
+- TEST-136 [DECIDED] [NOT_IMPLEMENTED] Copying public artifact bytes cannot redirect the citation-reward beneficiary under the selected attribution rule.
+- TEST-137 [DECIDED] [NOT_IMPLEMENTED] Citation-reward allocation for one eligible `StatementId` satisfied by multiple selected proofs follows the selected deterministic rule.
+- TEST-139 [DECIDED] [NOT_IMPLEMENTED] Every artifact inclusion preserves the selected strictly positive economic-loss margin after all protocol payouts in deterministic tests.
+- TEST-140 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight created at one consensus position cannot authorize agreement at that position in deterministic tests.
+- TEST-141 [DECIDED] [NOT_IMPLEMENTED] Unanimous genesis-validator agreement evidence cannot make a mathematically invalid artifact valid in deterministic tests.
+- TEST-142 [DECIDED] [NOT_IMPLEMENTED] One objective penalty event changes Knowledge Weight at most once in deterministic tests.
+- TEST-143 [DECIDED] [NOT_IMPLEMENTED] Restart cannot restore Knowledge Weight destroyed or restricted by a participant penalty in deterministic tests.
+- TEST-144 [DECIDED] [NOT_IMPLEMENTED] Participant key rotation cannot restore Knowledge Weight destroyed or restricted by a participant penalty in deterministic tests.
+- TEST-145 [DECIDED] [NOT_IMPLEMENTED] A post-sunset producer authorization receives zero weight from every genesis-validator bootstrap allocation in deterministic tests.
+- TEST-146 [DECIDED] [NOT_IMPLEMENTED] Post-sunset agreement receives zero weight from every genesis-validator bootstrap allocation in deterministic tests.
+- TEST-147 [DECIDED] [NOT_IMPLEMENTED] Unmatured citation-reward value produces zero proposer probability in deterministic tests.
+- TEST-148 [DECIDED] [NOT_IMPLEMENTED] Unmatured citation-reward value produces zero agreement weight in deterministic tests.
+- TEST-149 [DECIDED] [NOT_IMPLEMENTED] Genesis authority creates zero ordinary Knowledge Weight in deterministic tests.
+- TEST-150 [DECIDED] [NOT_IMPLEMENTED] A branch replacement removes every citation-reward balance derived only from the displaced branch in deterministic tests.
+- TEST-151 [DECIDED] [NOT_IMPLEMENTED] A branch replacement removes every unit of Knowledge Weight derived only from the displaced branch in deterministic tests.
+- TEST-152 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight created from matured citation-reward value never exceeds the selected finite weight-per-value bound in deterministic boundary tests.
+- TEST-153 [DECIDED] [NOT_IMPLEMENTED] Zero matured citation-reward value creates zero Knowledge Weight in deterministic boundary tests.
+- TEST-154 [DECIDED] [NOT_IMPLEMENTED] Each tagged genesis-validator bootstrap allocation is independently non-increasing in deterministic transition tests.
+- TEST-155 [DECIDED] [NOT_IMPLEMENTED] A pre-sunset transfer of genesis-validator bootstrap weight to another participant is rejected before state mutation in deterministic tests.
+- TEST-156 [DECIDED] [NOT_IMPLEMENTED] A pre-sunset merge of distinct genesis-validator bootstrap allocations is rejected before state mutation in deterministic tests.
+- TEST-157 [DECIDED] [NOT_IMPLEMENTED] A valid one-to-one bootstrap consensus-key rotation preserves allocation identity, bootstrap tag, current weight, controller, liability, and tombstone lineage; AFTER: `PROD-010`, `PROD-088`, `GOV-037`.
+- TEST-158 [DECIDED] [NOT_IMPLEMENTED] Deterministic censorship tests confirm the exact highest-ranked-at-honest-proposal-start inclusion guarantee and make no stronger starvation claim.
+- TEST-159 [DECIDED] [NOT_IMPLEMENTED] Copying a valid prepublication commitment cannot redirect its beneficiary in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-160 [DECIDED] [NOT_IMPLEMENTED] Revealing a prepublication commitment under the wrong beneficiary key fails before attribution state mutation in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-161 [DECIDED] [NOT_IMPLEMENTED] A prepublication commitment from another chain context fails before attribution state mutation in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-162 [DECIDED] [NOT_IMPLEMENTED] A prepublication commitment from another genesis context fails before attribution state mutation in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-163 [DECIDED] [NOT_IMPLEMENTED] A prepublication commitment from another protocol version fails before attribution state mutation in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-164 [DECIDED] [NOT_IMPLEMENTED] A duplicate prepublication reveal fails before duplicate reward or attribution state mutation in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-165 [DECIDED] [NOT_IMPLEMENTED] Unrevealed prepublication commitments cannot exceed the selected retained-state bound in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-166 [DECIDED] [NOT_IMPLEMENTED] Expired prepublication commitments are removed according to the selected deterministic rule in restart tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-167 [DECIDED] [NOT_IMPLEMENTED] The selected mixed bootstrap-and-ordinary agreement-weight calculation matches an independent exact-arithmetic model at every tested transition boundary.
+- TEST-168 [DECIDED] [NOT_IMPLEMENTED] The selected zero-eligible-Knowledge-Weight behavior is deterministic and never extends expired genesis-validator bootstrap weight.
+- TEST-169 [DECIDED] [NOT_IMPLEMENTED] Revealing a prepublication commitment with a different `ArtifactId` fails before attribution state mutation in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-170 [DECIDED] [NOT_IMPLEMENTED] An unauthorized prepublication-commitment charge payer fails before attribution state mutation in deterministic tests if the selected attribution mechanism charges commitment state.
+- TEST-171 [DECIDED] [NOT_IMPLEMENTED] A duplicate prepublication commitment cannot reserve duplicate attribution state in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-172 [DECIDED] [NOT_IMPLEMENTED] Revealing a prepublication commitment after its deadline fails before attribution state mutation in deterministic tests if the selected attribution mechanism uses prepublication commitments.
+- TEST-173 [DECIDED] [NOT_IMPLEMENTED] Saturating the unrevealed prepublication-commitment pool produces the same bounded retained state under every tested arrival permutation if the selected attribution mechanism uses prepublication commitments.
+- TEST-174 [DECIDED] [NOT_IMPLEMENTED] Citation-reward attribution-registration codecs have fixed cross-platform conformance vectors.
+- TEST-175 [DECIDED] [NOT_IMPLEMENTED] Equal canonical citation-reward attribution registrations produce equal identities on every conforming implementation.
+- TEST-176 [DECIDED] [NOT_IMPLEMENTED] A rejected citation-reward attribution registration leaves attribution state unchanged in deterministic tests.
+- TEST-177 [DECIDED] [NOT_IMPLEMENTED] A refundable prepublication-commitment deposit follows the selected debit, authorized-refund, and forfeiture transition exactly in deterministic tests.
+- TEST-178 [DECIDED] [NOT_IMPLEMENTED] Genesis conformance vectors commit each temporary validator's exact initial bootstrap weight.
+- TEST-179 [DECIDED] [NOT_IMPLEMENTED] A citation-reward attribution registration from another chain context fails before attribution state mutation in deterministic tests.
+- TEST-180 [DECIDED] [NOT_IMPLEMENTED] A citation-reward attribution registration from another genesis context fails before attribution state mutation in deterministic tests.
+- TEST-181 [DECIDED] [NOT_IMPLEMENTED] A citation-reward attribution registration from another protocol version fails before attribution state mutation in deterministic tests.
+- TEST-182 [DECIDED] [NOT_IMPLEMENTED] Epoch boundary vectors cover genesis height, the first non-genesis height, height 8192, height 8193, and multiple later epoch boundaries; AFTER: `PROD-036`, `PROD-037`, `PROD-038`.
+- TEST-183 [DECIDED] [NOT_IMPLEMENTED] Every arrival permutation of one candidate set yields the same capped active set and exact equal-weight tie ordering; AFTER: `PROD-008`, `PROD-047`, `PROD-048`.
+- TEST-184 [DECIDED] [NOT_IMPLEMENTED] A scheduled validator-set or delegation change finalized in epoch E is absent in E and E+1 and first appears in E+2; AFTER: `PROD-009`, `PROD-038`.
+- TEST-185 [DECIDED] [NOT_IMPLEMENTED] Weighted-round-robin conformance vectors produce identical proposer sequences, exact long-run weight-proportional counts, finite-window subset discrepancy, and maximum consecutive-run bounds on every implementation; AFTER: `PROD-002`, `PROD-028`, `PROD-082`, `PROD-083`.
+- TEST-186 [DECIDED] [NOT_IMPLEMENTED] Changing local or system wall clocks cannot change consensus-message validity, block validity, rewards, vesting, decay, or deadlines; AFTER: `CODEC-012`, `PROD-018`, `PROD-019`.
+- TEST-187 [DECIDED] [NOT_IMPLEMENTED] Gross genesis issuance equals exactly 10^18 NAO atoms, explicit genesis burns derive exact live supply, and no post-genesis transition issues an atom; AFTER: `ECON-005`, `ECON-006`, `GOV-043`.
+- TEST-188 [DECIDED] [NOT_IMPLEMENTED] Artifact-fee split vectors conserve every atom and match the exact citation, validator, and burn formulas at all remainder boundaries; AFTER: `ECON-007`, `ECON-081`.
+- TEST-189 [DECIDED] [NOT_IMPLEMENTED] Non-artifact operation-fee split vectors conserve every atom and create no citation reward or Knowledge Weight; AFTER: `ECON-082`, `ECON-122`.
+- TEST-190 [DECIDED] [NOT_IMPLEMENTED] An honest proposer selects the highest valid bid and then the lowest `ArtifactId` under every candidate arrival permutation; AFTER: `SEC-033`, `SEC-040`.
+- TEST-191 [DECIDED] [NOT_IMPLEMENTED] Every certificate-proven signer receives its fixed total-active-weight-denominator entitlement independently of which other valid signatures the certificate carries; AFTER: `CODEC-070`, `ECON-083`, `ECON-084`.
+- TEST-192 [DECIDED] [NOT_IMPLEMENTED] Validator reward accumulation and lazy claims match an independent per-delegator exact-arithmetic model without per-block delegator writes; AFTER: `ECON-085`, `ECON-120`.
+- TEST-193 [DECIDED] [NOT_IMPLEMENTED] Commission above 20%, increase above five percentage points per epoch, or premature activation fails before state mutation; AFTER: `ECON-086`, `ECON-087`, `ECON-088`, `ECON-089`.
+- TEST-194 [DECIDED] [NOT_IMPLEMENTED] Bond boundary vectors cover below, equal to, and above both the 10,000-NAO floor and one-bond-atom-per-20-weight cap; AFTER: `ECON-096`, `ECON-097`, `ECON-098`.
+- TEST-195 [DECIDED] [NOT_IMPLEMENTED] One matured citation-reward atom creates exactly one initial Knowledge Weight unit in one origin batch; AFTER: `ECON-045`, `ECON-059`.
+- TEST-196 [DECIDED] [NOT_IMPLEMENTED] Knowledge Weight decay vectors cover activation, every integer-rounding boundary, age 729, age 730, and later ages without batch refresh; AFTER: `ECON-111`, `ECON-112`.
+- TEST-197 [DECIDED] [NOT_IMPLEMENTED] Citation rewards earned in epoch E contribute zero active weight in E and E+1 and exact eligible weight in E+2; AFTER: `ECON-040`, `PROD-038`.
+- TEST-198 [DECIDED] [NOT_IMPLEMENTED] The first canonically applied destructive equivocation transition for one lineage forfeits the complete offense-liable bond, burns 90%, rewards its reporter with 10%, and destroys the selected delegated-weight amount exactly once; AFTER: `ECON-101`, `ECON-102`, `ECON-103`, `ECON-105`, `ECON-179`.
+- TEST-199 [DECIDED] [NOT_IMPLEMENTED] Evidence replay, later distinct offenses, restart, validator-key rotation, and validator re-registration cannot reapply a destructive equivocation penalty or reporter payout or escape the lineage tombstone; AFTER: `ECON-015`, `ECON-106`, `ECON-179`, `ECON-180`.
+- TEST-200 [DECIDED] [NOT_IMPLEMENTED] Bond and delegation-snapshot liability cases at 30 epochs minus one, exactly 30 epochs, and 30 epochs plus one follow the selected window without ambiguity; AFTER: `ECON-109`, `ECON-110`.
+- TEST-201 [DECIDED] [NOT_IMPLEMENTED] Every certificate-participation count leaves validator eligibility, agreement weight, proposer weight, preexisting NAO, and Knowledge Weight unchanged while only certificate-proven reward entitlements vary; AFTER: `PROD-043`, `PROD-044`, `PROD-045`, `PROD-046`, `PROD-069`, `ECON-107`, `ECON-108`.
+- TEST-202 [DECIDED] [NOT_IMPLEMENTED] Genesis allocation vectors prove that the exact 800,000,000-NAO auction pool plus exact 100,000,000-NAO development reserve plus exact 100,000,000-NAO grant reserve equals gross issuance, and that final buyer allocation plus the explicit unsold-pool burn equals the auction pool; AFTER: `ECON-005`, `ECON-007`, `GOV-002`, `GOV-041`, `GOV-042`, `GOV-043`.
+- TEST-203 [DECIDED] [NOT_IMPLEMENTED] Development-vesting vectors unlock zero before epoch 365 and follow the selected linear rounding through complete unlock at epoch 1460; AFTER: `GOV-044`, `GOV-045`, `GOV-046`.
+- TEST-204 [DECIDED] [NOT_IMPLEMENTED] Grant-vote vectors enforce the all-live-weight denominator, strict greater-than-two-thirds yes threshold, seven-epoch window, E+2 execution, and rolling 365-epoch 20,000,000-NAO cap; AFTER: `GOV-050`, `GOV-051`, `GOV-052`, `GOV-053`, `GOV-054`, `GOV-055`.
+- TEST-205 [DECIDED] [NOT_IMPLEMENTED] Mutating an accepted auction transcript or resulting allocation changes the committed genesis identity or fails genesis validation; AFTER: `GOV-001`, `GOV-056`.
+- TEST-206 [DECIDED] [NOT_IMPLEMENTED] Auction vectors enforce the 10,000,000-NAO verified-controller cap and the 400,000,000-NAO minimum sale independently of address count; AFTER: `GOV-063`, `GOV-064`, `GOV-066`.
+- TEST-207 [DECIDED] [NOT_IMPLEMENTED] A below-minimum auction cannot produce genesis and a retry requires a new valuation, notice period, and ceremony transcript; AFTER: `GOV-058`, `GOV-065`.
+- TEST-208 [DECIDED] [NOT_IMPLEMENTED] Invalid or defaulted auction bids are removed before deterministic uniform-price recomputation and never receive genesis NAO; AFTER: `GOV-061`, `GOV-062`.
+- TEST-209 [DECIDED] [NOT_IMPLEMENTED] Public auction output reveals only pseudonymous allocations while a valid three-of-five buyer-panel attestation enforces beneficial-controller aggregation; AFTER: `GOV-066`, `GOV-067`, `GOV-068`.
+- TEST-210 [DECIDED] [NOT_IMPLEMENTED] Genesis-panel and buyer-panel membership are disjoint and their public tender records expose applications, conflicts, and selection rationales; AFTER: `GOV-070`, `GOV-071`, `GOV-072`.
+- TEST-211 [DECIDED] [NOT_IMPLEMENTED] The genesis lottery selects exactly 32 unique qualified controllers from a complete valid reveal set and permanently excludes a nonrevealing controller before any restart; AFTER: `GOV-074`, `GOV-080`, `GOV-081`, `GOV-082`.
+- TEST-212 [DECIDED] [NOT_IMPLEMENTED] A genesis-validator applicant below 95% finalized-height precommit participation in the public testnet is ineligible; AFTER: `GOV-076`, `GOV-077`.
+- TEST-213 [DECIDED] [NOT_IMPLEMENTED] Genesis commits 32 bonds of 15,625 NAO and an aggregate bond escrow of exactly 500,000 NAO; AFTER: `GOV-078`, `GOV-085`.
+- TEST-214 [DECIDED] [NOT_IMPLEMENTED] Each unit of first-matured ordinary Knowledge Weight reduces bootstrap weight at most once and later decay, slash, delegation, or key rotation never restores bootstrap weight; AFTER: `GOV-039`, `GOV-033`.
+- TEST-215 [DECIDED] [NOT_IMPLEMENTED] Bootstrap-cap vectors match the exact linear formula, queued growth replacement, tombstone removal, and permanent epoch-730 zero boundary; AFTER: `PROD-042`, `GOV-024`, `GOV-084`, `GOV-086`.
+- TEST-216 [DECIDED] [NOT_IMPLEMENTED] Mixed bootstrap and ordinary validators always share one top-256 active set without reserved bootstrap slots; AFTER: `PROD-048`, `PROD-049`.
+- TEST-217 [DECIDED] [NOT_IMPLEMENTED] Zero total eligible active agreement weight halts proposal and agreement without quorum relaxation or bootstrap resurrection; AFTER: `PROD-034`.
+- TEST-218 [DECIDED] [NOT_IMPLEMENTED] An account operation with a stale nonce, wrong role, wrong account, wrong chain, wrong genesis, or wrong version fails before state mutation; AFTER: `ECON-003`, `ECON-004`.
+- TEST-219 [DECIDED] [NOT_IMPLEMENTED] V1 rejects any economic account operation that requires programmable script or virtual-machine execution; AFTER: `ECON-119`.
+- TEST-220 [DECIDED] [NOT_IMPLEMENTED] Direct split delegation conserves live Knowledge Weight, counts each unit once, and rejects recursive delegation under every owner-key permutation; AFTER: `ECON-090`, `ECON-091`, `ECON-092`, `ECON-093`.
+- TEST-221 [DECIDED] [NOT_IMPLEMENTED] Consensus delegation grants zero ecosystem-grant voting weight unless the owner separately authorizes a direct governance delegation; AFTER: `ECON-094`, `ECON-095`, `ECON-123`.
+- TEST-222 [DECIDED] [NOT_IMPLEMENTED] Owner-authorized account-key rotation preserves Knowledge Weight balances while no protocol transfer operation exists; AFTER: `ECON-041`, `ECON-042`.
+- TEST-223 [DECIDED] [NOT_IMPLEMENTED] A reveal referencing a same-block or nonancestor commitment fails before attribution state mutation; AFTER: `ECON-113`, `ECON-114`.
+- TEST-224 [DECIDED] [NOT_IMPLEMENTED] A timely valid authorized reveal refunds its deposit while expiry or an authorized claim-violating reveal burns the deposit; AFTER: `ECON-077`, `ECON-116`, `ECON-133`.
+- TEST-225 [DECIDED] [NOT_IMPLEMENTED] Earliest-finalized attribution wins and equal-height commitments use ascending canonical commitment identity regardless of arrival order; AFTER: `ECON-117`, `ECON-118`.
+- TEST-226 [DECIDED] [NOT_IMPLEMENTED] Commitment expiry occurs at the exact one-epoch height boundary and removes active retained state after restart; AFTER: `ECON-067`, `ECON-069`.
+- TEST-227 [DECIDED] [NOT_IMPLEMENTED] The voluntary 10% active-weight churn limit queues ordinary scheduled changes in canonical order; AFTER: `PROD-039`, `PROD-040`.
+- TEST-228 [DECIDED] [NOT_IMPLEMENTED] Equivocation penalties, batch decay, the independent linear bootstrap cap, and terminal sunset apply on schedule even when they change more than 10% of active weight; AFTER: `PROD-041`, `PROD-042`.
+- TEST-229 [DECIDED] [NOT_IMPLEMENTED] The adversarial cost model counts at most 90% of a forfeited bond as guaranteed attacker-external loss when the reporter may be attacker-controlled; AFTER: `ECON-102`, `ECON-103`, `ECON-104`.
+- TEST-230 [DECIDED] [NOT_IMPLEMENTED] A tombstoned genesis validator's bootstrap allocation becomes zero and cannot move to another validator; AFTER: `GOV-035`, `GOV-084`.
+- TEST-231 [DECIDED] [NOT_IMPLEMENTED] Complete genesis replay and a valid explicit recent-checkpoint bootstrap converge to identical consensus and artifact state commitments; AFTER: `SYNC-004`, `SYNC-028`, `SYNC-029`, `SYNC-030`.
+- TEST-232 [DECIDED] [NOT_IMPLEMENTED] A checkpoint at least 30 complete epochs behind the operator minimum or chosen only from peer or seed reports fails before snapshot installation; AFTER: `SYNC-029`, `SYNC-030`, `SYNC-033`.
+- TEST-233 [DECIDED] [NOT_IMPLEMENTED] A conforming full node rejects any pruning attempt that would remove a canonical `ArtifactBlock` or canonical artifact payload; AFTER: `SYNC-001`.
+- TEST-234 [DECIDED] [NOT_IMPLEMENTED] Losing any one official seed still permits discovery through another configured seed and authenticated learned-peer gossip; AFTER: `NET-024`, `NET-025`.
+- TEST-235 [DECIDED] [NOT_IMPLEMENTED] Seed-controller placement in one country or autonomous system does not change consensus validity or seed authority; AFTER: `NET-026`.
+- TEST-236 [DECIDED] [NOT_IMPLEMENTED] An upgrade requires one immutable-snapshot strict-greater-than-two-thirds exact-version certificate and 14 complete intervening epochs, while one valid strict-greater-than-one-third cancellation can cancel its exact scheduled identity; AFTER: `GOV-006`, `GOV-007`, `GOV-103`, `GOV-114`, `GOV-104`, `GOV-105`.
+- TEST-237 [DECIDED] [NOT_IMPLEMENTED] A same-genesis finalized-history rewrite fails while the same recovery state under a distinct explicitly installed genesis has distinct identities; AFTER: `GOV-012`, `GOV-013`.
+- TEST-238 [DECIDED] [NOT_IMPLEMENTED] Calendar-day changes cannot affect any on-chain epoch boundary, and epoch progress cannot alter a pre-genesis ceremony's civil-time transcript; AFTER: `CODEC-012`, `GOV-088`.
+- TEST-239 [DECIDED] [NOT_IMPLEMENTED] Development-reserve spending requires the exact three-of-five foundation multisig and grants that account no protocol authority; AFTER: `GOV-047`, `GOV-048`.
+- TEST-240 [DECIDED] [NOT_IMPLEMENTED] Every required 365-epoch development-reserve audit is publicly attributable without granting its auditor protocol authority; AFTER: `GOV-049`.
+- TEST-241 [DECIDED] [NOT_IMPLEMENTED] Only an accepted protocol grant vote can debit the ecosystem-grant reserve; AFTER: `GOV-087`.
+- TEST-242 [DECIDED] [NOT_IMPLEMENTED] The accepted auction directs proceeds to the nonprofit foundation without granting that foundation consensus authority; AFTER: `GOV-069`.
+- TEST-243 [DECIDED] [NOT_IMPLEMENTED] Two independently authorized function-definition proposal vectors with different valid supporting-proof inputs have the same `DefinitionId` and `ArtifactId` but distinct proposal signing roots and canonical consensus-envelope identities; AFTER: `CODEC-082`, `CODEC-083`, `CODEC-084`, `ECON-124`, `ECON-125`.
+- TEST-244 [DECIDED] [NOT_IMPLEMENTED] Definition-obligation citation rewards go only to the exact selected obligation-matching supporting proof artifact while its transitive dependencies and alternate proofs receive zero; AFTER: `ECON-177`, `ECON-178`.
+- TEST-245 [DECIDED] [NOT_IMPLEMENTED] Overdelegation preserves total live Knowledge Weight and matches the selected pro-rata remainder model under every delegation order; AFTER: `ECON-093`, `ECON-126`.
+- TEST-246 [DECIDED] [NOT_IMPLEMENTED] Split ecosystem-grant delegation counts each live Knowledge Weight unit at most once and rejects recursive delegation; AFTER: `ECON-123`, `ECON-127`.
+- TEST-247 [DECIDED] [NOT_IMPLEMENTED] Validator rewards and participation produce zero Knowledge Weight in deterministic transition tests; AFTER: `ECON-128`.
+- TEST-248 [DECIDED] [NOT_IMPLEMENTED] Genesis conformance vectors bind the exact selected audit-panel members, development multisig keys, auction transcript, and official seed addresses; AFTER: `GOV-091`, `GOV-092`, `GOV-093`, `NET-027`.
+- TEST-249 [DECIDED] [NOT_IMPLEMENTED] Multi-round lock model tests prove that an honest validator never precommits a conflicting value without the exact later-round prevote certificate required to change its lock; AFTER: `PROD-050`, `PROD-051`, `PROD-054`, `PROD-055`, `PROD-056`, `PROD-074`, `PROD-075`.
+- TEST-250 [DECIDED] [NOT_IMPLEMENTED] Crash injection at every lock, valid-value, and higher-round transition preserves exact durable state before any later signature is released; AFTER: `PROD-020`, `PROD-050`, `PROD-054`, `PROD-055`, `PROD-074`, `PROD-075`, `PROD-076`, `PROD-077`.
+- TEST-251 [DECIDED] [NOT_IMPLEMENTED] Nil-prevote, nil-precommit, timeout, and higher-round certificate vectors follow the exact round-transition rules without finalizing nil or clearing valid-value state; AFTER: `PROD-053`, `PROD-055`, `PROD-056`, `PROD-058`, `PROD-059`, `PROD-074`, `PROD-075`, `PROD-076`.
+- TEST-252 [DECIDED] [NOT_IMPLEMENTED] Every valid current-height certificate subset and arrival permutation leaves that height's proposal state unchanged before next-height settlement; AFTER: `CODEC-073`, `ECON-140`.
+- TEST-253 [DECIDED] [NOT_IMPLEMENTED] Finalizing height H plus one applies exactly the validator entitlements and participation proven by its canonical height-H settlement certificate; AFTER: `CODEC-070`, `ECON-137`.
+- TEST-254 [DECIDED] [NOT_IMPLEMENTED] Adversarial message scheduling may change certificate-participation metrics but cannot change the active validator set or any validator weight; AFTER: `PROD-043`, `PROD-044`, `PROD-067`.
+- TEST-255 [DECIDED] [NOT_IMPLEMENTED] A voluntary validator exit or delegation reduction larger than 10% completes through deterministic partial progress across later epochs; AFTER: `PROD-063`, `PROD-064`.
+- TEST-256 [DECIDED] [NOT_IMPLEMENTED] Artifact bytes, definition supporting-proof bytes and validation, and attached operation work are each charged exactly once to their designated payer and remain within the total block-work bound; AFTER: `RES-004`, `RES-045`, `RES-046`, `RES-048`, `ECON-187`.
+- TEST-257 [DECIDED] [NOT_IMPLEMENTED] Every unpaid or underpaid economic-operation and validator-operation class fails before state mutation; AFTER: `ECON-130`, `ECON-148`.
+- TEST-258 [DECIDED] [NOT_IMPLEMENTED] Artifact publication without a valid earlier attribution reveal in canonical execution order fails before artifact or attribution state mutation; AFTER: `ECON-131`, `ECON-149`.
+- TEST-259 [DECIDED] [NOT_IMPLEMENTED] A commitment or reveal for an already selected `ArtifactId` fails without attribution, deposit, or artifact-state mutation; AFTER: `ECON-150`.
+- TEST-260 [DECIDED] [NOT_IMPLEMENTED] An unauthorized or malformed third-party reveal cannot burn, refund, or otherwise mutate another payer's commitment deposit; AFTER: `ECON-133`, `ECON-134`, `ECON-171`.
+- TEST-261 [DECIDED] [NOT_IMPLEMENTED] A checkpoint-bootstrapped node becomes archival-full-node conforming only after complete independent genesis backfill and verification; AFTER: `SYNC-031`, `SYNC-032`.
+- TEST-262 [DECIDED] [NOT_IMPLEMENTED] Bare-genesis replay presented with two old-key-valid conflicting finalized histories halts until an admissible explicit checkpoint or new genesis is installed; AFTER: `SYNC-033`, `SYNC-034`.
+- TEST-263 [DECIDED] [NOT_IMPLEMENTED] Checkpoint age 29 epochs is eligible while age 30 epochs is rejected under the same operator minimum; AFTER: `SYNC-007`, `SYNC-030`, `SYNC-033`.
+- TEST-264 [DECIDED] [NOT_IMPLEMENTED] Upgrade-readiness and cancellation signatures from different snapshots, chains, geneses, versions, or activation coordinates cannot combine into one certificate; AFTER: `GOV-103`, `GOV-114`, `GOV-104`, `GOV-105`.
+- TEST-265 [DECIDED] [NOT_IMPLEMENTED] Bootstrap target, queued ordinary replacement, immediate linear cap, and applied per-allocation weight match one independent exact-arithmetic model; AFTER: `PROD-042`, `GOV-033`, `GOV-083`, `GOV-086`, `GOV-106`.
+- TEST-266 [DECIDED] [NOT_IMPLEMENTED] The minimum artifact fee creates positive citation and validator pools while preserving the exact burn remainder formula; AFTER: `ECON-081`, `ECON-129`.
+- TEST-267 [DECIDED] [NOT_IMPLEMENTED] Auction clearing-price, oversubscription, tie, removed-bid, refund, and beneficial-controller-cap vectors match an independent ceremony model; AFTER: `GOV-098`, `GOV-099`, `GOV-100`, `GOV-101`, `GOV-102`.
+- TEST-268 [DECIDED] [NOT_IMPLEMENTED] Reward accumulator, commission, delegation checkpoint, and lazy-claim vectors match an independent exact per-entitlement model; AFTER: `ECON-137`, `ECON-138`, `ECON-139`, `ECON-152`, `ECON-153`, `ECON-154`, `ECON-155`.
+- TEST-269 [DECIDED] [NOT_IMPLEMENTED] Governance overdelegation preserves total live Knowledge Weight and matches the selected pro-rata remainder model under every delegation order; AFTER: `ECON-127`, `ECON-141`.
+- TEST-270 [DECIDED] [NOT_IMPLEMENTED] Exact multi-target citation vectors reward only distinct direct admission dependencies plus the explicit function-definition obligation target, exclude every transitive-only dependency, split equal floor shares, and burn every remainder or no-target pool; AFTER: `ECON-030`, `ECON-036`, `ECON-037`, `ECON-178`.
+- TEST-271 [DECIDED] [NOT_IMPLEMENTED] Peer admission and eviction vectors enforce every selected independent-path and controller, prefix, and direction cap; AFTER: `NET-017`, `NET-018`, `NET-028`, `NET-029`, `NET-030`, `NET-031`.
+- TEST-272 [DECIDED] [NOT_IMPLEMENTED] Owner-key rotation and precommitted recovery vectors enforce authorization, delay, domain binding, replay protection, and unchanged Knowledge Weight balances; AFTER: `ECON-042`, `ECON-142`, `ECON-156`, `ECON-157`, `ECON-158`, `ECON-159`, `ECON-160`, `ECON-161`, `ECON-162`.
+- TEST-273 [DECIDED] [NOT_IMPLEMENTED] The first canonically applied delayed equivocation evidence collects the exact offense-snapshot Knowledge Weight liability despite later decay, redelegation, key rotation, or insufficient remaining implicated weight; AFTER: `ECON-145`, `ECON-146`, `ECON-163`, `ECON-164`, `ECON-179`.
+- TEST-274 [DECIDED] [NOT_IMPLEMENTED] Timeout and backoff vectors preserve safety and achieve the measured healthy-path target under documented multi-region and maximum-valid-block conditions; AFTER: `PROD-003`, `PROD-059`.
+- TEST-275 [DECIDED] [NOT_IMPLEMENTED] Artifact, definition supporting-proof, and operation fee coefficient vectors upper-bound measured worst-case work and reject every underpriced boundary case; AFTER: `RES-048`, `ECON-135`, `ECON-136`, `ECON-187`.
+- TEST-276 [DECIDED] [NOT_IMPLEMENTED] A malicious final lottery contributor can abort at most once, loses eligibility, and cannot cause genesis with fewer than 32 remaining qualified controllers; AFTER: `GOV-107`, `GOV-108`, `GOV-109`.
+- TEST-277 [DECIDED] [NOT_IMPLEMENTED] A panel member or foundation affiliate with a related buyer or applicant interest cannot contribute to the required three valid attestations; AFTER: `GOV-110`, `GOV-111`, `GOV-112`, `GOV-113`, `GOV-116`, `GOV-117`.
+- TEST-278 [DECIDED] [NOT_IMPLEMENTED] Valid pending attribution reveals and admitted first-penalty equivocation evidence receive sufficient reserved deadline-priority capacity under every ordinary-operation arrival permutation and the selected cross-snapshot finite proposer-gap bound; AFTER: `PROD-091`, `SEC-034`, `SEC-035`, `SEC-036`, `SEC-037`, `ECON-173`, `ECON-174`, `ECON-181`.
+- TEST-279 [DECIDED] [NOT_IMPLEMENTED] Economic and validator operation class count and byte limits are independently enforced before block-state mutation; AFTER: `CODEC-064`, `CODEC-065`, `CODEC-066`, `CODEC-067`.
+- TEST-280 [DECIDED] [NOT_IMPLEMENTED] V1 rejects remote-signer configuration without changing validator or safety-critical signing state; AFTER: `PROD-023`.
+- TEST-281 [DECIDED] [NOT_IMPLEMENTED] One selected prior-height certificate produces one exact next-height state while a different valid certificate produces a distinct competing next-height proposal root; AFTER: `CODEC-074`, `ECON-137`, `SEC-038`.
+- TEST-282 [DECIDED] [NOT_IMPLEMENTED] Exhaustive certificate-subset and adversarial-delivery vectors leave active validator membership and weight unchanged; AFTER: `PROD-043`, `PROD-044`, `PROD-067`.
+- TEST-283 [DECIDED] [NOT_IMPLEMENTED] A precommit absent from its canonical settlement certificate cannot later change participation, rewards, or the frozen public epoch metric; AFTER: `PROD-068`, `PROD-069`.
+- TEST-284 [DECIDED] [NOT_IMPLEMENTED] Voluntary active-set changes match exact 10% churn rounding across epoch boundaries; AFTER: `PROD-039`, `PROD-063`, `PROD-064`, `PROD-066`.
+- TEST-285 [DECIDED] [NOT_IMPLEMENTED] The selected genesis attribution bootstrap admits its exact valid first non-genesis artifact and beneficiary; AFTER: `GOV-115`, `GOV-118`, `GOV-119`, `GOV-121`, `GOV-122`, `GOV-126`, `GOV-127`, `GOV-128`.
+- TEST-286 [DECIDED] [NOT_IMPLEMENTED] First-height artifact admission without the selected genesis attribution bootstrap fails before artifact or economic-state mutation; AFTER: `GOV-115`, `GOV-121`, `GOV-126`, `GOV-127`.
+- TEST-287 [DECIDED] [NOT_IMPLEMENTED] A post-genesis same-block commitment and reveal remain invalid after the one-time genesis attribution bootstrap is selected; AFTER: `ECON-113`, `ECON-114`, `GOV-115`.
+- TEST-288 [DECIDED] [NOT_IMPLEMENTED] An unanchored eclipsed node offered one internally valid old-key-forged post-liability-window history refuses canonical installation; AFTER: `SYNC-014`, `SYNC-028`, `SYNC-033`.
+- TEST-289 [DECIDED] [NOT_IMPLEMENTED] A node with one authenticated recent checkpoint installs only a fully verified descendant history matching that stored anchor; AFTER: `SYNC-032`, `SYNC-035`.
+- TEST-290 [DECIDED] [NOT_IMPLEMENTED] Every settlement-certificate subset gives each included signer the same fixed total-active-weight-denominator entitlement and burns the exact unassigned validator-pool balance; AFTER: `ECON-083`, `ECON-084`.
+- TEST-291 [DECIDED] [NOT_IMPLEMENTED] Omitting any valid signer from a settlement certificate never increases another actor's validator reward or fee income; AFTER: `SEC-039`, `ECON-170`.
+- TEST-292 [DECIDED] [NOT_IMPLEMENTED] A precommit absent from the canonical settlement certificate receives zero validator reward and zero participation credit; AFTER: `PROD-043`, `PROD-068`, `ECON-083`.
+- TEST-293 [DECIDED] [NOT_IMPLEMENTED] A beneficiary-authorized claim-violating reveal leaves the payer's commitment deposit and every consensus-state commitment unchanged; AFTER: `ECON-116`, `ECON-133`, `ECON-171`.
+- TEST-294 [DECIDED] [NOT_IMPLEMENTED] Saturating every admissible commitment slot and submitting every valid reveal at the latest permitted height still services all reveals before expiry under the selected cross-snapshot finite proposer-gap and liveness assumptions; AFTER: `PROD-091`, `SEC-043`, `ECON-068`, `ECON-173`, `ECON-174`, `SEC-034`.
+- TEST-297 [DECIDED] [NOT_IMPLEMENTED] One otherwise-valid far-future-round proposal without the required vote certificate cannot advance validator round, phase, or durable signing state; AFTER: `PROD-076`, `PROD-080`, `PROD-077`.
+- TEST-298 [DECIDED] [NOT_IMPLEMENTED] Any peer can relay the preauthorized height-one reveal and artifact-publication fee operation and finalize the exact first artifact after the genesis payer and beneficiary go offline; AFTER: `GOV-115`, `GOV-118`, `GOV-121`, `GOV-122`, `GOV-126`, `GOV-127`, `GOV-128`.
+- TEST-300 [DECIDED] [NOT_IMPLEMENTED] Genesis attribution fee vectors burn the exact unassigned validator-pool fraction and preserve gross issuance, live supply, escrow, and balance conservation; AFTER: `ECON-005`, `ECON-007`, `ECON-082`, `GOV-120`, `GOV-123`.
+- TEST-301 [DECIDED] [NOT_IMPLEMENTED] A valid precommit created after prior-height finality but included in the canonical next-block settlement certificate receives its certificate-inclusion reward and metric credit without changing any validator weight; AFTER: `PROD-043`, `PROD-044`, `PROD-067`, `ECON-083`, `ECON-151`.
+- TEST-302 [DECIDED] [NOT_IMPLEMENTED] Height-one artifact admission without the exact valid preauthorized artifact-publication fee operation fails before artifact or economic-state mutation; AFTER: `GOV-126`, `GOV-127`, `GOV-128`.
+- TEST-303 [DECIDED] [NOT_IMPLEMENTED] The preauthorized height-one artifact-publication fee operation consumes its exact nonce and fee once and cannot be replayed across an account, chain, genesis, version, or operation role; AFTER: `ECON-004`, `GOV-126`, `GOV-127`, `GOV-128`.
+- TEST-304 [DECIDED] [NOT_IMPLEMENTED] Genesis construction deterministically fixes the bootstrap-attribution domain instance, derives its unsigned commitment, derives the unsigned signing root, validates every pre-finalization authorization over that root, and then derives the final genesis identity without a hash fixed point; AFTER: `GOV-131`, `GOV-132`, `GOV-133`, `GOV-134`, `GOV-140`, `GOV-142`, `GOV-143`, `GOV-145`.
+- TEST-305 [DECIDED] [NOT_IMPLEMENTED] Mutating any semantic genesis or unsigned operation field changes the unsigned genesis signing root and invalidates every unchanged pre-finalization authorization; AFTER: `GOV-130`, `GOV-131`, `GOV-133`.
+- TEST-306 [DECIDED] [NOT_IMPLEMENTED] Mutating only a pre-finalization authorization or signature field leaves the unsigned genesis signing root unchanged, changes the final genesis identity, and makes the resulting genesis envelope noncanonical; AFTER: `GOV-130`, `GOV-132`, `GOV-133`, `GOV-134`, `GOV-137`.
+- TEST-307 [DECIDED] [NOT_IMPLEMENTED] A pre-finalization authorization from another genesis signing root, chain context, protocol version, or operation role fails before genesis or economic-state mutation; AFTER: `GOV-131`, `GOV-133`.
+- TEST-308 [DECIDED] [NOT_IMPLEMENTED] Every otherwise-valid authorization or multisig-subset variant over the same unsigned genesis signing root fails genesis installation unless its bytes equal the exact ceremony-frozen canonical set; AFTER: `GOV-135`, `GOV-137`, `GOV-139`.
+- TEST-309 [DECIDED] [NOT_IMPLEMENTED] A node configured with one final genesis identity rejects every different final genesis identity before applying any preauthorized height-one operation; AFTER: `GOV-136`, `GOV-137`.
+- TEST-310 [DECIDED] [NOT_IMPLEMENTED] Creating a distinct genesis context changes the unsigned genesis signing root and makes every authorization from the prior root invalid; AFTER: `GOV-131`, `GOV-138`.
+- TEST-311 [DECIDED] [NOT_IMPLEMENTED] The complete genesis attribution bootstrap constructs through the finite domain-instance-to-commitment-to-root-to-authorization-to-final-identity sequence without any field hashing itself; AFTER: `ECON-175`, `GOV-130`, `GOV-131`, `GOV-132`, `GOV-140`, `GOV-142`, `GOV-143`, `GOV-145`.
+- TEST-312 [DECIDED] [NOT_IMPLEMENTED] Reusing a genesis-bootstrap commitment or its authorizations under another unsigned genesis signing root or final genesis context fails before genesis or economic-state mutation; AFTER: `GOV-131`, `GOV-138`, `GOV-143`, `GOV-144`.
+- TEST-313 [DECIDED] [NOT_IMPLEMENTED] A post-genesis prepublication commitment that substitutes the pre-root bootstrap-attribution domain for the installed chain or final genesis context fails before attribution or economic-state mutation; AFTER: `ECON-062`, `ECON-063`, `ECON-175`, `GOV-136`.
+- TEST-314 [DECIDED] [NOT_IMPLEMENTED] A cutoff vector with 300 honest registrations of weight W compares one fully bonded adversary registration of weight 100W against 100 earlier-ranked fully bonded adversary registrations of weight W and reproduces the changed top-256 membership and active share while owned Knowledge Weight is unchanged and no unit is counted twice; AFTER: `SEC-042`, `PROD-008`, `PROD-047`, `PROD-081`, `ECON-096`, `ECON-098`.
+- TEST-315 [DECIDED] [NOT_IMPLEMENTED] An independent exact-arithmetic oracle over every validator subset and proposer-position window, including subsets immediately below one-third active weight, matches the selected finite-window discrepancy and maximum-consecutive-run formulas; AFTER: `SEC-043`, `PROD-028`, `PROD-082`, `PROD-083`.
+- TEST-316 [DECIDED] [NOT_IMPLEMENTED] Missing, unknown, non-parent-selected, and obligation-mismatching definition supporting-proof inputs, plus any nonempty input on a proof artifact, relation definition, or other artifact without a checker-derived obligation, each fail before artifact or economic-state mutation; AFTER: `CODEC-082`, `CODEC-083`, `ECON-125`, `ECON-176`, `ECON-177`.
+- TEST-317 [DECIDED] [NOT_IMPLEMENTED] Two distinct valid equivocation offenses for one rotation lineage in either canonical execution order produce exactly one destructive penalty, one reporter payout, and one tombstone while later evidence produces no second economic transition across restart; AFTER: `CODEC-068`, `ECON-179`, `ECON-180`.
+- TEST-318 [DECIDED] [NOT_IMPLEMENTED] Maximum lineage turnover and latest-arrival first-penalty evidence saturation remain within the selected count, byte, work, pending-admission, and cross-snapshot finite-proposer-gap model and service every admitted penalty before its liability deadline; AFTER: `PROD-091`, `SEC-035`, `ECON-181`, `RES-049`.
+- TEST-319 [DECIDED] [NOT_IMPLEMENTED] A valid one-to-one bootstrap key rotation finalized in E leaves the old key active through E+1 and switches exactly one successor in E+2, while unauthorized, one-to-many, controller-changing, allocation-merging, lineage-changing, or tombstone-escaping rotations fail before mutation; AFTER: `PROD-089`, `PROD-088`, `GOV-035`, `GOV-036`, `GOV-037`.
+- TEST-320 [DECIDED] [NOT_IMPLEMENTED] Recomputing the recorded V1 bootstrap-attribution-domain instance from its ceremony inputs is byte-identical, while mutating any input changes the instance and invalidates unchanged downstream commitment and authorization vectors; AFTER: `GOV-142`, `GOV-145`.
+- TEST-321 [DECIDED] [NOT_IMPLEMENTED] A definition supporting-proof proposal input charged below its selected contribution to the payer-authorized artifact base fee fails before artifact or economic-state mutation; AFTER: `CODEC-083`, `ECON-177`, `RES-048`, `ECON-187`.
+- TEST-322 [DECIDED] [NOT_IMPLEMENTED] A deadline spanning the worst reachable voluntary-churn, split-registration, destructive-penalty, Knowledge-Weight-decay, bootstrap-transition, and weighted-round-robin-accumulator boundaries matches the independent cross-snapshot proposer-gap model; AFTER: `PROD-041`, `PROD-090`, `PROD-091`.
+- TEST-323 [DECIDED] [NOT_IMPLEMENTED] Later distinct valid equivocation evidence for a penalized lineage remains admissible within pending bounds, produces zero second economics across restart and auxiliary-index eviction, and remains present in finalized consensus-block history; AFTER: `ECON-180`, `ECON-188`, `RES-049`, `RES-050`, `RES-051`.
+- TEST-324 [DECIDED] [NOT_IMPLEMENTED] Active-set vectors below, at, and above 256 eligible independently bonded registrations select exactly `min(256, eligible_count)` registrations in canonical rank order; AFTER: `PROD-008`, `PROD-029`, `PROD-047`, `PROD-081`.
+- TEST-325 [DECIDED] [NOT_IMPLEMENTED] An independent exact-weight certificate oracle finalizes exactly the proposal named by one valid strict-greater-than-two-thirds precommit certificate; AFTER: `FORK-003`, `FORK-005`, `PROD-013`, `PROD-057`.
+- TEST-326 [DECIDED] [NOT_IMPLEMENTED] Two conflicting valid final certificates for one height trigger the safety-failure halt with no score, arrival-order, or local tie-break winner; AFTER: `FORK-004`, `PROD-013`, `PROD-057`.
+- TEST-327 [DECIDED] [NOT_IMPLEMENTED] When the definition beneficiary and artifact-publication fee payer are one account, one authorization binding the winning supporting `ProofId` admits exactly that support value; AFTER: `ECON-182`, `ECON-183`, `ECON-184`, `ECON-185`.
+- TEST-328 [DECIDED] [NOT_IMPLEMENTED] When the definition beneficiary and artifact-publication fee payer are distinct accounts, admission requires both authorizations to bind the same winning supporting `ProofId`; AFTER: `ECON-182`, `ECON-183`, `ECON-184`, `ECON-185`.
+- TEST-329 [DECIDED] [NOT_IMPLEMENTED] Changing only the supporting `ProofId` while retaining the beneficiary's otherwise-valid attribution authorization fails before artifact or economic-state mutation; AFTER: `ECON-183`, `ECON-185`.
+- TEST-330 [DECIDED] [NOT_IMPLEMENTED] Changing only the supporting `ProofId` while retaining a distinct payer's otherwise-valid publication authorization fails before artifact or economic-state mutation; AFTER: `ECON-184`, `ECON-185`.
+- TEST-331 [DECIDED] [NOT_IMPLEMENTED] A proposer cannot substitute another obligation-matching supporting proof and redirect its citation reward by signing a changed proposal; AFTER: `CODEC-084`, `ECON-178`, `ECON-185`.
+- TEST-332 [DECIDED] [NOT_IMPLEMENTED] A supporting proof owner's signature neither authorizes nor changes a definition's selected supporting `ProofId`; AFTER: `ECON-183`, `ECON-184`, `ECON-186`.
+- TEST-333 [DECIDED] [NOT_IMPLEMENTED] The genesis commitment, publicly relayable height-one reveal, and preauthorized publication-fee operation bind one identical supporting `ProofId` or null value, and any mutation fails after both principals go offline; AFTER: `GOV-115`, `GOV-121`, `GOV-126`, `GOV-128`.
+- TEST-334 [DECIDED] [NOT_IMPLEMENTED] Correctly charging supporting-proof resource work once through the artifact base fee preserves exact burn, citation-pool, validator-pool, payer-balance, and state-root accounting; AFTER: `ECON-082`, `ECON-135`, `ECON-187`, `RES-046`, `RES-048`.
+- TEST-335 [DECIDED] [NOT_IMPLEMENTED] A generic validator consensus-key rotation finalized in E leaves only the old key active through E+1 and first activates only the authorized successor in E+2; AFTER: `PROD-010`, `PROD-089`, `PROD-088`.
