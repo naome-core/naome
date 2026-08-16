@@ -34,13 +34,14 @@ The prerelease reference implementation provides:
 - deterministic proof checking and bounded conservative definition expansion;
 - atomic mixed-artifact admission and an authenticated `ArtifactId` set;
 - one exact-parent, fixed 128-byte artifact block per selected transition;
+- position-scoped immutable active-weight snapshots and strict weighted quorum arithmetic;
 - crash-consistent mixed proof/definition journal replay;
 - separate non-authoritative block-candidate and payload stores;
 - bounded caller-selected static-peer exchange, ancestry, and catch-up; and
 - a Python-shaped prerelease `.nao` authoring language.
 
-Consensus, fork choice, finality, reorganization, incentives, and recursive
-definitions are not implemented.
+Consensus messages and state transitions, fork choice, finality,
+reorganization, incentives, and recursive definitions are not implemented.
 
 The `canonical-definition-v1` chain, journal, archive, and network context
 replaces the earlier prerelease artifact context cleanly. Old local data must be
@@ -96,6 +97,7 @@ foundation -> proof -> checker -> ledger -> chain
                          |                  `-> naome   -> network
                          `-> authoring
 storage -> authoring
+consensus
 ```
 
 The layers own, respectively: primitive ZFC syntax and rules; canonical proof,
@@ -104,6 +106,11 @@ artifact admission; authenticated selected state and single-artifact blocks;
 selected persistence plus non-authoritative archives; transport-neutral
 messages; bounded libp2p transport and caller orchestration; and source
 authoring.
+
+The dependency-free consensus kernel currently owns only position-scoped
+active agreement snapshots and strict weighted quorum arithmetic. Validator
+selection, signatures, messages, and consensus state transitions remain later
+layers.
 
 Invariant boundaries are:
 
