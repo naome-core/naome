@@ -1,0 +1,11 @@
+[package]
+name = "naome-economy"
+version.workspace = true
+edition.workspace = true
+description = "Exact Knowledge Weight origin-batch arithmetic for NAOME."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
