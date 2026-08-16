@@ -17,6 +17,8 @@
 - BASE-010 [DECIDED] [IMPLEMENTED] Current exact-head artifact-block application changes selected state atomically or leaves it unchanged; evidence: `crates/naome-chain/src/block.rs`.
 - BASE-011 [DECIDED] [IMPLEMENTED] An artifact-block identifier is an ancestry address rather than independent evidence of mathematical validity; evidence: `specs/proof-protocol.md`.
 - BASE-012 [DECIDED] [IMPLEMENTED] Given one immutable caller-supplied position snapshot and one bounded caller-supplied signer-key list, the reference consensus kernel determines whether the listed active keys' exact weight is strictly greater than two thirds of the snapshot's unchanged total active weight; evidence: `crates/naome-consensus/src/lib.rs`, `crates/naome-consensus/src/tests.rs`.
+- BASE-013 [DECIDED] [IMPLEMENTED] Given already-matured citation-reward atoms, the reference economy kernel creates exactly one initial Knowledge Weight unit per atom; evidence: `crates/naome-economy/src/lib.rs`, `crates/naome-economy/src/tests.rs`.
+- BASE-014 [DECIDED] [IMPLEMENTED] Given one immutable Knowledge Weight origin batch and its caller-supplied integer age, the reference economy kernel evaluates exact overflow-safe linear decay to terminal zero at age 730; evidence: `crates/naome-economy/src/lib.rs`, `crates/naome-economy/src/tests.rs`; AFTER: `BASE-013`.
 - SEC-001 [DECIDED] [NOT_IMPLEMENTED] Block production is restricted to the canonical active validator set while validator candidacy remains permissionless.
 - SEC-002 [DECIDED] [NOT_IMPLEMENTED] Any account that pays the required charges may submit a canonically valid artifact.
 - SEC-003 [DECIDED] [NOT_IMPLEMENTED] Anyone may run a full independently verifying node.

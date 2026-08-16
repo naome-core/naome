@@ -35,6 +35,7 @@ The prerelease reference implementation provides:
 - atomic mixed-artifact admission and an authenticated `ArtifactId` set;
 - one exact-parent, fixed 128-byte artifact block per selected transition;
 - position-scoped immutable active-weight snapshots and strict weighted quorum arithmetic;
+- exact ordinary Knowledge-Weight origin-batch conversion and 730-epoch decay arithmetic;
 - crash-consistent mixed proof/definition journal replay;
 - separate non-authoritative block-candidate and payload stores;
 - bounded caller-selected static-peer exchange, ancestry, and catch-up; and
@@ -98,6 +99,7 @@ foundation -> proof -> checker -> ledger -> chain
                          `-> authoring
 storage -> authoring
 consensus
+economy
 ```
 
 The layers own, respectively: primitive ZFC syntax and rules; canonical proof,
@@ -111,6 +113,11 @@ The dependency-free consensus kernel currently owns only position-scoped
 active agreement snapshots and strict weighted quorum arithmetic. Validator
 selection, signatures, messages, and consensus state transitions remain later
 layers.
+
+The dependency-free economy kernel currently owns only one-to-one conversion
+of already-matured citation atoms into initial Knowledge Weight and exact
+730-epoch origin-batch decay. Reward maturity, ownership, delegation,
+penalties, and consensus use remain later state transitions.
 
 Invariant boundaries are:
 
