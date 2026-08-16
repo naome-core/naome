@@ -1,12 +1,113 @@
-//! Exact Knowledge Weight origin-batch arithmetic for NAOME.
+//! Exact fee-partition and Knowledge Weight origin-batch arithmetic for NAOME.
 //!
-//! This crate converts already-matured citation-reward atoms into initial
-//! Knowledge Weight and evaluates one immutable batch's 730-epoch linear
-//! decay. Callers remain responsible for reward maturity, activation age,
-//! ownership, persistence, delegation, penalties, and consensus use.
+//! This crate partitions caller-supplied fee atoms and converts
+//! already-matured citation-reward atoms into initial Knowledge Weight with
+//! exact 730-epoch origin-batch decay. Callers remain responsible for fee
+//! calculation and classification, payment authorization, balances, reward
+//! eligibility and settlement, maturity, ownership, persistence, delegation,
+//! penalties, and consensus use.
 
 const BATCH_LIFETIME_EPOCHS: u64 = 730;
 const BATCH_LIFETIME_UNITS: u128 = BATCH_LIFETIME_EPOCHS as u128;
+const FEE_PARTS: u128 = 5;
+
+/// Exact NAO atoms in the in-memory reference economy kernel.
+///
+/// This `u128` capacity does not define consensus-state or wire encoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[must_use]
+pub struct NaoAtoms(u128);
+
+impl NaoAtoms {
+    /// Zero NAO atoms.
+    pub const ZERO: Self = Self(0);
+
+    /// Constructs an exact NAO-atom value.
+    pub const fn new(atoms: u128) -> Self {
+        Self(atoms)
+    }
+
+    /// Returns the exact number of NAO atoms.
+    pub const fn atoms(self) -> u128 {
+        self.0
+    }
+
+    /// Returns whether this value is zero.
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// One exact, conserved partition of caller-supplied fee atoms.
+///
+/// Construction does not establish the fee's protocol validity, classify an
+/// operation, authorize a payer, select recipients, or mutate state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FeePartition {
+    fee: NaoAtoms,
+    citation_pool: NaoAtoms,
+    validator_pool: NaoAtoms,
+    burned: NaoAtoms,
+}
+
+impl FeePartition {
+    /// Partitions an already-computed artifact base fee.
+    ///
+    /// The citation pool is `floor(2 * fee / 5)`, the validator pool is
+    /// `floor(fee / 5)`, and every remaining atom is burned. Quotient and
+    /// remainder arithmetic avoids doubling the full `u128` fee.
+    pub const fn from_artifact_base_fee(fee: NaoAtoms) -> Self {
+        let quotient = fee.atoms() / FEE_PARTS;
+        let remainder = fee.atoms() % FEE_PARTS;
+        let citation_pool = quotient * 2 + (remainder * 2) / FEE_PARTS;
+        let validator_pool = quotient;
+        let burned = fee.atoms() - citation_pool - validator_pool;
+
+        Self {
+            fee,
+            citation_pool: NaoAtoms::new(citation_pool),
+            validator_pool: NaoAtoms::new(validator_pool),
+            burned: NaoAtoms::new(burned),
+        }
+    }
+
+    /// Partitions an already-computed non-artifact operation fee.
+    ///
+    /// No citation pool is created. The validator pool is `floor(fee / 5)`,
+    /// and every remaining atom is burned.
+    pub const fn from_non_artifact_operation_fee(fee: NaoAtoms) -> Self {
+        let validator_pool = fee.atoms() / FEE_PARTS;
+        let burned = fee.atoms() - validator_pool;
+
+        Self {
+            fee,
+            citation_pool: NaoAtoms::ZERO,
+            validator_pool: NaoAtoms::new(validator_pool),
+            burned: NaoAtoms::new(burned),
+        }
+    }
+
+    /// Returns the caller-supplied fee.
+    pub const fn fee(self) -> NaoAtoms {
+        self.fee
+    }
+
+    /// Returns the citation-reward pool.
+    pub const fn citation_pool(self) -> NaoAtoms {
+        self.citation_pool
+    }
+
+    /// Returns the validator-reward pool.
+    pub const fn validator_pool(self) -> NaoAtoms {
+        self.validator_pool
+    }
+
+    /// Returns the atoms assigned to explicit burn.
+    pub const fn burned(self) -> NaoAtoms {
+        self.burned
+    }
+}
 
 /// Exact Knowledge Weight units in the reference economy kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
