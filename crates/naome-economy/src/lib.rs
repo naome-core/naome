@@ -1,11 +1,13 @@
-//! Exact fee-partition and Knowledge Weight origin-batch arithmetic for NAOME.
+//! Exact fee-partition, citation-pool allocation, and Knowledge Weight
+//! origin-batch arithmetic for NAOME.
 //!
-//! This crate partitions caller-supplied fee atoms and converts
-//! already-matured citation-reward atoms into initial Knowledge Weight with
-//! exact 730-epoch origin-batch decay. Callers remain responsible for fee
-//! calculation and classification, payment authorization, balances, reward
-//! eligibility and settlement, maturity, ownership, persistence, delegation,
-//! penalties, and consensus use.
+//! This crate partitions caller-supplied fee atoms, allocates an already
+//! partitioned citation pool over a caller-validated distinct target count,
+//! and converts already-matured citation-reward atoms into initial Knowledge
+//! Weight with exact 730-epoch origin-batch decay. Callers remain responsible
+//! for fee calculation and classification, payment authorization, target
+//! eligibility and deduplication, identities, balances, reward settlement,
+//! maturity, ownership, persistence, delegation, penalties, and consensus use.
 
 const BATCH_LIFETIME_EPOCHS: u64 = 730;
 const BATCH_LIFETIME_UNITS: u128 = BATCH_LIFETIME_EPOCHS as u128;
@@ -88,6 +90,37 @@ impl FeePartition {
         }
     }
 
+    /// Allocates this partition's citation pool over a validated target count.
+    ///
+    /// The caller remains responsible for establishing that the count covers
+    /// exactly the distinct eligible citation targets. A zero count assigns no
+    /// reward and burns the complete citation pool. Otherwise, every target
+    /// receives `floor(citation_pool / count)` and the division remainder is
+    /// burned. This operation does not identify or credit any target.
+    pub const fn allocate_citation_pool(
+        self,
+        distinct_eligible_target_count: u128,
+    ) -> CitationPoolAllocation {
+        let citation_pool = self.citation_pool;
+        let (per_target_reward, burned_remainder) = match distinct_eligible_target_count {
+            0 => (NaoAtoms::ZERO, citation_pool),
+            target_count => {
+                let citation_atoms = citation_pool.atoms();
+                (
+                    NaoAtoms::new(citation_atoms / target_count),
+                    NaoAtoms::new(citation_atoms % target_count),
+                )
+            }
+        };
+
+        CitationPoolAllocation {
+            citation_pool,
+            distinct_eligible_target_count,
+            per_target_reward,
+            burned_remainder,
+        }
+    }
+
     /// Returns the caller-supplied fee.
     pub const fn fee(self) -> NaoAtoms {
         self.fee
@@ -106,6 +139,43 @@ impl FeePartition {
     /// Returns the atoms assigned to explicit burn.
     pub const fn burned(self) -> NaoAtoms {
         self.burned
+    }
+}
+
+/// One exact equal allocation of a citation pool.
+///
+/// The target count is supplied and validated by the caller. This value does
+/// not carry target identities, establish eligibility, credit beneficiaries,
+/// or mutate economic state. Its `u128` count is an in-memory reference
+/// capacity, not a canonical encoding or protocol target-count bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct CitationPoolAllocation {
+    citation_pool: NaoAtoms,
+    distinct_eligible_target_count: u128,
+    per_target_reward: NaoAtoms,
+    burned_remainder: NaoAtoms,
+}
+
+impl CitationPoolAllocation {
+    /// Returns the complete source citation pool.
+    pub const fn citation_pool(self) -> NaoAtoms {
+        self.citation_pool
+    }
+
+    /// Returns the caller-validated distinct eligible-target count.
+    pub const fn distinct_eligible_target_count(self) -> u128 {
+        self.distinct_eligible_target_count
+    }
+
+    /// Returns the equal reward assigned to every eligible target.
+    pub const fn per_target_reward(self) -> NaoAtoms {
+        self.per_target_reward
+    }
+
+    /// Returns the citation-pool division remainder assigned to burn.
+    pub const fn burned_remainder(self) -> NaoAtoms {
+        self.burned_remainder
     }
 }
 

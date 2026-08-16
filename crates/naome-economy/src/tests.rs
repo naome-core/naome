@@ -1,5 +1,63 @@
 use super::*;
 
+const TEST_FEE_PARTS: u128 = 5;
+
+fn assert_citation_pool_allocation_matches_oracle(
+    partition: FeePartition,
+    distinct_eligible_target_count: u128,
+) {
+    let allocation = partition.allocate_citation_pool(distinct_eligible_target_count);
+    let pool_atoms = partition.citation_pool().atoms();
+
+    assert_eq!(
+        allocation.citation_pool(),
+        partition.citation_pool(),
+        "pool={pool_atoms}, count={distinct_eligible_target_count}"
+    );
+    assert_eq!(
+        allocation.distinct_eligible_target_count(),
+        distinct_eligible_target_count,
+        "pool={pool_atoms}, count={distinct_eligible_target_count}"
+    );
+
+    if distinct_eligible_target_count == 0 {
+        assert_eq!(
+            allocation.per_target_reward(),
+            NaoAtoms::ZERO,
+            "pool={pool_atoms}, count={distinct_eligible_target_count}"
+        );
+        assert_eq!(
+            allocation.burned_remainder(),
+            partition.citation_pool(),
+            "pool={pool_atoms}, count={distinct_eligible_target_count}"
+        );
+        return;
+    }
+
+    let expected_reward = pool_atoms
+        .checked_div(distinct_eligible_target_count)
+        .expect("the target count is nonzero");
+    let expected_remainder = pool_atoms
+        .checked_rem(distinct_eligible_target_count)
+        .expect("the target count is nonzero");
+    assert_eq!(
+        allocation.per_target_reward().atoms(),
+        expected_reward,
+        "pool={pool_atoms}, count={distinct_eligible_target_count}"
+    );
+    assert_eq!(
+        allocation.burned_remainder().atoms(),
+        expected_remainder,
+        "pool={pool_atoms}, count={distinct_eligible_target_count}"
+    );
+    assert_eq!(
+        allocation.per_target_reward().atoms() * distinct_eligible_target_count
+            + allocation.burned_remainder().atoms(),
+        pool_atoms,
+        "pool={pool_atoms}, count={distinct_eligible_target_count}"
+    );
+}
+
 #[test]
 fn artifact_fee_partitions_match_small_boundaries() {
     let expected = [
@@ -121,6 +179,75 @@ fn near_maximum_fee_partitions_cover_every_remainder_without_overflow() {
             operation.validator_pool().atoms() + operation.burned().atoms(),
             fee_atoms
         );
+    }
+}
+
+#[test]
+fn citation_pool_allocations_match_literal_boundaries() {
+    let expected = [
+        (0, 0, 0, 0, 0),
+        (10, 0, 4, 0, 4),
+        (10, 1, 4, 4, 0),
+        (10, 2, 4, 2, 0),
+        (13, 2, 5, 2, 1),
+        (3, 2, 1, 0, 1),
+    ];
+
+    for (fee, count, pool, per_target, burned) in expected {
+        let allocation =
+            FeePartition::from_artifact_base_fee(NaoAtoms::new(fee)).allocate_citation_pool(count);
+
+        assert_eq!(allocation.citation_pool(), NaoAtoms::new(pool));
+        assert_eq!(allocation.distinct_eligible_target_count(), count);
+        assert_eq!(allocation.per_target_reward(), NaoAtoms::new(per_target));
+        assert_eq!(allocation.burned_remainder(), NaoAtoms::new(burned));
+    }
+}
+
+#[test]
+fn non_artifact_partitions_allocate_only_their_zero_citation_pool() {
+    let partition = FeePartition::from_non_artifact_operation_fee(NaoAtoms::new(25));
+
+    assert_eq!(partition.fee(), NaoAtoms::new(25));
+    assert_eq!(partition.validator_pool(), NaoAtoms::new(5));
+    assert_eq!(partition.burned(), NaoAtoms::new(20));
+
+    for count in [0, 7] {
+        let allocation = partition.allocate_citation_pool(count);
+
+        assert_eq!(allocation.citation_pool(), NaoAtoms::ZERO);
+        assert_eq!(allocation.distinct_eligible_target_count(), count);
+        assert_eq!(allocation.per_target_reward(), NaoAtoms::ZERO);
+        assert_eq!(allocation.burned_remainder(), NaoAtoms::ZERO);
+    }
+}
+
+#[test]
+fn every_small_pool_and_count_matches_division_oracles_and_conserves_atoms() {
+    for pool_atoms in 0_u128..=255 {
+        let fee_atoms = (TEST_FEE_PARTS * pool_atoms).div_ceil(2);
+        let partition = FeePartition::from_artifact_base_fee(NaoAtoms::new(fee_atoms));
+        assert_eq!(partition.citation_pool(), NaoAtoms::new(pool_atoms));
+
+        for count in 0_u128..=255 {
+            assert_citation_pool_allocation_matches_oracle(partition, count);
+        }
+    }
+}
+
+#[test]
+fn near_maximum_citation_pools_cover_count_boundaries_without_overflow() {
+    let maximum_remainder = u128::MAX % TEST_FEE_PARTS;
+
+    for target_remainder in 0_u128..TEST_FEE_PARTS {
+        let distance = (maximum_remainder + TEST_FEE_PARTS - target_remainder) % TEST_FEE_PARTS;
+        let fee_atoms = u128::MAX - distance;
+        let partition = FeePartition::from_artifact_base_fee(NaoAtoms::new(fee_atoms));
+        let pool_atoms = partition.citation_pool().atoms();
+
+        for count in [0, 1, 2, 3, 5, pool_atoms, pool_atoms + 1, u128::MAX] {
+            assert_citation_pool_allocation_matches_oracle(partition, count);
+        }
     }
 }
 

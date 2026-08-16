@@ -35,7 +35,7 @@ The prerelease reference implementation provides:
 - atomic mixed-artifact admission and an authenticated `ArtifactId` set;
 - one exact-parent, fixed 128-byte artifact block per selected transition;
 - position-scoped immutable active-weight snapshots and strict weighted quorum arithmetic;
-- exact conserved artifact and non-artifact fee-partition arithmetic;
+- exact conserved fee-partition and equal citation-pool allocation arithmetic;
 - exact ordinary Knowledge-Weight origin-batch conversion and 730-epoch decay arithmetic;
 - crash-consistent mixed proof/definition journal replay;
 - separate non-authoritative block-candidate and payload stores;
