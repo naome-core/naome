@@ -39,6 +39,7 @@ fn canonical_length(formula: &Formula) -> usize {
 
 mod checking;
 mod definitions;
+mod direct_dependencies;
 mod identity;
 mod limits;
 mod rules;

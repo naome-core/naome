@@ -6,9 +6,10 @@
 //! through an explicitly supplied, already checked [`ArtifactState`]. The crate
 //! remains deliberately in-memory and has no blocks, persistence, networking,
 //! or source parsing.
-//! Successful proof admission returns a [`CheckedProof`] that keeps the
-//! accepted normal form, reconstructed conclusion, and content identities
-//! coupled together.
+//! The normalizing and normal-form checking entry points return a
+//! [`CheckedProof`] that keeps the accepted normal form, reconstructed
+//! conclusion, and content identities coupled together and can project only
+//! that normal form's distinct direct proof and definition dependencies.
 
 mod state;
 
@@ -21,10 +22,10 @@ use naome_foundation::{
     Logic, LogicError, Replacement, SchemaError, Separation,
 };
 use naome_proof::{
-    CERTIFICATE_MAX_BYTES, DefinedFormula, DefinedFormulaCodecError, DefinitionCertificate,
-    DefinitionCertificateError, DefinitionExpansionError, DefinitionId, DefinitionKind,
-    DerivationId, ProofCertificate, ProofFormula, ProofId, ProofNormalForm, ProofReplacement,
-    ProofSeparation, ProofStep, StatementId,
+    ArtifactId, CERTIFICATE_MAX_BYTES, DefinedFormula, DefinedFormulaCodecError,
+    DefinitionCertificate, DefinitionCertificateError, DefinitionExpansionError, DefinitionId,
+    DefinitionKind, DerivationId, ProofCertificate, ProofFormula, ProofId, ProofNormalForm,
+    ProofReplacement, ProofSeparation, ProofStep, StatementId,
 };
 use sha2::{Digest, Sha256};
 
@@ -134,6 +135,37 @@ impl CheckedProof {
     /// Returns the identity of the checked proof's canonical normal form.
     pub const fn proof_id(&self) -> ProofId {
         self.proof_id
+    }
+
+    /// Returns the distinct direct artifact dependencies of this checked proof.
+    ///
+    /// The ascending result contains only proof and definition references in
+    /// the accepted root-reachable normal form. It does not expand referenced
+    /// artifacts to their transitive dependencies or establish citation
+    /// eligibility, attribution, rewards, Knowledge Weight, or chain state.
+    /// Projection is computed on demand without consulting [`ArtifactState`]
+    /// or retaining a cache; its work, output, and temporary allocation are
+    /// bounded by the accepted normal form's certificate and formula limits.
+    /// Ascending order is only a deterministic set representation and grants
+    /// no admission, reward, or ranking priority.
+    #[must_use]
+    pub fn direct_artifact_dependencies(&self) -> Box<[ArtifactId]> {
+        let mut dependencies = Vec::new();
+
+        for step in self.normal_form.certificate().steps() {
+            if let ProofStep::ProofReference { proof_id } = step {
+                dependencies.push(ArtifactId::from_proof_id(*proof_id));
+            }
+            dependencies.extend(
+                step.definition_references()
+                    .into_iter()
+                    .map(ArtifactId::from_definition_id),
+            );
+        }
+
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        dependencies.into_boxed_slice()
     }
 }
 
