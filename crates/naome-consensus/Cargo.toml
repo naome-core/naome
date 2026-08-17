@@ -2,7 +2,7 @@
 name = "naome-consensus"
 version.workspace = true
 edition.workspace = true
-description = "Position-scoped weighted agreement arithmetic for NAOME consensus."
+description = "Consensus coordinate and weighted agreement arithmetic for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

@@ -1,5 +1,18 @@
 use super::*;
 
+const REFERENCE_NON_GENESIS_HEIGHTS_PER_EPOCH: u64 = 8_192;
+const COMPILE_TIME_PROJECTED_EPOCH_VALUE: Option<u64> =
+    match ConsensusHeight::new(8_193).non_genesis_epoch() {
+        Some(epoch) => Some(epoch.value()),
+        None => None,
+    };
+
+fn projected_epoch_value(height: u64) -> Option<u64> {
+    ConsensusHeight::new(height)
+        .non_genesis_epoch()
+        .map(ConsensusEpoch::value)
+}
+
 fn key(index: u16) -> ConsensusKey {
     let mut bytes = [0_u8; CONSENSUS_KEY_BYTES];
     bytes[..2].copy_from_slice(&index.to_be_bytes());
@@ -38,6 +51,61 @@ fn coordinate_and_value_types_preserve_exact_values() {
     assert_eq!(consensus_key.as_bytes(), &[0_u8; CONSENSUS_KEY_BYTES]);
     assert_eq!(weight.units(), u128::MAX);
     assert!(AgreementWeight::ZERO.is_zero());
+}
+
+#[test]
+fn non_genesis_epoch_width_and_const_projection_match_literal_contract() {
+    assert_eq!(
+        NON_GENESIS_HEIGHTS_PER_EPOCH,
+        REFERENCE_NON_GENESIS_HEIGHTS_PER_EPOCH
+    );
+    assert_eq!(COMPILE_TIME_PROJECTED_EPOCH_VALUE, Some(1));
+}
+
+#[test]
+fn non_genesis_epoch_projection_covers_origin_and_literal_boundaries() {
+    for (height, expected_epoch) in [
+        (0, None),
+        (1, Some(0)),
+        (8_192, Some(0)),
+        (8_193, Some(1)),
+        (16_384, Some(1)),
+        (16_385, Some(2)),
+    ] {
+        assert_eq!(
+            projected_epoch_value(height),
+            expected_epoch,
+            "height={height}"
+        );
+    }
+}
+
+#[test]
+fn non_genesis_epoch_projection_matches_fixed_interval_oracle() {
+    for expected_epoch in 0..=1_024_u64 {
+        for offset in [0_u64, 4_095, 8_191] {
+            let height = expected_epoch * REFERENCE_NON_GENESIS_HEIGHTS_PER_EPOCH + offset + 1;
+            assert_eq!(
+                projected_epoch_value(height),
+                Some(expected_epoch),
+                "height={height}, offset={offset}"
+            );
+        }
+    }
+}
+
+#[test]
+fn non_genesis_epoch_projection_covers_terminal_transition() {
+    const TERMINAL_EPOCH: u64 = 2_251_799_813_685_247;
+    const TERMINAL_START: u64 = TERMINAL_EPOCH * REFERENCE_NON_GENESIS_HEIGHTS_PER_EPOCH + 1;
+
+    assert_eq!(TERMINAL_START, u64::MAX - 8_190);
+    assert_eq!(
+        projected_epoch_value(TERMINAL_START - 1),
+        Some(TERMINAL_EPOCH - 1)
+    );
+    assert_eq!(projected_epoch_value(TERMINAL_START), Some(TERMINAL_EPOCH));
+    assert_eq!(projected_epoch_value(u64::MAX), Some(TERMINAL_EPOCH));
 }
 
 #[test]
