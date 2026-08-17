@@ -13,6 +13,9 @@ const BATCH_LIFETIME_EPOCHS: u64 = 730;
 const BATCH_LIFETIME_UNITS: u128 = BATCH_LIFETIME_EPOCHS as u128;
 const FEE_PARTS: u128 = 5;
 
+/// Exact number of indivisible NAO atoms in one NAO.
+pub const NAO_ATOMS_PER_NAO: u128 = 1_000_000_000;
+
 /// Exact NAO atoms in the in-memory reference economy kernel.
 ///
 /// This `u128` capacity does not define consensus-state or wire encoding.

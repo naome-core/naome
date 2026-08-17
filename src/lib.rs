@@ -4,3 +4,4 @@ pub mod artifact_exchange;
 pub mod block_exchange;
 pub mod chain_head_announcement;
 pub mod chain_head_exchange;
+pub mod validator_bond;
