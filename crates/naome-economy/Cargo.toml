@@ -2,7 +2,7 @@
 name = "naome-economy"
 version.workspace = true
 edition.workspace = true
-description = "Exact fee-partition and Knowledge Weight arithmetic for NAOME."
+description = "Exact fee-partition, citation-pool, and Knowledge Weight arithmetic for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
