@@ -31,7 +31,7 @@ rather than trust in a publisher or validator majority.
 The prerelease reference implementation provides:
 
 - canonical proof, definition, and tagged-artifact codecs and identities;
-- deterministic proof checking and bounded conservative definition expansion;
+- deterministic proof checking, exact checked-proof direct-dependency projection, and bounded conservative definition expansion;
 - atomic mixed-artifact admission and an authenticated `ArtifactId` set;
 - one exact-parent, fixed 128-byte artifact block per selected transition;
 - position-scoped immutable active-weight snapshots and strict weighted quorum arithmetic;
