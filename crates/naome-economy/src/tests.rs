@@ -1,6 +1,19 @@
 use super::*;
 
 const TEST_FEE_PARTS: u128 = 5;
+const REFERENCE_MINIMUM_ARTIFACT_BASE_FEE_ATOMS: u128 = 5;
+
+const CONSTANT_QUALIFIED_ARTIFACT_BASE_FEE: FloorQualifiedArtifactBaseFee =
+    match FloorQualifiedArtifactBaseFee::try_from_fee_atoms(MINIMUM_ARTIFACT_BASE_FEE) {
+        Ok(fee) => fee,
+        Err(_) => panic!("the minimum artifact base fee must qualify"),
+    };
+const CONSTANT_QUALIFIED_FEE_ATOMS: NaoAtoms = CONSTANT_QUALIFIED_ARTIFACT_BASE_FEE.fee_atoms();
+const CONSTANT_QUALIFIED_PARTITION: FeePartition = CONSTANT_QUALIFIED_ARTIFACT_BASE_FEE.partition();
+const CONSTANT_BELOW_FLOOR_RESULT: Result<
+    FloorQualifiedArtifactBaseFee,
+    ArtifactBaseFeeFloorError,
+> = FloorQualifiedArtifactBaseFee::try_from_fee_atoms(NaoAtoms::new(4));
 
 fn assert_citation_pool_allocation_matches_oracle(
     partition: FeePartition,
@@ -56,6 +69,94 @@ fn assert_citation_pool_allocation_matches_oracle(
         pool_atoms,
         "pool={pool_atoms}, count={distinct_eligible_target_count}"
     );
+}
+
+#[test]
+fn artifact_base_fee_floor_rejects_every_below_minimum_amount() {
+    assert_eq!(
+        MINIMUM_ARTIFACT_BASE_FEE.atoms(),
+        REFERENCE_MINIMUM_ARTIFACT_BASE_FEE_ATOMS
+    );
+
+    for actual_atoms in 0_u128..REFERENCE_MINIMUM_ARTIFACT_BASE_FEE_ATOMS {
+        let actual = NaoAtoms::new(actual_atoms);
+        assert_eq!(
+            FloorQualifiedArtifactBaseFee::try_from_fee_atoms(actual),
+            Err(ArtifactBaseFeeFloorError::BelowMinimum {
+                actual,
+                minimum: NaoAtoms::new(REFERENCE_MINIMUM_ARTIFACT_BASE_FEE_ATOMS),
+            }),
+            "actual_atoms={actual_atoms}"
+        );
+    }
+}
+
+#[test]
+fn artifact_base_fee_floor_qualified_domain_matches_raw_partition() {
+    for fee_atoms in (REFERENCE_MINIMUM_ARTIFACT_BASE_FEE_ATOMS..=1_024).chain([u128::MAX]) {
+        let fee = NaoAtoms::new(fee_atoms);
+        let qualified = FloorQualifiedArtifactBaseFee::try_from_fee_atoms(fee).unwrap();
+        let partition = qualified.partition();
+
+        assert_eq!(qualified.fee_atoms(), fee, "fee_atoms={fee_atoms}");
+        assert_eq!(
+            partition,
+            FeePartition::from_artifact_base_fee(fee),
+            "fee_atoms={fee_atoms}"
+        );
+        assert!(
+            !partition.citation_pool().is_zero(),
+            "fee_atoms={fee_atoms}"
+        );
+        assert!(
+            !partition.validator_pool().is_zero(),
+            "fee_atoms={fee_atoms}"
+        );
+        assert_eq!(
+            partition.citation_pool().atoms()
+                + partition.validator_pool().atoms()
+                + partition.burned().atoms(),
+            fee_atoms,
+            "fee_atoms={fee_atoms}"
+        );
+    }
+}
+
+#[test]
+fn artifact_base_fee_floor_public_api_is_const_evaluable() {
+    assert_eq!(CONSTANT_QUALIFIED_FEE_ATOMS, MINIMUM_ARTIFACT_BASE_FEE);
+    assert_eq!(
+        CONSTANT_QUALIFIED_PARTITION.citation_pool(),
+        NaoAtoms::new(2)
+    );
+    assert_eq!(
+        CONSTANT_QUALIFIED_PARTITION.validator_pool(),
+        NaoAtoms::new(1)
+    );
+    assert_eq!(CONSTANT_QUALIFIED_PARTITION.burned(), NaoAtoms::new(2));
+    assert_eq!(
+        CONSTANT_BELOW_FLOOR_RESULT,
+        Err(ArtifactBaseFeeFloorError::BelowMinimum {
+            actual: NaoAtoms::new(4),
+            minimum: MINIMUM_ARTIFACT_BASE_FEE,
+        })
+    );
+}
+
+#[test]
+fn artifact_base_fee_floor_error_has_exact_display_and_standard_error() {
+    fn assert_standard_error(_: &dyn std::error::Error) {}
+
+    let error = ArtifactBaseFeeFloorError::BelowMinimum {
+        actual: NaoAtoms::new(4),
+        minimum: MINIMUM_ARTIFACT_BASE_FEE,
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "artifact base fee has 4 atoms, below numeric minimum 5"
+    );
+    assert_standard_error(&error);
 }
 
 #[test]
