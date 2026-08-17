@@ -34,7 +34,7 @@ The prerelease reference implementation provides:
 - deterministic proof checking, exact checked-proof direct-dependency projection, and bounded conservative definition expansion;
 - atomic mixed-artifact admission and an authenticated `ArtifactId` set;
 - one exact-parent, fixed 128-byte artifact block per selected transition;
-- position-scoped immutable active-weight snapshots and strict weighted quorum arithmetic;
+- caller-supplied numeric height-to-epoch projection, position-scoped immutable active-weight snapshots, and strict weighted quorum arithmetic;
 - exact conserved fee-partition and equal citation-pool allocation arithmetic;
 - exact ordinary Knowledge-Weight origin-batch conversion and 730-epoch decay arithmetic;
 - exact caller-supplied numeric validator-bond floor and agreement-weight cap arithmetic;
@@ -111,10 +111,11 @@ selected persistence plus non-authoritative archives; transport-neutral
 messages; bounded libp2p transport and caller orchestration; and source
 authoring.
 
-The dependency-free consensus kernel currently owns only position-scoped
-active agreement snapshots and strict weighted quorum arithmetic. Validator
-selection, signatures, messages, and consensus state transitions remain later
-layers.
+The dependency-free consensus kernel currently owns caller-supplied numeric
+height-to-epoch projection, position-scoped active agreement snapshots, and
+strict weighted quorum arithmetic. Canonical height encoding, genesis and
+finality authority, validator selection, signatures, messages, persistence,
+and consensus state transitions remain later layers.
 
 The dependency-free economy kernel currently owns exact partitions of
 caller-supplied artifact and non-artifact fee atoms, one-to-one conversion of

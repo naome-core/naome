@@ -1,10 +1,13 @@
-//! Position-scoped weighted agreement arithmetic for NAOME consensus.
+//! Numeric coordinate and position-scoped weighted agreement arithmetic for
+//! NAOME consensus.
 //!
-//! This crate accepts an already selected active validator set, freezes its
-//! exact position and weights, and evaluates the strict greater-than-two-thirds
-//! threshold without renormalizing offline weight. It does not select
-//! validators, encode or verify signatures, define consensus messages, or run
-//! a Byzantine-fault-tolerant state machine.
+//! This crate projects caller-supplied positive height values into numeric
+//! non-genesis epochs. It also accepts an already selected active validator
+//! set, freezes its exact position and weights, and evaluates the strict
+//! greater-than-two-thirds threshold without renormalizing offline weight. It
+//! does not establish canonical blocks, finality, ancestry, genesis state, or
+//! persistence; select validators; encode or verify signatures; define
+//! consensus messages; or run a Byzantine-fault-tolerant state machine.
 
 use std::error::Error;
 use std::fmt;
@@ -15,10 +18,34 @@ pub const CONSENSUS_KEY_BYTES: usize = 32;
 /// Maximum number of active validator entries in one agreement snapshot.
 pub const MAX_ACTIVE_VALIDATORS: usize = 256;
 
+/// Nominal width used to project positive consensus heights into numeric epochs.
+///
+/// The terminal epoch reachable through `u64` need not have a complete
+/// representable reverse range.
+pub const NON_GENESIS_HEIGHTS_PER_EPOCH: u64 = 8_192;
+
+/// Numeric epoch projected from a caller-supplied positive consensus height.
+///
+/// This value establishes no canonical block, finality, ancestry, genesis
+/// installation, clock, deadline, persistence, activation, or consensus-state
+/// authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[must_use]
+pub struct ConsensusEpoch(u64);
+
+impl ConsensusEpoch {
+    /// Returns the projected numeric epoch value.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
 /// In-memory consensus height used to distinguish agreement positions.
 ///
-/// This reference representation does not define canonical wire bytes or the
-/// relationship between genesis and the first non-genesis height.
+/// The numeric projection reserves zero and treats positive values as
+/// non-genesis coordinates. Constructing or projecting a value does not prove
+/// installed genesis, block existence, canonicality, or finality, and this
+/// representation does not define canonical wire bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
 pub struct ConsensusHeight(u64);
@@ -32,6 +59,21 @@ impl ConsensusHeight {
     /// Returns the in-memory height value.
     pub const fn value(self) -> u64 {
         self.0
+    }
+
+    /// Projects this caller-supplied height into its numeric non-genesis epoch.
+    ///
+    /// Zero is treated only as the reserved numeric genesis coordinate and
+    /// returns [`None`]. Every positive height `H` returns
+    /// `floor((H - 1) / 8192)`. This projection does not prove that the height
+    /// exists, is canonical or finalized, belongs to selected ancestry, or is
+    /// related to installed genesis or consensus state.
+    pub const fn non_genesis_epoch(self) -> Option<ConsensusEpoch> {
+        if self.0 == 0 {
+            None
+        } else {
+            Some(ConsensusEpoch((self.0 - 1) / NON_GENESIS_HEIGHTS_PER_EPOCH))
+        }
     }
 }
 
