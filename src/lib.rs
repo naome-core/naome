@@ -5,7 +5,9 @@
 //! caller-supplied reward atoms and numeric epochs; it does not establish that
 //! a reward was earned, matured canonically, or belongs to any account, and it
 //! neither consumes reward value nor returns, records, or persists an origin
-//! batch.
+//! batch. Its validator-fee projection accepts caller-supplied aggregate pool
+//! atoms and an immutable active snapshot; it establishes no pool provenance,
+//! certificate, entitlement, burn, settlement, or state authority.
 
 pub mod artifact_exchange;
 pub mod block_exchange;
@@ -13,3 +15,4 @@ pub mod chain_head_announcement;
 pub mod chain_head_exchange;
 pub mod citation_reward_weight;
 pub mod validator_bond;
+pub mod validator_fee_share;

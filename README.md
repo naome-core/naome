@@ -39,6 +39,7 @@ The prerelease reference implementation provides:
 - exact ordinary Knowledge-Weight origin-batch conversion and 730-epoch decay arithmetic;
 - exact caller-supplied citation-reward maturity-to-live-weight projection;
 - exact caller-supplied numeric validator-bond floor and agreement-weight cap arithmetic;
+- exact caller-supplied aggregate validator-pool share projection over an immutable active-weight snapshot;
 - crash-consistent mixed proof/definition journal replay;
 - separate non-authoritative block-candidate and payload stores;
 - bounded caller-selected static-peer exchange, ancestry, and catch-up; and
@@ -133,10 +134,15 @@ The root integration crate can project caller-supplied citation-reward atoms
 from caller-supplied earning and evaluation epochs into current live Knowledge
 Weight. It can also compare caller-supplied NAO atoms with the numeric
 validator-bond floor and cap caller-supplied agreement weight at the exact
-bond-backed limit. Citation-reward projection neither consumes reward value nor
-returns, records, or persists an origin batch. These integrations establish no
-reward earning, canonical maturation, beneficiary, balance, escrow,
-registration, delegation, active-set, or consensus authority.
+bond-backed limit. It can also project one active key's exact share of a
+caller-supplied already-aggregated validator pool using the snapshot's unchanged
+total weight. Citation-reward projection neither consumes reward value nor
+returns, records, or persists an origin batch. Validator-pool aggregation,
+certificate inclusion, complete signer allocation, unassigned-atom burn,
+entitlement, credit, claim, and settlement remain outside the share projection.
+These integrations establish no reward earning, canonical maturation,
+beneficiary, balance, escrow, registration, delegation, active-set, economic
+state, or consensus authority.
 
 Invariant boundaries are:
 
