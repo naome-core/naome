@@ -1,13 +1,19 @@
-//! Exact fee-partition, citation-pool allocation, and Knowledge Weight
-//! origin-batch arithmetic for NAOME.
+//! Exact artifact base-fee floor qualification, fee-partition, citation-pool
+//! allocation, and Knowledge Weight origin-batch arithmetic for NAOME.
 //!
-//! This crate partitions caller-supplied fee atoms, allocates an already
+//! This crate numerically qualifies caller-supplied artifact base-fee atoms against
+//! a fixed floor, partitions caller-supplied fee atoms, allocates an already
 //! partitioned citation pool over a caller-validated distinct target count,
 //! and converts already-matured citation-reward atoms into initial Knowledge
-//! Weight with exact 730-epoch origin-batch decay. Callers remain responsible
-//! for fee calculation and classification, payment authorization, target
-//! eligibility and deduplication, identities, balances, reward settlement,
-//! maturity, ownership, persistence, delegation, penalties, and consensus use.
+//! Weight with exact 730-epoch origin-batch decay. Floor qualification proves
+//! no fee calculation or resource adequacy. Callers remain responsible for fee
+//! calculation and classification, payment authorization, target eligibility
+//! and deduplication, identities, balances, actual burn and credit, reward
+//! settlement, maturity, ownership, persistence, delegation, penalties,
+//! height-farming safety, state transitions, and consensus use.
+
+use std::error::Error;
+use std::fmt;
 
 const BATCH_LIFETIME_EPOCHS: u64 = 730;
 const BATCH_LIFETIME_UNITS: u128 = BATCH_LIFETIME_EPOCHS as u128;
@@ -43,6 +49,12 @@ impl NaoAtoms {
     }
 }
 
+/// Exact numeric minimum for caller-supplied artifact base-fee atoms.
+///
+/// This constant does not establish fee calculation, resource adequacy,
+/// payment, inclusion, or economic-state authority.
+pub const MINIMUM_ARTIFACT_BASE_FEE: NaoAtoms = NaoAtoms::new(5);
+
 /// One exact, conserved partition of caller-supplied fee atoms.
 ///
 /// Construction does not establish the fee's protocol validity, classify an
@@ -61,7 +73,10 @@ impl FeePartition {
     ///
     /// The citation pool is `floor(2 * fee / 5)`, the validator pool is
     /// `floor(fee / 5)`, and every remaining atom is burned. Quotient and
-    /// remainder arithmetic avoids doubling the full `u128` fee.
+    /// remainder arithmetic avoids doubling the full `u128` fee. This raw
+    /// arithmetic path does not enforce [`MINIMUM_ARTIFACT_BASE_FEE`] and
+    /// accepts below-floor values; it proves no fee adequacy, payment, actual
+    /// burn or credit, state transition, or height-farming safety.
     pub const fn from_artifact_base_fee(fee: NaoAtoms) -> Self {
         let quotient = fee.atoms() / FEE_PARTS;
         let remainder = fee.atoms() % FEE_PARTS;
@@ -142,6 +157,78 @@ impl FeePartition {
     /// Returns the atoms assigned to explicit burn.
     pub const fn burned(self) -> NaoAtoms {
         self.burned
+    }
+}
+
+/// A numeric artifact-base-fee floor qualification error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ArtifactBaseFeeFloorError {
+    /// The caller-supplied atom amount is below the exact numeric floor.
+    ///
+    /// This variant proves only the failed integer comparison and carries no
+    /// fee-calculation, payment, inclusion, or state authority.
+    BelowMinimum { actual: NaoAtoms, minimum: NaoAtoms },
+}
+
+impl fmt::Display for ArtifactBaseFeeFloorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BelowMinimum { actual, minimum } => write!(
+                formatter,
+                "artifact base fee has {} atoms, below numeric minimum {}",
+                actual.atoms(),
+                minimum.atoms()
+            ),
+        }
+    }
+}
+
+impl Error for ArtifactBaseFeeFloorError {}
+
+/// Caller-supplied artifact base-fee atoms that meet the exact numeric floor.
+///
+/// This value proves only the integer comparison performed by
+/// [`Self::try_from_fee_atoms`]. It does not prove fee calculation, resource
+/// adequacy, artifact classification, payer authorization, payment, balance,
+/// inclusion, finality, actual burn or credit, settlement, economic state, or
+/// height-farming safety.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FloorQualifiedArtifactBaseFee {
+    fee_atoms: NaoAtoms,
+}
+
+impl FloorQualifiedArtifactBaseFee {
+    /// Qualifies caller-supplied atoms against the exact numeric floor.
+    ///
+    /// Success proves only `fee_atoms >= MINIMUM_ARTIFACT_BASE_FEE`; it does
+    /// not establish that the amount was computed, paid, or applied to state.
+    pub const fn try_from_fee_atoms(
+        fee_atoms: NaoAtoms,
+    ) -> Result<Self, ArtifactBaseFeeFloorError> {
+        if fee_atoms.atoms() < MINIMUM_ARTIFACT_BASE_FEE.atoms() {
+            return Err(ArtifactBaseFeeFloorError::BelowMinimum {
+                actual: fee_atoms,
+                minimum: MINIMUM_ARTIFACT_BASE_FEE,
+            });
+        }
+
+        Ok(Self { fee_atoms })
+    }
+
+    /// Returns the exact caller-supplied atom amount.
+    pub const fn fee_atoms(self) -> NaoAtoms {
+        self.fee_atoms
+    }
+
+    /// Returns the existing exact artifact base-fee arithmetic partition.
+    ///
+    /// The result is an arithmetic summary only. It proves no computed-fee
+    /// adequacy, payment, actual burn or credit, state transition, settlement,
+    /// or height-farming safety.
+    pub const fn partition(self) -> FeePartition {
+        FeePartition::from_artifact_base_fee(self.fee_atoms)
     }
 }
 
