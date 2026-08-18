@@ -1,15 +1,24 @@
 use std::error::Error;
 
 use naome_consensus::{
-    ActiveAgreementEntry, ActiveAgreementSnapshot, AgreementWeight, ConsensusHeight, ConsensusKey,
-    ConsensusPosition, ConsensusRound,
+    ActiveAgreementEntry, ActiveAgreementSnapshot, AgreementSignerError, AgreementWeight,
+    ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusRound, MAX_ACTIVE_VALIDATORS,
 };
 use naome_economy::{FeePartition, NaoAtoms};
 
-use super::{ValidatorFeeShareError, project_fee_funded_validator_share};
+use super::{
+    ValidatorFeeShareError, project_fee_funded_validator_allocation,
+    project_fee_funded_validator_share,
+};
 
 fn key(marker: u8) -> ConsensusKey {
     ConsensusKey::from_bytes([marker; 32])
+}
+
+fn numbered_key(index: usize) -> ConsensusKey {
+    let mut bytes = [0_u8; 32];
+    bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
+    ConsensusKey::from_bytes(bytes)
 }
 
 fn snapshot(entries: &[(u8, u128)]) -> ActiveAgreementSnapshot {
@@ -178,4 +187,159 @@ fn snapshot_entry_order_does_not_change_the_share() {
         project_fee_funded_validator_share(NaoAtoms::new(97), &ascending, key(1)),
         Ok(NaoAtoms::new(19))
     );
+}
+
+#[test]
+fn allocation_reuses_complete_signer_list_error_precedence_before_arithmetic() {
+    let active_snapshot = snapshot(&[(1, 7), (2, 3)]);
+    let too_many = (0..=MAX_ACTIVE_VALIDATORS)
+        .map(numbered_key)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        project_fee_funded_validator_allocation(NaoAtoms::ZERO, &active_snapshot, &too_many),
+        Err(AgreementSignerError::TooManySigners {
+            actual: MAX_ACTIVE_VALIDATORS + 1,
+            maximum: MAX_ACTIVE_VALIDATORS,
+        })
+    );
+
+    assert_eq!(
+        project_fee_funded_validator_allocation(
+            NaoAtoms::ZERO,
+            &active_snapshot,
+            &[key(2), key(1), key(1), key(9)],
+        ),
+        Err(AgreementSignerError::DuplicateSigner {
+            consensus_key: key(1),
+        })
+    );
+    assert_eq!(
+        project_fee_funded_validator_allocation(
+            NaoAtoms::ZERO,
+            &active_snapshot,
+            &[key(9), key(8)],
+        ),
+        Err(AgreementSignerError::UnknownSigner {
+            consensus_key: key(8),
+        })
+    );
+}
+
+#[test]
+fn empty_signer_list_leaves_the_complete_pool_unassigned() {
+    for active_snapshot in [snapshot(&[]), snapshot(&[(1, 7)])] {
+        let allocation =
+            project_fee_funded_validator_allocation(NaoAtoms::new(19), &active_snapshot, &[])
+                .unwrap();
+
+        assert_eq!(allocation.validator_pool(), NaoAtoms::new(19));
+        assert_eq!(allocation.shares(), &[]);
+        assert_eq!(allocation.unassigned(), NaoAtoms::new(19));
+    }
+}
+
+#[test]
+fn allocation_is_canonically_ordered_and_omission_keeps_the_denominator() {
+    let active_snapshot = snapshot(&[(3, 5), (1, 2), (2, 3)]);
+    let first = project_fee_funded_validator_allocation(
+        NaoAtoms::new(97),
+        &active_snapshot,
+        &[key(3), key(1)],
+    )
+    .unwrap();
+    let second = project_fee_funded_validator_allocation(
+        NaoAtoms::new(97),
+        &active_snapshot,
+        &[key(1), key(3)],
+    )
+    .unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(first.validator_pool(), NaoAtoms::new(97));
+    assert_eq!(
+        first
+            .shares()
+            .iter()
+            .map(|entry| (entry.consensus_key(), entry.share()))
+            .collect::<Vec<_>>(),
+        vec![(key(1), NaoAtoms::new(19)), (key(3), NaoAtoms::new(48))]
+    );
+    assert_eq!(first.unassigned(), NaoAtoms::new(30));
+
+    let full = project_fee_funded_validator_allocation(
+        NaoAtoms::new(97),
+        &active_snapshot,
+        &[key(1), key(2), key(3)],
+    )
+    .unwrap();
+    assert_eq!(full.shares()[0].share(), first.shares()[0].share());
+    assert_eq!(full.shares()[2].share(), first.shares()[1].share());
+}
+
+#[test]
+fn every_small_signer_subset_matches_an_independent_direct_product_oracle() {
+    let active_snapshot = snapshot(&[(1, 1), (2, 2), (3, 3)]);
+    let weights = [(1_u8, 1_u128), (2, 2), (3, 3)];
+    let total_weight = 6_u128;
+
+    for pool in 0_u128..=64 {
+        for mask in 0_u8..8 {
+            let signer_keys = weights
+                .iter()
+                .rev()
+                .filter(|(marker, _)| mask & (1 << (*marker - 1)) != 0)
+                .map(|(marker, _)| key(*marker))
+                .collect::<Vec<_>>();
+            let allocation = project_fee_funded_validator_allocation(
+                NaoAtoms::new(pool),
+                &active_snapshot,
+                &signer_keys,
+            )
+            .unwrap();
+            let expected = weights
+                .iter()
+                .filter(|(marker, _)| mask & (1 << (*marker - 1)) != 0)
+                .map(|(marker, weight)| (key(*marker), pool * *weight / total_weight))
+                .collect::<Vec<_>>();
+            let actual = allocation
+                .shares()
+                .iter()
+                .map(|entry| (entry.consensus_key(), entry.share().atoms()))
+                .collect::<Vec<_>>();
+            let assigned = expected.iter().map(|(_, share)| *share).sum::<u128>();
+
+            assert_eq!(actual, expected, "pool={pool}, mask={mask}");
+            assert_eq!(
+                allocation.unassigned().atoms(),
+                pool - assigned,
+                "pool={pool}, mask={mask}"
+            );
+        }
+    }
+}
+
+#[test]
+fn full_u128_allocation_conserves_every_atom_without_product_overflow() {
+    let maximum = u128::MAX;
+    let extreme_split = snapshot(&[(1, 1), (2, maximum - 1)]);
+    let allocation = project_fee_funded_validator_allocation(
+        NaoAtoms::new(maximum),
+        &extreme_split,
+        &[key(2), key(1)],
+    )
+    .unwrap();
+    assert_eq!(allocation.shares()[0].share(), NaoAtoms::new(1));
+    assert_eq!(allocation.shares()[1].share(), NaoAtoms::new(maximum - 1));
+    assert_eq!(allocation.unassigned(), NaoAtoms::ZERO);
+
+    let equal_split = snapshot(&[(1, 1), (2, 1)]);
+    let allocation = project_fee_funded_validator_allocation(
+        NaoAtoms::new(maximum),
+        &equal_split,
+        &[key(1), key(2)],
+    )
+    .unwrap();
+    assert_eq!(allocation.shares()[0].share(), NaoAtoms::new(maximum / 2));
+    assert_eq!(allocation.shares()[1].share(), NaoAtoms::new(maximum / 2));
+    assert_eq!(allocation.unassigned(), NaoAtoms::new(1));
 }
