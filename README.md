@@ -35,7 +35,7 @@ The prerelease reference implementation provides:
 - atomic mixed-artifact admission and an authenticated `ArtifactId` set;
 - one exact-parent, fixed 128-byte artifact block per selected transition;
 - caller-supplied numeric height-to-epoch projection, position-scoped immutable active-weight snapshots, and strict weighted quorum arithmetic;
-- exact caller-supplied numeric artifact base-fee and non-artifact operation-fee floor qualification, conserved fee-partition, and equal citation-pool allocation arithmetic;
+- exact caller-supplied numeric artifact base-fee and non-artifact operation-fee floor qualification, conserved fee-partition, checked validator-pool aggregation, and equal citation-pool allocation arithmetic;
 - exact ordinary Knowledge-Weight origin-batch conversion and 730-epoch decay arithmetic;
 - exact caller-supplied citation-reward maturity-to-live-weight projection;
 - exact caller-supplied numeric validator-bond floor and agreement-weight cap arithmetic;
@@ -122,10 +122,12 @@ and consensus state transitions remain later layers.
 The dependency-free economy kernel currently owns numeric floor qualification
 for caller-supplied artifact base-fee and non-artifact operation-fee atoms,
 exact partitions of caller-supplied artifact and non-artifact fee atoms,
-one-to-one conversion of already-matured citation atoms into initial Knowledge
-Weight, and exact 730-epoch origin-batch decay. Qualification proves only the
-respective five-atom or one-atom comparison, while raw partition arithmetic
-remains available for every amount. Fee calculation, resource adequacy,
+checked summation of caller-supplied partitions' validator pools, one-to-one
+conversion of already-matured citation atoms into initial Knowledge Weight, and
+exact 730-epoch origin-batch decay. Qualification proves only the respective
+five-atom or one-atom comparison, while raw partition arithmetic remains
+available for every amount. Pool aggregation establishes no input completeness,
+provenance, or canonical count bound. Fee calculation, resource adequacy,
 classification, payment authorization, balances, actual burn and credit,
 reward eligibility and settlement, maturity, ownership, delegation, penalties,
 height-farming safety, state transitions, and consensus use remain later
@@ -140,11 +142,12 @@ caller-supplied already-aggregated validator pool using the snapshot's unchanged
 total weight, or project the same shares over a bounded caller-supplied signer
 list with an exact unassigned arithmetic remainder. Citation-reward projection
 neither consumes reward value nor returns, records, or persists an origin batch.
-Validator-pool aggregation, certificate inclusion or list-completeness
-authority, actual unassigned-atom burn, entitlement, credit, claim, and
-settlement remain outside these projections. These integrations establish no
-reward earning, canonical maturation, beneficiary, balance, escrow,
-registration, delegation, active-set, economic state, or consensus authority.
+The share projections do not establish validator-pool provenance or
+completeness, certificate inclusion or signer-list completeness, actual
+unassigned-atom burn, entitlement, credit, claim, or settlement. These
+integrations establish no reward earning, canonical maturation, beneficiary,
+balance, escrow, registration, delegation, active-set, economic state, or
+consensus authority.
 
 Invariant boundaries are:
 

@@ -1,16 +1,18 @@
 //! Exact artifact base-fee and non-artifact operation-fee floor qualification,
-//! fee-partition, citation-pool allocation, and Knowledge Weight origin-batch
-//! arithmetic for NAOME.
+//! fee-partition, validator-pool aggregation, citation-pool allocation, and
+//! Knowledge Weight origin-batch arithmetic for NAOME.
 //!
 //! This crate numerically qualifies caller-supplied artifact base-fee and
 //! non-artifact operation-fee atoms against fixed floors, partitions
-//! caller-supplied fee atoms, allocates an already partitioned citation pool
-//! over a caller-validated distinct target count, and converts already-matured
+//! caller-supplied fee atoms, checks aggregation of caller-supplied partitions'
+//! validator pools, allocates an already partitioned citation pool over a
+//! caller-validated distinct target count, and converts already-matured
 //! citation-reward atoms into initial Knowledge Weight with exact 730-epoch
 //! origin-batch decay. Floor qualification proves no fee calculation or
-//! resource adequacy. Callers remain responsible for fee calculation and
-//! classification, payment authorization, target eligibility and
-//! deduplication, identities, balances, actual burn and credit, reward
+//! resource adequacy. Pool aggregation proves no input completeness,
+//! provenance, payment, or canonical bound. Callers remain responsible for fee
+//! calculation and classification, payment authorization, target eligibility
+//! and deduplication, identities, balances, actual burn and credit, reward
 //! settlement, maturity, ownership, persistence, delegation, penalties,
 //! height-farming safety, state transitions, and consensus use.
 
@@ -169,6 +171,52 @@ impl FeePartition {
     pub const fn burned(self) -> NaoAtoms {
         self.burned
     }
+}
+
+/// Failure to represent a caller-supplied validator-pool aggregation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ValidatorPoolAggregationError {
+    /// The complete mathematical sum exceeds `u128` capacity.
+    Overflow,
+}
+
+impl fmt::Display for ValidatorPoolAggregationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Overflow => formatter.write_str("validator pool total exceeds u128 capacity"),
+        }
+    }
+}
+
+impl Error for ValidatorPoolAggregationError {}
+
+/// Sums caller-supplied fee partitions' validator pools without wrapping.
+///
+/// The empty slice returns zero. Every nonempty input returns the exact sum or
+/// [`ValidatorPoolAggregationError::Overflow`] without exposing a partial
+/// result. Successful output and overflow behavior are independent of input
+/// order. This function does not establish that the slice is complete,
+/// canonically bounded, or associated with one height; prove partition
+/// provenance, fee classification, validity, calculation, payment, inclusion,
+/// or finality; or perform any burn, credit, settlement, persistence, or state
+/// transition.
+pub const fn aggregate_validator_pool(
+    partitions: &[FeePartition],
+) -> Result<NaoAtoms, ValidatorPoolAggregationError> {
+    let mut accumulated = 0_u128;
+    let mut partition_index = 0;
+
+    while partition_index < partitions.len() {
+        let next = partitions[partition_index].validator_pool().atoms();
+        accumulated = match accumulated.checked_add(next) {
+            Some(total) => total,
+            None => return Err(ValidatorPoolAggregationError::Overflow),
+        };
+        partition_index += 1;
+    }
+
+    Ok(NaoAtoms::new(accumulated))
 }
 
 /// A numeric artifact-base-fee floor qualification error.

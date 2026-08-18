@@ -30,6 +30,11 @@ const CONSTANT_ZERO_OPERATION_FEE_RESULT: Result<
     FloorQualifiedNonArtifactOperationFee,
     NonArtifactOperationFeeFloorError,
 > = FloorQualifiedNonArtifactOperationFee::try_from_fee_atoms(NaoAtoms::ZERO);
+const CONSTANT_AGGREGATED_VALIDATOR_POOL: Result<NaoAtoms, ValidatorPoolAggregationError> =
+    aggregate_validator_pool(&[
+        FeePartition::from_artifact_base_fee(NaoAtoms::new(5)),
+        FeePartition::from_non_artifact_operation_fee(NaoAtoms::new(5)),
+    ]);
 
 fn assert_standard_error(_: &dyn std::error::Error) {}
 
@@ -87,6 +92,74 @@ fn assert_citation_pool_allocation_matches_oracle(
         pool_atoms,
         "pool={pool_atoms}, count={distinct_eligible_target_count}"
     );
+}
+
+#[test]
+fn validator_pool_aggregation_is_const_evaluable_and_empty_is_zero() {
+    assert_eq!(CONSTANT_AGGREGATED_VALIDATOR_POOL, Ok(NaoAtoms::new(2)));
+    assert_eq!(aggregate_validator_pool(&[]), Ok(NaoAtoms::ZERO));
+}
+
+#[test]
+fn validator_pool_aggregation_matches_independent_mixed_fee_oracle() {
+    for artifact_fee_atoms in 0_u128..=64 {
+        for operation_fee_atoms in 0_u128..=64 {
+            let artifact = FeePartition::from_artifact_base_fee(NaoAtoms::new(artifact_fee_atoms));
+            let operation =
+                FeePartition::from_non_artifact_operation_fee(NaoAtoms::new(operation_fee_atoms));
+            let expected =
+                artifact_fee_atoms / TEST_FEE_PARTS + operation_fee_atoms / TEST_FEE_PARTS;
+
+            assert_eq!(
+                aggregate_validator_pool(&[artifact, operation]),
+                Ok(NaoAtoms::new(expected)),
+                "artifact_fee_atoms={artifact_fee_atoms}, operation_fee_atoms={operation_fee_atoms}"
+            );
+            assert_eq!(
+                aggregate_validator_pool(&[operation, artifact]),
+                Ok(NaoAtoms::new(expected)),
+                "reversed artifact_fee_atoms={artifact_fee_atoms}, operation_fee_atoms={operation_fee_atoms}"
+            );
+        }
+    }
+}
+
+#[test]
+fn validator_pool_aggregation_is_exact_at_full_u128_and_errors_past_it() {
+    let maximum_partition = FeePartition::from_artifact_base_fee(NaoAtoms::new(u128::MAX));
+    let minimum_partition = FeePartition::from_artifact_base_fee(MINIMUM_ARTIFACT_BASE_FEE);
+    let exact = [maximum_partition; 5];
+    let overflow_last = [
+        maximum_partition,
+        maximum_partition,
+        maximum_partition,
+        maximum_partition,
+        maximum_partition,
+        minimum_partition,
+    ];
+    let mut overflow_first = overflow_last;
+    overflow_first.reverse();
+
+    assert_eq!(u128::MAX % TEST_FEE_PARTS, 0);
+    assert_eq!(
+        aggregate_validator_pool(&[maximum_partition]),
+        Ok(NaoAtoms::new(u128::MAX / TEST_FEE_PARTS))
+    );
+    assert_eq!(
+        aggregate_validator_pool(&exact),
+        Ok(NaoAtoms::new(u128::MAX))
+    );
+    let error = aggregate_validator_pool(&overflow_last).unwrap_err();
+    assert_eq!(error, ValidatorPoolAggregationError::Overflow);
+    assert_eq!(
+        aggregate_validator_pool(&overflow_first),
+        Err(ValidatorPoolAggregationError::Overflow)
+    );
+    assert_eq!(
+        error.to_string(),
+        "validator pool total exceeds u128 capacity"
+    );
+    assert_standard_error(&error);
 }
 
 #[test]
