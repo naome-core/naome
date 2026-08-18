@@ -2,6 +2,7 @@ use super::*;
 
 const TEST_FEE_PARTS: u128 = 5;
 const REFERENCE_MINIMUM_ARTIFACT_BASE_FEE_ATOMS: u128 = 5;
+const REFERENCE_MINIMUM_NON_ARTIFACT_OPERATION_FEE_ATOMS: u128 = 1;
 
 const CONSTANT_QUALIFIED_ARTIFACT_BASE_FEE: FloorQualifiedArtifactBaseFee =
     match FloorQualifiedArtifactBaseFee::try_from_fee_atoms(MINIMUM_ARTIFACT_BASE_FEE) {
@@ -14,6 +15,23 @@ const CONSTANT_BELOW_FLOOR_RESULT: Result<
     FloorQualifiedArtifactBaseFee,
     ArtifactBaseFeeFloorError,
 > = FloorQualifiedArtifactBaseFee::try_from_fee_atoms(NaoAtoms::new(4));
+const CONSTANT_QUALIFIED_NON_ARTIFACT_OPERATION_FEE: FloorQualifiedNonArtifactOperationFee =
+    match FloorQualifiedNonArtifactOperationFee::try_from_fee_atoms(
+        MINIMUM_NON_ARTIFACT_OPERATION_FEE,
+    ) {
+        Ok(fee) => fee,
+        Err(_) => panic!("the minimum non-artifact operation fee must qualify"),
+    };
+const CONSTANT_QUALIFIED_OPERATION_FEE_ATOMS: NaoAtoms =
+    CONSTANT_QUALIFIED_NON_ARTIFACT_OPERATION_FEE.fee_atoms();
+const CONSTANT_QUALIFIED_OPERATION_PARTITION: FeePartition =
+    CONSTANT_QUALIFIED_NON_ARTIFACT_OPERATION_FEE.partition();
+const CONSTANT_ZERO_OPERATION_FEE_RESULT: Result<
+    FloorQualifiedNonArtifactOperationFee,
+    NonArtifactOperationFeeFloorError,
+> = FloorQualifiedNonArtifactOperationFee::try_from_fee_atoms(NaoAtoms::ZERO);
+
+fn assert_standard_error(_: &dyn std::error::Error) {}
 
 fn assert_citation_pool_allocation_matches_oracle(
     partition: FeePartition,
@@ -145,8 +163,6 @@ fn artifact_base_fee_floor_public_api_is_const_evaluable() {
 
 #[test]
 fn artifact_base_fee_floor_error_has_exact_display_and_standard_error() {
-    fn assert_standard_error(_: &dyn std::error::Error) {}
-
     let error = ArtifactBaseFeeFloorError::BelowMinimum {
         actual: NaoAtoms::new(4),
         minimum: MINIMUM_ARTIFACT_BASE_FEE,
@@ -155,6 +171,75 @@ fn artifact_base_fee_floor_error_has_exact_display_and_standard_error() {
     assert_eq!(
         error.to_string(),
         "artifact base fee has 4 atoms, below numeric minimum 5"
+    );
+    assert_standard_error(&error);
+}
+
+#[test]
+fn non_artifact_operation_fee_qualified_domain_matches_raw_partition() {
+    for fee_atoms in (REFERENCE_MINIMUM_NON_ARTIFACT_OPERATION_FEE_ATOMS..=1_024).chain([u128::MAX])
+    {
+        let fee = NaoAtoms::new(fee_atoms);
+        let qualified = FloorQualifiedNonArtifactOperationFee::try_from_fee_atoms(fee).unwrap();
+        let partition = qualified.partition();
+
+        assert_eq!(qualified.fee_atoms(), fee, "fee_atoms={fee_atoms}");
+        assert_eq!(
+            partition,
+            FeePartition::from_non_artifact_operation_fee(fee),
+            "fee_atoms={fee_atoms}"
+        );
+    }
+}
+
+#[test]
+fn non_artifact_operation_fee_floor_boundary_and_const_api_are_exact() {
+    assert_eq!(
+        MINIMUM_NON_ARTIFACT_OPERATION_FEE.atoms(),
+        REFERENCE_MINIMUM_NON_ARTIFACT_OPERATION_FEE_ATOMS
+    );
+    assert_eq!(
+        FloorQualifiedNonArtifactOperationFee::try_from_fee_atoms(NaoAtoms::ZERO),
+        Err(NonArtifactOperationFeeFloorError::BelowMinimum {
+            actual: NaoAtoms::ZERO,
+            minimum: NaoAtoms::new(REFERENCE_MINIMUM_NON_ARTIFACT_OPERATION_FEE_ATOMS),
+        })
+    );
+    assert_eq!(
+        CONSTANT_QUALIFIED_OPERATION_FEE_ATOMS,
+        MINIMUM_NON_ARTIFACT_OPERATION_FEE
+    );
+    assert_eq!(
+        CONSTANT_QUALIFIED_OPERATION_PARTITION.citation_pool(),
+        NaoAtoms::ZERO
+    );
+    assert_eq!(
+        CONSTANT_QUALIFIED_OPERATION_PARTITION.validator_pool(),
+        NaoAtoms::ZERO
+    );
+    assert_eq!(
+        CONSTANT_QUALIFIED_OPERATION_PARTITION.burned(),
+        NaoAtoms::new(1)
+    );
+    assert_eq!(
+        CONSTANT_ZERO_OPERATION_FEE_RESULT,
+        Err(NonArtifactOperationFeeFloorError::BelowMinimum {
+            actual: NaoAtoms::ZERO,
+            minimum: MINIMUM_NON_ARTIFACT_OPERATION_FEE,
+        })
+    );
+}
+
+#[test]
+fn non_artifact_operation_fee_floor_error_has_exact_display_and_standard_error() {
+    let error = NonArtifactOperationFeeFloorError::BelowMinimum {
+        actual: NaoAtoms::ZERO,
+        minimum: MINIMUM_NON_ARTIFACT_OPERATION_FEE,
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "non-artifact operation fee has 0 atoms, below numeric minimum 1"
     );
     assert_standard_error(&error);
 }

@@ -35,7 +35,7 @@ The prerelease reference implementation provides:
 - atomic mixed-artifact admission and an authenticated `ArtifactId` set;
 - one exact-parent, fixed 128-byte artifact block per selected transition;
 - caller-supplied numeric height-to-epoch projection, position-scoped immutable active-weight snapshots, and strict weighted quorum arithmetic;
-- exact caller-supplied numeric artifact base-fee floor qualification, conserved fee-partition, and equal citation-pool allocation arithmetic;
+- exact caller-supplied numeric artifact base-fee and non-artifact operation-fee floor qualification, conserved fee-partition, and equal citation-pool allocation arithmetic;
 - exact ordinary Knowledge-Weight origin-batch conversion and 730-epoch decay arithmetic;
 - exact caller-supplied citation-reward maturity-to-live-weight projection;
 - exact caller-supplied numeric validator-bond floor and agreement-weight cap arithmetic;
@@ -120,15 +120,16 @@ finality authority, validator selection, signatures, messages, persistence,
 and consensus state transitions remain later layers.
 
 The dependency-free economy kernel currently owns numeric floor qualification
-for caller-supplied artifact base-fee atoms, exact partitions of caller-supplied
-artifact and non-artifact fee atoms, one-to-one conversion of already-matured
-citation atoms into initial Knowledge Weight, and exact 730-epoch origin-batch
-decay. Qualification proves only the five-atom comparison, while raw partition
-arithmetic remains available for every amount. Fee calculation, resource
-adequacy, classification, payment authorization, balances, actual burn and
-credit, reward eligibility and settlement, maturity, ownership, delegation,
-penalties, height-farming safety, state transitions, and consensus use remain
-later protocol work.
+for caller-supplied artifact base-fee and non-artifact operation-fee atoms,
+exact partitions of caller-supplied artifact and non-artifact fee atoms,
+one-to-one conversion of already-matured citation atoms into initial Knowledge
+Weight, and exact 730-epoch origin-batch decay. Qualification proves only the
+respective five-atom or one-atom comparison, while raw partition arithmetic
+remains available for every amount. Fee calculation, resource adequacy,
+classification, payment authorization, balances, actual burn and credit,
+reward eligibility and settlement, maturity, ownership, delegation, penalties,
+height-farming safety, state transitions, and consensus use remain later
+protocol work.
 
 The root integration crate can project caller-supplied citation-reward atoms
 from caller-supplied earning and evaluation epochs into current live Knowledge
