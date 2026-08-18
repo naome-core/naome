@@ -360,7 +360,8 @@
 - GOV-004 [DECIDED] [NOT_IMPLEMENTED] Every protocol upgrade is explicitly versioned.
 - GOV-005 [DECIDED] [NOT_IMPLEMENTED] Every identity-changing protocol upgrade uses a distinct domain.
 - GOV-006 [DECIDED] [NOT_IMPLEMENTED] An exact-version protocol upgrade requires a readiness certificate signed by strict greater-than-two-thirds current active agreement weight and no administrator may authorize it; AFTER: `SEC-006`.
-- GOV-007 [DECIDED] [NOT_IMPLEMENTED] A readiness certificate formed in epoch E activates no earlier than E+15 after 14 complete intervening epochs unless strict greater-than-one-third current active agreement weight cancels that exact version and activation; AFTER: `CODEC-010`, `CODEC-011`.
+- GOV-007 [DECIDED] [IN_PROGRESS] A readiness certificate formed in epoch E activates no earlier than E+15 after 14 complete intervening epochs unless strict greater-than-one-third current active agreement weight cancels that exact version and activation; AFTER: `CODEC-010`, `CODEC-011`.
+- GOV-007-001 [DECIDED] [IMPLEMENTED] Given caller-supplied projected readiness epoch E and candidate activation epoch A, the reference consensus kernel returns true exactly when A is not earlier than E and `A - E >= 15`, without establishing readiness-certificate existence or validity, protocol-version identity, signature or snapshot authority, canonical epochs, a scheduled activation coordinate, cancellation, activation, persistence, or consensus state; evidence: `crates/naome-consensus/src/lib.rs`, `crates/naome-consensus/src/tests.rs`; AFTER: `BASE-021`.
 - GOV-008 [OPEN] [BLOCKED] Specify the exact pre-upgrade state transformation; AFTER: `GOV-006`, `GOV-007`.
 - GOV-009 [OPEN] [BLOCKED] Specify the exact post-upgrade state invariant; AFTER: `GOV-008`.
 - GOV-010 [OPEN] [BLOCKED] Specify unknown-version rejection; AFTER: `CODEC-013`.
