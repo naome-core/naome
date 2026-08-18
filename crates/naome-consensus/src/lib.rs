@@ -2,12 +2,14 @@
 //! NAOME consensus.
 //!
 //! This crate projects caller-supplied positive height values into numeric
-//! non-genesis epochs. It also accepts an already selected active validator
-//! set, freezes its exact position and weights, and evaluates the strict
-//! greater-than-two-thirds threshold without renormalizing offline weight. It
-//! does not establish canonical blocks, finality, ancestry, genesis state, or
-//! persistence; select validators; encode or verify signatures; define
-//! consensus messages; or run a Byzantine-fault-tolerant state machine.
+//! non-genesis epochs and compares caller-supplied checkpoint and
+//! operator-minimum epochs through a numeric freshness window. It also accepts
+//! an already selected active validator set, freezes its exact position and
+//! weights, and evaluates the strict greater-than-two-thirds threshold without
+//! renormalizing offline weight. It does not establish canonical blocks,
+//! checkpoints, finality, ancestry, genesis state, or persistence; select
+//! validators; encode or verify signatures; define consensus messages; or run
+//! a Byzantine-fault-tolerant state machine.
 
 use std::error::Error;
 use std::fmt;
@@ -24,6 +26,8 @@ pub const MAX_ACTIVE_VALIDATORS: usize = 256;
 /// representable reverse range.
 pub const NON_GENESIS_HEIGHTS_PER_EPOCH: u64 = 8_192;
 
+const CHECKPOINT_NUMERIC_FRESHNESS_WINDOW_EPOCHS: u64 = 30;
+
 /// Numeric epoch projected from a caller-supplied positive consensus height.
 ///
 /// This value establishes no canonical block, finality, ancestry, genesis
@@ -37,6 +41,27 @@ impl ConsensusEpoch {
     /// Returns the projected numeric epoch value.
     pub const fn value(self) -> u64 {
         self.0
+    }
+}
+
+/// Returns whether a checkpoint epoch is within the numeric freshness window.
+///
+/// The result is true exactly when `checkpoint_epoch` is fewer than 30 epochs
+/// behind `operator_minimum_epoch`. Equal or numerically newer checkpoint
+/// epochs therefore pass this age-only comparison. Passing does not establish
+/// checkpoint existence, authentication, selection, future-epoch
+/// admissibility, chain or genesis identity, version compatibility, finality,
+/// snapshot commitments, operator provenance or monotonicity of the minimum,
+/// installation, persistence, synchronization, or consensus state.
+pub const fn checkpoint_epoch_is_within_numeric_freshness_window(
+    checkpoint_epoch: ConsensusEpoch,
+    operator_minimum_epoch: ConsensusEpoch,
+) -> bool {
+    if checkpoint_epoch.value() >= operator_minimum_epoch.value() {
+        true
+    } else {
+        operator_minimum_epoch.value() - checkpoint_epoch.value()
+            < CHECKPOINT_NUMERIC_FRESHNESS_WINDOW_EPOCHS
     }
 }
 
