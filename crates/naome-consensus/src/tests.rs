@@ -368,6 +368,7 @@ fn empty_snapshot_represents_zero_authority() {
     assert_eq!(snapshot.total_weight(), AgreementWeight::ZERO);
     assert_eq!(snapshot.signed_weight(&[]), Ok(AgreementWeight::ZERO));
     assert_eq!(snapshot.has_strict_supermajority(&[]), Ok(false));
+    assert_eq!(snapshot.has_strict_one_third(&[]), Ok(false));
 }
 
 #[test]
@@ -510,6 +511,21 @@ fn strict_supermajority_boundaries_cover_all_total_remainders() {
 }
 
 #[test]
+fn strict_one_third_boundaries_cover_all_total_remainders() {
+    for (weights, false_signers, true_signers) in [
+        (&[1_u128][..], vec![], vec![key(0)]),
+        (&[1_u128, 1][..], vec![], vec![key(0)]),
+        (&[1_u128, 2][..], vec![key(0)], vec![key(1)]),
+        (&[1_u128, 1, 2][..], vec![key(0)], vec![key(2)]),
+        (&[1_u128, 2, 2][..], vec![key(0)], vec![key(1)]),
+    ] {
+        let snapshot = snapshot(weights);
+        assert_eq!(snapshot.has_strict_one_third(&false_signers), Ok(false));
+        assert_eq!(snapshot.has_strict_one_third(&true_signers), Ok(true));
+    }
+}
+
+#[test]
 fn small_domain_matches_independent_multiplication_oracle() {
     for validator_count in 1..=4_usize {
         let combinations = 3_usize.pow(validator_count as u32);
@@ -537,6 +553,11 @@ fn small_domain_matches_independent_multiplication_oracle() {
                     Ok(signed * 3 > total * 2),
                     "weights={weights:?}, signer_mask={signer_mask:#b}"
                 );
+                assert_eq!(
+                    snapshot.has_strict_one_third(&signers),
+                    Ok(signed * 3 > total),
+                    "weights={weights:?}, signer_mask={signer_mask:#b}"
+                );
             }
         }
     }
@@ -547,16 +568,31 @@ fn near_maximum_thresholds_cover_every_remainder_without_overflow() {
     for total in [u128::MAX, u128::MAX - 1, u128::MAX - 2] {
         let ceil_one_third = total / 3 + u128::from(total % 3 != 0);
         let floor_two_thirds = total - ceil_one_third;
-        let at_boundary = snapshot(&[floor_two_thirds, total - floor_two_thirds]);
-        let above_boundary = snapshot(&[floor_two_thirds + 1, total - floor_two_thirds - 1]);
+        let at_supermajority_boundary = snapshot(&[floor_two_thirds, total - floor_two_thirds]);
+        let above_supermajority_boundary =
+            snapshot(&[floor_two_thirds + 1, total - floor_two_thirds - 1]);
+        let floor_one_third = total / 3;
+        let at_one_third_boundary = snapshot(&[floor_one_third, total - floor_one_third]);
+        let above_one_third_boundary =
+            snapshot(&[floor_one_third + 1, total - floor_one_third - 1]);
 
         assert_eq!(
-            at_boundary.has_strict_supermajority(&[key(0)]),
+            at_supermajority_boundary.has_strict_supermajority(&[key(0)]),
             Ok(false),
             "total={total}"
         );
         assert_eq!(
-            above_boundary.has_strict_supermajority(&[key(0)]),
+            above_supermajority_boundary.has_strict_supermajority(&[key(0)]),
+            Ok(true),
+            "total={total}"
+        );
+        assert_eq!(
+            at_one_third_boundary.has_strict_one_third(&[key(0)]),
+            Ok(false),
+            "total={total}"
+        );
+        assert_eq!(
+            above_one_third_boundary.has_strict_one_third(&[key(0)]),
             Ok(true),
             "total={total}"
         );
@@ -575,6 +611,8 @@ fn offline_weight_remains_in_the_denominator() {
         snapshot.has_strict_supermajority(&[key(1), key(2)]),
         Ok(false)
     );
+    assert_eq!(snapshot.has_strict_one_third(&[key(0)]), Ok(true));
+    assert_eq!(snapshot.has_strict_one_third(&[key(1)]), Ok(false));
 }
 
 #[test]
@@ -612,6 +650,8 @@ fn signer_error_precedence_is_permutation_independent() {
         snapshot.has_strict_supermajority(&second),
         expected_duplicate
     );
+    assert_eq!(snapshot.has_strict_one_third(&first), expected_duplicate);
+    assert_eq!(snapshot.has_strict_one_third(&second), expected_duplicate);
 
     let first = [key(9), key(0), key(8)];
     let second = [key(8), key(9), key(0)];
@@ -621,6 +661,8 @@ fn signer_error_precedence_is_permutation_independent() {
 
     assert_eq!(snapshot.has_strict_supermajority(&first), expected_unknown);
     assert_eq!(snapshot.has_strict_supermajority(&second), expected_unknown);
+    assert_eq!(snapshot.has_strict_one_third(&first), expected_unknown);
+    assert_eq!(snapshot.has_strict_one_third(&second), expected_unknown);
 }
 
 #[test]
@@ -630,6 +672,13 @@ fn signer_entry_bound_precedes_duplicate_lookup() {
 
     assert_eq!(
         snapshot.signed_weight(&signers),
+        Err(AgreementSignerError::TooManySigners {
+            actual: MAX_ACTIVE_VALIDATORS + 1,
+            maximum: MAX_ACTIVE_VALIDATORS,
+        })
+    );
+    assert_eq!(
+        snapshot.has_strict_one_third(&signers),
         Err(AgreementSignerError::TooManySigners {
             actual: MAX_ACTIVE_VALIDATORS + 1,
             maximum: MAX_ACTIVE_VALIDATORS,
@@ -652,6 +701,10 @@ fn signer_permutations_produce_the_same_weight_and_result() {
         snapshot.has_strict_supermajority(&first),
         snapshot.has_strict_supermajority(&second)
     );
+    assert_eq!(
+        snapshot.has_strict_one_third(&first),
+        snapshot.has_strict_one_third(&second)
+    );
 }
 
 #[test]
@@ -669,6 +722,7 @@ fn complete_256_signer_list_is_accepted() {
         Ok(AgreementWeight::new(MAX_ACTIVE_VALIDATORS as u128))
     );
     assert_eq!(snapshot.has_strict_supermajority(&signers), Ok(true));
+    assert_eq!(snapshot.has_strict_one_third(&signers), Ok(true));
 }
 
 #[test]
@@ -684,5 +738,10 @@ fn splitting_active_weight_preserves_corresponding_aggregate_result() {
         unsplit.has_strict_supermajority(&[key(0)]),
         split.has_strict_supermajority(&[key(0), key(1)])
     );
+    assert_eq!(
+        unsplit.has_strict_one_third(&[key(0)]),
+        split.has_strict_one_third(&[key(0), key(1)])
+    );
     assert_eq!(split.has_strict_supermajority(&[key(1)]), Ok(false));
+    assert_eq!(split.has_strict_one_third(&[key(1)]), Ok(true));
 }

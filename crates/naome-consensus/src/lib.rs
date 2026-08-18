@@ -7,12 +7,13 @@
 //! operator-minimum epochs through a numeric freshness window, and checks a
 //! caller-supplied upgrade activation epoch against a numeric minimum delay. It
 //! also accepts an already selected active validator set, freezes its exact
-//! position and weights, and evaluates the strict greater-than-two-thirds
-//! threshold without renormalizing offline weight. It does not establish
-//! canonical blocks, checkpoints, genesis allocations, finality, ancestry,
-//! genesis state, or persistence; select validators; encode or verify
-//! signatures; define consensus messages; or run a Byzantine-fault-tolerant
-//! state machine.
+//! position and weights, and evaluates strict greater-than-one-third and
+//! greater-than-two-thirds weight thresholds without renormalizing offline
+//! weight. It does not establish canonical blocks,
+//! checkpoints, genesis allocations, finality, ancestry, genesis state, or
+//! persistence; select validators; encode or verify signatures; define
+//! consensus messages; authorize cancellation; or run a Byzantine-fault-
+//! tolerant state machine.
 
 use std::error::Error;
 use std::fmt;
@@ -430,6 +431,23 @@ impl ActiveAgreementSnapshot {
             signed_weight.units(),
             self.total_weight.units(),
         ))
+    }
+
+    /// Returns whether one complete signer-key list has more than one-third weight.
+    ///
+    /// The comparison retains every unlisted active entry in the immutable
+    /// snapshot total and reuses [`Self::signed_weight`] validation and error
+    /// precedence. Passing proves only this numeric threshold for the
+    /// caller-supplied snapshot and keys. It establishes no current or canonical
+    /// snapshot, readiness certificate, version or activation identity,
+    /// cancellation message or signature, cancellation authorization or
+    /// application, persistence, or consensus state.
+    pub fn has_strict_one_third(
+        &self,
+        signer_keys: &[ConsensusKey],
+    ) -> Result<bool, AgreementSignerError> {
+        let signed_weight = self.signed_weight(signer_keys)?;
+        Ok(signed_weight.units() > self.total_weight.units() / 3)
     }
 }
 
