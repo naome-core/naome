@@ -3,14 +3,16 @@
 //!
 //! This crate projects caller-supplied positive height values into numeric
 //! non-genesis epochs, evaluates a caller-supplied epoch's numeric linear
-//! genesis-bootstrap cap, and compares caller-supplied checkpoint and
-//! operator-minimum epochs through a numeric freshness window. It also accepts
-//! an already selected active validator set, freezes its exact position and
-//! weights, and evaluates the strict greater-than-two-thirds threshold without
-//! renormalizing offline weight. It does not establish canonical blocks,
-//! checkpoints, genesis allocations, finality, ancestry, genesis state, or
-//! persistence; select validators; encode or verify signatures; define
-//! consensus messages; or run a Byzantine-fault-tolerant state machine.
+//! genesis-bootstrap cap, compares caller-supplied checkpoint and
+//! operator-minimum epochs through a numeric freshness window, and checks a
+//! caller-supplied upgrade activation epoch against a numeric minimum delay. It
+//! also accepts an already selected active validator set, freezes its exact
+//! position and weights, and evaluates the strict greater-than-two-thirds
+//! threshold without renormalizing offline weight. It does not establish
+//! canonical blocks, checkpoints, genesis allocations, finality, ancestry,
+//! genesis state, or persistence; select validators; encode or verify
+//! signatures; define consensus messages; or run a Byzantine-fault-tolerant
+//! state machine.
 
 use std::error::Error;
 use std::fmt;
@@ -30,6 +32,7 @@ pub const NON_GENESIS_HEIGHTS_PER_EPOCH: u64 = 8_192;
 const CHECKPOINT_NUMERIC_FRESHNESS_WINDOW_EPOCHS: u64 = 30;
 const GENESIS_BOOTSTRAP_LINEAR_CAP_EPOCHS: u64 = 730;
 const INITIAL_GENESIS_BOOTSTRAP_WEIGHT_UNITS: u128 = 10_000_000_000_000_000;
+const UPGRADE_ACTIVATION_NUMERIC_MINIMUM_DELAY_EPOCHS: u64 = 15;
 
 /// Numeric epoch projected from a caller-supplied positive consensus height.
 ///
@@ -106,6 +109,27 @@ pub const fn checkpoint_epoch_is_within_numeric_freshness_window(
         operator_minimum_epoch.value() - checkpoint_epoch.value()
             < CHECKPOINT_NUMERIC_FRESHNESS_WINDOW_EPOCHS
     }
+}
+
+/// Returns whether a candidate activation epoch meets the numeric minimum delay.
+///
+/// The result is true exactly when `candidate_activation_epoch` is at least 15
+/// epochs after `readiness_epoch`. The comparison subtracts only after proving
+/// that the candidate is not earlier, so it remains total across the full
+/// projected epoch domain. Passing establishes no readiness-certificate
+/// existence or validity, protocol-version identity, signature or snapshot
+/// authority, canonical epoch, scheduled activation coordinate, cancellation,
+/// activation, persistence, or consensus state.
+pub const fn upgrade_activation_epoch_meets_numeric_minimum_delay(
+    readiness_epoch: ConsensusEpoch,
+    candidate_activation_epoch: ConsensusEpoch,
+) -> bool {
+    let readiness_epoch = readiness_epoch.value();
+    let candidate_activation_epoch = candidate_activation_epoch.value();
+
+    candidate_activation_epoch >= readiness_epoch
+        && candidate_activation_epoch - readiness_epoch
+            >= UPGRADE_ACTIVATION_NUMERIC_MINIMUM_DELAY_EPOCHS
 }
 
 /// In-memory consensus height used to distinguish agreement positions.

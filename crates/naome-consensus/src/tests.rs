@@ -1,6 +1,7 @@
 use super::*;
 
 const REFERENCE_NON_GENESIS_HEIGHTS_PER_EPOCH: u64 = 8_192;
+const REFERENCE_TERMINAL_EPOCH: u64 = 2_251_799_813_685_247;
 const COMPILE_TIME_PROJECTED_EPOCH_VALUE: Option<u64> =
     match ConsensusHeight::new(8_193).non_genesis_epoch() {
         Some(epoch) => Some(epoch.value()),
@@ -30,6 +31,17 @@ const COMPILE_TIME_EXPIRED_GENESIS_BOOTSTRAP_CAP: Option<GenesisBootstrapWeightC
         Some(epoch) => project_linear_genesis_bootstrap_cap(epoch),
         None => None,
     };
+const COMPILE_TIME_UPGRADE_ACTIVATION_DELAY: Option<(bool, bool)> = match (
+    ConsensusHeight::new(57_345).non_genesis_epoch(),
+    ConsensusHeight::new(172_033).non_genesis_epoch(),
+    ConsensusHeight::new(180_225).non_genesis_epoch(),
+) {
+    (Some(readiness), Some(age_14), Some(age_15)) => Some((
+        upgrade_activation_epoch_meets_numeric_minimum_delay(readiness, age_14),
+        upgrade_activation_epoch_meets_numeric_minimum_delay(readiness, age_15),
+    )),
+    _ => None,
+};
 
 fn projected_epoch_value(height: u64) -> Option<u64> {
     ConsensusHeight::new(height)
@@ -127,16 +139,22 @@ fn non_genesis_epoch_projection_matches_fixed_interval_oracle() {
 
 #[test]
 fn non_genesis_epoch_projection_covers_terminal_transition() {
-    const TERMINAL_EPOCH: u64 = 2_251_799_813_685_247;
-    const TERMINAL_START: u64 = TERMINAL_EPOCH * REFERENCE_NON_GENESIS_HEIGHTS_PER_EPOCH + 1;
+    const TERMINAL_START: u64 =
+        REFERENCE_TERMINAL_EPOCH * REFERENCE_NON_GENESIS_HEIGHTS_PER_EPOCH + 1;
 
     assert_eq!(TERMINAL_START, u64::MAX - 8_190);
     assert_eq!(
         projected_epoch_value(TERMINAL_START - 1),
-        Some(TERMINAL_EPOCH - 1)
+        Some(REFERENCE_TERMINAL_EPOCH - 1)
     );
-    assert_eq!(projected_epoch_value(TERMINAL_START), Some(TERMINAL_EPOCH));
-    assert_eq!(projected_epoch_value(u64::MAX), Some(TERMINAL_EPOCH));
+    assert_eq!(
+        projected_epoch_value(TERMINAL_START),
+        Some(REFERENCE_TERMINAL_EPOCH)
+    );
+    assert_eq!(
+        projected_epoch_value(u64::MAX),
+        Some(REFERENCE_TERMINAL_EPOCH)
+    );
 }
 
 #[test]
@@ -182,7 +200,6 @@ fn checkpoint_freshness_matches_independent_bounded_oracle() {
 
 #[test]
 fn checkpoint_freshness_is_safe_at_origin_and_terminal_epochs() {
-    const TERMINAL_EPOCH: u64 = 2_251_799_813_685_247;
     let terminal = ConsensusHeight::new(u64::MAX)
         .non_genesis_epoch()
         .expect("maximum positive height projects to the terminal epoch");
@@ -191,13 +208,13 @@ fn checkpoint_freshness_is_safe_at_origin_and_terminal_epochs() {
         projected_epoch(0),
         projected_epoch(0)
     ));
-    assert_eq!(terminal.value(), TERMINAL_EPOCH);
+    assert_eq!(terminal.value(), REFERENCE_TERMINAL_EPOCH);
     assert!(checkpoint_epoch_is_within_numeric_freshness_window(
-        projected_epoch(TERMINAL_EPOCH - 29),
+        projected_epoch(REFERENCE_TERMINAL_EPOCH - 29),
         terminal
     ));
     assert!(!checkpoint_epoch_is_within_numeric_freshness_window(
-        projected_epoch(TERMINAL_EPOCH - 30),
+        projected_epoch(REFERENCE_TERMINAL_EPOCH - 30),
         terminal
     ));
     assert!(checkpoint_epoch_is_within_numeric_freshness_window(
@@ -261,6 +278,73 @@ fn linear_genesis_bootstrap_cap_has_no_post_sunset_numeric_output() {
     for epoch in [projected_epoch(730), projected_epoch(731), terminal] {
         assert_eq!(project_linear_genesis_bootstrap_cap(epoch), None);
     }
+}
+
+#[test]
+fn upgrade_activation_delay_is_const_and_covers_literal_boundaries() {
+    assert_eq!(COMPILE_TIME_UPGRADE_ACTIVATION_DELAY, Some((false, true)));
+    let readiness = projected_epoch(40);
+
+    for (candidate, expected) in [
+        (39, false),
+        (40, false),
+        (54, false),
+        (55, true),
+        (56, true),
+    ] {
+        assert_eq!(
+            upgrade_activation_epoch_meets_numeric_minimum_delay(
+                readiness,
+                projected_epoch(candidate)
+            ),
+            expected,
+            "candidate={candidate}"
+        );
+    }
+}
+
+#[test]
+fn upgrade_activation_delay_matches_independent_bounded_oracle() {
+    const REFERENCE_MINIMUM_DELAY: u64 = 15;
+
+    for readiness in 0..=64_u64 {
+        for candidate in 0..=80_u64 {
+            let expected = candidate
+                .checked_sub(readiness)
+                .is_some_and(|elapsed| elapsed >= REFERENCE_MINIMUM_DELAY);
+            assert_eq!(
+                upgrade_activation_epoch_meets_numeric_minimum_delay(
+                    projected_epoch(readiness),
+                    projected_epoch(candidate)
+                ),
+                expected,
+                "readiness={readiness}, candidate={candidate}"
+            );
+        }
+    }
+}
+
+#[test]
+fn upgrade_activation_delay_is_safe_at_terminal_epoch() {
+    let terminal = ConsensusHeight::new(u64::MAX)
+        .non_genesis_epoch()
+        .expect("maximum positive height projects to the terminal epoch");
+
+    assert!(upgrade_activation_epoch_meets_numeric_minimum_delay(
+        projected_epoch(REFERENCE_TERMINAL_EPOCH - 15),
+        terminal
+    ));
+    assert!(!upgrade_activation_epoch_meets_numeric_minimum_delay(
+        projected_epoch(REFERENCE_TERMINAL_EPOCH - 14),
+        terminal
+    ));
+    assert!(!upgrade_activation_epoch_meets_numeric_minimum_delay(
+        terminal, terminal
+    ));
+    assert!(!upgrade_activation_epoch_meets_numeric_minimum_delay(
+        terminal,
+        projected_epoch(0)
+    ));
 }
 
 #[test]
