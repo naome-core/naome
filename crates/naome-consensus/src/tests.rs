@@ -6,11 +6,29 @@ const COMPILE_TIME_PROJECTED_EPOCH_VALUE: Option<u64> =
         Some(epoch) => Some(epoch.value()),
         None => None,
     };
+const COMPILE_TIME_CHECKPOINT_FRESHNESS: Option<(bool, bool)> = match (
+    ConsensusHeight::new(1).non_genesis_epoch(),
+    ConsensusHeight::new(237_569).non_genesis_epoch(),
+    ConsensusHeight::new(245_761).non_genesis_epoch(),
+) {
+    (Some(checkpoint), Some(age_29_minimum), Some(age_30_minimum)) => Some((
+        checkpoint_epoch_is_within_numeric_freshness_window(checkpoint, age_29_minimum),
+        checkpoint_epoch_is_within_numeric_freshness_window(checkpoint, age_30_minimum),
+    )),
+    _ => None,
+};
 
 fn projected_epoch_value(height: u64) -> Option<u64> {
     ConsensusHeight::new(height)
         .non_genesis_epoch()
         .map(ConsensusEpoch::value)
+}
+
+fn projected_epoch(value: u64) -> ConsensusEpoch {
+    let height = value * REFERENCE_NON_GENESIS_HEIGHTS_PER_EPOCH + 1;
+    ConsensusHeight::new(height)
+        .non_genesis_epoch()
+        .expect("positive reference height projects to an epoch")
 }
 
 fn key(index: u16) -> ConsensusKey {
@@ -106,6 +124,73 @@ fn non_genesis_epoch_projection_covers_terminal_transition() {
     );
     assert_eq!(projected_epoch_value(TERMINAL_START), Some(TERMINAL_EPOCH));
     assert_eq!(projected_epoch_value(u64::MAX), Some(TERMINAL_EPOCH));
+}
+
+#[test]
+fn checkpoint_freshness_is_const_and_matches_literal_boundaries() {
+    assert_eq!(COMPILE_TIME_CHECKPOINT_FRESHNESS, Some((true, false)));
+}
+
+#[test]
+fn checkpoint_freshness_covers_exact_age_boundaries_and_newer_values() {
+    let operator_minimum = projected_epoch(40);
+
+    for (checkpoint, expected) in [(9, false), (10, false), (11, true), (40, true), (41, true)] {
+        assert_eq!(
+            checkpoint_epoch_is_within_numeric_freshness_window(
+                projected_epoch(checkpoint),
+                operator_minimum
+            ),
+            expected,
+            "checkpoint={checkpoint}"
+        );
+    }
+}
+
+#[test]
+fn checkpoint_freshness_matches_independent_bounded_oracle() {
+    const REFERENCE_FRESHNESS_WINDOW: u64 = 30;
+
+    for operator_minimum in 0..=64_u64 {
+        for checkpoint in 0..=64_u64 {
+            let expected = checkpoint >= operator_minimum
+                || operator_minimum - checkpoint < REFERENCE_FRESHNESS_WINDOW;
+            assert_eq!(
+                checkpoint_epoch_is_within_numeric_freshness_window(
+                    projected_epoch(checkpoint),
+                    projected_epoch(operator_minimum)
+                ),
+                expected,
+                "checkpoint={checkpoint}, operator_minimum={operator_minimum}"
+            );
+        }
+    }
+}
+
+#[test]
+fn checkpoint_freshness_is_safe_at_origin_and_terminal_epochs() {
+    const TERMINAL_EPOCH: u64 = 2_251_799_813_685_247;
+    let terminal = ConsensusHeight::new(u64::MAX)
+        .non_genesis_epoch()
+        .expect("maximum positive height projects to the terminal epoch");
+
+    assert!(checkpoint_epoch_is_within_numeric_freshness_window(
+        projected_epoch(0),
+        projected_epoch(0)
+    ));
+    assert_eq!(terminal.value(), TERMINAL_EPOCH);
+    assert!(checkpoint_epoch_is_within_numeric_freshness_window(
+        projected_epoch(TERMINAL_EPOCH - 29),
+        terminal
+    ));
+    assert!(!checkpoint_epoch_is_within_numeric_freshness_window(
+        projected_epoch(TERMINAL_EPOCH - 30),
+        terminal
+    ));
+    assert!(checkpoint_epoch_is_within_numeric_freshness_window(
+        terminal,
+        projected_epoch(0)
+    ));
 }
 
 #[test]
