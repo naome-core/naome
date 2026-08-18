@@ -7,10 +7,11 @@
 //! caller-supplied reward atoms and numeric epochs; it does not establish that
 //! a reward was earned, matured canonically, or belongs to any account, and it
 //! neither consumes reward value nor returns, records, or persists an origin
-//! batch. Its validator-fee projections accept caller-supplied aggregate pool
-//! atoms, an immutable active snapshot, and either one active key or a bounded
-//! signer-key list; they establish no pool provenance, certificate,
-//! entitlement, burn, settlement, or state authority.
+//! batch. Its validator-fee projections accept either caller-supplied aggregate
+//! pool atoms or caller-supplied fee partitions, an immutable active snapshot,
+//! and either one active key or a bounded signer-key list. The partition path
+//! aggregates once before allocation, but establishes no partition completeness
+//! or grouping, certificate, entitlement, burn, settlement, or state authority.
 
 pub mod artifact_exchange;
 pub mod artifact_inclusion_priority;

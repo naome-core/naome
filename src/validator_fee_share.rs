@@ -14,7 +14,9 @@ use std::error::Error;
 use std::fmt;
 
 use naome_consensus::{ActiveAgreementSnapshot, AgreementSignerError, ConsensusKey};
-use naome_economy::NaoAtoms;
+use naome_economy::{
+    FeePartition, NaoAtoms, ValidatorPoolAggregationError, aggregate_validator_pool,
+};
 
 /// A failure to project one fee-funded validator share.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +40,38 @@ impl fmt::Display for ValidatorFeeShareError {
 }
 
 impl Error for ValidatorFeeShareError {}
+
+/// A failure to aggregate fee partitions and project their validator allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ValidatorFeeAllocationFromPartitionsError {
+    /// The caller-supplied partitions' validator pools cannot be summed.
+    PoolAggregation(ValidatorPoolAggregationError),
+    /// The caller-supplied signer list is invalid for the supplied snapshot.
+    SignerList(AgreementSignerError),
+}
+
+impl fmt::Display for ValidatorFeeAllocationFromPartitionsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PoolAggregation(error) => {
+                write!(formatter, "validator pool aggregation failed: {error}")
+            }
+            Self::SignerList(error) => {
+                write!(formatter, "validator signer list is invalid: {error}")
+            }
+        }
+    }
+}
+
+impl Error for ValidatorFeeAllocationFromPartitionsError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::PoolAggregation(error) => Some(error),
+            Self::SignerList(error) => Some(error),
+        }
+    }
+}
 
 /// One caller-listed signer's projected validator-pool share.
 ///
@@ -180,6 +214,31 @@ pub fn project_fee_funded_validator_allocation(
         shares,
         unassigned: NaoAtoms::new(unassigned),
     })
+}
+
+/// Aggregates fee partitions once, then projects the resulting validator pool.
+///
+/// Aggregation deliberately runs before signer-list validation. This makes
+/// overflow fail closed without returning a partial pool or allocation and
+/// prevents callers from projecting each partition separately, which can lose
+/// atoms to repeated floor rounding. On success, this is exactly equivalent to
+/// calling [`aggregate_validator_pool`] once and passing its result to
+/// [`project_fee_funded_validator_allocation`].
+///
+/// The caller remains responsible for partition provenance, completeness, and
+/// common-height grouping; certificate and signer-list authority; finality;
+/// entitlement creation; actual remainder burn; credit, settlement,
+/// persistence, and economic or consensus state.
+pub fn project_fee_funded_validator_allocation_from_partitions(
+    partitions: &[FeePartition],
+    snapshot: &ActiveAgreementSnapshot,
+    signer_keys: &[ConsensusKey],
+) -> Result<ProjectedValidatorFeeAllocation, ValidatorFeeAllocationFromPartitionsError> {
+    let validator_pool = aggregate_validator_pool(partitions)
+        .map_err(ValidatorFeeAllocationFromPartitionsError::PoolAggregation)?;
+
+    project_fee_funded_validator_allocation(validator_pool, snapshot, signer_keys)
+        .map_err(ValidatorFeeAllocationFromPartitionsError::SignerList)
 }
 
 fn floor_weighted_share(value: u128, numerator: u128, denominator: u128) -> u128 {

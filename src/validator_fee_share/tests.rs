@@ -4,11 +4,12 @@ use naome_consensus::{
     ActiveAgreementEntry, ActiveAgreementSnapshot, AgreementSignerError, AgreementWeight,
     ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusRound, MAX_ACTIVE_VALIDATORS,
 };
-use naome_economy::{FeePartition, NaoAtoms};
+use naome_economy::{FeePartition, NaoAtoms, ValidatorPoolAggregationError};
 
 use super::{
-    ValidatorFeeShareError, project_fee_funded_validator_allocation,
-    project_fee_funded_validator_share,
+    ValidatorFeeAllocationFromPartitionsError, ValidatorFeeShareError,
+    project_fee_funded_validator_allocation,
+    project_fee_funded_validator_allocation_from_partitions, project_fee_funded_validator_share,
 };
 
 fn key(marker: u8) -> ConsensusKey {
@@ -342,4 +343,106 @@ fn full_u128_allocation_conserves_every_atom_without_product_overflow() {
     assert_eq!(allocation.shares()[0].share(), NaoAtoms::new(maximum / 2));
     assert_eq!(allocation.shares()[1].share(), NaoAtoms::new(maximum / 2));
     assert_eq!(allocation.unassigned(), NaoAtoms::new(1));
+}
+
+#[test]
+fn partition_composition_matches_the_single_aggregate_pipeline() {
+    let active_snapshot = snapshot(&[(1, 1), (2, 1)]);
+    let partitions = [
+        FeePartition::from_artifact_base_fee(NaoAtoms::new(5)),
+        FeePartition::from_non_artifact_operation_fee(NaoAtoms::new(5)),
+    ];
+    let signers = [key(2), key(1)];
+    let expected_pool = naome_economy::aggregate_validator_pool(&partitions).unwrap();
+    let expected =
+        project_fee_funded_validator_allocation(expected_pool, &active_snapshot, &signers).unwrap();
+    let allocation = project_fee_funded_validator_allocation_from_partitions(
+        &partitions,
+        &active_snapshot,
+        &signers,
+    )
+    .unwrap();
+
+    assert_eq!(allocation, expected);
+    assert_eq!(allocation.validator_pool(), NaoAtoms::new(2));
+    assert_eq!(
+        allocation
+            .shares()
+            .iter()
+            .map(|share| (share.consensus_key(), share.share()))
+            .collect::<Vec<_>>(),
+        vec![(key(1), NaoAtoms::new(1)), (key(2), NaoAtoms::new(1))]
+    );
+    assert_eq!(allocation.unassigned(), NaoAtoms::ZERO);
+}
+
+#[test]
+fn partition_composition_preserves_empty_and_full_u128_boundaries() {
+    let empty_snapshot = snapshot(&[]);
+    let empty =
+        project_fee_funded_validator_allocation_from_partitions(&[], &empty_snapshot, &[]).unwrap();
+    assert_eq!(empty.validator_pool(), NaoAtoms::ZERO);
+    assert_eq!(empty.shares(), &[]);
+    assert_eq!(empty.unassigned(), NaoAtoms::ZERO);
+
+    let maximum_partition = FeePartition::from_artifact_base_fee(NaoAtoms::new(u128::MAX));
+    let exact = [maximum_partition; 5];
+    let full_weight = snapshot(&[(1, 1)]);
+    let maximum =
+        project_fee_funded_validator_allocation_from_partitions(&exact, &full_weight, &[key(1)])
+            .unwrap();
+    assert_eq!(maximum.validator_pool(), NaoAtoms::new(u128::MAX));
+    assert_eq!(maximum.shares()[0].share(), NaoAtoms::new(u128::MAX));
+    assert_eq!(maximum.unassigned(), NaoAtoms::ZERO);
+}
+
+#[test]
+fn partition_composition_reports_aggregation_before_signer_errors() {
+    let maximum_partition = FeePartition::from_artifact_base_fee(NaoAtoms::new(u128::MAX));
+    let overflow = [maximum_partition; 6];
+    let active_snapshot = snapshot(&[(1, 1)]);
+    let duplicate_signers = [key(1), key(1)];
+
+    let aggregation_error = project_fee_funded_validator_allocation_from_partitions(
+        &overflow,
+        &active_snapshot,
+        &duplicate_signers,
+    )
+    .unwrap_err();
+    assert_eq!(
+        aggregation_error,
+        ValidatorFeeAllocationFromPartitionsError::PoolAggregation(
+            ValidatorPoolAggregationError::Overflow
+        )
+    );
+    assert_eq!(
+        aggregation_error.to_string(),
+        "validator pool aggregation failed: validator pool total exceeds u128 capacity"
+    );
+    assert_standard_error(&aggregation_error);
+    assert!(aggregation_error.source().is_some());
+
+    let signer_error = project_fee_funded_validator_allocation_from_partitions(
+        &[],
+        &active_snapshot,
+        &duplicate_signers,
+    )
+    .unwrap_err();
+    assert_eq!(
+        signer_error,
+        ValidatorFeeAllocationFromPartitionsError::SignerList(
+            AgreementSignerError::DuplicateSigner {
+                consensus_key: key(1),
+            }
+        )
+    );
+    assert_eq!(
+        signer_error.to_string(),
+        format!(
+            "validator signer list is invalid: agreement signer list repeats key {:?}",
+            key(1)
+        )
+    );
+    assert_standard_error(&signer_error);
+    assert!(signer_error.source().is_some());
 }
