@@ -17,6 +17,19 @@ const COMPILE_TIME_CHECKPOINT_FRESHNESS: Option<(bool, bool)> = match (
     )),
     _ => None,
 };
+const COMPILE_TIME_GENESIS_BOOTSTRAP_CAP: Option<u128> =
+    match ConsensusHeight::new(1).non_genesis_epoch() {
+        Some(epoch) => match project_linear_genesis_bootstrap_cap(epoch) {
+            Some(cap) => Some(cap.units()),
+            None => None,
+        },
+        None => None,
+    };
+const COMPILE_TIME_EXPIRED_GENESIS_BOOTSTRAP_CAP: Option<GenesisBootstrapWeightCap> =
+    match ConsensusHeight::new(5_980_161).non_genesis_epoch() {
+        Some(epoch) => project_linear_genesis_bootstrap_cap(epoch),
+        None => None,
+    };
 
 fn projected_epoch_value(height: u64) -> Option<u64> {
     ConsensusHeight::new(height)
@@ -191,6 +204,63 @@ fn checkpoint_freshness_is_safe_at_origin_and_terminal_epochs() {
         terminal,
         projected_epoch(0)
     ));
+}
+
+#[test]
+fn linear_genesis_bootstrap_cap_is_const_and_matches_literal_boundaries() {
+    assert_eq!(
+        COMPILE_TIME_GENESIS_BOOTSTRAP_CAP,
+        Some(10_000_000_000_000_000)
+    );
+    assert_eq!(COMPILE_TIME_EXPIRED_GENESIS_BOOTSTRAP_CAP, None);
+
+    for (epoch, expected_units) in [
+        (0, 10_000_000_000_000_000),
+        (1, 9_986_301_369_863_013),
+        (365, 5_000_000_000_000_000),
+        (728, 27_397_260_273_972),
+        (729, 13_698_630_136_986),
+    ] {
+        assert_eq!(
+            project_linear_genesis_bootstrap_cap(projected_epoch(epoch))
+                .map(GenesisBootstrapWeightCap::units),
+            Some(expected_units),
+            "epoch={epoch}"
+        );
+    }
+}
+
+#[test]
+fn linear_genesis_bootstrap_cap_matches_independent_complete_domain_oracle() {
+    const REFERENCE_INITIAL_UNITS: u128 = 10_000_000_000_000_000;
+    const REFERENCE_EPOCHS: u128 = 730;
+    const REFERENCE_QUOTIENT: u128 = REFERENCE_INITIAL_UNITS / REFERENCE_EPOCHS;
+    const REFERENCE_REMAINDER: u128 = REFERENCE_INITIAL_UNITS % REFERENCE_EPOCHS;
+    let mut previous = REFERENCE_INITIAL_UNITS;
+
+    for epoch in 0..730_u64 {
+        let remaining = REFERENCE_EPOCHS - epoch as u128;
+        let expected =
+            REFERENCE_QUOTIENT * remaining + REFERENCE_REMAINDER * remaining / REFERENCE_EPOCHS;
+        let actual = project_linear_genesis_bootstrap_cap(projected_epoch(epoch))
+            .expect("every pre-sunset epoch has a numeric cap")
+            .units();
+
+        assert_eq!(actual, expected, "epoch={epoch}");
+        assert!(actual <= previous, "epoch={epoch}");
+        previous = actual;
+    }
+}
+
+#[test]
+fn linear_genesis_bootstrap_cap_has_no_post_sunset_numeric_output() {
+    let terminal = ConsensusHeight::new(u64::MAX)
+        .non_genesis_epoch()
+        .expect("maximum positive height projects to the terminal epoch");
+
+    for epoch in [projected_epoch(730), projected_epoch(731), terminal] {
+        assert_eq!(project_linear_genesis_bootstrap_cap(epoch), None);
+    }
 }
 
 #[test]

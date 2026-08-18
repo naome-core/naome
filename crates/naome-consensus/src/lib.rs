@@ -2,14 +2,15 @@
 //! NAOME consensus.
 //!
 //! This crate projects caller-supplied positive height values into numeric
-//! non-genesis epochs and compares caller-supplied checkpoint and
+//! non-genesis epochs, evaluates a caller-supplied epoch's numeric linear
+//! genesis-bootstrap cap, and compares caller-supplied checkpoint and
 //! operator-minimum epochs through a numeric freshness window. It also accepts
 //! an already selected active validator set, freezes its exact position and
 //! weights, and evaluates the strict greater-than-two-thirds threshold without
 //! renormalizing offline weight. It does not establish canonical blocks,
-//! checkpoints, finality, ancestry, genesis state, or persistence; select
-//! validators; encode or verify signatures; define consensus messages; or run
-//! a Byzantine-fault-tolerant state machine.
+//! checkpoints, genesis allocations, finality, ancestry, genesis state, or
+//! persistence; select validators; encode or verify signatures; define
+//! consensus messages; or run a Byzantine-fault-tolerant state machine.
 
 use std::error::Error;
 use std::fmt;
@@ -27,6 +28,8 @@ pub const MAX_ACTIVE_VALIDATORS: usize = 256;
 pub const NON_GENESIS_HEIGHTS_PER_EPOCH: u64 = 8_192;
 
 const CHECKPOINT_NUMERIC_FRESHNESS_WINDOW_EPOCHS: u64 = 30;
+const GENESIS_BOOTSTRAP_LINEAR_CAP_EPOCHS: u64 = 730;
+const INITIAL_GENESIS_BOOTSTRAP_WEIGHT_UNITS: u128 = 10_000_000_000_000_000;
 
 /// Numeric epoch projected from a caller-supplied positive consensus height.
 ///
@@ -41,6 +44,46 @@ impl ConsensusEpoch {
     /// Returns the projected numeric epoch value.
     pub const fn value(self) -> u64 {
         self.0
+    }
+}
+
+/// Opaque numeric output of the independent genesis-bootstrap linear cap.
+///
+/// This value is distinctly tagged from ordinary Knowledge Weight and active
+/// agreement weight. It proves no genesis allocation, validator membership,
+/// canonical epoch, active-set contribution, or consensus-state transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[must_use]
+pub struct GenesisBootstrapWeightCap(u128);
+
+impl GenesisBootstrapWeightCap {
+    /// Returns the exact numeric cap units.
+    pub const fn units(self) -> u128 {
+        self.0
+    }
+}
+
+/// Projects the independent pre-sunset linear genesis-bootstrap cap.
+///
+/// For caller-supplied epoch `E < 730`, this returns exactly
+/// `floor(10_000_000_000_000_000 * (730 - E) / 730)` in a distinct output
+/// type. Epochs at or beyond 730 return [`None`] because this numeric projection
+/// does not define or apply terminal sunset state. The result establishes no
+/// canonical epoch or genesis context, tagged allocation, validator split,
+/// ordinary-weight replacement, tombstone handling, active-set weight,
+/// persistence, or consensus state.
+pub const fn project_linear_genesis_bootstrap_cap(
+    epoch: ConsensusEpoch,
+) -> Option<GenesisBootstrapWeightCap> {
+    let epoch = epoch.value();
+    if epoch >= GENESIS_BOOTSTRAP_LINEAR_CAP_EPOCHS {
+        None
+    } else {
+        Some(GenesisBootstrapWeightCap(
+            INITIAL_GENESIS_BOOTSTRAP_WEIGHT_UNITS
+                * (GENESIS_BOOTSTRAP_LINEAR_CAP_EPOCHS - epoch) as u128
+                / GENESIS_BOOTSTRAP_LINEAR_CAP_EPOCHS as u128,
+        ))
     }
 }
 
