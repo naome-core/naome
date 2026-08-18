@@ -40,6 +40,7 @@ The prerelease reference implementation provides:
 - exact caller-supplied citation-reward maturity-to-live-weight projection;
 - exact caller-supplied numeric validator-bond floor and agreement-weight cap arithmetic;
 - exact caller-supplied aggregate validator-pool share and signer-list allocation projections over an immutable active-weight snapshot;
+- exact pairwise caller-supplied artifact-inclusion priority ordering by higher bid and then lower `ArtifactId`;
 - crash-consistent mixed proof/definition journal replay;
 - separate non-authoritative block-candidate and payload stores;
 - bounded caller-selected static-peer exchange, ancestry, and catch-up; and
@@ -132,6 +133,11 @@ classification, payment authorization, balances, actual burn and credit,
 reward eligibility and settlement, maturity, ownership, delegation, penalties,
 height-farming safety, state transitions, and consensus use remain later
 protocol work.
+
+The root integration crate can order two caller-supplied artifact identities
+and numeric inclusion bids by higher bid and then lower `ArtifactId`. This
+pairwise ordering establishes no candidate validity or availability, bid
+authorization or payment, proposer selection, inclusion, or state authority.
 
 The root integration crate can project caller-supplied citation-reward atoms
 from caller-supplied earning and evaluation epochs into current live Knowledge
