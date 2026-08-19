@@ -11,8 +11,8 @@ use crate::address_store::{
 
 /// Maximum signed peer records carried by one pull response.
 ///
-/// One authenticated bootstrap response can therefore contribute at most the
-/// complete per-source capacity accepted by the peer-address store.
+/// One authenticated pull response can therefore contribute at most the
+/// complete per-provenance capacity accepted by the peer-address store.
 pub const MAX_PEER_RECORDS_PER_BATCH: usize = MAX_RECORDS_PER_BOOTSTRAP;
 /// Exact maximum byte length of one encoded peer-record batch.
 pub const PEER_RECORD_BATCH_MAX_BYTES: usize =
@@ -23,8 +23,9 @@ pub const PEER_RECORD_PULL_REQUEST_BYTES: usize = 0;
 /// A request for one bounded batch of signed peer records.
 ///
 /// The request is intentionally empty. [`crate::PeerRecordBootstrapClient`]
-/// binds its source through the Noise-authenticated peer identity rather than
-/// through untrusted request bytes.
+/// and [`crate::LearnedPeerRecordPullClient`] bind the immediate responder
+/// through its Noise-authenticated peer identity rather than through untrusted
+/// request bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[must_use]
 pub struct PeerRecordPullRequest;

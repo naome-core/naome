@@ -16,10 +16,13 @@ The following facts remain separate:
 | Observed authenticated reachability | One exact endpoint was reachable at one instant | The protocol persists no such observation |
 | `StaticPeer` | The operator authorized one identity for artifact transport | Sybil or eclipse resistance |
 
-Source and subject are also distinct. The `source` is the configured bootstrap
-whose authenticated connection supplied a batch. The `subject` is the identity
-that signed one embedded record. Source is local diversity provenance, not an
-endorsement. A learned subject never becomes a `StaticPeer` implicitly.
+Immediate responder, source provenance, and subject are distinct. The immediate
+responder is the exact identity Noise-authenticated for one pull. The `source`
+is the configured bootstrap root under which a subject was first admitted and
+against which local diversity quotas are charged. The `subject` is the identity
+that signed one embedded record. Source provenance is not an endorsement. A
+learned subject never becomes a configured bootstrap or `StaticPeer`
+implicitly.
 
 ## Bootstrap configuration
 
@@ -36,8 +39,9 @@ No suffix is permitted. Operator-controlled bootstrap addresses may be private,
 loopback, or otherwise local. The outbound handshake must nevertheless
 authenticate the configured `PeerId` at the configured address. This contract
 supplies no default bootstrap list, DNS resolution, remote-list update,
-learned-address substitution, or fallback address. Only a configured bootstrap
-identity may be the source of a stored record.
+learned-address substitution, or fallback address. Every stored record retains
+one configured bootstrap as its root provenance, including records obtained
+through an authenticated learned peer.
 
 ## Standard signed peer records
 
@@ -137,7 +141,7 @@ an expired record.
 
 ## Peer-address store
 
-### Atomic batch admission
+### Atomic configured-bootstrap batch admission
 
 One canonical batch is admitted with one healthy store, one configured and
 separately authenticated source, and one caller-supplied local receipt time for
@@ -168,6 +172,29 @@ invalid receipt time, local subject, sequence conflict, allocation, or quota
 failure writes nothing. A commit I/O error returns no successful admission,
 poisons the handle, and may leave either the old or new complete snapshot
 durable; strict reopen is the only recovery.
+
+### Atomic learned-peer batch admission
+
+A learned pull carries the complete opaque `DialCandidate` selected earlier by
+the store. Before classifying any returned record, consuming admission applies
+this exact precedence:
+
+1. require a healthy store;
+2. require the candidate subject to remain stored;
+3. require its retained configured-bootstrap provenance and exact signed
+   address to match the candidate;
+4. validate the caller-supplied local receipt time; and
+5. require the retained subject to be fresh at that receipt time.
+
+Admission deliberately does not recompute the candidate rank. A newer signed
+record for the learned responder remains usable when it preserves the selected
+address and provenance. A missing subject, changed address or provenance, or
+expired subject fails before batch-local subject, sequence, and capacity
+checks. After this revalidation, the same complete atomic transition above is
+used: newly inserted subjects inherit the candidate's configured-bootstrap
+provenance, while replacements retain the configured bootstrap that first
+introduced each existing subject. Empty and all-stale batches still cross the
+candidate checks and do not refresh the candidate or any returned subject.
 
 ### Deterministic candidate selection
 
@@ -420,33 +447,40 @@ this exchange, not complete or network-wide absence.
 
 ### Direction, correlation, and ownership
 
-One dedicated `PeerRecordBootstrapClient` has zero to eight configured sources
-and supports only outbound `/naome/peer-record-exchange`. It has no listener,
-inbound stream capacity, responder API, or artifact protocol. A cold request dials
-the exact configured address and Noise identity; a different identity is a
-terminal transport failure. A healthy authenticated connection may be reused.
+One dedicated `PeerRecordBootstrapClient` has zero to eight configured
+bootstraps. A separate `LearnedPeerRecordPullClient` has zero to eight
+caller-selected opaque `DialCandidate` values in canonical identity order.
+Both support only outbound `/naome/peer-record-exchange`; neither has a
+listener, inbound stream capacity, responder API, or artifact protocol. A cold
+request dials only the exact configured or signed candidate address and exact
+Noise identity; a different identity is a terminal transport failure. A
+healthy authenticated connection may be reused.
 
-Starting a pull checks unknown bootstrap identity before source already active
-or retained. No separate global-limit error exists because eight immutable
-source slots and one permit per source impose the global bound.
+Starting a pull rejects an unknown configured identity before checking whether
+that pull peer is already active or retained. Learned-client construction
+rejects the ninth candidate before identities, then the local identity, then
+the lowest duplicate identity. No separate global-limit error exists because
+eight immutable pull slots and one permit per slot impose the global bound.
 
-Each pull correlates its request identifier, expected source, and retained
-source permit. A terminal checks request identity, then authenticated peer,
-then response or transport failure. Unknown or stale identifiers are ignored;
-peer mismatch is typed and never yields a batch. The permit remains held while
-an authenticated batch awaits atomic store admission and releases after that
-consuming admission or on drop, so the source cannot restart early. Network
-failure never becomes an empty batch or store mutation, and polling performs no
-disk I/O.
+Each pull correlates its request identifier, expected pull-peer identity, and
+retained peer permit. A terminal checks request identity, then authenticated
+peer, then response or transport failure. Unknown or stale identifiers are
+ignored; peer mismatch is typed and never yields a batch. The permit remains
+held while an authenticated batch awaits atomic store admission and releases
+after that consuming admission or on drop, so the pull peer cannot restart
+early. A learned response also retains its complete candidate, including
+configured-bootstrap provenance, until admission or drop. Network failure
+never becomes an empty batch or store mutation, and polling performs no disk
+I/O.
 
 ### Pull limits
 
 | Resource | Limit |
 | --- | ---: |
-| Configured sources | 8 |
-| Active or retained pulls per source / client | 1 / 8 |
+| Configured bootstraps or learned candidates per client | 8 |
+| Active or retained pulls per pull peer / client | 1 / 8 |
 | Pending / established outbound connections | 8 / 8 |
-| Established connections per source | 1 |
+| Established connections per pull peer | 1 |
 | Concurrent record streams per connection | 1 |
 | TCP/Noise/Yamux establishment | 10 seconds |
 | Outbound protocol negotiation | 10 seconds |
@@ -455,11 +489,12 @@ disk I/O.
 | Request / maximum response bytes | 0 / 131137 |
 
 The establishment, negotiation, and exchange bounds are consecutive physical
-phases, not a resettable application deadline. The client has no automatic
-retry, fallback, refresh, managed redial, backoff, or keepalive. Progress and
-timeout delivery require continued polling. The ten-second negotiation value is
-the pinned libp2p default, not a NAOME-owned constant; dependency upgrades must
-revalidate it.
+phases, not a resettable application deadline. Neither client has automatic
+selection, retry, fallback, refresh, managed redial, backoff, or keepalive.
+Progress and timeout delivery require continued polling. The learned client
+does not publish, rerank, or persist records by itself. The ten-second
+negotiation value is the pinned libp2p default, not a NAOME-owned constant;
+dependency upgrades must revalidate it.
 
 ## Authenticated inbound responder
 
@@ -475,9 +510,10 @@ or failure is encoded as an empty response.
 
 The responder supports only inbound `/naome/peer-record-exchange`, one
 listener, and any successfully Noise-authenticated requester. It has no dial
-API, outbound protocol, or artifact protocol. The responder's Noise `PeerId`
-becomes the pull result's source; it is never substituted by a signed subject
-or by an operator's upstream source.
+API, outbound protocol, or artifact protocol. Its Noise `PeerId` is the
+immediate responder identity observed by either pull client; it is never
+substituted by a signed subject. For learned admission it also does not replace
+the candidate's retained configured-bootstrap provenance.
 
 A second listen attempt fails while the listener slot is occupied. A listener
 error reports the error without silently releasing that slot; a listener-closed
@@ -545,10 +581,12 @@ require continued polling.
 
 ## Resulting trust boundary
 
-This contract provides bounded canonical self-signed address claims,
-authenticated bootstrap provenance, local receipt freshness, retained sequence
-watermarks, atomic snapshot transitions, deterministic local candidate
+This contract provides bounded canonical self-signed address claims, exact
+Noise authentication for configured and caller-selected learned pulls,
+configured-bootstrap-root provenance, local receipt freshness, retained
+sequence watermarks, atomic snapshot transitions, deterministic local candidate
 diversification, commit-before-return local issuance, and bounded directional
 exchange. It does not provide reachability, key custody, rollback protection,
-live publication, automatic discovery, artifact authorization, operator
-independence, reputation, Sybil or eclipse resistance, consensus, or finality.
+live publication, automatic discovery scheduling, artifact authorization,
+operator independence, reputation, Sybil or eclipse resistance, consensus, or
+finality.

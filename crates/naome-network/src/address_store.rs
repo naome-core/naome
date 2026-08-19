@@ -46,7 +46,7 @@ pub const MAX_RECORDS_PER_BOOTSTRAP: usize = 32;
 /// Maximum stored records that cover one IPv4 /16 or IPv6 /32 group.
 pub const MAX_RECORDS_PER_NETWORK_GROUP: usize = 8;
 /// Maximum candidates returned by one selection.
-pub const MAX_DIAL_CANDIDATES: usize = 8;
+pub const MAX_DIAL_CANDIDATES: usize = MAX_BOOTSTRAP_PEERS;
 /// Maximum selected candidates first learned from one bootstrap peer.
 pub const MAX_DIAL_CANDIDATES_PER_BOOTSTRAP: usize = 2;
 /// Local freshness lifetime of one signed peer record.
@@ -138,9 +138,23 @@ impl DialCandidate {
         &self.address
     }
 
-    /// Returns the bootstrap that first introduced this subject.
+    /// Returns the configured-bootstrap provenance that first introduced this
+    /// subject.
     pub const fn source_peer_id(&self) -> PeerId {
         self.source_peer_id
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(
+        peer_id: PeerId,
+        address: Multiaddr,
+        source_peer_id: PeerId,
+    ) -> Self {
+        Self {
+            peer_id,
+            address,
+            source_peer_id,
+        }
     }
 }
 
@@ -400,6 +414,58 @@ impl PeerAddressStore {
         let received_at = unix_seconds(received_at)?;
         validate_receipt_time(received_at)?;
 
+        self.admit_record_batch_from_validated_source(source_peer_id, batch, received_at)
+    }
+
+    /// Admits one batch obtained from an exact retained learned candidate.
+    ///
+    /// The candidate's subject, signed address, configured-bootstrap
+    /// provenance, and freshness at the caller-supplied receipt time are
+    /// revalidated before any batch record is classified. Candidate ranking is
+    /// deliberately not recomputed. New
+    /// subjects inherit the candidate's original configured-bootstrap
+    /// provenance; replacements keep their existing first-introducer
+    /// provenance.
+    pub(crate) fn admit_learned_record_batch(
+        &mut self,
+        candidate: &DialCandidate,
+        batch: PeerRecordBatch,
+        received_at: SystemTime,
+    ) -> Result<PeerRecordBatchAdmission, PeerAddressStoreError> {
+        self.ensure_healthy()?;
+        let Ok(index) = self.records.binary_search_by(|stored| {
+            compare_peer_id_bytes(&stored.record.peer_id, &candidate.peer_id)
+        }) else {
+            return Err(PeerAddressStoreError::UnknownDialCandidate(Box::new(
+                candidate.peer_id,
+            )));
+        };
+        let stored = &self.records[index];
+        if stored.source_peer_id != candidate.source_peer_id
+            || !stored.record.addresses.contains(&candidate.address)
+        {
+            return Err(PeerAddressStoreError::StaleDialCandidate(Box::new(
+                candidate.peer_id,
+            )));
+        }
+        let source_received_at = stored.received_at;
+        let received_at = unix_seconds(received_at)?;
+        validate_receipt_time(received_at)?;
+        if !is_fresh(source_received_at, received_at) {
+            return Err(PeerAddressStoreError::StaleDialCandidate(Box::new(
+                candidate.peer_id,
+            )));
+        }
+
+        self.admit_record_batch_from_validated_source(candidate.source_peer_id, batch, received_at)
+    }
+
+    fn admit_record_batch_from_validated_source(
+        &mut self,
+        source_peer_id: PeerId,
+        batch: PeerRecordBatch,
+        received_at: u64,
+    ) -> Result<PeerRecordBatchAdmission, PeerAddressStoreError> {
         let records = batch.into_records();
         if let Some(record) = records
             .iter()
@@ -847,8 +913,13 @@ pub enum PeerAddressStoreError {
         index: usize,
         source: Box<SignedPeerRecordError>,
     },
-    /// The supplying bootstrap is not configured.
+    /// The supplying configured-bootstrap provenance is not configured.
     UnknownSource(Box<PeerId>),
+    /// The learned dial-candidate subject is not retained by this store.
+    UnknownDialCandidate(Box<PeerId>),
+    /// The retained dial-candidate subject no longer matches the selected tuple
+    /// or is no longer fresh at the supplied receipt time.
+    StaleDialCandidate(Box<PeerId>),
     /// A record tried to add the local identity.
     LocalRecord(Box<PeerId>),
     /// The same subject signed different bytes at one sequence.
@@ -928,6 +999,14 @@ impl fmt::Display for PeerAddressStoreError {
             Self::UnknownSource(peer_id) => write!(
                 formatter,
                 "peer-address record source {peer_id} is not configured"
+            ),
+            Self::UnknownDialCandidate(peer_id) => write!(
+                formatter,
+                "learned dial candidate {peer_id} is not retained by this store"
+            ),
+            Self::StaleDialCandidate(peer_id) => write!(
+                formatter,
+                "learned dial candidate {peer_id} no longer matches the retained fresh tuple"
             ),
             Self::LocalRecord(peer_id) => write!(
                 formatter,
