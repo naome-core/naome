@@ -28,16 +28,18 @@
 //!
 //! The caller owns the Tokio runtime, drives every network event loop, routes
 //! correlated artifact events through exact one-payload block imports, consumes
-//! exact-block terminals through their generation tickets, may pull, explicitly
-//! announce, broadcast, or survey source-bound untrusted chain heads across a
-//! bounded caller-selected peer set, may retrieve one bounded caller-selected
-//! and unselected block ancestry, imports either one exact child or one
-//! consumed ancestry, or composes retrieval and import into one exact-target
-//! catch-up. Every import target remains a separate caller decision. The caller
-//! also explicitly admits a peer-record batch and may derive one owned
-//! canonical publication from exact fresh subjects retained by a peer-address
-//! store. The responder never reads that store and remains immutable after
-//! construction.
+//! exact-block terminals through their generation tickets, may durably retain
+//! one exact found block as an unselected structural candidate and explicitly
+//! serve it again from the caller-routed chain-scoped candidate store, may pull,
+//! explicitly announce, broadcast, or survey source-bound untrusted chain heads
+//! across a bounded caller-selected peer set, may retrieve one bounded
+//! caller-selected and unselected block ancestry, imports either one exact child
+//! or one consumed ancestry, or composes retrieval and import into one
+//! exact-target catch-up. Every import target remains a separate caller
+//! decision. The caller also explicitly admits a peer-record batch and may
+//! derive one owned canonical publication from exact fresh subjects retained by
+//! a peer-address store. The responder never reads that peer-address store and
+//! remains immutable after construction.
 //! [`StaticArtifactNetwork::next_journal_service_event`] serves authenticated
 //! artifact, block, and head pulls from one borrowed journal while returning
 //! announcements and every other event unchanged; it starts no background
@@ -131,8 +133,8 @@ pub use block_import::{
     ArtifactBlockImport, ArtifactBlockImportError, ArtifactBlockImportProgress,
 };
 pub use block_transport::{
-    ArtifactBlockRequestEventMismatch, BlockRequestTicket, InboundArtifactBlockRequest,
-    OutboundArtifactBlockEvent, OutboundArtifactBlockFailure,
+    ArtifactBlockCandidateRetentionError, ArtifactBlockRequestEventMismatch, BlockRequestTicket,
+    InboundArtifactBlockRequest, OutboundArtifactBlockEvent, OutboundArtifactBlockFailure,
 };
 pub use bootstrap::{
     AuthenticatedPeerRecordBatch, PeerRecordBootstrapBuildError, PeerRecordBootstrapClient,
@@ -222,9 +224,9 @@ pub const STABLE_SESSION_DURATION: Duration = Duration::from_secs(60);
 pub const INBOUND_AUTH_BURST: u32 = 8;
 /// Sustained pre-authentication inbound connection refill interval.
 pub const INBOUND_AUTH_REFILL_INTERVAL: Duration = Duration::from_secs(1);
-/// Maximum burst of admitted journal-response attempts per network instance.
+/// Maximum burst of admitted store- or journal-backed response attempts.
 pub const INBOUND_APPLICATION_REQUEST_BURST: u32 = 8;
-/// Sustained refill interval for journal-backed authenticated-peer responses.
+/// Sustained refill interval for store- or journal-backed responses.
 pub const INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// One manually authorized peer and its complete dial address.
@@ -1258,6 +1260,7 @@ impl PeerSessionEvent {
 #[non_exhaustive]
 pub enum RespondError {
     Journal(ArtifactChainJournalError),
+    CandidateStore(naome_storage::ArtifactBlockCandidateStoreError),
     ChannelClosed,
     RateLimited,
 }
@@ -1267,6 +1270,12 @@ impl fmt::Display for RespondError {
         match self {
             Self::Journal(source) => {
                 write!(formatter, "cannot read artifact-chain journal: {source}")
+            }
+            Self::CandidateStore(source) => {
+                write!(
+                    formatter,
+                    "cannot read artifact-block candidate store: {source}"
+                )
             }
             Self::ChannelClosed => write!(formatter, "response channel is closed"),
             Self::RateLimited => {
@@ -1280,6 +1289,7 @@ impl Error for RespondError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Journal(source) => Some(source),
+            Self::CandidateStore(source) => Some(source),
             Self::ChannelClosed | Self::RateLimited => None,
         }
     }

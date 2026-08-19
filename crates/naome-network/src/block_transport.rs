@@ -8,7 +8,11 @@ use libp2p::request_response;
 use naome::block_exchange::{
     ArtifactBlockExchangeWireError, ArtifactBlockRequest, ArtifactBlockResponse,
 };
-use naome_storage::ArtifactChainJournal;
+use naome_chain::{ArtifactBlock, ArtifactBlockId};
+use naome_storage::{
+    ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
+    ArtifactBlockCandidateStoreError, ArtifactChainJournal,
+};
 
 use super::codec::ArtifactBlockWireResponse;
 use super::{
@@ -77,6 +81,46 @@ impl BlockRequestTicket {
         }
         Ok(event.into_result())
     }
+
+    /// Consumes this ticket and durably retains its exact found block as an
+    /// unselected structural candidate.
+    ///
+    /// A mismatched terminal preserves both routable values and never accesses
+    /// `store`. A matched transport failure or `Unavailable` response also
+    /// performs no insertion. Success is returned only after the candidate
+    /// store acknowledges an insert or exact idempotent replay.
+    pub fn complete_into_candidate_store(
+        self,
+        event: OutboundArtifactBlockEvent,
+        store: &mut ArtifactBlockCandidateStore,
+    ) -> Result<
+        Result<ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateRetentionError>,
+        Box<ArtifactBlockRequestEventMismatch>,
+    > {
+        let peer_id = self.peer_id;
+        let block_id = self.request.block_id();
+        let response = match self.complete(event)? {
+            Ok(response) => response,
+            Err(source) => {
+                return Ok(Err(ArtifactBlockCandidateRetentionError::RequestFailed {
+                    peer_id,
+                    block_id,
+                    source,
+                }));
+            }
+        };
+        let Some(block) = response.into_block() else {
+            return Ok(Err(
+                ArtifactBlockCandidateRetentionError::BlockUnavailable { peer_id, block_id },
+            ));
+        };
+        Ok(store.insert(&block).map_err(|source| {
+            ArtifactBlockCandidateRetentionError::CandidateStore {
+                block_id,
+                source: Box::new(source),
+            }
+        }))
+    }
 }
 
 impl fmt::Debug for BlockRequestTicket {
@@ -120,6 +164,61 @@ impl fmt::Display for ArtifactBlockRequestEventMismatch {
 }
 
 impl Error for ArtifactBlockRequestEventMismatch {}
+
+/// Failure to retain one exact authenticated artifact-block response.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ArtifactBlockCandidateRetentionError {
+    /// The matched request failed before yielding a usable response.
+    RequestFailed {
+        peer_id: PeerId,
+        block_id: ArtifactBlockId,
+        source: Box<OutboundArtifactBlockFailure>,
+    },
+    /// The authenticated peer reported no block for the exact address.
+    BlockUnavailable {
+        peer_id: PeerId,
+        block_id: ArtifactBlockId,
+    },
+    /// The exact found block could not be durably retained.
+    CandidateStore {
+        block_id: ArtifactBlockId,
+        source: Box<ArtifactBlockCandidateStoreError>,
+    },
+}
+
+impl fmt::Display for ArtifactBlockCandidateRetentionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RequestFailed {
+                peer_id,
+                block_id,
+                source,
+            } => write!(
+                formatter,
+                "peer {peer_id} failed artifact-block candidate request {block_id:?}: {source}"
+            ),
+            Self::BlockUnavailable { peer_id, block_id } => write!(
+                formatter,
+                "peer {peer_id} has no artifact-block candidate at {block_id:?}"
+            ),
+            Self::CandidateStore { block_id, source } => write!(
+                formatter,
+                "cannot retain artifact-block candidate {block_id:?}: {source}"
+            ),
+        }
+    }
+}
+
+impl Error for ArtifactBlockCandidateRetentionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::RequestFailed { source, .. } => Some(source.as_ref()),
+            Self::CandidateStore { source, .. } => Some(source.as_ref()),
+            Self::BlockUnavailable { .. } => None,
+        }
+    }
+}
 
 /// One request received from an authenticated, statically authorized peer.
 #[must_use]
@@ -423,6 +522,31 @@ impl StaticArtifactNetwork {
         let block = journal
             .block(inbound.request.block_id())
             .map_err(RespondError::Journal)?;
+        self.respond_block_value(inbound, block)
+    }
+
+    /// Serves one authenticated block request from a caller-routed candidate store.
+    ///
+    /// The request carries no chain identity: the caller must supply the
+    /// intended chain-scoped store. A failed integrity read is reported rather
+    /// than translated to `Unavailable`; serving never inserts, replaces,
+    /// promotes, or deletes a candidate.
+    pub fn respond_block_from_candidate_store(
+        &mut self,
+        inbound: InboundArtifactBlockRequest,
+        store: &mut ArtifactBlockCandidateStore,
+    ) -> Result<(), RespondError> {
+        let block = store
+            .get(inbound.request.block_id())
+            .map_err(RespondError::CandidateStore)?;
+        self.respond_block_value(inbound, block.as_ref())
+    }
+
+    fn respond_block_value(
+        &mut self,
+        inbound: InboundArtifactBlockRequest,
+        block: Option<&ArtifactBlock>,
+    ) -> Result<(), RespondError> {
         if !inbound.channel.is_open() {
             return Err(RespondError::ChannelClosed);
         }
