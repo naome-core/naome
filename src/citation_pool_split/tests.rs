@@ -1,5 +1,6 @@
 use std::error::Error as _;
 
+use naome_chain::{ArtifactChainDefinition, ArtifactChainState};
 use naome_checker::{
     ArtifactState, CheckedProof, check_definition_with_state, normalize_and_check,
     normalize_and_check_with_state,
@@ -7,11 +8,14 @@ use naome_checker::{
 use naome_economy::{FloorQualifiedArtifactBaseFee, NaoAtoms};
 use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 use naome_proof::{
-    ArtifactId, DefinedFormula, DefinitionCertificate, DefinitionId, ProofCertificate,
-    ProofFormula, ProofId, ProofStep,
+    ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate, DefinitionId,
+    ProofCertificate, ProofFormula, ProofId, ProofStep,
 };
 
-use super::{CheckedProofTargetSplitError, project_checked_proof_target_split};
+use super::{
+    CheckedProofTargetSplitError, SelectedProofTargetSplitError,
+    project_checked_proof_target_split, project_selected_proof_target_split,
+};
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
     ProofCertificate::new(steps).expect("the test proof is structurally valid")
@@ -27,6 +31,131 @@ fn observed_artifact(byte: u8) -> ArtifactId {
 
 fn qualified_fee(atoms: u128) -> FloorQualifiedArtifactBaseFee {
     FloorQualifiedArtifactBaseFee::try_from_fee_atoms(NaoAtoms::new(atoms)).unwrap()
+}
+
+fn checked_proof_artifact_bytes(proof: &CheckedProof) -> Vec<u8> {
+    ArtifactPayload::Proof(proof.normal_form().certificate().clone()).to_canonical_bytes()
+}
+
+fn apply_selected_artifact(
+    chain: &mut ArtifactChainState,
+    artifact_id: ArtifactId,
+    canonical_artifact_bytes: &[u8],
+) {
+    let block = chain.prepare_block(artifact_id).unwrap();
+    chain
+        .apply_block(&block, canonical_artifact_bytes.to_vec())
+        .unwrap();
+}
+
+struct SelectedMixedProofFixture {
+    chain: ArtifactChainState,
+    proof: CheckedProof,
+    proof_bytes: Vec<u8>,
+    proof_artifact_id: ArtifactId,
+    targets: [ArtifactId; 2],
+    transitive_target: ArtifactId,
+}
+
+fn selected_mixed_proof_fixture() -> SelectedMixedProofFixture {
+    let variable = FreeVariable::new(13);
+    let mut chain = ArtifactChainState::new(ArtifactChainDefinition::new([0x63; 32]));
+    let base = normalize_and_check(certificate(vec![
+        ProofStep::EqualityReflexivity { variable },
+        ProofStep::Generalization {
+            premise: 0,
+            variable,
+        },
+    ]))
+    .unwrap();
+    let base_id = base.proof_id();
+    let base_artifact_id = ArtifactId::from_proof_id(base_id);
+    let base_bytes = checked_proof_artifact_bytes(&base);
+    let base_conclusion = base.conclusion().clone();
+    apply_selected_artifact(&mut chain, base_artifact_id, &base_bytes);
+
+    let source = normalize_and_check_with_state(
+        certificate(vec![
+            ProofStep::ProofReference { proof_id: base_id },
+            ProofStep::Simplification {
+                antecedent: base_conclusion.into(),
+                consequent: ZfcAxiom::Extensionality.formula().into(),
+            },
+            ProofStep::ModusPonens {
+                premise: 0,
+                implication: 1,
+            },
+        ]),
+        chain.artifact_state(),
+    )
+    .unwrap();
+    let source_id = source.proof_id();
+    let source_artifact_id = ArtifactId::from_proof_id(source_id);
+    let source_bytes = checked_proof_artifact_bytes(&source);
+    let theorem = source.conclusion().clone();
+
+    let definition = DefinitionCertificate::relation(
+        1,
+        DefinedFormula::equal(FreeVariable::new(0), FreeVariable::new(0)),
+    )
+    .unwrap();
+    let definition_bytes = ArtifactPayload::Definition(definition.clone()).to_canonical_bytes();
+    apply_selected_artifact(&mut chain, source_artifact_id, &source_bytes);
+    let checked_definition =
+        check_definition_with_state(definition, chain.artifact_state()).unwrap();
+    let definition_id = checked_definition.definition_id();
+    let definition_artifact_id = ArtifactId::from_definition_id(definition_id);
+    apply_selected_artifact(&mut chain, definition_artifact_id, &definition_bytes);
+
+    let defined = DefinedFormula::defined_relation(definition_id, [variable]);
+    let proof = normalize_and_check_with_state(
+        certificate(vec![
+            ProofStep::ProofReference {
+                proof_id: source_id,
+            },
+            ProofStep::Simplification {
+                antecedent: theorem.into(),
+                consequent: proof_formula(defined),
+            },
+            ProofStep::ModusPonens {
+                premise: 0,
+                implication: 1,
+            },
+            ProofStep::Generalization {
+                premise: 2,
+                variable,
+            },
+        ]),
+        chain.artifact_state(),
+    )
+    .unwrap();
+    let proof_artifact_id = ArtifactId::from_proof_id(proof.proof_id());
+    let proof_bytes = checked_proof_artifact_bytes(&proof);
+
+    let mut targets = [source_artifact_id, definition_artifact_id];
+    targets.sort_unstable();
+    SelectedMixedProofFixture {
+        chain,
+        proof,
+        proof_bytes,
+        proof_artifact_id,
+        targets,
+        transitive_target: base_artifact_id,
+    }
+}
+
+fn selected_definition_chain() -> (ArtifactChainState, ArtifactId) {
+    let definition = DefinitionCertificate::relation(
+        1,
+        DefinedFormula::equal(FreeVariable::new(0), FreeVariable::new(0)),
+    )
+    .unwrap();
+    let definition_id = definition.definition_id();
+    let definition_artifact_id = ArtifactId::from_definition_id(definition_id);
+    let definition_bytes = ArtifactPayload::Definition(definition).to_canonical_bytes();
+    let mut chain = ArtifactChainState::new(ArtifactChainDefinition::new([0x64; 32]));
+    apply_selected_artifact(&mut chain, definition_artifact_id, &definition_bytes);
+    (chain, definition_artifact_id)
 }
 
 fn select_relation(state: &mut ArtifactState, body: DefinedFormula) -> DefinitionId {
@@ -254,6 +383,158 @@ fn empty_and_proper_subset_lists_remain_external_caller_choices() {
 }
 
 #[test]
+fn strict_application_enables_the_same_identity_bound_split_as_the_checked_proof() {
+    let SelectedMixedProofFixture {
+        mut chain,
+        proof,
+        proof_bytes,
+        proof_artifact_id,
+        targets,
+        ..
+    } = selected_mixed_proof_fixture();
+    let block = chain.prepare_block(proof_artifact_id).unwrap();
+    let head_before = chain.head_block_id();
+    let root_before = chain.artifact_dag().artifact_set_root();
+    let len_before = chain.artifact_dag().len();
+
+    chain.validate_block(&block, proof_bytes.clone()).unwrap();
+    assert_eq!(chain.head_block_id(), head_before);
+    assert_eq!(chain.artifact_dag().artifact_set_root(), root_before);
+    assert_eq!(chain.artifact_dag().len(), len_before);
+    assert_eq!(
+        project_selected_proof_target_split(
+            &chain,
+            proof_artifact_id,
+            qualified_fee(13),
+            &[targets[0], targets[0]],
+        ),
+        Err(SelectedProofTargetSplitError::UnknownArtifact {
+            artifact_id: proof_artifact_id,
+        })
+    );
+
+    chain.apply_block(&block, proof_bytes).unwrap();
+    let selected_head = chain.head_block_id();
+    let selected_root = chain.artifact_dag().artifact_set_root();
+    let selected_len = chain.artifact_dag().len();
+    let checked =
+        project_checked_proof_target_split(&proof, qualified_fee(13), &[targets[1], targets[0]])
+            .unwrap();
+    let selected = project_selected_proof_target_split(
+        &chain,
+        proof_artifact_id,
+        qualified_fee(13),
+        &[targets[1], targets[0]],
+    )
+    .unwrap();
+
+    assert_eq!(selected, checked);
+    assert_eq!(selected.checked_proof_artifact_id(), proof_artifact_id);
+    assert_eq!(selected.targets(), targets);
+    assert_eq!(selected.citation_pool(), NaoAtoms::new(5));
+    assert_eq!(selected.per_target_share(), NaoAtoms::new(2));
+    assert_eq!(selected.unassigned_remainder(), NaoAtoms::new(1));
+    assert_eq!(chain.head_block_id(), selected_head);
+    assert_eq!(chain.artifact_dag().artifact_set_root(), selected_root);
+    assert_eq!(chain.artifact_dag().len(), selected_len);
+}
+
+#[test]
+fn selected_empty_and_proper_subset_lists_remain_external_caller_choices() {
+    let SelectedMixedProofFixture {
+        mut chain,
+        proof_bytes,
+        proof_artifact_id,
+        targets,
+        ..
+    } = selected_mixed_proof_fixture();
+    apply_selected_artifact(&mut chain, proof_artifact_id, &proof_bytes);
+
+    let empty =
+        project_selected_proof_target_split(&chain, proof_artifact_id, qualified_fee(13), &[])
+            .unwrap();
+    assert!(empty.targets().is_empty());
+    assert_eq!(empty.per_target_share(), NaoAtoms::ZERO);
+    assert_eq!(empty.unassigned_remainder(), NaoAtoms::new(5));
+
+    let subset = project_selected_proof_target_split(
+        &chain,
+        proof_artifact_id,
+        qualified_fee(13),
+        &[targets[1]],
+    )
+    .unwrap();
+    assert_eq!(subset.targets(), &[targets[1]]);
+    assert_eq!(subset.per_target_share(), NaoAtoms::new(5));
+    assert_eq!(subset.unassigned_remainder(), NaoAtoms::ZERO);
+}
+
+#[test]
+fn selected_source_errors_precede_every_target_check() {
+    let (chain, definition_artifact_id) = selected_definition_chain();
+    let unknown = observed_artifact(0xfa);
+    let malformed = [observed_artifact(0x01); 2];
+
+    assert_eq!(
+        project_selected_proof_target_split(&chain, unknown, qualified_fee(5), &malformed,),
+        Err(SelectedProofTargetSplitError::UnknownArtifact {
+            artifact_id: unknown,
+        })
+    );
+    assert_eq!(
+        project_selected_proof_target_split(
+            &chain,
+            definition_artifact_id,
+            qualified_fee(5),
+            &malformed,
+        ),
+        Err(SelectedProofTargetSplitError::NotProof {
+            artifact_id: definition_artifact_id,
+        })
+    );
+}
+
+#[test]
+fn selected_proof_reuses_nested_target_precedence_and_excludes_transitive_ancestors() {
+    let SelectedMixedProofFixture {
+        mut chain,
+        proof_bytes,
+        proof_artifact_id,
+        targets,
+        transitive_target,
+        ..
+    } = selected_mixed_proof_fixture();
+    apply_selected_artifact(&mut chain, proof_artifact_id, &proof_bytes);
+
+    assert_eq!(
+        project_selected_proof_target_split(
+            &chain,
+            proof_artifact_id,
+            qualified_fee(5),
+            &[targets[1], targets[1]],
+        ),
+        Err(SelectedProofTargetSplitError::TargetSplit(
+            CheckedProofTargetSplitError::DuplicateTarget {
+                artifact_id: targets[1],
+            },
+        ))
+    );
+    assert_eq!(
+        project_selected_proof_target_split(
+            &chain,
+            proof_artifact_id,
+            qualified_fee(5),
+            &[transitive_target],
+        ),
+        Err(SelectedProofTargetSplitError::TargetSplit(
+            CheckedProofTargetSplitError::NonDirectTarget {
+                artifact_id: transitive_target,
+            },
+        ))
+    );
+}
+
+#[test]
 fn excessive_length_precedes_duplicates_and_non_direct_targets() {
     let variable = FreeVariable::new(17);
     let proof = normalize_and_check(certificate(vec![
@@ -373,6 +654,13 @@ fn errors_have_exact_display_and_implement_standard_error() {
     let non_direct = CheckedProofTargetSplitError::NonDirectTarget {
         artifact_id: observed_artifact(0x34),
     };
+    let unknown = SelectedProofTargetSplitError::UnknownArtifact {
+        artifact_id: observed_artifact(0x56),
+    };
+    let not_proof = SelectedProofTargetSplitError::NotProof {
+        artifact_id: observed_artifact(0x78),
+    };
+    let nested = SelectedProofTargetSplitError::TargetSplit(non_direct);
 
     assert_eq!(
         too_many.to_string(),
@@ -392,7 +680,25 @@ fn errors_have_exact_display_and_implement_standard_error() {
             observed_artifact(0x34)
         )
     );
+    assert_eq!(
+        unknown.to_string(),
+        format!(
+            "artifact {:?} is not selected in the supplied artifact chain",
+            observed_artifact(0x56)
+        )
+    );
+    assert_eq!(
+        not_proof.to_string(),
+        format!(
+            "selected artifact {:?} is not a proof",
+            observed_artifact(0x78)
+        )
+    );
+    assert_eq!(nested.to_string(), non_direct.to_string());
     assert!(too_many.source().is_none());
     assert!(duplicate.source().is_none());
     assert!(non_direct.source().is_none());
+    assert!(unknown.source().is_none());
+    assert!(not_proof.source().is_none());
+    assert_eq!(nested.source().unwrap().to_string(), non_direct.to_string());
 }

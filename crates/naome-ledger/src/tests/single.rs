@@ -371,6 +371,10 @@ fn records_keep_only_unique_direct_dependencies_and_replay_in_dependency_order()
     let child_bytes = canonical_bytes(proof_using_every_reference(&repeated, ZfcAxiom::Choice));
     let child = original.apply_canonical_proof_bytes(child_bytes).unwrap();
     assert_eq!(child.direct_proof_dependencies(), [source.proof_id()]);
+    assert_eq!(
+        child.direct_artifact_dependencies().as_ref(),
+        &[ArtifactId::from_proof_id(source.proof_id())]
+    );
 
     let grandchild_bytes = canonical_bytes(proof_using_every_reference(
         &[(child.proof_id(), ZfcAxiom::Choice.formula())],
@@ -380,6 +384,14 @@ fn records_keep_only_unique_direct_dependencies_and_replay_in_dependency_order()
         .apply_canonical_proof_bytes(grandchild_bytes)
         .unwrap();
     assert_eq!(grandchild.direct_proof_dependencies(), [child.proof_id()]);
+    let grandchild_artifact_dependencies = grandchild.direct_artifact_dependencies();
+    assert_eq!(
+        grandchild_artifact_dependencies.as_ref(),
+        &[ArtifactId::from_proof_id(child.proof_id())]
+    );
+    assert!(
+        !grandchild_artifact_dependencies.contains(&ArtifactId::from_proof_id(source.proof_id()))
+    );
     assert!(
         !grandchild
             .direct_proof_dependencies()

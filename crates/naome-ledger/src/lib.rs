@@ -59,6 +59,36 @@ impl AcceptedProofRecord {
         &self.direct_definition_dependencies
     }
 
+    /// Returns the distinct direct dependencies as typed artifact addresses.
+    ///
+    /// Proof and definition identities recorded during this proof's ledger
+    /// acceptance are mapped into their domain-separated [`ArtifactId`] values,
+    /// sorted in ascending identity order, and deduplicated. The projection does
+    /// not expand transitive ancestors and establishes no current selection,
+    /// block or consensus inclusion, citation eligibility, beneficiary, reward,
+    /// settlement, or state authority.
+    #[must_use]
+    pub fn direct_artifact_dependencies(&self) -> Box<[ArtifactId]> {
+        let mut dependencies = Vec::with_capacity(
+            self.direct_proof_dependencies.len() + self.direct_definition_dependencies.len(),
+        );
+        dependencies.extend(
+            self.direct_proof_dependencies
+                .iter()
+                .copied()
+                .map(ArtifactId::from_proof_id),
+        );
+        dependencies.extend(
+            self.direct_definition_dependencies
+                .iter()
+                .copied()
+                .map(ArtifactId::from_definition_id),
+        );
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        dependencies.into_boxed_slice()
+    }
+
     /// Returns the typed artifact address committed by a block.
     pub const fn artifact_id(&self) -> ArtifactId {
         self.artifact_id
