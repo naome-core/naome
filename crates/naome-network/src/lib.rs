@@ -14,7 +14,11 @@
 //!
 //! A separate outbound-only [`PeerRecordBootstrapClient`] authenticates exact
 //! operator-configured bootstrap endpoints and returns source-bound record
-//! batches for explicit atomic admission. A separate inbound-only
+//! batches for explicit atomic admission. A separate outbound-only
+//! [`LearnedPeerRecordPullClient`] accepts a bounded caller-selected set of
+//! opaque store-produced candidates, authenticates each immediate identity,
+//! and preserves its configured-bootstrap provenance through revalidated
+//! atomic admission. A separate inbound-only
 //! [`PeerRecordBootstrapResponder`] serves one operator-supplied immutable
 //! canonical batch to bounded authenticated requesters. Neither swarm installs
 //! the artifact protocol or converts a learned candidate into artifact authority.
@@ -52,6 +56,7 @@ mod head_broadcast;
 mod head_survey;
 mod head_transport;
 mod journal_service;
+mod learned_pull;
 mod local_issuer;
 mod rate_limit;
 mod record_exchange;
@@ -154,6 +159,10 @@ pub use head_transport::{
     OutboundArtifactChainHeadFailure,
 };
 pub use journal_service::{JournalServiceEvent, JournalServiceRequest};
+pub use learned_pull::{
+    AuthenticatedLearnedPeerRecordBatch, LearnedPeerRecordPullBuildError,
+    LearnedPeerRecordPullClient, LearnedPeerRecordPullEvent, LearnedPeerRecordPullStartError,
+};
 pub use libp2p::core::transport::ListenerId;
 pub use libp2p::{Multiaddr, PeerId, identity::Keypair};
 pub use local_issuer::{LocalPeerRecordIssuer, LocalPeerRecordIssuerError};

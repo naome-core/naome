@@ -57,6 +57,16 @@ impl PeerRecordBootstrapClient {
         let bootstraps = validate_bootstraps(local_peer_id, bootstraps)
             .map_err(PeerRecordBootstrapBuildError::BootstrapConfig)?;
 
+        Self::from_validated_bootstraps(identity, bootstraps)
+            .map_err(PeerRecordBootstrapBuildError::Noise)
+    }
+
+    pub(crate) fn from_validated_bootstraps(
+        identity: Keypair,
+        bootstraps: Vec<BootstrapPeer>,
+    ) -> Result<Self, noise::Error> {
+        debug_assert!(bootstraps.len() <= MAX_BOOTSTRAP_PEERS);
+
         let maximum = u32::try_from(MAX_BOOTSTRAP_PEERS).expect("the bootstrap-peer cap fits u32");
         let limits = connection_limits::Behaviour::new(
             connection_limits::ConnectionLimits::default()
@@ -82,8 +92,7 @@ impl PeerRecordBootstrapClient {
             .with_tokio()
             .with_tcp(tcp::Config::new(), noise::Config::new, || {
                 yamux_config(MAX_PEER_RECORD_STREAMS_PER_CONNECTION)
-            })
-            .map_err(PeerRecordBootstrapBuildError::Noise)?
+            })?
             .with_behaviour(|_| behaviour)
             .expect("constructing the fixed bootstrap-client behavior is infallible")
             .with_swarm_config(|config| {
@@ -283,6 +292,23 @@ impl AuthenticatedPeerRecordBatch {
         drop(permit);
         result
     }
+
+    pub(crate) fn admit_learned_into(
+        self,
+        store: &mut PeerAddressStore,
+        candidate: &crate::DialCandidate,
+        received_at: SystemTime,
+    ) -> Result<PeerRecordBatchAdmission, PeerAddressStoreError> {
+        let Self {
+            source_peer_id,
+            batch,
+            permit,
+        } = self;
+        debug_assert_eq!(source_peer_id, candidate.peer_id());
+        let result = store.admit_learned_record_batch(candidate, batch, received_at);
+        drop(permit);
+        result
+    }
 }
 
 impl fmt::Debug for AuthenticatedPeerRecordBatch {
@@ -393,15 +419,15 @@ impl fmt::Display for PeerRecordPullStartError {
 
 impl Error for PeerRecordPullStartError {}
 
-/// A terminal failure for one exact bootstrap pull.
+/// A terminal failure for one exact authenticated peer-record pull.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum PeerRecordPullFailure {
     /// The exact request ended in a libp2p transport failure.
     Transport(request_response::OutboundFailure),
-    /// The terminal event's authenticated peer differed from the configured source.
+    /// The terminal event's authenticated peer differed from the expected pull peer.
     PeerMismatch {
-        /// The operator-configured bootstrap identity.
+        /// The exact expected pull-peer identity.
         expected: PeerId,
         /// The authenticated identity carried by the terminal event.
         actual: PeerId,

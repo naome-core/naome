@@ -130,7 +130,9 @@ impl Error for ResponderDenied {}
 /// The responder accepts Noise-authenticated requesters but grants them no
 /// artifact authority. It never reads from a peer-address store, dials another
 /// node, retries, or starts a background task. The caller must continuously
-/// poll [`Self::next_event`] for network progress and timeout delivery.
+/// poll [`Self::next_event`] for network progress and timeout delivery. The
+/// same responder serves configured-bootstrap and caller-selected learned-peer
+/// pulls; it assigns neither role to its own identity.
 pub struct PeerRecordBootstrapResponder {
     swarm: Swarm<Behaviour>,
     publication: Arc<Vec<u8>>,

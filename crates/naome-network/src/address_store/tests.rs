@@ -133,6 +133,15 @@ fn batch(records: impl IntoIterator<Item = SignedPeerRecord>) -> PeerRecordBatch
     PeerRecordBatch::new(records).unwrap()
 }
 
+fn selected_candidate(store: &PeerAddressStore, peer_id: PeerId, now: SystemTime) -> DialCandidate {
+    store
+        .dial_candidates(now)
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.peer_id() == peer_id)
+        .expect("the fresh distinct test subject is selected")
+}
+
 fn replace_checksum(bytes: &mut Vec<u8>) {
     bytes.truncate(bytes.len() - CHECKSUM_BYTES);
     bytes.extend_from_slice(&checksum(bytes));
@@ -1061,6 +1070,237 @@ fn expiry_retains_a_sequence_watermark_across_reopen() {
             .len(),
         1
     );
+}
+
+#[test]
+fn learned_batch_preserves_root_lineage_and_existing_first_introducer_on_reopen() {
+    let directory = TestDirectory::new("learned-lineage");
+    let local = deterministic_key(20);
+    let first_root = deterministic_key(21);
+    let second_root = deterministic_key(22);
+    let learned_source = deterministic_key(23);
+    let existing_subject = deterministic_key(24);
+    let inserted_subject = deterministic_key(25);
+    let first_root_id = first_root.public().to_peer_id();
+    let second_root_id = second_root.public().to_peer_id();
+    let learned_source_id = learned_source.public().to_peer_id();
+    let bootstraps = vec![bootstrap(&first_root, 4001), bootstrap(&second_root, 4002)];
+    let learned_address = global_address(51, 1, 4101);
+    let mut store = PeerAddressStore::create(
+        directory.path(),
+        local.public().to_peer_id(),
+        bootstraps.clone(),
+    )
+    .unwrap();
+    let _ = store
+        .admit_record(
+            first_root_id,
+            record(&learned_source, 1, vec![learned_address.clone()]),
+            unix_time(100),
+        )
+        .unwrap();
+    let _ = store
+        .admit_record(
+            second_root_id,
+            record(&existing_subject, 1, vec![global_address(52, 1, 4201)]),
+            unix_time(100),
+        )
+        .unwrap();
+    let candidate = selected_candidate(&store, learned_source_id, unix_time(100));
+
+    let admission = store
+        .admit_learned_record_batch(
+            &candidate,
+            batch([
+                record(&existing_subject, 2, vec![global_address(53, 1, 4202)]),
+                record(&inserted_subject, 1, vec![global_address(54, 1, 4203)]),
+            ]),
+            unix_time(200),
+        )
+        .unwrap();
+    assert_eq!(admission.inserted(), 1);
+    assert_eq!(admission.replaced(), 1);
+    let existing = store
+        .records
+        .iter()
+        .find(|stored| stored.record.peer_id == existing_subject.public().to_peer_id())
+        .unwrap();
+    assert_eq!(existing.source_peer_id, second_root_id);
+    let inserted = store
+        .records
+        .iter()
+        .find(|stored| stored.record.peer_id == inserted_subject.public().to_peer_id())
+        .unwrap();
+    assert_eq!(inserted.source_peer_id, first_root_id);
+    drop(store);
+
+    let reopened =
+        PeerAddressStore::open(directory.path(), local.public().to_peer_id(), bootstraps).unwrap();
+    assert_eq!(
+        selected_candidate(
+            &reopened,
+            inserted_subject.public().to_peer_id(),
+            unix_time(200)
+        )
+        .source_peer_id(),
+        first_root_id
+    );
+}
+
+#[test]
+fn learned_batch_revalidates_exact_retained_candidate_before_batch_errors() {
+    let directory = TestDirectory::new("learned-revalidation");
+    let local = deterministic_key(26);
+    let root = deterministic_key(27);
+    let other_root = deterministic_key(28);
+    let learned_source = deterministic_key(29);
+    let root_id = root.public().to_peer_id();
+    let learned_source_id = learned_source.public().to_peer_id();
+    let learned_address = global_address(55, 1, 4301);
+    let mut store = PeerAddressStore::create(
+        directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&root, 4001), bootstrap(&other_root, 4002)],
+    )
+    .unwrap();
+    let _ = store
+        .admit_record(
+            root_id,
+            record(&learned_source, 1, vec![learned_address.clone()]),
+            unix_time(1_000),
+        )
+        .unwrap();
+    let candidate = selected_candidate(&store, learned_source_id, unix_time(1_000));
+    let before_errors = directory.snapshot();
+    let unknown = DialCandidate::for_test(
+        deterministic_key(30).public().to_peer_id(),
+        learned_address.clone(),
+        root_id,
+    );
+    let invalid_time = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+    let local_record = record(&local, 1, vec![global_address(56, 1, 4302)]);
+    let local_batch = || batch([local_record.clone()]);
+    assert!(matches!(
+        store.admit_learned_record_batch(&unknown, local_batch(), invalid_time),
+        Err(PeerAddressStoreError::UnknownDialCandidate(_))
+    ));
+
+    let wrong_address =
+        DialCandidate::for_test(learned_source_id, global_address(57, 1, 4303), root_id);
+    assert!(matches!(
+        store.admit_learned_record_batch(&wrong_address, local_batch(), invalid_time),
+        Err(PeerAddressStoreError::StaleDialCandidate(_))
+    ));
+    let wrong_root = DialCandidate::for_test(
+        learned_source_id,
+        learned_address.clone(),
+        other_root.public().to_peer_id(),
+    );
+    assert!(matches!(
+        store.admit_learned_record_batch(&wrong_root, local_batch(), invalid_time),
+        Err(PeerAddressStoreError::StaleDialCandidate(_))
+    ));
+    assert!(matches!(
+        store.admit_learned_record_batch(&candidate, local_batch(), invalid_time),
+        Err(PeerAddressStoreError::TimeBeforeUnixEpoch)
+    ));
+    assert!(matches!(
+        store.admit_learned_record_batch(&candidate, local_batch(), unix_time(999)),
+        Err(PeerAddressStoreError::StaleDialCandidate(_))
+    ));
+    assert!(matches!(
+        store.admit_learned_record_batch(
+            &candidate,
+            local_batch(),
+            unix_time(1_000 + PEER_RECORD_TTL.as_secs())
+        ),
+        Err(PeerAddressStoreError::StaleDialCandidate(_))
+    ));
+    assert!(matches!(
+        store.admit_learned_record_batch(&candidate, local_batch(), unix_time(1_001)),
+        Err(PeerAddressStoreError::LocalRecord(_))
+    ));
+    assert_eq!(directory.snapshot(), before_errors);
+
+    let _ = store
+        .admit_record(
+            root_id,
+            record(
+                &learned_source,
+                2,
+                vec![learned_address.clone(), global_address(58, 1, 4304)],
+            ),
+            unix_time(1_100),
+        )
+        .unwrap();
+    let after_source_refresh = directory.snapshot();
+    let empty = store
+        .admit_learned_record_batch(&candidate, batch([]), unix_time(1_101))
+        .unwrap();
+    assert_eq!(empty.total(), 0);
+    assert_eq!(directory.snapshot(), after_source_refresh);
+
+    let _ = store
+        .admit_record(
+            root_id,
+            record(&learned_source, 3, vec![global_address(58, 2, 4305)]),
+            unix_time(1_200),
+        )
+        .unwrap();
+    assert!(matches!(
+        store.admit_learned_record_batch(&candidate, batch([]), unix_time(1_201)),
+        Err(PeerAddressStoreError::StaleDialCandidate(_))
+    ));
+}
+
+#[test]
+fn learned_batch_root_capacity_fails_without_installing_a_prefix() {
+    let source_directory = TestDirectory::new("learned-root-capacity");
+    let local = deterministic_key(31);
+    let root = deterministic_key(32);
+    let learned_source = deterministic_key(33);
+    let root_id = root.public().to_peer_id();
+    let learned_source_id = learned_source.public().to_peer_id();
+    let mut source_store = PeerAddressStore::create(
+        source_directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&root, 4001)],
+    )
+    .unwrap();
+    let _ = source_store
+        .admit_record(
+            root_id,
+            record(&learned_source, 1, vec![global_address(59, 1, 4401)]),
+            unix_time(2_000),
+        )
+        .unwrap();
+    let candidate = selected_candidate(&source_store, learned_source_id, unix_time(2_000));
+    for index in 0..MAX_RECORDS_PER_BOOTSTRAP - 2 {
+        let subject = deterministic_key(60 + index as u8);
+        let _ = source_store
+            .admit_record(
+                root_id,
+                record(&subject, 1, vec![global_address(80 + index as u8, 1, 4402)]),
+                unix_time(2_000),
+            )
+            .unwrap();
+    }
+    assert_eq!(source_store.len().unwrap(), MAX_RECORDS_PER_BOOTSTRAP - 1);
+    let before = source_directory.snapshot();
+    assert!(matches!(
+        source_store.admit_learned_record_batch(
+            &candidate,
+            batch([
+                record(&deterministic_key(100), 1, vec![global_address(180, 1, 4501)]),
+                record(&deterministic_key(101), 1, vec![global_address(181, 1, 4502)]),
+            ]),
+            unix_time(2_001),
+        ),
+        Err(PeerAddressStoreError::SourceCapacity { source, .. })
+            if *source == root_id
+    ));
+    assert_eq!(source_directory.snapshot(), before);
+    assert_eq!(source_store.len().unwrap(), MAX_RECORDS_PER_BOOTSTRAP - 1);
 }
 
 #[test]
