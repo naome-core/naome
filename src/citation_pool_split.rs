@@ -1,18 +1,21 @@
-//! Checked-proof direct-target citation-pool arithmetic.
+//! Checked-proof and selected-proof direct-target citation-pool arithmetic.
 //!
 //! This module combines a caller-supplied checked proof, a numerically floor-
 //! qualified artifact base fee, and a caller-designated target slice. It
 //! validates only that the slice is bounded, distinct, and contained in the
-//! checked proof's distinct direct dependency set. The caller remains solely
-//! responsible for eligibility and completeness. The projection establishes no
-//! canonical proof admission or selected-state authority, function-definition
-//! obligation supporting-proof targets, attribution, beneficiary, fee
-//! calculation or payment, inclusion or finality, reward entitlement, actual
-//! burn or credit, settlement, persistence, or economic or consensus state.
+//! checked proof's distinct direct dependency set. A selected-proof projection
+//! additionally requires that the source identity names a locally admitted
+//! proof in the supplied artifact-chain state. The caller remains solely
+//! responsible for eligibility and completeness. Neither projection
+//! establishes consensus selection or finality, function-definition obligation
+//! supporting-proof targets, attribution, beneficiary, fee calculation or
+//! payment, inclusion, reward entitlement, actual burn or credit, settlement,
+//! persistence, or economic or consensus state.
 
 use std::error::Error;
 use std::fmt;
 
+use naome_chain::ArtifactChainState;
 use naome_checker::CheckedProof;
 use naome_economy::{FloorQualifiedArtifactBaseFee, NaoAtoms};
 use naome_proof::ArtifactId;
@@ -50,7 +53,46 @@ impl fmt::Display for CheckedProofTargetSplitError {
 
 impl Error for CheckedProofTargetSplitError {}
 
-/// Neutral arithmetic coupled to one checked proof and one exact target slice.
+/// A selected artifact that cannot supply one proof-specific target split.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SelectedProofTargetSplitError {
+    /// The source identity is absent from the supplied selected chain state.
+    UnknownArtifact { artifact_id: ArtifactId },
+    /// The selected source artifact is a definition rather than a proof.
+    NotProof { artifact_id: ArtifactId },
+    /// The caller-designated target slice is invalid for the selected proof.
+    TargetSplit(CheckedProofTargetSplitError),
+}
+
+impl fmt::Display for SelectedProofTargetSplitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownArtifact { artifact_id } => write!(
+                formatter,
+                "artifact {artifact_id:?} is not selected in the supplied artifact chain"
+            ),
+            Self::NotProof { artifact_id } => {
+                write!(
+                    formatter,
+                    "selected artifact {artifact_id:?} is not a proof"
+                )
+            }
+            Self::TargetSplit(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl Error for SelectedProofTargetSplitError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::TargetSplit(source) => Some(source),
+            Self::UnknownArtifact { .. } | Self::NotProof { .. } => None,
+        }
+    }
+}
+
+/// Neutral arithmetic coupled to one checked or locally accepted source proof.
 ///
 /// The target slice is stored in ascending identity order and determines the
 /// division count. These values do not establish that any target is eligible,
@@ -66,9 +108,11 @@ pub struct ProjectedCheckedProofTargetSplit {
 }
 
 impl ProjectedCheckedProofTargetSplit {
-    /// Returns the content address of the caller-supplied checked proof.
+    /// Returns the content address of the checked or locally accepted proof.
     ///
-    /// This identity proves no block admission, inclusion, or finality.
+    /// The identity alone proves no admission or finality. Success through the
+    /// selected-proof path establishes only strict admission and membership in
+    /// the supplied local artifact-chain state.
     pub const fn checked_proof_artifact_id(&self) -> ArtifactId {
         self.checked_proof_artifact_id
     }
@@ -115,6 +159,57 @@ pub fn project_checked_proof_target_split(
     caller_asserted_eligible_targets: &[ArtifactId],
 ) -> Result<ProjectedCheckedProofTargetSplit, CheckedProofTargetSplitError> {
     let direct_dependencies = proof.direct_artifact_dependencies();
+    project_target_split(
+        ArtifactId::from_proof_id(proof.proof_id()),
+        &direct_dependencies,
+        base_fee,
+        caller_asserted_eligible_targets,
+    )
+}
+
+/// Projects caller-designated targets for one locally selected proof artifact.
+///
+/// The source lookup precedes every target check: an absent artifact returns
+/// [`SelectedProofTargetSplitError::UnknownArtifact`], and a selected definition
+/// returns [`SelectedProofTargetSplitError::NotProof`]. For a selected proof,
+/// target validation and arithmetic are identical to
+/// [`project_checked_proof_target_split`]. The selected record proves local
+/// strict admission into the supplied exact-head chain state only; it does not
+/// prove that the supplied chain is consensus-canonical or that the artifact is
+/// included or finalized by consensus, and the caller's eligibility and
+/// completeness assertions remain external.
+pub fn project_selected_proof_target_split(
+    chain: &ArtifactChainState,
+    proof_artifact_id: ArtifactId,
+    base_fee: FloorQualifiedArtifactBaseFee,
+    caller_asserted_eligible_targets: &[ArtifactId],
+) -> Result<ProjectedCheckedProofTargetSplit, SelectedProofTargetSplitError> {
+    let selected = chain.artifact_dag().artifact(proof_artifact_id).ok_or(
+        SelectedProofTargetSplitError::UnknownArtifact {
+            artifact_id: proof_artifact_id,
+        },
+    )?;
+    let proof = selected
+        .as_proof()
+        .ok_or(SelectedProofTargetSplitError::NotProof {
+            artifact_id: proof_artifact_id,
+        })?;
+    let direct_dependencies = proof.direct_artifact_dependencies();
+    project_target_split(
+        proof.artifact_id(),
+        &direct_dependencies,
+        base_fee,
+        caller_asserted_eligible_targets,
+    )
+    .map_err(SelectedProofTargetSplitError::TargetSplit)
+}
+
+fn project_target_split(
+    proof_artifact_id: ArtifactId,
+    direct_dependencies: &[ArtifactId],
+    base_fee: FloorQualifiedArtifactBaseFee,
+    caller_asserted_eligible_targets: &[ArtifactId],
+) -> Result<ProjectedCheckedProofTargetSplit, CheckedProofTargetSplitError> {
     if caller_asserted_eligible_targets.len() > direct_dependencies.len() {
         return Err(CheckedProofTargetSplitError::TooManyTargets {
             actual: caller_asserted_eligible_targets.len(),
@@ -146,7 +241,7 @@ pub fn project_checked_proof_target_split(
     let allocation = base_fee.partition().allocate_citation_pool(target_count);
 
     Ok(ProjectedCheckedProofTargetSplit {
-        checked_proof_artifact_id: ArtifactId::from_proof_id(proof.proof_id()),
+        checked_proof_artifact_id: proof_artifact_id,
         targets: targets.into_boxed_slice(),
         citation_pool: allocation.citation_pool(),
         per_target_share: allocation.per_target_reward(),

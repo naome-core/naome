@@ -9,13 +9,17 @@
 //! neither consumes reward value nor returns, records, or persists an origin
 //! batch. Its checked-proof citation projection validates only that a caller-
 //! asserted target slice is bounded, distinct, and direct before coupling those
-//! exact identities to numeric citation-pool division; it establishes no target
-//! eligibility, attribution, reward, burn, or state authority. Its validator-fee
-//! projections accept either caller-supplied aggregate pool atoms or caller-
-//! supplied fee partitions, an immutable active snapshot, and either one active
-//! key or a bounded signer-key list. The partition path aggregates once before
-//! allocation, but establishes no partition completeness or grouping,
-//! certificate, entitlement, burn, settlement, or state authority.
+//! exact identities to numeric citation-pool division. The selected-proof path
+//! additionally requires the source identity to name one locally admitted proof
+//! in the supplied artifact chain. That success establishes only local strict
+//! admission and selected membership; neither path mutates state or establishes
+//! consensus canonicality or finality, target eligibility, attribution, reward,
+//! burn, or economic or consensus-state authority. Its validator-fee projections
+//! accept either caller-supplied aggregate pool atoms or caller-supplied fee
+//! partitions, an immutable active snapshot, and either one active key or a
+//! bounded signer-key list. The partition path aggregates once before allocation,
+//! but establishes no partition completeness or grouping, certificate,
+//! entitlement, burn, settlement, or state authority.
 
 pub mod artifact_exchange;
 pub mod artifact_inclusion_priority;
