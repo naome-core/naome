@@ -1721,6 +1721,7 @@ name = "naome"
 version = "0.1.0"
 dependencies = [
  "naome-chain",
+ "naome-checker",
  "naome-consensus",
  "naome-economy",
  "naome-foundation",
