@@ -34,8 +34,10 @@
 //! and unselected block ancestry, imports either one exact child or one
 //! consumed ancestry, or composes retrieval and import into one exact-target
 //! catch-up. Every import target remains a separate caller decision. The caller
-//! also explicitly admits a peer-record batch. The
-//! responder publication is not derived from the address store.
+//! also explicitly admits a peer-record batch and may derive one owned
+//! canonical publication from exact fresh subjects retained by a peer-address
+//! store. The responder never reads that store and remains immutable after
+//! construction.
 //! [`StaticArtifactNetwork::next_journal_service_event`] serves authenticated
 //! artifact, block, and head pulls from one borrowed journal while returning
 //! announcements and every other event unchanged; it starts no background
@@ -112,7 +114,7 @@ pub use address_store::{
     MAX_DIAL_CANDIDATES_PER_BOOTSTRAP, MAX_PEER_ADDRESS_BYTES, MAX_PEER_ADDRESS_RECORDS,
     MAX_RECORDS_PER_BOOTSTRAP, MAX_RECORDS_PER_NETWORK_GROUP, MAX_SIGNED_PEER_RECORD_BYTES,
     PEER_RECORD_TTL, PeerAddressStore, PeerAddressStoreError, PeerRecordAdmission,
-    PeerRecordBatchAdmission, SignedPeerRecord, SignedPeerRecordError,
+    PeerRecordBatchAdmission, PeerRecordPublicationError, SignedPeerRecord, SignedPeerRecordError,
 };
 pub use block_ancestry::{
     ArtifactBlockAncestryPull, ArtifactBlockAncestryPullError, ArtifactBlockAncestryPullProgress,

@@ -19,7 +19,9 @@ use libp2p::core::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
 use sha2::{Digest, Sha256};
 
-use crate::record_exchange::{MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch};
+use crate::record_exchange::{
+    MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch, PeerRecordExchangeWireError,
+};
 use crate::snapshot_io::{
     BoundedReadError, ExclusiveLockError, open_exclusive, read_bounded, replace_synced,
 };
@@ -313,6 +315,93 @@ impl PeerAddressStore {
     pub fn is_empty(&self) -> Result<bool, PeerAddressStoreError> {
         self.ensure_healthy()?;
         Ok(self.records.is_empty())
+    }
+
+    /// Derives one owned canonical publication from exact caller-selected subjects.
+    ///
+    /// Selection rejects a poisoned handle, excess count, the lowest duplicate
+    /// subject, the lowest unretained subject, an evaluation time before the
+    /// Unix epoch, then the lowest subject that is not locally fresh. The
+    /// method neither mutates the store nor refreshes local receipt times, and
+    /// the returned batch contains no receipt-time or provenance metadata.
+    pub fn peer_record_publication(
+        &self,
+        now: SystemTime,
+        subjects: &[PeerId],
+    ) -> Result<PeerRecordBatch, PeerRecordPublicationError> {
+        if self.poisoned {
+            return Err(PeerRecordPublicationError::Poisoned);
+        }
+        if subjects.len() > MAX_PEER_RECORDS_PER_BATCH {
+            return Err(PeerRecordPublicationError::TooManySubjects {
+                actual: subjects.len(),
+                maximum: MAX_PEER_RECORDS_PER_BATCH,
+            });
+        }
+        if let Some(duplicate) = subjects
+            .iter()
+            .enumerate()
+            .filter_map(|(index, subject)| {
+                subjects[index + 1..].contains(subject).then_some(subject)
+            })
+            .min_by(|left, right| compare_peer_id_bytes(left, right))
+        {
+            return Err(PeerRecordPublicationError::DuplicateSubject(Box::new(
+                *duplicate,
+            )));
+        }
+        let mut selected_indices = [0_usize; MAX_PEER_RECORDS_PER_BATCH];
+        let mut lowest_unknown = None;
+        for (subject, selected_index) in subjects.iter().zip(&mut selected_indices) {
+            match self
+                .records
+                .binary_search_by(|stored| compare_peer_id_bytes(&stored.record.peer_id, subject))
+            {
+                Ok(index) => *selected_index = index,
+                Err(_) => {
+                    if lowest_unknown
+                        .is_none_or(|lowest| compare_peer_id_bytes(subject, lowest).is_lt())
+                    {
+                        lowest_unknown = Some(subject);
+                    }
+                }
+            }
+        }
+        if let Some(unknown) = lowest_unknown {
+            return Err(PeerRecordPublicationError::UnknownSubject(Box::new(
+                *unknown,
+            )));
+        }
+        let now = now
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| PeerRecordPublicationError::TimeBeforeUnixEpoch)?
+            .as_secs();
+        if let Some(not_fresh) = subjects
+            .iter()
+            .zip(&selected_indices)
+            .filter_map(|(subject, &index)| {
+                (!is_fresh(self.records[index].received_at, now)).then_some(subject)
+            })
+            .min_by(|left, right| compare_peer_id_bytes(left, right))
+        {
+            return Err(PeerRecordPublicationError::SubjectNotFresh(Box::new(
+                *not_fresh,
+            )));
+        }
+
+        match PeerRecordBatch::new(
+            selected_indices[..subjects.len()]
+                .iter()
+                .map(|&index| self.records[index].record.clone()),
+        ) {
+            Ok(batch) => Ok(batch),
+            Err(PeerRecordExchangeWireError::Allocation(source)) => {
+                Err(PeerRecordPublicationError::Allocation(source))
+            }
+            Err(source) => unreachable!(
+                "validated peer-record publication violated batch invariants: {source}"
+            ),
+        }
     }
 
     /// Admits one already-verified record from a configured bootstrap source.
@@ -712,6 +801,69 @@ impl PeerAddressStore {
             return Err(PeerAddressStoreError::Commit { source });
         }
         Ok(())
+    }
+}
+
+/// Error deriving one caller-selected peer-record publication from a store.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PeerRecordPublicationError {
+    /// A prior commit failure poisoned the store handle.
+    Poisoned,
+    /// The caller selected more subjects than one canonical batch can contain.
+    TooManySubjects { actual: usize, maximum: usize },
+    /// The caller selected one subject more than once.
+    DuplicateSubject(Box<PeerId>),
+    /// The caller selected a subject that the store does not retain.
+    UnknownSubject(Box<PeerId>),
+    /// The supplied local evaluation time preceded the Unix epoch.
+    TimeBeforeUnixEpoch,
+    /// A selected retained subject was not locally fresh at the supplied time.
+    SubjectNotFresh(Box<PeerId>),
+    /// Reserving the owned canonical batch failed.
+    Allocation(TryReserveError),
+}
+
+impl fmt::Display for PeerRecordPublicationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Poisoned => formatter
+                .write_str("cannot derive peer-record publication from a poisoned address store"),
+            Self::TooManySubjects { actual, maximum } => write!(
+                formatter,
+                "peer-record publication selects {actual} subjects; maximum is {maximum}"
+            ),
+            Self::DuplicateSubject(peer_id) => write!(
+                formatter,
+                "peer-record publication selects subject {peer_id} more than once"
+            ),
+            Self::UnknownSubject(peer_id) => write!(
+                formatter,
+                "peer-record publication subject {peer_id} is not retained"
+            ),
+            Self::TimeBeforeUnixEpoch => {
+                formatter.write_str("peer-record publication time precedes Unix epoch")
+            }
+            Self::SubjectNotFresh(peer_id) => write!(
+                formatter,
+                "peer-record publication subject {peer_id} is not fresh at the supplied time"
+            ),
+            Self::Allocation(source) => {
+                write!(
+                    formatter,
+                    "cannot reserve peer-record publication batch: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for PeerRecordPublicationError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Allocation(source) => Some(source),
+            _ => None,
+        }
     }
 }
 

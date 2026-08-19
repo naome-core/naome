@@ -218,6 +218,35 @@ total order selects at most eight rows while preserving at most one address per
 subject, two subjects per source, and one candidate per IPv4 `/16` or IPv6
 `/32` group. A selected candidate conveys no reachability or artifact authority.
 
+### Caller-selected publication snapshot
+
+One store, one caller-supplied local evaluation time, and one
+caller-selected subject-identity slice derive one owned
+canonical `PeerRecordBatch`. The store applies this exact precedence before
+cloning any retained record:
+
+1. reject a poisoned handle;
+2. reject more than 32 selected subjects;
+3. reject the lowest duplicated subject in raw `PeerId` order;
+4. reject the lowest selected subject not retained by the store;
+5. reject an evaluation time before the Unix epoch; and
+6. reject the lowest retained subject outside the local half-open freshness
+   interval `receipt_time <= now < receipt_time + 604800`.
+
+An empty selection still validates store health and time. The local issuer's
+own identity is unretained by construction and therefore follows the same
+unknown-subject result. Success returns every selected subject's exact current
+signed envelope in ascending raw identity order. No selected subject is omitted
+or substituted, and a newer retained sequence is the record returned.
+
+The projection is read-only and all-or-nothing. It does not refresh receipt
+times, rerank dial candidates, write a snapshot, or expose local receipt time or
+configured-bootstrap provenance on the wire. The returned batch owns its
+records, so later replacement, expiry, or store reopen cannot change it. The
+caller may pass that snapshot to a newly constructed responder, but selecting
+subjects and replacing an existing responder remain explicit caller actions;
+the store starts no publication or gossip task.
+
 ### Snapshot ownership, encoding, and recovery
 
 One store holds an exclusive cooperative sidecar lock for the lifetime of its
@@ -503,10 +532,11 @@ dependency upgrades must revalidate it.
 One dedicated responder consumes a verified canonical batch of `0..=32`
 records, encodes it once, drops the decoded batch, and retains one shared
 immutable response buffer for its lifetime. Every successful response uses
-identical bytes; changing publication requires a new responder. It does not
-read a store, issue records, apply TTL, preserve upstream provenance, or infer
-freshness or completeness. An empty configured batch is valid, but no rejection
-or failure is encoded as an empty response.
+identical bytes; changing publication requires a new responder. Its input may
+be an earlier caller-selected store projection, but the responder does not read
+or watch that store, issue records, apply TTL, preserve upstream provenance, or
+infer freshness or completeness. An empty configured batch is valid, but no
+rejection or failure is encoded as an empty response.
 
 The responder supports only inbound `/naome/peer-record-exchange`, one
 listener, and any successfully Noise-authenticated requester. It has no dial
@@ -585,8 +615,8 @@ This contract provides bounded canonical self-signed address claims, exact
 Noise authentication for configured and caller-selected learned pulls,
 configured-bootstrap-root provenance, local receipt freshness, retained
 sequence watermarks, atomic snapshot transitions, deterministic local candidate
-diversification, commit-before-return local issuance, and bounded directional
-exchange. It does not provide reachability, key custody, rollback protection,
-live publication, automatic discovery scheduling, artifact authorization,
-operator independence, reputation, Sybil or eclipse resistance, consensus, or
-finality.
+diversification, bounded caller-selected publication snapshots,
+commit-before-return local issuance, and bounded directional exchange. It does
+not provide reachability, key custody, rollback protection, live publication,
+automatic discovery scheduling, artifact authorization, operator independence,
+reputation, Sybil or eclipse resistance, consensus, or finality.
