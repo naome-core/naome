@@ -147,14 +147,31 @@ async fn exact_noise_authenticated_candidate_owns_response_until_drop() {
     let source_peer_id = source_identity.public().to_peer_id();
     let other_peer_id = other_identity.public().to_peer_id();
     let advertised = Keypair::generate_ed25519();
-    let response = PeerRecordBatch::new([signed_record(
-        &advertised,
-        "/ip4/31.1.0.1/tcp/4001".parse().unwrap(),
-    )])
+    let advertised_peer_id = advertised.public().to_peer_id();
+    let advertised_address: Multiaddr = "/ip4/31.1.0.1/tcp/4001".parse().unwrap();
+    let source_directory = TestDirectory::new("learned-store-publication");
+    let root = Keypair::generate_ed25519().public().to_peer_id();
+    let mut source_store = PeerAddressStore::create(
+        source_directory.path(),
+        source_peer_id,
+        [BootstrapPeer::new(root, "/ip4/127.0.0.1/tcp/39000".parse().unwrap()).unwrap()],
+    )
     .unwrap();
+    let stored_at = SystemTime::now();
+    let _ = source_store
+        .admit_record(
+            root,
+            signed_record(&advertised, advertised_address.clone()),
+            stored_at,
+        )
+        .unwrap();
+    let response = source_store
+        .peer_record_publication(stored_at, &[advertised_peer_id])
+        .unwrap();
+    assert_eq!(response.records()[0].peer_id(), advertised_peer_id);
+    assert_eq!(response.records()[0].addresses(), &[advertised_address]);
     let mut server = PeerRecordBootstrapResponder::new(source_identity, response).unwrap();
     let source_address = listen(&mut server).await;
-    let root = Keypair::generate_ed25519().public().to_peer_id();
     let configured = DialCandidate::for_test(source_peer_id, source_address, root);
     let other = DialCandidate::for_test(
         other_peer_id,

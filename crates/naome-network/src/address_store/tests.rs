@@ -990,11 +990,17 @@ fn failed_batch_commit_poisoning_never_installs_a_prefix() {
     assert_eq!(directory.snapshot(), before);
     assert!(matches!(store.len(), Err(PeerAddressStoreError::Poisoned)));
     assert_eq!(store.commit_attempts, commit_attempts + 1);
+    let invalid_time = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+    let oversized = vec![local.public().to_peer_id(); MAX_PEER_RECORDS_PER_BATCH + 1];
+    assert!(matches!(
+        store.peer_record_publication(invalid_time, &oversized),
+        Err(PeerRecordPublicationError::Poisoned)
+    ));
     assert!(matches!(
         store.admit_record_batch(
             deterministic_key(106).public().to_peer_id(),
             batch([record(&local, 1, vec![global_address(154, 1, 4001)])]),
-            UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap(),
+            invalid_time,
         ),
         Err(PeerAddressStoreError::Poisoned)
     ));
@@ -1003,6 +1009,277 @@ fn failed_batch_commit_poisoning_never_installs_a_prefix() {
     let reopened =
         PeerAddressStore::open(directory.path(), local.public().to_peer_id(), bootstraps).unwrap();
     assert!(reopened.is_empty().unwrap());
+}
+
+#[test]
+fn publication_is_canonical_exact_owned_and_read_only() {
+    let directory = TestDirectory::new("publication-owned");
+    let local = deterministic_key(106);
+    let source = deterministic_key(107);
+    let first = deterministic_key(108);
+    let second = deterministic_key(109);
+    let source_id = source.public().to_peer_id();
+    let first_v1 = record(&first, 1, vec![global_address(31, 1, 4001)]);
+    let second_v1 = record(&second, 1, vec![global_address(32, 1, 4002)]);
+    let first_v1_bytes = first_v1.envelope_bytes().to_vec();
+    let second_v1_bytes = second_v1.envelope_bytes().to_vec();
+    let mut store = PeerAddressStore::create(
+        directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&source, 4001)],
+    )
+    .unwrap();
+    let _ = store
+        .admit_record_batch(source_id, batch([second_v1, first_v1]), unix_time(1_000))
+        .unwrap();
+    let before = directory.snapshot();
+    let commit_attempts = store.commit_attempts;
+
+    let publication = store
+        .peer_record_publication(
+            unix_time(1_001),
+            &[second.public().to_peer_id(), first.public().to_peer_id()],
+        )
+        .unwrap();
+    let mut expected = vec![
+        (first.public().to_peer_id(), first_v1_bytes.as_slice()),
+        (second.public().to_peer_id(), second_v1_bytes.as_slice()),
+    ];
+    expected.sort_unstable_by(|left, right| compare_peer_id_bytes(&left.0, &right.0));
+    assert_eq!(publication.len(), 2);
+    for (actual, (expected_id, expected_bytes)) in publication.records().iter().zip(&expected) {
+        assert_eq!(actual.peer_id(), *expected_id);
+        assert_eq!(actual.envelope_bytes(), *expected_bytes);
+    }
+    assert_eq!(directory.snapshot(), before);
+    assert_eq!(store.commit_attempts, commit_attempts);
+
+    let first_v2 = record(&first, 2, vec![global_address(33, 1, 4003)]);
+    let first_v2_bytes = first_v2.envelope_bytes().to_vec();
+    assert_eq!(
+        store
+            .admit_record(source_id, first_v2, unix_time(1_100))
+            .unwrap(),
+        PeerRecordAdmission::Replaced
+    );
+    let retained_old = publication
+        .records()
+        .iter()
+        .find(|record| record.peer_id() == first.public().to_peer_id())
+        .unwrap();
+    assert_eq!(retained_old.envelope_bytes(), first_v1_bytes);
+    let current = store
+        .peer_record_publication(unix_time(1_100), &[first.public().to_peer_id()])
+        .unwrap();
+    assert_eq!(current.records()[0].envelope_bytes(), first_v2_bytes);
+
+    drop(store);
+    let reopened = PeerAddressStore::open(
+        directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&source, 4001)],
+    )
+    .unwrap();
+    let reopened_publication = reopened
+        .peer_record_publication(unix_time(1_101), &[first.public().to_peer_id()])
+        .unwrap();
+    assert_eq!(
+        reopened_publication.records()[0].envelope_bytes(),
+        first_v2_bytes
+    );
+}
+
+#[test]
+fn publication_is_bounded_and_has_stable_failure_precedence() {
+    let directory = TestDirectory::new("publication-precedence");
+    let local = deterministic_key(110);
+    let source = deterministic_key(111);
+    let source_id = source.public().to_peer_id();
+    let subjects = (0..MAX_PEER_RECORDS_PER_BATCH)
+        .map(|index| deterministic_key(u8::try_from(120 + index).unwrap()))
+        .collect::<Vec<_>>();
+    let records = subjects.iter().enumerate().map(|(index, subject)| {
+        record(
+            subject,
+            1,
+            vec![global_address(
+                u8::try_from(40 + index).unwrap(),
+                1,
+                u16::try_from(4_100 + index).unwrap(),
+            )],
+        )
+    });
+    let mut store = PeerAddressStore::create(
+        directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&source, 4001)],
+    )
+    .unwrap();
+    let _ = store
+        .admit_record_batch(source_id, batch(records), unix_time(2_000))
+        .unwrap();
+    let mut subject_ids = subjects
+        .iter()
+        .map(|subject| subject.public().to_peer_id())
+        .collect::<Vec<_>>();
+    subject_ids.sort_unstable_by(compare_peer_id_bytes);
+    subject_ids.reverse();
+    let publication = store
+        .peer_record_publication(unix_time(2_001), &subject_ids)
+        .unwrap();
+    assert_eq!(publication.len(), MAX_PEER_RECORDS_PER_BATCH);
+    assert!(publication.records().windows(2).all(|pair| {
+        compare_peer_id_bytes(pair[0].peer_id_ref(), pair[1].peer_id_ref()).is_lt()
+    }));
+
+    let invalid_time = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+    let mut oversized = subject_ids.clone();
+    oversized.push(subject_ids[0]);
+    assert!(matches!(
+        store.peer_record_publication(invalid_time, &oversized),
+        Err(PeerRecordPublicationError::TooManySubjects {
+            actual,
+            maximum: MAX_PEER_RECORDS_PER_BATCH,
+        }) if actual == MAX_PEER_RECORDS_PER_BATCH + 1
+    ));
+
+    let mut duplicate_candidates = [subject_ids[0], subject_ids[1]];
+    duplicate_candidates.sort_unstable_by(compare_peer_id_bytes);
+    let lower_duplicate = duplicate_candidates[0];
+    let higher_duplicate = duplicate_candidates[1];
+    let unknown = deterministic_key(200).public().to_peer_id();
+    let duplicate_selection = [
+        higher_duplicate,
+        lower_duplicate,
+        higher_duplicate,
+        unknown,
+        lower_duplicate,
+    ];
+    let duplicate_error = store
+        .peer_record_publication(invalid_time, &duplicate_selection)
+        .unwrap_err();
+    assert!(matches!(
+        &duplicate_error,
+        PeerRecordPublicationError::DuplicateSubject(peer_id)
+            if **peer_id == lower_duplicate
+    ));
+    assert!(std::error::Error::source(&duplicate_error).is_none());
+    assert_eq!(
+        duplicate_error.to_string(),
+        format!("peer-record publication selects subject {lower_duplicate} more than once")
+    );
+    let allocation = Vec::<u8>::new().try_reserve_exact(usize::MAX).unwrap_err();
+    let allocation_error = PeerRecordPublicationError::Allocation(allocation);
+    assert!(std::error::Error::source(&allocation_error).is_some());
+
+    let mut unknowns = [
+        deterministic_key(201).public().to_peer_id(),
+        deterministic_key(202).public().to_peer_id(),
+    ];
+    unknowns.sort_unstable_by(compare_peer_id_bytes);
+    assert!(matches!(
+        store.peer_record_publication(invalid_time, &[unknowns[1], unknowns[0]]),
+        Err(PeerRecordPublicationError::UnknownSubject(peer_id))
+            if *peer_id == unknowns[0]
+    ));
+    assert!(matches!(
+        store.peer_record_publication(invalid_time, &[subject_ids[0]]),
+        Err(PeerRecordPublicationError::TimeBeforeUnixEpoch)
+    ));
+
+    let mut stale = [subject_ids[0], subject_ids[1]];
+    stale.sort_unstable_by(compare_peer_id_bytes);
+    let lowest_stale = *subject_ids.last().unwrap();
+    let higher_unknown = (206..=u8::MAX)
+        .map(|seed| deterministic_key(seed).public().to_peer_id())
+        .find(|peer_id| compare_peer_id_bytes(&lowest_stale, peer_id).is_lt())
+        .expect("the deterministic fixture contains an unknown identity above the stale subject");
+    assert!(matches!(
+        store.peer_record_publication(
+            unix_time(2_000 + PEER_RECORD_TTL.as_secs()),
+            &[higher_unknown, lowest_stale]
+        ),
+        Err(PeerRecordPublicationError::UnknownSubject(peer_id))
+            if *peer_id == higher_unknown
+    ));
+    assert!(matches!(
+        store.peer_record_publication(
+            unix_time(2_000 + PEER_RECORD_TTL.as_secs()),
+            &[stale[1], stale[0]]
+        ),
+        Err(PeerRecordPublicationError::SubjectNotFresh(peer_id))
+            if *peer_id == stale[0]
+    ));
+}
+
+#[test]
+fn publication_uses_exact_local_freshness_boundaries() {
+    let directory = TestDirectory::new("publication-freshness");
+    let local = deterministic_key(203);
+    let source = deterministic_key(204);
+    let subject = deterministic_key(205);
+    let subject_id = subject.public().to_peer_id();
+    let received_at = 3_000;
+    let mut store = PeerAddressStore::create(
+        directory.path(),
+        local.public().to_peer_id(),
+        [bootstrap(&source, 4001)],
+    )
+    .unwrap();
+    let _ = store
+        .admit_record(
+            source.public().to_peer_id(),
+            record(&subject, 1, vec![global_address(72, 1, 4001)]),
+            unix_time(received_at),
+        )
+        .unwrap();
+
+    assert!(
+        store
+            .peer_record_publication(unix_time(0), &[])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        store.peer_record_publication(UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap(), &[]),
+        Err(PeerRecordPublicationError::TimeBeforeUnixEpoch)
+    ));
+    assert!(matches!(
+        store.peer_record_publication(unix_time(received_at - 1), &[subject_id]),
+        Err(PeerRecordPublicationError::SubjectNotFresh(peer_id)) if *peer_id == subject_id
+    ));
+    assert!(matches!(
+        store.peer_record_publication(
+            unix_time(received_at),
+            &[local.public().to_peer_id()]
+        ),
+        Err(PeerRecordPublicationError::UnknownSubject(peer_id))
+            if *peer_id == local.public().to_peer_id()
+    ));
+    assert_eq!(
+        store
+            .peer_record_publication(unix_time(received_at), &[subject_id])
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .peer_record_publication(
+                unix_time(received_at + PEER_RECORD_TTL.as_secs() - 1),
+                &[subject_id]
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        store.peer_record_publication(
+            unix_time(received_at + PEER_RECORD_TTL.as_secs()),
+            &[subject_id]
+        ),
+        Err(PeerRecordPublicationError::SubjectNotFresh(peer_id)) if *peer_id == subject_id
+    ));
 }
 
 #[test]
