@@ -4,7 +4,7 @@
 
 This document normatively defines transport-neutral artifact, artifact-block,
 and artifact-chain-head exchanges; authenticated static-peer framing; head
-announcements; resource bounds; and journal-backed serving. The
+announcements; resource bounds; and store- or journal-backed serving. The
 [Caller-Selected Orchestration](caller-selected-orchestration.md) contract owns
 survey, broadcast, ancestry, import, and catch-up workflows.
 
@@ -173,7 +173,7 @@ One network instance enforces:
 | Blocks retained by one ancestry pull | 16 |
 | Managed-session idle expiry | effectively disabled; at most 8 sessions |
 | Pre-Noise inbound authentication burst/refill | 8 / 1 per second |
-| Journal-response attempt burst/refill | 8 / 1 per second |
+| Store- or journal-response attempt burst/refill | 8 / 1 per second |
 
 Managed redial delays are `1, 2, 4, 8, 16, 32, 60` seconds and then remain at
 60. A connection stable for 60 seconds resets backoff. Idle expiry is
@@ -188,9 +188,10 @@ declared artifact-response ingress is the same 33,554,440 bytes. These limits do
 not include transient decoder, checker, or journal state.
 
 Pending connection limits precede the global pre-Noise token bucket. The bucket
-starts with eight and refills one per monotonic second to eight. The journal
-response bucket is shared across artifact, block, and head serving. Neither is
-per-source fairness, DDoS protection, or Sybil resistance.
+starts with eight and refills one per monotonic second to eight. The inbound
+response bucket is shared across artifact, block, and head serving from either
+a journal or candidate store. Neither is per-source fairness, DDoS protection,
+or Sybil resistance.
 
 ## Outbound correlation and tickets
 
@@ -208,6 +209,35 @@ ticket consumes it or is dropped; terminal failure releases before delivery.
 Dropping these direct tickets does not cancel libp2p work. Their peer slot and
 permit remain until a terminal event. Unsupported remote protocol is a later
 transport failure, not a start failure.
+
+## Candidate-store retention and serving
+
+A caller may consume one exact block ticket and its matching generation-bound
+terminal into a caller-supplied chain-scoped `ArtifactBlockCandidateStore`.
+Ticket mismatch is returned with both routable values before store access. A
+matched transport failure or the authenticated peer's `Unavailable` response is
+reported without insertion. A found response has already passed fixed 128-byte
+canonical decoding and exact `ArtifactBlockId` comparison; success is returned
+only after the store reports `Inserted` or the exact idempotent
+`AlreadyPresent`. Capacity, corruption, and ambiguous durability remain typed
+candidate-store failures.
+
+The request carries no chain ID, so only the caller routes an inbound request to
+the intended chain-scoped candidate store. Candidate-store response precedence
+is:
+
+1. store health and exact integrity-checked candidate read;
+2. response-channel availability;
+3. shared inbound response token;
+4. fixed block encoding or `Unavailable` construction; and
+5. libp2p response submission.
+
+A store read failure never becomes `Unavailable` and may poison the store under
+its own integrity contract. Serving does not insert, replace, refresh, promote,
+or delete a candidate. The store retains no source or requester identity or
+receipt time, and a submitted response does not prove remote receipt. This
+composition defines no automatic relay, retry, peer or target selection,
+payload availability, chain membership, fork choice, consensus, or finality.
 
 ## Exact block import
 

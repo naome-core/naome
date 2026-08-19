@@ -8,18 +8,19 @@ use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome::block_exchange::{
     ARTIFACT_BLOCK_RESPONSE_MAX_BYTES, ArtifactBlockExchangeWireError, ArtifactBlockRequest,
 };
-use naome_chain::{ARTIFACT_BLOCK_BYTES, ArtifactBlockDecodeError, ArtifactBlockId};
+use naome_chain::{ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockDecodeError, ArtifactBlockId};
+use naome_storage::ArtifactBlockCandidateStoreLimits;
 use tokio::time::timeout;
 
 use super::*;
 use crate::codec::ArtifactBlockWireResponse;
 use crate::tests::{
-    TestDirectory, apply_fresh_blocks, connected_pair, create_journal, pairing_bytes,
-    test_network_for_peers, union_bytes,
+    TestDirectory, apply_fresh_blocks, assert_snapshot, connected_pair, create_journal,
+    pairing_bytes, snapshot, test_chain_definition, test_network_for_peers, union_bytes,
 };
 use crate::{
-    ExchangeRequestId, Keypair, MAX_PENDING_REQUESTS, NetworkEvent, PendingBudget,
-    RequestStartError,
+    ExchangeRequestId, INBOUND_APPLICATION_REQUEST_BURST, Keypair, MAX_PENDING_REQUESTS,
+    NetworkEvent, PendingBudget, RequestStartError,
 };
 
 fn block_id(byte: u8) -> ArtifactBlockId {
@@ -349,6 +350,141 @@ fn physical_failure_releases_the_permit_and_unknown_late_events_are_ignored() {
 }
 
 #[test]
+fn candidate_retention_routes_before_store_access_and_maps_terminal_failures() {
+    let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+    let request = ArtifactBlockRequest::new(block_id(0x4b));
+    let mut first = test_network_for_peers(&[peer_id]);
+    let mut second = test_network_for_peers(&[peer_id]);
+    let first_ticket = first.request_block(peer_id, request).unwrap();
+    let second_ticket = second.request_block(peer_id, request).unwrap();
+    let second_event =
+        block_response_event(&mut second, second_ticket.request_id, peer_id, Vec::new());
+    let store_directory = TestDirectory::new("candidate-routing");
+    let mut store = ArtifactBlockCandidateStore::create(
+        store_directory.path(),
+        test_chain_definition(),
+        ArtifactBlockCandidateStoreLimits::new(1).unwrap(),
+    )
+    .unwrap();
+
+    let mismatch = first_ticket
+        .complete_into_candidate_store(second_event, &mut store)
+        .unwrap_err();
+    assert!(store.is_empty().unwrap());
+    let (first_ticket, second_event) = (*mismatch).into_parts();
+    let unavailable = second_ticket
+        .complete_into_candidate_store(second_event, &mut store)
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(
+        &unavailable,
+        ArtifactBlockCandidateRetentionError::BlockUnavailable {
+            peer_id: actual_peer,
+            block_id: actual_block,
+        } if *actual_peer == peer_id && *actual_block == request.block_id()
+    ));
+    assert!(unavailable.source().is_none());
+    assert!(store.is_empty().unwrap());
+
+    let failure_event = block_failure_event(
+        &mut first,
+        first_ticket.request_id,
+        peer_id,
+        request_response::OutboundFailure::Timeout,
+    );
+    let failure = first_ticket
+        .complete_into_candidate_store(failure_event, &mut store)
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(
+        &failure,
+        ArtifactBlockCandidateRetentionError::RequestFailed {
+            peer_id: actual_peer,
+            block_id: actual_block,
+            source,
+        } if *actual_peer == peer_id
+            && *actual_block == request.block_id()
+            && matches!(
+                source.as_ref(),
+                OutboundArtifactBlockFailure::Transport(
+                    request_response::OutboundFailure::Timeout
+                )
+            )
+    ));
+    assert!(failure.source().is_some());
+    assert!(store.is_empty().unwrap());
+}
+
+#[test]
+fn candidate_retention_is_idempotent_and_preserves_store_failures() {
+    let first_block = ArtifactBlock::from_canonical_bytes(&[0x11; ARTIFACT_BLOCK_BYTES]).unwrap();
+    let first_block_id = first_block.id();
+    let second_block = ArtifactBlock::from_canonical_bytes(&[0x22; ARTIFACT_BLOCK_BYTES]).unwrap();
+    let second_block_id = second_block.id();
+    let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = test_network_for_peers(&[peer_id]);
+    let store_directory = TestDirectory::new("candidate-retention-store");
+    let mut store = ArtifactBlockCandidateStore::create(
+        store_directory.path(),
+        test_chain_definition(),
+        ArtifactBlockCandidateStoreLimits::new(1).unwrap(),
+    )
+    .unwrap();
+
+    for expected in [
+        ArtifactBlockCandidateInsertOutcome::Inserted,
+        ArtifactBlockCandidateInsertOutcome::AlreadyPresent,
+    ] {
+        let ticket = network
+            .request_block(peer_id, ArtifactBlockRequest::new(first_block_id))
+            .unwrap();
+        let event = block_response_event(
+            &mut network,
+            ticket.request_id,
+            peer_id,
+            first_block.to_canonical_bytes().to_vec(),
+        );
+        assert_eq!(
+            ticket
+                .complete_into_candidate_store(event, &mut store)
+                .unwrap()
+                .unwrap(),
+            expected
+        );
+    }
+
+    let full_ticket = network
+        .request_block(peer_id, ArtifactBlockRequest::new(second_block_id))
+        .unwrap();
+    let full_event = block_response_event(
+        &mut network,
+        full_ticket.request_id,
+        peer_id,
+        second_block.to_canonical_bytes().to_vec(),
+    );
+    let full = full_ticket
+        .complete_into_candidate_store(full_event, &mut store)
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(
+        &full,
+        ArtifactBlockCandidateRetentionError::CandidateStore {
+            block_id,
+            source,
+        } if *block_id == second_block_id
+            && matches!(
+                source.as_ref(),
+                ArtifactBlockCandidateStoreError::EntryLimitExceeded {
+                    actual: 2,
+                    maximum: 1,
+                }
+            )
+    ));
+    assert!(full.source().is_some());
+    assert_eq!(store.len().unwrap(), 1);
+}
+
+#[test]
 fn dropping_a_ticket_does_not_cancel_or_release_its_physical_request() {
     let peer_id = Keypair::generate_ed25519().public().to_peer_id();
     let mut network = test_network_for_peers(&[peer_id]);
@@ -501,10 +637,13 @@ fn successful_block_event_holds_the_shared_global_permit_until_completion() {
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
 }
 
-async fn receive_block(
+async fn receive_block_with(
     client: &mut StaticArtifactNetwork,
     server: &mut StaticArtifactNetwork,
-    server_journal: &ArtifactChainJournal,
+    mut respond: impl FnMut(
+        &mut StaticArtifactNetwork,
+        InboundArtifactBlockRequest,
+    ) -> Result<(), RespondError>,
 ) -> OutboundArtifactBlockEvent {
     timeout(Duration::from_secs(10), async {
         loop {
@@ -516,7 +655,7 @@ async fn receive_block(
                 }
                 event = server.next_event() => match event {
                     NetworkEvent::InboundBlockRequest(inbound) => {
-                        server.respond_block_from_journal(inbound, server_journal).unwrap();
+                        respond(server, inbound).unwrap();
                     }
                     NetworkEvent::InboundBlockFailure { error, .. } => {
                         panic!("inbound artifact-block exchange failed: {error}");
@@ -528,6 +667,170 @@ async fn receive_block(
     })
     .await
     .expect("artifact-block exchange timed out")
+}
+
+async fn receive_inbound_block_request(
+    client: &mut StaticArtifactNetwork,
+    server: &mut StaticArtifactNetwork,
+) -> InboundArtifactBlockRequest {
+    timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => {
+                    if let NetworkEvent::OutboundBlock(event) = event {
+                        panic!("block request terminated before reaching the responder: {event:?}");
+                    }
+                }
+                event = server.next_event() => {
+                    if let NetworkEvent::InboundBlockRequest(inbound) = event {
+                        return inbound;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("inbound artifact-block request timed out")
+}
+
+#[tokio::test]
+async fn candidate_store_relay_is_exact_durable_and_never_selected() {
+    let (mut relay, mut origin, _, origin_peer_id) = connected_pair().await;
+    let origin_directory = TestDirectory::new("candidate-relay-origin");
+    let mut origin_journal = create_journal(origin_directory.path()).unwrap();
+    apply_fresh_blocks(&mut origin_journal, [pairing_bytes()]);
+    let target_block_id = origin_journal.head_block_id().unwrap();
+    let expected_block = *origin_journal.block(target_block_id).unwrap().unwrap();
+
+    let relay_directory = TestDirectory::new("candidate-relay-store");
+    let relay_journal = create_journal(relay_directory.path()).unwrap();
+    let relay_selected = snapshot(&relay_directory, &relay_journal);
+    let limits = ArtifactBlockCandidateStoreLimits::new(1).unwrap();
+    let mut relay_store = ArtifactBlockCandidateStore::create(
+        relay_directory.path(),
+        test_chain_definition(),
+        limits,
+    )
+    .unwrap();
+
+    let ticket = relay
+        .request_block(origin_peer_id, ArtifactBlockRequest::new(target_block_id))
+        .unwrap();
+    let event = receive_block_with(&mut relay, &mut origin, |origin, inbound| {
+        origin.respond_block_from_journal(inbound, &origin_journal)
+    })
+    .await;
+    assert_eq!(
+        ticket
+            .complete_into_candidate_store(event, &mut relay_store)
+            .unwrap()
+            .unwrap(),
+        ArtifactBlockCandidateInsertOutcome::Inserted
+    );
+    assert_snapshot(&relay_directory, &relay_journal, &relay_selected);
+    drop(relay_store);
+    drop(relay);
+    drop(origin);
+
+    let mut reopened =
+        ArtifactBlockCandidateStore::open(relay_directory.path(), test_chain_definition(), limits)
+            .unwrap();
+
+    let (mut downstream, mut relay_server, _, relay_peer_id) = connected_pair().await;
+    let found_ticket = downstream
+        .request_block(relay_peer_id, ArtifactBlockRequest::new(target_block_id))
+        .unwrap();
+    let found_event = receive_block_with(&mut downstream, &mut relay_server, |server, inbound| {
+        server.respond_block_from_candidate_store(inbound, &mut reopened)
+    })
+    .await;
+    assert_eq!(
+        found_ticket
+            .complete(found_event)
+            .unwrap()
+            .unwrap()
+            .into_block(),
+        Some(expected_block)
+    );
+
+    let unknown_id = block_id(0xff);
+    let unavailable_ticket = downstream
+        .request_block(relay_peer_id, ArtifactBlockRequest::new(unknown_id))
+        .unwrap();
+    let unavailable_event =
+        receive_block_with(&mut downstream, &mut relay_server, |server, inbound| {
+            server.respond_block_from_candidate_store(inbound, &mut reopened)
+        })
+        .await;
+    assert!(
+        unavailable_ticket
+            .complete(unavailable_event)
+            .unwrap()
+            .unwrap()
+            .is_unavailable()
+    );
+    assert_snapshot(&relay_directory, &relay_journal, &relay_selected);
+}
+
+#[tokio::test]
+async fn candidate_store_read_failure_precedes_the_shared_response_budget() {
+    let candidate = ArtifactBlock::from_canonical_bytes(&[0x33; ARTIFACT_BLOCK_BYTES]).unwrap();
+    let candidate_id = candidate.id();
+    let store_directory = TestDirectory::new("candidate-response-precedence");
+    let mut store = ArtifactBlockCandidateStore::create(
+        store_directory.path(),
+        test_chain_definition(),
+        ArtifactBlockCandidateStoreLimits::new(1).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.insert(&candidate).unwrap(),
+        ArtifactBlockCandidateInsertOutcome::Inserted
+    );
+
+    let (mut client, mut server, _, server_peer_id) = connected_pair().await;
+    let ticket = client
+        .request_block(server_peer_id, ArtifactBlockRequest::new(candidate_id))
+        .unwrap();
+    let inbound = receive_inbound_block_request(&mut client, &mut server).await;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(
+            store_directory
+                .path()
+                .join("artifact-block-candidate-store.log"),
+        )
+        .unwrap()
+        .set_len(0)
+        .unwrap();
+    for _ in 0..INBOUND_APPLICATION_REQUEST_BURST {
+        server.take_inbound_application_request().unwrap();
+    }
+    assert!(matches!(
+        server.take_inbound_application_request(),
+        Err(RespondError::RateLimited)
+    ));
+
+    let error = server
+        .respond_block_from_candidate_store(inbound, &mut store)
+        .unwrap_err();
+    let RespondError::CandidateStore(source) = &error else {
+        panic!("candidate-store read failure lost its source: {error}");
+    };
+    assert!(matches!(
+        source,
+        ArtifactBlockCandidateStoreError::Read { .. }
+    ));
+    assert_eq!(
+        error.to_string(),
+        format!("cannot read artifact-block candidate store: {source}")
+    );
+    assert!(error.source().is_some());
+    assert!(matches!(
+        store.is_empty(),
+        Err(ArtifactBlockCandidateStoreError::Poisoned)
+    ));
+    drop(ticket);
 }
 
 #[tokio::test]
@@ -547,7 +850,10 @@ async fn committed_block_found_and_unavailable_round_trip_without_client_mutatio
 
     let found_request = ArtifactBlockRequest::new(committed_block_id);
     let found_ticket = client.request_block(server_peer_id, found_request).unwrap();
-    let found_event = receive_block(&mut client, &mut server, &server_journal).await;
+    let found_event = receive_block_with(&mut client, &mut server, |server, inbound| {
+        server.respond_block_from_journal(inbound, &server_journal)
+    })
+    .await;
     assert!(found_ticket.accepts_event(&found_event));
     let found = found_ticket.complete(found_event).unwrap().unwrap();
     assert_eq!(found.into_block(), Some(expected_block));
@@ -559,7 +865,10 @@ async fn committed_block_found_and_unavailable_round_trip_without_client_mutatio
     let unavailable_ticket = client
         .request_block(server_peer_id, unavailable_request)
         .unwrap();
-    let unavailable_event = receive_block(&mut client, &mut server, &server_journal).await;
+    let unavailable_event = receive_block_with(&mut client, &mut server, |server, inbound| {
+        server.respond_block_from_journal(inbound, &server_journal)
+    })
+    .await;
     assert!(unavailable_ticket.accepts_event(&unavailable_event));
     assert!(
         unavailable_ticket
@@ -575,7 +884,10 @@ async fn committed_block_found_and_unavailable_round_trip_without_client_mutatio
     let reverse_ticket = server
         .request_block(client_peer_id, ArtifactBlockRequest::new(client_head))
         .unwrap();
-    let reverse_event = receive_block(&mut server, &mut client, &client_journal).await;
+    let reverse_event = receive_block_with(&mut server, &mut client, |client, inbound| {
+        client.respond_block_from_journal(inbound, &client_journal)
+    })
+    .await;
     assert!(reverse_ticket.accepts_event(&reverse_event));
     assert!(
         reverse_ticket
