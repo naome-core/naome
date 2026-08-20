@@ -34,13 +34,14 @@
 //! explicitly announce, broadcast, or survey source-bound untrusted chain heads
 //! across a bounded caller-selected peer set, may retrieve one bounded
 //! caller-selected and unselected block ancestry, imports one exact child or one
-//! consumed ancestry, reconstructs and begins importing one bounded ancestry
-//! from a caller-routed candidate store without block requests, or composes
-//! retrieval and import into one exact-target catch-up. Every import target
-//! remains a separate caller decision. The caller also explicitly admits a
-//! peer-record batch and may derive one owned canonical publication from exact
-//! fresh subjects retained by a peer-address store. The responder never reads
-//! that peer-address store and remains immutable after construction.
+//! consumed ancestry, durably fills one bounded candidate-store ancestry while
+//! reusing retained blocks, reconstructs and begins importing one bounded
+//! ancestry from a caller-routed candidate store without block requests, or
+//! composes retrieval and import into one exact-target catch-up. Every fill and
+//! import target remains a separate caller decision. The caller also explicitly
+//! admits a peer-record batch and may derive one owned canonical publication
+//! from exact fresh subjects retained by a peer-address store. The responder
+//! never reads that peer-address store and remains immutable after construction.
 //! [`StaticArtifactNetwork::next_journal_service_event`] serves authenticated
 //! artifact, block, and head pulls from one borrowed journal while returning
 //! announcements and every other event unchanged; it starts no background
@@ -51,6 +52,7 @@
 mod address_store;
 mod block_ancestry;
 mod block_ancestry_import;
+mod block_candidate_ancestry_fill;
 mod block_catch_up;
 mod block_import;
 mod block_transport;
@@ -126,6 +128,10 @@ pub use block_ancestry::{
 pub use block_ancestry_import::{
     ArtifactBlockAncestryImport, ArtifactBlockAncestryImportError,
     ArtifactBlockAncestryImportProgress, ArtifactBlockCandidateAncestryImportStartError,
+};
+pub use block_candidate_ancestry_fill::{
+    ArtifactBlockCandidateAncestryFill, ArtifactBlockCandidateAncestryFillError,
+    ArtifactBlockCandidateAncestryFillProgress,
 };
 pub use block_catch_up::{
     ArtifactBlockCatchUp, ArtifactBlockCatchUpError, ArtifactBlockCatchUpProgress,
