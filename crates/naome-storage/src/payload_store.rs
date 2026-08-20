@@ -5,12 +5,16 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, SeekFrom, Write};
 use std::path::Path;
 
+use naome_chain::ArtifactBlock;
 use naome_foundation::FOUNDATION_ID;
 use naome_ledger::AcceptedArtifactRecord;
 use naome_proof::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId};
 use sha2::{Digest, Sha256};
 
-use crate::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
+use crate::{
+    AppendPhase, ArtifactChainJournal, ArtifactChainJournalError, ExclusiveLockError, StoreIo,
+    open_exclusive_lock,
+};
 
 const LOCK_FILE_NAME: &str = "artifact-payload-store.lock";
 const STORE_FILE_NAME: &str = "artifact-payload-store.log";
@@ -89,11 +93,11 @@ impl Error for ArtifactPayloadStoreLimitsError {}
 
 /// One immutable tagged canonical artifact payload loaded from local storage.
 ///
-/// The payload was originally admitted through an [`AcceptedArtifactRecord`], but
-/// loading does not recreate that checked context. Before admission elsewhere,
-/// consumers must strictly decode, require canonical bytes, resolve and check
-/// dependencies, and compare the resulting artifact identity with
-/// [`Self::artifact_id`].
+/// The payload entered through an [`AcceptedArtifactRecord`] or the same-call
+/// direct-child validation gate, but loading does not recreate that checked
+/// context. Before admission elsewhere, consumers must strictly decode, require
+/// canonical bytes, resolve and check dependencies, and compare the resulting
+/// artifact identity with [`Self::artifact_id`].
 #[derive(PartialEq, Eq)]
 #[must_use]
 pub struct CanonicalArtifactPayload {
@@ -131,7 +135,7 @@ impl fmt::Debug for CanonicalArtifactPayload {
     }
 }
 
-/// The result of inserting one accepted artifact payload.
+/// The result of inserting one strictly gated artifact payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 pub enum ArtifactPayloadInsertOutcome {
@@ -141,12 +145,66 @@ pub enum ArtifactPayloadInsertOutcome {
     AlreadyPresent,
 }
 
+/// A failed direct-child candidate validation or payload archive.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CandidatePayloadArchiveError {
+    /// The block or payload failed validation against the journal's current head.
+    Validation {
+        source: Box<ArtifactChainJournalError>,
+    },
+    /// The strictly validated payload could not be archived.
+    Archive {
+        source: Box<CanonicalArtifactPayloadStoreError>,
+    },
+}
+
+impl CandidatePayloadArchiveError {
+    fn validation(source: ArtifactChainJournalError) -> Self {
+        Self::Validation {
+            source: Box::new(source),
+        }
+    }
+
+    fn archive(source: CanonicalArtifactPayloadStoreError) -> Self {
+        Self::Archive {
+            source: Box::new(source),
+        }
+    }
+}
+
+impl fmt::Display for CandidatePayloadArchiveError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Validation { source } => {
+                write!(formatter, "candidate payload validation failed: {source}")
+            }
+            Self::Archive { source } => {
+                write!(
+                    formatter,
+                    "validated candidate payload archive failed: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for CandidatePayloadArchiveError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Validation { source } => Some(source.as_ref()),
+            Self::Archive { source } => Some(source.as_ref()),
+        }
+    }
+}
+
 /// An exclusively opened append-only archive of canonical artifact payloads.
 ///
 /// The archive is scoped to the compiled Foundation contract rather than one
-/// deployment or artifact chain. Its sole write gate accepts already checked
-/// [`AcceptedArtifactRecord`] values. Persisted entries contain no dependency,
-/// statement, derivation, selected-chain, or consensus metadata.
+/// deployment or artifact chain. Writes accept either an already checked
+/// [`AcceptedArtifactRecord`] or exact bytes validated in the same call against
+/// one journal's current direct-child candidate. Persisted entries contain no
+/// dependency, statement, derivation, selected-chain, or consensus metadata.
 ///
 /// A commit I/O error poisons the handle because the durable outcome is then
 /// ambiguous. A post-open read or integrity failure also poisons it because the
@@ -220,6 +278,40 @@ impl CanonicalArtifactPayloadStore {
         record: &AcceptedArtifactRecord,
     ) -> Result<ArtifactPayloadInsertOutcome, CanonicalArtifactPayloadStoreError> {
         self.core.insert(record)
+    }
+
+    /// Strictly validates and durably archives one direct-child candidate payload.
+    ///
+    /// Archive health is checked before candidate work. Validation then uses the
+    /// journal's current exact head and selected artifact state without mutating
+    /// either. Only bytes that pass the complete existing block and artifact
+    /// validation are passed to the private archive write gate. Success does not
+    /// reserve, select, or authorize the block, and every later use of archived
+    /// bytes must validate them again in its target state.
+    pub fn validate_and_insert_candidate_payload(
+        &mut self,
+        selected: &ArtifactChainJournal,
+        block: &ArtifactBlock,
+        canonical_artifact_bytes: Vec<u8>,
+    ) -> Result<ArtifactPayloadInsertOutcome, CandidatePayloadArchiveError> {
+        self.core
+            .ensure_healthy()
+            .map_err(CandidatePayloadArchiveError::archive)?;
+        if canonical_artifact_bytes.len() > ARTIFACT_PAYLOAD_MAX_BYTES {
+            return match selected.validate_block(block, canonical_artifact_bytes) {
+                Err(source) => Err(CandidatePayloadArchiveError::validation(source)),
+                Ok(()) => unreachable!(
+                    "journal validation cannot accept an artifact payload above the canonical byte limit"
+                ),
+            };
+        }
+        let archive_bytes = canonical_artifact_bytes.clone();
+        selected
+            .validate_block(block, canonical_artifact_bytes)
+            .map_err(CandidatePayloadArchiveError::validation)?;
+        self.core
+            .insert_payload(block.artifact_id(), &archive_bytes)
+            .map_err(CandidatePayloadArchiveError::archive)
     }
 
     /// Loads one exact owned payload candidate and rechecks its entry integrity.
@@ -479,9 +571,15 @@ impl<F: StoreIo> ArtifactPayloadStoreCore<F> {
         &mut self,
         record: &AcceptedArtifactRecord,
     ) -> Result<ArtifactPayloadInsertOutcome, CanonicalArtifactPayloadStoreError> {
+        self.insert_payload(record.artifact_id(), record.canonical_artifact_bytes())
+    }
+
+    fn insert_payload(
+        &mut self,
+        artifact_id: ArtifactId,
+        payload: &[u8],
+    ) -> Result<ArtifactPayloadInsertOutcome, CanonicalArtifactPayloadStoreError> {
         self.ensure_healthy()?;
-        let artifact_id = record.artifact_id();
-        let payload = record.canonical_artifact_bytes();
         debug_assert!(!payload.is_empty());
         debug_assert!(payload.len() <= ARTIFACT_PAYLOAD_MAX_BYTES);
 

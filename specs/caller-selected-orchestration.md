@@ -236,6 +236,53 @@ candidate, and establishes no peer trust, reachability, target or branch
 selection, background retry schedule, network-wide availability, consensus,
 finality, or economic authority.
 
+### Direct candidate-payload validation and archive
+
+`StaticArtifactNetwork::start_artifact_block_candidate_payload_fill` is a
+separate caller-driven direct-peer workflow. The caller supplies one exact
+target, one chain-scoped `ArtifactBlockCandidateStore`, one matching selected
+journal, one Foundation-scoped `CanonicalArtifactPayloadStore`, and one peer
+identity used only if the exact committed payload is absent from that archive.
+The workflow does not choose any of those inputs.
+
+Start rejects unequal candidate-store and journal `ArtifactChainId` values
+before any health or disk read, then captures the selected head and rejects a
+target equal to that head, virtual genesis, or another selected block. It next
+integrity-reads the exact retained target block and requires its direct-parent,
+previous-root, and resulting-root shape to match the captured selected state.
+Only after those selected-context and candidate-shape checks does it
+integrity-read the archive. An exact archive hit is fully revalidated against
+that current journal through
+`CanonicalArtifactPayloadStore::validate_and_insert_candidate_payload`; it
+completes without inspecting peer configuration or opening a request. Archive
+presence alone is never treated as current validity.
+
+Only an archive miss validates the caller-supplied peer as statically
+configured and connected and starts one request for the block's exact committed
+`ArtifactId`. The request uses the existing Noise-authenticated session,
+generation correlation, global pending-request bound, and absolute artifact
+request deadline. It tries that peer once: there is no peer fallback, retry,
+rotation, or aggregate workflow deadline.
+
+The active fill accepts only its exact terminal from the network instance that
+started it. Transport failure, deadline, `Unavailable`, invalid payload, peer
+mismatch, or an unrelated event is typed and archives nothing. A found response
+first requires the selected head still to equal the captured head and then
+passes the owned bytes and retained block to
+`CanonicalArtifactPayloadStore::validate_and_insert_candidate_payload`.
+Completion occurs only after strict validation and a durable inserted or
+idempotently confirmed archive outcome.
+
+The candidate store is read-only apart from its existing integrity-read poison
+semantics, and the selected journal is never mutated. Previously acknowledged
+archive entries survive later ordinary failure; an ambiguous archive write
+retains the archive's poison-and-reopen boundary. The workflow requests no
+block, exposes no accepted-record or reusable-validation token, does not import,
+promote, select, rank, replace, refresh, or delete a candidate, records no peer
+provenance, starts no background task, and establishes no continued artifact
+validity, chain membership, network-wide availability, consensus, finality, or
+economic authority.
+
 ## Sequential ancestry import
 
 `ArtifactBlockAncestryImport` consumes one completed unselected ancestry so the
