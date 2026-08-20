@@ -43,6 +43,18 @@ returns no successor, leaves the predecessor unchanged, and retains the
 archive's existing typed poison-and-reopen boundary; an ambiguous write may be
 recovered only by dropping and reopening the archive.
 
+For caller-supplied bytes missing from the archive, an incremental
+candidate-branch reconstruction cursor may consume these successors in exact
+forward ancestry order. An awaiting cursor exclusively borrows the exact
+archive supplied at start and cannot redirect continuation to another archive.
+Each successor becomes available only after the corresponding archive
+acknowledgement, so an ordinary later failure can leave a durable validated
+payload prefix without exposing a partially reconstructed branch. A fresh
+reconstruction must integrity-read and fully revalidate every such archive hit
+against its newly chosen branch snapshot; the earlier acknowledgement is
+neither a reusable validation token nor proof that the target remains a
+candidate after selected-state advancement.
+
 The branch gate advances only the caller-held memory snapshot. It does not
 write a candidate branch, selected journal, block store, branch marker, or
 checked-record cache, and it does not expose an `AcceptedArtifactRecord` or a

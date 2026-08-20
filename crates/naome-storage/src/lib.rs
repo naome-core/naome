@@ -32,8 +32,9 @@ pub use block_candidate_store::{
 };
 
 pub use candidate_branch_reconstruction::{
-    CandidateBranchReconstructionError, CandidateBranchReconstructionLimits,
-    CandidateBranchReconstructionLimitsError, ReconstructedCandidateBranch,
+    CandidateBranchReconstructionCursor, CandidateBranchReconstructionError,
+    CandidateBranchReconstructionLimits, CandidateBranchReconstructionLimitsError,
+    CandidateBranchReconstructionProgress, ReconstructedCandidateBranch,
 };
 
 pub use payload_store::{

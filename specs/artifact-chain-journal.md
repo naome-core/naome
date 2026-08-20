@@ -211,6 +211,45 @@ global absence. The caller may separately use the payload archive's
 branch-candidate write gate to validate and durably retain one exact child
 before attempting reconstruction again.
 
+### Incremental payload recovery cursor
+
+`ArtifactChainJournal::start_candidate_branch_reconstruction` exposes the same
+structural walk and forward validation as an opaque consuming progress cursor.
+It accepts the same exact target, matching candidate store, payload archive,
+and positive caller-local `CandidateBranchReconstructionLimits`. The complete
+candidate path is integrity-read and shape-checked back to its nearest selected
+ancestor before the cursor can report a missing payload or change the archive.
+The cursor then owns that ancestor's immutable replay-built snapshot and the
+forward candidate path, and its lifetime exclusively binds the exact payload
+archive supplied at start so continuation cannot be redirected to another
+archive; a later selected-journal append cannot change the captured state.
+
+For each child in forward order, an exact archive hit is integrity-read and
+fully revalidated read-only through
+`ArtifactChainBranchSnapshot::validate_child`. On the first archive miss,
+`CandidateBranchReconstructionProgress::AwaitingPayload` returns an opaque
+`CandidateBranchReconstructionCursor` that exposes only the overall target,
+pending block, and exact pending `ArtifactId`. The consuming
+`validate_and_archive_pending_payload` operation accepts owned payload bytes,
+delegates to `CanonicalArtifactPayloadStore::validate_and_insert_branch_payload`
+for complete branch-context validation, and advances only after the archive
+durably inserts or idempotently confirms those exact bytes. It then continues
+across read-only validated archive hits until the next miss or until
+`CandidateBranchReconstructionProgress::Complete` returns the fully validated
+`ReconstructedCandidateBranch`.
+
+No progress value exposes a partial branch snapshot. A validation or archive
+error consumes the active cursor and returns no successor; every earlier
+acknowledged archive entry remains durable, and a fresh explicit start
+integrity-reads and revalidates that prefix before resuming at a later miss.
+The existing all-local `reconstruct_candidate_branch` delegates to this state
+machine but preserves its all-or-nothing interface and typed missing-payload
+failure. Neither entry point fetches content, mutates the journal or candidate
+store, persists a branch snapshot, or assigns selection, consensus, finality,
+availability, or peer-trust authority. Continuing a cursor after the selected
+head advances evaluates only its captured historical artifact state and makes
+no claim that the target remains an unselected candidate.
+
 ## Read interface
 
 A healthy journal exposes the derived chain ID, exact head (virtual genesis

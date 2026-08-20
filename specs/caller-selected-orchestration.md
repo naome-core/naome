@@ -283,6 +283,62 @@ provenance, starts no background task, and establishes no continued artifact
 validity, chain membership, network-wide availability, consensus, finality, or
 economic authority.
 
+### Restartable candidate-branch payload recovery
+
+`StaticArtifactNetwork::start_artifact_block_candidate_branch_payload_fill`
+extends the direct archive workflow to one fully retained candidate ancestry.
+The caller supplies one exact target, one caller-routed chain-scoped
+`ArtifactBlockCandidateStore`, one matching selected journal, one
+Foundation-scoped `CanonicalArtifactPayloadStore`, one peer identity used only
+at an archive miss, and positive caller-local
+`CandidateBranchReconstructionLimits`. The workflow chooses none of them. The
+limit bounds this one reconstruction attempt only; it does not create a
+protocol branch-depth, retention, or verification-work rule.
+
+Start first delegates to the storage reconstruction cursor. Candidate-store and
+journal chain context are compared before health or disk reads, and the complete
+retained block path is integrity-read and structurally checked back to its
+nearest selected ancestor before any payload request or archive write. A
+missing block is terminal and is never requested by this workflow. The caller
+may first run the separate candidate-ancestry fill and then explicitly restart.
+
+The reconstruction cursor advances forward from its owned immutable snapshot.
+Every exact archive hit is integrity-read and fully revalidated read-only
+without inspecting peer configuration or opening a request. Only an archive
+miss validates and uses the caller's exact peer identity to request the pending
+block's committed `ArtifactId`, under the existing configured-peer,
+Noise-authenticated generation-correlation, global-permit, and absolute
+artifact-request-deadline checks. At most one request is active. Each missing
+address tries that peer once: there is no fallback, retry, rotation, or
+aggregate workflow deadline.
+
+The active fill consumes only its exact correlated terminal from the network
+instance that started it. Transport failure, deadline, `Unavailable`, invalid
+payload, peer mismatch, and unrelated events remain typed. A found owned
+payload is passed directly to the reconstruction cursor's strict branch
+validation-and-archive gate. The archive must durably insert or idempotently
+confirm the exact bytes before the cursor may validate archive hits or request
+the next missing address.
+
+The cursor retains its captured historical snapshot, so selected-head
+advancement while a request is active neither aborts nor retargets the
+workflow. Completion still means only that the caller's original target and
+entire retained ancestry validated against that captured selected ancestor; it
+does not claim that the target remains unselected or currently preferred.
+Completion returns the full `ReconstructedCandidateBranch` only after every
+child validates. No failure exposes a partial snapshot.
+
+Every acknowledged archive entry remains durable after a later ordinary
+failure or request-start error. A fresh explicit start integrity-reads and
+revalidates those hits and can resume at the next archive miss if the target is
+still reconstructable in the new selected context. An ambiguous archive write
+retains the archive's poison-and-reopen boundary. The workflow never requests
+an absent block, mutates the candidate store or journal, persists a branch
+snapshot, imports, promotes, selects, ranks, reorganizes, or rolls back a
+branch, records peer provenance, chooses a target or peer, starts background
+work, or establishes global availability, peer trust, consensus ancestry,
+consensus, finality, economics, or protocol-wide resource authority.
+
 ## Sequential ancestry import
 
 `ArtifactBlockAncestryImport` consumes one completed unselected ancestry so the
