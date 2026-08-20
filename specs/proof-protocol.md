@@ -759,6 +759,39 @@ fails at parent comparison before payload work. This defines one local selected
 line; it does not define fork choice, rollback, reorganization, consensus, or
 finality.
 
+### Persistent candidate-branch snapshots
+
+`ArtifactChainState::branch_snapshot` returns an opaque owned
+`ArtifactChainBranchSnapshot` at that state's exact current head. The snapshot
+contains the same checked resolver, accepted records, authenticated artifact-set
+root, and block head as its source, represented by immutable structurally shared
+identity-map and authenticated-set nodes. Cloning a snapshot shares those
+immutable nodes; it does not copy accepted payloads or grant selected-state
+authority.
+
+`ArtifactChainBranchSnapshot::validate_child` takes one exact-child
+`ArtifactBlock` and one owned canonical tagged payload. It applies the same
+parent, previous-root, already-selected, projected-root, decode, canonicality,
+content-identity, dependency, mathematical, and novelty checks as selected
+application. Success returns a new snapshot whose changed resolver and
+authenticated-set paths are persistently path-copied. The predecessor remains
+unchanged and may independently produce another child. Failure returns no
+successor and likewise preserves the predecessor.
+
+Proof and definition resolution uses exactly one snapshot's ancestry. An
+artifact admitted only to one sibling cannot satisfy a dependency or function
+obligation in another sibling derived from the same predecessor. The selected
+state can advance after a snapshot is created without changing that snapshot.
+Authenticated-set roots and proof bytes remain the canonical values defined
+above; structural sharing is an in-memory representation and contributes no new
+identity bytes.
+
+This boundary evaluates caller-supplied artifact ancestry only. It does not
+persist a candidate snapshot, map consensus ancestry to artifact ancestry,
+choose or retain a consensus branch, define a branch-count, depth, byte, or work
+limit, mutate canonical selected state, or establish availability, consensus,
+finality, or economic authority.
+
 ### Payload and trust boundaries
 
 Block bytes contain an `ArtifactId` but no typed payload. Possessing a block

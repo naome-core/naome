@@ -45,8 +45,8 @@ use std::path::Path;
 
 use naome_chain::{
     ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockApplyError, ArtifactBlockId,
-    ArtifactBlockPrepareError, ArtifactChainDefinition, ArtifactChainId, ArtifactChainState,
-    ArtifactSetProof, ArtifactSetRoot,
+    ArtifactBlockPrepareError, ArtifactChainBranchSnapshot, ArtifactChainDefinition,
+    ArtifactChainId, ArtifactChainState, ArtifactSetProof, ArtifactSetRoot,
 };
 use naome_ledger::{AcceptedArtifactRecord, ArtifactState};
 use naome_proof::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId};
@@ -207,6 +207,20 @@ impl ArtifactChainJournal {
         Ok(self.core.blocks.get(&block_id))
     }
 
+    /// Returns an owned immutable branch snapshot at one selected artifact fork point.
+    ///
+    /// The virtual genesis anchor and every strictly selected block are available.
+    /// An unknown or non-selected address returns `None`. Journal health is checked
+    /// before the address lookup. Candidate snapshots derived from the result are
+    /// memory-only and are never added to this selected snapshot index.
+    pub fn branch_snapshot_at(
+        &self,
+        block_id: ArtifactBlockId,
+    ) -> Result<Option<ArtifactChainBranchSnapshot>, ArtifactChainJournalError> {
+        self.core.ensure_healthy()?;
+        Ok(self.core.blocks.snapshot(block_id))
+    }
+
     /// Returns one committed and replay-checked artifact record.
     pub fn artifact(
         &self,
@@ -320,17 +334,78 @@ impl StoreIo for File {
 struct JournalCore<F> {
     file: F,
     chain: ArtifactChainState,
-    blocks: HashMap<ArtifactBlockId, ArtifactBlock>,
+    blocks: SelectedBlockIndex,
     committed_end: u64,
     poisoned: bool,
 }
 
+struct SelectedBlockEntry {
+    block: ArtifactBlock,
+    snapshot: ArtifactChainBranchSnapshot,
+}
+
+struct SelectedBlockIndex {
+    genesis: ArtifactChainBranchSnapshot,
+    blocks: HashMap<ArtifactBlockId, SelectedBlockEntry>,
+}
+
+impl SelectedBlockIndex {
+    fn new(chain: &ArtifactChainState) -> Self {
+        Self {
+            genesis: chain.branch_snapshot(),
+            blocks: HashMap::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.blocks.len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    fn get(&self, block_id: &ArtifactBlockId) -> Option<&ArtifactBlock> {
+        self.blocks.get(block_id).map(|entry| &entry.block)
+    }
+
+    fn snapshot(&self, block_id: ArtifactBlockId) -> Option<ArtifactChainBranchSnapshot> {
+        if block_id == self.genesis.head_block_id() {
+            Some(self.genesis.clone())
+        } else {
+            self.blocks
+                .get(&block_id)
+                .map(|entry| entry.snapshot.clone())
+        }
+    }
+
+    fn reserve_entry(&mut self, entry: u64) -> Result<(), ArtifactChainJournalError> {
+        self.blocks
+            .try_reserve(1)
+            .map_err(|_| ArtifactChainJournalError::BlockIndexAllocation { entry })
+    }
+
+    fn insert(
+        &mut self,
+        block_id: ArtifactBlockId,
+        block: ArtifactBlock,
+        snapshot: ArtifactChainBranchSnapshot,
+    ) {
+        let replaced = self
+            .blocks
+            .insert(block_id, SelectedBlockEntry { block, snapshot });
+        debug_assert!(replaced.is_none());
+    }
+}
+
 impl<F: StoreIo> JournalCore<F> {
     fn empty(file: F, chain: ArtifactChainState) -> Self {
+        let blocks = SelectedBlockIndex::new(&chain);
         Self {
             file,
             chain,
-            blocks: HashMap::new(),
+            blocks,
             committed_end: JOURNAL_PREFIX_BYTES as u64,
             poisoned: false,
         }
@@ -374,8 +449,8 @@ impl<F: StoreIo> JournalCore<F> {
             });
         }
 
+        let mut blocks = SelectedBlockIndex::new(&chain);
         let mut chain = chain;
-        let mut blocks = HashMap::new();
         let mut entry_start = JOURNAL_PREFIX_BYTES as u64;
         let mut entry = 0_u64;
 
@@ -470,9 +545,9 @@ impl<F: StoreIo> JournalCore<F> {
                     source: Box::new(source),
                 }
             })?;
-            reserve_block_index_entry(&mut blocks, entry)?;
-            let replaced = blocks.insert(expected_block_id, block);
-            debug_assert!(replaced.is_none());
+            blocks.reserve_entry(entry)?;
+            let snapshot = chain.branch_snapshot();
+            blocks.insert(expected_block_id, block, snapshot);
 
             entry_start = entry_end;
             entry += 1;
@@ -484,7 +559,7 @@ impl<F: StoreIo> JournalCore<F> {
     fn finish_replay(
         mut file: F,
         chain: ArtifactChainState,
-        blocks: HashMap<ArtifactBlockId, ArtifactBlock>,
+        blocks: SelectedBlockIndex,
         committed_end: u64,
         expected_head: Option<ArtifactBlockId>,
         recovery_offset: Option<u64>,
@@ -531,14 +606,14 @@ impl<F: StoreIo> JournalCore<F> {
         let block_bytes = block.to_canonical_bytes();
         let indexed_block = *block;
         let entry = u64::try_from(self.blocks.len()).expect("block index length fits u64");
-        reserve_block_index_entry(&mut self.blocks, entry)?;
+        self.blocks.reserve_entry(entry)?;
         self.chain
             .apply_block(block, canonical_artifact_bytes)
             .map_err(|source| ArtifactChainJournalError::BlockAdmission { source })?;
         let block_id = self.chain.head_block_id();
+        let snapshot = self.chain.branch_snapshot();
         self.commit_entry(block_id, &block_bytes, block.artifact_id())?;
-        let replaced = self.blocks.insert(block_id, indexed_block);
-        debug_assert!(replaced.is_none());
+        self.blocks.insert(block_id, indexed_block, snapshot);
         Ok(self
             .chain
             .artifact_dag()
@@ -601,15 +676,6 @@ impl<F: StoreIo> JournalCore<F> {
             Ok(())
         }
     }
-}
-
-fn reserve_block_index_entry(
-    blocks: &mut HashMap<ArtifactBlockId, ArtifactBlock>,
-    entry: u64,
-) -> Result<(), ArtifactChainJournalError> {
-    blocks
-        .try_reserve(1)
-        .map_err(|_| ArtifactChainJournalError::BlockIndexAllocation { entry })
 }
 
 fn recover_tail<F: StoreIo>(file: &mut F, offset: u64) -> Result<(), ArtifactChainJournalError> {

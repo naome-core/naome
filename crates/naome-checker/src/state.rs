@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
@@ -10,28 +9,48 @@ use naome_proof::{
 
 use crate::{CheckedDefinition, CheckedProof};
 
+mod persistent_map;
+
+use persistent_map::{Key256, PersistentMap};
+
+macro_rules! impl_key256 {
+    ($($key:ty),+ $(,)?) => {
+        $(
+            impl Key256 for $key {
+                fn as_key_bytes(&self) -> &[u8; 32] {
+                    self.as_bytes()
+                }
+            }
+        )+
+    };
+}
+
+impl_key256!(ProofId, DerivationId, StatementId, DefinitionId);
+
 /// The already checked proofs and definitions selected by one chain state.
 ///
 /// Resolution is deliberately limited to this in-memory selected set. Candidate,
 /// archived, locally authored, and network-visible artifacts cannot be used by
 /// mathematical checking until their blocks are selected by the caller.
-#[derive(Default)]
+/// Cloning is constant-time: immutable resolver nodes remain shared, and every
+/// later successful registration copies only the changed Patricia paths.
+#[derive(Clone, Default)]
 #[must_use]
 pub struct ArtifactState {
-    proofs: BTreeMap<ProofId, DerivationId>,
-    derivations: BTreeMap<DerivationId, StatementId>,
-    statements: BTreeMap<StatementId, StoredStatement>,
-    definitions: BTreeMap<DefinitionId, StoredDefinition>,
+    proofs: PersistentMap<ProofId, DerivationId>,
+    derivations: PersistentMap<DerivationId, StatementId>,
+    statements: PersistentMap<StatementId, StoredStatement>,
+    definitions: PersistentMap<DefinitionId, StoredDefinition>,
 }
 
 impl ArtifactState {
     /// Constructs an empty selected-artifact state.
     pub const fn new() -> Self {
         Self {
-            proofs: BTreeMap::new(),
-            derivations: BTreeMap::new(),
-            statements: BTreeMap::new(),
-            definitions: BTreeMap::new(),
+            proofs: PersistentMap::new(),
+            derivations: PersistentMap::new(),
+            statements: PersistentMap::new(),
+            definitions: PersistentMap::new(),
         }
     }
 
@@ -79,14 +98,17 @@ impl ArtifactState {
             canonical_conclusion_length,
         } = proof;
 
-        self.statements
-            .entry(statement_id)
-            .or_insert(StoredStatement {
+        self.statements.insert(
+            statement_id,
+            StoredStatement {
                 conclusion,
                 canonical_length: canonical_conclusion_length,
-            });
-        self.derivations.insert(derivation_id, statement_id);
-        self.proofs.insert(proof_id, derivation_id);
+            },
+        );
+        let inserted = self.derivations.insert(derivation_id, statement_id);
+        debug_assert!(inserted);
+        let inserted = self.proofs.insert(proof_id, derivation_id);
+        debug_assert!(inserted);
 
         Ok(normal_form.into_canonical_bytes())
     }
@@ -182,8 +204,10 @@ impl ArtifactState {
             definition_id,
             obligation: _,
         } = definition;
-        self.definitions
+        let inserted = self
+            .definitions
             .insert(definition_id, StoredDefinition { certificate });
+        debug_assert!(inserted);
         Ok(())
     }
 

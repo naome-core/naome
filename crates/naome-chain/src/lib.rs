@@ -28,15 +28,16 @@ pub use artifact_set::{
 };
 pub use block::{
     ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockApplyError, ArtifactBlockDecodeError,
-    ArtifactBlockId, ArtifactBlockPrepareError, ArtifactChainDefinition,
-    ArtifactChainDefinitionDecodeError, ArtifactChainId, ArtifactChainState,
+    ArtifactBlockId, ArtifactBlockPrepareError, ArtifactChainBranchSnapshot,
+    ArtifactChainDefinition, ArtifactChainDefinitionDecodeError, ArtifactChainId,
+    ArtifactChainState,
 };
 
 /// A selected, monotonically growing set of accepted artifact-DAG nodes.
 ///
 /// Both the checked resolver state and retained records are private so callers
 /// cannot insert unverified bytes, identities, or dependency edges.
-#[derive(Default)]
+#[derive(Clone, Default)]
 #[must_use]
 pub struct ArtifactDag {
     ledger: LedgerState,

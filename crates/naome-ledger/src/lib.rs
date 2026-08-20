@@ -234,7 +234,9 @@ impl AcceptedArtifactRecord {
 ///
 /// The resolver is private so callers cannot interleave checking and mutation.
 /// Every failure leaves the complete selected state unchanged.
-#[derive(Default)]
+/// Cloning is constant-time and shares immutable resolver nodes; later strict
+/// admissions path-copy only the changed resolver paths.
+#[derive(Clone, Default)]
 #[must_use]
 pub struct LedgerState {
     artifact_state: ArtifactState,

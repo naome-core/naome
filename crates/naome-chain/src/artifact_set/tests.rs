@@ -1,4 +1,5 @@
 use std::fmt::Write;
+use std::sync::Arc;
 
 use super::{
     ArtifactPathStep, ArtifactSetMembership, ArtifactSetProofError, ArtifactSetRoot,
@@ -37,6 +38,28 @@ fn root_for(order: &[ArtifactId]) -> ArtifactSetRoot {
         assert!(set.insert(*artifact_id).is_some());
     }
     set.root()
+}
+
+fn node_for(
+    set: &AuthenticatedArtifactSet<ArtifactId>,
+    artifact_id: ArtifactId,
+) -> &Arc<super::Node<ArtifactId>> {
+    let mut node = set.root.as_ref().expect("the test set is not empty");
+    loop {
+        match node.as_ref() {
+            super::Node::Branch(branch) => {
+                node = if key_bit(artifact_id, branch.bit) {
+                    &branch.right
+                } else {
+                    &branch.left
+                };
+            }
+            super::Node::Leaf(value) => {
+                assert_eq!(*value, artifact_id);
+                return node;
+            }
+        }
+    }
 }
 
 fn reference_root(keys: &[ArtifactId]) -> ArtifactSetRoot {
@@ -125,10 +148,43 @@ fn long_shared_prefixes_store_only_one_branch() {
     let _ = set.insert(zero).unwrap();
     let _ = set.insert(id(last_bit)).unwrap();
 
-    assert_eq!(set.leaves.len(), 2);
-    assert_eq!(set.branches.len(), 1);
-    assert_eq!(set.branches[0].bit, 255);
+    assert_eq!(set.len(), 2);
+    assert_eq!(set.proof(zero).sibling_count(), 1);
     assert_eq!(set.root(), reference_root(&[zero, id(last_bit)]));
+}
+
+#[test]
+fn clones_share_unchanged_nodes_and_keep_independent_roots() {
+    let zero = id([0; 32]);
+    let high = id_with_bit(0);
+    let quarter = id_with_bit(1);
+    let mut selected = AuthenticatedArtifactSet::new();
+    let _ = selected.insert(zero).unwrap();
+    let _ = selected.insert(high).unwrap();
+    let snapshot = selected.clone();
+    let snapshot_root = snapshot.root();
+    let snapshot_proof = snapshot.proof(high).to_canonical_bytes();
+
+    assert!(Arc::ptr_eq(
+        selected.root.as_ref().unwrap(),
+        snapshot.root.as_ref().unwrap()
+    ));
+
+    let _ = selected.insert(quarter).unwrap();
+
+    assert_eq!(snapshot.len(), 2);
+    assert_eq!(snapshot.root(), snapshot_root);
+    assert_eq!(snapshot.proof(high).to_canonical_bytes(), snapshot_proof);
+    assert_eq!(selected.len(), 3);
+    assert_ne!(selected.root(), snapshot_root);
+    assert!(!Arc::ptr_eq(
+        selected.root.as_ref().unwrap(),
+        snapshot.root.as_ref().unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        node_for(&selected, high),
+        node_for(&snapshot, high)
+    ));
 }
 
 #[test]
@@ -168,7 +224,7 @@ fn duplicate_insertions_do_not_change_structure_or_root() {
 
     assert!(set.insert(artifact_id).is_none());
     assert_eq!(set.len(), 1);
-    assert_eq!(set.branches.len(), 0);
+    assert_eq!(set.proof(artifact_id).sibling_count(), 0);
     assert_eq!(set.root(), root);
 }
 
@@ -191,14 +247,12 @@ fn projected_root_matches_insertion_without_mutating_the_selected_set() {
     }
     let selected_root = set.root();
     let selected_len = set.len();
-    let selected_branches = set.branches.len();
 
     for artifact_id in additions {
         let (projected, existing) = set.projected_root(artifact_id);
         assert!(!existing);
         assert_eq!(set.root(), selected_root);
         assert_eq!(set.len(), selected_len);
-        assert_eq!(set.branches.len(), selected_branches);
 
         let mut expected = AuthenticatedArtifactSet::new();
         for selected in selected {

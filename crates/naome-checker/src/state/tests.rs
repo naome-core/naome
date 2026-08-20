@@ -1,8 +1,8 @@
 use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
-use naome_proof::{ProofCertificate, ProofStep};
+use naome_proof::{DefinedFormula, DefinitionCertificate, ProofCertificate, ProofStep};
 
 use super::{ArtifactState, ArtifactStateError};
-use crate::normalize_and_check;
+use crate::{check_definition_with_state, normalize_and_check};
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
     ProofCertificate::new(steps).unwrap()
@@ -21,6 +21,48 @@ fn direct_identity(variable: FreeVariable) -> crate::CheckedProof {
 
 fn axiom(axiom: ZfcAxiom) -> crate::CheckedProof {
     normalize_and_check(certificate(vec![ProofStep::ZfcAxiom(axiom)])).unwrap()
+}
+
+fn relation(body: DefinedFormula) -> DefinitionCertificate {
+    DefinitionCertificate::relation(1, body).unwrap()
+}
+
+#[test]
+fn cloned_states_isolate_later_registrations() {
+    let mut selected = ArtifactState::new();
+    let first_proof = axiom(ZfcAxiom::Pairing);
+    let first_proof_id = first_proof.proof_id();
+    selected.register_proof(first_proof).unwrap();
+    let variable = FreeVariable::new(0);
+    let first_definition = check_definition_with_state(
+        relation(DefinedFormula::equal(variable, variable)),
+        &selected,
+    )
+    .unwrap();
+    let first_definition_id = first_definition.definition_id();
+    selected.register_definition(first_definition).unwrap();
+
+    let mut branch = selected.clone();
+
+    let second_proof = axiom(ZfcAxiom::Union);
+    let second_proof_id = second_proof.proof_id();
+    branch.register_proof(second_proof).unwrap();
+    let second_definition = check_definition_with_state(
+        relation(DefinedFormula::member(variable, variable)),
+        &branch,
+    )
+    .unwrap();
+    let second_definition_id = second_definition.definition_id();
+    branch.register_definition(second_definition).unwrap();
+
+    assert!(selected.contains_proof(first_proof_id));
+    assert!(selected.contains_definition(first_definition_id));
+    assert!(!selected.contains_proof(second_proof_id));
+    assert!(!selected.contains_definition(second_definition_id));
+    assert!(branch.contains_proof(first_proof_id));
+    assert!(branch.contains_definition(first_definition_id));
+    assert!(branch.contains_proof(second_proof_id));
+    assert!(branch.contains_definition(second_definition_id));
 }
 
 #[test]

@@ -317,7 +317,6 @@ fn maximum_member_and_nonmember_proofs_round_trip() {
     let member = member_set.proof(zero);
     let member_bytes = member.to_canonical_bytes();
     assert_eq!(member_set.len(), 257);
-    assert_eq!(member_set.branches.len(), 256);
     assert_eq!(member.sibling_count(), 256);
     assert_eq!(member_bytes.len(), ARTIFACT_SET_PROOF_MAX_BYTES);
     round_trip(

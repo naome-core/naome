@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use naome_ledger::AcceptedArtifactRecord;
 use naome_proof::ArtifactId;
@@ -258,35 +259,32 @@ impl ArtifactSetValue for AcceptedArtifactRecord {
 }
 
 pub(super) struct AuthenticatedArtifactSet<V> {
-    root: Option<NodeRef>,
-    leaves: Vec<V>,
-    branches: Vec<Branch>,
-    search_path: Vec<usize>,
+    root: Option<Arc<Node<V>>>,
+    len: usize,
+}
+
+impl<V> Clone for AuthenticatedArtifactSet<V> {
+    fn clone(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            len: self.len,
+        }
+    }
 }
 
 impl<V> Default for AuthenticatedArtifactSet<V> {
     fn default() -> Self {
-        Self {
-            root: None,
-            leaves: Vec::new(),
-            branches: Vec::new(),
-            search_path: Vec::new(),
-        }
+        Self { root: None, len: 0 }
     }
 }
 
 impl<V: ArtifactSetValue> AuthenticatedArtifactSet<V> {
     pub(crate) const fn new() -> Self {
-        Self {
-            root: None,
-            leaves: Vec::new(),
-            branches: Vec::new(),
-            search_path: Vec::new(),
-        }
+        Self { root: None, len: 0 }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.leaves.len()
+        self.len
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -294,81 +292,87 @@ impl<V: ArtifactSetValue> AuthenticatedArtifactSet<V> {
     }
 
     pub(crate) fn root(&self) -> ArtifactSetRoot {
-        self.root.map_or_else(ArtifactSetRoot::empty, |root| {
-            ArtifactSetRoot(self.node_digest(root))
-        })
+        self.root
+            .as_deref()
+            .map_or_else(ArtifactSetRoot::empty, |root| {
+                ArtifactSetRoot(root.digest())
+            })
     }
 
     pub(crate) fn projected_root(&self, artifact_id: ArtifactId) -> (ArtifactSetRoot, bool) {
-        let Some(mut node) = self.root else {
+        let Some(mut node) = self.root.as_ref() else {
             return (ArtifactSetRoot(leaf_digest(artifact_id)), false);
         };
 
-        let mut path = [0_usize; KEY_BITS];
+        let mut path = [None; KEY_BITS];
         let mut path_len = 0;
-        while node.is_branch() {
-            let branch_index = node.index();
-            path[path_len] = branch_index;
+        while let Node::Branch(branch) = node.as_ref() {
+            path[path_len] = Some(branch);
             path_len += 1;
-            let branch = &self.branches[branch_index];
             node = if key_bit(artifact_id, branch.bit) {
-                branch.right
+                &branch.right
             } else {
-                branch.left
+                &branch.left
             };
         }
 
-        let terminal_id = self.leaves[node.index()].artifact_id();
+        let Node::Leaf(value) = node.as_ref() else {
+            unreachable!("artifact-set traversal terminates at a leaf")
+        };
+        let terminal_id = value.artifact_id();
         if terminal_id == artifact_id {
             return (self.root(), true);
         }
 
         let differing_bit = first_differing_bit(artifact_id, terminal_id);
-        let insertion_position =
-            path[..path_len].partition_point(|branch| self.branches[*branch].bit < differing_bit);
+        let insertion_position = path[..path_len].partition_point(|branch| {
+            branch.expect("the populated path has a branch").bit < differing_bit
+        });
         let old_subtree = if insertion_position == path_len {
-            node
+            node.digest()
         } else {
-            NodeRef::branch(path[insertion_position])
+            path[insertion_position]
+                .expect("the insertion position has a branch")
+                .digest
         };
-        let old_digest = self.node_digest(old_subtree);
         let new_digest = leaf_digest(artifact_id);
         let mut subtree = if key_bit(artifact_id, differing_bit) {
-            branch_digest(differing_bit, old_digest, new_digest)
+            branch_digest(differing_bit, old_subtree, new_digest)
         } else {
-            branch_digest(differing_bit, new_digest, old_digest)
+            branch_digest(differing_bit, new_digest, old_subtree)
         };
 
         for position in (0..insertion_position).rev() {
-            let branch = &self.branches[path[position]];
+            let branch = path[position].expect("the populated path has a branch");
             subtree = if key_bit(artifact_id, branch.bit) {
-                branch_digest(branch.bit, self.node_digest(branch.left), subtree)
+                branch_digest(branch.bit, branch.left.digest(), subtree)
             } else {
-                branch_digest(branch.bit, subtree, self.node_digest(branch.right))
+                branch_digest(branch.bit, subtree, branch.right.digest())
             };
         }
         (ArtifactSetRoot(subtree), false)
     }
 
     pub(crate) fn get(&self, artifact_id: ArtifactId) -> Option<&V> {
-        let mut node = self.root?;
+        let mut node = self.root.as_deref()?;
         loop {
-            if node.is_branch() {
-                let branch = &self.branches[node.index()];
-                node = if key_bit(artifact_id, branch.bit) {
-                    branch.right
-                } else {
-                    branch.left
-                };
-            } else {
-                let value = &self.leaves[node.index()];
-                return (value.artifact_id() == artifact_id).then_some(value);
+            match node {
+                Node::Branch(branch) => {
+                    node = if key_bit(artifact_id, branch.bit) {
+                        &branch.right
+                    } else {
+                        &branch.left
+                    };
+                }
+                Node::Leaf(value) => {
+                    return (value.artifact_id() == artifact_id).then_some(value);
+                }
             }
         }
     }
 
     pub(crate) fn proof(&self, artifact_id: ArtifactId) -> ArtifactSetProof {
-        let Some(mut node) = self.root else {
+        let Some(mut node) = self.root.as_deref() else {
             return ArtifactSetProof {
                 terminal: ArtifactTerminal::Empty,
                 path: Box::new([]),
@@ -376,26 +380,28 @@ impl<V: ArtifactSetValue> AuthenticatedArtifactSet<V> {
         };
 
         let mut path = Vec::with_capacity(16);
-        while node.is_branch() {
-            let branch = &self.branches[node.index()];
+        while let Node::Branch(branch) = node {
             let goes_right = key_bit(artifact_id, branch.bit);
             let sibling = if goes_right {
-                branch.left
+                &branch.left
             } else {
-                branch.right
+                &branch.right
             };
             path.push(ArtifactPathStep {
-                sibling: self.node_digest(sibling),
+                sibling: sibling.digest(),
                 bit: branch.bit,
             });
             node = if goes_right {
-                branch.right
+                &branch.right
             } else {
-                branch.left
+                &branch.left
             };
         }
 
-        let terminal = self.leaves[node.index()].artifact_id();
+        let Node::Leaf(value) = node else {
+            unreachable!("artifact-set traversal terminates at a leaf")
+        };
+        let terminal = value.artifact_id();
         ArtifactSetProof {
             terminal: if terminal == artifact_id {
                 ArtifactTerminal::Member
@@ -408,135 +414,114 @@ impl<V: ArtifactSetValue> AuthenticatedArtifactSet<V> {
 
     pub(crate) fn insert(&mut self, value: V) -> Option<&V> {
         let artifact_id = value.artifact_id();
-        let Some(mut node) = self.root else {
-            self.leaves.push(value);
-            self.root = Some(NodeRef::leaf(0));
-            return self.leaves.first();
+        let Some(mut node) = self.root.as_ref() else {
+            self.root = Some(Arc::new(Node::Leaf(value)));
+            self.len = 1;
+            return self.get(artifact_id);
         };
 
-        self.search_path.clear();
-        while node.is_branch() {
-            let branch_index = node.index();
-            let branch = &self.branches[branch_index];
+        let mut path = [None; KEY_BITS];
+        let mut path_len = 0;
+        while let Node::Branch(branch) = node.as_ref() {
             let goes_right = key_bit(artifact_id, branch.bit);
-            self.search_path.push(branch_index);
+            path[path_len] = Some(node);
+            path_len += 1;
             node = if goes_right {
-                branch.right
+                &branch.right
             } else {
-                branch.left
+                &branch.left
             };
         }
 
-        let terminal_id = self.leaves[node.index()].artifact_id();
+        let Node::Leaf(terminal) = node.as_ref() else {
+            unreachable!("artifact-set traversal terminates at a leaf")
+        };
+        let terminal_id = terminal.artifact_id();
         if terminal_id == artifact_id {
             return None;
         }
         let differing_bit = first_differing_bit(artifact_id, terminal_id);
-        let insertion_position = self
-            .search_path
-            .partition_point(|branch| self.branches[*branch].bit < differing_bit);
+        let insertion_position = path[..path_len].partition_point(|node| {
+            let Node::Branch(branch) = node.expect("the populated path has a node").as_ref() else {
+                unreachable!("the search path contains only branches")
+            };
+            branch.bit < differing_bit
+        });
         debug_assert!(
-            insertion_position == self.search_path.len()
-                || self.branches[self.search_path[insertion_position]].bit > differing_bit
+            insertion_position == path_len
+                || matches!(
+                    path[insertion_position]
+                        .expect("the insertion position has a node")
+                        .as_ref(),
+                    Node::Branch(branch) if branch.bit > differing_bit
+                )
         );
 
-        let old_subtree = if insertion_position == self.search_path.len() {
-            node
+        let old_subtree = if insertion_position == path_len {
+            Arc::clone(node)
         } else {
-            NodeRef::branch(self.search_path[insertion_position])
+            Arc::clone(path[insertion_position].expect("the insertion position has a node"))
         };
-        let leaf_index = self.leaves.len();
-        self.leaves.push(value);
-        let new_leaf = NodeRef::leaf(leaf_index);
+        let new_leaf = Arc::new(Node::Leaf(value));
         let (left, right) = if key_bit(artifact_id, differing_bit) {
             (old_subtree, new_leaf)
         } else {
             (new_leaf, old_subtree)
         };
-        let branch_index = self.branches.len();
-        self.branches.push(Branch {
-            bit: differing_bit,
-            left,
-            right,
-            digest: branch_digest(
-                differing_bit,
-                self.node_digest(left),
-                self.node_digest(right),
-            ),
-        });
-        let new_branch = NodeRef::branch(branch_index);
-
-        if insertion_position == 0 {
-            self.root = Some(new_branch);
-        } else {
-            let parent_index = self.search_path[insertion_position - 1];
-            let goes_right = key_bit(artifact_id, self.branches[parent_index].bit);
-            let parent = &mut self.branches[parent_index];
-            if goes_right {
-                parent.right = new_branch;
-            } else {
-                parent.left = new_branch;
-            }
-        }
+        let mut subtree = Arc::new(Node::branch(differing_bit, left, right));
 
         for position in (0..insertion_position).rev() {
-            let branch_index = self.search_path[position];
-            let (bit, left, right) = {
-                let branch = &self.branches[branch_index];
-                (branch.bit, branch.left, branch.right)
+            let Node::Branch(branch) = path[position]
+                .expect("the populated path has a node")
+                .as_ref()
+            else {
+                unreachable!("the search path contains only branches")
             };
-            let digest = branch_digest(bit, self.node_digest(left), self.node_digest(right));
-            self.branches[branch_index].digest = digest;
+            let (left, right) = if key_bit(artifact_id, branch.bit) {
+                (Arc::clone(&branch.left), subtree)
+            } else {
+                (subtree, Arc::clone(&branch.right))
+            };
+            subtree = Arc::new(Node::branch(branch.bit, left, right));
         }
 
-        Some(&self.leaves[leaf_index])
+        let next_len = self
+            .len
+            .checked_add(1)
+            .expect("artifact-set length cannot exhaust usize");
+        self.root = Some(subtree);
+        self.len = next_len;
+        self.get(artifact_id)
     }
+}
 
-    fn node_digest(&self, node: NodeRef) -> [u8; 32] {
-        if node.is_branch() {
-            self.branches[node.index()].digest
-        } else {
-            leaf_digest(self.leaves[node.index()].artifact_id())
+enum Node<V> {
+    Leaf(V),
+    Branch(Branch<V>),
+}
+
+impl<V: ArtifactSetValue> Node<V> {
+    fn branch(bit: u8, left: Arc<Self>, right: Arc<Self>) -> Self {
+        let digest = branch_digest(bit, left.digest(), right.digest());
+        Self::Branch(Branch {
+            bit,
+            left,
+            right,
+            digest,
+        })
+    }
+    fn digest(&self) -> [u8; 32] {
+        match self {
+            Self::Leaf(value) => leaf_digest(value.artifact_id()),
+            Self::Branch(branch) => branch.digest,
         }
     }
 }
 
-#[derive(Clone, Copy)]
-struct NodeRef(usize);
-
-impl NodeRef {
-    const BRANCH_BIT: usize = 1;
-
-    fn leaf(index: usize) -> Self {
-        Self(
-            index
-                .checked_mul(2)
-                .expect("artifact-set leaf arena cannot exhaust usize"),
-        )
-    }
-
-    fn branch(index: usize) -> Self {
-        Self(
-            index
-                .checked_mul(2)
-                .and_then(|value| value.checked_add(Self::BRANCH_BIT))
-                .expect("artifact-set branch arena cannot exhaust usize"),
-        )
-    }
-
-    const fn is_branch(self) -> bool {
-        self.0 & Self::BRANCH_BIT != 0
-    }
-
-    const fn index(self) -> usize {
-        self.0 >> 1
-    }
-}
-
-struct Branch {
+struct Branch<V> {
     bit: u8,
-    left: NodeRef,
-    right: NodeRef,
+    left: Arc<Node<V>>,
+    right: Arc<Node<V>>,
     digest: [u8; 32],
 }
 
