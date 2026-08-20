@@ -35,10 +35,12 @@
 //! across a bounded caller-selected peer set, may retrieve one bounded
 //! caller-selected and unselected block ancestry, imports one exact child or one
 //! consumed ancestry, durably fills one bounded candidate-store ancestry while
-//! reusing retained blocks, reconstructs and begins importing one bounded
+//! reusing retained blocks through either one exact peer or a separate bounded
+//! caller-ordered fallback sequence, reconstructs and begins importing one bounded
 //! ancestry from a caller-routed candidate store without block requests, or
-//! composes retrieval and import into one exact-target catch-up. Every fill and
-//! import target remains a separate caller decision. The caller also explicitly
+//! composes retrieval and import into one exact-target catch-up. Every fill
+//! target, import target, and fallback order remains caller-selected. The caller
+//! also explicitly
 //! admits a peer-record batch and may derive one owned canonical publication
 //! from exact fresh subjects retained by a peer-address store. The responder
 //! never reads that peer-address store and remains immutable after construction.

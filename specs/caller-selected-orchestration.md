@@ -197,6 +197,45 @@ candidate, records peer provenance, chooses a target, peer, chain, store,
 journal, or branch, relays or gossips, or establishes artifact validity,
 payload availability, rollback, reorganization, consensus, or finality.
 
+### Caller-ordered fallback fill
+
+`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill_with_peer_fallback`
+is a separate opt-in mode. It accepts the same exact target, candidate store,
+and selected journal plus one caller-ordered peer-identity slice. The direct
+single-peer start above keeps its no-retry behavior unchanged.
+
+Retained candidates are read and shape-checked before the fallback slice is
+inspected. A fully retained path therefore completes without validating or
+using any fallback peer. Only at the first missing exact address does the mode
+reject an empty slice or one longer than `MAX_STATIC_PEERS`, then the lowest raw
+duplicate `PeerId`, then the lowest raw `PeerId` absent from the network's
+static configuration. A valid slice keeps the caller's exact order; it is not
+sorted for execution.
+
+For each missing address, the mode tries every listed peer at most once and
+keeps at most one block request active. An `AlreadyPending` or
+`PeerDisconnected` start is skipped. Any other request-start error is
+terminal. Each started attempt retains the existing 30-second transport
+request timeout; there is no new aggregate fallback deadline. A matched
+transport failure, `InvalidResponse`, or authenticated `Unavailable` response
+may advance to the next caller-ordered peer. `PeerMismatch`, an unmatched
+event, or an event from another network instance is terminal and never rotates.
+If every listed peer is skipped as busy or disconnected before any request
+starts, the mode reports no requestable listed peer. If a matched retryable
+terminal has already occurred and every later peer is skipped, that last
+terminal remains the exact error.
+
+A found identity-matched block ends fallback for that address. The captured
+selected head is rechecked, the shared ancestry shape checks run, and the store
+must durably acknowledge the block before the full caller-ordered attempt set
+is reset for a missing parent. Head, shape, candidate-read, and candidate-insert
+errors are terminal. An error after an acknowledged insertion preserves that
+insertion exactly as in the direct fill. The fallback records no peer
+provenance, requests no artifact payload, mutates no journal, promotes no
+candidate, and establishes no peer trust, reachability, target or branch
+selection, background retry schedule, network-wide availability, consensus,
+finality, or economic authority.
+
 ## Sequential ancestry import
 
 `ArtifactBlockAncestryImport` consumes one completed unselected ancestry so the

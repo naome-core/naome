@@ -17,8 +17,9 @@ use crate::tests::{
     test_chain_definition, test_network_for_peers, union_bytes,
 };
 use crate::{
-    ExchangeRequestId, Keypair, MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS, NetworkEvent,
-    OutboundArtifactBlockFailure, PendingRequest, RequestStartError,
+    ExchangeRequestId, Keypair, MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS, MAX_PENDING_REQUESTS,
+    MAX_STATIC_PEERS, NetworkEvent, OutboundArtifactBlockFailure, PendingRequest,
+    RequestStartError,
 };
 
 fn artifact_id(index: usize) -> ArtifactId {
@@ -33,6 +34,12 @@ fn root(index: usize) -> ArtifactSetRoot {
     bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
     bytes[31] = 0x5a;
     ArtifactSetRoot::from_bytes(bytes)
+}
+
+fn peer_ids(count: usize) -> Vec<PeerId> {
+    (0..count)
+        .map(|_| Keypair::generate_ed25519().public().to_peer_id())
+        .collect()
 }
 
 fn extension(
@@ -104,36 +111,35 @@ fn pending_block_request(
         .expect("the candidate ancestry fill has one pending block request")
 }
 
-fn block_response_event(
+fn block_wire_response_event(
     network: &mut StaticArtifactNetwork,
-    peer_id: PeerId,
-    block: &ArtifactBlock,
+    pending_peer_id: PeerId,
+    response_peer_id: PeerId,
+    bytes: impl Into<Vec<u8>>,
 ) -> NetworkEvent {
-    let (request_id, _) = pending_block_request(network, peer_id);
+    let (request_id, _) = pending_block_request(network, pending_peer_id);
     network
         .handle_block_exchange_event(request_response::Event::Message {
-            peer: peer_id,
+            peer: response_peer_id,
             connection_id: ConnectionId::new_unchecked(1_500),
             message: request_response::Message::Response {
                 request_id,
-                response: ArtifactBlockWireResponse::new(block.to_canonical_bytes()),
+                response: ArtifactBlockWireResponse::new(bytes.into()),
             },
         })
         .expect("the retained fill request produces one terminal event")
 }
 
+fn block_response_event(
+    network: &mut StaticArtifactNetwork,
+    peer_id: PeerId,
+    block: &ArtifactBlock,
+) -> NetworkEvent {
+    block_wire_response_event(network, peer_id, peer_id, block.to_canonical_bytes())
+}
+
 fn unavailable_event(network: &mut StaticArtifactNetwork, peer_id: PeerId) -> NetworkEvent {
-    let (request_id, _) = pending_block_request(network, peer_id);
-    network
-        .handle_block_exchange_event(request_response::Event::Message {
-            peer: peer_id,
-            connection_id: ConnectionId::new_unchecked(1_501),
-            message: request_response::Message::Response {
-                request_id,
-                response: ArtifactBlockWireResponse::new(Vec::new()),
-            },
-        })
-        .expect("the retained fill request produces one unavailable terminal")
+    block_wire_response_event(network, peer_id, peer_id, Vec::new())
 }
 
 fn block_failure_event(network: &mut StaticArtifactNetwork, peer_id: PeerId) -> NetworkEvent {
@@ -146,6 +152,27 @@ fn block_failure_event(network: &mut StaticArtifactNetwork, peer_id: PeerId) -> 
             error: request_response::OutboundFailure::Timeout,
         })
         .expect("the retained fill request produces one failure terminal")
+}
+
+fn invalid_block_response_event(
+    network: &mut StaticArtifactNetwork,
+    peer_id: PeerId,
+) -> NetworkEvent {
+    block_wire_response_event(network, peer_id, peer_id, vec![0xff])
+}
+
+fn peer_mismatch_event(
+    network: &mut StaticArtifactNetwork,
+    expected_peer_id: PeerId,
+    actual_peer_id: PeerId,
+    block: &ArtifactBlock,
+) -> NetworkEvent {
+    block_wire_response_event(
+        network,
+        expected_peer_id,
+        actual_peer_id,
+        block.to_canonical_bytes(),
+    )
 }
 
 fn awaiting(
@@ -760,4 +787,549 @@ fn terminal_and_routing_failures_preserve_the_candidate_store() {
     assert!(network.pending.is_empty());
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn fallback_peer_validation_is_lazy_and_reports_lowest_raw_identity() {
+    let directory = TestDirectory::new("candidate-fill-fallback-validation");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let valid = extension(before.head, before.root, 1).remove(0);
+    let wrong_root = root(0xfa01);
+    assert_ne!(wrong_root, before.root);
+    let invalid = ArtifactBlock::new(before.head, wrong_root, root(0xfa02), artifact_id(0xfa03));
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 2);
+    retain(&mut candidates, [valid, invalid]);
+
+    let mut configured = peer_ids(2);
+    configured.sort_unstable();
+    let mut network = test_network_for_peers(&configured);
+
+    assert_complete(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &[],
+                valid.id(),
+            )
+            .unwrap(),
+    );
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &[],
+            invalid.id(),
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::ArtifactSetRootMismatch {
+            preceding_block_id,
+            expected,
+            actual,
+        }) if preceding_block_id == before.head && expected == before.root && actual == wrong_root
+    ));
+
+    let missing = ArtifactBlockId::from_bytes([0xfa; 32]);
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &[],
+            missing,
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::EmptyBlockPeerSet)
+    ));
+
+    let too_many = peer_ids(MAX_STATIC_PEERS + 1);
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &too_many,
+            missing,
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::TooManyBlockPeers {
+            actual,
+            maximum,
+        }) if actual == MAX_STATIC_PEERS + 1 && maximum == MAX_STATIC_PEERS
+    ));
+
+    let [lowest, highest] = configured.as_slice() else {
+        unreachable!("the fixture contains exactly two configured peers")
+    };
+    let unknown_before_duplicates = Keypair::generate_ed25519().public().to_peer_id();
+    let duplicate_order = [
+        unknown_before_duplicates,
+        *highest,
+        *lowest,
+        *highest,
+        *lowest,
+    ];
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &duplicate_order,
+            missing,
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::DuplicateBlockPeer { peer_id })
+            if peer_id == *lowest
+    ));
+
+    let mut unknown = peer_ids(2);
+    unknown.sort_unstable();
+    let unknown_order = [unknown[1], *highest, unknown[0]];
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &unknown_order,
+            missing,
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::UnknownBlockPeer { peer_id })
+            if peer_id == unknown[0]
+    ));
+    assert!(network.pending.is_empty());
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn fallback_uses_caller_order_across_retryable_terminals_then_retains() {
+    let directory = TestDirectory::new("candidate-fill-fallback-order");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let target = extension(before.head, before.root, 1).remove(0);
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 1);
+    let mut raw_order = peer_ids(4);
+    raw_order.sort_unstable();
+    let caller_order = [raw_order[2], raw_order[0], raw_order[3], raw_order[1]];
+    assert_ne!(caller_order.as_slice(), raw_order.as_slice());
+    let mut network = test_network_for_peers(&raw_order);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &caller_order,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    assert_eq!(fill.pending_peer_id(), caller_order[0]);
+
+    let event = unavailable_event(&mut network, caller_order[0]);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), caller_order[1]);
+
+    let event = block_failure_event(&mut network, caller_order[1]);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), caller_order[2]);
+
+    let event = invalid_block_response_event(&mut network, caller_order[2]);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), caller_order[3]);
+
+    let event = block_response_event(&mut network, caller_order[3], &target);
+    assert_complete(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(candidates.get(target.id()).unwrap(), Some(target));
+    assert!(network.pending.is_empty());
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn fallback_skips_busy_and_disconnected_peers_but_accepts_the_eighth() {
+    let directory = TestDirectory::new("candidate-fill-fallback-skips");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let target = extension(before.head, before.root, 1).remove(0);
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 1);
+    let peers = peer_ids(MAX_STATIC_PEERS);
+    let mut network = test_network_for_peers(&peers);
+
+    let busy_ticket = network
+        .request_block(
+            peers[0],
+            ArtifactBlockRequest::new(ArtifactBlockId::from_bytes([0xfb; 32])),
+        )
+        .unwrap();
+    for peer_id in &peers[1..MAX_STATIC_PEERS - 1] {
+        network
+            .swarm
+            .behaviour_mut()
+            .sessions
+            .mark_disconnected_for_test(*peer_id);
+    }
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    assert_eq!(fill.pending_peer_id(), peers[MAX_STATIC_PEERS - 1]);
+    assert_eq!(network.pending.len(), 2);
+    fill.cancel();
+
+    drop(unavailable_event(&mut network, peers[MAX_STATIC_PEERS - 1]));
+    drop(unavailable_event(&mut network, peers[0]));
+    drop(busy_ticket);
+    assert!(network.pending.is_empty());
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    assert_eq!(candidates.get(target.id()).unwrap(), None);
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn fallback_reports_no_requestable_peer_and_global_capacity() {
+    let no_peer_directory = TestDirectory::new("candidate-fill-fallback-no-requestable");
+    let no_peer_selected = create_journal(no_peer_directory.path()).unwrap();
+    let no_peer_before = snapshot(&no_peer_directory, &no_peer_selected);
+    let no_peer_target = extension(no_peer_before.head, no_peer_before.root, 1).remove(0);
+    let mut no_peer_candidates = candidate_store(&no_peer_directory, test_chain_definition(), 1);
+    let no_peer_ids = peer_ids(2);
+    let mut no_peer_network = test_network_for_peers(&no_peer_ids);
+    let busy_ticket = no_peer_network
+        .request_block(
+            no_peer_ids[0],
+            ArtifactBlockRequest::new(ArtifactBlockId::from_bytes([0xfc; 32])),
+        )
+        .unwrap();
+    no_peer_network
+        .swarm
+        .behaviour_mut()
+        .sessions
+        .mark_disconnected_for_test(no_peer_ids[1]);
+    assert!(matches!(
+        no_peer_network.start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+            &no_peer_selected,
+            &mut no_peer_candidates,
+            &no_peer_ids,
+            no_peer_target.id(),
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::NoRequestableBlockPeer { block_id })
+            if block_id == no_peer_target.id()
+    ));
+    drop(unavailable_event(&mut no_peer_network, no_peer_ids[0]));
+    drop(busy_ticket);
+    assert_eq!(no_peer_candidates.get(no_peer_target.id()).unwrap(), None);
+
+    let limit_directory = TestDirectory::new("candidate-fill-fallback-global-limit");
+    let limit_selected = create_journal(limit_directory.path()).unwrap();
+    let limit_before = snapshot(&limit_directory, &limit_selected);
+    let limit_target = extension(limit_before.head, limit_before.root, 1).remove(0);
+    let mut limit_candidates = candidate_store(&limit_directory, test_chain_definition(), 1);
+    let limit_peers = peer_ids(2);
+    let mut limit_network = test_network_for_peers(&limit_peers);
+    let mut retained_terminals = Vec::new();
+    for index in 0..MAX_PENDING_REQUESTS {
+        let ticket = limit_network
+            .request_block(
+                limit_peers[0],
+                ArtifactBlockRequest::new(ArtifactBlockId::from_bytes([index as u8; 32])),
+            )
+            .unwrap();
+        retained_terminals.push(unavailable_event(&mut limit_network, limit_peers[0]));
+        drop(ticket);
+    }
+    assert_eq!(
+        limit_network.pending_budget.active.load(Ordering::Relaxed),
+        MAX_PENDING_REQUESTS
+    );
+    assert!(matches!(
+        limit_network.start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+            &limit_selected,
+            &mut limit_candidates,
+            &[limit_peers[1]],
+            limit_target.id(),
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::RequestStart {
+            block_id,
+            source: RequestStartError::GlobalLimit { maximum },
+        }) if block_id == limit_target.id() && maximum == MAX_PENDING_REQUESTS
+    ));
+    assert_eq!(limit_candidates.get(limit_target.id()).unwrap(), None);
+    drop(retained_terminals);
+    assert_eq!(
+        limit_network.pending_budget.active.load(Ordering::Relaxed),
+        0
+    );
+}
+
+#[test]
+fn fallback_exhaustion_returns_the_last_retryable_terminal() {
+    let directory = TestDirectory::new("candidate-fill-fallback-exhaustion");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let target = extension(before.head, before.root, 1).remove(0);
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 1);
+    let peers = peer_ids(2);
+    let mut network = test_network_for_peers(&peers);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    let event = unavailable_event(&mut network, peers[0]);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[1]);
+    let event = block_failure_event(&mut network, peers[1]);
+    assert!(matches!(
+        fill.on_event(&mut network, &selected, event),
+        Err(ArtifactBlockCandidateAncestryFillError::BlockRequestFailed {
+            peer_id,
+            block_id,
+            source,
+        }) if peer_id == peers[1]
+            && block_id == target.id()
+            && matches!(
+                source.as_ref(),
+                OutboundArtifactBlockFailure::Transport(
+                    request_response::OutboundFailure::Timeout
+                )
+            )
+    ));
+    assert!(network.pending.is_empty());
+    assert_eq!(candidates.get(target.id()).unwrap(), None);
+
+    network
+        .swarm
+        .behaviour_mut()
+        .sessions
+        .mark_disconnected_for_test(peers[1]);
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    let event = unavailable_event(&mut network, peers[0]);
+    assert!(matches!(
+        fill.on_event(&mut network, &selected, event),
+        Err(ArtifactBlockCandidateAncestryFillError::BlockUnavailable {
+            peer_id,
+            block_id,
+        }) if peer_id == peers[0] && block_id == target.id()
+    ));
+    assert!(network.pending.is_empty());
+    assert_eq!(candidates.get(target.id()).unwrap(), None);
+
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn fallback_peer_mismatch_shape_and_store_failures_do_not_rotate() {
+    let directory = TestDirectory::new("candidate-fill-fallback-terminal-found");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let initial = snapshot(&directory, &selected);
+    let target = extension(initial.head, initial.root, 1).remove(0);
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 1);
+    let peers = peer_ids(2);
+    let mut network = test_network_for_peers(&peers);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    let event = peer_mismatch_event(&mut network, peers[0], peers[1], &target);
+    assert!(matches!(
+        fill.on_event(&mut network, &selected, event),
+        Err(ArtifactBlockCandidateAncestryFillError::BlockRequestFailed {
+            peer_id,
+            block_id,
+            source,
+        }) if peer_id == peers[0]
+            && block_id == target.id()
+            && matches!(
+                source.as_ref(),
+                OutboundArtifactBlockFailure::PeerMismatch { expected, actual }
+                    if *expected == peers[0] && *actual == peers[1]
+            )
+    ));
+    assert!(network.pending.is_empty());
+
+    let drift_target = extension(initial.head, initial.root, 1).remove(0);
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                drift_target.id(),
+            )
+            .unwrap(),
+    );
+    let event = block_response_event(&mut network, peers[0], &drift_target);
+    apply_fresh_blocks(&mut selected, [pairing_bytes()]);
+    let actual_head = selected.head_block_id().unwrap();
+    assert!(matches!(
+        fill.on_event(&mut network, &selected, event),
+        Err(ArtifactBlockCandidateAncestryFillError::SelectedHeadChanged {
+            expected,
+            actual,
+        }) if expected == initial.head && actual == actual_head
+    ));
+    assert!(network.pending.is_empty());
+
+    let current_head = selected.head_block_id().unwrap();
+    let current_root = selected.artifact_set_root().unwrap();
+    let malformed_root = root(0xfd01);
+    assert_ne!(malformed_root, current_root);
+    let malformed = ArtifactBlock::new(
+        current_head,
+        malformed_root,
+        root(0xfd02),
+        artifact_id(0xfd03),
+    );
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                malformed.id(),
+            )
+            .unwrap(),
+    );
+    let event = block_response_event(&mut network, peers[0], &malformed);
+    assert!(matches!(
+        fill.on_event(&mut network, &selected, event),
+        Err(ArtifactBlockCandidateAncestryFillError::ArtifactSetRootMismatch {
+            preceding_block_id,
+            expected,
+            actual,
+        }) if preceding_block_id == current_head
+            && expected == current_root
+            && actual == malformed_root
+    ));
+    assert!(network.pending.is_empty());
+
+    let unrelated = ArtifactBlock::new(
+        ArtifactBlockId::from_bytes([0xfe; 32]),
+        root(0xfe01),
+        root(0xfe02),
+        artifact_id(0xfe03),
+    );
+    retain(&mut candidates, [unrelated]);
+    let valid = extension(current_head, current_root, 1).remove(0);
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                valid.id(),
+            )
+            .unwrap(),
+    );
+    let event = block_response_event(&mut network, peers[0], &valid);
+    assert!(matches!(
+        fill.on_event(&mut network, &selected, event),
+        Err(ArtifactBlockCandidateAncestryFillError::CandidateStoreInsert {
+            block_id,
+            source,
+        }) if block_id == valid.id()
+            && matches!(
+                source.as_ref(),
+                ArtifactBlockCandidateStoreError::EntryLimitExceeded { .. }
+            )
+    ));
+    assert!(network.pending.is_empty());
+    assert_eq!(candidates.get(valid.id()).unwrap(), None);
+    assert_eq!(candidates.get(unrelated.id()).unwrap(), Some(unrelated));
+}
+
+#[test]
+fn fallback_resets_after_durable_insert_and_restart_skips_that_prefix() {
+    let directory = TestDirectory::new("candidate-fill-fallback-reset-restart");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let blocks = extension(before.head, before.root, 2);
+    let [parent, target] = blocks.as_slice() else {
+        unreachable!("the fixture contains exactly two blocks")
+    };
+    let limits = ArtifactBlockCandidateStoreLimits::new(2).unwrap();
+    let mut candidates =
+        ArtifactBlockCandidateStore::create(directory.path(), test_chain_definition(), limits)
+            .unwrap();
+    let peers = peer_ids(2);
+    let mut network = test_network_for_peers(&peers);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    let event = unavailable_event(&mut network, peers[0]);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[1]);
+    let event = block_response_event(&mut network, peers[1], target);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_block_id(), parent.id());
+    assert_eq!(fill.pending_peer_id(), peers[0]);
+
+    let event = unavailable_event(&mut network, peers[0]);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[1]);
+    let event = unavailable_event(&mut network, peers[1]);
+    assert!(matches!(
+        fill.on_event(&mut network, &selected, event),
+        Err(ArtifactBlockCandidateAncestryFillError::BlockUnavailable {
+            peer_id,
+            block_id,
+        }) if peer_id == peers[1] && block_id == parent.id()
+    ));
+    assert_eq!(candidates.get(target.id()).unwrap(), Some(*target));
+    assert_eq!(candidates.get(parent.id()).unwrap(), None);
+    assert_snapshot(&directory, &selected, &before);
+
+    drop(network);
+    drop(candidates);
+    let mut candidates =
+        ArtifactBlockCandidateStore::open(directory.path(), test_chain_definition(), limits)
+            .unwrap();
+    assert_eq!(candidates.get(target.id()).unwrap(), Some(*target));
+    let mut restarted = test_network_for_peers(&peers);
+    let fill = awaiting(
+        restarted
+            .start_artifact_block_candidate_ancestry_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    assert_eq!(fill.pending_block_id(), parent.id());
+    assert_eq!(fill.pending_peer_id(), peers[0]);
+    let event = block_response_event(&mut restarted, peers[0], parent);
+    assert_complete(fill.on_event(&mut restarted, &selected, event).unwrap());
+    assert_eq!(candidates.get(parent.id()).unwrap(), Some(*parent));
+    assert_eq!(candidates.get(target.id()).unwrap(), Some(*target));
+    assert!(restarted.pending.is_empty());
 }
