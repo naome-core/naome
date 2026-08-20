@@ -162,6 +162,33 @@ and exact direct-import source. An ambiguous journal commit is deliberately not
 counted as acknowledged; recovery requires journal reopen. Cancellation drops
 unprocessed blocks and never rolls back the committed prefix.
 
+### Candidate-store start
+
+`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_import`
+accepts one exact target, one caller-routed `ArtifactBlockCandidateStore`, the
+selected journal, and one caller-preferred configured artifact-payload peer. It
+compares the store and journal `ArtifactChainId` values before any health or disk
+read. It then reads the selected head, rejects a target already equal to the
+head, virtual genesis, or another committed block, and snapshots the selected
+artifact-set root.
+
+Starting at the target, the method integrity-reads one exact candidate address
+at a time. A store error or missing address precedes shape checks for that
+block. The shared bounded ancestry checks then apply in order: child/root
+continuity; anchor/root completion; repeated parent; divergent virtual-genesis
+or other selected history, including a typed selected-state read failure; and
+the need for a seventeenth block. Completion reverses the retained path into
+forward order and issues no block request.
+
+The complete path enters the same strict sequential import with the
+caller-preferred peer, existing deterministic configured-peer fallback, and a
+fresh absolute deadline for each block's committed artifact request. Candidate
+reads and successful imports never insert, replace, refresh, mark, or delete an
+entry; an integrity failure retains the store's existing poison-and-reopen
+contract. The preferred or fallback payload peer is not candidate provenance.
+Only this explicit caller start can lead to journal application, with the
+existing acknowledged-prefix and ambiguous-commit semantics.
+
 ## Composed catch-up
 
 `ArtifactBlockCatchUp` composes exactly one ancestry pull followed by exactly

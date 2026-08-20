@@ -1,22 +1,32 @@
 use std::collections::HashMap;
+use std::error::Error;
+use std::fs::OpenOptions;
 use std::sync::atomic::Ordering;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
 use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome::block_exchange::ArtifactBlockRequest;
-use naome_chain::{ArtifactBlock, ArtifactBlockApplyError, ArtifactChainState, ArtifactDag};
+use naome_chain::{
+    ArtifactBlock, ArtifactBlockApplyError, ArtifactChainDefinition, ArtifactChainState,
+    ArtifactDag, ArtifactSetRoot,
+};
 use naome_ledger::LedgerError;
 use naome_proof::{
     ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate, DefinitionId,
     ProofCertificate, ProofFormula, ProofStep,
 };
-use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
+use naome_storage::{
+    ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
+    ArtifactBlockCandidateStoreError, ArtifactBlockCandidateStoreLimits, ArtifactChainJournal,
+    ArtifactChainJournalError,
+};
 
 use super::*;
 use crate::codec::ArtifactBlockWireResponse;
 use crate::tests::{
-    TestDirectory, create_journal, pairing_bytes, test_chain_definition, test_network_for_peers,
+    TestDirectory, apply_fresh_blocks, create_journal, pairing_bytes, test_chain_definition,
+    test_network_for_peers,
 };
 use crate::{
     ArtifactBlockAncestryPullProgress, ArtifactBlockImportError, ExchangeRequestId, Keypair,
@@ -141,6 +151,31 @@ fn ancestry(
         target_block_id,
         blocks,
     )
+}
+
+fn create_candidate_store(
+    directory: &TestDirectory,
+    definition: ArtifactChainDefinition,
+    max_entries: usize,
+) -> ArtifactBlockCandidateStore {
+    ArtifactBlockCandidateStore::create(
+        directory.path(),
+        definition,
+        ArtifactBlockCandidateStoreLimits::new(max_entries).unwrap(),
+    )
+    .unwrap()
+}
+
+fn retain_candidates<'a>(
+    store: &mut ArtifactBlockCandidateStore,
+    blocks: impl IntoIterator<Item = &'a ArtifactBlock>,
+) {
+    for block in blocks {
+        assert_eq!(
+            store.insert(block).unwrap(),
+            ArtifactBlockCandidateInsertOutcome::Inserted
+        );
+    }
 }
 
 fn pending_artifact_request(
@@ -310,6 +345,320 @@ fn one_three_and_sixteen_block_paths_commit_forward_without_block_refetch() {
                 .unwrap();
         assert_eq!(reopened.len().unwrap(), count);
     }
+}
+
+#[test]
+fn candidate_store_paths_reopen_and_import_without_block_requests() {
+    let directory = TestDirectory::new("candidate-ancestry-import-success");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let anchor = selected.head_block_id().unwrap();
+    let preferred_peer_id = Keypair::generate_ed25519().public().to_peer_id();
+    let (blocks, payloads) = valid_extension(3);
+    let target = blocks.last().unwrap().id();
+    let limits = ArtifactBlockCandidateStoreLimits::new(blocks.len()).unwrap();
+    let mut candidates =
+        ArtifactBlockCandidateStore::create(directory.path(), test_chain_definition(), limits)
+            .unwrap();
+    retain_candidates(&mut candidates, blocks.iter().rev());
+    drop(candidates);
+    let mut candidates =
+        ArtifactBlockCandidateStore::open(directory.path(), test_chain_definition(), limits)
+            .unwrap();
+    let mut network = test_network_for_peers(&[preferred_peer_id]);
+
+    let import = network
+        .start_artifact_block_candidate_ancestry_import(
+            &selected,
+            &mut candidates,
+            preferred_peer_id,
+            target,
+        )
+        .unwrap();
+    assert_eq!(import.anchor_block_id(), anchor);
+    assert_eq!(import.target_block_id(), target);
+    assert_eq!(import.pending_block_id(), blocks[0].id());
+    assert_eq!(import.pending_peer_id(), preferred_peer_id);
+    drive_success(&mut network, &mut selected, import, &payloads);
+
+    assert_eq!(selected.head_block_id().unwrap(), target);
+    assert_eq!(candidates.len().unwrap(), blocks.len());
+    for block in &blocks {
+        assert!(candidates.contains(block.id()).unwrap());
+    }
+}
+
+#[test]
+fn candidate_start_precedence_is_chain_then_selected_then_retained_path() {
+    let preferred_peer_id = Keypair::generate_ed25519().public().to_peer_id();
+
+    let mismatch_directory = TestDirectory::new("candidate-ancestry-chain-precedence");
+    let mismatch_selected = create_journal(mismatch_directory.path()).unwrap();
+    let mismatched_definition = ArtifactChainDefinition::new([0x42; 32]);
+    let mut mismatched_candidates =
+        create_candidate_store(&mismatch_directory, mismatched_definition, 1);
+    let selected_target = mismatch_selected.head_block_id().unwrap();
+    let mut mismatch_network = test_network_for_peers(&[preferred_peer_id]);
+    assert!(matches!(
+        mismatch_network.start_artifact_block_candidate_ancestry_import(
+            &mismatch_selected,
+            &mut mismatched_candidates,
+            preferred_peer_id,
+            selected_target,
+        ),
+        Err(ArtifactBlockCandidateAncestryImportStartError::ChainIdMismatch {
+            selected,
+            candidates,
+        }) if selected == mismatch_selected.chain_id()
+            && candidates == mismatched_definition.id()
+    ));
+    assert!(mismatch_network.pending.is_empty());
+
+    let selected_directory = TestDirectory::new("candidate-ancestry-selected-precedence");
+    let selected = create_journal(selected_directory.path()).unwrap();
+    let mut empty_candidates =
+        create_candidate_store(&selected_directory, test_chain_definition(), 2);
+    let selected_target = selected.head_block_id().unwrap();
+    let mut selected_network = test_network_for_peers(&[preferred_peer_id]);
+    assert!(matches!(
+        selected_network.start_artifact_block_candidate_ancestry_import(
+            &selected,
+            &mut empty_candidates,
+            preferred_peer_id,
+            selected_target,
+        ),
+        Err(ArtifactBlockCandidateAncestryImportStartError::TargetAlreadySelected {
+            block_id,
+        }) if block_id == selected_target
+    ));
+
+    let (blocks, _) = valid_extension(2);
+    let missing_target = blocks[1].id();
+    assert!(matches!(
+        selected_network.start_artifact_block_candidate_ancestry_import(
+            &selected,
+            &mut empty_candidates,
+            preferred_peer_id,
+            missing_target,
+        ),
+        Err(ArtifactBlockCandidateAncestryImportStartError::CandidateNotRetained {
+            block_id,
+        }) if block_id == missing_target
+    ));
+    retain_candidates(&mut empty_candidates, [&blocks[1]]);
+    assert!(matches!(
+        selected_network.start_artifact_block_candidate_ancestry_import(
+            &selected,
+            &mut empty_candidates,
+            preferred_peer_id,
+            missing_target,
+        ),
+        Err(ArtifactBlockCandidateAncestryImportStartError::CandidateNotRetained {
+            block_id,
+        }) if block_id == blocks[0].id()
+    ));
+    assert!(selected_network.pending.is_empty());
+}
+
+#[test]
+fn candidate_shape_validation_rejects_discontinuity_divergence_and_overbound() {
+    let preferred_peer_id = Keypair::generate_ed25519().public().to_peer_id();
+
+    let root_directory = TestDirectory::new("candidate-ancestry-root-mismatch");
+    let root_selected = create_journal(root_directory.path()).unwrap();
+    let mut root_candidates = create_candidate_store(&root_directory, test_chain_definition(), 2);
+    let (blocks, _) = valid_extension(2);
+    let parent = blocks[0];
+    let original_child = blocks[1];
+    let wrong_previous_root = ArtifactSetRoot::from_bytes([0xff; 32]);
+    assert_ne!(wrong_previous_root, parent.resulting_artifact_set_root());
+    let child = ArtifactBlock::new(
+        parent.id(),
+        wrong_previous_root,
+        original_child.resulting_artifact_set_root(),
+        original_child.artifact_id(),
+    );
+    retain_candidates(&mut root_candidates, [&parent, &child]);
+    let mut root_network = test_network_for_peers(&[preferred_peer_id]);
+    assert!(matches!(
+        root_network.start_artifact_block_candidate_ancestry_import(
+            &root_selected,
+            &mut root_candidates,
+            preferred_peer_id,
+            child.id(),
+        ),
+        Err(ArtifactBlockCandidateAncestryImportStartError::ArtifactSetRootMismatch {
+            preceding_block_id,
+            expected,
+            actual,
+        }) if preceding_block_id == parent.id()
+            && expected == parent.resulting_artifact_set_root()
+            && actual == wrong_previous_root
+    ));
+    assert!(root_network.pending.is_empty());
+
+    let divergence_directory = TestDirectory::new("candidate-ancestry-divergence");
+    let mut divergence_selected = create_journal(divergence_directory.path()).unwrap();
+    apply_fresh_blocks(&mut divergence_selected, [pairing_bytes()]);
+    let historical = divergence_selected.head_block_id().unwrap();
+    let historical_root = divergence_selected.artifact_set_root().unwrap();
+    apply_fresh_blocks(&mut divergence_selected, [independent_proof_bytes(30)]);
+    let current_head = divergence_selected.head_block_id().unwrap();
+    let divergent = ArtifactBlock::new(
+        historical,
+        historical_root,
+        ArtifactSetRoot::from_bytes([0x33; 32]),
+        artifact_id(&independent_proof_bytes(31)),
+    );
+    let mut divergence_candidates =
+        create_candidate_store(&divergence_directory, test_chain_definition(), 1);
+    retain_candidates(&mut divergence_candidates, [&divergent]);
+    let mut divergence_network = test_network_for_peers(&[preferred_peer_id]);
+    assert!(matches!(
+        divergence_network.start_artifact_block_candidate_ancestry_import(
+            &divergence_selected,
+            &mut divergence_candidates,
+            preferred_peer_id,
+            divergent.id(),
+        ),
+        Err(ArtifactBlockCandidateAncestryImportStartError::DivergentAncestry {
+            expected_anchor,
+            encountered,
+        }) if expected_anchor == current_head && encountered == historical
+    ));
+    assert!(divergence_network.pending.is_empty());
+
+    let bound_directory = TestDirectory::new("candidate-ancestry-bound");
+    let bound_selected = create_journal(bound_directory.path()).unwrap();
+    let (bound_blocks, _) = valid_extension(MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS + 1);
+    let mut bound_candidates = create_candidate_store(
+        &bound_directory,
+        test_chain_definition(),
+        MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS,
+    );
+    retain_candidates(&mut bound_candidates, bound_blocks[1..].iter());
+    let target = bound_blocks.last().unwrap().id();
+    let mut bound_network = test_network_for_peers(&[preferred_peer_id]);
+    assert!(matches!(
+        bound_network.start_artifact_block_candidate_ancestry_import(
+            &bound_selected,
+            &mut bound_candidates,
+            preferred_peer_id,
+            target,
+        ),
+        Err(ArtifactBlockCandidateAncestryImportStartError::AncestryLimitExceeded {
+            maximum,
+            next_block_id,
+        }) if maximum == MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS
+            && next_block_id == bound_blocks[0].id()
+    ));
+    assert_eq!(
+        bound_candidates.len().unwrap(),
+        MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS
+    );
+    assert!(bound_network.pending.is_empty());
+}
+
+#[test]
+fn candidate_strict_preflight_failure_is_nested_before_payload_start() {
+    let directory = TestDirectory::new("candidate-ancestry-import-start");
+    let selected = create_journal(directory.path()).unwrap();
+    let selected_head = selected.head_block_id().unwrap();
+    let selected_root = selected.artifact_set_root().unwrap();
+    let preferred_peer_id = Keypair::generate_ed25519().public().to_peer_id();
+    let (blocks, _) = valid_extension(1);
+    let original = blocks[0];
+    let wrong_resulting_root = ArtifactSetRoot::from_bytes([0xee; 32]);
+    assert_ne!(wrong_resulting_root, original.resulting_artifact_set_root());
+    let malformed = ArtifactBlock::new(
+        original.parent_block_id(),
+        original.previous_artifact_set_root(),
+        wrong_resulting_root,
+        original.artifact_id(),
+    );
+    let target = malformed.id();
+    let mut candidates = create_candidate_store(&directory, test_chain_definition(), 1);
+    retain_candidates(&mut candidates, [&malformed]);
+    let mut network = test_network_for_peers(&[preferred_peer_id]);
+
+    let error = network
+        .start_artifact_block_candidate_ancestry_import(
+            &selected,
+            &mut candidates,
+            preferred_peer_id,
+            target,
+        )
+        .unwrap_err();
+    let ArtifactBlockCandidateAncestryImportStartError::ImportStart { source } = &error else {
+        panic!("strict preflight failure lost its ancestry source: {error}");
+    };
+    assert_eq!(source.target_block_id(), target);
+    assert_eq!(source.failed_block_id(), target);
+    assert_eq!(source.committed_block_count(), 0);
+    assert_eq!(source.last_acknowledged_head_block_id(), selected_head);
+    assert!(matches!(
+        source.block_import_error(),
+        ArtifactBlockImportError::ResultingArtifactSetRootMismatch { expected, actual }
+            if *expected == original.resulting_artifact_set_root()
+                && *actual == wrong_resulting_root
+    ));
+    assert_eq!(
+        error.to_string(),
+        format!("cannot start retained candidate ancestry import: {source}")
+    );
+    assert!(error.source().is_some());
+    assert_eq!(selected.head_block_id().unwrap(), selected_head);
+    assert_eq!(selected.artifact_set_root().unwrap(), selected_root);
+    assert!(network.pending.is_empty());
+    assert!(candidates.contains(target).unwrap());
+}
+
+#[test]
+fn candidate_store_read_failure_is_typed_and_precedes_payload_start() {
+    let directory = TestDirectory::new("candidate-ancestry-read-failure");
+    let selected = create_journal(directory.path()).unwrap();
+    let selected_head = selected.head_block_id().unwrap();
+    let preferred_peer_id = Keypair::generate_ed25519().public().to_peer_id();
+    let (blocks, _) = valid_extension(1);
+    let target = blocks[0].id();
+    let mut candidates = create_candidate_store(&directory, test_chain_definition(), 1);
+    retain_candidates(&mut candidates, &blocks);
+    OpenOptions::new()
+        .write(true)
+        .open(directory.path().join("artifact-block-candidate-store.log"))
+        .unwrap()
+        .set_len(0)
+        .unwrap();
+    let mut network = test_network_for_peers(&[preferred_peer_id]);
+
+    let error = network
+        .start_artifact_block_candidate_ancestry_import(
+            &selected,
+            &mut candidates,
+            preferred_peer_id,
+            target,
+        )
+        .unwrap_err();
+    let ArtifactBlockCandidateAncestryImportStartError::CandidateStore { block_id, source } =
+        &error
+    else {
+        panic!("candidate read failure lost its typed source: {error}");
+    };
+    assert_eq!(*block_id, target);
+    assert!(matches!(
+        source.as_ref(),
+        ArtifactBlockCandidateStoreError::Read { .. }
+    ));
+    assert_eq!(
+        error.to_string(),
+        format!("cannot read candidate block address {target:?}: {source}")
+    );
+    assert!(error.source().is_some());
+    assert_eq!(selected.head_block_id().unwrap(), selected_head);
+    assert!(network.pending.is_empty());
+    assert!(matches!(
+        candidates.len(),
+        Err(ArtifactBlockCandidateStoreError::Poisoned)
+    ));
 }
 
 #[test]

@@ -15,6 +15,126 @@ use super::{
 /// Maximum number of blocks retained by one ancestry pull.
 pub const MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS: usize = 16;
 
+#[derive(Clone, Copy)]
+pub(super) struct ArtifactBlockAncestryShapeContext {
+    anchor_block_id: ArtifactBlockId,
+    anchor_artifact_set_root: ArtifactSetRoot,
+    virtual_genesis_block_id: ArtifactBlockId,
+    target_block_id: ArtifactBlockId,
+}
+
+impl ArtifactBlockAncestryShapeContext {
+    pub(super) const fn new(
+        anchor_block_id: ArtifactBlockId,
+        anchor_artifact_set_root: ArtifactSetRoot,
+        virtual_genesis_block_id: ArtifactBlockId,
+        target_block_id: ArtifactBlockId,
+    ) -> Self {
+        Self {
+            anchor_block_id,
+            anchor_artifact_set_root,
+            virtual_genesis_block_id,
+            target_block_id,
+        }
+    }
+}
+
+pub(super) enum ArtifactBlockAncestryShapeError {
+    SelectedState(ArtifactChainJournalError),
+    ArtifactSetRootMismatch {
+        preceding_block_id: ArtifactBlockId,
+        expected: ArtifactSetRoot,
+        actual: ArtifactSetRoot,
+    },
+    RepeatedBlockId {
+        block_id: ArtifactBlockId,
+    },
+    DivergentAncestry {
+        expected_anchor: ArtifactBlockId,
+        encountered: ArtifactBlockId,
+    },
+    AncestryLimitExceeded {
+        maximum: usize,
+        next_block_id: ArtifactBlockId,
+    },
+}
+
+pub(super) fn retain_ancestry_block(
+    selected: &ArtifactChainJournal,
+    context: ArtifactBlockAncestryShapeContext,
+    blocks: &mut Vec<ArtifactBlock>,
+    block: ArtifactBlock,
+) -> Result<Option<ArtifactBlockId>, ArtifactBlockAncestryShapeError> {
+    let block_id = block.id();
+
+    if let Some(child) = blocks.last() {
+        require_root_continuity(
+            block_id,
+            block.resulting_artifact_set_root(),
+            child.previous_artifact_set_root(),
+        )?;
+    }
+
+    let parent_block_id = block.parent_block_id();
+    if parent_block_id == context.anchor_block_id {
+        require_root_continuity(
+            context.anchor_block_id,
+            context.anchor_artifact_set_root,
+            block.previous_artifact_set_root(),
+        )?;
+        blocks.push(block);
+        blocks.reverse();
+        return Ok(None);
+    }
+
+    if ArtifactBlockAncestryPull::was_already_requested(
+        context.target_block_id,
+        blocks,
+        parent_block_id,
+    ) {
+        return Err(ArtifactBlockAncestryShapeError::RepeatedBlockId {
+            block_id: parent_block_id,
+        });
+    }
+    if parent_block_id == context.virtual_genesis_block_id
+        || selected
+            .block(parent_block_id)
+            .map_err(ArtifactBlockAncestryShapeError::SelectedState)?
+            .is_some()
+    {
+        return Err(ArtifactBlockAncestryShapeError::DivergentAncestry {
+            expected_anchor: context.anchor_block_id,
+            encountered: parent_block_id,
+        });
+    }
+
+    let retained = blocks.len() + 1;
+    if retained == MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS {
+        return Err(ArtifactBlockAncestryShapeError::AncestryLimitExceeded {
+            maximum: MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS,
+            next_block_id: parent_block_id,
+        });
+    }
+
+    blocks.push(block);
+    Ok(Some(parent_block_id))
+}
+
+fn require_root_continuity(
+    preceding_block_id: ArtifactBlockId,
+    expected: ArtifactSetRoot,
+    actual: ArtifactSetRoot,
+) -> Result<(), ArtifactBlockAncestryShapeError> {
+    if expected != actual {
+        return Err(ArtifactBlockAncestryShapeError::ArtifactSetRootMismatch {
+            preceding_block_id,
+            expected,
+            actual,
+        });
+    }
+    Ok(())
+}
+
 /// One bounded caller-selected artifact-block ancestry pull in progress.
 ///
 /// The caller supplies the exact target identity and one statically authorized
@@ -171,23 +291,19 @@ impl ArtifactBlockAncestryPull {
             });
         }
 
-        if let Some(child) = blocks.last() {
-            Self::require_root_continuity(
-                block_id,
-                block.resulting_artifact_set_root(),
-                child.previous_artifact_set_root(),
-            )?;
-        }
-
-        let parent_block_id = block.parent_block_id();
-        if parent_block_id == anchor_block_id {
-            Self::require_root_continuity(
+        let next_block_id = retain_ancestry_block(
+            selected,
+            ArtifactBlockAncestryShapeContext::new(
                 anchor_block_id,
                 anchor_artifact_set_root,
-                block.previous_artifact_set_root(),
-            )?;
-            blocks.push(block);
-            blocks.reverse();
+                virtual_genesis_block_id,
+                target_block_id,
+            ),
+            &mut blocks,
+            block,
+        )
+        .map_err(ArtifactBlockAncestryPullError::from_shape)?;
+        let Some(parent_block_id) = next_block_id else {
             return Ok(ArtifactBlockAncestryPullProgress::Complete(
                 UnselectedArtifactBlockAncestry {
                     peer_id,
@@ -196,32 +312,7 @@ impl ArtifactBlockAncestryPull {
                     blocks,
                 },
             ));
-        }
-
-        if Self::was_already_requested(target_block_id, &blocks, parent_block_id) {
-            return Err(ArtifactBlockAncestryPullError::RepeatedBlockId {
-                block_id: parent_block_id,
-            });
-        }
-        if parent_block_id == virtual_genesis_block_id
-            || selected
-                .block(parent_block_id)
-                .map_err(ArtifactBlockAncestryPullError::selected_state)?
-                .is_some()
-        {
-            return Err(ArtifactBlockAncestryPullError::DivergentAncestry {
-                expected_anchor: anchor_block_id,
-                encountered: parent_block_id,
-            });
-        }
-
-        let retained = blocks.len() + 1;
-        if retained == MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS {
-            return Err(ArtifactBlockAncestryPullError::AncestryLimitExceeded {
-                maximum: MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS,
-                next_block_id: parent_block_id,
-            });
-        }
+        };
 
         let ticket = network
             .request_block(peer_id, ArtifactBlockRequest::new(parent_block_id))
@@ -229,7 +320,6 @@ impl ArtifactBlockAncestryPull {
                 block_id: parent_block_id,
                 source,
             })?;
-        blocks.push(block);
         Ok(ArtifactBlockAncestryPullProgress::AwaitingResponse(
             ArtifactBlockAncestryPull {
                 anchor_block_id,
@@ -240,21 +330,6 @@ impl ArtifactBlockAncestryPull {
                 ticket,
             },
         ))
-    }
-
-    fn require_root_continuity(
-        preceding_block_id: ArtifactBlockId,
-        expected: ArtifactSetRoot,
-        actual: ArtifactSetRoot,
-    ) -> Result<(), ArtifactBlockAncestryPullError> {
-        if expected != actual {
-            return Err(ArtifactBlockAncestryPullError::ArtifactSetRootMismatch {
-                preceding_block_id,
-                expected,
-                actual,
-            });
-        }
-        Ok(())
     }
 
     fn was_already_requested(
@@ -415,6 +490,38 @@ impl ArtifactBlockAncestryPullError {
     fn selected_state(source: ArtifactChainJournalError) -> Self {
         Self::SelectedState {
             source: Box::new(source),
+        }
+    }
+
+    fn from_shape(error: ArtifactBlockAncestryShapeError) -> Self {
+        match error {
+            ArtifactBlockAncestryShapeError::SelectedState(source) => Self::selected_state(source),
+            ArtifactBlockAncestryShapeError::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            } => Self::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            },
+            ArtifactBlockAncestryShapeError::RepeatedBlockId { block_id } => {
+                Self::RepeatedBlockId { block_id }
+            }
+            ArtifactBlockAncestryShapeError::DivergentAncestry {
+                expected_anchor,
+                encountered,
+            } => Self::DivergentAncestry {
+                expected_anchor,
+                encountered,
+            },
+            ArtifactBlockAncestryShapeError::AncestryLimitExceeded {
+                maximum,
+                next_block_id,
+            } => Self::AncestryLimitExceeded {
+                maximum,
+                next_block_id,
+            },
         }
     }
 }
