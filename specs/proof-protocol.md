@@ -786,11 +786,33 @@ Authenticated-set roots and proof bytes remain the canonical values defined
 above; structural sharing is an in-memory representation and contributes no new
 identity bytes.
 
+A Foundation-scoped payload archive may use
+`validate_and_insert_branch_payload` to validate and retain one exact child
+against a caller-held branch snapshot. The archive returns the successor only
+after strict snapshot validation and durable insertion or idempotent
+confirmation of that exact payload. The predecessor never changes; a validation
+or archive failure returns no successor. Archive retention is not a checked
+record or branch-state cache, so every later use repeats complete validation in
+its target ancestry.
+
+`ArtifactChainJournal::reconstruct_candidate_branch` may start from one
+caller-selected retained candidate tip, walk its exact parent and root links
+backward to the first selected ancestor, and replay its archived payloads
+forward from that ancestor's replay-built snapshot. The caller supplies a
+`CandidateBranchReconstructionLimits` with a positive maximum candidate-block
+count for that one operation. Only a completely validated target returns a
+`ReconstructedCandidateBranch` containing its memory-only snapshot; missing,
+corrupt, over-limit, or invalid input returns no partial result. Reconstruction
+performs no durable or selected-state mutation; corrupt store reads retain
+their typed poison-and-reopen behavior.
+
 This boundary evaluates caller-supplied artifact ancestry only. It does not
 persist a candidate snapshot, map consensus ancestry to artifact ancestry,
 choose or retain a consensus branch, define a branch-count, depth, byte, or work
-limit, mutate canonical selected state, or establish availability, consensus,
-finality, or economic authority.
+limit, fetch missing content, treat local absence as global absence, mutate
+canonical selected state, or establish availability, consensus, finality, or
+economic authority. A caller-local reconstruction bound is not a protocol-wide
+branch limit.
 
 ### Payload and trust boundaries
 

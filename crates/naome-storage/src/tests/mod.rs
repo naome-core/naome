@@ -24,6 +24,7 @@ use naome_proof::{
 
 mod admission;
 mod branch_snapshots;
+mod candidate_branch_reconstruction;
 mod candidate_validation;
 mod faults;
 mod replay;

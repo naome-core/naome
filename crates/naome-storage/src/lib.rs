@@ -9,10 +9,10 @@
 //! durable application always revalidates before selection and commit.
 //!
 //! [`CanonicalArtifactPayloadStore`] separately archives exact tagged payload
-//! bytes from accepted artifact records or from direct-child candidates strictly
-//! validated against one journal's current selected state. Archiving does not make
-//! bytes selected or reusable as checked records; consumers must validate them
-//! again in their target artifact context.
+//! bytes from accepted artifact records or from candidates strictly validated
+//! against an exact selected or memory-only branch predecessor. Archiving does
+//! not make bytes selected or reusable as checked records; consumers must
+//! validate them again in their target artifact context.
 //!
 //! [`ArtifactBlockCandidateStore`] retains chain-scoped structural blocks,
 //! including siblings and blocks with unavailable parents, without validating
@@ -20,6 +20,7 @@
 //! fork choice, consensus, finality, networking, or economic state.
 
 mod block_candidate_store;
+mod candidate_branch_reconstruction;
 #[cfg(test)]
 mod fault_io;
 mod payload_store;
@@ -30,8 +31,14 @@ pub use block_candidate_store::{
     ArtifactBlockCandidateStoreLimitsError,
 };
 
+pub use candidate_branch_reconstruction::{
+    CandidateBranchReconstructionError, CandidateBranchReconstructionLimits,
+    CandidateBranchReconstructionLimitsError, ReconstructedCandidateBranch,
+};
+
 pub use payload_store::{
     ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits, ArtifactPayloadStoreLimitsError,
+    CandidateBranchPayloadArchiveError, CandidateBranchPayloadArchiveOutcome,
     CandidatePayloadArchiveError, CanonicalArtifactPayload, CanonicalArtifactPayloadStore,
     CanonicalArtifactPayloadStoreError,
 };
