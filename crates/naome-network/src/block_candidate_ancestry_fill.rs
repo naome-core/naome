@@ -1,0 +1,493 @@
+//! Durable caller-selected acquisition of one bounded artifact-block ancestry.
+
+use std::error::Error;
+use std::fmt;
+
+use naome::block_exchange::ArtifactBlockRequest;
+use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactChainId, ArtifactSetRoot};
+use naome_storage::{
+    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, ArtifactChainJournal,
+    ArtifactChainJournalError,
+};
+
+use super::{
+    BlockRequestTicket, NetworkEvent, OutboundArtifactBlockFailure, PeerId, RequestStartError,
+    StaticArtifactNetwork,
+    block_ancestry::{
+        ArtifactBlockAncestryShapeContext, ArtifactBlockAncestryShapeError, retain_ancestry_block,
+    },
+    selected_context_contains_block,
+};
+
+/// One durable candidate-store ancestry fill awaiting an exact block terminal.
+///
+/// The workflow exclusively borrows one candidate store so completion cannot be
+/// assembled across different same-chain stores. It retains each shape-checked
+/// found block before scanning or requesting its parent. Previously acknowledged
+/// insertions survive cancellation and later failure, but no continuation starts
+/// without another explicit caller action.
+#[must_use]
+pub struct ArtifactBlockCandidateAncestryFill<'store> {
+    state: ArtifactBlockCandidateAncestryFillState<'store>,
+    ticket: BlockRequestTicket,
+}
+
+struct ArtifactBlockCandidateAncestryFillState<'store> {
+    candidates: &'store mut ArtifactBlockCandidateStore,
+    anchor_block_id: ArtifactBlockId,
+    anchor_artifact_set_root: ArtifactSetRoot,
+    virtual_genesis_block_id: ArtifactBlockId,
+    target_block_id: ArtifactBlockId,
+    block_peer_id: PeerId,
+    blocks: Vec<ArtifactBlock>,
+}
+
+impl StaticArtifactNetwork {
+    /// Starts or resumes one durable bounded ancestry fill.
+    ///
+    /// Already retained blocks are integrity-read and shape-checked without a
+    /// network request. Only the first missing exact address is requested from
+    /// `block_peer_id`. A fully retained path completes synchronously and does
+    /// not inspect the peer configuration or connection state. The selected
+    /// journal supplies only a read-only anchor and divergence checks.
+    pub fn start_artifact_block_candidate_ancestry_fill<'store>(
+        &mut self,
+        selected: &ArtifactChainJournal,
+        candidates: &'store mut ArtifactBlockCandidateStore,
+        block_peer_id: PeerId,
+        target_block_id: ArtifactBlockId,
+    ) -> Result<
+        ArtifactBlockCandidateAncestryFillProgress<'store>,
+        ArtifactBlockCandidateAncestryFillError,
+    > {
+        let selected_chain_id = selected.chain_id();
+        let candidate_chain_id = candidates.chain_id();
+        if selected_chain_id != candidate_chain_id {
+            return Err(ArtifactBlockCandidateAncestryFillError::ChainIdMismatch {
+                selected: selected_chain_id,
+                candidates: candidate_chain_id,
+            });
+        }
+
+        let anchor_block_id = selected
+            .head_block_id()
+            .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?;
+        let virtual_genesis_block_id = selected_chain_id.virtual_genesis_block_id();
+        if selected_context_contains_block(
+            selected,
+            anchor_block_id,
+            virtual_genesis_block_id,
+            target_block_id,
+        )
+        .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?
+        {
+            return Err(
+                ArtifactBlockCandidateAncestryFillError::TargetAlreadySelected {
+                    block_id: target_block_id,
+                },
+            );
+        }
+        let anchor_artifact_set_root = selected
+            .artifact_set_root()
+            .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?;
+
+        ArtifactBlockCandidateAncestryFillState {
+            candidates,
+            anchor_block_id,
+            anchor_artifact_set_root,
+            virtual_genesis_block_id,
+            target_block_id,
+            block_peer_id,
+            blocks: Vec::new(),
+        }
+        .scan_or_request(self, selected, target_block_id)
+    }
+}
+
+impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
+    fn scan_or_request(
+        mut self,
+        network: &mut StaticArtifactNetwork,
+        selected: &ArtifactChainJournal,
+        mut block_id: ArtifactBlockId,
+    ) -> Result<
+        ArtifactBlockCandidateAncestryFillProgress<'store>,
+        ArtifactBlockCandidateAncestryFillError,
+    > {
+        loop {
+            let Some(block) = self.candidates.get(block_id).map_err(|source| {
+                ArtifactBlockCandidateAncestryFillError::CandidateStoreRead {
+                    block_id,
+                    source: Box::new(source),
+                }
+            })?
+            else {
+                let ticket = network
+                    .request_block(self.block_peer_id, ArtifactBlockRequest::new(block_id))
+                    .map_err(
+                        |source| ArtifactBlockCandidateAncestryFillError::RequestStart {
+                            block_id,
+                            source,
+                        },
+                    )?;
+                return Ok(Some(ArtifactBlockCandidateAncestryFill {
+                    state: self,
+                    ticket,
+                }));
+            };
+
+            let next_block_id =
+                retain_ancestry_block(selected, self.shape_context(), &mut self.blocks, block)
+                    .map_err(ArtifactBlockCandidateAncestryFillError::from_shape)?;
+            let Some(next_block_id) = next_block_id else {
+                return Ok(None);
+            };
+            block_id = next_block_id;
+        }
+    }
+
+    fn shape_context(&self) -> ArtifactBlockAncestryShapeContext {
+        ArtifactBlockAncestryShapeContext::new(
+            self.anchor_block_id,
+            self.anchor_artifact_set_root,
+            self.virtual_genesis_block_id,
+            self.target_block_id,
+        )
+    }
+}
+
+impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
+    /// Returns the selected head captured when this fill started.
+    pub const fn anchor_block_id(&self) -> ArtifactBlockId {
+        self.state.anchor_block_id
+    }
+
+    /// Returns the exact ancestry target selected by the caller.
+    pub const fn target_block_id(&self) -> ArtifactBlockId {
+        self.state.target_block_id
+    }
+
+    /// Returns the exact missing block identity awaited by the active request.
+    pub const fn pending_block_id(&self) -> ArtifactBlockId {
+        self.ticket.request().block_id()
+    }
+
+    /// Returns the authenticated peer expected to serve the active request.
+    pub const fn pending_peer_id(&self) -> PeerId {
+        self.ticket.peer_id()
+    }
+
+    /// Returns whether `event` is the exact terminal awaited by this fill.
+    pub fn accepts_event(&self, event: &NetworkEvent) -> bool {
+        matches!(event, NetworkEvent::OutboundBlock(event) if self.ticket.accepts_event(event))
+    }
+
+    /// Cancels the fill and releases its exclusive candidate-store borrow.
+    ///
+    /// Every previously acknowledged insertion remains durable. Dropping the
+    /// active ticket does not cancel its physical libp2p request, whose slot and
+    /// permit drain through the network event loop.
+    pub fn cancel(self) {}
+
+    /// Advances the fill with its exact correlated block terminal.
+    ///
+    /// The selected head is rechecked before the found block is shape-checked
+    /// or inserted. A successful insertion is acknowledged before any retained
+    /// parent scan or next request. The journal is never mutated.
+    pub fn on_event(
+        self,
+        network: &mut StaticArtifactNetwork,
+        selected: &ArtifactChainJournal,
+        event: NetworkEvent,
+    ) -> Result<
+        ArtifactBlockCandidateAncestryFillProgress<'store>,
+        ArtifactBlockCandidateAncestryFillError,
+    > {
+        if !self.accepts_event(&event) {
+            return Err(ArtifactBlockCandidateAncestryFillError::UnexpectedEvent);
+        }
+
+        let Self { mut state, ticket } = self;
+        let NetworkEvent::OutboundBlock(event) = event else {
+            unreachable!("an accepted candidate ancestry event is a block terminal")
+        };
+        if !ticket.belongs_to_network(network) {
+            return Err(ArtifactBlockCandidateAncestryFillError::UnexpectedEvent);
+        }
+
+        let peer_id = ticket.peer_id();
+        let block_id = ticket.request().block_id();
+        let response = ticket
+            .complete(event)
+            .expect("the accepted block event matches its candidate ancestry ticket")
+            .map_err(
+                |source| ArtifactBlockCandidateAncestryFillError::BlockRequestFailed {
+                    peer_id,
+                    block_id,
+                    source,
+                },
+            )?;
+        let block = response.into_block().ok_or(
+            ArtifactBlockCandidateAncestryFillError::BlockUnavailable { peer_id, block_id },
+        )?;
+
+        let actual_head = selected
+            .head_block_id()
+            .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?;
+        if actual_head != state.anchor_block_id {
+            return Err(
+                ArtifactBlockCandidateAncestryFillError::SelectedHeadChanged {
+                    expected: state.anchor_block_id,
+                    actual: actual_head,
+                },
+            );
+        }
+
+        let next_block_id =
+            retain_ancestry_block(selected, state.shape_context(), &mut state.blocks, block)
+                .map_err(ArtifactBlockCandidateAncestryFillError::from_shape)?;
+        let _ = state.candidates.insert(&block).map_err(|source| {
+            ArtifactBlockCandidateAncestryFillError::CandidateStoreInsert {
+                block_id,
+                source: Box::new(source),
+            }
+        })?;
+
+        let Some(next_block_id) = next_block_id else {
+            return Ok(None);
+        };
+        state.scan_or_request(network, selected, next_block_id)
+    }
+}
+
+impl fmt::Debug for ArtifactBlockCandidateAncestryFill<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ArtifactBlockCandidateAncestryFill")
+            .field("anchor_block_id", &self.anchor_block_id())
+            .field("target_block_id", &self.target_block_id())
+            .field("pending_block_id", &self.pending_block_id())
+            .field("pending_peer_id", &self.pending_peer_id())
+            .field("retained_block_count", &self.state.blocks.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Allocation-free progress after start or one exact block terminal.
+///
+/// `Some(fill)` means one exact missing-block request remains active. `None`
+/// means the bound candidate store contains the complete checked path to the
+/// captured selected head.
+pub type ArtifactBlockCandidateAncestryFillProgress<'store> =
+    Option<ArtifactBlockCandidateAncestryFill<'store>>;
+
+/// A fail-closed durable candidate-store ancestry fill error.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ArtifactBlockCandidateAncestryFillError {
+    /// The candidate store and selected journal belong to different chains.
+    ChainIdMismatch {
+        selected: ArtifactChainId,
+        candidates: ArtifactChainId,
+    },
+    /// The selected journal failed a required read.
+    SelectedState {
+        source: Box<ArtifactChainJournalError>,
+    },
+    /// The target is the current head, virtual genesis, or another selected block.
+    TargetAlreadySelected { block_id: ArtifactBlockId },
+    /// The candidate store could not integrity-read one required block address.
+    CandidateStoreRead {
+        block_id: ArtifactBlockId,
+        source: Box<ArtifactBlockCandidateStoreError>,
+    },
+    /// One exact missing block request could not be started.
+    RequestStart {
+        block_id: ArtifactBlockId,
+        source: RequestStartError,
+    },
+    /// The supplied event or driver did not belong to this fill generation.
+    UnexpectedEvent,
+    /// One exact missing block request failed before yielding a usable response.
+    BlockRequestFailed {
+        peer_id: PeerId,
+        block_id: ArtifactBlockId,
+        source: Box<OutboundArtifactBlockFailure>,
+    },
+    /// The authenticated peer reported no block for an exact missing address.
+    BlockUnavailable {
+        peer_id: PeerId,
+        block_id: ArtifactBlockId,
+    },
+    /// The selected head changed after this fill captured its anchor.
+    SelectedHeadChanged {
+        expected: ArtifactBlockId,
+        actual: ArtifactBlockId,
+    },
+    /// One child block did not start at its parent's resulting artifact-set root.
+    ArtifactSetRootMismatch {
+        preceding_block_id: ArtifactBlockId,
+        expected: ArtifactSetRoot,
+        actual: ArtifactSetRoot,
+    },
+    /// A parent address repeated within the retained path.
+    RepeatedBlockId { block_id: ArtifactBlockId },
+    /// The retained path met selected history other than the captured head.
+    DivergentAncestry {
+        expected_anchor: ArtifactBlockId,
+        encountered: ArtifactBlockId,
+    },
+    /// The retained path did not reach its anchor within the fixed bound.
+    AncestryLimitExceeded {
+        maximum: usize,
+        next_block_id: ArtifactBlockId,
+    },
+    /// One shape-checked found block could not be durably retained.
+    CandidateStoreInsert {
+        block_id: ArtifactBlockId,
+        source: Box<ArtifactBlockCandidateStoreError>,
+    },
+}
+
+impl ArtifactBlockCandidateAncestryFillError {
+    fn selected_state(source: ArtifactChainJournalError) -> Self {
+        Self::SelectedState {
+            source: Box::new(source),
+        }
+    }
+
+    fn from_shape(error: ArtifactBlockAncestryShapeError) -> Self {
+        match error {
+            ArtifactBlockAncestryShapeError::SelectedState(source) => Self::selected_state(source),
+            ArtifactBlockAncestryShapeError::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            } => Self::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            },
+            ArtifactBlockAncestryShapeError::RepeatedBlockId { block_id } => {
+                Self::RepeatedBlockId { block_id }
+            }
+            ArtifactBlockAncestryShapeError::DivergentAncestry {
+                expected_anchor,
+                encountered,
+            } => Self::DivergentAncestry {
+                expected_anchor,
+                encountered,
+            },
+            ArtifactBlockAncestryShapeError::AncestryLimitExceeded {
+                maximum,
+                next_block_id,
+            } => Self::AncestryLimitExceeded {
+                maximum,
+                next_block_id,
+            },
+        }
+    }
+}
+
+impl fmt::Display for ArtifactBlockCandidateAncestryFillError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ChainIdMismatch {
+                selected,
+                candidates,
+            } => write!(
+                formatter,
+                "candidate store chain {candidates:?} does not match selected journal chain {selected:?}"
+            ),
+            Self::SelectedState { source } => write!(
+                formatter,
+                "candidate ancestry fill cannot use selected state: {source}"
+            ),
+            Self::TargetAlreadySelected { block_id } => write!(
+                formatter,
+                "candidate ancestry fill target {block_id:?} is already selected"
+            ),
+            Self::CandidateStoreRead { block_id, source } => write!(
+                formatter,
+                "cannot read candidate ancestry block address {block_id:?}: {source}"
+            ),
+            Self::RequestStart { block_id, source } => write!(
+                formatter,
+                "cannot request missing candidate ancestry block {block_id:?}: {source}"
+            ),
+            Self::UnexpectedEvent => formatter.write_str(
+                "network event or driver does not belong to this candidate ancestry fill",
+            ),
+            Self::BlockRequestFailed {
+                peer_id,
+                block_id,
+                source,
+            } => write!(
+                formatter,
+                "peer {peer_id} failed candidate ancestry block request {block_id:?}: {source}"
+            ),
+            Self::BlockUnavailable { peer_id, block_id } => write!(
+                formatter,
+                "peer {peer_id} has no candidate ancestry block at {block_id:?}"
+            ),
+            Self::SelectedHeadChanged { expected, actual } => write!(
+                formatter,
+                "selected head changed during candidate ancestry fill: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "candidate ancestry predecessor {preceding_block_id:?} ends at artifact-set root {expected:?}, but its child starts at {actual:?}"
+            ),
+            Self::RepeatedBlockId { block_id } => {
+                write!(formatter, "candidate ancestry repeats block {block_id:?}")
+            }
+            Self::DivergentAncestry {
+                expected_anchor,
+                encountered,
+            } => write!(
+                formatter,
+                "candidate ancestry expected anchor {expected_anchor:?} but encountered selected-chain context {encountered:?}"
+            ),
+            Self::AncestryLimitExceeded {
+                maximum,
+                next_block_id,
+            } => write!(
+                formatter,
+                "candidate ancestry did not reach its anchor within {maximum} blocks; next parent is {next_block_id:?}"
+            ),
+            Self::CandidateStoreInsert { block_id, source } => write!(
+                formatter,
+                "cannot retain candidate ancestry block {block_id:?}: {source}"
+            ),
+        }
+    }
+}
+
+impl Error for ArtifactBlockCandidateAncestryFillError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::SelectedState { source } => Some(source.as_ref()),
+            Self::CandidateStoreRead { source, .. } | Self::CandidateStoreInsert { source, .. } => {
+                Some(source.as_ref())
+            }
+            Self::RequestStart { source, .. } => Some(source),
+            Self::BlockRequestFailed { source, .. } => Some(source.as_ref()),
+            Self::ChainIdMismatch { .. }
+            | Self::TargetAlreadySelected { .. }
+            | Self::UnexpectedEvent
+            | Self::BlockUnavailable { .. }
+            | Self::SelectedHeadChanged { .. }
+            | Self::ArtifactSetRootMismatch { .. }
+            | Self::RepeatedBlockId { .. }
+            | Self::DivergentAncestry { .. }
+            | Self::AncestryLimitExceeded { .. } => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -10,7 +10,10 @@ target, performs discovery, or establishes consensus or finality.
 
 Workflows advance only when the caller routes an exact correlated
 `NetworkEvent`. `accepts_event` is the non-consuming routing predicate.
-Mismatches never inspect, reinterpret, or discard another workflow's event.
+The caller retains an event when that predicate is false and must not pass it
+to the consuming `on_event`; doing so is a caller routing error that may end the
+workflow. Lower-level mismatch APIs that accept both routable values return
+both unchanged.
 Cancellation is logical: retained values are released, while an already queued
 libp2p request drains its peer slot and shared permit through the network event
 loop.
@@ -140,6 +143,59 @@ anchor's direct child through the target. The result proves only content-address
 and structural parent/root continuity from one authenticated source. It proves
 no payload availability, artifact validity, selected ancestry, or finality.
 Any failure releases retained blocks and changes no journal state.
+
+## Durable candidate-store ancestry fill
+
+`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill` accepts
+one exact target, one caller-routed chain-scoped
+`ArtifactBlockCandidateStore`, the selected journal, and one caller-supplied
+peer identity used only if an exact candidate address is missing. The returned
+`ArtifactBlockCandidateAncestryFill` exclusively borrows that exact store for
+its lifetime, so one fill cannot silently assemble a completion claim across
+substituted same-chain stores.
+
+Start compares the store and journal `ArtifactChainId` values before any health
+or disk read. It then reads the selected head, rejects a target already equal to
+the head, virtual genesis, or another committed block, and snapshots the
+selected artifact-set root. Beginning at the target, it integrity-reads each
+already retained exact candidate and applies the shared ancestry checks in
+order: child/root continuity; anchor/root completion; repeated parent;
+divergent virtual-genesis or other selected history, including a typed
+selected-state read failure; and the need for a seventeenth block. Retained
+blocks are never requested again. The first missing exact address starts one
+request to the caller-supplied peer; only that request start applies the
+existing configured-peer and Noise-authenticated transport checks. A fully
+retained path completes without opening a request or inspecting that peer.
+
+`ArtifactBlockCandidateAncestryFill::on_event` accepts only the exact correlated
+terminal from the network instance that owns the active request. A transport
+failure or `Unavailable` response inserts nothing. For a found identity-matched
+block, the workflow first requires the selected head still to equal its captured
+anchor, then applies the shared ancestry checks, durably inserts the block, and
+only after the store acknowledges that insertion scans or requests its parent.
+It continues with at most one active request until another error or completion.
+If that subsequent retained scan or parent-request start fails, the already
+acknowledged insertion remains durable.
+
+`ArtifactBlockCandidateAncestryFillProgress` is an allocation-free `Option`
+alias. `Some(fill)` retains the store borrow and exactly one active
+missing-block request. `None` is the sole completion observation and exposes no
+anchor, target, or retained-count fields. It means only that every block in the
+bounded continuous path for the caller's exact target was integrity-read from
+or durably acknowledged by the same store. It does not mean that any committed
+artifact payload is available or valid.
+
+An ordinary later failure or explicit cancellation preserves every earlier
+acknowledged insertion. A new explicit caller start may therefore skip that
+retained target-side prefix and, while the retained continuation remains
+readable and shape-valid, resume at the first missing address, possibly with
+another caller-selected configured peer. This is durable partial progress, not
+automatic retry or scheduling. Candidate read failures and ambiguous insert
+failures retain the store's typed poison-and-reopen boundary. The fill never
+requests an artifact payload, mutates the journal, imports or promotes a
+candidate, records peer provenance, chooses a target, peer, chain, store,
+journal, or branch, relays or gossips, or establishes artifact validity,
+payload availability, rollback, reorganization, consensus, or finality.
 
 ## Sequential ancestry import
 
