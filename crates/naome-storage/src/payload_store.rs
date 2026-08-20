@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, SeekFrom, Write};
 use std::path::Path;
 
-use naome_chain::ArtifactBlock;
+use naome_chain::{ArtifactBlock, ArtifactBlockApplyError, ArtifactChainBranchSnapshot};
 use naome_foundation::FOUNDATION_ID;
 use naome_ledger::AcceptedArtifactRecord;
 use naome_proof::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId};
@@ -93,11 +93,11 @@ impl Error for ArtifactPayloadStoreLimitsError {}
 
 /// One immutable tagged canonical artifact payload loaded from local storage.
 ///
-/// The payload entered through an [`AcceptedArtifactRecord`] or the same-call
-/// direct-child validation gate, but loading does not recreate that checked
-/// context. Before admission elsewhere, consumers must strictly decode, require
-/// canonical bytes, resolve and check dependencies, and compare the resulting
-/// artifact identity with [`Self::artifact_id`].
+/// The payload entered through an [`AcceptedArtifactRecord`] or one of the
+/// same-call candidate validation gates, but loading does not recreate that
+/// checked context. Before admission elsewhere, consumers must strictly decode,
+/// require canonical bytes, resolve and check dependencies, and compare the
+/// resulting artifact identity with [`Self::artifact_id`].
 #[derive(PartialEq, Eq)]
 #[must_use]
 pub struct CanonicalArtifactPayload {
@@ -198,13 +198,109 @@ impl Error for CandidatePayloadArchiveError {
     }
 }
 
+/// The durable archive result and successor of one validated branch child.
+///
+/// The successor is returned only after the exact payload was durably inserted
+/// or idempotently confirmed. It remains a memory-only evaluation snapshot and
+/// confers no selected-state, consensus, or finality authority.
+#[must_use]
+pub struct CandidateBranchPayloadArchiveOutcome {
+    insertion_outcome: ArtifactPayloadInsertOutcome,
+    successor: ArtifactChainBranchSnapshot,
+}
+
+impl CandidateBranchPayloadArchiveOutcome {
+    /// Returns whether the exact payload was inserted or already present.
+    pub const fn insertion_outcome(&self) -> ArtifactPayloadInsertOutcome {
+        self.insertion_outcome
+    }
+
+    /// Borrows the strictly validated memory-only successor snapshot.
+    pub const fn successor(&self) -> &ArtifactChainBranchSnapshot {
+        &self.successor
+    }
+
+    /// Consumes this outcome and returns the memory-only successor snapshot.
+    pub fn into_successor(self) -> ArtifactChainBranchSnapshot {
+        self.successor
+    }
+}
+
+impl fmt::Debug for CandidateBranchPayloadArchiveOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CandidateBranchPayloadArchiveOutcome")
+            .field("insertion_outcome", &self.insertion_outcome)
+            .field("successor_head", &self.successor.head_block_id())
+            .field(
+                "successor_artifact_set_root",
+                &self.successor.artifact_set_root(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+/// A failed branch-child validation or payload archive.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CandidateBranchPayloadArchiveError {
+    /// The block or payload failed strict validation against its predecessor.
+    Validation {
+        source: Box<ArtifactBlockApplyError>,
+    },
+    /// The strictly validated payload could not be durably archived.
+    Archive {
+        source: Box<CanonicalArtifactPayloadStoreError>,
+    },
+}
+
+impl CandidateBranchPayloadArchiveError {
+    fn validation(source: ArtifactBlockApplyError) -> Self {
+        Self::Validation {
+            source: Box::new(source),
+        }
+    }
+
+    fn archive(source: CanonicalArtifactPayloadStoreError) -> Self {
+        Self::Archive {
+            source: Box::new(source),
+        }
+    }
+}
+
+impl fmt::Display for CandidateBranchPayloadArchiveError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Validation { source } => {
+                write!(
+                    formatter,
+                    "candidate branch payload validation failed: {source}"
+                )
+            }
+            Self::Archive { source } => write!(
+                formatter,
+                "validated candidate branch payload archive failed: {source}"
+            ),
+        }
+    }
+}
+
+impl Error for CandidateBranchPayloadArchiveError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Validation { source } => Some(source.as_ref()),
+            Self::Archive { source } => Some(source.as_ref()),
+        }
+    }
+}
+
 /// An exclusively opened append-only archive of canonical artifact payloads.
 ///
 /// The archive is scoped to the compiled Foundation contract rather than one
 /// deployment or artifact chain. Writes accept either an already checked
 /// [`AcceptedArtifactRecord`] or exact bytes validated in the same call against
-/// one journal's current direct-child candidate. Persisted entries contain no
-/// dependency, statement, derivation, selected-chain, or consensus metadata.
+/// one journal or branch predecessor. Persisted entries contain no dependency,
+/// statement, derivation, selected-chain, or consensus metadata.
 ///
 /// A commit I/O error poisons the handle because the durable outcome is then
 /// ambiguous. A post-open read or integrity failure also poisons it because the
@@ -312,6 +408,46 @@ impl CanonicalArtifactPayloadStore {
         self.core
             .insert_payload(block.artifact_id(), &archive_bytes)
             .map_err(CandidatePayloadArchiveError::archive)
+    }
+
+    /// Strictly validates and durably archives one memory-only branch child.
+    ///
+    /// Archive health is checked before validation. Complete child validation
+    /// then runs against the exact caller-supplied predecessor without changing
+    /// it. The successor is returned only after the exact payload is durably
+    /// inserted or idempotently confirmed. A validation or archive failure
+    /// returns no successor, and later use must still revalidate the archived
+    /// bytes in its target context.
+    pub fn validate_and_insert_branch_payload(
+        &mut self,
+        predecessor: &ArtifactChainBranchSnapshot,
+        block: &ArtifactBlock,
+        canonical_artifact_bytes: Vec<u8>,
+    ) -> Result<CandidateBranchPayloadArchiveOutcome, CandidateBranchPayloadArchiveError> {
+        self.core
+            .ensure_healthy()
+            .map_err(CandidateBranchPayloadArchiveError::archive)?;
+        if canonical_artifact_bytes.len() > ARTIFACT_PAYLOAD_MAX_BYTES {
+            return match predecessor.validate_child(block, canonical_artifact_bytes) {
+                Err(source) => Err(CandidateBranchPayloadArchiveError::validation(source)),
+                Ok(_) => unreachable!(
+                    "branch validation cannot accept an artifact payload above the canonical byte limit"
+                ),
+            };
+        }
+
+        let archive_bytes = canonical_artifact_bytes.clone();
+        let successor = predecessor
+            .validate_child(block, canonical_artifact_bytes)
+            .map_err(CandidateBranchPayloadArchiveError::validation)?;
+        let insertion_outcome = self
+            .core
+            .insert_payload(block.artifact_id(), &archive_bytes)
+            .map_err(CandidateBranchPayloadArchiveError::archive)?;
+        Ok(CandidateBranchPayloadArchiveOutcome {
+            insertion_outcome,
+            successor,
+        })
     }
 
     /// Loads one exact owned payload candidate and rechecks its entry integrity.

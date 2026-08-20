@@ -2,8 +2,9 @@
 
 This document normatively defines a Foundation-scoped append-only archive of
 exact tagged proof and definition payloads. It preserves bytes admitted from
-accepted records or strictly validated as exact current-head direct-child
-candidates, but does not preserve or confer selected-state authority.
+accepted records or strictly validated as exact children of selected or
+candidate-branch state, but does not preserve or confer selected-state
+authority.
 
 ## Scope and write gate
 
@@ -12,7 +13,7 @@ an `AcceptedArtifactRecord` produced by strict ledger admission. It stores the
 record's exact `ArtifactId` and complete canonical artifact bytes, including tag
 `00` for proof or `01` for definition.
 
-The separate sealed
+The separate public
 `CanonicalArtifactPayloadStore::validate_and_insert_candidate_payload` entry
 point accepts one caller-supplied `ArtifactChainJournal`, one `ArtifactBlock`,
 and owned canonical artifact bytes. It first requires a healthy archive handle,
@@ -26,6 +27,28 @@ privately insert or idempotently confirm the exact validated payload; the method
 exposes no `AcceptedArtifactRecord` or reusable validation token. An archive
 error leaves the journal unchanged and retains the archive's existing typed
 poison-and-reopen boundary.
+
+The separate public
+`CanonicalArtifactPayloadStore::validate_and_insert_branch_payload` write gate
+accepts one caller-supplied `ArtifactChainBranchSnapshot`, one exact-child
+`ArtifactBlock`, and owned canonical artifact bytes. Archive health precedes
+branch validation. The gate uses
+`ArtifactChainBranchSnapshot::validate_child` to repeat the complete
+context-specific checks against that exact predecessor, then privately inserts
+or idempotently confirms the validated payload. It returns a
+`CandidateBranchPayloadArchiveOutcome` containing the immutable successor only
+after the archive acknowledges that write. Validation failure leaves both
+predecessor and archive unchanged. A `CandidateBranchPayloadArchiveError`
+returns no successor, leaves the predecessor unchanged, and retains the
+archive's existing typed poison-and-reopen boundary; an ambiguous write may be
+recovered only by dropping and reopening the archive.
+
+The branch gate advances only the caller-held memory snapshot. It does not
+write a candidate branch, selected journal, block store, branch marker, or
+checked-record cache, and it does not expose an `AcceptedArtifactRecord` or a
+reusable validation token. A later reconstruction integrity-reads archived
+bytes and repeats the complete target-ancestry validation rather than trusting
+the earlier archive acknowledgement.
 
 Loading those bytes does not recreate the original checked context. Before use
 in another branch or chain state, a consumer must decode the typed payload,
@@ -140,9 +163,10 @@ acceptance, consensus, or finality.
 This `v1` tagged-artifact archive is a clean prerelease cutover. Earlier payload
 archives have no legacy reader or migration and must be removed and recreated.
 
-The store alone does not select or execute blocks, validate candidate context,
+The store alone does not select blocks, persist candidate execution state,
 cache reusable checked records, resolve dependencies, fetch content, compact or
 prune, synchronize peers, choose forks, or establish proposer authority,
-consensus, or economics. Its candidate-payload write gate delegates all
-context-specific checking to the caller-supplied journal and records no result
-other than the same non-authoritative Foundation-scoped payload bytes.
+consensus, or economics. Its candidate-payload write gates delegate all
+context-specific checking to the caller-supplied journal or branch snapshot and
+record no result other than the same non-authoritative Foundation-scoped
+payload bytes.

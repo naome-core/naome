@@ -170,6 +170,47 @@ recovered after a restart. Replay rebuilds selected snapshots only. Recreating a
 discarded candidate branch therefore requires the caller to supply its blocks
 and canonical payloads again from a selected fork point.
 
+## Local candidate-branch reconstruction
+
+`ArtifactChainJournal::reconstruct_candidate_branch` accepts one healthy
+selected journal, one caller-routed `ArtifactBlockCandidateStore` for the same
+`ArtifactChainId`, one healthy Foundation-scoped
+`CanonicalArtifactPayloadStore`, one exact caller-selected target
+`ArtifactBlockId`, and one `CandidateBranchReconstructionLimits` containing a
+positive `max_blocks`. The target chooses only which locally retained
+observations to evaluate. It does not choose a consensus branch.
+
+Journal and candidate-store chain IDs are compared before health or disk reads.
+The boundary then walks parent addresses backward from the target through exact
+integrity-checked candidate-store reads. It stops at the first parent that is
+the journal's virtual genesis or a retained selected block, which is the nearest
+selected artifact ancestor on that retained path. The walk rejects a selected
+target, a missing or corrupt candidate, a repeated identity, a broken parent or
+artifact-set-root link, or a path requiring more than `max_blocks` candidate
+blocks. `max_blocks` bounds this one local operation only; it is not a
+consensus branch-depth, retention, or verification-work rule.
+
+After discovering the complete path, reconstruction obtains the replay-built
+snapshot at that selected ancestor and evaluates retained candidates in forward
+order. For each block it integrity-reads the exact archived payload addressed
+by the block's `ArtifactId` and calls the ordinary immutable snapshot child
+validation. Missing or corrupt archive content and every canonical, identity,
+dependency, mathematical, novelty, parent, or root failure are typed errors.
+Success returns one `ReconstructedCandidateBranch`, including an owned
+memory-only snapshot, only after the exact target has validated. A
+`CandidateBranchReconstructionError` returns no partial snapshot.
+
+Reconstruction performs no insert, replacement, refresh, promotion, deletion,
+or durable-byte mutation in the journal, candidate store, or payload archive.
+Successful and ordinary failed evaluation leave selected snapshots and state
+unchanged. A corrupt candidate or archive integrity read retains that store's
+typed poison-and-reopen behavior; poisoning a handle is not candidate or
+selected-state mutation. In particular, an archive hit is revalidated rather
+than promoted or refreshed. Missing local content is not fetched and proves no
+global absence. The caller may separately use the payload archive's
+branch-candidate write gate to validate and durably retain one exact child
+before attempting reconstruction again.
+
 ## Read interface
 
 A healthy journal exposes the derived chain ID, exact head (virtual genesis
