@@ -42,7 +42,7 @@ enum ArtifactBlockImportPhase {
     },
 }
 
-struct ArtifactPayloadRequest {
+pub(super) struct ArtifactPayloadRequest {
     control: Option<Arc<ArtifactRequestControl>>,
     peer_id: PeerId,
     request: ArtifactRequest,
@@ -51,19 +51,42 @@ struct ArtifactPayloadRequest {
 }
 
 impl ArtifactPayloadRequest {
+    fn new_controlled_request(
+        network: &StaticArtifactNetwork,
+        artifact_id: ArtifactId,
+    ) -> (Arc<ArtifactRequestControl>, ArtifactRequest) {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(ARTIFACT_BLOCK_IMPORT_TIMEOUT)
+            .expect("the fixed artifact-payload deadline fits Tokio Instant");
+        let control = Arc::new(ArtifactRequestControl::new(
+            Arc::clone(&network.pending_budget),
+            deadline,
+        ));
+        (control, ArtifactRequest::new(artifact_id))
+    }
+
+    pub(super) fn start_direct(
+        network: &mut StaticArtifactNetwork,
+        peer_id: PeerId,
+        artifact_id: ArtifactId,
+    ) -> Result<Self, RequestStartError> {
+        let (control, request) = Self::new_controlled_request(network, artifact_id);
+        let request_id = network.request_controlled_artifact(peer_id, request, &control)?;
+        Ok(Self {
+            control: Some(control),
+            peer_id,
+            request,
+            request_id,
+            attempted_peers: 0,
+        })
+    }
+
     fn start(
         network: &mut StaticArtifactNetwork,
         preferred_peer_id: PeerId,
         artifact_id: ArtifactId,
     ) -> Result<Self, ArtifactBlockImportError> {
-        let deadline = tokio::time::Instant::now()
-            .checked_add(ARTIFACT_BLOCK_IMPORT_TIMEOUT)
-            .expect("the fixed artifact-block import timeout fits Tokio Instant");
-        let control = Arc::new(ArtifactRequestControl::new(
-            Arc::clone(&network.pending_budget),
-            deadline,
-        ));
-        let request = ArtifactRequest::new(artifact_id);
+        let (control, request) = Self::new_controlled_request(network, artifact_id);
         let mut attempted_peers = 0;
         let (peer_id, request_id) = start_next_artifact_attempt(
             network,
@@ -95,21 +118,21 @@ impl ArtifactPayloadRequest {
     fn control(&self) -> &Arc<ArtifactRequestControl> {
         self.control
             .as_ref()
-            .expect("an active block import retains artifact-request control")
+            .expect("an active artifact payload request retains its control")
     }
 
-    fn belongs_to_network(&self, network: &StaticArtifactNetwork) -> bool {
+    pub(super) fn belongs_to_network(&self, network: &StaticArtifactNetwork) -> bool {
         Arc::ptr_eq(&self.control().network_budget, &network.pending_budget)
     }
 
-    fn accepts_event(&self, event: &OutboundArtifactEvent) -> bool {
+    pub(super) fn accepts_event(&self, event: &OutboundArtifactEvent) -> bool {
         Arc::ptr_eq(self.control(), &event.control)
             && self.request_id == event.request_id
             && self.peer_id == event.peer_id
             && self.request == event.request
     }
 
-    fn deadline_expired(&self) -> bool {
+    pub(super) fn deadline_expired(&self) -> bool {
         tokio::time::Instant::now() >= self.control().deadline
     }
 
@@ -149,7 +172,11 @@ impl ArtifactPayloadRequest {
         Ok(self)
     }
 
-    fn disarm(&mut self) {
+    pub(super) const fn peer_id(&self) -> PeerId {
+        self.peer_id
+    }
+
+    pub(super) fn disarm(&mut self) {
         self.control = None;
     }
 }
@@ -435,7 +462,7 @@ impl ArtifactBlockImport {
         })
     }
 
-    fn preflight_block(
+    pub(super) fn preflight_block(
         selected: &ArtifactChainJournal,
         block: &ArtifactBlock,
     ) -> Result<(), ArtifactBlockImportError> {

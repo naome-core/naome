@@ -2,14 +2,30 @@
 
 This document normatively defines a Foundation-scoped append-only archive of
 exact tagged proof and definition payloads. It preserves bytes admitted from
-accepted records but does not preserve or confer selected-state authority.
+accepted records or strictly validated as exact current-head direct-child
+candidates, but does not preserve or confer selected-state authority.
 
 ## Scope and write gate
 
-`CanonicalArtifactPayloadStore` accepts only an `AcceptedArtifactRecord`
-produced by strict ledger admission. It stores the record's exact `ArtifactId`
-and complete canonical artifact bytes, including tag `00` for proof or `01` for
-definition.
+The ordinary `CanonicalArtifactPayloadStore::insert` entry point accepts only
+an `AcceptedArtifactRecord` produced by strict ledger admission. It stores the
+record's exact `ArtifactId` and complete canonical artifact bytes, including tag
+`00` for proof or `01` for definition.
+
+The separate sealed
+`CanonicalArtifactPayloadStore::validate_and_insert_candidate_payload` entry
+point accepts one caller-supplied `ArtifactChainJournal`, one `ArtifactBlock`,
+and owned canonical artifact bytes. It first requires a healthy archive handle,
+so a poisoned archive error precedes candidate validation. It then requires the
+block to be an exact direct child of that journal's current selected head and
+performs the same complete parent, artifact-set-root, decode, canonicality,
+content-identity, dependency, mathematical, and novelty validation as strict
+block application. Validation is read-only and every validation error precedes
+archive mutation. Only after that complete check succeeds may the store
+privately insert or idempotently confirm the exact validated payload; the method
+exposes no `AcceptedArtifactRecord` or reusable validation token. An archive
+error leaves the journal unchanged and retains the archive's existing typed
+poison-and-reopen boundary.
 
 Loading those bytes does not recreate the original checked context. Before use
 in another branch or chain state, a consumer must decode the typed payload,
@@ -124,6 +140,9 @@ acceptance, consensus, or finality.
 This `v1` tagged-artifact archive is a clean prerelease cutover. Earlier payload
 archives have no legacy reader or migration and must be removed and recreated.
 
-The store does not select or execute blocks, cache reusable checked records,
-resolve dependencies, fetch content, compact or prune, synchronize peers,
-choose forks, or establish proposer authority, consensus, or economics.
+The store alone does not select or execute blocks, validate candidate context,
+cache reusable checked records, resolve dependencies, fetch content, compact or
+prune, synchronize peers, choose forks, or establish proposer authority,
+consensus, or economics. Its candidate-payload write gate delegates all
+context-specific checking to the caller-supplied journal and records no result
+other than the same non-authoritative Foundation-scoped payload bytes.

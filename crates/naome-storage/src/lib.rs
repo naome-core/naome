@@ -9,9 +9,10 @@
 //! durable application always revalidates before selection and commit.
 //!
 //! [`CanonicalArtifactPayloadStore`] separately archives exact tagged payload
-//! bytes from accepted artifact records without making them selected or reusable
-//! as checked records. Consumers must validate loaded bytes again in their target
-//! artifact context.
+//! bytes from accepted artifact records or from direct-child candidates strictly
+//! validated against one journal's current selected state. Archiving does not make
+//! bytes selected or reusable as checked records; consumers must validate them
+//! again in their target artifact context.
 //!
 //! [`ArtifactBlockCandidateStore`] retains chain-scoped structural blocks,
 //! including siblings and blocks with unavailable parents, without validating
@@ -31,7 +32,8 @@ pub use block_candidate_store::{
 
 pub use payload_store::{
     ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits, ArtifactPayloadStoreLimitsError,
-    CanonicalArtifactPayload, CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError,
+    CandidatePayloadArchiveError, CanonicalArtifactPayload, CanonicalArtifactPayloadStore,
+    CanonicalArtifactPayloadStoreError,
 };
 
 use std::collections::HashMap;

@@ -1,3 +1,5 @@
+use std::io::{Read, Seek, SeekFrom, Write};
+
 use naome_chain::ARTIFACT_BLOCK_BYTES;
 use naome_checker::CheckError;
 
@@ -5,7 +7,8 @@ use super::*;
 use crate::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreLimits, ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits,
-    CanonicalArtifactPayloadStore,
+    CandidatePayloadArchiveError, CanonicalArtifactPayloadStore,
+    CanonicalArtifactPayloadStoreError,
 };
 
 const CANDIDATE_STORE_FILE_NAME: &str = "artifact-block-candidate-store.log";
@@ -85,6 +88,292 @@ fn assert_empty_journal_unchanged(
             *witness
         );
     }
+}
+
+#[test]
+fn validated_direct_child_payloads_archive_idempotently_without_selection() {
+    let directory = TestDirectory::new();
+    let definition = chain_definition(CHAIN_BYTE);
+    let payloads = vec![axiom_bytes(ZfcAxiom::Pairing), relation_definition_bytes()];
+    let artifact_ids = artifact_ids(&payloads);
+    let journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
+    let blocks = artifact_ids
+        .iter()
+        .copied()
+        .map(|artifact_id| journal.prepare_block(artifact_id).unwrap())
+        .collect::<Vec<_>>();
+    let mut payload_store = CanonicalArtifactPayloadStore::create(
+        &directory.path,
+        payload_limits(
+            payloads.len(),
+            payloads.iter().map(Vec::len).sum::<usize>() as u64,
+        ),
+    )
+    .unwrap();
+    let journal_image = fs::read(directory.journal_path()).unwrap();
+    let head = journal.head_block_id().unwrap();
+    let root = journal.artifact_set_root().unwrap();
+
+    for ((block, payload), artifact_id) in blocks
+        .iter()
+        .zip(&payloads)
+        .zip(artifact_ids.iter().copied())
+    {
+        assert_eq!(
+            payload_store
+                .validate_and_insert_candidate_payload(&journal, block, payload.clone())
+                .unwrap(),
+            ArtifactPayloadInsertOutcome::Inserted
+        );
+        let archived = payload_store.get(artifact_id).unwrap().unwrap();
+        assert_eq!(archived.artifact_id(), artifact_id);
+        assert_eq!(archived.canonical_artifact_bytes(), payload);
+    }
+
+    assert_eq!(journal.head_block_id().unwrap(), head);
+    assert_eq!(journal.artifact_set_root().unwrap(), root);
+    assert!(journal.is_empty().unwrap());
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), journal_image);
+
+    let payload_image = fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+    assert_eq!(
+        payload_store
+            .validate_and_insert_candidate_payload(&journal, &blocks[0], payloads[0].clone())
+            .unwrap(),
+        ArtifactPayloadInsertOutcome::AlreadyPresent
+    );
+    assert_eq!(payload_store.len().unwrap(), payloads.len());
+    assert_eq!(
+        fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        payload_image
+    );
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), journal_image);
+}
+
+#[test]
+fn rejected_candidate_payload_archives_nothing_and_remains_retryable() {
+    let directory = TestDirectory::new();
+    let definition = chain_definition(CHAIN_BYTE);
+    let payload = axiom_bytes(ZfcAxiom::Pairing);
+    let artifact_id = artifact_ids(std::slice::from_ref(&payload))[0];
+    let journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
+    let block = journal.prepare_block(artifact_id).unwrap();
+    let mut payload_store = CanonicalArtifactPayloadStore::create(
+        &directory.path,
+        payload_limits(1, payload.len() as u64),
+    )
+    .unwrap();
+    let journal_image = fs::read(directory.journal_path()).unwrap();
+    let payload_image = fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+    let wrong_payload = relation_definition_bytes();
+
+    assert!(matches!(
+        payload_store.validate_and_insert_candidate_payload(&journal, &block, wrong_payload),
+        Err(CandidatePayloadArchiveError::Validation { source })
+            if matches!(
+                source.as_ref(),
+                ArtifactChainJournalError::BlockAdmission {
+                    source: ArtifactBlockApplyError::Admission {
+                        source: LedgerError::ArtifactIdMismatch {
+                            expected,
+                            actual: _,
+                        },
+                    },
+                } if *expected == artifact_id
+            )
+    ));
+    assert!(payload_store.is_empty().unwrap());
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), journal_image);
+    assert_eq!(
+        fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        payload_image
+    );
+
+    assert_eq!(
+        payload_store
+            .validate_and_insert_candidate_payload(&journal, &block, payload)
+            .unwrap(),
+        ArtifactPayloadInsertOutcome::Inserted
+    );
+    assert!(journal.is_empty().unwrap());
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), journal_image);
+}
+
+#[test]
+fn oversized_candidate_payload_returns_exact_validation_error_without_mutation() {
+    let directory = TestDirectory::new();
+    let definition = chain_definition(CHAIN_BYTE);
+    let payload = axiom_bytes(ZfcAxiom::Pairing);
+    let artifact_id = artifact_ids(std::slice::from_ref(&payload))[0];
+    let journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
+    let block = journal.prepare_block(artifact_id).unwrap();
+    let mut payload_store = CanonicalArtifactPayloadStore::create(
+        &directory.path,
+        payload_limits(1, payload.len() as u64),
+    )
+    .unwrap();
+    let journal_image = fs::read(directory.journal_path()).unwrap();
+    let payload_image = fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+    let oversized_len = ARTIFACT_PAYLOAD_MAX_BYTES + 1;
+
+    assert!(matches!(
+        payload_store.validate_and_insert_candidate_payload(
+            &journal,
+            &block,
+            vec![0; oversized_len],
+        ),
+        Err(CandidatePayloadArchiveError::Validation { source })
+            if matches!(
+                source.as_ref(),
+                ArtifactChainJournalError::BlockAdmission {
+                    source: ArtifactBlockApplyError::Admission {
+                        source: LedgerError::Decode {
+                            source: ArtifactPayloadError::InputTooLong { actual, maximum },
+                        },
+                    },
+                } if *actual == oversized_len && *maximum == ARTIFACT_PAYLOAD_MAX_BYTES
+            )
+    ));
+    assert!(journal.is_empty().unwrap());
+    assert!(payload_store.is_empty().unwrap());
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), journal_image);
+    assert_eq!(
+        fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        payload_image
+    );
+}
+
+#[test]
+fn archive_policy_failure_follows_validation_and_does_not_select() {
+    let directory = TestDirectory::new();
+    let definition = chain_definition(CHAIN_BYTE);
+    let payload = axiom_bytes(ZfcAxiom::Pairing);
+    let artifact_id = artifact_ids(std::slice::from_ref(&payload))[0];
+    let journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
+    let block = journal.prepare_block(artifact_id).unwrap();
+    let mut payload_store = CanonicalArtifactPayloadStore::create(
+        &directory.path,
+        payload_limits(1, u64::try_from(payload.len() - 1).unwrap()),
+    )
+    .unwrap();
+    let journal_image = fs::read(directory.journal_path()).unwrap();
+    let payload_image = fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+
+    assert!(matches!(
+        payload_store.validate_and_insert_candidate_payload(&journal, &block, payload),
+        Err(CandidatePayloadArchiveError::Archive { source })
+            if matches!(
+                source.as_ref(),
+                CanonicalArtifactPayloadStoreError::PayloadByteLimitExceeded {
+                    actual,
+                    maximum,
+                } if *actual == *maximum + 1
+            )
+    ));
+    assert!(journal.is_empty().unwrap());
+    assert!(payload_store.is_empty().unwrap());
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), journal_image);
+    assert_eq!(
+        fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        payload_image
+    );
+}
+
+#[test]
+fn poisoned_archive_precedes_invalid_candidate_validation() {
+    let directory = TestDirectory::new();
+    let definition = chain_definition(CHAIN_BYTE);
+    let payload = axiom_bytes(ZfcAxiom::Pairing);
+    let artifact_id = artifact_ids(std::slice::from_ref(&payload))[0];
+    let journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
+    let block = journal.prepare_block(artifact_id).unwrap();
+    let mut payload_store = CanonicalArtifactPayloadStore::create(
+        &directory.path,
+        payload_limits(1, payload.len() as u64),
+    )
+    .unwrap();
+    archive_payloads(
+        &mut payload_store,
+        std::slice::from_ref(&payload),
+        std::slice::from_ref(&artifact_id),
+    );
+
+    let payload_path = directory.path.join(PAYLOAD_STORE_FILE_NAME);
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&payload_path)
+        .unwrap();
+    file.seek(SeekFrom::End(-1)).unwrap();
+    let mut changed = [0_u8; 1];
+    file.read_exact(&mut changed).unwrap();
+    changed[0] ^= 0xff;
+    file.seek(SeekFrom::End(-1)).unwrap();
+    file.write_all(&changed).unwrap();
+    file.sync_all().unwrap();
+    assert!(matches!(
+        payload_store.get(artifact_id),
+        Err(CanonicalArtifactPayloadStoreError::StoredEntryChanged {
+            artifact_id: actual,
+        }) if actual == artifact_id
+    ));
+
+    assert!(matches!(
+        payload_store.validate_and_insert_candidate_payload(&journal, &block, vec![0]),
+        Err(CandidatePayloadArchiveError::Archive { source })
+            if matches!(
+                source.as_ref(),
+                CanonicalArtifactPayloadStoreError::Poisoned
+            )
+    ));
+    assert!(journal.is_empty().unwrap());
+}
+
+#[test]
+fn stale_direct_child_is_rejected_without_archive_mutation() {
+    let directory = TestDirectory::new();
+    let definition = chain_definition(CHAIN_BYTE);
+    let candidate_payload = axiom_bytes(ZfcAxiom::Pairing);
+    let selected_payload = axiom_bytes(ZfcAxiom::Union);
+    let artifact_ids = artifact_ids(&[candidate_payload.clone(), selected_payload.clone()]);
+    let candidate_id = artifact_ids[0];
+    let selected_id = artifact_ids[1];
+    let mut journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
+    let candidate = journal.prepare_block(candidate_id).unwrap();
+    let selected = journal.prepare_block(selected_id).unwrap();
+    journal.apply_block(&selected, selected_payload).unwrap();
+    let mut payload_store = CanonicalArtifactPayloadStore::create(
+        &directory.path,
+        payload_limits(1, candidate_payload.len() as u64),
+    )
+    .unwrap();
+    let journal_image = fs::read(directory.journal_path()).unwrap();
+    let payload_image = fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+
+    assert!(matches!(
+        payload_store.validate_and_insert_candidate_payload(
+            &journal,
+            &candidate,
+            candidate_payload,
+        ),
+        Err(CandidatePayloadArchiveError::Validation { source })
+            if matches!(
+                source.as_ref(),
+                ArtifactChainJournalError::BlockAdmission {
+                    source: ArtifactBlockApplyError::ParentBlockIdMismatch {
+                        expected,
+                        actual,
+                    },
+                } if *expected == selected.id() && *actual == candidate.parent_block_id()
+            )
+    ));
+    assert_eq!(journal.head_block_id().unwrap(), selected.id());
+    assert!(payload_store.is_empty().unwrap());
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), journal_image);
+    assert_eq!(
+        fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        payload_image
+    );
 }
 
 #[test]
