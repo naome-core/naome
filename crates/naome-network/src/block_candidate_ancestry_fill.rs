@@ -11,8 +11,8 @@ use naome_storage::{
 };
 
 use super::{
-    BlockRequestTicket, NetworkEvent, OutboundArtifactBlockFailure, PeerId, RequestStartError,
-    StaticArtifactNetwork,
+    BlockRequestTicket, MAX_STATIC_PEERS, NetworkEvent, OutboundArtifactBlockFailure, PeerId,
+    RequestStartError, StaticArtifactNetwork,
     block_ancestry::{
         ArtifactBlockAncestryShapeContext, ArtifactBlockAncestryShapeError, retain_ancestry_block,
     },
@@ -30,6 +30,7 @@ use super::{
 pub struct ArtifactBlockCandidateAncestryFill<'store> {
     state: ArtifactBlockCandidateAncestryFillState<'store>,
     ticket: BlockRequestTicket,
+    peers: ArtifactBlockCandidateAncestryFillPeers,
 }
 
 struct ArtifactBlockCandidateAncestryFillState<'store> {
@@ -38,8 +39,17 @@ struct ArtifactBlockCandidateAncestryFillState<'store> {
     anchor_artifact_set_root: ArtifactSetRoot,
     virtual_genesis_block_id: ArtifactBlockId,
     target_block_id: ArtifactBlockId,
-    block_peer_id: PeerId,
     blocks: Vec<ArtifactBlock>,
+}
+
+enum ArtifactBlockCandidateAncestryFillPeers {
+    Direct(PeerId),
+    Fallback(ArtifactBlockCandidateAncestryFallbackPeers),
+}
+
+struct ArtifactBlockCandidateAncestryFallbackPeers {
+    peer_ids: Box<[PeerId]>,
+    next_peer_index: usize,
 }
 
 impl StaticArtifactNetwork {
@@ -60,6 +70,54 @@ impl StaticArtifactNetwork {
         ArtifactBlockCandidateAncestryFillProgress<'store>,
         ArtifactBlockCandidateAncestryFillError,
     > {
+        let state =
+            ArtifactBlockCandidateAncestryFillState::new(selected, candidates, target_block_id)?;
+        match state.scan(selected, target_block_id)? {
+            None => Ok(None),
+            Some((state, block_id)) => {
+                ArtifactBlockCandidateAncestryFillPeers::Direct(block_peer_id)
+                    .start_request(self, state, block_id, None)
+            }
+        }
+    }
+
+    /// Starts or resumes one durable bounded ancestry fill with ordered peer fallback.
+    ///
+    /// Already retained blocks are integrity-read and shape-checked before the
+    /// peer slice is inspected. At the first missing address, `block_peer_ids`
+    /// must contain one to [`MAX_STATIC_PEERS`] distinct statically configured
+    /// identities. Requests consider those peers once in exact caller order;
+    /// busy or disconnected peers are skipped, while matched retryable
+    /// terminals may advance to the next peer. The direct single-peer start
+    /// remains a no-fallback operation.
+    pub fn start_artifact_block_candidate_ancestry_fill_with_peer_fallback<'store>(
+        &mut self,
+        selected: &ArtifactChainJournal,
+        candidates: &'store mut ArtifactBlockCandidateStore,
+        block_peer_ids: &[PeerId],
+        target_block_id: ArtifactBlockId,
+    ) -> Result<
+        ArtifactBlockCandidateAncestryFillProgress<'store>,
+        ArtifactBlockCandidateAncestryFillError,
+    > {
+        let state =
+            ArtifactBlockCandidateAncestryFillState::new(selected, candidates, target_block_id)?;
+        match state.scan(selected, target_block_id)? {
+            None => Ok(None),
+            Some((state, block_id)) => {
+                ArtifactBlockCandidateAncestryFillPeers::validated_fallback(self, block_peer_ids)?
+                    .start_request(self, state, block_id, None)
+            }
+        }
+    }
+}
+
+impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
+    fn new(
+        selected: &ArtifactChainJournal,
+        candidates: &'store mut ArtifactBlockCandidateStore,
+        target_block_id: ArtifactBlockId,
+    ) -> Result<Self, ArtifactBlockCandidateAncestryFillError> {
         let selected_chain_id = selected.chain_id();
         let candidate_chain_id = candidates.chain_id();
         if selected_chain_id != candidate_chain_id {
@@ -91,29 +149,21 @@ impl StaticArtifactNetwork {
             .artifact_set_root()
             .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?;
 
-        ArtifactBlockCandidateAncestryFillState {
+        Ok(Self {
             candidates,
             anchor_block_id,
             anchor_artifact_set_root,
             virtual_genesis_block_id,
             target_block_id,
-            block_peer_id,
             blocks: Vec::new(),
-        }
-        .scan_or_request(self, selected, target_block_id)
+        })
     }
-}
 
-impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
-    fn scan_or_request(
+    fn scan(
         mut self,
-        network: &mut StaticArtifactNetwork,
         selected: &ArtifactChainJournal,
         mut block_id: ArtifactBlockId,
-    ) -> Result<
-        ArtifactBlockCandidateAncestryFillProgress<'store>,
-        ArtifactBlockCandidateAncestryFillError,
-    > {
+    ) -> Result<Option<(Self, ArtifactBlockId)>, ArtifactBlockCandidateAncestryFillError> {
         loop {
             let Some(block) = self.candidates.get(block_id).map_err(|source| {
                 ArtifactBlockCandidateAncestryFillError::CandidateStoreRead {
@@ -122,18 +172,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
                 }
             })?
             else {
-                let ticket = network
-                    .request_block(self.block_peer_id, ArtifactBlockRequest::new(block_id))
-                    .map_err(
-                        |source| ArtifactBlockCandidateAncestryFillError::RequestStart {
-                            block_id,
-                            source,
-                        },
-                    )?;
-                return Ok(Some(ArtifactBlockCandidateAncestryFill {
-                    state: self,
-                    ticket,
-                }));
+                return Ok(Some((self, block_id)));
             };
 
             let next_block_id =
@@ -153,6 +192,117 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
             self.virtual_genesis_block_id,
             self.target_block_id,
         )
+    }
+}
+
+impl ArtifactBlockCandidateAncestryFillPeers {
+    fn validated_fallback(
+        network: &StaticArtifactNetwork,
+        peer_ids: &[PeerId],
+    ) -> Result<Self, ArtifactBlockCandidateAncestryFillError> {
+        if peer_ids.is_empty() {
+            return Err(ArtifactBlockCandidateAncestryFillError::EmptyBlockPeerSet);
+        }
+        if peer_ids.len() > MAX_STATIC_PEERS {
+            return Err(ArtifactBlockCandidateAncestryFillError::TooManyBlockPeers {
+                actual: peer_ids.len(),
+                maximum: MAX_STATIC_PEERS,
+            });
+        }
+
+        let mut canonical_peer_ids = peer_ids.to_vec();
+        canonical_peer_ids.sort_unstable();
+        if let Some(peer_id) = canonical_peer_ids
+            .windows(2)
+            .find_map(|pair| (pair[0] == pair[1]).then_some(pair[0]))
+        {
+            return Err(ArtifactBlockCandidateAncestryFillError::DuplicateBlockPeer { peer_id });
+        }
+        if let Some(peer_id) = canonical_peer_ids.iter().copied().find(|peer_id| {
+            network
+                .swarm
+                .behaviour()
+                .sessions
+                .peer_index(peer_id)
+                .is_none()
+        }) {
+            return Err(ArtifactBlockCandidateAncestryFillError::UnknownBlockPeer { peer_id });
+        }
+
+        canonical_peer_ids.clone_from_slice(peer_ids);
+        Ok(Self::Fallback(
+            ArtifactBlockCandidateAncestryFallbackPeers {
+                peer_ids: canonical_peer_ids.into_boxed_slice(),
+                next_peer_index: 0,
+            },
+        ))
+    }
+
+    fn start_request<'store>(
+        self,
+        network: &mut StaticArtifactNetwork,
+        state: ArtifactBlockCandidateAncestryFillState<'store>,
+        block_id: ArtifactBlockId,
+        last_terminal: Option<ArtifactBlockCandidateAncestryFillError>,
+    ) -> Result<
+        ArtifactBlockCandidateAncestryFillProgress<'store>,
+        ArtifactBlockCandidateAncestryFillError,
+    > {
+        match self {
+            Self::Direct(peer_id) => {
+                if let Some(error) = last_terminal {
+                    return Err(error);
+                }
+                let ticket = network
+                    .request_block(peer_id, ArtifactBlockRequest::new(block_id))
+                    .map_err(
+                        |source| ArtifactBlockCandidateAncestryFillError::RequestStart {
+                            block_id,
+                            source,
+                        },
+                    )?;
+                Ok(Some(ArtifactBlockCandidateAncestryFill {
+                    state,
+                    ticket,
+                    peers: Self::Direct(peer_id),
+                }))
+            }
+            Self::Fallback(mut peers) => loop {
+                let Some(&peer_id) = peers.peer_ids.get(peers.next_peer_index) else {
+                    return Err(last_terminal.unwrap_or(
+                        ArtifactBlockCandidateAncestryFillError::NoRequestableBlockPeer {
+                            block_id,
+                        },
+                    ));
+                };
+                peers.next_peer_index += 1;
+                match network.request_block(peer_id, ArtifactBlockRequest::new(block_id)) {
+                    Ok(ticket) => {
+                        return Ok(Some(ArtifactBlockCandidateAncestryFill {
+                            state,
+                            ticket,
+                            peers: Self::Fallback(peers),
+                        }));
+                    }
+                    Err(
+                        RequestStartError::AlreadyPending(_)
+                        | RequestStartError::PeerDisconnected(_),
+                    ) => {}
+                    Err(source) => {
+                        return Err(ArtifactBlockCandidateAncestryFillError::RequestStart {
+                            block_id,
+                            source,
+                        });
+                    }
+                }
+            },
+        }
+    }
+
+    fn reset_for_parent(&mut self) {
+        if let Self::Fallback(peers) = self {
+            peers.next_peer_index = 0;
+        }
     }
 }
 
@@ -207,7 +357,11 @@ impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
             return Err(ArtifactBlockCandidateAncestryFillError::UnexpectedEvent);
         }
 
-        let Self { mut state, ticket } = self;
+        let Self {
+            mut state,
+            ticket,
+            mut peers,
+        } = self;
         let NetworkEvent::OutboundBlock(event) = event else {
             unreachable!("an accepted candidate ancestry event is a block terminal")
         };
@@ -217,19 +371,33 @@ impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
 
         let peer_id = ticket.peer_id();
         let block_id = ticket.request().block_id();
-        let response = ticket
+        let response = match ticket
             .complete(event)
             .expect("the accepted block event matches its candidate ancestry ticket")
-            .map_err(
-                |source| ArtifactBlockCandidateAncestryFillError::BlockRequestFailed {
+        {
+            Ok(response) => response,
+            Err(source) => {
+                let retryable = matches!(
+                    source.as_ref(),
+                    OutboundArtifactBlockFailure::Transport(_)
+                        | OutboundArtifactBlockFailure::InvalidResponse { .. }
+                );
+                let error = ArtifactBlockCandidateAncestryFillError::BlockRequestFailed {
                     peer_id,
                     block_id,
                     source,
-                },
-            )?;
-        let block = response.into_block().ok_or(
-            ArtifactBlockCandidateAncestryFillError::BlockUnavailable { peer_id, block_id },
-        )?;
+                };
+                if retryable {
+                    return peers.start_request(network, state, block_id, Some(error));
+                }
+                return Err(error);
+            }
+        };
+        let Some(block) = response.into_block() else {
+            let error =
+                ArtifactBlockCandidateAncestryFillError::BlockUnavailable { peer_id, block_id };
+            return peers.start_request(network, state, block_id, Some(error));
+        };
 
         let actual_head = selected
             .head_block_id()
@@ -256,7 +424,11 @@ impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
         let Some(next_block_id) = next_block_id else {
             return Ok(None);
         };
-        state.scan_or_request(network, selected, next_block_id)
+        peers.reset_for_parent();
+        match state.scan(selected, next_block_id)? {
+            None => Ok(None),
+            Some((state, block_id)) => peers.start_request(network, state, block_id, None),
+        }
     }
 }
 
@@ -285,6 +457,14 @@ pub type ArtifactBlockCandidateAncestryFillProgress<'store> =
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ArtifactBlockCandidateAncestryFillError {
+    /// The fallback mode was given no candidate block peer.
+    EmptyBlockPeerSet,
+    /// The fallback mode exceeded the fixed configured-peer bound.
+    TooManyBlockPeers { actual: usize, maximum: usize },
+    /// The fallback mode repeated one peer identity.
+    DuplicateBlockPeer { peer_id: PeerId },
+    /// The fallback mode named a peer outside the static configuration.
+    UnknownBlockPeer { peer_id: PeerId },
     /// The candidate store and selected journal belong to different chains.
     ChainIdMismatch {
         selected: ArtifactChainId,
@@ -306,6 +486,8 @@ pub enum ArtifactBlockCandidateAncestryFillError {
         block_id: ArtifactBlockId,
         source: RequestStartError,
     },
+    /// No listed fallback peer could start the exact missing request.
+    NoRequestableBlockPeer { block_id: ArtifactBlockId },
     /// The supplied event or driver did not belong to this fill generation.
     UnexpectedEvent,
     /// One exact missing block request failed before yielding a usable response.
@@ -392,6 +574,21 @@ impl ArtifactBlockCandidateAncestryFillError {
 impl fmt::Display for ArtifactBlockCandidateAncestryFillError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EmptyBlockPeerSet => {
+                formatter.write_str("candidate ancestry fallback peer set is empty")
+            }
+            Self::TooManyBlockPeers { actual, maximum } => write!(
+                formatter,
+                "candidate ancestry fallback has {actual} peers, maximum is {maximum}"
+            ),
+            Self::DuplicateBlockPeer { peer_id } => write!(
+                formatter,
+                "candidate ancestry fallback repeats peer {peer_id}"
+            ),
+            Self::UnknownBlockPeer { peer_id } => write!(
+                formatter,
+                "candidate ancestry fallback peer {peer_id} is not statically configured"
+            ),
             Self::ChainIdMismatch {
                 selected,
                 candidates,
@@ -414,6 +611,10 @@ impl fmt::Display for ArtifactBlockCandidateAncestryFillError {
             Self::RequestStart { block_id, source } => write!(
                 formatter,
                 "cannot request missing candidate ancestry block {block_id:?}: {source}"
+            ),
+            Self::NoRequestableBlockPeer { block_id } => write!(
+                formatter,
+                "no candidate ancestry fallback peer can request block {block_id:?}"
             ),
             Self::UnexpectedEvent => formatter.write_str(
                 "network event or driver does not belong to this candidate ancestry fill",
@@ -476,8 +677,13 @@ impl Error for ArtifactBlockCandidateAncestryFillError {
             }
             Self::RequestStart { source, .. } => Some(source),
             Self::BlockRequestFailed { source, .. } => Some(source.as_ref()),
-            Self::ChainIdMismatch { .. }
+            Self::EmptyBlockPeerSet
+            | Self::TooManyBlockPeers { .. }
+            | Self::DuplicateBlockPeer { .. }
+            | Self::UnknownBlockPeer { .. }
+            | Self::ChainIdMismatch { .. }
             | Self::TargetAlreadySelected { .. }
+            | Self::NoRequestableBlockPeer { .. }
             | Self::UnexpectedEvent
             | Self::BlockUnavailable { .. }
             | Self::SelectedHeadChanged { .. }
