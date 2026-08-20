@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn cloned_ledgers_share_a_selected_prefix_and_isolate_later_admission() {
+    let mut selected = LedgerState::new();
+    let source = selected
+        .apply(certificate(vec![ProofStep::ZfcAxiom(ZfcAxiom::Pairing)]))
+        .unwrap();
+    let source_id = source.proof_id();
+    let mut branch = selected.clone();
+
+    let dependent = proof_using_every_reference(
+        &[(source_id, ZfcAxiom::Pairing.formula())],
+        ZfcAxiom::Choice,
+    );
+    let dependent_id = branch.apply(dependent).unwrap().proof_id();
+    let selected_only = selected
+        .apply(certificate(vec![ProofStep::ZfcAxiom(ZfcAxiom::Union)]))
+        .unwrap()
+        .proof_id();
+
+    assert!(selected.contains_proof(source_id));
+    assert!(branch.contains_proof(source_id));
+    assert!(!selected.contains_proof(dependent_id));
+    assert!(branch.contains_proof(dependent_id));
+    assert!(selected.contains_proof(selected_only));
+    assert!(!branch.contains_proof(selected_only));
+}
+
+#[test]
 fn canonical_bytes_match_authoring_admission_and_duplicate_semantics() {
     let variable = FreeVariable::new(42);
     let bytes = canonical_bytes(identity(variable));

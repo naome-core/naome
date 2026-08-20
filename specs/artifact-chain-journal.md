@@ -140,6 +140,36 @@ head to equal a separately trusted expected `ArtifactBlockId`; when a tail is
 present, the head comparison occurs before truncation. A mismatch preserves the
 file unchanged.
 
+## Selected snapshots and memory-only candidate branches
+
+Creation retains one immutable structurally shared selected-artifact snapshot
+at the virtual genesis position. Each successful durable selected append retains
+the resulting snapshot with that selected block, and strict replay rebuilds the
+same snapshot sequence from the existing journal entries. The journal therefore
+has one selected snapshot for virtual genesis and one for every retained
+selected `ArtifactBlock`. No snapshot bytes, branch marker, or new framing field
+are added to the journal format.
+
+`ArtifactChainJournal::branch_snapshot_at` first requires a healthy journal and
+only then looks up the caller-supplied `ArtifactBlockId`. The identifier must be
+the journal's exact virtual genesis or one of its retained selected blocks. An
+unselected, unknown, candidate-only, or other-chain block identity fails as a
+fork point. Success returns an owned `ArtifactChainBranchSnapshot` rooted in the
+exact replay-checked state at that selected position.
+
+The returned snapshot uses the proof protocol's persistent path-copy boundary.
+Successful and failed child validation cannot change the journal's selected
+head, resolver, accepted records, authenticated root, selected-block index, or
+durable bytes. Independent clones may evaluate siblings, and a later selected
+journal append does not change an already returned snapshot. Reference-count
+bookkeeping is representation metadata rather than selected-state mutation.
+
+Candidate snapshots exist only in caller-held memory. They are not inserted
+into the selected-position index, written to the journal, restored on open, or
+recovered after a restart. Replay rebuilds selected snapshots only. Recreating a
+discarded candidate branch therefore requires the caller to supply its blocks
+and canonical payloads again from a selected fork point.
+
 ## Read interface
 
 A healthy journal exposes the derived chain ID, exact head (virtual genesis
@@ -157,8 +187,13 @@ candidates, archived payloads, or fetched but unselected artifacts.
 
 Entries are length-bounded before payload allocation. Replay retains accepted
 records, selected resolver indexes, authenticated-set topology, and one
-`ArtifactBlockId -> ArtifactBlock` index; it does not retain duplicate payload
-buffers or Merkle-node serialization. Allocation failure is explicit.
+selected-block index whose entries also reference the immutable structurally
+shared state at that selected position, plus the virtual-genesis snapshot. New
+snapshots path-copy only changed identity-map and authenticated-set paths; they
+do not retain duplicate payload buffers or Merkle-node serialization.
+Framed-payload and selected-block-index reservation failures are explicit.
+Ordinary reference-counted node allocation is not represented as a protocol
+error and follows the Rust allocator's process-level failure behavior.
 
 Opening or reading can fail on lock, I/O, invalid header, chain mismatch,
 invalid entry length, offset overflow, allocation, footer mismatch, replay
@@ -172,6 +207,7 @@ The `v1` header and `canonical-definition-v1` chain identity are a clean
 prerelease cutover. Earlier journals have no legacy reader or migration; remove
 and recreate local data.
 
-The journal does not define branch storage, rollback, reorganization, pruning,
+The journal does not define durable candidate-branch storage, rollback,
+reorganization, pruning, candidate-snapshot retention or eviction policy,
 compaction, discovery, networking, consensus, finality, proposer authority,
 economics, or backup policy.

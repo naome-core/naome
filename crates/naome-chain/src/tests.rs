@@ -209,6 +209,119 @@ fn read_only_validation_is_repeatable_and_application_makes_siblings_stale() {
 }
 
 #[test]
+fn branch_snapshots_advance_functionally_and_keep_siblings_isolated() {
+    let pairing = axiom_artifact_bytes(ZfcAxiom::Pairing);
+    let union = axiom_artifact_bytes(ZfcAxiom::Union);
+    let pairing_id = artifact_id_for(&pairing);
+    let union_id = artifact_id_for(&union);
+    let state = chain(0x42);
+    let pairing_block = state.prepare_block(pairing_id).unwrap();
+    let union_block = state.prepare_block(union_id).unwrap();
+    let snapshot = state.branch_snapshot();
+    let anchor = snapshot.head_block_id();
+    let empty_root = snapshot.artifact_set_root();
+
+    assert_eq!(snapshot.chain_id(), state.chain_id());
+    assert_eq!(anchor, state.head_block_id());
+    assert_eq!(empty_root, state.artifact_dag().artifact_set_root());
+
+    let pairing_snapshot = snapshot
+        .validate_child(&pairing_block, payload(&pairing))
+        .unwrap();
+    let union_snapshot = snapshot
+        .validate_child(&union_block, payload(&union))
+        .unwrap();
+
+    assert_eq!(pairing_snapshot.head_block_id(), pairing_block.id());
+    assert_eq!(
+        pairing_snapshot.artifact_set_root(),
+        pairing_block.resulting_artifact_set_root()
+    );
+    assert_eq!(union_snapshot.head_block_id(), union_block.id());
+    assert_eq!(
+        union_snapshot.artifact_set_root(),
+        union_block.resulting_artifact_set_root()
+    );
+    assert_ne!(
+        pairing_snapshot.artifact_set_root(),
+        union_snapshot.artifact_set_root()
+    );
+    assert_eq!(snapshot.head_block_id(), anchor);
+    assert_eq!(snapshot.artifact_set_root(), empty_root);
+    assert_empty_chain(&state, anchor, empty_root);
+
+    assert!(matches!(
+        snapshot.validate_child(&pairing_block, payload(&[0])),
+        Err(ArtifactBlockApplyError::Admission {
+            source: LedgerError::Decode { .. },
+        })
+    ));
+    assert_eq!(snapshot.head_block_id(), anchor);
+    assert_eq!(snapshot.artifact_set_root(), empty_root);
+    let _ = snapshot
+        .validate_child(&pairing_block, payload(&pairing))
+        .unwrap();
+}
+
+#[test]
+fn branch_snapshots_resolve_prior_candidate_dependencies_only_on_that_branch() {
+    let parent = axiom_artifact_bytes(ZfcAxiom::Pairing);
+    let parent_artifact_id = artifact_id_for(&parent);
+    let parent_proof_id = standalone_proof_id(&parent);
+    let child = referenced_generalization_artifact_bytes(parent_proof_id, 11);
+    let child_id = {
+        let mut scratch = ArtifactDag::new();
+        scratch
+            .apply_canonical_artifact_bytes(parent.clone())
+            .unwrap();
+        scratch
+            .apply_canonical_artifact_bytes(child.clone())
+            .unwrap()
+            .artifact_id()
+    };
+    let mut selected = chain(0x43);
+    let anchor = selected.head_block_id();
+    let empty_root = selected.artifact_dag().artifact_set_root();
+    let child_at_anchor = selected.prepare_block(child_id).unwrap();
+    let parent_block = selected.prepare_block(parent_artifact_id).unwrap();
+    let base = selected.branch_snapshot();
+
+    assert!(matches!(
+        base.validate_child(&child_at_anchor, payload(&child)),
+        Err(ArtifactBlockApplyError::Admission {
+            source: LedgerError::ProofCheck {
+                source: CheckError::UnknownProofReference { proof_id, .. },
+            },
+        }) if proof_id == parent_proof_id
+    ));
+
+    let parent_snapshot = base
+        .validate_child(&parent_block, payload(&parent))
+        .unwrap();
+    selected
+        .apply_block(&parent_block, payload(&parent))
+        .unwrap();
+    let child_block = selected.prepare_block(child_id).unwrap();
+    let child_snapshot = parent_snapshot
+        .validate_child(&child_block, payload(&child))
+        .unwrap();
+
+    assert_eq!(child_snapshot.head_block_id(), child_block.id());
+    assert_eq!(
+        child_snapshot.artifact_set_root(),
+        child_block.resulting_artifact_set_root()
+    );
+    assert_eq!(parent_snapshot.head_block_id(), parent_block.id());
+    assert_eq!(
+        parent_snapshot.artifact_set_root(),
+        parent_block.resulting_artifact_set_root()
+    );
+    assert_eq!(base.head_block_id(), anchor);
+    assert_eq!(base.artifact_set_root(), empty_root);
+    assert_eq!(selected.head_block_id(), parent_block.id());
+}
+
+#[test]
 fn block_preflight_precedence_is_flat_and_preserves_state() {
     let bytes = axiom_artifact_bytes(ZfcAxiom::Pairing);
     let artifact_id = artifact_id_for(&bytes);

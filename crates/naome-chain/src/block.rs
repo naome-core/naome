@@ -349,6 +349,7 @@ impl Error for ArtifactBlockDecodeError {}
 /// The selected [`ArtifactDag`] is privately owned so its authenticated state and
 /// the linear block head cannot diverge. The initial head is a virtual genesis
 /// parent derived from [`ArtifactChainDefinition`], not an admitted block.
+#[derive(Clone)]
 #[must_use]
 pub struct ArtifactChainState {
     chain_id: ArtifactChainId,
@@ -388,6 +389,17 @@ impl ArtifactChainState {
     /// Returns immutable access to the selected checked-artifact resolver state.
     pub const fn artifact_state(&self) -> &ArtifactState {
         self.artifact_dag.artifact_state()
+    }
+
+    /// Captures this exact strictly constructed chain state as an immutable branch snapshot.
+    ///
+    /// The snapshot structurally shares immutable state with this chain. Later
+    /// selected-chain changes cannot alter it, and validating a child returns a
+    /// separate snapshot without mutating either input.
+    pub fn branch_snapshot(&self) -> ArtifactChainBranchSnapshot {
+        ArtifactChainBranchSnapshot {
+            state: self.clone(),
+        }
     }
 
     /// Prepares one block against the exact current head and artifact state.
@@ -489,6 +501,51 @@ impl ArtifactChainState {
             });
         }
         Ok(())
+    }
+}
+
+/// An immutable exact-head artifact-chain state for candidate evaluation.
+///
+/// Snapshots have no public constructor. They are derived from one strictly constructed
+/// [`ArtifactChainState`] or from a successfully validated child, and bind the
+/// chain identity, exact block head, authenticated artifact-set root, and the
+/// complete checked dependency resolver state. A snapshot establishes no
+/// selection, fork choice, consensus inclusion, finality, or persistence.
+#[derive(Clone)]
+#[must_use]
+pub struct ArtifactChainBranchSnapshot {
+    state: ArtifactChainState,
+}
+
+impl ArtifactChainBranchSnapshot {
+    /// Returns the chain identity captured by this snapshot.
+    pub const fn chain_id(&self) -> ArtifactChainId {
+        self.state.chain_id()
+    }
+
+    /// Returns the exact parent required by the next candidate child.
+    pub const fn head_block_id(&self) -> ArtifactBlockId {
+        self.state.head_block_id()
+    }
+
+    /// Returns the authenticated artifact-set root captured by this snapshot.
+    pub fn artifact_set_root(&self) -> ArtifactSetRoot {
+        self.state.artifact_dag().artifact_set_root()
+    }
+
+    /// Strictly validates one direct child and returns its immutable state.
+    ///
+    /// Validation preserves the same parent, root, duplicate, projected-root,
+    /// and strict artifact-admission precedence as selected-chain application.
+    /// Every error leaves this snapshot unchanged.
+    pub fn validate_child(
+        &self,
+        block: &ArtifactBlock,
+        canonical_artifact_bytes: Vec<u8>,
+    ) -> Result<Self, ArtifactBlockApplyError> {
+        let mut state = self.state.clone();
+        state.apply_block(block, canonical_artifact_bytes)?;
+        Ok(Self { state })
     }
 }
 
