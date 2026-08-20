@@ -4,12 +4,19 @@ use std::error::Error;
 use std::fmt;
 use std::vec::IntoIter;
 
-use naome_chain::{ArtifactBlock, ArtifactBlockId};
-use naome_storage::ArtifactChainJournal;
+use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactChainId, ArtifactSetRoot};
+use naome_storage::{
+    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, ArtifactChainJournal,
+    ArtifactChainJournalError,
+};
 
 use super::{
     ArtifactBlockImport, ArtifactBlockImportError, NetworkEvent, PeerId, StaticArtifactNetwork,
     UnselectedArtifactBlockAncestry,
+    block_ancestry::{
+        ArtifactBlockAncestryShapeContext, ArtifactBlockAncestryShapeError, retain_ancestry_block,
+    },
+    selected_context_contains_block,
 };
 
 /// One bounded caller-selected ancestry import in progress.
@@ -22,7 +29,7 @@ use super::{
 pub struct ArtifactBlockAncestryImport {
     anchor_block_id: ArtifactBlockId,
     target_block_id: ArtifactBlockId,
-    source_peer_id: PeerId,
+    preferred_artifact_peer_id: PeerId,
     committed_block_count: usize,
     last_acknowledged_head_block_id: ArtifactBlockId,
     remaining_blocks: IntoIter<ArtifactBlock>,
@@ -41,15 +48,129 @@ impl StaticArtifactNetwork {
         ancestry: UnselectedArtifactBlockAncestry,
     ) -> Result<ArtifactBlockAncestryImport, ArtifactBlockAncestryImportError> {
         let (peer_id, anchor_block_id, target_block_id, blocks) = ancestry.into_parts();
-        let mut remaining_blocks = blocks.into_iter();
-        let first = remaining_blocks
-            .next()
-            .expect("a completed ancestry always contains its target block");
-        let first_block_id = first.id();
-        let current = ArtifactBlockImport::start_from_retained_block(
+        ArtifactBlockAncestryImport::start_from_parts(
             self,
             selected,
             peer_id,
+            anchor_block_id,
+            target_block_id,
+            blocks,
+        )
+    }
+
+    /// Starts strict sequential import from one caller-selected retained target.
+    ///
+    /// Candidate blocks are integrity-read backward from `target_block_id` to
+    /// the current selected head without any block request. Their bounded path
+    /// remains unselected until the returned import obtains and strictly
+    /// applies each committed artifact payload in forward order. The preferred
+    /// payload peer is not candidate provenance, and deterministic fallback may
+    /// use another configured peer. A candidate integrity-read failure retains
+    /// the store's existing poison-and-reopen behavior.
+    pub fn start_artifact_block_candidate_ancestry_import(
+        &mut self,
+        selected: &ArtifactChainJournal,
+        candidates: &mut ArtifactBlockCandidateStore,
+        preferred_artifact_peer_id: PeerId,
+        target_block_id: ArtifactBlockId,
+    ) -> Result<ArtifactBlockAncestryImport, ArtifactBlockCandidateAncestryImportStartError> {
+        let selected_chain_id = selected.chain_id();
+        let candidate_chain_id = candidates.chain_id();
+        if selected_chain_id != candidate_chain_id {
+            return Err(
+                ArtifactBlockCandidateAncestryImportStartError::ChainIdMismatch {
+                    selected: selected_chain_id,
+                    candidates: candidate_chain_id,
+                },
+            );
+        }
+
+        let anchor_block_id = selected
+            .head_block_id()
+            .map_err(ArtifactBlockCandidateAncestryImportStartError::selected_state)?;
+        let virtual_genesis_block_id = selected_chain_id.virtual_genesis_block_id();
+        if selected_context_contains_block(
+            selected,
+            anchor_block_id,
+            virtual_genesis_block_id,
+            target_block_id,
+        )
+        .map_err(ArtifactBlockCandidateAncestryImportStartError::selected_state)?
+        {
+            return Err(
+                ArtifactBlockCandidateAncestryImportStartError::TargetAlreadySelected {
+                    block_id: target_block_id,
+                },
+            );
+        }
+        let anchor_artifact_set_root = selected
+            .artifact_set_root()
+            .map_err(ArtifactBlockCandidateAncestryImportStartError::selected_state)?;
+        let shape = ArtifactBlockAncestryShapeContext::new(
+            anchor_block_id,
+            anchor_artifact_set_root,
+            virtual_genesis_block_id,
+            target_block_id,
+        );
+
+        let mut blocks = Vec::new();
+        let mut block_id = target_block_id;
+        loop {
+            let block = candidates
+                .get(block_id)
+                .map_err(
+                    |source| ArtifactBlockCandidateAncestryImportStartError::CandidateStore {
+                        block_id,
+                        source: Box::new(source),
+                    },
+                )?
+                .ok_or(
+                    ArtifactBlockCandidateAncestryImportStartError::CandidateNotRetained {
+                        block_id,
+                    },
+                )?;
+            let next_block_id = retain_ancestry_block(selected, shape, &mut blocks, block)
+                .map_err(ArtifactBlockCandidateAncestryImportStartError::from_shape)?;
+            let Some(next_block_id) = next_block_id else {
+                break;
+            };
+            block_id = next_block_id;
+        }
+
+        ArtifactBlockAncestryImport::start_from_parts(
+            self,
+            selected,
+            preferred_artifact_peer_id,
+            anchor_block_id,
+            target_block_id,
+            blocks,
+        )
+        .map_err(
+            |source| ArtifactBlockCandidateAncestryImportStartError::ImportStart {
+                source: Box::new(source),
+            },
+        )
+    }
+}
+
+impl ArtifactBlockAncestryImport {
+    fn start_from_parts(
+        network: &mut StaticArtifactNetwork,
+        selected: &ArtifactChainJournal,
+        preferred_artifact_peer_id: PeerId,
+        anchor_block_id: ArtifactBlockId,
+        target_block_id: ArtifactBlockId,
+        blocks: Vec<ArtifactBlock>,
+    ) -> Result<Self, ArtifactBlockAncestryImportError> {
+        let mut remaining_blocks = blocks.into_iter();
+        let first = remaining_blocks
+            .next()
+            .expect("a retained ancestry always contains its target block");
+        let first_block_id = first.id();
+        let current = ArtifactBlockImport::start_from_retained_block(
+            network,
+            selected,
+            preferred_artifact_peer_id,
             first_block_id,
             first,
         )
@@ -63,19 +184,17 @@ impl StaticArtifactNetwork {
             )
         })?;
 
-        Ok(ArtifactBlockAncestryImport {
+        Ok(Self {
             anchor_block_id,
             target_block_id,
-            source_peer_id: peer_id,
+            preferred_artifact_peer_id,
             committed_block_count: 0,
             last_acknowledged_head_block_id: anchor_block_id,
             remaining_blocks,
             current,
         })
     }
-}
 
-impl ArtifactBlockAncestryImport {
     /// Returns the selected head captured by the consumed ancestry pull.
     pub const fn anchor_block_id(&self) -> ArtifactBlockId {
         self.anchor_block_id
@@ -132,7 +251,7 @@ impl ArtifactBlockAncestryImport {
         let Self {
             anchor_block_id,
             target_block_id,
-            source_peer_id,
+            preferred_artifact_peer_id,
             committed_block_count,
             last_acknowledged_head_block_id,
             mut remaining_blocks,
@@ -155,7 +274,7 @@ impl ArtifactBlockAncestryImport {
             return Ok(Some(Self {
                 anchor_block_id,
                 target_block_id,
-                source_peer_id,
+                preferred_artifact_peer_id,
                 committed_block_count,
                 last_acknowledged_head_block_id,
                 remaining_blocks,
@@ -173,7 +292,7 @@ impl ArtifactBlockAncestryImport {
         let current = ArtifactBlockImport::start_from_retained_block(
             network,
             selected,
-            source_peer_id,
+            preferred_artifact_peer_id,
             next_block_id,
             next,
         )
@@ -190,7 +309,7 @@ impl ArtifactBlockAncestryImport {
         Ok(Some(Self {
             anchor_block_id,
             target_block_id,
-            source_peer_id,
+            preferred_artifact_peer_id,
             committed_block_count,
             last_acknowledged_head_block_id,
             remaining_blocks,
@@ -204,6 +323,170 @@ impl ArtifactBlockAncestryImport {
 /// `Some(import)` means one artifact request remains active. `None` means every
 /// retained block through the exact target was durably acknowledged.
 pub type ArtifactBlockAncestryImportProgress = Option<ArtifactBlockAncestryImport>;
+
+/// A rejected candidate-store-backed ancestry import start.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ArtifactBlockCandidateAncestryImportStartError {
+    /// The candidate store and selected journal belong to different chains.
+    ChainIdMismatch {
+        selected: ArtifactChainId,
+        candidates: ArtifactChainId,
+    },
+    /// The selected journal failed a required read.
+    SelectedState {
+        source: Box<ArtifactChainJournalError>,
+    },
+    /// The target is the current head, virtual genesis, or another selected block.
+    TargetAlreadySelected { block_id: ArtifactBlockId },
+    /// The candidate store could not read one required block address.
+    CandidateStore {
+        block_id: ArtifactBlockId,
+        source: Box<ArtifactBlockCandidateStoreError>,
+    },
+    /// One required candidate address was not retained locally.
+    CandidateNotRetained { block_id: ArtifactBlockId },
+    /// One child block did not start at its parent's resulting artifact-set root.
+    ArtifactSetRootMismatch {
+        preceding_block_id: ArtifactBlockId,
+        expected: ArtifactSetRoot,
+        actual: ArtifactSetRoot,
+    },
+    /// A parent address repeated within the retained path.
+    RepeatedBlockId { block_id: ArtifactBlockId },
+    /// The retained path met selected history other than the current head.
+    DivergentAncestry {
+        expected_anchor: ArtifactBlockId,
+        encountered: ArtifactBlockId,
+    },
+    /// The retained path did not reach the current head within the fixed bound.
+    AncestryLimitExceeded {
+        maximum: usize,
+        next_block_id: ArtifactBlockId,
+    },
+    /// The complete retained path failed strict first-block preflight or payload start.
+    ImportStart {
+        source: Box<ArtifactBlockAncestryImportError>,
+    },
+}
+
+impl ArtifactBlockCandidateAncestryImportStartError {
+    fn selected_state(source: ArtifactChainJournalError) -> Self {
+        Self::SelectedState {
+            source: Box::new(source),
+        }
+    }
+
+    fn from_shape(error: ArtifactBlockAncestryShapeError) -> Self {
+        match error {
+            ArtifactBlockAncestryShapeError::SelectedState(source) => Self::selected_state(source),
+            ArtifactBlockAncestryShapeError::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            } => Self::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            },
+            ArtifactBlockAncestryShapeError::RepeatedBlockId { block_id } => {
+                Self::RepeatedBlockId { block_id }
+            }
+            ArtifactBlockAncestryShapeError::DivergentAncestry {
+                expected_anchor,
+                encountered,
+            } => Self::DivergentAncestry {
+                expected_anchor,
+                encountered,
+            },
+            ArtifactBlockAncestryShapeError::AncestryLimitExceeded {
+                maximum,
+                next_block_id,
+            } => Self::AncestryLimitExceeded {
+                maximum,
+                next_block_id,
+            },
+        }
+    }
+}
+
+impl fmt::Display for ArtifactBlockCandidateAncestryImportStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ChainIdMismatch {
+                selected,
+                candidates,
+            } => write!(
+                formatter,
+                "candidate store chain {candidates:?} does not match selected journal chain {selected:?}"
+            ),
+            Self::SelectedState { source } => write!(
+                formatter,
+                "candidate ancestry import cannot use selected state: {source}"
+            ),
+            Self::TargetAlreadySelected { block_id } => write!(
+                formatter,
+                "candidate ancestry import target {block_id:?} is already selected"
+            ),
+            Self::CandidateStore { block_id, source } => write!(
+                formatter,
+                "cannot read candidate block address {block_id:?}: {source}"
+            ),
+            Self::CandidateNotRetained { block_id } => write!(
+                formatter,
+                "candidate ancestry block {block_id:?} is not retained"
+            ),
+            Self::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "candidate ancestry predecessor {preceding_block_id:?} ends at artifact-set root {expected:?}, but its child starts at {actual:?}"
+            ),
+            Self::RepeatedBlockId { block_id } => {
+                write!(formatter, "candidate ancestry repeats block {block_id:?}")
+            }
+            Self::DivergentAncestry {
+                expected_anchor,
+                encountered,
+            } => write!(
+                formatter,
+                "candidate ancestry expected anchor {expected_anchor:?} but encountered selected-chain context {encountered:?}"
+            ),
+            Self::AncestryLimitExceeded {
+                maximum,
+                next_block_id,
+            } => write!(
+                formatter,
+                "candidate ancestry exceeds {maximum} retained blocks before parent {next_block_id:?}"
+            ),
+            Self::ImportStart { source } => {
+                write!(
+                    formatter,
+                    "cannot start retained candidate ancestry import: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for ArtifactBlockCandidateAncestryImportStartError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::SelectedState { source } => Some(source.as_ref()),
+            Self::CandidateStore { source, .. } => Some(source.as_ref()),
+            Self::ImportStart { source } => Some(source.as_ref()),
+            Self::ChainIdMismatch { .. }
+            | Self::TargetAlreadySelected { .. }
+            | Self::CandidateNotRetained { .. }
+            | Self::ArtifactSetRootMismatch { .. }
+            | Self::RepeatedBlockId { .. }
+            | Self::DivergentAncestry { .. }
+            | Self::AncestryLimitExceeded { .. } => None,
+        }
+    }
+}
 
 /// One ancestry-import failure plus its last acknowledged durable prefix.
 #[derive(Debug)]
