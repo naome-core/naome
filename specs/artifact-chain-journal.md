@@ -257,6 +257,75 @@ availability, or peer-trust authority. Continuing a cursor after the selected
 head advances evaluates only its captured historical artifact state and makes
 no claim that the target remains an unselected candidate.
 
+## Full-preflight offline candidate import
+
+`ArtifactChainJournal::import_candidate_branch_from_archive` accepts one
+mutable selected journal, one exact caller-selected target `ArtifactBlockId`,
+one caller-routed `ArtifactBlockCandidateStore` for the same `ArtifactChainId`,
+one Foundation-scoped `CanonicalArtifactPayloadStore`, and positive
+caller-local `CandidateBranchArchiveImportLimits` containing `max_blocks` and
+`max_buffered_payload_bytes`. Invoking this method is the caller's explicit
+authorization to advance that local artifact journal toward the exact target.
+It is not consensus branch selection, fork choice, or finality authority.
+
+Journal and candidate-store chain IDs are compared before health or disk reads.
+The method then captures the journal's current exact head and replay-built
+immutable snapshot and rejects a target already present anywhere in selected
+history. Starting at the target, it integrity-reads retained candidates
+backward, rejects repetition and broken parent or artifact-set-root continuity,
+and applies `max_blocks` before inspecting another address. The first selected
+position reached must be the captured current head, including virtual genesis
+only when virtual genesis is that head. Encountering any other retained
+selected position is divergent ancestry and fails before payload access or
+journal mutation.
+
+After retaining the complete block path in forward order, preflight
+integrity-reads each block's exact archived payload and checks cumulative owned
+payload bytes against `max_buffered_payload_bytes` before retaining another
+payload. It privately retains those exact owned bytes and applies complete
+immutable snapshot child validation from the captured head through the target.
+Missing or corrupt archive content, allocation or byte-limit exhaustion, and
+every canonical, identity, dependency, mathematical, novelty, parent, or root
+failure are typed preflight errors. No preflight failure writes the journal,
+candidate store, or payload archive; an integrity failure may still poison the
+affected read handle under its existing poison-and-reopen contract. Complete
+preflight exposes no accepted record, branch snapshot, or reusable validation
+token.
+
+Only after the entire path and its payload bytes pass preflight does the method
+begin selected-journal application. In forward order it moves each privately
+retained exact payload into ordinary `ArtifactChainJournal::apply_block`. That
+call repeats complete target-state validation and the existing synchronized
+single-entry journal commit; preflight cannot bypass admission. A block enters
+the import's acknowledged count and becomes its last-acknowledged head only
+after `apply_block` returns success. `CandidateBranchArchiveImportOutcome`
+reports the captured anchor, exact target, acknowledged block count, and total
+buffered payload bytes. Success leaves the exact target as the local selected
+artifact-journal head.
+
+A later validation or journal error never rolls back an earlier acknowledged
+block. `CandidateBranchArchiveImportError::Commit` reports only the exact
+acknowledged prefix. If the current journal commit has an ambiguous I/O outcome,
+that block is excluded from the acknowledged count and head, the journal
+retains its existing poisoned state, and the caller must drop and reopen it
+under the ordinary journal recovery contract to determine the durable prefix
+before retrying. The complete ancestry is not one transaction; the existing
+single-entry recovery boundary applies independently to each attempted block.
+
+Both positive limits bound only this caller-local operation. They are not
+consensus branch-depth, payload-size, validation-work, retention, or admission
+rules. Retaining the bounded payload bytes is private implementation state for
+this one call and creates no reusable certificate. Candidate-store and payload-
+archive durable bytes remain read-only except that an integrity failure may
+poison the affected handle.
+
+The operation does not discover or choose a target, inspect peers, fetch
+missing data, archive payloads, mutate candidate retention, import from a
+historical selected anchor, reorganize or roll back selected history, choose or
+rank competing branches, define retention or pruning, map consensus ancestry,
+or establish consensus canonicality, finality, peer trust, global availability,
+or economic authority.
+
 ## Read interface
 
 A healthy journal exposes the derived chain ID, exact head (virtual genesis

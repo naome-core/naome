@@ -171,6 +171,13 @@ integrity digest. It does not prove data availability elsewhere, continued
 mathematical validity under another context, selected ancestry, network
 acceptance, consensus, or finality.
 
+Full-preflight offline candidate import integrity-reads each exact payload once,
+privately retains the complete byte-bounded path, and validates it against the
+current selected-head snapshot before the first journal write. Ordinary journal
+application then repeats complete target-context validation from those retained
+bytes. The archive is not mutated, and neither archive presence nor successful
+preflight is a reusable admission or selected-state token.
+
 ## Caller-routed network serving
 
 `StaticArtifactNetwork::respond_artifact_from_payload_store` consumes one exact
