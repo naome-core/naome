@@ -1,5 +1,6 @@
 //! Numeric coordinate, position-scoped weighted agreement arithmetic, and
-//! authenticated agreement-evidence verification for NAOME consensus.
+//! authenticated agreement-evidence and producer-authorization verification
+//! for NAOME consensus.
 //!
 //! This crate projects caller-supplied positive height values into numeric
 //! non-genesis epochs, evaluates a caller-supplied epoch's numeric linear
@@ -9,10 +10,12 @@
 //! also accepts an already selected active validator set, freezes its exact
 //! position and weights, evaluates strict greater-than-one-third and
 //! greater-than-two-thirds weight thresholds without renormalizing offline
-//! weight, and verifies canonical signed prevotes, precommits, and bounded
+//! weight; verifies canonical signed prevotes, precommits, and bounded
 //! role-complete quorum certificates against that exact caller-supplied
-//! snapshot. It does
-//! not establish canonical blocks, checkpoints, genesis allocations, proposal
+//! snapshot; and verifies one fixed producer authorization for an opaque
+//! proposal signing root against a caller-designated active proposer at the
+//! same position. It does not establish canonical blocks, checkpoints,
+//! genesis allocations, proposal
 //! validity, selected validator-set provenance, finality, ancestry, genesis
 //! state, or persistence; select validators; create signatures; authorize
 //! cancellation; mutate a chain; or run a Byzantine-fault-tolerant state
@@ -22,6 +25,7 @@ use std::error::Error;
 use std::fmt;
 
 mod agreement_evidence;
+mod producer_authorization;
 
 pub use agreement_evidence::{
     CONSENSUS_SIGNATURE_BYTES, ConsensusContextV0, ConsensusGenesisId, ConsensusProtocolVersion,
@@ -30,6 +34,9 @@ pub use agreement_evidence::{
     PrecommitCertificateVerifyError, ProposalSigningRoot, QuorumCertificateId,
     QuorumCertificateVerifyError, VerifiedConsensusVoteV0, VerifiedPrecommitCertificateV0,
     VerifiedQuorumCertificateV0,
+};
+pub use producer_authorization::{
+    ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,
 };
 
 /// Exact width of one opaque consensus-key address.
