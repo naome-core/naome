@@ -4,8 +4,8 @@ use std::fmt;
 use std::ops::Range;
 
 use naome_chain::{
-    ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockApplyError, ArtifactBlockId, ArtifactChainId,
-    ArtifactSetRoot,
+    ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockApplyError, ArtifactBlockId,
+    ArtifactChainBranchSnapshot, ArtifactChainId, ArtifactSetRoot,
 };
 use naome_proof::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId};
 use sha2::{Digest, Sha256};
@@ -169,12 +169,12 @@ impl CandidateBranchRecoveryBundleV0 {
         self.chain_id
     }
 
-    /// Returns the exact selected head captured by export.
+    /// Returns the exact selected anchor committed by the bundle.
     pub const fn anchor_block_id(&self) -> ArtifactBlockId {
         self.anchor_block_id
     }
 
-    /// Returns the exact selected artifact-set root captured by export.
+    /// Returns the exact selected anchor's artifact-set root.
     pub const fn anchor_artifact_set_root(&self) -> ArtifactSetRoot {
         self.anchor_artifact_set_root
     }
@@ -184,7 +184,7 @@ impl CandidateBranchRecoveryBundleV0 {
         self.target_block_id
     }
 
-    /// Returns the number of forward candidate entries.
+    /// Returns the number of forward branch entries.
     pub const fn block_count(&self) -> usize {
         self.block_count
     }
@@ -620,6 +620,21 @@ impl Error for CandidateBranchRecoveryBundleDecodeError {
 }
 
 impl ArtifactChainJournal {
+    fn recovery_bundle_chain_id(
+        &self,
+        candidates: &ArtifactBlockCandidateStore,
+    ) -> Result<ArtifactChainId, CandidateBranchRecoveryBundleExportError> {
+        let selected = self.chain_id();
+        let candidate_chain = candidates.chain_id();
+        if selected != candidate_chain {
+            return Err(CandidateBranchRecoveryBundleExportError::ChainIdMismatch {
+                selected,
+                candidates: candidate_chain,
+            });
+        }
+        Ok(selected)
+    }
+
     /// Exports one exact current-head candidate extension as a portable V0 bundle.
     ///
     /// The caller chooses the target. Every block and exact archived payload is
@@ -632,14 +647,7 @@ impl ArtifactChainJournal {
         payloads: &mut CanonicalArtifactPayloadStore,
         limits: CandidateBranchRecoveryBundleLimits,
     ) -> Result<CandidateBranchRecoveryBundleV0, CandidateBranchRecoveryBundleExportError> {
-        let selected_chain_id = self.chain_id();
-        let candidate_chain_id = candidates.chain_id();
-        if selected_chain_id != candidate_chain_id {
-            return Err(CandidateBranchRecoveryBundleExportError::ChainIdMismatch {
-                selected: selected_chain_id,
-                candidates: candidate_chain_id,
-            });
-        }
+        let selected_chain_id = self.recovery_bundle_chain_id(candidates)?;
 
         let anchor_block_id = self
             .head_block_id()
@@ -648,7 +656,6 @@ impl ArtifactChainJournal {
             .branch_snapshot_at(anchor_block_id)
             .map_err(CandidateBranchRecoveryBundleExportError::selected_state)?
             .expect("a healthy current selected head retains its exact snapshot");
-        let anchor_artifact_set_root = anchor_snapshot.artifact_set_root();
 
         let path = collect_candidate_branch_path(
             self,
@@ -663,148 +670,148 @@ impl ArtifactChainJournal {
         .map_err(CandidateBranchRecoveryBundleExportError::from_path)?;
         debug_assert_eq!(path.anchor_block_id, anchor_block_id);
         let block_count = path.blocks.len();
-        let block_count_u32 = u32::try_from(block_count).map_err(|_| {
-            CandidateBranchRecoveryBundleExportError::BlockCountOverflow { block_count }
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(block_count).map_err(|_| {
+            CandidateBranchRecoveryBundleExportError::EntryAllocation {
+                entries: block_count,
+            }
         })?;
+        entries.extend(path.blocks.into_iter().map(|block| BundleExportEntry {
+            block,
+            payload: BundleExportPayload::Archive,
+            payload_len: 0,
+        }));
 
-        let mut payload_lengths = Vec::new();
-        payload_lengths
-            .try_reserve_exact(block_count)
+        encode_recovery_bundle(
+            BundleExportContext {
+                chain_id: selected_chain_id,
+                target_block_id,
+                snapshot: path.snapshot,
+            },
+            entries,
+            payloads,
+            limits,
+        )
+    }
+
+    /// Exports one exact candidate branch from virtual genesis as a portable V0 bundle.
+    ///
+    /// The caller chooses an unselected target. Export discovers that candidate's
+    /// nearest retained selected ancestor, walks the replay-verified selected
+    /// prefix backward to virtual genesis, then strictly validates the combined
+    /// selected-prefix and candidate-suffix payloads forward from genesis before
+    /// publishing canonical bytes. Selected-prefix payloads come from the
+    /// journal's accepted records; only candidate-suffix payloads use `payloads`.
+    ///
+    /// This operation neither exports later selected history after the candidate's
+    /// anchor nor changes any source store. The bundle carries no source-selection,
+    /// consensus, finality, or peer-trust authority.
+    pub fn export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+        &self,
+        target_block_id: ArtifactBlockId,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        limits: CandidateBranchRecoveryBundleLimits,
+    ) -> Result<CandidateBranchRecoveryBundleV0, CandidateBranchRecoveryBundleExportError> {
+        let selected_chain_id = self.recovery_bundle_chain_id(candidates)?;
+        let path = collect_candidate_branch_path(
+            self,
+            target_block_id,
+            candidates,
+            limits.max_blocks,
+            CandidateBranchPathAnchor::NearestSelected,
+        )
+        .map_err(CandidateBranchRecoveryBundleExportError::from_path)?;
+        let candidate_block_count = path.blocks.len();
+        let max_selected_block_count = limits.max_blocks - candidate_block_count;
+        let mut next_selected_block_id = path.anchor_block_id;
+        let mut entries = Vec::new();
+
+        let genesis_snapshot = loop {
+            let selected_block = self
+                .block(next_selected_block_id)
+                .map_err(CandidateBranchRecoveryBundleExportError::selected_state)?;
+            let Some(selected_block) = selected_block else {
+                let snapshot = self
+                    .branch_snapshot_at(next_selected_block_id)
+                    .map_err(CandidateBranchRecoveryBundleExportError::selected_state)?
+                    .ok_or(
+                        CandidateBranchRecoveryBundleExportError::SelectedPrefixBlockMissing {
+                            block_id: next_selected_block_id,
+                        },
+                    )?;
+                if next_selected_block_id != selected_chain_id.virtual_genesis_block_id() {
+                    return Err(
+                        CandidateBranchRecoveryBundleExportError::SelectedPrefixBlockMissing {
+                            block_id: next_selected_block_id,
+                        },
+                    );
+                }
+                break snapshot;
+            };
+
+            if entries.len() == max_selected_block_count {
+                return Err(
+                    CandidateBranchRecoveryBundleExportError::BlockLimitExceeded {
+                        maximum: limits.max_blocks,
+                        next_block_id: next_selected_block_id,
+                    },
+                );
+            }
+            let retained_blocks = candidate_block_count + entries.len();
+            entries.try_reserve(1).map_err(|_| {
+                CandidateBranchRecoveryBundleExportError::SelectedPrefixBufferAllocation {
+                    next_block_id: next_selected_block_id,
+                    retained_blocks,
+                }
+            })?;
+
+            let selected_block = *selected_block;
+            let artifact_id = selected_block.artifact_id();
+            let payload = self
+                .artifact(artifact_id)
+                .map_err(CandidateBranchRecoveryBundleExportError::selected_state)?
+                .ok_or(
+                    CandidateBranchRecoveryBundleExportError::SelectedPrefixArtifactMissing {
+                        block_id: next_selected_block_id,
+                        artifact_id,
+                    },
+                )?
+                .canonical_artifact_bytes();
+            entries.push(BundleExportEntry {
+                block: selected_block,
+                payload: BundleExportPayload::Selected(payload),
+                payload_len: 0,
+            });
+            next_selected_block_id = selected_block.parent_block_id();
+        };
+
+        entries.reverse();
+        let block_count = entries.len() + candidate_block_count;
+        entries
+            .try_reserve_exact(candidate_block_count)
             .map_err(
                 |_| CandidateBranchRecoveryBundleExportError::EntryAllocation {
                     entries: block_count,
                 },
             )?;
-        let mut total_payload_bytes = 0_u64;
-        for block in &path.blocks {
-            let block_id = block.id();
-            let artifact_id = block.artifact_id();
-            let payload_len = payloads
-                .indexed_payload_len(artifact_id)
-                .map_err(
-                    |source| CandidateBranchRecoveryBundleExportError::PayloadStoreRead {
-                        block_id,
-                        artifact_id,
-                        source: Box::new(source),
-                    },
-                )?
-                .ok_or(
-                    CandidateBranchRecoveryBundleExportError::PayloadNotRetained {
-                        block_id,
-                        artifact_id,
-                    },
-                )?;
-            let attempted = total_payload_bytes
-                .checked_add(u64::from(payload_len))
-                .ok_or(CandidateBranchRecoveryBundleExportError::PayloadByteCountOverflow)?;
-            if attempted > limits.max_payload_bytes {
-                return Err(
-                    CandidateBranchRecoveryBundleExportError::PayloadByteLimitExceeded {
-                        actual: attempted,
-                        maximum: limits.max_payload_bytes,
-                        block_id,
-                        artifact_id,
-                    },
-                );
-            }
-            total_payload_bytes = attempted;
-            payload_lengths.push(payload_len);
-        }
+        entries.extend(path.blocks.into_iter().map(|block| BundleExportEntry {
+            block,
+            payload: BundleExportPayload::Archive,
+            payload_len: 0,
+        }));
+        debug_assert_eq!(entries.len(), block_count);
 
-        let fixed = u64::try_from(FIXED_METADATA_BYTES + DIGEST_BYTES)
-            .expect("fixed recovery bundle framing fits u64");
-        let per_entry = u64::try_from(ARTIFACT_BLOCK_BYTES + PAYLOAD_LENGTH_BYTES)
-            .expect("fixed recovery bundle entry framing fits u64");
-        let encoded_bytes = u64::try_from(block_count)
-            .ok()
-            .and_then(|count| count.checked_mul(per_entry))
-            .and_then(|entries| fixed.checked_add(entries))
-            .and_then(|bytes| bytes.checked_add(total_payload_bytes))
-            .ok_or(CandidateBranchRecoveryBundleExportError::BundleByteCountOverflow)?;
-        if encoded_bytes > limits.max_bundle_bytes {
-            return Err(
-                CandidateBranchRecoveryBundleExportError::BundleByteLimitExceeded {
-                    actual: encoded_bytes,
-                    maximum: limits.max_bundle_bytes,
-                },
-            );
-        }
-        let encoded_bytes_usize = usize::try_from(encoded_bytes).map_err(|_| {
-            CandidateBranchRecoveryBundleExportError::UnsupportedBundleLength {
-                bytes: encoded_bytes,
-            }
-        })?;
-        let mut canonical_bytes = Vec::new();
-        canonical_bytes
-            .try_reserve_exact(encoded_bytes_usize)
-            .map_err(
-                |_| CandidateBranchRecoveryBundleExportError::BundleAllocation {
-                    bytes: encoded_bytes_usize,
-                },
-            )?;
-        canonical_bytes.extend_from_slice(BUNDLE_HEADER);
-        canonical_bytes.extend_from_slice(selected_chain_id.as_bytes());
-        canonical_bytes.extend_from_slice(anchor_block_id.as_bytes());
-        canonical_bytes.extend_from_slice(anchor_artifact_set_root.as_bytes());
-        canonical_bytes.extend_from_slice(target_block_id.as_bytes());
-        canonical_bytes.extend_from_slice(&block_count_u32.to_be_bytes());
-        canonical_bytes.extend_from_slice(&total_payload_bytes.to_be_bytes());
-
-        let mut snapshot = path.snapshot;
-        for (block, expected_payload_len) in path.blocks.into_iter().zip(payload_lengths) {
-            let block_id = block.id();
-            let artifact_id = block.artifact_id();
-            let payload = payloads
-                .get(artifact_id)
-                .map_err(
-                    |source| CandidateBranchRecoveryBundleExportError::PayloadStoreRead {
-                        block_id,
-                        artifact_id,
-                        source: Box::new(source),
-                    },
-                )?
-                .ok_or(
-                    CandidateBranchRecoveryBundleExportError::PayloadNotRetained {
-                        block_id,
-                        artifact_id,
-                    },
-                )?;
-            let payload = payload.into_canonical_artifact_bytes().into_vec();
-            debug_assert_eq!(payload.len(), expected_payload_len as usize);
-            let validation_payload = copy_payload(&payload).map_err(|bytes| {
-                CandidateBranchRecoveryBundleExportError::PayloadAllocation {
-                    block_id,
-                    artifact_id,
-                    bytes,
-                }
-            })?;
-            snapshot = snapshot
-                .validate_child(&block, validation_payload)
-                .map_err(
-                    |source| CandidateBranchRecoveryBundleExportError::BlockValidation {
-                        block_id,
-                        source: Box::new(source),
-                    },
-                )?;
-            canonical_bytes.extend_from_slice(&block.to_canonical_bytes());
-            canonical_bytes.extend_from_slice(&expected_payload_len.to_be_bytes());
-            canonical_bytes.extend_from_slice(&payload);
-        }
-        debug_assert_eq!(snapshot.head_block_id(), target_block_id);
-
-        let digest = bundle_digest(&canonical_bytes);
-        canonical_bytes.extend_from_slice(&digest);
-        debug_assert_eq!(canonical_bytes.len(), encoded_bytes_usize);
-
-        Ok(CandidateBranchRecoveryBundleV0 {
-            canonical_bytes,
-            chain_id: selected_chain_id,
-            anchor_block_id,
-            anchor_artifact_set_root,
-            target_block_id,
-            block_count,
-            total_payload_bytes,
-        })
+        encode_recovery_bundle(
+            BundleExportContext {
+                chain_id: selected_chain_id,
+                target_block_id,
+                snapshot: genesis_snapshot,
+            },
+            entries,
+            payloads,
+            limits,
+        )
     }
 
     /// Imports or resumes one exact portable V0 bundle at its captured head.
@@ -822,6 +829,188 @@ impl ArtifactChainJournal {
         self.core
             .import_candidate_branch_recovery_bundle_v0(bundle, limits)
     }
+}
+
+enum BundleExportPayload<'journal> {
+    Selected(&'journal [u8]),
+    Archive,
+}
+
+struct BundleExportEntry<'journal> {
+    block: ArtifactBlock,
+    payload: BundleExportPayload<'journal>,
+    payload_len: u32,
+}
+
+struct BundleExportContext {
+    chain_id: ArtifactChainId,
+    target_block_id: ArtifactBlockId,
+    snapshot: ArtifactChainBranchSnapshot,
+}
+
+fn encode_recovery_bundle(
+    context: BundleExportContext,
+    entries: Vec<BundleExportEntry<'_>>,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    limits: CandidateBranchRecoveryBundleLimits,
+) -> Result<CandidateBranchRecoveryBundleV0, CandidateBranchRecoveryBundleExportError> {
+    let BundleExportContext {
+        chain_id,
+        target_block_id,
+        mut snapshot,
+    } = context;
+    let anchor_block_id = snapshot.head_block_id();
+    let anchor_artifact_set_root = snapshot.artifact_set_root();
+    let block_count = entries.len();
+    let block_count_u32 = u32::try_from(block_count).map_err(|_| {
+        CandidateBranchRecoveryBundleExportError::BlockCountOverflow { block_count }
+    })?;
+
+    let mut total_payload_bytes = 0_u64;
+    let mut entries = entries;
+    for entry in &mut entries {
+        let block_id = entry.block.id();
+        let artifact_id = entry.block.artifact_id();
+        let payload_len = match &entry.payload {
+            BundleExportPayload::Selected(bytes) => u32::try_from(bytes.len())
+                .expect("a replay-accepted artifact payload length fits V0 framing"),
+            BundleExportPayload::Archive => payloads
+                .indexed_payload_len(artifact_id)
+                .map_err(
+                    |source| CandidateBranchRecoveryBundleExportError::PayloadStoreRead {
+                        block_id,
+                        artifact_id,
+                        source: Box::new(source),
+                    },
+                )?
+                .ok_or(
+                    CandidateBranchRecoveryBundleExportError::PayloadNotRetained {
+                        block_id,
+                        artifact_id,
+                    },
+                )?,
+        };
+        let attempted = total_payload_bytes
+            .checked_add(u64::from(payload_len))
+            .ok_or(CandidateBranchRecoveryBundleExportError::PayloadByteCountOverflow)?;
+        if attempted > limits.max_payload_bytes {
+            return Err(
+                CandidateBranchRecoveryBundleExportError::PayloadByteLimitExceeded {
+                    actual: attempted,
+                    maximum: limits.max_payload_bytes,
+                    block_id,
+                    artifact_id,
+                },
+            );
+        }
+        total_payload_bytes = attempted;
+        entry.payload_len = payload_len;
+    }
+
+    let fixed = u64::try_from(FIXED_METADATA_BYTES + DIGEST_BYTES)
+        .expect("fixed recovery bundle framing fits u64");
+    let per_entry = u64::try_from(ARTIFACT_BLOCK_BYTES + PAYLOAD_LENGTH_BYTES)
+        .expect("fixed recovery bundle entry framing fits u64");
+    let encoded_bytes = u64::try_from(block_count)
+        .ok()
+        .and_then(|count| count.checked_mul(per_entry))
+        .and_then(|entry_bytes| fixed.checked_add(entry_bytes))
+        .and_then(|bytes| bytes.checked_add(total_payload_bytes))
+        .ok_or(CandidateBranchRecoveryBundleExportError::BundleByteCountOverflow)?;
+    if encoded_bytes > limits.max_bundle_bytes {
+        return Err(
+            CandidateBranchRecoveryBundleExportError::BundleByteLimitExceeded {
+                actual: encoded_bytes,
+                maximum: limits.max_bundle_bytes,
+            },
+        );
+    }
+    let encoded_bytes_usize = usize::try_from(encoded_bytes).map_err(|_| {
+        CandidateBranchRecoveryBundleExportError::UnsupportedBundleLength {
+            bytes: encoded_bytes,
+        }
+    })?;
+    let mut canonical_bytes = Vec::new();
+    canonical_bytes
+        .try_reserve_exact(encoded_bytes_usize)
+        .map_err(
+            |_| CandidateBranchRecoveryBundleExportError::BundleAllocation {
+                bytes: encoded_bytes_usize,
+            },
+        )?;
+    canonical_bytes.extend_from_slice(BUNDLE_HEADER);
+    canonical_bytes.extend_from_slice(chain_id.as_bytes());
+    canonical_bytes.extend_from_slice(anchor_block_id.as_bytes());
+    canonical_bytes.extend_from_slice(anchor_artifact_set_root.as_bytes());
+    canonical_bytes.extend_from_slice(target_block_id.as_bytes());
+    canonical_bytes.extend_from_slice(&block_count_u32.to_be_bytes());
+    canonical_bytes.extend_from_slice(&total_payload_bytes.to_be_bytes());
+
+    for entry in entries {
+        let block = entry.block;
+        let block_id = block.id();
+        let artifact_id = block.artifact_id();
+        let expected_payload_len = entry.payload_len;
+        canonical_bytes.extend_from_slice(&block.to_canonical_bytes());
+        canonical_bytes.extend_from_slice(&expected_payload_len.to_be_bytes());
+        let validation_payload = match entry.payload {
+            BundleExportPayload::Selected(payload) => {
+                canonical_bytes.extend_from_slice(payload);
+                copy_payload(payload).map_err(|bytes| {
+                    CandidateBranchRecoveryBundleExportError::PayloadAllocation {
+                        block_id,
+                        artifact_id,
+                        bytes,
+                    }
+                })?
+            }
+            BundleExportPayload::Archive => {
+                let payload = payloads
+                    .get(artifact_id)
+                    .map_err(
+                        |source| CandidateBranchRecoveryBundleExportError::PayloadStoreRead {
+                            block_id,
+                            artifact_id,
+                            source: Box::new(source),
+                        },
+                    )?
+                    .ok_or(
+                        CandidateBranchRecoveryBundleExportError::PayloadNotRetained {
+                            block_id,
+                            artifact_id,
+                        },
+                    )?;
+                let payload = payload.into_canonical_artifact_bytes().into_vec();
+                debug_assert_eq!(payload.len(), expected_payload_len as usize);
+                canonical_bytes.extend_from_slice(&payload);
+                payload
+            }
+        };
+        debug_assert_eq!(validation_payload.len(), expected_payload_len as usize);
+        snapshot = snapshot
+            .validate_child(&block, validation_payload)
+            .map_err(
+                |source| CandidateBranchRecoveryBundleExportError::BlockValidation {
+                    block_id,
+                    source: Box::new(source),
+                },
+            )?;
+    }
+    debug_assert_eq!(snapshot.head_block_id(), target_block_id);
+
+    let digest = bundle_digest(&canonical_bytes);
+    canonical_bytes.extend_from_slice(&digest);
+    debug_assert_eq!(canonical_bytes.len(), encoded_bytes_usize);
+
+    Ok(CandidateBranchRecoveryBundleV0 {
+        canonical_bytes,
+        chain_id,
+        anchor_block_id,
+        anchor_artifact_set_root,
+        target_block_id,
+        block_count,
+        total_payload_bytes,
+    })
 }
 
 fn copy_payload(bytes: &[u8]) -> Result<Vec<u8>, usize> {
@@ -848,10 +1037,22 @@ pub enum CandidateBranchRecoveryBundleExportError {
     },
     /// The exact caller target is already selected.
     TargetAlreadySelected { block_id: ArtifactBlockId },
-    /// Reserving bounded candidate-path metadata failed.
+    /// Reserving bounded candidate-suffix metadata failed.
     CandidateBufferAllocation {
         next_block_id: ArtifactBlockId,
         retained_blocks: usize,
+    },
+    /// Reserving bounded selected-prefix metadata failed.
+    SelectedPrefixBufferAllocation {
+        next_block_id: ArtifactBlockId,
+        retained_blocks: usize,
+    },
+    /// A required selected-prefix block is absent from the selected index.
+    SelectedPrefixBlockMissing { block_id: ArtifactBlockId },
+    /// A selected block's replay-accepted artifact record is absent.
+    SelectedPrefixArtifactMissing {
+        block_id: ArtifactBlockId,
+        artifact_id: ArtifactId,
     },
     /// An exact candidate-store integrity read failed.
     CandidateStoreRead {
@@ -868,19 +1069,19 @@ pub enum CandidateBranchRecoveryBundleExportError {
     },
     /// A block identity repeats in the retained path.
     RepeatedBlockId { block_id: ArtifactBlockId },
-    /// The path reaches selected history other than the captured current head.
+    /// The path reaches selected history other than the required selected anchor.
     DivergentAncestry {
         expected_anchor: ArtifactBlockId,
         encountered: ArtifactBlockId,
     },
-    /// The retained path does not reach the current head within the block bound.
+    /// The complete retained path does not reach its required anchor within the block bound.
     BlockLimitExceeded {
         maximum: usize,
         next_block_id: ArtifactBlockId,
     },
     /// The retained entry count cannot be encoded in V0's u32 field.
     BlockCountOverflow { block_count: usize },
-    /// Reserving bounded payload-length metadata failed.
+    /// Reserving bounded bundle-entry metadata failed.
     EntryAllocation { entries: usize },
     /// One exact payload-store integrity read failed.
     PayloadStoreRead {
@@ -888,7 +1089,7 @@ pub enum CandidateBranchRecoveryBundleExportError {
         artifact_id: ArtifactId,
         source: Box<CanonicalArtifactPayloadStoreError>,
     },
-    /// One candidate's exact payload is absent locally.
+    /// One candidate suffix's exact payload is absent locally.
     PayloadNotRetained {
         block_id: ArtifactBlockId,
         artifact_id: ArtifactId,
@@ -910,7 +1111,7 @@ pub enum CandidateBranchRecoveryBundleExportError {
     UnsupportedBundleLength { bytes: u64 },
     /// Allocating the complete canonical bundle buffer failed.
     BundleAllocation { bytes: usize },
-    /// Copying one payload for immutable branch validation failed.
+    /// Copying one selected-prefix payload for immutable validation failed.
     PayloadAllocation {
         block_id: ArtifactBlockId,
         artifact_id: ArtifactId,
@@ -1004,6 +1205,24 @@ impl fmt::Display for CandidateBranchRecoveryBundleExportError {
                 formatter,
                 "candidate recovery bundle path after {retained_blocks} blocks could not reserve storage for {next_block_id:?}"
             ),
+            Self::SelectedPrefixBufferAllocation {
+                next_block_id,
+                retained_blocks,
+            } => write!(
+                formatter,
+                "candidate recovery bundle combined path after {retained_blocks} blocks could not reserve selected-prefix storage for {next_block_id:?}"
+            ),
+            Self::SelectedPrefixBlockMissing { block_id } => write!(
+                formatter,
+                "candidate recovery bundle selected-prefix block {block_id:?} is absent from selected history"
+            ),
+            Self::SelectedPrefixArtifactMissing {
+                block_id,
+                artifact_id,
+            } => write!(
+                formatter,
+                "candidate recovery bundle selected-prefix block {block_id:?} has no replay-accepted artifact record {artifact_id:?}"
+            ),
             Self::CandidateStoreRead { block_id, source } => write!(
                 formatter,
                 "candidate recovery bundle block {block_id:?} could not be read: {source}"
@@ -1029,14 +1248,14 @@ impl fmt::Display for CandidateBranchRecoveryBundleExportError {
                 encountered,
             } => write!(
                 formatter,
-                "candidate recovery bundle expected current-head anchor {expected_anchor:?} but encountered selected position {encountered:?}"
+                "candidate recovery bundle expected selected anchor {expected_anchor:?} but encountered selected position {encountered:?}"
             ),
             Self::BlockLimitExceeded {
                 maximum,
                 next_block_id,
             } => write!(
                 formatter,
-                "candidate recovery bundle did not reach its current-head anchor within {maximum} blocks; next parent is {next_block_id:?}"
+                "candidate recovery bundle did not reach its required anchor within {maximum} blocks; next block is {next_block_id:?}"
             ),
             Self::BlockCountOverflow { block_count } => write!(
                 formatter,

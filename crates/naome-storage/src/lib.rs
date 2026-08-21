@@ -18,6 +18,14 @@
 //! including siblings and blocks with unavailable parents, without validating
 //! or selecting a candidate history. These stores define no reorganization,
 //! fork choice, consensus, finality, networking, or economic state.
+//!
+//! The journal exporters publish [`CandidateBranchRecoveryBundleV0`] bytes for
+//! one caller-selected, fully validated branch anchored either at the current
+//! selected head or at virtual genesis. Decoded bundles remain untrusted until
+//! import preflight validates their payloads and destination prefix. The
+//! genesis-anchored exporter sources its selected prefix only from
+//! replay-accepted journal records; the wire bytes carry no anchor-mode or
+//! provenance authority and remain a caller-owned offline artifact.
 
 mod block_candidate_store;
 mod candidate_branch_archive_import;
