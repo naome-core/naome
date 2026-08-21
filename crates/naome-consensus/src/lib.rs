@@ -10,7 +10,8 @@
 //! position and weights, evaluates strict greater-than-one-third and
 //! greater-than-two-thirds weight thresholds without renormalizing offline
 //! weight, and verifies canonical signed prevotes, precommits, and bounded
-//! precommit certificates against that exact caller-supplied snapshot. It does
+//! role-complete quorum certificates against that exact caller-supplied
+//! snapshot. It does
 //! not establish canonical blocks, checkpoints, genesis allocations, proposal
 //! validity, selected validator-set provenance, finality, ancestry, genesis
 //! state, or persistence; select validators; create signatures; authorize
@@ -26,8 +27,9 @@ pub use agreement_evidence::{
     CONSENSUS_SIGNATURE_BYTES, ConsensusContextV0, ConsensusGenesisId, ConsensusProtocolVersion,
     ConsensusSignature, ConsensusVoteDecodeError, ConsensusVoteId, ConsensusVoteRole,
     ConsensusVoteTarget, ConsensusVoteVerifyError, PrecommitCertificateId,
-    PrecommitCertificateVerifyError, ProposalSigningRoot, VerifiedConsensusVoteV0,
-    VerifiedPrecommitCertificateV0,
+    PrecommitCertificateVerifyError, ProposalSigningRoot, QuorumCertificateId,
+    QuorumCertificateVerifyError, VerifiedConsensusVoteV0, VerifiedPrecommitCertificateV0,
+    VerifiedQuorumCertificateV0,
 };
 
 /// Exact width of one opaque consensus-key address.

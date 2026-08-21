@@ -134,6 +134,21 @@ fn snapshot(
     ActiveAgreementSnapshot::try_from_preselected(position, &entries).unwrap()
 }
 
+fn role_target_cases() -> [(ConsensusVoteRole, ConsensusVoteTarget); 4] {
+    [
+        (ConsensusVoteRole::Prevote, ConsensusVoteTarget::Nil),
+        (
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Proposal(root(9)),
+        ),
+        (ConsensusVoteRole::Precommit, ConsensusVoteTarget::Nil),
+        (
+            ConsensusVoteRole::Precommit,
+            ConsensusVoteTarget::Proposal(root(9)),
+        ),
+    ]
+}
+
 #[test]
 fn context_and_evidence_value_types_preserve_exact_values() {
     let context = context(0x11, 0x22, u32::MAX);
@@ -492,6 +507,14 @@ fn strict_verification_rejects_low_order_evidence_accepted_by_ordinary_ed25519()
         ),
         Err(PrecommitCertificateVerifyError::InvalidSignature { signer: weak_key })
     );
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &certificate,
+            expected_context,
+            &weak_snapshot,
+        ),
+        Err(QuorumCertificateVerifyError::InvalidSignature { signer: weak_key })
+    );
 }
 
 #[test]
@@ -538,6 +561,16 @@ fn malformed_ed25519_keys_fail_before_signature_or_threshold_results() {
             &malformed_snapshot,
         ),
         Err(PrecommitCertificateVerifyError::MalformedConsensusKey {
+            signer: malformed_key,
+        })
+    );
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &certificate,
+            expected_context,
+            &malformed_snapshot,
+        ),
+        Err(QuorumCertificateVerifyError::MalformedConsensusKey {
             signer: malformed_key,
         })
     );
@@ -647,6 +680,10 @@ fn certificate_rejects_nil_prevote_duplicates_ordering_and_unknown_signers() {
         VerifiedPrecommitCertificateV0::decode_and_verify(&duplicate, expected_context, &snapshot),
         Err(PrecommitCertificateVerifyError::DuplicateSigner { .. })
     ));
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(&duplicate, expected_context, &snapshot),
+        Err(QuorumCertificateVerifyError::DuplicateSigner { .. })
+    ));
 
     let ascending = ordered_keys([&keys[0], &keys[1]]);
     let descending = [ascending[1], ascending[0]];
@@ -654,6 +691,10 @@ fn certificate_rejects_nil_prevote_duplicates_ordering_and_unknown_signers() {
     assert!(matches!(
         VerifiedPrecommitCertificateV0::decode_and_verify(&unordered, expected_context, &snapshot),
         Err(PrecommitCertificateVerifyError::NonAscendingSignerOrder { .. })
+    ));
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(&unordered, expected_context, &snapshot),
+        Err(QuorumCertificateVerifyError::NonAscendingSignerOrder { .. })
     ));
 
     let unknown_certificate = certificate_bytes(proposal_body, &[&keys[0], &keys[1], &unknown]);
@@ -664,6 +705,14 @@ fn certificate_rejects_nil_prevote_duplicates_ordering_and_unknown_signers() {
             &snapshot
         ),
         Err(PrecommitCertificateVerifyError::UnknownSigner { .. })
+    ));
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &unknown_certificate,
+            expected_context,
+            &snapshot
+        ),
+        Err(QuorumCertificateVerifyError::UnknownSigner { .. })
     ));
 }
 
@@ -765,6 +814,14 @@ fn certificate_enforces_expected_context_and_snapshot_position_before_crypto() {
         Err(PrecommitCertificateVerifyError::ChainIdMismatch { .. })
     ));
     assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &certificate,
+            context(2, 2, 3),
+            &matching_snapshot
+        ),
+        Err(QuorumCertificateVerifyError::ChainIdMismatch { .. })
+    ));
+    assert!(matches!(
         VerifiedPrecommitCertificateV0::decode_and_verify(
             &certificate,
             context(1, 3, 3),
@@ -773,12 +830,28 @@ fn certificate_enforces_expected_context_and_snapshot_position_before_crypto() {
         Err(PrecommitCertificateVerifyError::GenesisIdMismatch { .. })
     ));
     assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &certificate,
+            context(1, 3, 3),
+            &matching_snapshot
+        ),
+        Err(QuorumCertificateVerifyError::GenesisIdMismatch { .. })
+    ));
+    assert!(matches!(
         VerifiedPrecommitCertificateV0::decode_and_verify(
             &certificate,
             context(1, 2, 4),
             &matching_snapshot
         ),
         Err(PrecommitCertificateVerifyError::ProtocolVersionMismatch { .. })
+    ));
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &certificate,
+            context(1, 2, 4),
+            &matching_snapshot
+        ),
+        Err(QuorumCertificateVerifyError::ProtocolVersionMismatch { .. })
     ));
     let wrong_position_snapshot = snapshot(
         position(7, 9),
@@ -791,6 +864,14 @@ fn certificate_enforces_expected_context_and_snapshot_position_before_crypto() {
             &wrong_position_snapshot
         ),
         Err(PrecommitCertificateVerifyError::SnapshotPositionMismatch { .. })
+    ));
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &certificate,
+            embedded_context,
+            &wrong_position_snapshot
+        ),
+        Err(QuorumCertificateVerifyError::SnapshotPositionMismatch { .. })
     ));
 }
 
@@ -916,4 +997,385 @@ fn valid_signer_subsets_share_target_but_have_distinct_evidence_ids() {
     assert_eq!(first.proposal_signing_root(), expected_root);
     assert_eq!(second.proposal_signing_root(), expected_root);
     assert_ne!(first.id(), second.id());
+}
+
+#[test]
+fn quorum_certificate_accepts_all_four_role_target_forms() {
+    let expected_context = context(1, 2, 3);
+    let expected_position = position(7, 8);
+    let keys = [signing_key(1), signing_key(2), signing_key(3)];
+    let snapshot = snapshot(
+        expected_position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+    let cases = role_target_cases();
+    let expected_signers = ordered_keys(keys.iter())
+        .into_iter()
+        .map(consensus_key)
+        .collect::<Vec<_>>();
+    let mut ids = Vec::new();
+
+    assert_eq!(VerifiedQuorumCertificateV0::MIN_BYTE_LENGTH, 216);
+    assert_eq!(VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH, 24_696);
+
+    for (role, target) in cases {
+        let body = manual_vote_body(expected_context, expected_position, role, target);
+        let bytes = certificate_bytes(body, &keys.iter().collect::<Vec<_>>());
+        let verified =
+            VerifiedQuorumCertificateV0::decode_and_verify(&bytes, expected_context, &snapshot)
+                .unwrap();
+        let expected_id: [u8; 32] = Sha256::digest(&bytes).into();
+
+        assert_eq!(verified.context(), expected_context);
+        assert_eq!(verified.position(), expected_position);
+        assert_eq!(verified.role(), role);
+        assert_eq!(verified.target(), target);
+        assert_eq!(verified.signer_count(), 3);
+        assert_eq!(verified.signer_keys().collect::<Vec<_>>(), expected_signers);
+        assert_eq!(verified.signed_weight(), AgreementWeight::new(3));
+        assert_eq!(verified.total_weight(), AgreementWeight::new(3));
+        assert_eq!(verified.id().as_bytes(), &expected_id);
+        assert_eq!(verified.to_canonical_bytes(), bytes);
+        ids.push(expected_id);
+    }
+
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), cases.len());
+}
+
+#[test]
+fn quorum_certificate_rejects_noncanonical_bodies_and_framing() {
+    let expected_context = context(1, 2, 3);
+    let expected_position = position(7, 8);
+    let key = signing_key(1);
+    let snapshot = snapshot(expected_position, &[(&key, 1)]);
+    let body = manual_vote_body(
+        expected_context,
+        expected_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+    );
+    let valid = certificate_bytes(body, &[&key]);
+
+    let mut unknown_role = valid.clone();
+    unknown_role[ROLE_OFFSET] = 3;
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(&unknown_role, expected_context, &snapshot,),
+        Err(QuorumCertificateVerifyError::VoteBody(
+            ConsensusVoteDecodeError::UnknownRoleTag { actual: 3 },
+        )),
+    );
+
+    let mut unknown_target = valid.clone();
+    unknown_target[TARGET_TAG_OFFSET] = 2;
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &unknown_target,
+            expected_context,
+            &snapshot,
+        ),
+        Err(QuorumCertificateVerifyError::VoteBody(
+            ConsensusVoteDecodeError::UnknownTargetTag { actual: 2 },
+        )),
+    );
+
+    let mut reserved_height = valid.clone();
+    reserved_height[HEIGHT_OFFSET..ROUND_OFFSET].fill(0);
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &reserved_height,
+            expected_context,
+            &snapshot,
+        ),
+        Err(QuorumCertificateVerifyError::VoteBody(
+            ConsensusVoteDecodeError::ReservedGenesisHeight,
+        )),
+    );
+
+    let mut noncanonical_nil = valid.clone();
+    noncanonical_nil[TARGET_PAYLOAD_OFFSET] = 1;
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &noncanonical_nil,
+            expected_context,
+            &snapshot,
+        ),
+        Err(QuorumCertificateVerifyError::VoteBody(
+            ConsensusVoteDecodeError::NonCanonicalNilTarget,
+        )),
+    );
+
+    let empty = [&body[..], &0_u16.to_be_bytes()].concat();
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(&empty, expected_context, &snapshot),
+        Err(QuorumCertificateVerifyError::EmptySignerSet),
+    );
+    let over_count = [&body[..], &257_u16.to_be_bytes()].concat();
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(&over_count, expected_context, &snapshot),
+        Err(QuorumCertificateVerifyError::TooManySigners {
+            actual: 257,
+            maximum: 256,
+        }),
+    );
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &valid[..valid.len() - 1],
+            expected_context,
+            &snapshot,
+        ),
+        Err(QuorumCertificateVerifyError::LengthMismatch { .. })
+    ));
+    let mut trailing = valid;
+    trailing.push(0);
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(&trailing, expected_context, &snapshot,),
+        Err(QuorumCertificateVerifyError::LengthMismatch { .. })
+    ));
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(
+            &vec![0; MAX_CERTIFICATE_BYTES + 1],
+            expected_context,
+            &snapshot,
+        ),
+        Err(QuorumCertificateVerifyError::InputTooLong {
+            actual: MAX_CERTIFICATE_BYTES + 1,
+            maximum: MAX_CERTIFICATE_BYTES,
+        }),
+    );
+}
+
+#[test]
+fn only_nonnil_precommit_narrows_to_precommit_certificate() {
+    let expected_context = context(1, 2, 3);
+    let expected_position = position(7, 8);
+    let key = signing_key(1);
+    let snapshot = snapshot(expected_position, &[(&key, 1)]);
+    let cases = role_target_cases();
+
+    for (role, target) in cases {
+        let bytes = certificate_bytes(
+            manual_vote_body(expected_context, expected_position, role, target),
+            &[&key],
+        );
+        let generic =
+            VerifiedQuorumCertificateV0::decode_and_verify(&bytes, expected_context, &snapshot)
+                .unwrap();
+        let generic_id = *generic.id().as_bytes();
+
+        if role == ConsensusVoteRole::Precommit
+            && matches!(target, ConsensusVoteTarget::Proposal(_))
+        {
+            let specialized = generic.try_into_precommit_certificate().unwrap();
+            assert_eq!(specialized.context(), expected_context);
+            assert_eq!(specialized.position(), expected_position);
+            assert_eq!(specialized.proposal_signing_root(), root(9));
+            assert_eq!(specialized.signer_count(), 1);
+            assert_eq!(specialized.signed_weight(), AgreementWeight::new(1));
+            assert_eq!(specialized.total_weight(), AgreementWeight::new(1));
+            assert_eq!(specialized.id().as_bytes(), &generic_id);
+            assert_eq!(specialized.to_canonical_bytes(), bytes);
+
+            let widened: VerifiedQuorumCertificateV0<'_> = specialized.into();
+            assert_eq!(widened.role(), role);
+            assert_eq!(widened.target(), target);
+            assert_eq!(widened.id().as_bytes(), &generic_id);
+        } else {
+            let unchanged = generic.try_into_precommit_certificate().unwrap_err();
+            assert_eq!(unchanged.role(), role);
+            assert_eq!(unchanged.target(), target);
+            assert_eq!(unchanged.id().as_bytes(), &generic_id);
+            assert_eq!(unchanged.to_canonical_bytes(), bytes);
+        }
+    }
+}
+
+#[test]
+fn legacy_precommit_decoder_preserves_role_target_error_precedence() {
+    let expected_context = context(1, 2, 3);
+    let expected_position = position(7, 8);
+    let key = signing_key(1);
+    let snapshot = snapshot(expected_position, &[(&key, 1)]);
+    let cases = [
+        (
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Nil,
+            PrecommitCertificateVerifyError::WrongVoteRole {
+                actual: ConsensusVoteRole::Prevote,
+            },
+        ),
+        (
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Proposal(root(9)),
+            PrecommitCertificateVerifyError::WrongVoteRole {
+                actual: ConsensusVoteRole::Prevote,
+            },
+        ),
+        (
+            ConsensusVoteRole::Precommit,
+            ConsensusVoteTarget::Nil,
+            PrecommitCertificateVerifyError::NilCertificateTarget,
+        ),
+    ];
+
+    for (role, target, expected_error) in cases {
+        let body = manual_vote_body(expected_context, expected_position, role, target);
+        let invalid_count = [&body[..], &0_u16.to_be_bytes()].concat();
+        assert_eq!(
+            VerifiedPrecommitCertificateV0::decode_and_verify(
+                &invalid_count,
+                expected_context,
+                &snapshot,
+            ),
+            Err(expected_error),
+        );
+    }
+
+    let body = manual_vote_body(
+        expected_context,
+        expected_position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(root(9)),
+    );
+    let bytes = certificate_bytes(body, &[&key]);
+    let direct =
+        VerifiedPrecommitCertificateV0::decode_and_verify(&bytes, expected_context, &snapshot)
+            .unwrap();
+    let narrowed =
+        VerifiedQuorumCertificateV0::decode_and_verify(&bytes, expected_context, &snapshot)
+            .unwrap()
+            .try_into_precommit_certificate()
+            .unwrap();
+    assert_eq!(direct.to_canonical_bytes(), narrowed.to_canonical_bytes());
+    assert_eq!(direct.id(), narrowed.id());
+    assert_eq!(
+        direct.signer_keys().collect::<Vec<_>>(),
+        narrowed.signer_keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn certificate_signatures_cannot_replay_across_role_or_target() {
+    let expected_context = context(1, 2, 3);
+    let expected_position = position(7, 8);
+    let keys = [signing_key(1), signing_key(2), signing_key(3)];
+    let snapshot = snapshot(
+        expected_position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+    let bodies = role_target_cases()
+        .map(|(role, target)| manual_vote_body(expected_context, expected_position, role, target));
+    let signing_key_refs = keys.iter().collect::<Vec<_>>();
+    let certificates = bodies
+        .iter()
+        .map(|body| certificate_bytes(*body, &signing_key_refs))
+        .collect::<Vec<_>>();
+
+    for (source_index, source) in certificates.iter().enumerate() {
+        for (destination_index, destination_body) in bodies.iter().enumerate() {
+            if source_index == destination_index {
+                continue;
+            }
+            let mut replay = source.clone();
+            replay[..VOTE_BODY_BYTES].copy_from_slice(destination_body);
+            assert!(matches!(
+                VerifiedQuorumCertificateV0::decode_and_verify(
+                    &replay,
+                    expected_context,
+                    &snapshot,
+                ),
+                Err(QuorumCertificateVerifyError::InvalidSignature { .. })
+            ));
+        }
+    }
+
+    let mut mixed = certificates[3].clone();
+    let first_signature = CERTIFICATE_ENTRIES_OFFSET + CONSENSUS_KEY_BYTES;
+    mixed[first_signature..first_signature + CONSENSUS_SIGNATURE_BYTES].copy_from_slice(
+        &certificates[1][first_signature..first_signature + CONSENSUS_SIGNATURE_BYTES],
+    );
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::decode_and_verify(&mixed, expected_context, &snapshot,),
+        Err(QuorumCertificateVerifyError::InvalidSignature { .. })
+    ));
+}
+
+#[test]
+fn nil_and_zero_root_proposal_certificates_remain_distinct() {
+    let expected_context = context(1, 2, 3);
+    let expected_position = position(7, 8);
+    let key = signing_key(1);
+    let snapshot = snapshot(expected_position, &[(&key, 1)]);
+
+    for role in [ConsensusVoteRole::Prevote, ConsensusVoteRole::Precommit] {
+        let nil = certificate_bytes(
+            manual_vote_body(
+                expected_context,
+                expected_position,
+                role,
+                ConsensusVoteTarget::Nil,
+            ),
+            &[&key],
+        );
+        let zero_root = certificate_bytes(
+            manual_vote_body(
+                expected_context,
+                expected_position,
+                role,
+                ConsensusVoteTarget::Proposal(root(0)),
+            ),
+            &[&key],
+        );
+        let verified_nil =
+            VerifiedQuorumCertificateV0::decode_and_verify(&nil, expected_context, &snapshot)
+                .unwrap();
+        let verified_zero_root =
+            VerifiedQuorumCertificateV0::decode_and_verify(&zero_root, expected_context, &snapshot)
+                .unwrap();
+
+        assert_eq!(verified_nil.target(), ConsensusVoteTarget::Nil);
+        assert_eq!(
+            verified_zero_root.target(),
+            ConsensusVoteTarget::Proposal(root(0))
+        );
+        assert_ne!(verified_nil.id(), verified_zero_root.id());
+        assert_ne!(nil, zero_root);
+
+        let mut relabeled = nil;
+        relabeled[TARGET_TAG_OFFSET] = PROPOSAL_TARGET_TAG;
+        assert!(matches!(
+            VerifiedQuorumCertificateV0::decode_and_verify(&relabeled, expected_context, &snapshot,),
+            Err(QuorumCertificateVerifyError::InvalidSignature { .. })
+        ));
+    }
+}
+
+#[test]
+fn every_quorum_certificate_form_uses_the_same_strict_threshold() {
+    let expected_context = context(1, 2, 3);
+    let expected_position = position(7, 8);
+    let keys = [signing_key(1), signing_key(2), signing_key(3)];
+    let snapshot = snapshot(
+        expected_position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+
+    for (role, target) in role_target_cases() {
+        let exact_two_thirds = certificate_bytes(
+            manual_vote_body(expected_context, expected_position, role, target),
+            &[&keys[0], &keys[1]],
+        );
+        assert_eq!(
+            VerifiedQuorumCertificateV0::decode_and_verify(
+                &exact_two_thirds,
+                expected_context,
+                &snapshot,
+            ),
+            Err(QuorumCertificateVerifyError::InsufficientAgreementWeight {
+                signed: AgreementWeight::new(2),
+                total: AgreementWeight::new(3),
+            }),
+        );
+    }
 }
