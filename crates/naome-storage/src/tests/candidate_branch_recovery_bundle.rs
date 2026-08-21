@@ -14,6 +14,8 @@ use crate::{
 const CANDIDATE_STORE_FILE_NAME: &str = "artifact-block-candidate-store.log";
 const CANDIDATE_STORE_HEADER: &[u8] = b"naome:artifact-block-candidate-store:v0\0";
 const PAYLOAD_STORE_FILE_NAME: &str = "artifact-payload-store.log";
+const PAYLOAD_STORE_HEADER: &[u8] = b"naome:artifact-payload-store:v1\0";
+const FOUNDATION_ID_BYTES: &[u8] = b"naome:zfc";
 const BUNDLE_HEADER: &[u8] = b"naome:candidate-branch-recovery-bundle:v0\0";
 const BUNDLE_DIGEST_DOMAIN: &[u8] = b"naome:candidate-branch-recovery-bundle-digest:v0\0";
 const DIGEST_BYTES: usize = 32;
@@ -277,6 +279,134 @@ impl BundleFixture {
     }
 }
 
+struct HistoricalForkFixture {
+    definition: ArtifactChainDefinition,
+    bundle_payloads: Vec<Vec<u8>>,
+    bundle_blocks: Vec<ArtifactBlock>,
+    selected_only_payload: Vec<u8>,
+    selected_only_block: ArtifactBlock,
+    bytes: Vec<u8>,
+    limits: CandidateBranchRecoveryBundleLimits,
+}
+
+impl HistoricalForkFixture {
+    fn new() -> Self {
+        let definition = chain_definition(CHAIN_BYTE);
+        let (bundle_payloads, bundle_artifact_ids) = dependency_chain_with_len(3);
+        let bundle_blocks = branch_blocks(definition, &bundle_payloads, &bundle_artifact_ids);
+
+        let selected_only_payload = axiom_bytes(ZfcAxiom::PowerSet);
+        let selected_only_artifact_id = ArtifactDag::new()
+            .apply_canonical_artifact_bytes(selected_only_payload.clone())
+            .unwrap()
+            .artifact_id();
+        let mut selected_shape = ArtifactChainState::new(definition);
+        selected_shape
+            .apply_block(&bundle_blocks[0], bundle_payloads[0].clone())
+            .unwrap();
+        let selected_only_block = selected_shape
+            .prepare_block(selected_only_artifact_id)
+            .unwrap();
+        selected_shape
+            .apply_block(&selected_only_block, selected_only_payload.clone())
+            .unwrap();
+
+        let bytes = encode_bundle(
+            definition.id(),
+            definition.id().virtual_genesis_block_id(),
+            genesis_root(definition),
+            bundle_blocks.last().unwrap().id(),
+            &bundle_blocks,
+            &bundle_payloads,
+        );
+        let limits = exact_bundle_limits(&bundle_blocks, &bundle_payloads);
+        Self {
+            definition,
+            bundle_payloads,
+            bundle_blocks,
+            selected_only_payload,
+            selected_only_block,
+            bytes,
+            limits,
+        }
+    }
+
+    fn candidate_payload_bytes(&self) -> usize {
+        self.bundle_payloads[1..].iter().map(Vec::len).sum()
+    }
+
+    fn total_payload_bytes(&self) -> usize {
+        self.bundle_payloads.iter().map(Vec::len).sum()
+    }
+}
+
+fn historical_fork_source(
+    directory: &TestDirectory,
+    fixture: &HistoricalForkFixture,
+    candidate_indices: &[usize],
+    payload_indices: &[usize],
+) -> (
+    ArtifactChainJournal,
+    ArtifactBlockCandidateStore,
+    CanonicalArtifactPayloadStore,
+) {
+    let mut journal = ArtifactChainJournal::create(&directory.path, fixture.definition).unwrap();
+    journal
+        .apply_block(
+            &fixture.bundle_blocks[0],
+            fixture.bundle_payloads[0].clone(),
+        )
+        .unwrap();
+    journal
+        .apply_block(
+            &fixture.selected_only_block,
+            fixture.selected_only_payload.clone(),
+        )
+        .unwrap();
+
+    let mut candidates = ArtifactBlockCandidateStore::create(
+        &directory.path,
+        fixture.definition,
+        candidate_limits(fixture.bundle_blocks.len() - 1),
+    )
+    .unwrap();
+    for &index in candidate_indices {
+        assert!(index > 0);
+        insert_candidates(&mut candidates, &fixture.bundle_blocks[index..=index]);
+    }
+
+    let mut payloads = CanonicalArtifactPayloadStore::create(
+        &directory.path,
+        payload_limits(
+            fixture.bundle_payloads.len() - 1,
+            fixture.candidate_payload_bytes(),
+        ),
+    )
+    .unwrap();
+    let mut branch_dag = ArtifactDag::new();
+    for (block, payload) in fixture.bundle_blocks.iter().zip(&fixture.bundle_payloads) {
+        let record = branch_dag
+            .apply_canonical_artifact_bytes(payload.clone())
+            .unwrap();
+        assert_eq!(record.artifact_id(), block.artifact_id());
+    }
+    for &index in payload_indices {
+        assert!(index > 0);
+        assert_eq!(
+            payloads
+                .insert(
+                    branch_dag
+                        .artifact(fixture.bundle_blocks[index].artifact_id())
+                        .unwrap(),
+                )
+                .unwrap(),
+            ArtifactPayloadInsertOutcome::Inserted
+        );
+    }
+
+    (journal, candidates, payloads)
+}
+
 fn export_source(
     directory: &TestDirectory,
     fixture: &BundleFixture,
@@ -351,6 +481,34 @@ fn assert_export_rejected_unchanged(
         fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
         payload_image
     );
+}
+
+fn assert_genesis_export_rejected_unchanged(
+    journal: &ArtifactChainJournal,
+    directory: &TestDirectory,
+    target: ArtifactBlockId,
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    limits: CandidateBranchRecoveryBundleLimits,
+) -> crate::CandidateBranchRecoveryBundleExportError {
+    let selected = selected_snapshot(journal, directory);
+    let candidate_image = fs::read(directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap();
+    let payload_image = fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+    let error = journal
+        .export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+            target, candidates, payloads, limits,
+        )
+        .unwrap_err();
+    assert_selected_unchanged(journal, directory, &selected);
+    assert_eq!(
+        fs::read(directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap(),
+        candidate_image
+    );
+    assert_eq!(
+        fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        payload_image
+    );
+    error
 }
 
 #[test]
@@ -971,4 +1129,658 @@ fn commit_faults_report_only_acknowledged_blocks_and_reopen_resumes_exact_durabl
         assert_eq!(resumed.committed_block_count(), 1);
         assert_eq!(reopened.chain.head_block_id(), fixture.blocks[1].id());
     }
+}
+
+#[test]
+fn genesis_anchored_historical_fork_bundle_restores_empty_destination_and_reopens() {
+    let source_directory = TestDirectory::new();
+    let fixture = HistoricalForkFixture::new();
+    let (source, mut candidates, mut payloads) =
+        historical_fork_source(&source_directory, &fixture, &[1, 2], &[1, 2]);
+    let source_before = selected_snapshot(&source, &source_directory);
+    let candidate_image = fs::read(source_directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap();
+    let payload_image = fs::read(source_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+
+    let bundle = source
+        .export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+            fixture.bundle_blocks[2].id(),
+            &mut candidates,
+            &mut payloads,
+            fixture.limits,
+        )
+        .unwrap();
+
+    assert_selected_unchanged(&source, &source_directory, &source_before);
+    assert_eq!(
+        fs::read(source_directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap(),
+        candidate_image
+    );
+    assert_eq!(
+        fs::read(source_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        payload_image
+    );
+    assert_eq!(bundle.canonical_bytes(), fixture.bytes);
+    assert_eq!(
+        (
+            bundle.anchor_block_id(),
+            bundle.anchor_artifact_set_root(),
+            bundle.target_block_id(),
+            bundle.block_count(),
+            bundle.total_payload_bytes(),
+        ),
+        (
+            fixture.definition.id().virtual_genesis_block_id(),
+            genesis_root(fixture.definition),
+            fixture.bundle_blocks[2].id(),
+            fixture.bundle_blocks.len(),
+            u64::try_from(fixture.total_payload_bytes()).unwrap(),
+        )
+    );
+
+    let destination_directory = TestDirectory::new();
+    let mut destination =
+        ArtifactChainJournal::create(&destination_directory.path, fixture.definition).unwrap();
+    let outcome = destination
+        .import_candidate_branch_recovery_bundle_v0(&bundle, fixture.limits)
+        .unwrap();
+    assert_eq!(
+        (
+            outcome.anchor_block_id(),
+            outcome.resumed_from_block_id(),
+            outcome.target_block_id(),
+            outcome.already_selected_block_count(),
+            outcome.committed_block_count(),
+        ),
+        (
+            fixture.definition.id().virtual_genesis_block_id(),
+            fixture.definition.id().virtual_genesis_block_id(),
+            fixture.bundle_blocks[2].id(),
+            0,
+            fixture.bundle_blocks.len(),
+        )
+    );
+    assert_eq!(destination.len().unwrap(), fixture.bundle_blocks.len());
+    assert_eq!(
+        destination.artifact_set_root().unwrap(),
+        fixture.bundle_blocks[2].resulting_artifact_set_root()
+    );
+    for block in &fixture.bundle_blocks {
+        assert!(destination.artifact(block.artifact_id()).unwrap().is_some());
+    }
+    assert!(
+        destination
+            .artifact(fixture.selected_only_block.artifact_id())
+            .unwrap()
+            .is_none(),
+        "selected sibling B must not enter the recovered A -> C -> D branch"
+    );
+
+    drop(destination);
+    let reopened = ArtifactChainJournal::open_verified(
+        &destination_directory.path,
+        fixture.definition,
+        fixture.bundle_blocks[2].id(),
+    )
+    .unwrap();
+    assert_eq!(reopened.len().unwrap(), fixture.bundle_blocks.len());
+    assert_eq!(
+        reopened.artifact_set_root().unwrap(),
+        fixture.bundle_blocks[2].resulting_artifact_set_root()
+    );
+    assert!(
+        reopened
+            .artifact(fixture.selected_only_block.artifact_id())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn genesis_anchored_export_is_deterministic_across_reopen_and_store_insertion_order() {
+    let fixture = HistoricalForkFixture::new();
+
+    let reopened_directory = TestDirectory::new();
+    let (journal, candidates, payloads) =
+        historical_fork_source(&reopened_directory, &fixture, &[1, 2], &[1, 2]);
+    drop(payloads);
+    drop(candidates);
+    drop(journal);
+    let reopened = ArtifactChainJournal::open_verified(
+        &reopened_directory.path,
+        fixture.definition,
+        fixture.selected_only_block.id(),
+    )
+    .unwrap();
+    let mut reopened_candidates = ArtifactBlockCandidateStore::open(
+        &reopened_directory.path,
+        fixture.definition,
+        candidate_limits(2),
+    )
+    .unwrap();
+    let mut reopened_payloads = CanonicalArtifactPayloadStore::open(
+        &reopened_directory.path,
+        payload_limits(2, fixture.candidate_payload_bytes()),
+    )
+    .unwrap();
+    let reopened_bundle = reopened
+        .export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+            fixture.bundle_blocks[2].id(),
+            &mut reopened_candidates,
+            &mut reopened_payloads,
+            fixture.limits,
+        )
+        .unwrap();
+
+    let reverse_directory = TestDirectory::new();
+    let (reverse, mut reverse_candidates, mut reverse_payloads) =
+        historical_fork_source(&reverse_directory, &fixture, &[2, 1], &[2, 1]);
+    let reverse_before = selected_snapshot(&reverse, &reverse_directory);
+    let reverse_candidate_image =
+        fs::read(reverse_directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap();
+    let reverse_payload_image =
+        fs::read(reverse_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+    let reverse_bundle = reverse
+        .export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+            fixture.bundle_blocks[2].id(),
+            &mut reverse_candidates,
+            &mut reverse_payloads,
+            fixture.limits,
+        )
+        .unwrap();
+
+    assert_eq!(reopened_bundle.canonical_bytes(), fixture.bytes);
+    assert_eq!(reverse_bundle.canonical_bytes(), fixture.bytes);
+    assert_selected_unchanged(&reverse, &reverse_directory, &reverse_before);
+    assert_eq!(
+        fs::read(reverse_directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap(),
+        reverse_candidate_image
+    );
+    assert_eq!(
+        fs::read(reverse_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        reverse_payload_image
+    );
+}
+
+#[test]
+fn genesis_export_orders_multiple_selected_prefix_blocks_and_excludes_later_history() {
+    let definition = chain_definition(CHAIN_BYTE);
+    let (branch_payloads, branch_artifact_ids) = dependency_chain_with_len(3);
+    let branch_blocks = branch_blocks(definition, &branch_payloads, &branch_artifact_ids);
+    let later_selected_payload = axiom_bytes(ZfcAxiom::PowerSet);
+    let later_selected_artifact_id = ArtifactDag::new()
+        .apply_canonical_artifact_bytes(later_selected_payload.clone())
+        .unwrap()
+        .artifact_id();
+
+    let source_directory = TestDirectory::new();
+    let mut source = ArtifactChainJournal::create(&source_directory.path, definition).unwrap();
+    for (block, payload) in branch_blocks.iter().zip(&branch_payloads).take(2) {
+        source.apply_block(block, payload.clone()).unwrap();
+    }
+    let later_selected = source.prepare_block(later_selected_artifact_id).unwrap();
+    source
+        .apply_block(&later_selected, later_selected_payload)
+        .unwrap();
+
+    let mut candidates = ArtifactBlockCandidateStore::create(
+        &source_directory.path,
+        definition,
+        candidate_limits(1),
+    )
+    .unwrap();
+    insert_candidates(&mut candidates, &branch_blocks[2..]);
+    let mut payloads = CanonicalArtifactPayloadStore::create(
+        &source_directory.path,
+        payload_limits(1, branch_payloads[2].len()),
+    )
+    .unwrap();
+    archive_payloads(&mut payloads, &branch_payloads, &[2]);
+
+    let expected_bytes = encode_bundle(
+        definition.id(),
+        definition.id().virtual_genesis_block_id(),
+        genesis_root(definition),
+        branch_blocks[2].id(),
+        &branch_blocks,
+        &branch_payloads,
+    );
+    let limits = exact_bundle_limits(&branch_blocks, &branch_payloads);
+    let source_before = selected_snapshot(&source, &source_directory);
+    let candidate_image = fs::read(source_directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap();
+    let payload_image = fs::read(source_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+
+    let too_small = assert_genesis_export_rejected_unchanged(
+        &source,
+        &source_directory,
+        branch_blocks[2].id(),
+        &mut candidates,
+        &mut payloads,
+        bundle_limits(
+            2,
+            branch_payloads.iter().map(Vec::len).sum(),
+            expected_bytes.len(),
+        ),
+    );
+    assert!(matches!(
+        too_small,
+        crate::CandidateBranchRecoveryBundleExportError::BlockLimitExceeded {
+            maximum: 2,
+            next_block_id,
+        } if next_block_id == branch_blocks[0].id()
+    ));
+
+    let bundle = source
+        .export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+            branch_blocks[2].id(),
+            &mut candidates,
+            &mut payloads,
+            limits,
+        )
+        .unwrap();
+    assert_eq!(bundle.canonical_bytes(), expected_bytes);
+    assert_selected_unchanged(&source, &source_directory, &source_before);
+    assert_eq!(
+        fs::read(source_directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap(),
+        candidate_image
+    );
+    assert_eq!(
+        fs::read(source_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        payload_image
+    );
+
+    let destination_directory = TestDirectory::new();
+    let mut destination =
+        ArtifactChainJournal::create(&destination_directory.path, definition).unwrap();
+    let outcome = destination
+        .import_candidate_branch_recovery_bundle_v0(&bundle, limits)
+        .unwrap();
+    assert_eq!(outcome.committed_block_count(), branch_blocks.len());
+    assert_eq!(destination.head_block_id().unwrap(), branch_blocks[2].id());
+    assert!(
+        destination
+            .artifact(later_selected.artifact_id())
+            .unwrap()
+            .is_none()
+    );
+    for block in &branch_blocks {
+        assert!(destination.artifact(block.artifact_id()).unwrap().is_some());
+    }
+
+    drop(destination);
+    let reopened = ArtifactChainJournal::open_verified(
+        &destination_directory.path,
+        definition,
+        branch_blocks[2].id(),
+    )
+    .unwrap();
+    assert_eq!(reopened.len().unwrap(), branch_blocks.len());
+    assert_eq!(
+        reopened.artifact_set_root().unwrap(),
+        branch_blocks[2].resulting_artifact_set_root()
+    );
+    assert!(
+        reopened
+            .artifact(later_selected.artifact_id())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn genesis_bundle_resumes_at_exact_selected_and_candidate_prefixes() {
+    let source_directory = TestDirectory::new();
+    let fixture = HistoricalForkFixture::new();
+    let (source, mut candidates, mut payloads) =
+        historical_fork_source(&source_directory, &fixture, &[1, 2], &[1, 2]);
+    let bundle = source
+        .export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+            fixture.bundle_blocks[2].id(),
+            &mut candidates,
+            &mut payloads,
+            fixture.limits,
+        )
+        .unwrap();
+
+    for prefix_len in [1_usize, 2] {
+        let destination_directory = TestDirectory::new();
+        let mut destination =
+            ArtifactChainJournal::create(&destination_directory.path, fixture.definition).unwrap();
+        for (block, payload) in fixture
+            .bundle_blocks
+            .iter()
+            .zip(&fixture.bundle_payloads)
+            .take(prefix_len)
+        {
+            destination.apply_block(block, payload.clone()).unwrap();
+        }
+
+        let outcome = destination
+            .import_candidate_branch_recovery_bundle_v0(&bundle, fixture.limits)
+            .unwrap();
+        assert_eq!(
+            outcome.resumed_from_block_id(),
+            fixture.bundle_blocks[prefix_len - 1].id()
+        );
+        assert_eq!(outcome.already_selected_block_count(), prefix_len);
+        assert_eq!(
+            outcome.committed_block_count(),
+            fixture.bundle_blocks.len() - prefix_len
+        );
+        assert_eq!(
+            destination.head_block_id().unwrap(),
+            fixture.bundle_blocks[2].id()
+        );
+        assert_eq!(destination.len().unwrap(), fixture.bundle_blocks.len());
+    }
+}
+
+#[test]
+fn genesis_bundle_rejects_divergent_and_longer_destinations_without_writes() {
+    let source_directory = TestDirectory::new();
+    let fixture = HistoricalForkFixture::new();
+    let (source, mut candidates, mut payloads) =
+        historical_fork_source(&source_directory, &fixture, &[1, 2], &[1, 2]);
+    let bundle = source
+        .export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+            fixture.bundle_blocks[2].id(),
+            &mut candidates,
+            &mut payloads,
+            fixture.limits,
+        )
+        .unwrap();
+
+    let divergent_directory = TestDirectory::new();
+    let mut divergent =
+        ArtifactChainJournal::create(&divergent_directory.path, fixture.definition).unwrap();
+    divergent
+        .apply_block(
+            &fixture.bundle_blocks[0],
+            fixture.bundle_payloads[0].clone(),
+        )
+        .unwrap();
+    divergent
+        .apply_block(
+            &fixture.selected_only_block,
+            fixture.selected_only_payload.clone(),
+        )
+        .unwrap();
+    assert_import_rejected(
+        &mut divergent,
+        &divergent_directory,
+        &bundle,
+        fixture.limits,
+    );
+
+    let longer_directory = TestDirectory::new();
+    let mut longer =
+        ArtifactChainJournal::create(&longer_directory.path, fixture.definition).unwrap();
+    for (block, payload) in fixture.bundle_blocks.iter().zip(&fixture.bundle_payloads) {
+        longer.apply_block(block, payload.clone()).unwrap();
+    }
+    let tail = longer
+        .prepare_block(fixture.selected_only_block.artifact_id())
+        .unwrap();
+    longer
+        .apply_block(&tail, fixture.selected_only_payload.clone())
+        .unwrap();
+    assert_import_rejected(&mut longer, &longer_directory, &bundle, fixture.limits);
+}
+
+#[test]
+fn genesis_export_rejects_virtual_genesis_and_selected_block_targets_without_mutation() {
+    let source_directory = TestDirectory::new();
+    let fixture = HistoricalForkFixture::new();
+    let (source, mut candidates, mut payloads) =
+        historical_fork_source(&source_directory, &fixture, &[1, 2], &[1, 2]);
+
+    for target in [
+        fixture.definition.id().virtual_genesis_block_id(),
+        fixture.selected_only_block.id(),
+    ] {
+        let error = assert_genesis_export_rejected_unchanged(
+            &source,
+            &source_directory,
+            target,
+            &mut candidates,
+            &mut payloads,
+            fixture.limits,
+        );
+        assert!(matches!(
+            error,
+            crate::CandidateBranchRecoveryBundleExportError::TargetAlreadySelected {
+                block_id
+            } if block_id == target
+        ));
+    }
+}
+
+#[test]
+fn genesis_export_with_empty_selected_prefix_reuses_current_head_v0_bytes() {
+    let source_directory = TestDirectory::new();
+    let fixture = BundleFixture::new(2);
+    let target = fixture.blocks[1].id();
+    let (source, mut candidates, mut payloads) = export_source(
+        &source_directory,
+        &fixture,
+        fixture.definition,
+        &[0, 1],
+        &[0, 1],
+    );
+    let selected = selected_snapshot(&source, &source_directory);
+    let candidate_image = fs::read(source_directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap();
+    let payload_image = fs::read(source_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+
+    let current_head_bundle = source
+        .export_candidate_branch_recovery_bundle_v0(
+            target,
+            &mut candidates,
+            &mut payloads,
+            fixture.limits,
+        )
+        .unwrap();
+    let genesis_bundle = source
+        .export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+            target,
+            &mut candidates,
+            &mut payloads,
+            fixture.limits,
+        )
+        .unwrap();
+
+    assert_eq!(current_head_bundle.canonical_bytes(), fixture.bytes);
+    assert_eq!(genesis_bundle.canonical_bytes(), fixture.bytes);
+    assert_selected_unchanged(&source, &source_directory, &selected);
+    assert_eq!(
+        fs::read(source_directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap(),
+        candidate_image
+    );
+    assert_eq!(
+        fs::read(source_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        payload_image
+    );
+}
+
+#[test]
+fn genesis_export_limits_cover_selected_prefix_and_candidate_suffix_together() {
+    let source_directory = TestDirectory::new();
+    let fixture = HistoricalForkFixture::new();
+    let (source, mut candidates, mut payloads) =
+        historical_fork_source(&source_directory, &fixture, &[1, 2], &[1, 2]);
+    let candidate_payload_bytes = fixture.candidate_payload_bytes();
+    let total_payload_bytes = fixture.total_payload_bytes();
+    let target = fixture.bundle_blocks[2].id();
+
+    for limits in [
+        bundle_limits(2, total_payload_bytes, fixture.bytes.len()),
+        bundle_limits(3, candidate_payload_bytes, fixture.bytes.len()),
+        bundle_limits(
+            3,
+            total_payload_bytes,
+            encoded_bundle_len(2, candidate_payload_bytes),
+        ),
+    ] {
+        assert_genesis_export_rejected_unchanged(
+            &source,
+            &source_directory,
+            target,
+            &mut candidates,
+            &mut payloads,
+            limits,
+        );
+    }
+
+    let exact = source
+        .export_genesis_anchored_candidate_branch_recovery_bundle_v0(
+            target,
+            &mut candidates,
+            &mut payloads,
+            fixture.limits,
+        )
+        .unwrap();
+    assert_eq!(exact.canonical_bytes(), fixture.bytes);
+}
+
+#[test]
+fn genesis_export_rejects_context_invalid_candidate_payload_before_publication() {
+    let directory = TestDirectory::new();
+    let definition = chain_definition(CHAIN_BYTE);
+    let selected_payload = axiom_bytes(ZfcAxiom::Pairing);
+    let selected_id = ArtifactDag::new()
+        .apply_canonical_artifact_bytes(selected_payload.clone())
+        .unwrap()
+        .artifact_id();
+
+    let mut foreign_context = ArtifactDag::new();
+    let missing_dependency = foreign_context
+        .apply_canonical_artifact_bytes(axiom_bytes(ZfcAxiom::Union))
+        .unwrap();
+    let candidate_payload = referenced_generalization(
+        missing_dependency.as_proof().unwrap().proof_id(),
+        FreeVariable::new(17),
+    );
+    let candidate_id = foreign_context
+        .apply_canonical_artifact_bytes(candidate_payload.clone())
+        .unwrap()
+        .artifact_id();
+
+    let mut journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
+    let selected_block = journal.prepare_block(selected_id).unwrap();
+    journal
+        .apply_block(&selected_block, selected_payload.clone())
+        .unwrap();
+    let candidate_block = journal.prepare_block(candidate_id).unwrap();
+
+    let mut candidates =
+        ArtifactBlockCandidateStore::create(&directory.path, definition, candidate_limits(1))
+            .unwrap();
+    insert_candidates(&mut candidates, &[candidate_block]);
+    let mut payloads = CanonicalArtifactPayloadStore::create(
+        &directory.path,
+        payload_limits(1, candidate_payload.len()),
+    )
+    .unwrap();
+    assert_eq!(
+        payloads
+            .insert(foreign_context.artifact(candidate_id).unwrap())
+            .unwrap(),
+        ArtifactPayloadInsertOutcome::Inserted
+    );
+
+    let blocks = [selected_block, candidate_block];
+    let bundle_payloads = [selected_payload, candidate_payload];
+    let error = assert_genesis_export_rejected_unchanged(
+        &journal,
+        &directory,
+        candidate_block.id(),
+        &mut candidates,
+        &mut payloads,
+        exact_bundle_limits(&blocks, &bundle_payloads),
+    );
+    assert!(matches!(
+        error,
+        crate::CandidateBranchRecoveryBundleExportError::BlockValidation {
+            block_id,
+            ..
+        } if block_id == candidate_block.id()
+    ));
+}
+
+#[test]
+fn genesis_export_fails_closed_for_missing_or_corrupt_candidate_and_payload_entries() {
+    let fixture = HistoricalForkFixture::new();
+    let target = fixture.bundle_blocks[2].id();
+
+    for candidate_indices in [&[2][..], &[1][..]] {
+        let directory = TestDirectory::new();
+        let (source, mut candidates, mut payloads) =
+            historical_fork_source(&directory, &fixture, candidate_indices, &[1, 2]);
+        assert_genesis_export_rejected_unchanged(
+            &source,
+            &directory,
+            target,
+            &mut candidates,
+            &mut payloads,
+            fixture.limits,
+        );
+    }
+
+    for payload_indices in [&[2][..], &[1][..]] {
+        let directory = TestDirectory::new();
+        let (source, mut candidates, mut payloads) =
+            historical_fork_source(&directory, &fixture, &[1, 2], payload_indices);
+        assert_genesis_export_rejected_unchanged(
+            &source,
+            &directory,
+            target,
+            &mut candidates,
+            &mut payloads,
+            fixture.limits,
+        );
+    }
+
+    let candidate_directory = TestDirectory::new();
+    let (candidate_source, mut corrupt_candidates, mut candidate_payloads) =
+        historical_fork_source(&candidate_directory, &fixture, &[1, 2], &[1, 2]);
+    flip_byte(
+        &candidate_directory.path.join(CANDIDATE_STORE_FILE_NAME),
+        u64::try_from(CANDIDATE_STORE_HEADER.len() + ArtifactChainId::BYTE_LENGTH).unwrap(),
+    );
+    assert_genesis_export_rejected_unchanged(
+        &candidate_source,
+        &candidate_directory,
+        target,
+        &mut corrupt_candidates,
+        &mut candidate_payloads,
+        fixture.limits,
+    );
+    assert!(matches!(
+        corrupt_candidates.len(),
+        Err(crate::ArtifactBlockCandidateStoreError::Poisoned)
+    ));
+
+    let payload_directory = TestDirectory::new();
+    let (payload_source, mut payload_candidates, mut corrupt_payloads) =
+        historical_fork_source(&payload_directory, &fixture, &[1, 2], &[1, 2]);
+    flip_byte(
+        &payload_directory.path.join(PAYLOAD_STORE_FILE_NAME),
+        u64::try_from(
+            PAYLOAD_STORE_HEADER.len()
+                + FOUNDATION_ID_BYTES.len()
+                + PAYLOAD_LENGTH_BYTES
+                + ArtifactId::BYTE_LENGTH,
+        )
+        .unwrap(),
+    );
+    assert_genesis_export_rejected_unchanged(
+        &payload_source,
+        &payload_directory,
+        target,
+        &mut payload_candidates,
+        &mut corrupt_payloads,
+        fixture.limits,
+    );
+    assert!(matches!(
+        corrupt_payloads.len(),
+        Err(crate::CanonicalArtifactPayloadStoreError::Poisoned)
+    ));
 }

@@ -11,11 +11,14 @@ The bundle is not the node's durable competing-branch representation under
 bundles automatically. Caller-managed bundle files do not become a candidate
 pool, fork choice, recovery queue, or source of consensus authority.
 
-Export binds the anchor to the source journal's exact current head. Import
-accepts that anchor only at the destination's current head or behind an exact
-already-selected bundle prefix, and can only append the remaining suffix. It
-cannot begin at an arbitrary historical position, roll back, replace, or
-reorganize selected history.
+The current-head export binds the anchor to the source journal's exact current
+head. A separate candidate-only export may instead bind the same V0 format to
+the source chain's virtual genesis and include the replay-verified selected
+prefix required to reach one unselected target. Import accepts either anchor
+only at the destination's current head or behind an exact already-selected
+bundle prefix, and can only append the remaining suffix. It cannot begin at an
+arbitrary historical position, roll back, replace, or reorganize selected
+history.
 
 ## Limits
 
@@ -27,6 +30,9 @@ Checked arithmetic and fallible reservations precede growth.
 
 These are per-operation local limits, not persisted identity or protocol rules
 for branch depth, block size, validation work, retention, or networking.
+For a virtual-genesis export they apply to the complete combined selected
+prefix and candidate suffix: no selected-prefix block, payload byte, or encoded
+byte is exempt from the caller's limits.
 
 ## Canonical bytes
 
@@ -70,7 +76,7 @@ or finality certificate. Import always treats the bytes as untrusted.
 This prerelease `v0` has no compatibility alias, legacy decoder, or migration.
 Unsupported bundles must be re-exported from supported local stores.
 
-## Export
+## Current-head export
 
 `ArtifactChainJournal::export_candidate_branch_recovery_bundle_v0` accepts one
 exact target, the selected journal, a caller-routed candidate store with the same
@@ -94,6 +100,42 @@ Only complete validation may publish one owned canonical bundle. Failure returns
 no bundle or partial validation result. Export does not mutate the journal,
 candidate store, or payload archive; caller-managed transport and durable file
 placement remain outside this contract.
+
+## Virtual-genesis candidate-only export
+
+`ArtifactChainJournal::export_genesis_anchored_candidate_branch_recovery_bundle_v0`
+is a separate mode that accepts the same caller-routed stores, exact target, and
+limits. It rejects virtual genesis and every target already present in the
+selected journal. It is therefore not a selected-history backup entry point.
+
+The mode integrity-walks the target's retained candidate suffix backward to its
+nearest retained selected ancestor under the same identity, repetition, parent,
+root-continuity, and candidate-store failure checks as current-head export. It
+then prepends every replay-verified selected block from the virtual-genesis
+direct child through that ancestor. When the nearest selected ancestor is
+virtual genesis, that selected prefix is empty. Later source-selected blocks are
+never included.
+
+Selected-prefix payloads come from each replay-accepted journal record's exact
+canonical artifact bytes. The external payload archive is consulted only for
+the candidate suffix. Starting from the journal's replay-built virtual-genesis
+snapshot, export repeats immutable child validation over every selected-prefix
+and candidate-suffix block and exact payload in forward order. Selected bytes
+are therefore replay input, not trusted serialized state or a reusable
+validation result.
+
+The published object uses the existing V0 bytes without another header, mode,
+or provenance field. Its anchor is the journal chain's exact virtual-genesis
+`ArtifactBlockId`, and its anchor root is that replay-built snapshot's exact
+`ArtifactSetRoot`. `max_blocks`, `max_payload_bytes`, and `max_bundle_bytes`
+bound the whole combined path and final encoding before publication. A selected
+prefix encoded in this bundle states neither that the target was selected at
+the source nor that any entry is canonical, final, preferred, or trusted at the
+destination.
+
+The exporter performs no durable mutation. It does not make bundles a
+node-managed candidate pool or durable competing-branch representation, and it
+does not extend the current-head export to selected targets.
 
 ## Decode and import preflight
 
@@ -148,7 +190,8 @@ head is an error. A fully selected bundle succeeds without a new commit.
 
 ## Non-goals
 
-This API does not choose a target or branch; persist or resume caller intent;
+This API does not choose a target or branch; export an already-selected target
+as a backup or attest selected provenance; persist or resume caller intent;
 create node-managed competing-branch state; mutate candidate or payload stores;
 fetch, relay, gossip, authenticate, or define a network protocol; import from an
 arbitrary historical anchor; make the whole branch one crash-atomic transaction;

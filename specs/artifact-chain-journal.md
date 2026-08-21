@@ -326,6 +326,47 @@ rank competing branches, define retention or pruning, map consensus ancestry,
 or establish consensus canonicality, finality, peer trust, global availability,
 or economic authority.
 
+## Candidate-branch recovery bundles
+
+The [Candidate-Branch Recovery Bundle V0](candidate-branch-recovery-bundle.md)
+defines one caller-owned canonical offline transfer artifact. The existing
+`export_candidate_branch_recovery_bundle_v0` mode binds one exact unselected
+candidate target to this journal's captured current head and root. The separate
+`export_genesis_anchored_candidate_branch_recovery_bundle_v0` mode also accepts
+only an exact unselected candidate target, but emits the existing V0 format
+anchored at this journal's virtual-genesis position and replay-built
+virtual-genesis root.
+Virtual genesis and every selected target are rejected; this is not a
+selected-journal backup mode.
+
+Genesis-anchored export integrity-walks the retained candidate suffix to its
+nearest retained selected ancestor, prepends the exact selected prefix from
+virtual genesis through that ancestor, and forward-validates the complete path
+from the immutable virtual-genesis snapshot. Exact selected-prefix payloads
+come from the corresponding replay-accepted journal records; the caller-routed
+payload archive supplies only the candidate-suffix payloads. The selected bytes
+are ordinary validation input and confer no reusable validation, provenance,
+selection, or finality claim.
+
+The positive caller-local bundle limits apply to the whole combined block
+count, aggregate payload bytes, and final canonical encoding. Export publishes
+nothing until the complete bounded path validates and performs no journal,
+candidate-store, or payload-archive write.
+
+`import_candidate_branch_recovery_bundle_v0` is unchanged. It re-decodes and
+fully preflights the whole bundle under the destination limits, accepts only a
+destination head equal to the encoded anchor or one exact contiguous encoded
+prefix, and then applies only the remaining suffix through ordinary sequential
+journal admission. Each acknowledged block is durable independently; an
+ambiguous current append requires reopen, and a retry succeeds only from the
+exact reopened bundle prefix. A divergent or longer head fails before a new
+append.
+
+Neither export mode chooses a target or branch, mutates selected state, or
+creates a durable competing-branch representation. The format and these methods
+define no rollback, reorganization, networking, authentication, availability,
+peer trust, consensus, finality, or economic authority.
+
 ## Read interface
 
 A healthy journal exposes the derived chain ID, exact head (virtual genesis
