@@ -3,15 +3,21 @@
 ## Status and authority
 
 This specification defines the prerelease V0 canonical bytes and stateless
-verification contract for separately signed Tendermint prevotes, precommits,
-and one bounded shared-body precommit certificate.
+verification contract for separately signed Tendermint prevotes and
+precommits, plus one bounded shared-body quorum-certificate layout reused for
+prevote or precommit quorums over either nil or one opaque proposal signing
+root.
 
-Successful certificate verification proves only that distinct Ed25519 keys in
-one exact caller-supplied immutable `ActiveAgreementSnapshot` validly
-precommitted one opaque proposal signing root at one exact caller-supplied
-chain, final-genesis, protocol-version, height, and round context, and that
-their exact weight is strictly greater than two thirds of that snapshot's
-unchanged total active weight.
+Successful generic certificate verification proves only that distinct
+Ed25519 keys in one exact caller-supplied immutable
+`ActiveAgreementSnapshot` validly signed the certificate's exact embedded
+prevote-or-precommit role and nil-or-proposal target at one exact
+caller-supplied chain, final-genesis, protocol-version, height, and round
+context, and that their exact weight is strictly greater than two thirds of
+that snapshot's unchanged total active weight. Only a verified non-nil
+precommit quorum can be published through the finality-facing
+`VerifiedPrecommitCertificateV0` subtype; that subtype still proves agreement
+evidence rather than a finality transition.
 
 It does not prove that the supplied snapshot is canonical or correctly
 derived; derive or validate the proposal signing root; prove that a proposal,
@@ -106,13 +112,13 @@ Ed25519 key and applies strict Ed25519 verification to the exact transcript.
 Success authenticates the embedded position, role, signer, and target but does
 not establish active-set membership or agreement.
 
-## Canonical precommit certificate
+## Canonical quorum certificate
 
-The V0 certificate compresses multiple signatures over one shared precommit
-body. Its exact representation is:
+The V0 certificate compresses multiple signatures over one shared vote body.
+Its exact representation is:
 
 ```text
-shared_precommit_body[118]
+shared_vote_body[118]
 signer_count u16 big-endian
 signer_count * (
     ConsensusKey[32]
@@ -120,13 +126,29 @@ signer_count * (
 )
 ```
 
-The shared body must have role `0x02` and target tag `0x01`. Nil precommits can
-advance Tendermint round logic but cannot enter this non-nil certificate form.
+The shared body admits exactly the four combinations formed by role `0x01`
+prevote or `0x02` precommit and target tag `0x00` nil or `0x01` proposal:
+
+```text
+prevote   / proposal
+prevote   / nil
+precommit / proposal
+precommit / nil
+```
+
+Every combination uses the identical representation, signer-count bound,
+entry order, signature verification, and agreement-weight threshold. The
+embedded role and target remain authenticated protocol values and are never
+normalized or inferred from a consuming state-machine phase. Generic success
+publishes `VerifiedQuorumCertificateV0`; only the precommit/proposal
+combination may also publish `VerifiedPrecommitCertificateV0`. A verified
+prevote or nil certificate does not itself lock, unlock, update a valid value,
+advance a phase or round, or finalize anything.
 
 `signer_count` is in `1..=256`. Entries are strictly ascending by the raw 32
 consensus-key bytes. Equal keys are duplicates and rejected. Descending or
 otherwise unsorted keys are noncanonical and rejected rather than reordered.
-Each signature authenticates the precommit signing transcript reconstructed
+Each signature authenticates the role-specific signing transcript reconstructed
 from the shared body and that entry's exact consensus key.
 
 The complete length is:
@@ -140,16 +162,19 @@ input above the maximum before allocation, rejects a declared count above 256
 before entry allocation, and requires the declared count to consume the input
 exactly. Truncation and trailing bytes are errors.
 
-`PrecommitCertificateId` is exactly:
+`QuorumCertificateId` is exactly:
 
 ```text
 SHA256(complete_canonical_certificate_bytes)
 ```
 
-Different valid signer subsets or valid signature variants produce different
-certificate evidence identities while retaining the same opaque proposal
-target. This identity defines neither evidence preference nor consensus
-ancestry.
+For a verified non-nil precommit, `PrecommitCertificateId` retains these same
+32 digest bytes through the specialized compatibility boundary. Different
+valid signer subsets or valid signature variants produce different certificate
+evidence identities while retaining the same authenticated role and target.
+Certificates with different authenticated roles or targets also have distinct
+complete canonical bytes and therefore distinct identities. This identity
+defines neither evidence preference nor consensus ancestry.
 
 ## Certificate verification
 
@@ -157,9 +182,9 @@ Verification receives the canonical certificate bytes, one exact expected
 `ConsensusContextV0`, and one borrowed immutable `ActiveAgreementSnapshot`.
 It proceeds all-or-nothing in this order:
 
-1. Enforce the complete input-size bound, fixed body framing, supported tags,
-   positive height, non-nil target, signer-count bound, exact derived length,
-   strict key order, and distinct keys.
+1. Enforce the complete input-size bound, fixed body framing, supported role
+   and target tags, canonical nil payload, positive height, signer-count bound,
+   exact derived length, strict key order, and distinct keys.
 2. Require exact equality between the embedded and expected chain, final
    genesis, and protocol version.
 3. Require exact equality between the certificate height and round and the
@@ -172,7 +197,8 @@ It proceeds all-or-nothing in this order:
 6. Require the authenticated signer weight `S` to be strictly greater than two
    thirds of the unchanged total active snapshot weight `T`.
 7. Only after every prior check succeeds, publish one borrowed
-   `VerifiedPrecommitCertificateV0`.
+   `VerifiedQuorumCertificateV0` exposing the exact authenticated role and
+   target.
 
 The threshold is mathematically `3 * S > 2 * T`, but the reference verifier
 uses the equivalent division-and-remainder comparison so the full `u128`
@@ -180,17 +206,22 @@ weight domain cannot overflow. Exact two-thirds equality fails. A snapshot's
 offline validators remain in `T`; verification never renormalizes the
 denominator.
 
-The verified value borrows the supplied snapshot so it cannot silently outlive
-its verification context. It exposes the authenticated target, position,
-ascending signer keys, signed weight, unchanged total weight, canonical bytes,
-and evidence identity. It has no public unchecked constructor.
+The verified generic value borrows the supplied snapshot so it cannot silently
+outlive its verification context. It exposes the authenticated role, target,
+position, ascending signer keys, signed weight, unchanged total weight,
+canonical bytes, and evidence identity. It has no public unchecked
+constructor. The finality-facing `VerifiedPrecommitCertificateV0` boundary
+accepts only an already fully verified certificate whose role is precommit and
+whose target is one proposal signing root. The other three valid generic forms
+cannot produce that subtype.
 
 ## Resource and compatibility boundary
 
-One signed vote performs one strict Ed25519 verification. One certificate
-contains at most 256 keys and signatures, performs at most 256 active-set
-lookups and 256 strict Ed25519 verifications, and allocates only after its
-count and exact byte length pass the fixed bounds.
+One signed vote performs one strict Ed25519 verification. One quorum
+certificate in any of the four supported role-target forms contains at most
+256 keys and signatures, performs at most 256 active-set lookups and 256 strict
+Ed25519 verifications, and allocates only after its count and exact byte length
+pass the fixed bounds.
 
 This is a prerelease V0 format with no production-data compatibility promise.
 Any incompatible successor must use new role signing domains and a newly
