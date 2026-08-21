@@ -888,7 +888,7 @@ fn verify_vote_signature(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ContextMismatch {
+pub(super) enum ContextMismatch {
     Chain {
         expected: ArtifactChainId,
         actual: ArtifactChainId,
@@ -903,7 +903,7 @@ enum ContextMismatch {
     },
 }
 
-fn verify_context(
+pub(super) fn verify_context(
     actual: ConsensusContextV0,
     expected: ConsensusContextV0,
 ) -> Result<(), ContextMismatch> {

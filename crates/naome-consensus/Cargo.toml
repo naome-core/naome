@@ -2,7 +2,7 @@
 name = "naome-consensus"
 version.workspace = true
 edition.workspace = true
-description = "Consensus coordinates, weighted agreement, and authenticated agreement evidence for NAOME."
+description = "Consensus coordinates, weighted agreement, and authenticated consensus verification for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
