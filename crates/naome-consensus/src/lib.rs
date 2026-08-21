@@ -1,5 +1,5 @@
-//! Numeric coordinate and position-scoped weighted agreement arithmetic for
-//! NAOME consensus.
+//! Numeric coordinate, position-scoped weighted agreement arithmetic, and
+//! authenticated agreement-evidence verification for NAOME consensus.
 //!
 //! This crate projects caller-supplied positive height values into numeric
 //! non-genesis epochs, evaluates a caller-supplied epoch's numeric linear
@@ -7,16 +7,28 @@
 //! operator-minimum epochs through a numeric freshness window, and checks a
 //! caller-supplied upgrade activation epoch against a numeric minimum delay. It
 //! also accepts an already selected active validator set, freezes its exact
-//! position and weights, and evaluates strict greater-than-one-third and
+//! position and weights, evaluates strict greater-than-one-third and
 //! greater-than-two-thirds weight thresholds without renormalizing offline
-//! weight. It does not establish canonical blocks,
-//! checkpoints, genesis allocations, finality, ancestry, genesis state, or
-//! persistence; select validators; encode or verify signatures; define
-//! consensus messages; authorize cancellation; or run a Byzantine-fault-
-//! tolerant state machine.
+//! weight, and verifies canonical signed prevotes, precommits, and bounded
+//! precommit certificates against that exact caller-supplied snapshot. It does
+//! not establish canonical blocks, checkpoints, genesis allocations, proposal
+//! validity, selected validator-set provenance, finality, ancestry, genesis
+//! state, or persistence; select validators; create signatures; authorize
+//! cancellation; mutate a chain; or run a Byzantine-fault-tolerant state
+//! machine.
 
 use std::error::Error;
 use std::fmt;
+
+mod agreement_evidence;
+
+pub use agreement_evidence::{
+    CONSENSUS_SIGNATURE_BYTES, ConsensusContextV0, ConsensusGenesisId, ConsensusProtocolVersion,
+    ConsensusSignature, ConsensusVoteDecodeError, ConsensusVoteId, ConsensusVoteRole,
+    ConsensusVoteTarget, ConsensusVoteVerifyError, PrecommitCertificateId,
+    PrecommitCertificateVerifyError, ProposalSigningRoot, VerifiedConsensusVoteV0,
+    VerifiedPrecommitCertificateV0,
+};
 
 /// Exact width of one opaque consensus-key address.
 pub const CONSENSUS_KEY_BYTES: usize = 32;
@@ -379,6 +391,17 @@ impl ActiveAgreementSnapshot {
         self.total_weight
     }
 
+    fn agreement_weight_for(
+        &self,
+        consensus_key: ConsensusKey,
+    ) -> Result<AgreementWeight, AgreementSignerError> {
+        let entry_index = self
+            .entries
+            .binary_search_by_key(&consensus_key, |entry| entry.consensus_key)
+            .map_err(|_| AgreementSignerError::UnknownSigner { consensus_key })?;
+        Ok(self.entries[entry_index].agreement_weight)
+    }
+
     /// Returns the exact weight signed by one complete signer-key list.
     ///
     /// Duplicate or unknown keys invalidate the complete list. Active keys that
@@ -409,12 +432,9 @@ impl ActiveAgreementSnapshot {
 
         let mut signed_weight = 0_u128;
         for consensus_key in signer_keys {
-            let entry_index = self
-                .entries
-                .binary_search_by_key(&consensus_key, |entry| entry.consensus_key)
-                .map_err(|_| AgreementSignerError::UnknownSigner { consensus_key })?;
+            let agreement_weight = self.agreement_weight_for(consensus_key)?;
             signed_weight = signed_weight
-                .checked_add(self.entries[entry_index].agreement_weight.units())
+                .checked_add(agreement_weight.units())
                 .expect("distinct known signer weights cannot exceed validated total weight");
         }
 

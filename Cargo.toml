@@ -30,6 +30,7 @@ repository = "https://github.com/naome-core/naome"
 publish = false
 
 [workspace.dependencies]
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std"] }
 sha2 = { version = "0.11.0", default-features = false }
 
 [dependencies]

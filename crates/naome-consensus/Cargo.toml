@@ -2,10 +2,15 @@
 name = "naome-consensus"
 version.workspace = true
 edition.workspace = true
-description = "Consensus coordinate and weighted agreement arithmetic for NAOME."
+description = "Consensus coordinates, weighted agreement, and authenticated agreement evidence for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+naome-chain = { path = "../naome-chain" }
+sha2.workspace = true
 
 [lints]
 workspace = true
