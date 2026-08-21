@@ -75,6 +75,7 @@ mod head_transport;
 mod journal_service;
 mod learned_pull;
 mod local_issuer;
+mod payload_archive_transport;
 mod rate_limit;
 mod record_exchange;
 mod responder;
@@ -1285,6 +1286,7 @@ impl PeerSessionEvent {
 pub enum RespondError {
     Journal(ArtifactChainJournalError),
     CandidateStore(naome_storage::ArtifactBlockCandidateStoreError),
+    PayloadStore(naome_storage::CanonicalArtifactPayloadStoreError),
     ChannelClosed,
     RateLimited,
 }
@@ -1301,6 +1303,12 @@ impl fmt::Display for RespondError {
                     "cannot read artifact-block candidate store: {source}"
                 )
             }
+            Self::PayloadStore(source) => {
+                write!(
+                    formatter,
+                    "cannot read canonical artifact-payload store: {source}"
+                )
+            }
             Self::ChannelClosed => write!(formatter, "response channel is closed"),
             Self::RateLimited => {
                 formatter.write_str("inbound application request budget is exhausted")
@@ -1314,6 +1322,7 @@ impl Error for RespondError {
         match self {
             Self::Journal(source) => Some(source),
             Self::CandidateStore(source) => Some(source),
+            Self::PayloadStore(source) => Some(source),
             Self::ChannelClosed | Self::RateLimited => None,
         }
     }
