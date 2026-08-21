@@ -1,4 +1,6 @@
+use std::fs;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
@@ -12,21 +14,39 @@ use naome_storage::{
     CandidateBranchReconstructionError, CandidateBranchReconstructionLimits,
     CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError,
 };
+use tokio::time::timeout;
 
 use super::*;
 use crate::tests::{
-    TestDirectory, apply_fresh_blocks, assert_snapshot, create_journal, pairing_bytes, snapshot,
-    test_chain_definition, test_network_for_peers, union_bytes,
+    TestDirectory, address, apply_fresh_blocks, assert_snapshot, create_journal, listening_address,
+    pairing_bytes, snapshot, test_chain_definition, test_network_for_peers, union_bytes,
 };
 use crate::{
-    ExchangeRequestId, Keypair, NetworkEvent, OutboundArtifactFailure, PendingRequest,
-    RequestStartError,
+    ExchangeRequestId, Keypair, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent,
+    OutboundArtifactFailure, PeerSessionEvent, PendingRequest, RequestStartError, StaticPeer,
 };
+
+const CANDIDATE_STORE_FILE_NAME: &str = "artifact-block-candidate-store.log";
+const PAYLOAD_STORE_FILE_NAME: &str = "artifact-payload-store.log";
 
 struct DependencyBranch {
     blocks: Vec<ArtifactBlock>,
     payloads: Vec<Vec<u8>>,
     root: ArtifactSetRoot,
+}
+
+fn peer_ids(count: usize) -> Vec<PeerId> {
+    (0..count)
+        .map(|_| Keypair::generate_ed25519().public().to_peer_id())
+        .collect()
+}
+
+fn candidate_store_bytes(directory: &TestDirectory) -> Vec<u8> {
+    fs::read(directory.path().join(CANDIDATE_STORE_FILE_NAME)).unwrap()
+}
+
+fn payload_store_bytes(directory: &TestDirectory) -> Vec<u8> {
+    fs::read(directory.path().join(PAYLOAD_STORE_FILE_NAME)).unwrap()
 }
 
 fn reconstruction_limits(blocks: usize) -> CandidateBranchReconstructionLimits {
@@ -157,6 +177,22 @@ fn artifact_response_event(
     artifact_response_event_from(network, peer_id, peer_id, bytes)
 }
 
+fn artifact_failure_event(
+    network: &mut StaticArtifactNetwork,
+    peer_id: PeerId,
+    error: request_response::OutboundFailure,
+) -> NetworkEvent {
+    let (request_id, _) = pending_artifact_request(network, peer_id);
+    network
+        .handle_artifact_exchange_event(request_response::Event::OutboundFailure {
+            peer: peer_id,
+            connection_id: ConnectionId::new_unchecked(1_801),
+            request_id,
+            error,
+        })
+        .expect("the branch payload fill produces one failure terminal event")
+}
+
 fn awaiting(
     progress: ArtifactBlockCandidateBranchPayloadFillProgress<'_>,
 ) -> ArtifactBlockCandidateBranchPayloadFill<'_> {
@@ -173,6 +209,165 @@ fn complete(
         panic!("the branch payload fill unexpectedly awaits a response")
     };
     reconstructed
+}
+
+async fn connected_archive_triplet() -> (
+    StaticArtifactNetwork,
+    StaticArtifactNetwork,
+    StaticArtifactNetwork,
+    PeerId,
+    PeerId,
+) {
+    let mut identities = (0..3)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
+    identities.sort_unstable_by_key(|identity| identity.public().to_peer_id().to_bytes());
+    let mut identities = identities.into_iter();
+    let client_identity = identities.next().unwrap();
+    let first_server_identity = identities.next().unwrap();
+    let second_server_identity = identities.next().unwrap();
+    let client_peer_id = client_identity.public().to_peer_id();
+    let first_server_peer_id = first_server_identity.public().to_peer_id();
+    let second_server_peer_id = second_server_identity.public().to_peer_id();
+
+    let mut first_server = StaticArtifactNetwork::new(
+        first_server_identity,
+        [StaticPeer::new(client_peer_id, address(1))],
+    )
+    .unwrap();
+    let first_server_address = listening_address(&mut first_server).await;
+    let mut second_server = StaticArtifactNetwork::new(
+        second_server_identity,
+        [StaticPeer::new(client_peer_id, address(2))],
+    )
+    .unwrap();
+    let second_server_address = listening_address(&mut second_server).await;
+    let mut client = StaticArtifactNetwork::new(
+        client_identity,
+        [
+            StaticPeer::new(first_server_peer_id, first_server_address),
+            StaticPeer::new(second_server_peer_id, second_server_address),
+        ],
+    )
+    .unwrap();
+
+    let mut client_established = [false; 2];
+    let mut first_server_established = false;
+    let mut second_server_established = false;
+    timeout(Duration::from_secs(15), async {
+        while !client_established.iter().all(|established| *established)
+            || !first_server_established
+            || !second_server_established
+        {
+            tokio::select! {
+                event = client.next_event() => match event {
+                    NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id })
+                        if peer_id == first_server_peer_id => client_established[0] = true,
+                    NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id })
+                        if peer_id == second_server_peer_id => client_established[1] = true,
+                    NetworkEvent::PeerSession(PeerSessionEvent::DialFailed { peer_id }) => {
+                        panic!("client dial to {peer_id} failed")
+                    }
+                    NetworkEvent::ListenerError { error, .. } => {
+                        panic!("client listener failed: {error}")
+                    }
+                    _ => {}
+                },
+                event = first_server.next_event() => match event {
+                    NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) => {
+                        assert_eq!(peer_id, client_peer_id);
+                        first_server_established = true;
+                    }
+                    NetworkEvent::ListenerError { error, .. } => {
+                        panic!("first server listener failed: {error}")
+                    }
+                    _ => {}
+                },
+                event = second_server.next_event() => match event {
+                    NetworkEvent::PeerSession(PeerSessionEvent::Established { peer_id }) => {
+                        assert_eq!(peer_id, client_peer_id);
+                        second_server_established = true;
+                    }
+                    NetworkEvent::ListenerError { error, .. } => {
+                        panic!("second server listener failed: {error}")
+                    }
+                    _ => {}
+                },
+            }
+        }
+    })
+    .await
+    .expect("both archive peer sessions did not establish");
+
+    (
+        client,
+        first_server,
+        second_server,
+        first_server_peer_id,
+        second_server_peer_id,
+    )
+}
+
+async fn complete_fallback_branch_fill<'store>(
+    client: &mut StaticArtifactNetwork,
+    first_server: &mut StaticArtifactNetwork,
+    second_server: &mut StaticArtifactNetwork,
+    first_server_payloads: &mut CanonicalArtifactPayloadStore,
+    second_server_payloads: &mut CanonicalArtifactPayloadStore,
+    progress: ArtifactBlockCandidateBranchPayloadFillProgress<'store>,
+) -> (
+    naome_storage::ReconstructedCandidateBranch,
+    Vec<(naome_proof::ArtifactId, PeerId)>,
+) {
+    let mut fill = Some(awaiting(progress));
+    let mut attempts = Vec::new();
+    let reconstructed = timeout(Duration::from_secs(15), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => {
+                    let active = fill.as_ref().expect("a branch fill remains active");
+                    if !active.accepts_event(&event) {
+                        continue;
+                    }
+                    attempts.push((active.pending_artifact_id(), active.pending_peer_id()));
+                    let active = fill.take().unwrap();
+                    match active.on_event(client, event).unwrap() {
+                        ArtifactBlockCandidateBranchPayloadFillProgress::AwaitingResponse(next) => {
+                            fill = Some(next);
+                        }
+                        ArtifactBlockCandidateBranchPayloadFillProgress::Complete(reconstructed) => {
+                            return reconstructed;
+                        }
+                    }
+                }
+                event = first_server.next_event() => match event {
+                    NetworkEvent::InboundArtifactRequest(inbound) => {
+                        first_server
+                            .respond_artifact_from_payload_store(inbound, first_server_payloads)
+                            .unwrap();
+                    }
+                    NetworkEvent::InboundArtifactFailure { error, .. } => {
+                        panic!("first archive response failed: {error}")
+                    }
+                    _ => {}
+                },
+                event = second_server.next_event() => match event {
+                    NetworkEvent::InboundArtifactRequest(inbound) => {
+                        second_server
+                            .respond_artifact_from_payload_store(inbound, second_server_payloads)
+                            .unwrap();
+                    }
+                    NetworkEvent::InboundArtifactFailure { error, .. } => {
+                        panic!("second archive response failed: {error}")
+                    }
+                    _ => {}
+                },
+            }
+        }
+    })
+    .await
+    .expect("candidate branch payload fallback timed out");
+    (reconstructed, attempts)
 }
 
 #[test]
@@ -649,4 +844,940 @@ async fn one_payload_deadline_is_terminal_and_drains_without_archive() {
     assert!(network.pending.is_empty());
     assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
     assert!(payloads.is_empty().unwrap());
+}
+
+#[test]
+fn fallback_peer_validation_is_lazy_bounded_and_reports_lowest_raw_identity() {
+    let all_hit_directory = TestDirectory::new("candidate-branch-fallback-lazy-validation");
+    let all_hit_selected = create_journal(all_hit_directory.path()).unwrap();
+    let all_hit_before = snapshot(&all_hit_directory, &all_hit_selected);
+    let branch = dependency_branch();
+    let target = branch.blocks[1].id();
+    let mut all_hit_candidates = candidate_store(&all_hit_directory);
+    insert_candidates(&mut all_hit_candidates, &branch.blocks);
+    let all_hit_candidate_bytes = candidate_store_bytes(&all_hit_directory);
+    let mut all_hit_payloads = payload_store(&all_hit_directory);
+    seed_payloads(&mut all_hit_payloads, &branch.payloads);
+    let invalid_peers = peer_ids(MAX_STATIC_PEERS + 1);
+    let duplicate_unknown = [invalid_peers[0], invalid_peers[0]];
+    let mut all_hit_network = test_network_for_peers(&[]);
+
+    for peer_ids in [&[][..], &invalid_peers[..], &duplicate_unknown[..]] {
+        let reconstructed = complete(
+            all_hit_network
+                .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                    &all_hit_selected,
+                    &mut all_hit_candidates,
+                    &mut all_hit_payloads,
+                    peer_ids,
+                    target,
+                    reconstruction_limits(2),
+                )
+                .unwrap(),
+        );
+        assert_eq!(reconstructed.target_block_id(), target);
+        assert_eq!(reconstructed.snapshot().artifact_set_root(), branch.root);
+    }
+    assert!(matches!(
+        all_hit_network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &all_hit_selected,
+                &mut all_hit_candidates,
+                &mut all_hit_payloads,
+                &[],
+                target,
+                reconstruction_limits(1),
+            ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::Reconstruction { source })
+            if matches!(
+                source.as_ref(),
+                CandidateBranchReconstructionError::BlockLimitExceeded { maximum: 1, .. }
+            )
+    ));
+    assert!(all_hit_network.pending.is_empty());
+    assert_eq!(
+        candidate_store_bytes(&all_hit_directory),
+        all_hit_candidate_bytes
+    );
+    assert_snapshot(&all_hit_directory, &all_hit_selected, &all_hit_before);
+
+    let miss_directory = TestDirectory::new("candidate-branch-fallback-peer-validation");
+    let miss_selected = create_journal(miss_directory.path()).unwrap();
+    let miss_before = snapshot(&miss_directory, &miss_selected);
+    let block = branch.blocks[0];
+    let mut miss_candidates = candidate_store(&miss_directory);
+    insert_candidates(&mut miss_candidates, std::slice::from_ref(&block));
+    let miss_candidate_bytes = candidate_store_bytes(&miss_directory);
+    let mut miss_payloads = payload_store(&miss_directory);
+    let mut configured = peer_ids(2);
+    configured.sort_unstable();
+    let mut network = test_network_for_peers(&configured);
+
+    assert!(matches!(
+        network.start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+            &miss_selected,
+            &mut miss_candidates,
+            &mut miss_payloads,
+            &[],
+            block.id(),
+            reconstruction_limits(1),
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::EmptyPayloadPeerSet)
+    ));
+
+    let too_many = peer_ids(MAX_STATIC_PEERS + 1);
+    assert!(matches!(
+        network.start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+            &miss_selected,
+            &mut miss_candidates,
+            &mut miss_payloads,
+            &too_many,
+            block.id(),
+            reconstruction_limits(1),
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::TooManyPayloadPeers {
+            actual,
+            maximum,
+        }) if actual == MAX_STATIC_PEERS + 1 && maximum == MAX_STATIC_PEERS
+    ));
+
+    let [lowest, highest] = configured.as_slice() else {
+        unreachable!("the fixture contains exactly two configured peers")
+    };
+    let unknown_before_duplicates = Keypair::generate_ed25519().public().to_peer_id();
+    let duplicate_order = [
+        unknown_before_duplicates,
+        *highest,
+        *lowest,
+        *highest,
+        *lowest,
+    ];
+    assert!(matches!(
+        network.start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+            &miss_selected,
+            &mut miss_candidates,
+            &mut miss_payloads,
+            &duplicate_order,
+            block.id(),
+            reconstruction_limits(1),
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::DuplicatePayloadPeer { peer_id })
+            if *peer_id == *lowest
+    ));
+
+    let mut unknown = peer_ids(2);
+    unknown.sort_unstable();
+    let unknown_order = [unknown[1], *highest, unknown[0]];
+    assert!(matches!(
+        network.start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+            &miss_selected,
+            &mut miss_candidates,
+            &mut miss_payloads,
+            &unknown_order,
+            block.id(),
+            reconstruction_limits(1),
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::UnknownPayloadPeer { peer_id })
+            if *peer_id == unknown[0]
+    ));
+    assert!(network.pending.is_empty());
+    assert!(miss_payloads.is_empty().unwrap());
+    assert_eq!(candidate_store_bytes(&miss_directory), miss_candidate_bytes);
+    assert_snapshot(&miss_directory, &miss_selected, &miss_before);
+}
+
+#[test]
+fn fallback_preserves_non_raw_caller_order_across_transport_codec_and_unavailable() {
+    let directory = TestDirectory::new("candidate-branch-fallback-order");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let branch = dependency_branch();
+    let block = branch.blocks[0];
+    let mut candidates = candidate_store(&directory);
+    insert_candidates(&mut candidates, std::slice::from_ref(&block));
+    let candidate_bytes = candidate_store_bytes(&directory);
+    let mut payloads = payload_store(&directory);
+    let mut raw_order = peer_ids(4);
+    raw_order.sort_unstable();
+    let caller_order = [raw_order[2], raw_order[0], raw_order[3], raw_order[1]];
+    assert_ne!(caller_order.as_slice(), raw_order.as_slice());
+    let mut network = test_network_for_peers(&raw_order);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &caller_order,
+                block.id(),
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    assert_eq!(fill.pending_peer_id(), caller_order[0]);
+
+    let event = artifact_failure_event(
+        &mut network,
+        caller_order[0],
+        request_response::OutboundFailure::Timeout,
+    );
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), caller_order[1]);
+
+    let codec_error = std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "invalid artifact response framing",
+    );
+    let event = artifact_failure_event(
+        &mut network,
+        caller_order[1],
+        request_response::OutboundFailure::Io(codec_error),
+    );
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), caller_order[2]);
+
+    let event = artifact_response_event(&mut network, caller_order[2], Vec::new());
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), caller_order[3]);
+
+    let event = artifact_response_event(&mut network, caller_order[3], branch.payloads[0].clone());
+    let reconstructed = complete(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(reconstructed.target_block_id(), block.id());
+    assert!(payloads.contains(block.artifact_id()).unwrap());
+    assert!(network.pending.is_empty());
+    assert_eq!(candidate_store_bytes(&directory), candidate_bytes);
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn fallback_skips_busy_and_disconnected_peers_but_the_eighth_succeeds() {
+    let directory = TestDirectory::new("candidate-branch-fallback-skips");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let branch = dependency_branch();
+    let block = branch.blocks[0];
+    let mut candidates = candidate_store(&directory);
+    insert_candidates(&mut candidates, std::slice::from_ref(&block));
+    let candidate_bytes = candidate_store_bytes(&directory);
+    let mut payloads = payload_store(&directory);
+    let peers = peer_ids(MAX_STATIC_PEERS);
+    let mut network = test_network_for_peers(&peers);
+
+    network
+        .request_artifact(
+            peers[0],
+            ArtifactRequest::new(naome_proof::ArtifactId::from_bytes([0xb1; 32])),
+        )
+        .unwrap();
+    for peer_id in &peers[1..MAX_STATIC_PEERS - 1] {
+        network
+            .swarm
+            .behaviour_mut()
+            .sessions
+            .mark_disconnected_for_test(*peer_id);
+    }
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                block.id(),
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    assert_eq!(fill.pending_peer_id(), peers[MAX_STATIC_PEERS - 1]);
+    assert_eq!(network.pending.len(), 2);
+    let event = artifact_response_event(
+        &mut network,
+        peers[MAX_STATIC_PEERS - 1],
+        branch.payloads[0].clone(),
+    );
+    let reconstructed = complete(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(reconstructed.target_block_id(), block.id());
+    assert_eq!(network.pending.len(), 1);
+
+    drop(artifact_response_event(&mut network, peers[0], Vec::new()));
+    assert!(network.pending.is_empty());
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    assert_eq!(candidate_store_bytes(&directory), candidate_bytes);
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn fallback_distinguishes_no_requestable_peer_from_last_terminal_exhaustion() {
+    let directory = TestDirectory::new("candidate-branch-fallback-exhaustion");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let branch = dependency_branch();
+    let block = branch.blocks[0];
+    let mut candidates = candidate_store(&directory);
+    insert_candidates(&mut candidates, std::slice::from_ref(&block));
+    let candidate_bytes = candidate_store_bytes(&directory);
+    let mut payloads = payload_store(&directory);
+    let peers = peer_ids(2);
+    let mut network = test_network_for_peers(&peers);
+
+    network
+        .request_artifact(
+            peers[0],
+            ArtifactRequest::new(naome_proof::ArtifactId::from_bytes([0xb2; 32])),
+        )
+        .unwrap();
+    network
+        .swarm
+        .behaviour_mut()
+        .sessions
+        .mark_disconnected_for_test(peers[1]);
+    assert!(matches!(
+        network.start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &mut payloads,
+            &peers,
+            block.id(),
+            reconstruction_limits(1),
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::NoRequestablePayloadPeer {
+            block_id,
+            artifact_id,
+        }) if block_id == block.id() && artifact_id == block.artifact_id()
+    ));
+    drop(artifact_response_event(&mut network, peers[0], Vec::new()));
+    network
+        .swarm
+        .behaviour_mut()
+        .sessions
+        .mark_connected_for_test(peers[1]);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                block.id(),
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    let event = artifact_response_event(&mut network, peers[0], Vec::new());
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[1]);
+    let event = artifact_failure_event(
+        &mut network,
+        peers[1],
+        request_response::OutboundFailure::Timeout,
+    );
+    assert!(matches!(
+        fill.on_event(&mut network, event),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::ArtifactRequestFailed {
+            peer_id,
+            block_id,
+            artifact_id,
+            source,
+        }) if *peer_id == peers[1]
+            && block_id == block.id()
+            && artifact_id == block.artifact_id()
+            && matches!(
+                source.as_ref(),
+                OutboundArtifactFailure::Transport(request_response::OutboundFailure::Timeout)
+            )
+    ));
+    assert!(network.pending.is_empty());
+    assert!(payloads.is_empty().unwrap());
+    assert_eq!(candidate_store_bytes(&directory), candidate_bytes);
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn fallback_global_request_capacity_is_terminal_without_peer_rotation() {
+    let directory = TestDirectory::new("candidate-branch-fallback-global-capacity");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let branch = dependency_branch();
+    let block = branch.blocks[0];
+    let mut candidates = candidate_store(&directory);
+    insert_candidates(&mut candidates, std::slice::from_ref(&block));
+    let candidate_bytes = candidate_store_bytes(&directory);
+    let mut payloads = payload_store(&directory);
+    let peers = peer_ids(2);
+    let caller_order = [peers[1], peers[0]];
+    let mut network = test_network_for_peers(&peers);
+    let mut retained_terminals = Vec::new();
+
+    for index in 0..MAX_PENDING_REQUESTS {
+        network
+            .request_artifact(
+                peers[0],
+                ArtifactRequest::new(naome_proof::ArtifactId::from_bytes([index as u8; 32])),
+            )
+            .unwrap();
+        retained_terminals.push(artifact_response_event(&mut network, peers[0], Vec::new()));
+    }
+    assert_eq!(
+        network.pending_budget.active.load(Ordering::Relaxed),
+        MAX_PENDING_REQUESTS
+    );
+    assert!(matches!(
+        network.start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &mut payloads,
+            &caller_order,
+            block.id(),
+            reconstruction_limits(1),
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::RequestStart {
+            peer_id,
+            block_id,
+            artifact_id,
+            source,
+        }) if *peer_id == caller_order[0]
+            && block_id == block.id()
+            && artifact_id == block.artifact_id()
+            && matches!(
+                source.as_ref(),
+                RequestStartError::GlobalLimit { maximum } if *maximum == MAX_PENDING_REQUESTS
+            )
+    ));
+    assert!(network.pending.is_empty());
+    assert!(payloads.is_empty().unwrap());
+    drop(retained_terminals);
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    assert_eq!(candidate_store_bytes(&directory), candidate_bytes);
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[tokio::test(start_paused = true)]
+async fn fallback_shares_one_exact_deadline_across_all_attempts_for_one_artifact() {
+    assert_eq!(ARTIFACT_BLOCK_IMPORT_TIMEOUT, Duration::from_secs(120));
+    let directory = TestDirectory::new("candidate-branch-fallback-shared-deadline");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let branch = dependency_branch();
+    let block = branch.blocks[0];
+    let mut candidates = candidate_store(&directory);
+    insert_candidates(&mut candidates, std::slice::from_ref(&block));
+    let candidate_bytes = candidate_store_bytes(&directory);
+    let mut payloads = payload_store(&directory);
+    let peers = peer_ids(3);
+    let mut network = test_network_for_peers(&peers);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                block.id(),
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    tokio::time::advance(Duration::from_secs(40)).await;
+    let event = artifact_failure_event(
+        &mut network,
+        peers[0],
+        request_response::OutboundFailure::Timeout,
+    );
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[1]);
+
+    tokio::time::advance(Duration::from_secs(79)).await;
+    let event = artifact_response_event(&mut network, peers[1], Vec::new());
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[2]);
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let deadline = artifact_response_event(&mut network, peers[2], branch.payloads[0].clone());
+    assert!(fill.accepts_event(&deadline));
+    assert!(matches!(
+        fill.on_event(&mut network, deadline),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::ArtifactDeadlineExceeded {
+            peer_id,
+            block_id,
+            artifact_id,
+        }) if *peer_id == peers[2]
+            && block_id == block.id()
+            && artifact_id == block.artifact_id()
+    ));
+    assert!(network.pending.is_empty());
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    assert!(payloads.is_empty().unwrap());
+    assert_eq!(candidate_store_bytes(&directory), candidate_bytes);
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[tokio::test(start_paused = true)]
+async fn fallback_durable_acknowledgement_starts_a_fresh_next_artifact_deadline() {
+    let directory = TestDirectory::new("candidate-branch-fallback-fresh-deadline");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let branch = dependency_branch();
+    let first = branch.blocks[0];
+    let target = branch.blocks[1];
+    let mut candidates = candidate_store(&directory);
+    insert_candidates(&mut candidates, &branch.blocks);
+    let candidate_bytes = candidate_store_bytes(&directory);
+    let mut payloads = payload_store(&directory);
+    let peers = peer_ids(2);
+    let mut network = test_network_for_peers(&peers);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                target.id(),
+                reconstruction_limits(2),
+            )
+            .unwrap(),
+    );
+    tokio::time::advance(Duration::from_secs(119)).await;
+    let event = artifact_response_event(&mut network, peers[0], branch.payloads[0].clone());
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_block_id(), target.id());
+    assert_eq!(fill.pending_peer_id(), peers[0]);
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let event = artifact_response_event(&mut network, peers[0], branch.payloads[1].clone());
+    let reconstructed = complete(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(reconstructed.target_block_id(), target.id());
+    assert_eq!(reconstructed.snapshot().artifact_set_root(), branch.root);
+    assert!(payloads.contains(first.artifact_id()).unwrap());
+    assert!(payloads.contains(target.artifact_id()).unwrap());
+    assert!(network.pending.is_empty());
+    assert_eq!(candidate_store_bytes(&directory), candidate_bytes);
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn fallback_peer_mismatch_unexpected_and_found_failures_do_not_rotate() {
+    let directory = TestDirectory::new("candidate-branch-fallback-terminal-found");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let branch = dependency_branch();
+    let block = branch.blocks[0];
+    let mut candidates = candidate_store(&directory);
+    insert_candidates(&mut candidates, std::slice::from_ref(&block));
+    let candidate_bytes = candidate_store_bytes(&directory);
+    let mut payloads = payload_store(&directory);
+    let peers = peer_ids(2);
+    let mut network = test_network_for_peers(&peers);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                block.id(),
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    let event =
+        artifact_response_event_from(&mut network, peers[0], peers[1], branch.payloads[0].clone());
+    assert!(matches!(
+        fill.on_event(&mut network, event),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::ArtifactRequestFailed {
+            peer_id,
+            block_id,
+            artifact_id,
+            source,
+        }) if *peer_id == peers[0]
+            && block_id == block.id()
+            && artifact_id == block.artifact_id()
+            && matches!(
+                source.as_ref(),
+                OutboundArtifactFailure::PeerMismatch { expected, actual }
+                    if *expected == peers[0] && *actual == peers[1]
+            )
+    ));
+    assert!(network.pending.is_empty());
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                block.id(),
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    assert!(matches!(
+        fill.on_event(
+            &mut network,
+            NetworkEvent::Listening {
+                address: address(0)
+            }
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::UnexpectedEvent)
+    ));
+    assert_eq!(network.pending.len(), 1);
+    assert_eq!(
+        pending_artifact_request(&network, peers[0]).1.artifact_id(),
+        block.artifact_id()
+    );
+    assert!(matches!(
+        artifact_response_event(&mut network, peers[0], branch.payloads[0].clone()),
+        NetworkEvent::ArtifactCancellationDrained { .. }
+    ));
+    assert!(network.pending.is_empty());
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                block.id(),
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    let event = artifact_response_event(&mut network, peers[0], branch.payloads[0].clone());
+    let mut other_network = test_network_for_peers(&peers);
+    assert!(matches!(
+        fill.on_event(&mut other_network, event),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::UnexpectedEvent)
+    ));
+    assert!(network.pending.is_empty());
+    assert!(other_network.pending.is_empty());
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                block.id(),
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    let event = artifact_response_event(&mut network, peers[0], union_bytes());
+    assert!(matches!(
+        fill.on_event(&mut network, event),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::Reconstruction { source })
+            if matches!(
+                source.as_ref(),
+                CandidateBranchReconstructionError::BlockValidation { block_id, .. }
+                    if *block_id == block.id()
+            )
+    ));
+    assert!(network.pending.is_empty());
+    assert!(payloads.is_empty().unwrap());
+    assert_eq!(candidate_store_bytes(&directory), candidate_bytes);
+    assert_snapshot(&directory, &selected, &before);
+
+    let capacity_directory = TestDirectory::new("candidate-branch-fallback-archive-failure");
+    let capacity_selected = create_journal(capacity_directory.path()).unwrap();
+    let capacity_before = snapshot(&capacity_directory, &capacity_selected);
+    let mut capacity_candidates = candidate_store(&capacity_directory);
+    insert_candidates(&mut capacity_candidates, std::slice::from_ref(&block));
+    let capacity_candidate_bytes = candidate_store_bytes(&capacity_directory);
+    let maximum = u64::try_from(branch.payloads[0].len()).unwrap() - 1;
+    let mut capacity_payloads = CanonicalArtifactPayloadStore::create(
+        capacity_directory.path(),
+        payload_limits(1, maximum),
+    )
+    .unwrap();
+    let mut capacity_network = test_network_for_peers(&peers);
+    let fill = awaiting(
+        capacity_network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &capacity_selected,
+                &mut capacity_candidates,
+                &mut capacity_payloads,
+                &peers,
+                block.id(),
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    let event =
+        artifact_response_event(&mut capacity_network, peers[0], branch.payloads[0].clone());
+    assert!(matches!(
+        fill.on_event(&mut capacity_network, event),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::Reconstruction { source })
+            if matches!(
+                source.as_ref(),
+                CandidateBranchReconstructionError::PayloadArchive {
+                    block_id,
+                    artifact_id,
+                    source,
+                } if *block_id == block.id()
+                    && *artifact_id == block.artifact_id()
+                    && matches!(
+                        source.as_ref(),
+                        CanonicalArtifactPayloadStoreError::PayloadByteLimitExceeded {
+                            maximum: error_maximum,
+                            ..
+                        } if *error_maximum == maximum
+                    )
+            )
+    ));
+    assert!(capacity_network.pending.is_empty());
+    assert!(capacity_payloads.is_empty().unwrap());
+    assert_eq!(
+        candidate_store_bytes(&capacity_directory),
+        capacity_candidate_bytes
+    );
+    assert_snapshot(&capacity_directory, &capacity_selected, &capacity_before);
+}
+
+#[test]
+fn fallback_resets_order_after_durable_payload_and_restart_skips_that_prefix() {
+    let directory = TestDirectory::new("candidate-branch-fallback-reset-restart");
+    let selected = create_journal(directory.path()).unwrap();
+    let before = snapshot(&directory, &selected);
+    let branch = dependency_branch();
+    let first = branch.blocks[0];
+    let target = branch.blocks[1];
+    let mut candidates = candidate_store(&directory);
+    insert_candidates(&mut candidates, &branch.blocks);
+    let candidate_bytes = candidate_store_bytes(&directory);
+    let limits = payload_limits(8, 1_000_000);
+    let mut payloads = CanonicalArtifactPayloadStore::create(directory.path(), limits).unwrap();
+    let peers = peer_ids(2);
+    let mut network = test_network_for_peers(&peers);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                target.id(),
+                reconstruction_limits(2),
+            )
+            .unwrap(),
+    );
+    let event = artifact_response_event(&mut network, peers[0], Vec::new());
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[1]);
+    let event = artifact_response_event(&mut network, peers[1], branch.payloads[0].clone());
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_block_id(), target.id());
+    assert_eq!(fill.pending_artifact_id(), target.artifact_id());
+    assert_eq!(fill.pending_peer_id(), peers[0]);
+    let event = artifact_failure_event(
+        &mut network,
+        peers[0],
+        request_response::OutboundFailure::Timeout,
+    );
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[1]);
+    let event = artifact_response_event(&mut network, peers[1], Vec::new());
+    assert!(matches!(
+        fill.on_event(&mut network, event),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::ArtifactUnavailable {
+            peer_id,
+            block_id,
+            artifact_id,
+        }) if *peer_id == peers[1]
+            && block_id == target.id()
+            && artifact_id == target.artifact_id()
+    ));
+    assert!(payloads.contains(first.artifact_id()).unwrap());
+    assert!(!payloads.contains(target.artifact_id()).unwrap());
+    let durable_prefix = payload_store_bytes(&directory);
+    assert!(network.pending.is_empty());
+    drop(network);
+    drop(payloads);
+
+    let mut payloads = CanonicalArtifactPayloadStore::open(directory.path(), limits).unwrap();
+    assert_eq!(payload_store_bytes(&directory), durable_prefix);
+    assert!(payloads.contains(first.artifact_id()).unwrap());
+    assert!(!payloads.contains(target.artifact_id()).unwrap());
+    let mut restarted = test_network_for_peers(&peers);
+    let fill = awaiting(
+        restarted
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                &peers,
+                target.id(),
+                reconstruction_limits(2),
+            )
+            .unwrap(),
+    );
+    assert_eq!(fill.pending_block_id(), target.id());
+    assert_eq!(fill.pending_peer_id(), peers[0]);
+    let event = artifact_response_event(&mut restarted, peers[0], branch.payloads[1].clone());
+    let reconstructed = complete(fill.on_event(&mut restarted, event).unwrap());
+    assert_eq!(reconstructed.target_block_id(), target.id());
+    assert_eq!(reconstructed.snapshot().artifact_set_root(), branch.root);
+    assert!(payloads.contains(first.artifact_id()).unwrap());
+    assert!(payloads.contains(target.artifact_id()).unwrap());
+    assert!(restarted.pending.is_empty());
+    assert_eq!(candidate_store_bytes(&directory), candidate_bytes);
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[tokio::test]
+async fn reopened_archives_recover_one_branch_from_two_authenticated_servers_without_selection() {
+    let branch = dependency_branch();
+    let first = branch.blocks[0];
+    let target = branch.blocks[1];
+    let server_limits = payload_limits(1, 1_000_000);
+
+    let first_server_directory = TestDirectory::new("candidate-branch-fallback-first-server");
+    let first_server_journal = create_journal(first_server_directory.path()).unwrap();
+    let first_server_selected = snapshot(&first_server_directory, &first_server_journal);
+    let mut first_server_payloads =
+        CanonicalArtifactPayloadStore::create(first_server_directory.path(), server_limits)
+            .unwrap();
+    let mut first_source = ArtifactDag::new();
+    let first_record = first_source
+        .apply_canonical_artifact_bytes(branch.payloads[0].clone())
+        .unwrap();
+    assert_eq!(
+        first_server_payloads.insert(first_record).unwrap(),
+        ArtifactPayloadInsertOutcome::Inserted
+    );
+    let first_server_archive = payload_store_bytes(&first_server_directory);
+    drop(first_server_payloads);
+    let mut first_server_payloads =
+        CanonicalArtifactPayloadStore::open(first_server_directory.path(), server_limits).unwrap();
+
+    let second_server_directory = TestDirectory::new("candidate-branch-fallback-second-server");
+    let second_server_journal = create_journal(second_server_directory.path()).unwrap();
+    let second_server_selected = snapshot(&second_server_directory, &second_server_journal);
+    let mut second_server_payloads =
+        CanonicalArtifactPayloadStore::create(second_server_directory.path(), server_limits)
+            .unwrap();
+    let mut second_source = ArtifactDag::new();
+    second_source
+        .apply_canonical_artifact_bytes(branch.payloads[0].clone())
+        .unwrap();
+    let second_record = second_source
+        .apply_canonical_artifact_bytes(branch.payloads[1].clone())
+        .unwrap();
+    assert_eq!(
+        second_server_payloads.insert(second_record).unwrap(),
+        ArtifactPayloadInsertOutcome::Inserted
+    );
+    let second_server_archive = payload_store_bytes(&second_server_directory);
+    drop(second_server_payloads);
+    let mut second_server_payloads =
+        CanonicalArtifactPayloadStore::open(second_server_directory.path(), server_limits).unwrap();
+
+    let client_directory = TestDirectory::new("candidate-branch-fallback-client");
+    let client_journal = create_journal(client_directory.path()).unwrap();
+    let client_selected = snapshot(&client_directory, &client_journal);
+    let mut candidates = candidate_store(&client_directory);
+    insert_candidates(&mut candidates, &branch.blocks);
+    let client_candidate_bytes = candidate_store_bytes(&client_directory);
+    let client_payload_limits = payload_limits(2, 1_000_000);
+    let mut client_payloads =
+        CanonicalArtifactPayloadStore::create(client_directory.path(), client_payload_limits)
+            .unwrap();
+
+    for artifact_id in [first.artifact_id(), target.artifact_id()] {
+        assert!(
+            first_server_journal
+                .artifact(artifact_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            second_server_journal
+                .artifact(artifact_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(client_journal.artifact(artifact_id).unwrap().is_none());
+    }
+
+    let (
+        mut client,
+        mut first_server,
+        mut second_server,
+        first_server_peer_id,
+        second_server_peer_id,
+    ) = connected_archive_triplet().await;
+    let peer_order = [first_server_peer_id, second_server_peer_id];
+    let progress = client
+        .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+            &client_journal,
+            &mut candidates,
+            &mut client_payloads,
+            &peer_order,
+            target.id(),
+            reconstruction_limits(2),
+        )
+        .unwrap();
+    let (reconstructed, attempts) = complete_fallback_branch_fill(
+        &mut client,
+        &mut first_server,
+        &mut second_server,
+        &mut first_server_payloads,
+        &mut second_server_payloads,
+        progress,
+    )
+    .await;
+
+    assert_eq!(
+        attempts,
+        vec![
+            (first.artifact_id(), first_server_peer_id),
+            (target.artifact_id(), first_server_peer_id),
+            (target.artifact_id(), second_server_peer_id),
+        ]
+    );
+    assert_eq!(reconstructed.target_block_id(), target.id());
+    assert_eq!(reconstructed.block_count(), 2);
+    assert_eq!(reconstructed.snapshot().artifact_set_root(), branch.root);
+    assert!(client_payloads.contains(first.artifact_id()).unwrap());
+    assert!(client_payloads.contains(target.artifact_id()).unwrap());
+    assert_eq!(first_server_payloads.len().unwrap(), 1);
+    assert_eq!(second_server_payloads.len().unwrap(), 1);
+    assert_eq!(
+        payload_store_bytes(&first_server_directory),
+        first_server_archive
+    );
+    assert_eq!(
+        payload_store_bytes(&second_server_directory),
+        second_server_archive
+    );
+    assert_eq!(
+        candidate_store_bytes(&client_directory),
+        client_candidate_bytes
+    );
+    assert_snapshot(&client_directory, &client_journal, &client_selected);
+    assert_snapshot(
+        &first_server_directory,
+        &first_server_journal,
+        &first_server_selected,
+    );
+    assert_snapshot(
+        &second_server_directory,
+        &second_server_journal,
+        &second_server_selected,
+    );
+
+    drop(client_payloads);
+    let reopened_client =
+        CanonicalArtifactPayloadStore::open(client_directory.path(), client_payload_limits)
+            .unwrap();
+    assert_eq!(reopened_client.len().unwrap(), 2);
 }

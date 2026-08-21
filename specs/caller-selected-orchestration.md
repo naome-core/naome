@@ -371,6 +371,54 @@ branch, records peer provenance, chooses a target or peer, starts background
 work, or establishes global availability, peer trust, consensus ancestry,
 consensus, finality, economics, or protocol-wide resource authority.
 
+### Caller-ordered candidate-branch payload fallback
+
+`StaticArtifactNetwork::start_artifact_block_candidate_branch_payload_fill_with_peer_fallback`
+is a separate opt-in mode. It accepts the same exact target, caller-routed
+stores and journal, and positive local reconstruction limit as the direct mode,
+plus one caller-ordered payload-peer slice. The direct single-peer API and its
+no-fallback behavior remain unchanged.
+
+The complete candidate-block path is integrity-read and structurally checked
+before payload traffic exactly as in the direct mode. The reconstruction cursor
+then integrity-reads and fully revalidates every archive hit before inspecting
+the fallback slice. A fully archived branch therefore completes without
+validating or using any fallback peer. Only at the first archive miss does the
+mode reject an empty slice or one longer than `MAX_STATIC_PEERS`, then the
+lowest raw duplicate `PeerId`, then the lowest raw `PeerId` absent from the
+network's static configuration. A valid slice retains the caller's exact order;
+it is not sorted for execution.
+
+For each missing `ArtifactId`, the mode creates one fresh 120-second absolute
+deadline shared by every attempt for that address, tries each listed peer at
+most once, and keeps at most one request active. An `AlreadyPending` or
+`PeerDisconnected` start is skipped. Any other request-start error is terminal.
+A matched transport failure, including a framing or codec failure, or an
+authenticated `Unavailable` response may advance to the next caller-ordered
+peer. Deadline expiry, `PeerMismatch`, an unmatched event, or an event from
+another network instance is terminal and never rotates. If every listed peer
+is skipped before an attempt starts, the mode reports that no listed peer could
+request the address. If a matched retryable terminal has already occurred and
+all later peers are skipped, that last terminal remains the exact error.
+
+A found response ends fallback for that address. Its owned opaque bytes pass
+immediately to the same strict branch validation-and-archive gate as the direct
+mode. Malformed or noncanonical bytes, identity, mathematical, dependency, or
+novelty failure, and every reconstruction or archive error are terminal and do
+not try another peer. Only a successful durable insertion or exact idempotent
+confirmation permits the cursor to advance. The complete caller-ordered peer
+set and a new per-address deadline are then reset for the next archive miss;
+there is no aggregate branch deadline.
+
+Every acknowledged archive entry survives a later ordinary failure. A fresh
+explicit caller start revalidates that durable prefix and can resume at the next
+miss. The fallback records no peer provenance and defines no automatic retry,
+resume, scheduling, or background task. It does not fetch an absent candidate
+block, mutate the candidate store or journal, persist, import, promote, select,
+rank, reorganize, or roll back a branch, choose the target or peer order, or
+establish peer trust, reachability, global availability, consensus ancestry,
+consensus, finality, economics, or protocol-wide resource authority.
+
 ## Sequential ancestry import
 
 `ArtifactBlockAncestryImport` consumes one completed unselected ancestry so the
