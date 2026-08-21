@@ -8,8 +8,8 @@ use crate::{
     ArtifactBlockCandidateStoreError, ArtifactBlockCandidateStoreLimits,
     ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits, CandidateBranchPayloadArchiveError,
     CandidateBranchReconstructionError, CandidateBranchReconstructionLimits,
-    CandidateBranchReconstructionLimitsError, CanonicalArtifactPayloadStore,
-    CanonicalArtifactPayloadStoreError,
+    CandidateBranchReconstructionLimitsError, CandidateBranchReconstructionProgress,
+    CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError,
 };
 
 const CANDIDATE_STORE_FILE_NAME: &str = "artifact-block-candidate-store.log";
@@ -321,6 +321,241 @@ fn reconstruction_rebuilds_branch_only_dependencies_from_a_historical_selected_f
         fs::read(directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
         payload_image
     );
+}
+
+#[test]
+fn reconstruction_cursor_archives_each_missing_payload_and_restarts_from_the_durable_prefix() {
+    let directory = TestDirectory::new();
+    let definition = chain_definition(CHAIN_BYTE);
+    let genesis = definition.id().virtual_genesis_block_id();
+    let (branch_payloads, artifact_ids) = dependency_chain_with_len(2);
+    let mut branch = ArtifactChainState::new(definition);
+    let first = branch.prepare_block(artifact_ids[0]).unwrap();
+    branch
+        .apply_block(&first, branch_payloads[0].clone())
+        .unwrap();
+    let target = branch.prepare_block(artifact_ids[1]).unwrap();
+    branch
+        .apply_block(&target, branch_payloads[1].clone())
+        .unwrap();
+    let expected_root = branch.artifact_dag().artifact_set_root();
+
+    let mut journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
+    let mut candidates =
+        ArtifactBlockCandidateStore::create(&directory.path, definition, candidate_limits(2))
+            .unwrap();
+    insert_candidates(&mut candidates, &[first, target]);
+    let mut payloads = CanonicalArtifactPayloadStore::create(
+        &directory.path,
+        payload_limits(
+            2,
+            branch_payloads.iter().map(Vec::len).sum::<usize>() as u64,
+        ),
+    )
+    .unwrap();
+    let candidate_image = fs::read(directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap();
+
+    let first_cursor = match journal
+        .start_candidate_branch_reconstruction(
+            target.id(),
+            &mut candidates,
+            &mut payloads,
+            reconstruction_limits(2),
+        )
+        .unwrap()
+    {
+        CandidateBranchReconstructionProgress::AwaitingPayload(cursor) => cursor,
+        CandidateBranchReconstructionProgress::Complete(_) => {
+            panic!("empty payload archive unexpectedly completed reconstruction")
+        }
+    };
+    assert_eq!(first_cursor.target_block_id(), target.id());
+    assert_eq!(first_cursor.pending_block_id(), first.id());
+    assert_eq!(first_cursor.pending_artifact_id(), artifact_ids[0]);
+
+    let selected_sibling_payload = axiom_bytes(ZfcAxiom::PowerSet);
+    let selected_sibling = journal
+        .prepare_block(artifact_id(&selected_sibling_payload))
+        .unwrap();
+    journal
+        .apply_block(&selected_sibling, selected_sibling_payload)
+        .unwrap();
+    let selected_head = journal.head_block_id().unwrap();
+    let selected_root = journal.artifact_set_root().unwrap();
+    let selected_len = journal.len().unwrap();
+    let journal_image = fs::read(directory.journal_path()).unwrap();
+
+    let second_cursor = match first_cursor
+        .validate_and_archive_pending_payload(branch_payloads[0].clone())
+        .unwrap()
+    {
+        CandidateBranchReconstructionProgress::AwaitingPayload(cursor) => cursor,
+        CandidateBranchReconstructionProgress::Complete(_) => {
+            panic!("one missing payload unexpectedly completed a two-block reconstruction")
+        }
+    };
+    assert_eq!(second_cursor.target_block_id(), target.id());
+    assert_eq!(second_cursor.pending_block_id(), target.id());
+    assert_eq!(second_cursor.pending_artifact_id(), artifact_ids[1]);
+    drop(second_cursor);
+    assert_eq!(payloads.len().unwrap(), 1);
+    assert_eq!(
+        payloads
+            .get(artifact_ids[0])
+            .unwrap()
+            .unwrap()
+            .canonical_artifact_bytes(),
+        branch_payloads[0]
+    );
+
+    let restarted_cursor = match journal
+        .start_candidate_branch_reconstruction(
+            target.id(),
+            &mut candidates,
+            &mut payloads,
+            reconstruction_limits(2),
+        )
+        .unwrap()
+    {
+        CandidateBranchReconstructionProgress::AwaitingPayload(cursor) => cursor,
+        CandidateBranchReconstructionProgress::Complete(_) => {
+            panic!("incomplete durable prefix unexpectedly completed reconstruction")
+        }
+    };
+    assert_eq!(restarted_cursor.target_block_id(), target.id());
+    assert_eq!(restarted_cursor.pending_block_id(), target.id());
+    assert_eq!(restarted_cursor.pending_artifact_id(), artifact_ids[1]);
+
+    let reconstructed = match restarted_cursor
+        .validate_and_archive_pending_payload(branch_payloads[1].clone())
+        .unwrap()
+    {
+        CandidateBranchReconstructionProgress::AwaitingPayload(_) => {
+            panic!("complete payload archive still awaited a payload")
+        }
+        CandidateBranchReconstructionProgress::Complete(reconstructed) => reconstructed,
+    };
+    assert_eq!(reconstructed.anchor_block_id(), genesis);
+    assert_eq!(reconstructed.target_block_id(), target.id());
+    assert_eq!(reconstructed.block_count(), 2);
+    assert_eq!(reconstructed.snapshot().artifact_set_root(), expected_root);
+    assert_eq!(payloads.len().unwrap(), 2);
+    assert_eq!(journal.head_block_id().unwrap(), selected_head);
+    assert_eq!(journal.artifact_set_root().unwrap(), selected_root);
+    assert_eq!(journal.len().unwrap(), selected_len);
+    assert_eq!(fs::read(directory.journal_path()).unwrap(), journal_image);
+    assert_eq!(
+        fs::read(directory.path.join(CANDIDATE_STORE_FILE_NAME)).unwrap(),
+        candidate_image
+    );
+}
+
+#[test]
+fn reconstruction_cursor_maps_supplied_validation_and_archive_failures() {
+    let validation_directory = TestDirectory::new();
+    let definition = chain_definition(CHAIN_BYTE);
+    let payload = axiom_bytes(ZfcAxiom::Pairing);
+    let expected_id = artifact_id(&payload);
+    let journal = ArtifactChainJournal::create(&validation_directory.path, definition).unwrap();
+    let block = journal.prepare_block(expected_id).unwrap();
+    let mut candidates = ArtifactBlockCandidateStore::create(
+        &validation_directory.path,
+        definition,
+        candidate_limits(1),
+    )
+    .unwrap();
+    insert_candidates(&mut candidates, std::slice::from_ref(&block));
+    let mut payloads = CanonicalArtifactPayloadStore::create(
+        &validation_directory.path,
+        payload_limits(1, payload.len() as u64),
+    )
+    .unwrap();
+    let cursor = match journal
+        .start_candidate_branch_reconstruction(
+            block.id(),
+            &mut candidates,
+            &mut payloads,
+            reconstruction_limits(1),
+        )
+        .unwrap()
+    {
+        CandidateBranchReconstructionProgress::AwaitingPayload(cursor) => cursor,
+        CandidateBranchReconstructionProgress::Complete(_) => {
+            panic!("empty payload archive unexpectedly completed reconstruction")
+        }
+    };
+    assert!(matches!(
+        cursor.validate_and_archive_pending_payload(vec![0]),
+        Err(CandidateBranchReconstructionError::BlockValidation {
+            block_id,
+            ..
+        }) if block_id == block.id()
+    ));
+    assert!(payloads.is_empty().unwrap());
+
+    let archive_directory = TestDirectory::new();
+    let journal = ArtifactChainJournal::create(&archive_directory.path, definition).unwrap();
+    let block = journal.prepare_block(expected_id).unwrap();
+    let mut candidates = ArtifactBlockCandidateStore::create(
+        &archive_directory.path,
+        definition,
+        candidate_limits(1),
+    )
+    .unwrap();
+    insert_candidates(&mut candidates, std::slice::from_ref(&block));
+    let retained_payload = axiom_bytes(ZfcAxiom::Union);
+    let retained_id = artifact_id(&retained_payload);
+    let mut payloads = CanonicalArtifactPayloadStore::create(
+        &archive_directory.path,
+        payload_limits(1, retained_payload.len() as u64),
+    )
+    .unwrap();
+    archive_payloads(
+        &mut payloads,
+        std::slice::from_ref(&retained_payload),
+        std::slice::from_ref(&retained_id),
+    );
+    let committed = fs::read(archive_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap();
+    let cursor = match journal
+        .start_candidate_branch_reconstruction(
+            block.id(),
+            &mut candidates,
+            &mut payloads,
+            reconstruction_limits(1),
+        )
+        .unwrap()
+    {
+        CandidateBranchReconstructionProgress::AwaitingPayload(cursor) => cursor,
+        CandidateBranchReconstructionProgress::Complete(_) => {
+            panic!("unrelated retained payload unexpectedly completed reconstruction")
+        }
+    };
+    let archive_error = cursor
+        .validate_and_archive_pending_payload(payload)
+        .unwrap_err();
+    assert!(matches!(
+        &archive_error,
+        CandidateBranchReconstructionError::PayloadArchive {
+            block_id,
+            artifact_id,
+            source,
+        } if *block_id == block.id()
+            && *artifact_id == expected_id
+            && matches!(
+                source.as_ref(),
+                CanonicalArtifactPayloadStoreError::EntryLimitExceeded {
+                    actual: 2,
+                    maximum: 1,
+                }
+            )
+    ));
+    assert!(archive_error.to_string().contains("could not be archived"));
+    assert!(std::error::Error::source(&archive_error).is_some());
+    assert_eq!(
+        fs::read(archive_directory.path.join(PAYLOAD_STORE_FILE_NAME)).unwrap(),
+        committed
+    );
+    assert!(!payloads.contains(expected_id).unwrap());
 }
 
 #[test]
