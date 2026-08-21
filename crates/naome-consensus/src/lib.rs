@@ -1,6 +1,6 @@
 //! Numeric coordinate, position-scoped weighted agreement arithmetic, and
-//! authenticated agreement-evidence and producer-authorization verification
-//! for NAOME consensus.
+//! authenticated agreement-evidence, producer-authorization, and canonical
+//! consensus-value envelope verification for NAOME consensus.
 //!
 //! This crate projects caller-supplied positive height values into numeric
 //! non-genesis epochs, evaluates a caller-supplied epoch's numeric linear
@@ -14,17 +14,22 @@
 //! role-complete quorum certificates against that exact caller-supplied
 //! snapshot; and verifies one fixed producer authorization for an opaque
 //! proposal signing root against a caller-designated active proposer at the
-//! same position. It does not establish canonical blocks, checkpoints,
-//! genesis allocations, proposal
-//! validity, selected validator-set provenance, finality, ancestry, genesis
+//! same position. It also derives one evidence-free proposal signing root and
+//! consensus-ancestry identity from a strict V0 value, then verifies that one
+//! producer authorization and one non-nil precommit certificate authenticate
+//! that exact value before validating its artifact transition against a
+//! caller-supplied immutable branch snapshot. It does not establish canonical
+//! checkpoints, genesis allocations, consensus-state-commitment derivation,
+//! selected validator-set or proposer provenance, durable finality, genesis
 //! state, or persistence; select validators; create signatures; authorize
-//! cancellation; mutate a chain; or run a Byzantine-fault-tolerant state
-//! machine.
+//! cancellation; mutate a selected chain; or run a Byzantine-fault-tolerant
+//! state machine.
 
 use std::error::Error;
 use std::fmt;
 
 mod agreement_evidence;
+mod consensus_value;
 mod producer_authorization;
 
 pub use agreement_evidence::{
@@ -34,6 +39,10 @@ pub use agreement_evidence::{
     PrecommitCertificateVerifyError, ProposalSigningRoot, QuorumCertificateId,
     QuorumCertificateVerifyError, VerifiedConsensusVoteV0, VerifiedPrecommitCertificateV0,
     VerifiedQuorumCertificateV0,
+};
+pub use consensus_value::{
+    ConsensusAncestryId, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,
+    ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0, VerifiedConsensusEnvelopeV0,
 };
 pub use producer_authorization::{
     ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,
