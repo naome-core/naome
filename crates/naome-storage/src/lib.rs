@@ -22,6 +22,7 @@
 mod block_candidate_store;
 mod candidate_branch_archive_import;
 mod candidate_branch_reconstruction;
+mod candidate_branch_recovery_bundle;
 #[cfg(test)]
 mod fault_io;
 mod payload_store;
@@ -38,6 +39,13 @@ pub use candidate_branch_archive_import::{
     CandidateBranchArchiveImportCommitError, CandidateBranchArchiveImportError,
     CandidateBranchArchiveImportLimits, CandidateBranchArchiveImportLimitsError,
     CandidateBranchArchiveImportOutcome, CandidateBranchArchiveImportPreflightError,
+};
+
+pub use candidate_branch_recovery_bundle::{
+    CandidateBranchRecoveryBundleCommitError, CandidateBranchRecoveryBundleDecodeError,
+    CandidateBranchRecoveryBundleExportError, CandidateBranchRecoveryBundleImportError,
+    CandidateBranchRecoveryBundleImportOutcome, CandidateBranchRecoveryBundleLimits,
+    CandidateBranchRecoveryBundleLimitsError, CandidateBranchRecoveryBundleV0,
 };
 
 pub use candidate_branch_reconstruction::{
@@ -402,6 +410,16 @@ impl SelectedBlockIndex {
             self.blocks
                 .get(&block_id)
                 .map(|entry| entry.snapshot.clone())
+        }
+    }
+
+    fn artifact_set_root(&self, block_id: ArtifactBlockId) -> Option<ArtifactSetRoot> {
+        if block_id == self.genesis.head_block_id() {
+            Some(self.genesis.artifact_set_root())
+        } else {
+            self.blocks
+                .get(&block_id)
+                .map(|entry| entry.snapshot.artifact_set_root())
         }
     }
 
