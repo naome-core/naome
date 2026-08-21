@@ -20,6 +20,7 @@
 //! fork choice, consensus, finality, networking, or economic state.
 
 mod block_candidate_store;
+mod candidate_branch_archive_import;
 mod candidate_branch_reconstruction;
 #[cfg(test)]
 mod fault_io;
@@ -29,6 +30,12 @@ pub use block_candidate_store::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreError, ArtifactBlockCandidateStoreLimits,
     ArtifactBlockCandidateStoreLimitsError,
+};
+
+pub use candidate_branch_archive_import::{
+    CandidateBranchArchiveImportCommitError, CandidateBranchArchiveImportError,
+    CandidateBranchArchiveImportLimits, CandidateBranchArchiveImportLimitsError,
+    CandidateBranchArchiveImportOutcome, CandidateBranchArchiveImportPreflightError,
 };
 
 pub use candidate_branch_reconstruction::{
@@ -277,6 +284,14 @@ impl ArtifactChainJournal {
             .artifact_dag()
             .artifact_set_proof(artifact_id))
     }
+
+    fn reserve_selected_block_entries(
+        &mut self,
+        additional: usize,
+    ) -> Result<(), ArtifactChainJournalError> {
+        self.core.ensure_healthy()?;
+        self.core.blocks.reserve_entries(additional)
+    }
 }
 
 fn open_and_lock(directory: &Path) -> Result<File, ArtifactChainJournalError> {
@@ -391,6 +406,13 @@ impl SelectedBlockIndex {
     fn reserve_entry(&mut self, entry: u64) -> Result<(), ArtifactChainJournalError> {
         self.blocks
             .try_reserve(1)
+            .map_err(|_| ArtifactChainJournalError::BlockIndexAllocation { entry })
+    }
+
+    fn reserve_entries(&mut self, additional: usize) -> Result<(), ArtifactChainJournalError> {
+        let entry = u64::try_from(self.blocks.len()).expect("block index length fits u64");
+        self.blocks
+            .try_reserve(additional)
             .map_err(|_| ArtifactChainJournalError::BlockIndexAllocation { entry })
     }
 

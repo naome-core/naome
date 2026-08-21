@@ -230,6 +230,188 @@ impl fmt::Debug for CandidateBranchReconstructionCursor<'_> {
     }
 }
 
+pub(super) enum CandidateBranchPathAnchor {
+    NearestSelected,
+    ExactSelected {
+        block_id: ArtifactBlockId,
+        snapshot: ArtifactChainBranchSnapshot,
+    },
+}
+
+pub(super) struct CandidateBranchPath {
+    pub(super) anchor_block_id: ArtifactBlockId,
+    pub(super) snapshot: ArtifactChainBranchSnapshot,
+    pub(super) blocks: Vec<ArtifactBlock>,
+}
+
+#[derive(Debug)]
+pub(super) enum CandidateBranchPathError {
+    SelectedState {
+        source: Box<ArtifactChainJournalError>,
+    },
+    TargetAlreadySelected {
+        block_id: ArtifactBlockId,
+    },
+    CandidateBufferAllocation {
+        next_block_id: ArtifactBlockId,
+        retained_blocks: usize,
+    },
+    CandidateStoreRead {
+        block_id: ArtifactBlockId,
+        source: Box<ArtifactBlockCandidateStoreError>,
+    },
+    CandidateNotRetained {
+        block_id: ArtifactBlockId,
+    },
+    ArtifactSetRootMismatch {
+        preceding_block_id: ArtifactBlockId,
+        expected: ArtifactSetRoot,
+        actual: ArtifactSetRoot,
+    },
+    RepeatedBlockId {
+        block_id: ArtifactBlockId,
+    },
+    DivergentAncestry {
+        expected_anchor: ArtifactBlockId,
+        encountered: ArtifactBlockId,
+    },
+    BlockLimitExceeded {
+        maximum: usize,
+        next_block_id: ArtifactBlockId,
+    },
+}
+
+pub(super) fn collect_candidate_branch_path(
+    selected: &ArtifactChainJournal,
+    target_block_id: ArtifactBlockId,
+    candidates: &mut ArtifactBlockCandidateStore,
+    max_blocks: usize,
+    anchor: CandidateBranchPathAnchor,
+) -> Result<CandidateBranchPath, CandidateBranchPathError> {
+    if selected
+        .branch_snapshot_at(target_block_id)
+        .map_err(CandidateBranchPathError::selected_state)?
+        .is_some()
+    {
+        return Err(CandidateBranchPathError::TargetAlreadySelected {
+            block_id: target_block_id,
+        });
+    }
+
+    let mut reverse_blocks = Vec::<ArtifactBlock>::new();
+    let mut seen_block_ids = HashSet::<ArtifactBlockId>::new();
+    let mut next_block_id = target_block_id;
+    let (anchor_block_id, snapshot) = loop {
+        reverse_blocks.try_reserve(1).map_err(|_| {
+            CandidateBranchPathError::CandidateBufferAllocation {
+                next_block_id,
+                retained_blocks: reverse_blocks.len(),
+            }
+        })?;
+        seen_block_ids.try_reserve(1).map_err(|_| {
+            CandidateBranchPathError::CandidateBufferAllocation {
+                next_block_id,
+                retained_blocks: reverse_blocks.len(),
+            }
+        })?;
+        let block = candidates
+            .get(next_block_id)
+            .map_err(|source| CandidateBranchPathError::CandidateStoreRead {
+                block_id: next_block_id,
+                source: Box::new(source),
+            })?
+            .ok_or(CandidateBranchPathError::CandidateNotRetained {
+                block_id: next_block_id,
+            })?;
+        let block_id = block.id();
+        debug_assert_eq!(block_id, next_block_id);
+        if !seen_block_ids.insert(block_id) {
+            return Err(CandidateBranchPathError::RepeatedBlockId { block_id });
+        }
+
+        if let Some(child) = reverse_blocks.last() {
+            require_root_continuity(
+                block_id,
+                block.resulting_artifact_set_root(),
+                child.previous_artifact_set_root(),
+            )?;
+        }
+
+        let parent_block_id = block.parent_block_id();
+        match &anchor {
+            CandidateBranchPathAnchor::NearestSelected => {
+                if let Some(selected_snapshot) = selected
+                    .branch_snapshot_at(parent_block_id)
+                    .map_err(CandidateBranchPathError::selected_state)?
+                {
+                    require_root_continuity(
+                        parent_block_id,
+                        selected_snapshot.artifact_set_root(),
+                        block.previous_artifact_set_root(),
+                    )?;
+                    reverse_blocks.push(block);
+                    break (parent_block_id, selected_snapshot);
+                }
+            }
+            CandidateBranchPathAnchor::ExactSelected {
+                block_id: exact_anchor_block_id,
+                snapshot: exact_anchor_snapshot,
+            } => {
+                if parent_block_id == *exact_anchor_block_id {
+                    require_root_continuity(
+                        parent_block_id,
+                        exact_anchor_snapshot.artifact_set_root(),
+                        block.previous_artifact_set_root(),
+                    )?;
+                    reverse_blocks.push(block);
+                    break (*exact_anchor_block_id, exact_anchor_snapshot.clone());
+                }
+                if selected
+                    .branch_snapshot_at(parent_block_id)
+                    .map_err(CandidateBranchPathError::selected_state)?
+                    .is_some()
+                {
+                    return Err(CandidateBranchPathError::DivergentAncestry {
+                        expected_anchor: *exact_anchor_block_id,
+                        encountered: parent_block_id,
+                    });
+                }
+            }
+        }
+
+        if seen_block_ids.contains(&parent_block_id) {
+            return Err(CandidateBranchPathError::RepeatedBlockId {
+                block_id: parent_block_id,
+            });
+        }
+
+        if reverse_blocks.len() + 1 == max_blocks {
+            return Err(CandidateBranchPathError::BlockLimitExceeded {
+                maximum: max_blocks,
+                next_block_id: parent_block_id,
+            });
+        }
+
+        reverse_blocks.push(block);
+        next_block_id = parent_block_id;
+    };
+
+    reverse_blocks.reverse();
+    Ok(CandidateBranchPath {
+        anchor_block_id,
+        snapshot,
+        blocks: reverse_blocks,
+    })
+}
+
+impl CandidateBranchPathError {
+    fn selected_state(source: ArtifactChainJournalError) -> Self {
+        Self::SelectedState {
+            source: Box::new(source),
+        }
+    }
+}
+
 impl ArtifactChainJournal {
     /// Starts one exact retained candidate-branch reconstruction.
     ///
@@ -261,96 +443,21 @@ impl ArtifactChainJournal {
             });
         }
 
-        if self
-            .branch_snapshot_at(target_block_id)
-            .map_err(CandidateBranchReconstructionError::selected_state)?
-            .is_some()
-        {
-            return Err(CandidateBranchReconstructionError::TargetAlreadySelected {
-                block_id: target_block_id,
-            });
-        }
-
-        let mut reverse_blocks = Vec::<ArtifactBlock>::new();
-        let mut seen_block_ids = HashSet::<ArtifactBlockId>::new();
-        let mut next_block_id = target_block_id;
-        let (anchor_block_id, snapshot) = loop {
-            reverse_blocks.try_reserve(1).map_err(|_| {
-                CandidateBranchReconstructionError::CandidateBufferAllocation {
-                    next_block_id,
-                    retained_blocks: reverse_blocks.len(),
-                }
-            })?;
-            seen_block_ids.try_reserve(1).map_err(|_| {
-                CandidateBranchReconstructionError::CandidateBufferAllocation {
-                    next_block_id,
-                    retained_blocks: reverse_blocks.len(),
-                }
-            })?;
-            let block = candidates
-                .get(next_block_id)
-                .map_err(
-                    |source| CandidateBranchReconstructionError::CandidateStoreRead {
-                        block_id: next_block_id,
-                        source: Box::new(source),
-                    },
-                )?
-                .ok_or(CandidateBranchReconstructionError::CandidateNotRetained {
-                    block_id: next_block_id,
-                })?;
-            let block_id = block.id();
-            debug_assert_eq!(block_id, next_block_id);
-            if !seen_block_ids.insert(block_id) {
-                return Err(CandidateBranchReconstructionError::RepeatedBlockId { block_id });
-            }
-
-            if let Some(child) = reverse_blocks.last() {
-                require_root_continuity(
-                    block_id,
-                    block.resulting_artifact_set_root(),
-                    child.previous_artifact_set_root(),
-                )?;
-            }
-
-            let parent_block_id = block.parent_block_id();
-            if let Some(selected_snapshot) = self
-                .branch_snapshot_at(parent_block_id)
-                .map_err(CandidateBranchReconstructionError::selected_state)?
-            {
-                require_root_continuity(
-                    parent_block_id,
-                    selected_snapshot.artifact_set_root(),
-                    block.previous_artifact_set_root(),
-                )?;
-                reverse_blocks.push(block);
-                break (parent_block_id, selected_snapshot);
-            }
-
-            if seen_block_ids.contains(&parent_block_id) {
-                return Err(CandidateBranchReconstructionError::RepeatedBlockId {
-                    block_id: parent_block_id,
-                });
-            }
-
-            if reverse_blocks.len() + 1 == limits.max_blocks {
-                return Err(CandidateBranchReconstructionError::BlockLimitExceeded {
-                    maximum: limits.max_blocks,
-                    next_block_id: parent_block_id,
-                });
-            }
-
-            reverse_blocks.push(block);
-            next_block_id = parent_block_id;
-        };
-
-        reverse_blocks.reverse();
-        let block_count = reverse_blocks.len();
+        let path = collect_candidate_branch_path(
+            self,
+            target_block_id,
+            candidates,
+            limits.max_blocks,
+            CandidateBranchPathAnchor::NearestSelected,
+        )
+        .map_err(CandidateBranchReconstructionError::from_path)?;
+        let block_count = path.blocks.len();
         advance_candidate_branch_reconstruction(
-            anchor_block_id,
+            path.anchor_block_id,
             target_block_id,
             block_count,
-            snapshot,
-            reverse_blocks.into_iter(),
+            path.snapshot,
+            path.blocks.into_iter(),
             payloads,
         )
     }
@@ -447,15 +554,13 @@ fn require_root_continuity(
     preceding_block_id: ArtifactBlockId,
     expected: ArtifactSetRoot,
     actual: ArtifactSetRoot,
-) -> Result<(), CandidateBranchReconstructionError> {
+) -> Result<(), CandidateBranchPathError> {
     if expected != actual {
-        return Err(
-            CandidateBranchReconstructionError::ArtifactSetRootMismatch {
-                preceding_block_id,
-                expected,
-                actual,
-            },
-        );
+        return Err(CandidateBranchPathError::ArtifactSetRootMismatch {
+            preceding_block_id,
+            expected,
+            actual,
+        });
     }
     Ok(())
 }
@@ -525,9 +630,47 @@ pub enum CandidateBranchReconstructionError {
 }
 
 impl CandidateBranchReconstructionError {
-    fn selected_state(source: ArtifactChainJournalError) -> Self {
-        Self::SelectedState {
-            source: Box::new(source),
+    fn from_path(error: CandidateBranchPathError) -> Self {
+        match error {
+            CandidateBranchPathError::SelectedState { source } => Self::SelectedState { source },
+            CandidateBranchPathError::TargetAlreadySelected { block_id } => {
+                Self::TargetAlreadySelected { block_id }
+            }
+            CandidateBranchPathError::CandidateBufferAllocation {
+                next_block_id,
+                retained_blocks,
+            } => Self::CandidateBufferAllocation {
+                next_block_id,
+                retained_blocks,
+            },
+            CandidateBranchPathError::CandidateStoreRead { block_id, source } => {
+                Self::CandidateStoreRead { block_id, source }
+            }
+            CandidateBranchPathError::CandidateNotRetained { block_id } => {
+                Self::CandidateNotRetained { block_id }
+            }
+            CandidateBranchPathError::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            } => Self::ArtifactSetRootMismatch {
+                preceding_block_id,
+                expected,
+                actual,
+            },
+            CandidateBranchPathError::RepeatedBlockId { block_id } => {
+                Self::RepeatedBlockId { block_id }
+            }
+            CandidateBranchPathError::BlockLimitExceeded {
+                maximum,
+                next_block_id,
+            } => Self::BlockLimitExceeded {
+                maximum,
+                next_block_id,
+            },
+            CandidateBranchPathError::DivergentAncestry { .. } => {
+                unreachable!("nearest-selected reconstruction cannot encounter selected divergence")
+            }
         }
     }
 }
