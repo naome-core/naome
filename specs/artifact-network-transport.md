@@ -170,7 +170,13 @@ One network instance enforces:
 | One exact artifact-block import | 120 seconds monotonic |
 | Requests issued by one block import | at most 8 |
 | Candidate bodies retained by one block import | at most 1 |
-| Declared response bytes read by one block import | at most 33,554,440 |
+| Declared response-body bytes read per block-import attempt | at most 4,194,305 |
+| Cumulative declared response-body bytes across one block import | at most 33,554,440 |
+| Candidate-branch payload fallback | 120 seconds per missing `ArtifactId` |
+| Peer attempts per missing candidate-branch payload | at most 8 |
+| Candidate bodies retained by one candidate-branch payload fallback | at most 1 |
+| Declared response-body bytes read per candidate-branch payload attempt | at most 4,194,305 |
+| Cumulative declared response-body bytes per missing candidate-branch payload | at most 33,554,440 |
 | Blocks retained by one ancestry pull | 16 |
 | Managed-session idle expiry | effectively disabled; at most 8 sessions |
 | Pre-Noise inbound authentication burst/refill | 8 / 1 per second |
@@ -182,11 +188,17 @@ effectively disabled; static peer and connection caps bound retained sessions.
 Every timer requires continued caller polling.
 
 The eight shared permits jointly bound pending requests, quarantined artifact
-candidates, decoded blocks, heads, and receipts. At most eight maximum artifact
-buffers can be retained: 33,554,440 payload bytes. One block import tries at
-most eight configured peers for one immutable `ArtifactId`, so its maximum
-declared artifact-response ingress is the same 33,554,440 bytes. These limits do
-not include transient decoder, checker, or journal state.
+candidates, decoded blocks, heads, and receipts. Each artifact response buffer
+is capped at 4,194,305 body bytes, so eight caller-retained maximum responses
+can hold 33,554,440 body bytes in total. One block import and one opt-in
+candidate-branch payload fallback each try at most eight peers for one immutable
+`ArtifactId`. Because a retryable codec failure can occur after reading its
+declared body, cumulative declared response-body ingress across those attempts
+is capped at 33,554,440 bytes even though either workflow retains at most one
+such buffer at a time. The fallback's positive caller-local branch limit
+determines how many addresses one reconstruction may encounter. These limits do
+not include framing, transient decoder, checker, or journal state and create no
+protocol-wide branch work limit.
 
 Pending connection limits precede the global pre-Noise token bucket. The bucket
 starts with eight and refills one per monotonic second to eight. The inbound
@@ -309,6 +321,31 @@ equality wins over a simultaneous physical response. Cancellation releases any
 quarantined candidate and tombstones in-flight work; libp2p's eventual terminal
 is drained without exposing bytes or advancing import. Physical drain can
 outlive the logical deadline.
+
+## Caller-ordered candidate-branch payload fallback
+
+The separate opt-in candidate-branch payload fallback keeps the direct
+single-peer branch-recovery API unchanged. Retained branch shape and exact
+archive hits are checked before the caller-ordered slice is inspected, so an
+all-hit reconstruction neither validates nor contacts those peers. At the first
+miss, the fallback validates a nonempty slice of at most eight unique statically
+configured identities and preserves its exact caller order.
+
+One fresh 120-second absolute deadline spans every attempt for one missing
+`ArtifactId`; no later attempt resets it. Busy or disconnected peers are
+skipped, and a matched transport or codec failure or authenticated
+`Unavailable` response may rotate. Any other start failure, deadline,
+peer/network/event mismatch, found-payload validation failure, or archive error
+is terminal. A found response is never evidence for trying another peer: its
+opaque bytes must pass the existing strict target-context validation and be
+durably inserted or idempotently confirmed before reconstruction advances.
+
+After acknowledgement, the full caller order and a new per-address deadline
+apply to the next miss. There is no aggregate branch deadline, automatic retry,
+background scheduling, provenance record, or peer, target, candidate, or branch
+selection. The mode establishes no validity before strict checking, peer trust,
+global availability, consensus, finality, economic, or protocol-wide resource
+authority.
 
 ## Journal-backed serving
 

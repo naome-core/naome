@@ -44,9 +44,10 @@
 //! candidate payload through either a healthy archive hit or one exact
 //! caller-selected peer request, without selecting the candidate. It may also
 //! reconstruct one fully retained bounded candidate branch while retrieving
-//! each missing exact committed payload from one caller-selected peer; every
-//! acknowledged archive prefix is durable, but no partial branch snapshot is
-//! exposed. The caller also explicitly
+//! each missing exact committed payload from one caller-selected peer or through
+//! a separate bounded caller-ordered fallback sequence with one absolute
+//! deadline per missing address; every acknowledged archive prefix is durable,
+//! but no partial branch snapshot is exposed. The caller also explicitly
 //! admits a peer-record batch and may derive one owned canonical publication
 //! from exact fresh subjects retained by a peer-address store. The responder
 //! never reads that peer-address store and remains immutable after construction.

@@ -50,6 +50,11 @@ pub(super) struct ArtifactPayloadRequest {
     attempted_peers: u8,
 }
 
+pub(super) struct ArtifactPayloadRequestStarter {
+    control: Arc<ArtifactRequestControl>,
+    request: ArtifactRequest,
+}
+
 impl ArtifactPayloadRequest {
     fn new_controlled_request(
         network: &StaticArtifactNetwork,
@@ -136,6 +141,17 @@ impl ArtifactPayloadRequest {
         tokio::time::Instant::now() >= self.control().deadline
     }
 
+    pub(super) fn into_starter(mut self) -> ArtifactPayloadRequestStarter {
+        let control = self
+            .control
+            .take()
+            .expect("an active artifact payload request retains its control");
+        ArtifactPayloadRequestStarter {
+            control,
+            request: self.request,
+        }
+    }
+
     fn retry(
         mut self,
         network: &mut StaticArtifactNetwork,
@@ -178,6 +194,34 @@ impl ArtifactPayloadRequest {
 
     pub(super) fn disarm(&mut self) {
         self.control = None;
+    }
+}
+
+impl ArtifactPayloadRequestStarter {
+    pub(super) fn new(network: &StaticArtifactNetwork, artifact_id: ArtifactId) -> Self {
+        let (control, request) =
+            ArtifactPayloadRequest::new_controlled_request(network, artifact_id);
+        Self { control, request }
+    }
+
+    pub(super) fn deadline_expired(&self) -> bool {
+        tokio::time::Instant::now() >= self.control.deadline
+    }
+
+    pub(super) fn start(
+        &self,
+        network: &mut StaticArtifactNetwork,
+        peer_id: PeerId,
+    ) -> Result<ArtifactPayloadRequest, RequestStartError> {
+        let request_id =
+            network.request_controlled_artifact(peer_id, self.request, &self.control)?;
+        Ok(ArtifactPayloadRequest {
+            control: Some(Arc::clone(&self.control)),
+            peer_id,
+            request: self.request,
+            request_id,
+            attempted_peers: 0,
+        })
     }
 }
 
