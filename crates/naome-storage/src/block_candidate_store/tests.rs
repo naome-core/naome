@@ -1,6 +1,6 @@
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io;
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -73,6 +73,25 @@ fn block(parent: u8, proof: u8) -> ArtifactBlock {
         ArtifactSetRoot::from_bytes([proof.wrapping_add(2); ArtifactSetRoot::BYTE_LENGTH]),
         artifact_id(proof),
     )
+}
+
+fn child_block(parent_block_id: ArtifactBlockId, artifact: u8) -> ArtifactBlock {
+    ArtifactBlock::new(
+        parent_block_id,
+        ArtifactSetRoot::from_bytes([artifact.wrapping_add(1); ArtifactSetRoot::BYTE_LENGTH]),
+        ArtifactSetRoot::from_bytes([artifact.wrapping_add(2); ArtifactSetRoot::BYTE_LENGTH]),
+        artifact_id(artifact),
+    )
+}
+
+fn sorted_blocks(mut blocks: Vec<ArtifactBlock>) -> Vec<ArtifactBlock> {
+    blocks.sort_unstable_by_key(ArtifactBlock::id);
+    blocks
+}
+
+fn sorted_block_ids(mut block_ids: Vec<ArtifactBlockId>) -> Vec<ArtifactBlockId> {
+    block_ids.sort_unstable();
+    block_ids
 }
 
 fn prefix(definition: ArtifactChainDefinition) -> Vec<u8> {
@@ -149,6 +168,188 @@ fn limits_round_trip_idempotence_and_create_without_replacement_are_exact() {
         ArtifactBlockCandidateStore::open(&directory.path, chain_definition, limits(2)).unwrap();
     assert_eq!(reopened.get(candidate.id()).unwrap(), Some(candidate));
     assert_eq!(reopened.len().unwrap(), 1);
+}
+
+#[test]
+fn structural_inventory_limits_and_empty_snapshot_are_exact() {
+    assert_eq!(
+        ArtifactBlockCandidateInventoryLimits::new(0),
+        Err(ArtifactBlockCandidateInventoryLimitsError::ZeroMaxEntries)
+    );
+    let inventory_limits = ArtifactBlockCandidateInventoryLimits::new(1).unwrap();
+    assert_eq!(inventory_limits.max_entries(), 1);
+
+    let definition = chain_definition(0x11);
+    let directory = TestDirectory::new("empty-inventory");
+    let mut store =
+        ArtifactBlockCandidateStore::create(&directory.path, definition, limits(1)).unwrap();
+    let inventory = store.structural_inventory(inventory_limits).unwrap();
+    assert_eq!(inventory.chain_id(), definition.id());
+    assert!(inventory.is_empty());
+    assert_eq!(inventory.len(), 0);
+    assert!(inventory.blocks().is_empty());
+    assert!(inventory.local_leaf_block_ids().is_empty());
+
+    drop(store);
+    let mut reopened =
+        ArtifactBlockCandidateStore::open(&directory.path, definition, limits(1)).unwrap();
+    let reopened_inventory = reopened.structural_inventory(inventory_limits).unwrap();
+    assert_eq!(reopened_inventory.chain_id(), inventory.chain_id());
+    assert_eq!(reopened_inventory.blocks(), inventory.blocks());
+    assert_eq!(
+        reopened_inventory.local_leaf_block_ids(),
+        inventory.local_leaf_block_ids()
+    );
+}
+
+#[test]
+fn structural_inventory_is_raw_id_sorted_independent_of_append_order_and_reopen() {
+    let definition = chain_definition(0x11);
+    let candidates = vec![
+        block(0xf1, 0x21),
+        block(0xf2, 0x22),
+        block(0xf3, 0x23),
+        block(0xf4, 0x24),
+    ];
+    let expected_blocks = sorted_blocks(candidates.clone());
+    let expected_leaf_ids = sorted_block_ids(candidates.iter().map(ArtifactBlock::id).collect());
+    let inventory_limits = ArtifactBlockCandidateInventoryLimits::new(candidates.len()).unwrap();
+
+    let forward_directory = TestDirectory::new("inventory-forward");
+    let mut forward = ArtifactBlockCandidateStore::create(
+        &forward_directory.path,
+        definition,
+        limits(candidates.len()),
+    )
+    .unwrap();
+    for candidate in &candidates {
+        assert_eq!(
+            forward.insert(candidate).unwrap(),
+            ArtifactBlockCandidateInsertOutcome::Inserted
+        );
+    }
+    let forward_inventory = forward.structural_inventory(inventory_limits).unwrap();
+    assert_eq!(forward_inventory.chain_id(), definition.id());
+    assert_eq!(forward_inventory.blocks(), expected_blocks.as_slice());
+    assert_eq!(
+        forward_inventory.local_leaf_block_ids(),
+        expected_leaf_ids.as_slice()
+    );
+
+    let reverse_directory = TestDirectory::new("inventory-reverse");
+    let mut reverse = ArtifactBlockCandidateStore::create(
+        &reverse_directory.path,
+        definition,
+        limits(candidates.len()),
+    )
+    .unwrap();
+    for candidate in candidates.iter().rev() {
+        assert_eq!(
+            reverse.insert(candidate).unwrap(),
+            ArtifactBlockCandidateInsertOutcome::Inserted
+        );
+    }
+    let reverse_inventory = reverse.structural_inventory(inventory_limits).unwrap();
+    assert_eq!(reverse_inventory.blocks(), forward_inventory.blocks());
+    assert_eq!(
+        reverse_inventory.local_leaf_block_ids(),
+        forward_inventory.local_leaf_block_ids()
+    );
+
+    drop(reverse);
+    let mut reopened = ArtifactBlockCandidateStore::open(
+        &reverse_directory.path,
+        definition,
+        limits(candidates.len()),
+    )
+    .unwrap();
+    let reopened_inventory = reopened.structural_inventory(inventory_limits).unwrap();
+    assert_eq!(reopened_inventory.blocks(), expected_blocks.as_slice());
+    assert_eq!(
+        reopened_inventory.local_leaf_block_ids(),
+        expected_leaf_ids.as_slice()
+    );
+}
+
+#[test]
+fn local_leaf_projection_is_structural_across_siblings_orphans_and_junk_children() {
+    let definition = chain_definition(0x11);
+    let root = child_block(ArtifactBlockId::from_bytes([0xa0; 32]), 0x31);
+    let first_child = child_block(root.id(), 0x32);
+    let sibling = child_block(root.id(), 0x33);
+    let grandchild = child_block(first_child.id(), 0x34);
+    let orphan = child_block(ArtifactBlockId::from_bytes([0xb0; 32]), 0x35);
+
+    // This block is structurally encodable but deliberately does not continue
+    // `sibling`'s artifact-set roots. Inventory grants it no validity, yet its
+    // raw parent field still removes `sibling` from the local-leaf projection.
+    let junk_child = ArtifactBlock::new(
+        sibling.id(),
+        ArtifactSetRoot::from_bytes([0xee; ArtifactSetRoot::BYTE_LENGTH]),
+        ArtifactSetRoot::from_bytes([0xef; ArtifactSetRoot::BYTE_LENGTH]),
+        artifact_id(0x36),
+    );
+    assert_ne!(
+        junk_child.previous_artifact_set_root(),
+        sibling.resulting_artifact_set_root()
+    );
+
+    let candidates = vec![root, first_child, sibling, grandchild, orphan, junk_child];
+    let expected_blocks = sorted_blocks(candidates.clone());
+    let expected_leaf_ids = sorted_block_ids(vec![grandchild.id(), orphan.id(), junk_child.id()]);
+    let directory = TestDirectory::new("inventory-local-leaves");
+    let mut store =
+        ArtifactBlockCandidateStore::create(&directory.path, definition, limits(candidates.len()))
+            .unwrap();
+    for candidate in candidates.iter().rev() {
+        assert_eq!(
+            store.insert(candidate).unwrap(),
+            ArtifactBlockCandidateInsertOutcome::Inserted
+        );
+    }
+
+    let inventory = store
+        .structural_inventory(ArtifactBlockCandidateInventoryLimits::new(candidates.len()).unwrap())
+        .unwrap();
+    assert_eq!(inventory.blocks(), expected_blocks.as_slice());
+    assert_eq!(
+        inventory.local_leaf_block_ids(),
+        expected_leaf_ids.as_slice()
+    );
+    assert!(!inventory.local_leaf_block_ids().contains(&root.id()));
+    assert!(!inventory.local_leaf_block_ids().contains(&first_child.id()));
+    assert!(!inventory.local_leaf_block_ids().contains(&sibling.id()));
+}
+
+#[test]
+fn structural_inventory_snapshot_is_owned_and_independent_of_later_inserts() {
+    let definition = chain_definition(0x11);
+    let parent = child_block(ArtifactBlockId::from_bytes([0xa0; 32]), 0x41);
+    let child = child_block(parent.id(), 0x42);
+    let directory = TestDirectory::new("inventory-owned-snapshot");
+    let mut store =
+        ArtifactBlockCandidateStore::create(&directory.path, definition, limits(2)).unwrap();
+    assert_eq!(
+        store.insert(&parent).unwrap(),
+        ArtifactBlockCandidateInsertOutcome::Inserted
+    );
+
+    let inventory_limits = ArtifactBlockCandidateInventoryLimits::new(2).unwrap();
+    let before = store.structural_inventory(inventory_limits).unwrap();
+    assert_eq!(before.blocks(), &[parent]);
+    assert_eq!(before.local_leaf_block_ids(), &[parent.id()]);
+
+    assert_eq!(
+        store.insert(&child).unwrap(),
+        ArtifactBlockCandidateInsertOutcome::Inserted
+    );
+    assert_eq!(before.blocks(), &[parent]);
+    assert_eq!(before.local_leaf_block_ids(), &[parent.id()]);
+
+    let after = store.structural_inventory(inventory_limits).unwrap();
+    let expected_blocks = sorted_blocks(vec![parent, child]);
+    assert_eq!(after.blocks(), expected_blocks.as_slice());
+    assert_eq!(after.local_leaf_block_ids(), &[child.id()]);
 }
 
 #[test]
@@ -466,6 +667,104 @@ fn post_open_block_footer_and_truncation_changes_poison_the_handle() {
 }
 
 #[test]
+fn mid_inventory_integrity_failure_returns_no_snapshot_poisons_and_reopens_cleanly() {
+    let definition = chain_definition(0x11);
+    let candidates = sorted_blocks(vec![
+        block(0xe1, 0x51),
+        block(0xe2, 0x52),
+        block(0xe3, 0x53),
+    ]);
+    let directory = TestDirectory::new("inventory-mid-read-corruption");
+    let mut store =
+        ArtifactBlockCandidateStore::create(&directory.path, definition, limits(candidates.len()))
+            .unwrap();
+    for candidate in &candidates {
+        assert_eq!(
+            store.insert(candidate).unwrap(),
+            ArtifactBlockCandidateInsertOutcome::Inserted
+        );
+    }
+    let committed = fs::read(directory.store_path()).unwrap();
+
+    // Append order is raw-ID order here, so this changes the second body only.
+    // The first body is successfully checked before the operation fails, but
+    // the all-or-none API cannot publish that partial progress.
+    let second_body_offset = STORE_PREFIX_BYTES as usize + ENTRY_BYTES as usize;
+    let mut changed = committed.clone();
+    changed[second_body_offset] ^= 0x01;
+    fs::write(directory.store_path(), &changed).unwrap();
+
+    let inventory_limits = ArtifactBlockCandidateInventoryLimits::new(candidates.len()).unwrap();
+    assert!(matches!(
+        store.structural_inventory(inventory_limits),
+        Err(ArtifactBlockCandidateInventoryError::CandidateStore {
+            source: ArtifactBlockCandidateStoreError::StoredEntryChanged { block_id },
+        }) if block_id == candidates[1].id()
+    ));
+    assert!(matches!(
+        store.structural_inventory(ArtifactBlockCandidateInventoryLimits::new(1).unwrap()),
+        Err(ArtifactBlockCandidateInventoryError::CandidateStore {
+            source: ArtifactBlockCandidateStoreError::Poisoned,
+        })
+    ));
+
+    drop(store);
+    fs::write(directory.store_path(), &committed).unwrap();
+    let mut reopened =
+        ArtifactBlockCandidateStore::open(&directory.path, definition, limits(candidates.len()))
+            .unwrap();
+    let inventory = reopened.structural_inventory(inventory_limits).unwrap();
+    assert_eq!(inventory.chain_id(), definition.id());
+    assert_eq!(inventory.blocks(), candidates.as_slice());
+}
+
+#[test]
+fn complete_post_open_append_fails_inventory_and_reopen_observes_the_entry() {
+    let definition = chain_definition(0x11);
+    let parent = child_block(ArtifactBlockId::from_bytes([0xc0; 32]), 0x54);
+    let child = child_block(parent.id(), 0x55);
+    let directory = TestDirectory::new("inventory-pre-scan-length-drift");
+    let mut store =
+        ArtifactBlockCandidateStore::create(&directory.path, definition, limits(2)).unwrap();
+    assert_eq!(
+        store.insert(&parent).unwrap(),
+        ArtifactBlockCandidateInsertOutcome::Inserted
+    );
+    let expected_end = fs::metadata(directory.store_path()).unwrap().len();
+
+    let child_entry = encoded_entry(&child);
+    let mut raw_writer = OpenOptions::new()
+        .append(true)
+        .open(directory.store_path())
+        .unwrap();
+    raw_writer.write_all(&child_entry).unwrap();
+    raw_writer.sync_all().unwrap();
+    drop(raw_writer);
+    let actual_end = expected_end + ENTRY_BYTES;
+
+    assert!(matches!(
+        store.structural_inventory(ArtifactBlockCandidateInventoryLimits::new(2).unwrap()),
+        Err(ArtifactBlockCandidateInventoryError::CandidateStore {
+            source: ArtifactBlockCandidateStoreError::StoreLengthChanged { expected, actual },
+        }) if expected == expected_end && actual == actual_end
+    ));
+    assert!(matches!(
+        store.len(),
+        Err(ArtifactBlockCandidateStoreError::Poisoned)
+    ));
+
+    drop(store);
+    let mut reopened =
+        ArtifactBlockCandidateStore::open(&directory.path, definition, limits(2)).unwrap();
+    let inventory = reopened
+        .structural_inventory(ArtifactBlockCandidateInventoryLimits::new(2).unwrap())
+        .unwrap();
+    let expected_blocks = sorted_blocks(vec![parent, child]);
+    assert_eq!(inventory.blocks(), expected_blocks.as_slice());
+    assert_eq!(inventory.local_leaf_block_ids(), &[child.id()]);
+}
+
+#[test]
 fn new_insert_detects_post_open_truncation_and_extension_before_writing() {
     let definition = chain_definition(0x11);
     let first = block(0x21, 0x31);
@@ -508,6 +807,213 @@ fn new_insert_detects_post_open_truncation_and_extension_before_writing() {
 
 fn scripted_io(definition: ArtifactChainDefinition, fault: Option<Fault>) -> ScriptedIo {
     ScriptedIo::new(prefix(definition), fault)
+}
+
+struct AppendAfterReadsIo {
+    cursor: Cursor<Vec<u8>>,
+    reads_until_append: Option<usize>,
+    appended_entry: Vec<u8>,
+}
+
+impl AppendAfterReadsIo {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            cursor: Cursor::new(bytes),
+            reads_until_append: None,
+            appended_entry: Vec::new(),
+        }
+    }
+
+    fn append_after_reads(&mut self, reads: usize, entry: Vec<u8>) {
+        assert!(reads > 0);
+        assert!(self.reads_until_append.is_none());
+        self.reads_until_append = Some(reads);
+        self.appended_entry = entry;
+    }
+}
+
+impl Read for AppendAfterReadsIo {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let read = self.cursor.read(bytes)?;
+        let append_now = match self.reads_until_append {
+            Some(1) => {
+                self.reads_until_append = None;
+                true
+            }
+            Some(remaining) => {
+                self.reads_until_append = Some(remaining - 1);
+                false
+            }
+            None => false,
+        };
+        if append_now {
+            self.cursor
+                .get_mut()
+                .extend_from_slice(&self.appended_entry);
+        }
+        Ok(read)
+    }
+}
+
+impl Write for AppendAfterReadsIo {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.cursor.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Seek for AppendAfterReadsIo {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.cursor.seek(position)
+    }
+}
+
+impl StoreIo for AppendAfterReadsIo {
+    fn set_len(&mut self, size: u64) -> io::Result<()> {
+        self.cursor.get_mut().truncate(size as usize);
+        if self.cursor.position() > size {
+            self.cursor.set_position(size);
+        }
+        Ok(())
+    }
+
+    fn sync_all(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn post_scan_length_check_catches_complete_append_after_indexed_reads() {
+    let definition = chain_definition(0x11);
+    let parent = child_block(ArtifactBlockId::from_bytes([0xc1; 32]), 0x56);
+    let child = child_block(parent.id(), 0x57);
+    let initial = image(definition, &[parent]);
+    let expected_end = initial.len() as u64;
+    let mut core = ArtifactBlockCandidateStoreCore::replay(
+        AppendAfterReadsIo::new(initial),
+        definition.id(),
+        limits(2),
+    )
+    .unwrap();
+    core.file.append_after_reads(2, encoded_entry(&child));
+
+    assert!(matches!(
+        core.structural_inventory(ArtifactBlockCandidateInventoryLimits::new(2).unwrap()),
+        Err(ArtifactBlockCandidateInventoryError::CandidateStore {
+            source: ArtifactBlockCandidateStoreError::StoreLengthChanged { expected, actual },
+        }) if expected == expected_end && actual == expected_end + ENTRY_BYTES
+    ));
+    assert!(core.poisoned);
+}
+
+#[test]
+fn inventory_over_cap_precedes_body_reads_and_poisoned_precedes_the_cap() {
+    let definition = chain_definition(0x11);
+    let candidates = sorted_blocks(vec![block(0xd1, 0x61), block(0xd2, 0x62)]);
+    let visible = image(definition, &candidates);
+    let mut core = ArtifactBlockCandidateStoreCore::replay(
+        ScriptedIo::from_images(visible.clone(), visible),
+        definition.id(),
+        limits(candidates.len()),
+    )
+    .unwrap();
+
+    // If the over-cap path touched this first body, it would poison the core.
+    core.file.volatile.get_mut()[STORE_PREFIX_BYTES as usize] ^= 0x01;
+    assert!(matches!(
+        core.structural_inventory(ArtifactBlockCandidateInventoryLimits::new(1).unwrap()),
+        Err(ArtifactBlockCandidateInventoryError::EntryLimitExceeded {
+            actual: 2,
+            maximum: 1,
+        })
+    ));
+    assert!(!core.poisoned);
+
+    assert!(matches!(
+        core.structural_inventory(ArtifactBlockCandidateInventoryLimits::new(2).unwrap()),
+        Err(ArtifactBlockCandidateInventoryError::CandidateStore {
+            source: ArtifactBlockCandidateStoreError::StoredEntryChanged { block_id },
+        }) if block_id == candidates[0].id()
+    ));
+    assert!(core.poisoned);
+    assert!(matches!(
+        core.structural_inventory(ArtifactBlockCandidateInventoryLimits::new(1).unwrap()),
+        Err(ArtifactBlockCandidateInventoryError::CandidateStore {
+            source: ArtifactBlockCandidateStoreError::Poisoned,
+        })
+    ));
+}
+
+#[test]
+fn inventory_over_cap_precedes_pre_scan_length_drift() {
+    let definition = chain_definition(0x11);
+    let candidates = sorted_blocks(vec![block(0xd3, 0x63), block(0xd4, 0x64)]);
+    let visible = image(definition, &candidates);
+    let expected_end = visible.len() as u64;
+    let mut core = ArtifactBlockCandidateStoreCore::replay(
+        ScriptedIo::from_images(visible.clone(), visible),
+        definition.id(),
+        limits(candidates.len()),
+    )
+    .unwrap();
+    core.file.volatile.get_mut().push(0xff);
+
+    assert!(matches!(
+        core.structural_inventory(ArtifactBlockCandidateInventoryLimits::new(1).unwrap()),
+        Err(ArtifactBlockCandidateInventoryError::EntryLimitExceeded {
+            actual: 2,
+            maximum: 1,
+        })
+    ));
+    assert!(!core.poisoned);
+    assert!(matches!(
+        core.structural_inventory(ArtifactBlockCandidateInventoryLimits::new(2).unwrap()),
+        Err(ArtifactBlockCandidateInventoryError::CandidateStore {
+            source: ArtifactBlockCandidateStoreError::StoreLengthChanged { expected, actual },
+        }) if expected == expected_end && actual == expected_end + 1
+    ));
+    assert!(core.poisoned);
+}
+
+#[test]
+fn inventory_visible_length_query_failure_is_typed_and_poisons() {
+    let definition = chain_definition(0x11);
+    let mut core = ArtifactBlockCandidateStoreCore::empty(
+        scripted_io(definition, Some(Fault::Seek)),
+        definition.id(),
+        limits(1),
+    );
+    let inventory_limits = ArtifactBlockCandidateInventoryLimits::new(1).unwrap();
+
+    assert!(matches!(
+        core.structural_inventory(inventory_limits),
+        Err(ArtifactBlockCandidateInventoryError::CandidateStore {
+            source: ArtifactBlockCandidateStoreError::Read { offset, .. },
+        }) if offset == STORE_PREFIX_BYTES
+    ));
+    assert!(core.poisoned);
+    assert!(matches!(
+        core.structural_inventory(inventory_limits),
+        Err(ArtifactBlockCandidateInventoryError::CandidateStore {
+            source: ArtifactBlockCandidateStoreError::Poisoned,
+        })
+    ));
+}
+
+#[test]
+fn inventory_allocation_failure_is_typed_without_partial_storage() {
+    let mut entries = Vec::<u8>::new();
+    assert!(matches!(
+        reserve_inventory_entries(&mut entries, usize::MAX),
+        Err(ArtifactBlockCandidateInventoryError::Allocation {
+            entries: usize::MAX,
+            ..
+        })
+    ));
+    assert!(entries.is_empty());
 }
 
 #[test]

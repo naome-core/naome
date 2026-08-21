@@ -93,6 +93,53 @@ block bodies remain on disk until read. Every limit is checked before growth.
 Portable durability of the parent directory entry remains the caller's
 responsibility.
 
+## Deterministic structural inventory
+
+`ArtifactBlockCandidateStore::structural_inventory` accepts positive
+caller-local `ArtifactBlockCandidateInventoryLimits` containing `max_entries`.
+It first requires a healthy handle, then reads the complete local indexed count.
+If that count exceeds `max_entries`, the operation fails before allocating an
+inventory buffer or reading any candidate body. The per-call limit bounds only
+this local snapshot operation; it does not change the handle's retention limit
+or establish a protocol resource rule.
+
+Only after the indexed-count cap passes, and still before inventory-buffer
+allocation or any candidate-body read, the operation requires the visible store
+length to equal the handle's replay-established committed boundary. It then
+fallibly reserves its complete working and result capacity, orders every indexed
+`ArtifactBlockId` by ascending raw identity bytes, and integrity-reads the exact
+stored block at each address in that order. After every entry has been read, it
+rechecks the visible length against the same committed boundary before
+publishing. Success returns one owned all-or-nothing
+`ArtifactBlockCandidateInventory` containing the store's exact
+`ArtifactChainId` and every exact retained `ArtifactBlock` in that deterministic
+order. An allocation failure returns no inventory and leaves the handle
+healthy. A visible-length query failure or mismatch, or a candidate read or
+integrity failure, returns no inventory and retains the store's existing typed
+poison-and-reopen boundary.
+
+The inventory separately exposes `local_leaf_block_ids` in ascending raw
+identity order. An inventoried block is a local structural leaf exactly when no
+block in that same inventory names its `ArtifactBlockId` as `parent_block_id`.
+This definition uses no root-continuity, ancestry, payload, artifact, selected-
+state, or validity check. A local leaf may therefore be an orphan, invalid,
+unavailable, already selected in some external journal, or otherwise unsuitable
+for reconstruction or import. A retained block named as another inventoried
+block's parent is not a local leaf even when that child is invalid.
+
+The result is an owned snapshot. A later candidate insertion cannot change its
+blocks or local-leaf IDs. Inventory order exposes neither durable append order
+nor arrival order, and no position in either ascending list conveys height,
+depth, priority, preference, or selection. Successful and ordinary failed
+inventory attempts do not insert, replace, refresh, mark, delete, or change
+durable store bytes.
+
+The inventory does not group blocks into paths or branches, identify a complete
+ancestry, consult a selected journal or payload archive, establish payload
+coverage or recoverability, choose a recovery target, rank candidates, or prove
+that its contents or absences are complete beyond this exact local store
+snapshot. It establishes no network availability, consensus, or finality.
+
 ## Compatibility and non-goals
 
 This `v0` artifact format is a clean prerelease cutover. A proof-block candidate

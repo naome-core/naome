@@ -27,7 +27,9 @@ mod fault_io;
 mod payload_store;
 
 pub use block_candidate_store::{
-    ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
+    ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateInventory,
+    ArtifactBlockCandidateInventoryError, ArtifactBlockCandidateInventoryLimits,
+    ArtifactBlockCandidateInventoryLimitsError, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreError, ArtifactBlockCandidateStoreLimits,
     ArtifactBlockCandidateStoreLimitsError,
 };
