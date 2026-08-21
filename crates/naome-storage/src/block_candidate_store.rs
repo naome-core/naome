@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, TryReserveError};
 use std::error::Error;
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -63,6 +63,143 @@ impl fmt::Display for ArtifactBlockCandidateStoreLimitsError {
 }
 
 impl Error for ArtifactBlockCandidateStoreLimitsError {}
+
+/// Caller-local result-size bound for one structural candidate inventory.
+///
+/// This limit is not persisted and does not change candidate retention. It
+/// bounds only how many exact retained blocks one inventory call may read and
+/// return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArtifactBlockCandidateInventoryLimits {
+    max_entries: usize,
+}
+
+impl ArtifactBlockCandidateInventoryLimits {
+    /// Constructs a positive per-call retained-entry limit.
+    pub const fn new(
+        max_entries: usize,
+    ) -> Result<Self, ArtifactBlockCandidateInventoryLimitsError> {
+        if max_entries == 0 {
+            return Err(ArtifactBlockCandidateInventoryLimitsError::ZeroMaxEntries);
+        }
+        Ok(Self { max_entries })
+    }
+
+    /// Returns the maximum number of retained blocks this call may return.
+    pub const fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+}
+
+/// A rejected structural candidate-inventory limit configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ArtifactBlockCandidateInventoryLimitsError {
+    /// An inventory must permit at least one retained entry.
+    ZeroMaxEntries,
+}
+
+impl fmt::Display for ArtifactBlockCandidateInventoryLimitsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroMaxEntries => formatter
+                .write_str("artifact-block candidate inventory entry limit must be positive"),
+        }
+    }
+}
+
+impl Error for ArtifactBlockCandidateInventoryLimitsError {}
+
+/// One owned, chain-bound snapshot of locally retained structural candidates.
+///
+/// Blocks are ordered by ascending raw [`ArtifactBlockId`]. A local leaf is a
+/// retained block whose identity is not named as the parent of any other block
+/// in this same snapshot; leaf status is only a raw local relation and does not
+/// establish validity, availability, preference, selection, or finality.
+/// The type is deliberately not cloneable because one value may own the
+/// caller-bounded complete store snapshot.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub struct ArtifactBlockCandidateInventory {
+    chain_id: ArtifactChainId,
+    blocks: Vec<ArtifactBlock>,
+    local_leaf_block_ids: Vec<ArtifactBlockId>,
+}
+
+impl ArtifactBlockCandidateInventory {
+    /// Returns the exact chain context of the candidate store snapshot.
+    pub const fn chain_id(&self) -> ArtifactChainId {
+        self.chain_id
+    }
+
+    /// Borrows all exact retained blocks in ascending raw block-ID order.
+    pub fn blocks(&self) -> &[ArtifactBlock] {
+        &self.blocks
+    }
+
+    /// Borrows raw local leaf IDs in ascending raw block-ID order.
+    pub fn local_leaf_block_ids(&self) -> &[ArtifactBlockId] {
+        &self.local_leaf_block_ids
+    }
+
+    /// Returns the number of exact retained blocks in this snapshot.
+    pub fn len(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Returns whether this snapshot contains no retained blocks.
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+}
+
+/// A failed structural candidate inventory operation.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ArtifactBlockCandidateInventoryError {
+    /// The retained candidate count exceeds this call's local result bound.
+    EntryLimitExceeded { actual: usize, maximum: usize },
+    /// Reserving bounded memory for the complete owned result failed.
+    Allocation {
+        entries: usize,
+        source: TryReserveError,
+    },
+    /// The underlying candidate store was unhealthy or failed an integrity read.
+    CandidateStore {
+        source: ArtifactBlockCandidateStoreError,
+    },
+}
+
+impl fmt::Display for ArtifactBlockCandidateInventoryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EntryLimitExceeded { actual, maximum } => write!(
+                formatter,
+                "artifact-block candidate inventory has {actual} entries, exceeding limit {maximum}"
+            ),
+            Self::Allocation { entries, .. } => write!(
+                formatter,
+                "artifact-block candidate inventory could not reserve bounded memory for {entries} entries"
+            ),
+            Self::CandidateStore { source } => {
+                write!(
+                    formatter,
+                    "artifact-block candidate inventory failed: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for ArtifactBlockCandidateInventoryError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Allocation { source, .. } => Some(source),
+            Self::CandidateStore { source } => Some(source),
+            Self::EntryLimitExceeded { .. } => None,
+        }
+    }
+}
 
 /// The result of inserting one structural artifact-block candidate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,6 +302,26 @@ impl ArtifactBlockCandidateStore {
         block_id: ArtifactBlockId,
     ) -> Result<Option<ArtifactBlock>, ArtifactBlockCandidateStoreError> {
         self.core.get(block_id)
+    }
+
+    /// Returns one deterministic owned snapshot of all retained candidates.
+    ///
+    /// A healthy handle and the caller-local entry bound are checked before any
+    /// block body is read. The visible log length must equal the indexed
+    /// committed boundary before allocation and again after every integrity
+    /// read, immediately before return. The operation returns either the
+    /// complete raw snapshot or no snapshot. Any post-open read, length, or
+    /// integrity failure retains the same poison-and-reopen boundary as
+    /// [`Self::get`].
+    ///
+    /// The local leaf list describes only parent references within this exact
+    /// snapshot. This operation performs no path construction, artifact
+    /// validation, availability check, ranking, selection, or journal access.
+    pub fn structural_inventory(
+        &mut self,
+        limits: ArtifactBlockCandidateInventoryLimits,
+    ) -> Result<ArtifactBlockCandidateInventory, ArtifactBlockCandidateInventoryError> {
+        self.core.structural_inventory(limits)
     }
 
     /// Returns whether an exact block address is indexed.
@@ -467,6 +624,83 @@ impl<F: StoreIo> ArtifactBlockCandidateStoreCore<F> {
         Ok(Some(block))
     }
 
+    fn structural_inventory(
+        &mut self,
+        limits: ArtifactBlockCandidateInventoryLimits,
+    ) -> Result<ArtifactBlockCandidateInventory, ArtifactBlockCandidateInventoryError> {
+        self.ensure_healthy()
+            .map_err(|source| ArtifactBlockCandidateInventoryError::CandidateStore { source })?;
+
+        let entry_count = self.index.len();
+        if entry_count > limits.max_entries {
+            return Err(ArtifactBlockCandidateInventoryError::EntryLimitExceeded {
+                actual: entry_count,
+                maximum: limits.max_entries,
+            });
+        }
+        self.verify_visible_length_for_inventory()
+            .map_err(|source| ArtifactBlockCandidateInventoryError::CandidateStore { source })?;
+
+        let mut block_ids = Vec::new();
+        let mut blocks = Vec::new();
+        let mut has_local_child = Vec::<u8>::new();
+        reserve_inventory_entries(&mut block_ids, entry_count)?;
+        reserve_inventory_entries(&mut blocks, entry_count)?;
+        reserve_inventory_entries(&mut has_local_child, entry_count)?;
+
+        block_ids.extend(self.index.keys().copied());
+        block_ids.sort_unstable();
+        has_local_child.resize(entry_count, 0);
+
+        for block_id in &block_ids {
+            let block = self
+                .get(*block_id)
+                .map_err(|source| ArtifactBlockCandidateInventoryError::CandidateStore { source })?
+                .expect("every candidate inventory block ID came from the live index");
+            if let Ok(parent_index) = block_ids.binary_search(&block.parent_block_id()) {
+                has_local_child[parent_index] = 1;
+            }
+            blocks.push(block);
+        }
+
+        let mut candidate_index = 0;
+        block_ids.retain(|_| {
+            let is_local_leaf = has_local_child[candidate_index] == 0;
+            candidate_index += 1;
+            is_local_leaf
+        });
+
+        self.verify_visible_length_for_inventory()
+            .map_err(|source| ArtifactBlockCandidateInventoryError::CandidateStore { source })?;
+
+        Ok(ArtifactBlockCandidateInventory {
+            chain_id: self.chain_id,
+            blocks,
+            local_leaf_block_ids: block_ids,
+        })
+    }
+
+    fn verify_visible_length_for_inventory(
+        &mut self,
+    ) -> Result<(), ArtifactBlockCandidateStoreError> {
+        let expected = self.committed_end;
+        let actual = match self.file.seek(SeekFrom::End(0)) {
+            Ok(actual) => actual,
+            Err(source) => {
+                self.poisoned = true;
+                return Err(ArtifactBlockCandidateStoreError::Read {
+                    offset: expected,
+                    source,
+                });
+            }
+        };
+        if actual != expected {
+            self.poisoned = true;
+            return Err(ArtifactBlockCandidateStoreError::StoreLengthChanged { expected, actual });
+        }
+        Ok(())
+    }
+
     fn poison_stored_read(
         &mut self,
         block_id: ArtifactBlockId,
@@ -490,6 +724,18 @@ impl<F: StoreIo> ArtifactBlockCandidateStoreCore<F> {
             Ok(())
         }
     }
+}
+
+fn reserve_inventory_entries<T>(
+    entries: &mut Vec<T>,
+    entry_count: usize,
+) -> Result<(), ArtifactBlockCandidateInventoryError> {
+    entries.try_reserve_exact(entry_count).map_err(|source| {
+        ArtifactBlockCandidateInventoryError::Allocation {
+            entries: entry_count,
+            source,
+        }
+    })
 }
 
 fn reserve_index_entry(
