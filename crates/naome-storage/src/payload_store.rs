@@ -461,6 +461,19 @@ impl CanonicalArtifactPayloadStore {
         self.core.get(artifact_id)
     }
 
+    /// Returns one replay-verified indexed length without allocating its body.
+    pub(crate) fn indexed_payload_len(
+        &self,
+        artifact_id: ArtifactId,
+    ) -> Result<Option<u32>, CanonicalArtifactPayloadStoreError> {
+        self.core.ensure_healthy()?;
+        Ok(self
+            .core
+            .index
+            .get(&artifact_id)
+            .map(|location| location.payload_len))
+    }
+
     /// Returns whether an exact artifact address is indexed.
     pub fn contains(
         &self,
