@@ -3,7 +3,8 @@
 This document normatively defines a Foundation-scoped append-only archive of
 exact tagged proof and definition payloads. It preserves bytes admitted from
 accepted records or strictly validated as exact children of selected or
-candidate-branch state, but does not preserve or confer selected-state
+candidate-branch state and may supply exact owned bytes to an explicitly
+caller-routed network response, but does not preserve or confer selected-state
 authority.
 
 ## Scope and write gate
@@ -169,6 +170,44 @@ Archive presence proves only that one local store retained bytes under an
 integrity digest. It does not prove data availability elsewhere, continued
 mathematical validity under another context, selected ancestry, network
 acceptance, consensus, or finality.
+
+## Caller-routed network serving
+
+`StaticArtifactNetwork::respond_artifact_from_payload_store` consumes one exact
+statically authorized Noise-authenticated inbound `ArtifactRequest` only when
+its caller explicitly routes that request and one mutable archive handle to
+this responder. The request contains an `ArtifactId` but no chain, branch,
+selected-state, or archive identity. The archive is Foundation-scoped, and the
+responder does not infer or select an artifact-chain context.
+
+Serving first calls `contains` to require archive health and look up the exact
+address in the in-memory index. It then requires an open response channel and
+consumes one shared inbound response token. Only for an indexed address does it
+call `get`, which performs the complete existing entry integrity read and
+returns owned bytes. This order ensures a closed channel or rate-limited
+request performs no artifact-sized archive read or allocation. A `get` failure
+remains typed, may poison the handle, and produces no network response; it is
+never translated to `Unavailable`. An unindexed address is served as
+`Unavailable` after the same channel and token checks.
+
+A found response is the exact archived tagged canonical payload. Loading and
+serving it still does not recreate the original checked context or expose an
+`AcceptedArtifactRecord`. The responder does not decode, recheck, register, or
+refresh the bytes; every receiver must repeat complete validation against its
+own exact target ancestry. Serving is read-only except for the existing poison
+transition on an integrity failure and retains no requester, source, or receipt
+metadata.
+
+Because the archive retains no source provenance, explicit caller routing may
+retransmit exact bytes that the node learned elsewhere. The responder chooses
+neither the original source nor the requesting recipient and defines no
+automatic relay admission, eviction, recipient-selection policy, or relay task.
+
+The response call performs no selected-journal lookup or fallback, candidate
+block lookup, automatic publication, service loop, retry, import, promotion,
+branch selection, validity assertion, peer trust, global-availability claim,
+consensus, finality, or economic action. One statically authorized
+Noise-authenticated peer's `Unavailable` response proves no wider absence.
 
 ## Compatibility and non-goals
 

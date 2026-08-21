@@ -236,6 +236,38 @@ candidate, and establishes no peer trust, reachability, target or branch
 selection, background retry schedule, network-wide availability, consensus,
 finality, or economic authority.
 
+### Explicit canonical-payload-archive serving
+
+`StaticArtifactNetwork::respond_artifact_from_payload_store` is a standalone
+caller-routed response call. The caller supplies one exact statically authorized
+Noise-authenticated inbound artifact request from one peer and one
+Foundation-scoped `CanonicalArtifactPayloadStore`. The request contains only
+its `ArtifactId` and does not identify a chain, branch, selected journal,
+candidate block, or archive. Invoking the method is the caller's explicit
+choice of that archive for that one request.
+
+The responder first uses `contains` to require a healthy archive and determine
+whether the exact address is indexed without reading payload bytes. It then
+requires the response channel to remain open and consumes one token from the
+same bounded inbound response bucket used by journal and candidate-block
+serving. Only an indexed hit proceeds to `get` for a complete integrity read
+and owned payload. A hit submits those exact tagged canonical bytes; a miss
+submits `Unavailable`. A closed channel or exhausted bucket therefore performs
+no artifact-sized archive read or allocation. A later `get` error remains a
+typed payload-store failure, may poison the handle, and submits no response.
+
+Serving is not candidate validation. The archive records no branch context,
+and the returned bytes remain opaque until the receiver strictly validates
+them against its own exact target ancestry. Because the archive retains no
+source provenance, explicit caller routing may retransmit exact bytes that this
+node learned elsewhere; the responder chooses neither their original source nor
+the requesting recipient and defines no automatic relay admission, eviction,
+recipient-selection policy, or relay task. It does not inspect or fall back to
+the selected journal, choose between selected and archived bytes, serve a
+candidate block, start a service loop, retry, import, promote, select, rank, or
+establish validity, peer trust, global availability, consensus, finality, or
+economic authority. The existing journal responder remains selected-only.
+
 ### Direct candidate-payload validation and archive
 
 `StaticArtifactNetwork::start_artifact_block_candidate_payload_fill` is a

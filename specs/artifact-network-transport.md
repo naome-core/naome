@@ -4,7 +4,8 @@
 
 This document normatively defines transport-neutral artifact, artifact-block,
 and artifact-chain-head exchanges; authenticated static-peer framing; head
-announcements; resource bounds; and store- or journal-backed serving. The
+announcements; resource bounds; and caller-routed journal,
+candidate-block-store, or canonical-payload-archive serving. The
 [Caller-Selected Orchestration](caller-selected-orchestration.md) contract owns
 survey, broadcast, ancestry, import, and catch-up workflows.
 
@@ -189,9 +190,9 @@ not include transient decoder, checker, or journal state.
 
 Pending connection limits precede the global pre-Noise token bucket. The bucket
 starts with eight and refills one per monotonic second to eight. The inbound
-response bucket is shared across artifact, block, and head serving from either
-a journal or candidate store. Neither is per-source fairness, DDoS protection,
-or Sybil resistance.
+response bucket is shared across artifact, block, and head serving from a
+journal, candidate block store, or canonical payload archive. It is not
+per-source fairness, DDoS protection, or Sybil resistance.
 
 ## Outbound correlation and tickets
 
@@ -239,6 +240,53 @@ receipt time, and a submitted response does not prove remote receipt. This
 composition defines no automatic relay, retry, peer or target selection,
 payload availability, chain membership, fork choice, consensus, or finality.
 
+## Canonical-payload-archive serving
+
+A caller may route one exact statically authorized Noise-authenticated inbound
+artifact request from one peer to one caller-supplied Foundation-scoped
+`CanonicalArtifactPayloadStore`. The request contains only its exact
+`ArtifactId`; it carries no artifact-chain, branch, selected-state, or archive
+identity. Only the caller chooses the archive and whether to invoke this
+responder for that request.
+
+Archive response precedence is split so the response budget protects the
+potential maximum-sized payload read:
+
+1. require a healthy archive handle and look up the exact address in its
+   in-memory index through `contains`;
+2. require the response channel to remain open;
+3. consume one shared inbound response token;
+4. for an indexed address, integrity-read the exact owned payload through
+   `get`; and
+5. construct the exact found bytes or `Unavailable` response and submit it to
+   libp2p.
+
+Consequently, a closed channel or exhausted response bucket performs no
+artifact-sized archive read or allocation. A later indexed-entry read or
+integrity failure remains a typed payload-store error, may poison that archive
+handle under its existing contract, and never becomes `Unavailable`. An
+unindexed address yields the statically authorized Noise-authenticated peer's
+`Unavailable` response only after the same channel and response-token checks.
+
+A found response contains the archive's exact tagged canonical payload bytes.
+The responder neither recreates the context in which those bytes were archived
+nor validates them against any selected or candidate ancestry. The receiver
+must still perform complete target-context validation. Serving does not insert,
+replace, refresh, delete, import, promote, select, rank, or persist a branch;
+retain source, requester, or receipt-time provenance; or establish validity,
+continued availability, peer trust, chain membership, fork choice, consensus,
+finality, or economic authority.
+
+The archive retains no source provenance. Explicit caller routing may therefore
+retransmit exact bytes that this node learned elsewhere, but the responder
+chooses neither the original source nor the requesting recipient and defines no
+automatic relay admission, eviction, recipient-selection policy, or relay task.
+
+This is a standalone explicit response boundary. It does not inspect or fall
+back to an `ArtifactChainJournal`, choose between selected and archived bytes,
+serve candidate blocks, start a service loop, retry, or start an automatic
+relay. Journal-backed artifact serving remains selected-only.
+
 ## Exact block import
 
 After caller-selected direct-child preflight, import requests exactly the
@@ -283,7 +331,8 @@ selected accepted record; block lookup serves only a committed selected block;
 head lookup returns the exact current head only for the matching chain. Unknown
 objects and mismatched chains are unavailable. The journal borrow ends when the
 service call returns, and serving performs no checking, import, mutation, disk
-write, retry, or background work.
+write, retry, archive lookup, or background work. In particular, the journal
+service never falls back to a canonical payload archive.
 
 Inbound announcements require explicit caller acknowledgement. The journal
 adapter never acknowledges, compares, retrieves, or selects them automatically.
@@ -293,7 +342,8 @@ adapter never acknowledges, compares, retrieves, or selects them automatically.
 Framing, identity authentication, protocol negotiation, timeout, truncation,
 and reset failures remain distinct from object-level unavailable. Listener,
 redial, request, response, timeout, and terminal progress stop when polling
-stops. A poisoned journal is never translated into network content.
+stops. A poisoned journal, candidate block store, or canonical payload archive
+is never translated into network content.
 
 `Unavailable` is one authenticated peer's response to one address. It is not
 global absence, invalidity, authenticated-set non-membership, freshness, or
