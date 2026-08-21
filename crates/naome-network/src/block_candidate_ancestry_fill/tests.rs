@@ -1,20 +1,28 @@
 use std::fs::OpenOptions;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactSetRoot};
-use naome_proof::ArtifactId;
+use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
+use naome_chain::{
+    ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactDag,
+    ArtifactSetRoot,
+};
+use naome_foundation::FreeVariable;
+use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 use naome_storage::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreError, ArtifactBlockCandidateStoreLimits,
+    ArtifactPayloadStoreLimits, CandidateBranchReconstructionLimits, CanonicalArtifactPayloadStore,
 };
+use tokio::time::timeout;
 
 use super::*;
 use crate::codec::ArtifactBlockWireResponse;
 use crate::tests::{
-    TestDirectory, apply_fresh_blocks, assert_snapshot, create_journal, pairing_bytes, snapshot,
-    test_chain_definition, test_network_for_peers, union_bytes,
+    TestDirectory, apply_fresh_blocks, assert_snapshot, connected_pair, create_journal,
+    pairing_bytes, snapshot, test_chain_definition, test_network_for_peers, union_bytes,
 };
 use crate::{
     ExchangeRequestId, Keypair, MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS, MAX_PENDING_REQUESTS,
@@ -34,6 +42,35 @@ fn root(index: usize) -> ArtifactSetRoot {
     bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
     bytes[31] = 0x5a;
     ArtifactSetRoot::from_bytes(bytes)
+}
+
+fn independent_proof_bytes(index: usize) -> Vec<u8> {
+    let mut steps = vec![ProofStep::EqualityReflexivity {
+        variable: FreeVariable::new(u32::try_from(index).unwrap()),
+    }];
+    for variable in 0..=index {
+        steps.push(ProofStep::Generalization {
+            premise: u32::try_from(steps.len() - 1).unwrap(),
+            variable: FreeVariable::new(u32::try_from(variable).unwrap()),
+        });
+    }
+    let normal = ProofCertificate::new(steps)
+        .unwrap()
+        .into_unchecked_normal_form();
+    ArtifactPayload::Proof(normal.certificate().clone()).to_canonical_bytes()
+}
+
+fn referenced_generalization_bytes(parent: naome_proof::ProofId) -> Vec<u8> {
+    let normal = ProofCertificate::new(vec![
+        ProofStep::ProofReference { proof_id: parent },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: FreeVariable::new(7),
+        },
+    ])
+    .unwrap()
+    .into_unchecked_normal_form();
+    ArtifactPayload::Proof(normal.certificate().clone()).to_canonical_bytes()
 }
 
 fn peer_ids(count: usize) -> Vec<PeerId> {
@@ -109,6 +146,42 @@ fn pending_block_request(
             _ => None,
         })
         .expect("the candidate ancestry fill has one pending block request")
+}
+
+fn pending_artifact_request(
+    network: &StaticArtifactNetwork,
+    peer_id: PeerId,
+) -> (request_response::OutboundRequestId, ArtifactRequest) {
+    network
+        .pending
+        .iter()
+        .find_map(|(request_id, pending)| match (request_id, pending) {
+            (ExchangeRequestId::Artifact(request_id), PendingRequest::Artifact(pending))
+                if network.pending_peer_id(pending.peer_index) == peer_id =>
+            {
+                Some((*request_id, pending.request))
+            }
+            _ => None,
+        })
+        .expect("the composed branch recovery has one pending artifact request")
+}
+
+fn artifact_response_event(
+    network: &mut StaticArtifactNetwork,
+    peer_id: PeerId,
+    bytes: Vec<u8>,
+) -> NetworkEvent {
+    let (request_id, _) = pending_artifact_request(network, peer_id);
+    network
+        .handle_artifact_exchange_event(request_response::Event::Message {
+            peer: peer_id,
+            connection_id: ConnectionId::new_unchecked(1_503),
+            message: request_response::Message::Response {
+                request_id,
+                response: ArtifactResponse::from_wire_bytes(bytes).unwrap(),
+            },
+        })
+        .expect("the composed payload fill produces one terminal event")
 }
 
 fn block_wire_response_event(
@@ -1332,4 +1405,620 @@ fn fallback_resets_after_durable_insert_and_restart_skips_that_prefix() {
     assert_eq!(candidates.get(parent.id()).unwrap(), Some(*parent));
     assert_eq!(candidates.get(target.id()).unwrap(), Some(*target));
     assert!(restarted.pending.is_empty());
+}
+
+#[test]
+fn explicit_selected_anchor_accepts_genesis_historical_and_current_paths_lazily() {
+    let directory = TestDirectory::new("candidate-fill-explicit-anchor-local");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let genesis = selected.head_block_id().unwrap();
+    let genesis_root = selected.artifact_set_root().unwrap();
+    apply_fresh_blocks(&mut selected, [pairing_bytes()]);
+    let historical = selected.head_block_id().unwrap();
+    let historical_root = selected.artifact_set_root().unwrap();
+    apply_fresh_blocks(&mut selected, [union_bytes()]);
+    let current = selected.head_block_id().unwrap();
+    let current_root = selected.artifact_set_root().unwrap();
+    let before = snapshot(&directory, &selected);
+
+    let genesis_child = extension(genesis, genesis_root, 1).remove(0);
+    let historical_child = extension(historical, historical_root, 1).remove(0);
+    let current_child = extension(current, current_root, 1).remove(0);
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 3);
+    retain(
+        &mut candidates,
+        [genesis_child, historical_child, current_child],
+    );
+    let unknown_peer = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = test_network_for_peers(&[]);
+
+    assert_complete(
+        network
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor(
+                &selected,
+                &mut candidates,
+                unknown_peer,
+                genesis,
+                genesis_child.id(),
+            )
+            .unwrap(),
+    );
+    assert_complete(
+        network
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &[],
+                historical,
+                historical_child.id(),
+            )
+            .unwrap(),
+    );
+    assert_complete(
+        network
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor(
+                &selected,
+                &mut candidates,
+                unknown_peer,
+                current,
+                current_child.id(),
+            )
+            .unwrap(),
+    );
+
+    assert!(network.pending.is_empty());
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn explicit_selected_anchor_rejects_unknown_and_candidate_only_anchors_before_peers() {
+    let directory = TestDirectory::new("candidate-fill-explicit-anchor-rejection");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let genesis = selected.head_block_id().unwrap();
+    apply_fresh_blocks(&mut selected, [pairing_bytes()]);
+    let current = selected.head_block_id().unwrap();
+    let current_root = selected.artifact_set_root().unwrap();
+    let before = snapshot(&directory, &selected);
+    let candidate_only_anchor = extension(current, current_root, 1).remove(0);
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 1);
+    retain(&mut candidates, [candidate_only_anchor]);
+    let unknown_anchor = ArtifactBlockId::from_bytes([0xe1; 32]);
+    let missing_target = ArtifactBlockId::from_bytes([0xe2; 32]);
+    let unknown_peer = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = test_network_for_peers(&[]);
+
+    let foreign_directory = TestDirectory::new("candidate-fill-explicit-anchor-foreign");
+    let foreign_definition = ArtifactChainDefinition::new([0x43; 32]);
+    let foreign_chain_id = foreign_definition.id();
+    let mut foreign = candidate_store(&foreign_directory, foreign_definition, 1);
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
+            &selected,
+            &mut foreign,
+            &[],
+            unknown_anchor,
+            missing_target,
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::ChainIdMismatch {
+            selected,
+            candidates,
+        }) if selected == test_chain_definition().id() && candidates == foreign_chain_id
+    ));
+
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &[],
+            unknown_anchor,
+            missing_target,
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::SelectedAnchorNotRetained { block_id })
+            if block_id == unknown_anchor
+    ));
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_from_selected_anchor(
+            &selected,
+            &mut candidates,
+            unknown_peer,
+            candidate_only_anchor.id(),
+            missing_target,
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::SelectedAnchorNotRetained { block_id })
+            if block_id == candidate_only_anchor.id()
+    ));
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_from_selected_anchor(
+            &selected,
+            &mut candidates,
+            unknown_peer,
+            genesis,
+            current,
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::TargetAlreadySelected { block_id })
+            if block_id == current
+    ));
+
+    assert!(network.pending.is_empty());
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn explicit_selected_anchor_survives_unrelated_selected_head_advancement() {
+    let directory = TestDirectory::new("candidate-fill-explicit-anchor-head-advance");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let genesis = selected.head_block_id().unwrap();
+    let genesis_root = selected.artifact_set_root().unwrap();
+    let blocks = extension(genesis, genesis_root, 2);
+    let [parent, target] = blocks.as_slice() else {
+        unreachable!("the fixture contains exactly two blocks")
+    };
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 2);
+    let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = test_network_for_peers(&[peer_id]);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor(
+                &selected,
+                &mut candidates,
+                peer_id,
+                genesis,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    let event = block_response_event(&mut network, peer_id, target);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.anchor_block_id(), genesis);
+    assert_eq!(fill.pending_block_id(), parent.id());
+
+    apply_fresh_blocks(&mut selected, [pairing_bytes()]);
+    let advanced = snapshot(&directory, &selected);
+    let event = block_response_event(&mut network, peer_id, parent);
+    assert_complete(fill.on_event(&mut network, &selected, event).unwrap());
+
+    assert_eq!(candidates.get(parent.id()).unwrap(), Some(*parent));
+    assert_eq!(candidates.get(target.id()).unwrap(), Some(*target));
+    assert!(network.pending.is_empty());
+    assert_snapshot(&directory, &selected, &advanced);
+}
+
+#[test]
+fn explicit_selected_anchor_rejects_a_different_selected_ancestor_without_requesting_it() {
+    let directory = TestDirectory::new("candidate-fill-explicit-anchor-divergence");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let genesis = selected.head_block_id().unwrap();
+    apply_fresh_blocks(&mut selected, [pairing_bytes()]);
+    let historical = selected.head_block_id().unwrap();
+    let historical_root = selected.artifact_set_root().unwrap();
+    apply_fresh_blocks(&mut selected, [union_bytes()]);
+    let before = snapshot(&directory, &selected);
+    let target = ArtifactBlock::new(
+        historical,
+        historical_root,
+        root(0xe301),
+        artifact_id(0xe302),
+    );
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 1);
+    retain(&mut candidates, [target]);
+    let mut network = test_network_for_peers(&[]);
+
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &[],
+            genesis,
+            target.id(),
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::DivergentAncestry {
+            expected_anchor,
+            encountered,
+        }) if expected_anchor == genesis && encountered == historical
+    ));
+    assert!(network.pending.is_empty());
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn explicit_selected_anchor_rejects_a_pending_block_that_becomes_selected() {
+    let directory = TestDirectory::new("candidate-fill-explicit-anchor-pending-selected");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let genesis = selected.head_block_id().unwrap();
+    let genesis_root = selected.artifact_set_root().unwrap();
+    let parent_bytes = pairing_bytes();
+    let parent_id = ArtifactDag::new()
+        .apply_canonical_artifact_bytes(parent_bytes.clone())
+        .unwrap()
+        .artifact_id();
+    let parent = selected.prepare_block(parent_id).unwrap();
+    let target = ArtifactBlock::new(
+        parent.id(),
+        parent.resulting_artifact_set_root(),
+        root(0xe401),
+        artifact_id(0xe402),
+    );
+    assert_eq!(parent.parent_block_id(), genesis);
+    assert_eq!(parent.previous_artifact_set_root(), genesis_root);
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 2);
+    let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = test_network_for_peers(&[peer_id]);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor(
+                &selected,
+                &mut candidates,
+                peer_id,
+                genesis,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    let event = block_response_event(&mut network, peer_id, &target);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_block_id(), parent.id());
+
+    selected.apply_block(&parent, parent_bytes).unwrap();
+    let selected_after = snapshot(&directory, &selected);
+    let event = block_response_event(&mut network, peer_id, &parent);
+    assert!(matches!(
+        fill.on_event(&mut network, &selected, event),
+        Err(ArtifactBlockCandidateAncestryFillError::DivergentAncestry {
+            expected_anchor,
+            encountered,
+        }) if expected_anchor == genesis && encountered == parent.id()
+    ));
+
+    assert_eq!(candidates.get(target.id()).unwrap(), Some(target));
+    assert_eq!(candidates.get(parent.id()).unwrap(), None);
+    assert!(network.pending.is_empty());
+    assert_snapshot(&directory, &selected, &selected_after);
+}
+
+#[test]
+fn explicit_selected_anchor_preserves_the_fixed_sixteen_block_bound() {
+    let directory = TestDirectory::new("candidate-fill-explicit-anchor-bound");
+    let mut selected = create_journal(directory.path()).unwrap();
+    apply_fresh_blocks(&mut selected, [pairing_bytes()]);
+    let historical = selected.head_block_id().unwrap();
+    let historical_root = selected.artifact_set_root().unwrap();
+    apply_fresh_blocks(&mut selected, [union_bytes()]);
+    let before = snapshot(&directory, &selected);
+    let blocks = extension(
+        historical,
+        historical_root,
+        MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS + 1,
+    );
+    let mut candidates = candidate_store(
+        &directory,
+        test_chain_definition(),
+        MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS + 1,
+    );
+    retain(&mut candidates, blocks.iter().copied());
+    let unknown_peer = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = test_network_for_peers(&[]);
+
+    assert_complete(
+        network
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor(
+                &selected,
+                &mut candidates,
+                unknown_peer,
+                historical,
+                blocks[MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS - 1].id(),
+            )
+            .unwrap(),
+    );
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &[],
+            historical,
+            blocks[MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS].id(),
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::AncestryLimitExceeded {
+            maximum,
+            next_block_id,
+        }) if maximum == MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS
+            && next_block_id == blocks[0].id()
+    ));
+    assert!(network.pending.is_empty());
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn explicit_selected_anchor_fallback_reopens_and_resumes_at_the_durable_parent() {
+    let directory = TestDirectory::new("candidate-fill-explicit-anchor-reopen");
+    let mut selected = create_journal(directory.path()).unwrap();
+    apply_fresh_blocks(&mut selected, [pairing_bytes()]);
+    let historical = selected.head_block_id().unwrap();
+    let historical_root = selected.artifact_set_root().unwrap();
+    apply_fresh_blocks(&mut selected, [union_bytes()]);
+    let before = snapshot(&directory, &selected);
+    let blocks = extension(historical, historical_root, 2);
+    let [parent, target] = blocks.as_slice() else {
+        unreachable!("the fixture contains exactly two blocks")
+    };
+    let limits = ArtifactBlockCandidateStoreLimits::new(2).unwrap();
+    let mut candidates =
+        ArtifactBlockCandidateStore::create(directory.path(), test_chain_definition(), limits)
+            .unwrap();
+    let peers = peer_ids(2);
+    let mut network = test_network_for_peers(&peers);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                historical,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    let event = block_response_event(&mut network, peers[0], target);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_block_id(), parent.id());
+    assert_eq!(fill.pending_peer_id(), peers[0]);
+    let event = unavailable_event(&mut network, peers[0]);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[1]);
+    let event = unavailable_event(&mut network, peers[1]);
+    assert!(matches!(
+        fill.on_event(&mut network, &selected, event),
+        Err(ArtifactBlockCandidateAncestryFillError::BlockUnavailable {
+            peer_id,
+            block_id,
+        }) if peer_id == peers[1] && block_id == parent.id()
+    ));
+    assert_eq!(candidates.get(target.id()).unwrap(), Some(*target));
+    assert_eq!(candidates.get(parent.id()).unwrap(), None);
+    drop(network);
+    drop(candidates);
+
+    let mut candidates =
+        ArtifactBlockCandidateStore::open(directory.path(), test_chain_definition(), limits)
+            .unwrap();
+    let mut restarted = test_network_for_peers(&peers);
+    let fill = awaiting(
+        restarted
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers,
+                historical,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    assert_eq!(fill.pending_block_id(), parent.id());
+    assert_eq!(fill.pending_peer_id(), peers[0]);
+    let event = block_response_event(&mut restarted, peers[0], parent);
+    assert_complete(fill.on_event(&mut restarted, &selected, event).unwrap());
+    assert_eq!(candidates.get(parent.id()).unwrap(), Some(*parent));
+    assert_eq!(candidates.get(target.id()).unwrap(), Some(*target));
+    assert_snapshot(&directory, &selected, &before);
+}
+
+#[tokio::test]
+async fn real_reopened_candidate_server_fills_a_historical_branch_without_selection() {
+    let (mut client, mut server, _, server_peer_id) = connected_pair().await;
+
+    let client_directory = TestDirectory::new("candidate-fill-explicit-anchor-real-client");
+    let mut client_selected = create_journal(client_directory.path()).unwrap();
+    apply_fresh_blocks(&mut client_selected, [pairing_bytes()]);
+    let historical = client_selected.head_block_id().unwrap();
+    let historical_root = client_selected.artifact_set_root().unwrap();
+    apply_fresh_blocks(&mut client_selected, [union_bytes()]);
+    let client_selected_before = snapshot(&client_directory, &client_selected);
+    let blocks = extension(historical, historical_root, 2);
+    let target = blocks[1];
+    let limits = ArtifactBlockCandidateStoreLimits::new(2).unwrap();
+    let mut client_candidates = ArtifactBlockCandidateStore::create(
+        client_directory.path(),
+        test_chain_definition(),
+        limits,
+    )
+    .unwrap();
+
+    let server_directory = TestDirectory::new("candidate-fill-explicit-anchor-real-server");
+    let server_selected = create_journal(server_directory.path()).unwrap();
+    let server_selected_before = snapshot(&server_directory, &server_selected);
+    let mut server_candidates = ArtifactBlockCandidateStore::create(
+        server_directory.path(),
+        test_chain_definition(),
+        limits,
+    )
+    .unwrap();
+    retain(&mut server_candidates, blocks.iter().copied());
+    drop(server_candidates);
+    let mut server_candidates =
+        ArtifactBlockCandidateStore::open(server_directory.path(), test_chain_definition(), limits)
+            .unwrap();
+
+    let mut fill = client
+        .start_artifact_block_candidate_ancestry_fill_from_selected_anchor(
+            &client_selected,
+            &mut client_candidates,
+            server_peer_id,
+            historical,
+            target.id(),
+        )
+        .unwrap();
+    let mut served = 0_usize;
+    timeout(Duration::from_secs(20), async {
+        while fill.is_some() {
+            tokio::select! {
+                event = client.next_event() => {
+                    let current = fill.take().unwrap();
+                    if current.accepts_event(&event) {
+                        fill = current
+                            .on_event(&mut client, &client_selected, event)
+                            .unwrap();
+                    } else {
+                        if let NetworkEvent::ListenerError { error, .. } = &event {
+                            panic!("candidate-fill client listener failed: {error}");
+                        }
+                        fill = Some(current);
+                    }
+                }
+                event = server.next_event() => match event {
+                    NetworkEvent::InboundBlockRequest(inbound) => {
+                        server
+                            .respond_block_from_candidate_store(inbound, &mut server_candidates)
+                            .unwrap();
+                        served += 1;
+                    }
+                    NetworkEvent::InboundBlockFailure { error, .. } => {
+                        panic!("candidate-fill server request failed: {error}");
+                    }
+                    NetworkEvent::ListenerError { error, .. } => {
+                        panic!("candidate-fill server listener failed: {error}");
+                    }
+                    _ => {}
+                },
+            }
+        }
+    })
+    .await
+    .expect("authenticated historical candidate fill timed out");
+
+    assert_eq!(served, 2);
+    assert!(client.pending.is_empty());
+    assert_snapshot(&client_directory, &client_selected, &client_selected_before);
+    assert_snapshot(&server_directory, &server_selected, &server_selected_before);
+    for block in &blocks {
+        assert_eq!(server_candidates.get(block.id()).unwrap(), Some(*block));
+    }
+
+    drop(client_candidates);
+    let mut reopened_client =
+        ArtifactBlockCandidateStore::open(client_directory.path(), test_chain_definition(), limits)
+            .unwrap();
+    for block in blocks {
+        assert_eq!(reopened_client.get(block.id()).unwrap(), Some(block));
+    }
+    assert_snapshot(&client_directory, &client_selected, &client_selected_before);
+    assert_snapshot(&server_directory, &server_selected, &server_selected_before);
+}
+
+#[test]
+fn explicit_anchor_fill_composes_with_payload_fallback_for_a_branch_only_dependency() {
+    let directory = TestDirectory::new("candidate-fill-explicit-anchor-composition");
+    let mut selected = create_journal(directory.path()).unwrap();
+    let base_bytes = pairing_bytes();
+    let mut identities = ArtifactDag::new();
+    let base_id = identities
+        .apply_canonical_artifact_bytes(base_bytes.clone())
+        .unwrap()
+        .artifact_id();
+    let base = selected.prepare_block(base_id).unwrap();
+    selected.apply_block(&base, base_bytes.clone()).unwrap();
+    let historical = base.id();
+
+    let first_bytes = independent_proof_bytes(3);
+    let first_record = identities
+        .apply_canonical_artifact_bytes(first_bytes.clone())
+        .unwrap();
+    let first_id = first_record.artifact_id();
+    let first_proof_id = first_record.as_proof().unwrap().proof_id();
+    let target_bytes = referenced_generalization_bytes(first_proof_id);
+    let target_id = identities
+        .apply_canonical_artifact_bytes(target_bytes.clone())
+        .unwrap()
+        .artifact_id();
+
+    let mut branch = ArtifactChainState::new(test_chain_definition());
+    branch.apply_block(&base, base_bytes).unwrap();
+    let first = branch.prepare_block(first_id).unwrap();
+    branch.apply_block(&first, first_bytes.clone()).unwrap();
+    let target = branch.prepare_block(target_id).unwrap();
+    branch.apply_block(&target, target_bytes.clone()).unwrap();
+    let expected_root = branch.artifact_dag().artifact_set_root();
+
+    apply_fresh_blocks(&mut selected, [union_bytes()]);
+    let before = snapshot(&directory, &selected);
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 2);
+    let mut payloads = CanonicalArtifactPayloadStore::create(
+        directory.path(),
+        ArtifactPayloadStoreLimits::new(2, 1_000_000).unwrap(),
+    )
+    .unwrap();
+    let peers = peer_ids(4);
+    let block_peers = &peers[..2];
+    let payload_peers = &peers[2..];
+    let mut network = test_network_for_peers(&peers);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                block_peers,
+                historical,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    let event = unavailable_event(&mut network, block_peers[0]);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_peer_id(), block_peers[1]);
+    let event = block_response_event(&mut network, block_peers[1], &target);
+    let fill = awaiting(fill.on_event(&mut network, &selected, event).unwrap());
+    assert_eq!(fill.pending_block_id(), first.id());
+    assert_eq!(fill.pending_peer_id(), block_peers[0]);
+    let event = block_response_event(&mut network, block_peers[0], &first);
+    assert_complete(fill.on_event(&mut network, &selected, event).unwrap());
+
+    let progress = network
+        .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+            &selected,
+            &mut candidates,
+            &mut payloads,
+            payload_peers,
+            target.id(),
+            CandidateBranchReconstructionLimits::new(2).unwrap(),
+        )
+        .unwrap();
+    let crate::ArtifactBlockCandidateBranchPayloadFillProgress::AwaitingResponse(fill) = progress
+    else {
+        panic!("the empty archive unexpectedly completed branch reconstruction")
+    };
+    assert_eq!(fill.pending_block_id(), first.id());
+    assert_eq!(fill.pending_peer_id(), payload_peers[0]);
+    let event = artifact_response_event(&mut network, payload_peers[0], Vec::new());
+    let progress = fill.on_event(&mut network, event).unwrap();
+    let crate::ArtifactBlockCandidateBranchPayloadFillProgress::AwaitingResponse(fill) = progress
+    else {
+        panic!("the unavailable first payload unexpectedly completed reconstruction")
+    };
+    assert_eq!(fill.pending_peer_id(), payload_peers[1]);
+    let event = artifact_response_event(&mut network, payload_peers[1], first_bytes);
+    let progress = fill.on_event(&mut network, event).unwrap();
+    let crate::ArtifactBlockCandidateBranchPayloadFillProgress::AwaitingResponse(fill) = progress
+    else {
+        panic!("the first durable payload unexpectedly completed reconstruction")
+    };
+    assert_eq!(fill.pending_block_id(), target.id());
+    assert_eq!(fill.pending_peer_id(), payload_peers[0]);
+    let event = artifact_response_event(&mut network, payload_peers[0], target_bytes);
+    let progress = fill.on_event(&mut network, event).unwrap();
+    let crate::ArtifactBlockCandidateBranchPayloadFillProgress::Complete(reconstructed) = progress
+    else {
+        panic!("the complete branch still awaits a payload")
+    };
+
+    assert_eq!(reconstructed.anchor_block_id(), historical);
+    assert_eq!(reconstructed.target_block_id(), target.id());
+    assert_eq!(reconstructed.snapshot().artifact_set_root(), expected_root);
+    assert!(payloads.contains(first.artifact_id()).unwrap());
+    assert!(payloads.contains(target.artifact_id()).unwrap());
+    assert_eq!(candidates.get(first.id()).unwrap(), Some(first));
+    assert_eq!(candidates.get(target.id()).unwrap(), Some(target));
+    assert!(network.pending.is_empty());
+    assert_snapshot(&directory, &selected, &before);
 }

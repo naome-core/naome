@@ -35,11 +35,18 @@ pub struct ArtifactBlockCandidateAncestryFill<'store> {
 
 struct ArtifactBlockCandidateAncestryFillState<'store> {
     candidates: &'store mut ArtifactBlockCandidateStore,
+    anchor_mode: ArtifactBlockCandidateAncestryAnchorMode,
     anchor_block_id: ArtifactBlockId,
     anchor_artifact_set_root: ArtifactSetRoot,
     virtual_genesis_block_id: ArtifactBlockId,
     target_block_id: ArtifactBlockId,
     blocks: Vec<ArtifactBlock>,
+}
+
+#[derive(Clone, Copy)]
+enum ArtifactBlockCandidateAncestryAnchorMode {
+    CurrentHead,
+    ExplicitSelected,
 }
 
 enum ArtifactBlockCandidateAncestryFillPeers {
@@ -70,8 +77,11 @@ impl StaticArtifactNetwork {
         ArtifactBlockCandidateAncestryFillProgress<'store>,
         ArtifactBlockCandidateAncestryFillError,
     > {
-        let state =
-            ArtifactBlockCandidateAncestryFillState::new(selected, candidates, target_block_id)?;
+        let state = ArtifactBlockCandidateAncestryFillState::new_current_head(
+            selected,
+            candidates,
+            target_block_id,
+        )?;
         match state.scan(selected, target_block_id)? {
             None => Ok(None),
             Some((state, block_id)) => {
@@ -100,8 +110,86 @@ impl StaticArtifactNetwork {
         ArtifactBlockCandidateAncestryFillProgress<'store>,
         ArtifactBlockCandidateAncestryFillError,
     > {
-        let state =
-            ArtifactBlockCandidateAncestryFillState::new(selected, candidates, target_block_id)?;
+        let state = ArtifactBlockCandidateAncestryFillState::new_current_head(
+            selected,
+            candidates,
+            target_block_id,
+        )?;
+        match state.scan(selected, target_block_id)? {
+            None => Ok(None),
+            Some((state, block_id)) => {
+                ArtifactBlockCandidateAncestryFillPeers::validated_fallback(self, block_peer_ids)?
+                    .start_request(self, state, block_id, None)
+            }
+        }
+    }
+
+    /// Starts or resumes a durable bounded ancestry fill to one exact selected anchor.
+    ///
+    /// `selected_anchor_block_id` may be virtual genesis, the current selected
+    /// head, or a historical selected block. The exact anchor and its artifact
+    /// root are captured before candidate reads. Unlike the current-head start,
+    /// unrelated later selected-head advancement does not abort this mode. The
+    /// target and every retained or retrieved candidate-path block must remain
+    /// unselected, and encountering any selected position other than the exact
+    /// anchor is terminal rather than silently changing anchors.
+    ///
+    /// Already retained blocks are integrity-read and shape-checked before
+    /// `block_peer_id` is inspected. Only the first missing exact address is
+    /// requested, with no peer fallback or retry.
+    pub fn start_artifact_block_candidate_ancestry_fill_from_selected_anchor<'store>(
+        &mut self,
+        selected: &ArtifactChainJournal,
+        candidates: &'store mut ArtifactBlockCandidateStore,
+        block_peer_id: PeerId,
+        selected_anchor_block_id: ArtifactBlockId,
+        target_block_id: ArtifactBlockId,
+    ) -> Result<
+        ArtifactBlockCandidateAncestryFillProgress<'store>,
+        ArtifactBlockCandidateAncestryFillError,
+    > {
+        let state = ArtifactBlockCandidateAncestryFillState::new_explicit_selected(
+            selected,
+            candidates,
+            selected_anchor_block_id,
+            target_block_id,
+        )?;
+        match state.scan(selected, target_block_id)? {
+            None => Ok(None),
+            Some((state, block_id)) => {
+                ArtifactBlockCandidateAncestryFillPeers::Direct(block_peer_id)
+                    .start_request(self, state, block_id, None)
+            }
+        }
+    }
+
+    /// Starts or resumes an exact-selected-anchor fill with ordered peer fallback.
+    ///
+    /// This preserves the explicit-anchor behavior of
+    /// [`Self::start_artifact_block_candidate_ancestry_fill_from_selected_anchor`].
+    /// At the first missing address, `block_peer_ids` must contain one to
+    /// [`MAX_STATIC_PEERS`] distinct statically configured identities. Each peer
+    /// is considered once in exact caller order for that address under the
+    /// existing retry, durability, and per-attempt timeout contract.
+    pub fn start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback<
+        'store,
+    >(
+        &mut self,
+        selected: &ArtifactChainJournal,
+        candidates: &'store mut ArtifactBlockCandidateStore,
+        block_peer_ids: &[PeerId],
+        selected_anchor_block_id: ArtifactBlockId,
+        target_block_id: ArtifactBlockId,
+    ) -> Result<
+        ArtifactBlockCandidateAncestryFillProgress<'store>,
+        ArtifactBlockCandidateAncestryFillError,
+    > {
+        let state = ArtifactBlockCandidateAncestryFillState::new_explicit_selected(
+            selected,
+            candidates,
+            selected_anchor_block_id,
+            target_block_id,
+        )?;
         match state.scan(selected, target_block_id)? {
             None => Ok(None),
             Some((state, block_id)) => {
@@ -113,7 +201,7 @@ impl StaticArtifactNetwork {
 }
 
 impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
-    fn new(
+    fn new_current_head(
         selected: &ArtifactChainJournal,
         candidates: &'store mut ArtifactBlockCandidateStore,
         target_block_id: ArtifactBlockId,
@@ -151,8 +239,59 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
 
         Ok(Self {
             candidates,
+            anchor_mode: ArtifactBlockCandidateAncestryAnchorMode::CurrentHead,
             anchor_block_id,
             anchor_artifact_set_root,
+            virtual_genesis_block_id,
+            target_block_id,
+            blocks: Vec::new(),
+        })
+    }
+
+    fn new_explicit_selected(
+        selected: &ArtifactChainJournal,
+        candidates: &'store mut ArtifactBlockCandidateStore,
+        anchor_block_id: ArtifactBlockId,
+        target_block_id: ArtifactBlockId,
+    ) -> Result<Self, ArtifactBlockCandidateAncestryFillError> {
+        let selected_chain_id = selected.chain_id();
+        let candidate_chain_id = candidates.chain_id();
+        if selected_chain_id != candidate_chain_id {
+            return Err(ArtifactBlockCandidateAncestryFillError::ChainIdMismatch {
+                selected: selected_chain_id,
+                candidates: candidate_chain_id,
+            });
+        }
+
+        let anchor = selected
+            .branch_snapshot_at(anchor_block_id)
+            .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?
+            .ok_or(
+                ArtifactBlockCandidateAncestryFillError::SelectedAnchorNotRetained {
+                    block_id: anchor_block_id,
+                },
+            )?;
+        let virtual_genesis_block_id = selected_chain_id.virtual_genesis_block_id();
+        if selected_context_contains_block(
+            selected,
+            anchor_block_id,
+            virtual_genesis_block_id,
+            target_block_id,
+        )
+        .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?
+        {
+            return Err(
+                ArtifactBlockCandidateAncestryFillError::TargetAlreadySelected {
+                    block_id: target_block_id,
+                },
+            );
+        }
+
+        Ok(Self {
+            candidates,
+            anchor_mode: ArtifactBlockCandidateAncestryAnchorMode::ExplicitSelected,
+            anchor_block_id,
+            anchor_artifact_set_root: anchor.artifact_set_root(),
             virtual_genesis_block_id,
             target_block_id,
             blocks: Vec::new(),
@@ -165,6 +304,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
         mut block_id: ArtifactBlockId,
     ) -> Result<Option<(Self, ArtifactBlockId)>, ArtifactBlockCandidateAncestryFillError> {
         loop {
+            self.require_explicit_path_position_unselected(selected, block_id)?;
             let Some(block) = self.candidates.get(block_id).map_err(|source| {
                 ArtifactBlockCandidateAncestryFillError::CandidateStoreRead {
                     block_id,
@@ -183,6 +323,86 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
             };
             block_id = next_block_id;
         }
+    }
+
+    fn require_explicit_path_position_unselected(
+        &self,
+        selected: &ArtifactChainJournal,
+        block_id: ArtifactBlockId,
+    ) -> Result<(), ArtifactBlockCandidateAncestryFillError> {
+        if !matches!(
+            self.anchor_mode,
+            ArtifactBlockCandidateAncestryAnchorMode::ExplicitSelected
+        ) {
+            return Ok(());
+        }
+        if selected_context_contains_block(
+            selected,
+            self.anchor_block_id,
+            self.virtual_genesis_block_id,
+            block_id,
+        )
+        .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?
+        {
+            return Err(ArtifactBlockCandidateAncestryFillError::DivergentAncestry {
+                expected_anchor: self.anchor_block_id,
+                encountered: block_id,
+            });
+        }
+        Ok(())
+    }
+
+    fn require_explicit_anchor_and_path(
+        &self,
+        selected: &ArtifactChainJournal,
+        pending_block_id: ArtifactBlockId,
+    ) -> Result<(), ArtifactBlockCandidateAncestryFillError> {
+        if !matches!(
+            self.anchor_mode,
+            ArtifactBlockCandidateAncestryAnchorMode::ExplicitSelected
+        ) {
+            return Ok(());
+        }
+
+        let anchor = selected
+            .branch_snapshot_at(self.anchor_block_id)
+            .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?
+            .ok_or(
+                ArtifactBlockCandidateAncestryFillError::SelectedAnchorNotRetained {
+                    block_id: self.anchor_block_id,
+                },
+            )?;
+        debug_assert_eq!(
+            anchor.artifact_set_root(),
+            self.anchor_artifact_set_root,
+            "one selected block identity has one immutable artifact-set root"
+        );
+        for block in &self.blocks {
+            self.require_explicit_path_position_unselected(selected, block.id())?;
+        }
+        self.require_explicit_path_position_unselected(selected, pending_block_id)
+    }
+
+    fn require_current_head(
+        &self,
+        selected: &ArtifactChainJournal,
+    ) -> Result<(), ArtifactBlockCandidateAncestryFillError> {
+        debug_assert!(matches!(
+            self.anchor_mode,
+            ArtifactBlockCandidateAncestryAnchorMode::CurrentHead
+        ));
+        let actual_head = selected
+            .head_block_id()
+            .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?;
+        if actual_head != self.anchor_block_id {
+            return Err(
+                ArtifactBlockCandidateAncestryFillError::SelectedHeadChanged {
+                    expected: self.anchor_block_id,
+                    actual: actual_head,
+                },
+            );
+        }
+        Ok(())
     }
 
     fn shape_context(&self) -> ArtifactBlockAncestryShapeContext {
@@ -307,7 +527,7 @@ impl ArtifactBlockCandidateAncestryFillPeers {
 }
 
 impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
-    /// Returns the selected head captured when this fill started.
+    /// Returns the exact selected anchor captured when this fill started.
     pub const fn anchor_block_id(&self) -> ArtifactBlockId {
         self.state.anchor_block_id
     }
@@ -341,9 +561,12 @@ impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
 
     /// Advances the fill with its exact correlated block terminal.
     ///
-    /// The selected head is rechecked before the found block is shape-checked
-    /// or inserted. A successful insertion is acknowledged before any retained
-    /// parent scan or next request. The journal is never mutated.
+    /// Current-head mode rechecks that head before a found block is shape-checked
+    /// or inserted. Explicit-anchor mode instead rechecks its anchor plus every
+    /// retained and pending candidate-path address before processing a terminal;
+    /// unrelated selected-head advancement does not abort it. A successful
+    /// insertion is acknowledged before any retained parent scan or next request.
+    /// The journal is never mutated.
     pub fn on_event(
         self,
         network: &mut StaticArtifactNetwork,
@@ -371,6 +594,7 @@ impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
 
         let peer_id = ticket.peer_id();
         let block_id = ticket.request().block_id();
+        state.require_explicit_anchor_and_path(selected, block_id)?;
         let response = match ticket
             .complete(event)
             .expect("the accepted block event matches its candidate ancestry ticket")
@@ -399,16 +623,11 @@ impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
             return peers.start_request(network, state, block_id, Some(error));
         };
 
-        let actual_head = selected
-            .head_block_id()
-            .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?;
-        if actual_head != state.anchor_block_id {
-            return Err(
-                ArtifactBlockCandidateAncestryFillError::SelectedHeadChanged {
-                    expected: state.anchor_block_id,
-                    actual: actual_head,
-                },
-            );
+        if matches!(
+            state.anchor_mode,
+            ArtifactBlockCandidateAncestryAnchorMode::CurrentHead
+        ) {
+            state.require_current_head(selected)?;
         }
 
         let next_block_id =
@@ -449,7 +668,7 @@ impl fmt::Debug for ArtifactBlockCandidateAncestryFill<'_> {
 ///
 /// `Some(fill)` means one exact missing-block request remains active. `None`
 /// means the bound candidate store contains the complete checked path to the
-/// captured selected head.
+/// captured selected anchor.
 pub type ArtifactBlockCandidateAncestryFillProgress<'store> =
     Option<ArtifactBlockCandidateAncestryFill<'store>>;
 
@@ -474,6 +693,8 @@ pub enum ArtifactBlockCandidateAncestryFillError {
     SelectedState {
         source: Box<ArtifactChainJournalError>,
     },
+    /// The explicit anchor is neither virtual genesis nor a retained selected block.
+    SelectedAnchorNotRetained { block_id: ArtifactBlockId },
     /// The target is the current head, virtual genesis, or another selected block.
     TargetAlreadySelected { block_id: ArtifactBlockId },
     /// The candidate store could not integrity-read one required block address.
@@ -501,7 +722,7 @@ pub enum ArtifactBlockCandidateAncestryFillError {
         peer_id: PeerId,
         block_id: ArtifactBlockId,
     },
-    /// The selected head changed after this fill captured its anchor.
+    /// Current-head mode observed a different selected head after start.
     SelectedHeadChanged {
         expected: ArtifactBlockId,
         actual: ArtifactBlockId,
@@ -514,7 +735,7 @@ pub enum ArtifactBlockCandidateAncestryFillError {
     },
     /// A parent address repeated within the retained path.
     RepeatedBlockId { block_id: ArtifactBlockId },
-    /// The retained path met selected history other than the captured head.
+    /// The retained or pending path met selected history other than its exact anchor.
     DivergentAncestry {
         expected_anchor: ArtifactBlockId,
         encountered: ArtifactBlockId,
@@ -600,6 +821,10 @@ impl fmt::Display for ArtifactBlockCandidateAncestryFillError {
                 formatter,
                 "candidate ancestry fill cannot use selected state: {source}"
             ),
+            Self::SelectedAnchorNotRetained { block_id } => write!(
+                formatter,
+                "candidate ancestry fill anchor {block_id:?} is not a retained selected position"
+            ),
             Self::TargetAlreadySelected { block_id } => write!(
                 formatter,
                 "candidate ancestry fill target {block_id:?} is already selected"
@@ -682,6 +907,7 @@ impl Error for ArtifactBlockCandidateAncestryFillError {
             | Self::DuplicateBlockPeer { .. }
             | Self::UnknownBlockPeer { .. }
             | Self::ChainIdMismatch { .. }
+            | Self::SelectedAnchorNotRetained { .. }
             | Self::TargetAlreadySelected { .. }
             | Self::NoRequestableBlockPeer { .. }
             | Self::UnexpectedEvent

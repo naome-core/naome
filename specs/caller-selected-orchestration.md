@@ -236,6 +236,69 @@ candidate, and establishes no peer trust, reachability, target or branch
 selection, background retry schedule, network-wide availability, consensus,
 finality, or economic authority.
 
+### Explicit historical selected-anchor fill
+
+`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill_from_selected_anchor`
+is a separate direct-peer mode for recovering a candidate path to one exact
+caller-selected historical position in the selected journal. The caller
+supplies the exact candidate target, exact selected anchor, matching
+chain-scoped candidate store and selected journal, and one peer identity used
+only when an exact candidate address is absent. The anchor may be the journal's
+virtual genesis or any retained selected block; it need not be the current
+selected head.
+
+Start compares candidate-store and journal chain IDs before health or disk
+reads, then obtains the anchor's immutable replay-built snapshot through
+`ArtifactChainJournal::branch_snapshot_at`. An unknown, candidate-only,
+other-chain, or otherwise unretained anchor is terminal. The snapshot supplies
+the exact anchor `ArtifactSetRoot`; the mode never substitutes the current head
+or another selected position. A later selected-head advance does not invalidate
+or retarget this historical anchor.
+
+Beginning at the target, the mode applies the ordinary candidate ancestry
+integrity and shape checks while walking backward toward that exact anchor. It
+rejects a selected target, a repeated address, broken child/root continuity,
+encountering virtual genesis or any retained selected block other than the
+exact anchor, and a path requiring more than the existing fixed maximum of 16
+candidate blocks. Already retained candidates are never requested again. The
+direct peer remains uninspected until the first missing exact block address, so
+a fully retained path completes without validating or using that peer.
+
+At a miss, the mode starts at most one generation-bound request to the supplied
+statically configured Noise-authenticated peer. A found identity-matching block
+must pass the captured anchor and retained-child shape checks and be durably
+inserted before the mode scans or requests its parent. A transport failure,
+`Unavailable`, request-start failure, mismatched event, shape error,
+candidate-store error, or newly encountered different selected position is
+terminal. Every earlier acknowledged insertion remains durable, permitting a
+fresh explicit restart to skip that retained prefix. Completion exposes only
+that one continuous structural path to the exact anchor is integrity-readable
+from the same candidate store; it proves no payload availability or artifact
+validity.
+
+`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback`
+is the corresponding opt-in caller-ordered fallback. It preserves the direct
+mode unchanged and reuses the ordinary fallback fill's lazy peer-slice
+validation, exact caller order, per-address attempt reset, one-active-request
+bound, retryable-terminal classification, and durable insertion boundary. The
+block-peer slice is inspected only at the first store miss. It is independent
+of any payload-peer identity or order the caller may later supply.
+
+After block completion, the caller may explicitly start the existing
+candidate-branch payload fill against the target, stores, journal, and a
+separately chosen direct payload peer or caller-ordered payload-peer slice. That
+second start repeats its own complete selected-context, retained-path, archive,
+and strict artifact-validation checks. There is no combined coordinator,
+automatic phase transition, shared peer provenance, or atomic claim spanning
+the two workflows. In particular, block-fill completion cannot be reused as a
+payload-validation token and does not freeze the selected context for a later
+payload start.
+
+Both explicit-anchor modes leave the selected journal read-only and never
+request an artifact payload, import, promote, select, rank, persist an executed
+branch, reorganize, roll back, define retention or trust policy, or establish
+consensus, finality, or economic authority.
+
 ### Explicit canonical-payload-archive serving
 
 `StaticArtifactNetwork::respond_artifact_from_payload_store` is a standalone

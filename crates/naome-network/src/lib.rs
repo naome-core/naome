@@ -34,10 +34,11 @@
 //! explicitly announce, broadcast, or survey source-bound untrusted chain heads
 //! across a bounded caller-selected peer set, may retrieve one bounded
 //! caller-selected and unselected block ancestry, imports one exact child or one
-//! consumed ancestry, durably fills one bounded candidate-store ancestry while
-//! reusing retained blocks through either one exact peer or a separate bounded
-//! caller-ordered fallback sequence, reconstructs and begins importing one bounded
-//! ancestry from a caller-routed candidate store without block requests, or
+//! consumed ancestry, durably fills one bounded candidate-store ancestry to the
+//! current head or an explicit retained selected anchor while reusing retained
+//! blocks through either one exact peer or a separate bounded caller-ordered
+//! fallback sequence, reconstructs and begins importing one bounded ancestry from
+//! a caller-routed candidate store without block requests, or
 //! composes retrieval and import into one exact-target catch-up. Every fill
 //! target, import target, and fallback order remains caller-selected. The caller
 //! may also validate and durably archive one exact retained direct-child

@@ -157,6 +157,13 @@ unselected, unknown, candidate-only, or other-chain block identity fails as a
 fork point. Success returns an owned `ArtifactChainBranchSnapshot` rooted in the
 exact replay-checked state at that selected position.
 
+The caller may use that exact retained position as a historical structural
+recovery anchor. The journal does not replace it with the current head, choose
+it from candidate observations, or infer that it is a preferred fork point. A
+network workflow using the snapshot must still require its candidate path to
+reach that exact address and treat any different selected position as divergent
+for that operation.
+
 The returned snapshot uses the proof protocol's persistent path-copy boundary.
 Successful and failed child validation cannot change the journal's selected
 head, resolver, accepted records, authenticated root, selected-block index, or
