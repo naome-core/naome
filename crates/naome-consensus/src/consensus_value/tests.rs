@@ -1,0 +1,960 @@
+use ed25519_dalek::{Signer, SigningKey};
+use naome_chain::{
+    ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactDag, ArtifactSetRoot,
+};
+use naome_foundation::ZfcAxiom;
+use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
+
+use super::*;
+use crate::{ActiveAgreementEntry, AgreementWeight, CONSENSUS_KEY_BYTES, ConsensusRound};
+
+const AUTHORIZATION_BODY_BYTES: usize = 116;
+const AUTHORIZATION_PROPOSER_OFFSET: usize = AUTHORIZATION_BODY_BYTES;
+const AUTHORIZATION_SIGNATURE_OFFSET: usize = AUTHORIZATION_PROPOSER_OFFSET + CONSENSUS_KEY_BYTES;
+const VOTE_BODY_BYTES: usize = 118;
+const CERTIFICATE_COUNT_OFFSET: usize = VOTE_BODY_BYTES;
+const CERTIFICATE_ENTRIES_OFFSET: usize = CERTIFICATE_COUNT_OFFSET + 2;
+
+fn context(chain_id: ArtifactChainId, genesis: u8, version: u32) -> ConsensusContextV0 {
+    ConsensusContextV0::new(
+        chain_id,
+        ConsensusGenesisId::from_bytes([genesis; ConsensusGenesisId::BYTE_LENGTH]),
+        ConsensusProtocolVersion::new(version),
+    )
+}
+
+fn position(height: u64, round: u64) -> ConsensusPosition {
+    ConsensusPosition::new(ConsensusHeight::new(height), ConsensusRound::new(round))
+}
+
+fn signing_key(index: u16) -> SigningKey {
+    let mut seed = [0_u8; 32];
+    seed[..2].copy_from_slice(&index.to_be_bytes());
+    seed[2] = 0xa5;
+    SigningKey::from_bytes(&seed)
+}
+
+fn consensus_key(signing_key: &SigningKey) -> ConsensusKey {
+    ConsensusKey::from_bytes(signing_key.verifying_key().to_bytes())
+}
+
+fn snapshot(
+    position: ConsensusPosition,
+    weighted_keys: &[(&SigningKey, u128)],
+) -> ActiveAgreementSnapshot {
+    ActiveAgreementSnapshot::try_from_preselected(
+        position,
+        &weighted_keys
+            .iter()
+            .map(|(key, weight)| {
+                ActiveAgreementEntry::new(consensus_key(key), AgreementWeight::new(*weight))
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap()
+}
+
+fn authorization_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    root: ProposalSigningRoot,
+    proposer: &SigningKey,
+) -> [u8; VerifiedProducerAuthorizationV0::BYTE_LENGTH] {
+    let mut body = [0_u8; AUTHORIZATION_BODY_BYTES];
+    body[..32].copy_from_slice(context.chain_id().as_bytes());
+    body[32..64].copy_from_slice(context.genesis_id().as_bytes());
+    body[64..68].copy_from_slice(&context.protocol_version().value().to_be_bytes());
+    body[68..76].copy_from_slice(&position.height().value().to_be_bytes());
+    body[76..84].copy_from_slice(&position.round().value().to_be_bytes());
+    body[84..].copy_from_slice(root.as_bytes());
+
+    let proposer_key = consensus_key(proposer);
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"naome:consensus-producer-authorization:v0\0");
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(proposer_key.as_bytes());
+    let signature = proposer.sign(&transcript).to_bytes();
+
+    let mut bytes = [0_u8; VerifiedProducerAuthorizationV0::BYTE_LENGTH];
+    bytes[..AUTHORIZATION_BODY_BYTES].copy_from_slice(&body);
+    bytes[AUTHORIZATION_PROPOSER_OFFSET..AUTHORIZATION_SIGNATURE_OFFSET]
+        .copy_from_slice(proposer_key.as_bytes());
+    bytes[AUTHORIZATION_SIGNATURE_OFFSET..].copy_from_slice(&signature);
+    bytes
+}
+
+fn certificate_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    root: ProposalSigningRoot,
+    signers: &[&SigningKey],
+) -> Vec<u8> {
+    let mut body = [0_u8; VOTE_BODY_BYTES];
+    body[0] = 2;
+    body[1..33].copy_from_slice(context.chain_id().as_bytes());
+    body[33..65].copy_from_slice(context.genesis_id().as_bytes());
+    body[65..69].copy_from_slice(&context.protocol_version().value().to_be_bytes());
+    body[69..77].copy_from_slice(&position.height().value().to_be_bytes());
+    body[77..85].copy_from_slice(&position.round().value().to_be_bytes());
+    body[85] = 1;
+    body[86..].copy_from_slice(root.as_bytes());
+
+    let mut signers = signers.to_vec();
+    signers.sort_unstable_by_key(|signer| consensus_key(signer));
+    let mut bytes = Vec::with_capacity(CERTIFICATE_ENTRIES_OFFSET + signers.len() * 96);
+    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(&u16::try_from(signers.len()).unwrap().to_be_bytes());
+    for signer in signers {
+        let key = consensus_key(signer);
+        let mut transcript = Vec::new();
+        transcript.extend_from_slice(b"naome:consensus-precommit-signing:v0\0");
+        transcript.extend_from_slice(&body);
+        transcript.extend_from_slice(key.as_bytes());
+        bytes.extend_from_slice(key.as_bytes());
+        bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
+    }
+    bytes
+}
+
+fn envelope_bytes(
+    value: ConsensusValueV0,
+    position: ConsensusPosition,
+    proposer: &SigningKey,
+    certificate_signers: &[&SigningKey],
+) -> Vec<u8> {
+    envelope_bytes_with_roots(
+        value,
+        position,
+        proposer,
+        certificate_signers,
+        value.proposal_signing_root(),
+        value.proposal_signing_root(),
+    )
+}
+
+fn envelope_bytes_with_roots(
+    value: ConsensusValueV0,
+    position: ConsensusPosition,
+    proposer: &SigningKey,
+    certificate_signers: &[&SigningKey],
+    authorization_root: ProposalSigningRoot,
+    certificate_root: ProposalSigningRoot,
+) -> Vec<u8> {
+    let authorization =
+        authorization_bytes(value.context(), position, authorization_root, proposer);
+    let certificate = certificate_bytes(
+        value.context(),
+        position,
+        certificate_root,
+        certificate_signers,
+    );
+    let mut bytes =
+        Vec::with_capacity(ConsensusValueV0::BYTE_LENGTH + authorization.len() + certificate.len());
+    bytes.extend_from_slice(&value.to_canonical_bytes());
+    bytes.extend_from_slice(&authorization);
+    bytes.extend_from_slice(&certificate);
+    bytes
+}
+
+fn proof_payload(axiom: ZfcAxiom) -> Vec<u8> {
+    let certificate = ProofCertificate::new(vec![ProofStep::ZfcAxiom(axiom)])
+        .unwrap()
+        .into_unchecked_normal_form()
+        .certificate()
+        .clone();
+    ArtifactPayload::Proof(certificate).to_canonical_bytes()
+}
+
+fn artifact_id_for(payload: &[u8]) -> ArtifactId {
+    ArtifactDag::new()
+        .apply_canonical_artifact_bytes(payload.to_vec())
+        .unwrap()
+        .artifact_id()
+}
+
+struct Fixture {
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    proposer: SigningKey,
+    snapshot: ActiveAgreementSnapshot,
+    value: ConsensusValueV0,
+    parent: ArtifactChainBranchSnapshot,
+    payload: Vec<u8>,
+    expected_state: ConsensusStateCommitment,
+    bytes: Vec<u8>,
+}
+
+fn fixture(round: u64) -> Fixture {
+    let definition = ArtifactChainDefinition::new([0x31; 32]);
+    let context = context(definition.id(), 0x42, 7);
+    let position = position(1, round);
+    let proposer = signing_key(1);
+    let snapshot = snapshot(position, &[(&proposer, 1)]);
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let state = ArtifactChainState::new(definition);
+    let block = state.prepare_block(artifact_id_for(&payload)).unwrap();
+    let parent = state.branch_snapshot();
+    let expected_state = ConsensusStateCommitment::from_bytes([0x53; 32]);
+    let value = ConsensusValueV0::try_new(
+        context,
+        position.height(),
+        ConsensusAncestryId::virtual_genesis(context),
+        block,
+        expected_state,
+    )
+    .unwrap();
+    let bytes = envelope_bytes(value, position, &proposer, &[&proposer]);
+    Fixture {
+        context,
+        position,
+        proposer,
+        snapshot,
+        value,
+        parent,
+        payload,
+        expected_state,
+        bytes,
+    }
+}
+
+fn verify_fixture<'snapshot>(
+    fixture: &'snapshot Fixture,
+    bytes: &[u8],
+    payload: Vec<u8>,
+) -> Result<VerifiedConsensusEnvelopeV0<'snapshot>, ConsensusEnvelopeVerifyError> {
+    VerifiedConsensusEnvelopeV0::decode_and_verify(
+        bytes,
+        fixture.context,
+        consensus_key(&fixture.proposer),
+        &fixture.snapshot,
+        None,
+        fixture.expected_state,
+        &fixture.parent,
+        payload,
+    )
+}
+
+fn hex_array<const N: usize>(hex: &str) -> [u8; N] {
+    assert_eq!(hex.len(), N * 2);
+    let mut bytes = [0_u8; N];
+    for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |value: u8| match value {
+            b'0'..=b'9' => value - b'0',
+            b'a'..=b'f' => value - b'a' + 10,
+            _ => panic!("invalid lowercase hexadecimal test vector"),
+        };
+        bytes[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    bytes
+}
+
+fn golden_value() -> ConsensusValueV0 {
+    ConsensusValueV0::try_new(
+        context(ArtifactChainId::from_bytes([0x11; 32]), 0x22, 0x0102_0304),
+        ConsensusHeight::new(0x0102_0304_0506_0708),
+        ConsensusAncestryId::from_bytes([0x33; 32]),
+        ArtifactBlock::new(
+            ArtifactBlockId::from_bytes([0x44; 32]),
+            ArtifactSetRoot::from_bytes([0x55; 32]),
+            ArtifactSetRoot::from_bytes([0x66; 32]),
+            ArtifactId::from_bytes([0x77; 32]),
+        ),
+        ConsensusStateCommitment::from_bytes([0x88; 32]),
+    )
+    .unwrap()
+}
+
+#[test]
+fn fixed_value_layout_and_domain_hashes_have_independent_goldens() {
+    let value = golden_value();
+    let bytes = value.to_canonical_bytes();
+    assert_eq!(ConsensusValueV0::BYTE_LENGTH, 268);
+    assert_eq!(&bytes[0..32], &[0x11; 32]);
+    assert_eq!(&bytes[32..64], &[0x22; 32]);
+    assert_eq!(&bytes[64..68], &0x0102_0304_u32.to_be_bytes());
+    assert_eq!(&bytes[68..76], &0x0102_0304_0506_0708_u64.to_be_bytes());
+    assert_eq!(&bytes[76..108], &[0x33; 32]);
+    assert_eq!(&bytes[108..140], &[0x44; 32]);
+    assert_eq!(&bytes[140..172], &[0x55; 32]);
+    assert_eq!(&bytes[172..204], &[0x66; 32]);
+    assert_eq!(&bytes[204..236], &[0x77; 32]);
+    assert_eq!(&bytes[236..268], &[0x88; 32]);
+    assert_eq!(ConsensusValueV0::from_canonical_bytes(&bytes), Ok(value));
+    assert_eq!(
+        value.proposal_signing_root().as_bytes(),
+        &hex_array::<32>("78e4be2276389085c7e3541d37b93626d077dfc5e737886078c7d0702489120b")
+    );
+    assert_eq!(
+        value.ancestry_id().as_bytes(),
+        &hex_array::<32>("d051b3d3da623c952df59d4ad81c35c8968a4dfb8da5a4343fb4a9d8f76ddded")
+    );
+    assert_eq!(
+        ConsensusAncestryId::virtual_genesis(value.context()).as_bytes(),
+        &hex_array::<32>("2f17b4dc216011b82cf5cb518767af514520a291709a8b48daf80367d76ccbe5")
+    );
+    let signer = signing_key(1);
+    let envelope = envelope_bytes(
+        value,
+        position(value.height().value(), 0x1112_1314_1516_1718),
+        &signer,
+        &[&signer],
+    );
+    assert_eq!(envelope.len(), VerifiedConsensusEnvelopeV0::MIN_BYTE_LENGTH);
+    assert_eq!(
+        domain_hash(CONSENSUS_ENVELOPE_DOMAIN, &envelope),
+        hex_array::<32>("9841e8ac33a8bf53044731ea519eceacc0e60e66d0ff9a562e1236502c8e6982")
+    );
+}
+
+#[test]
+fn value_rejects_every_other_length_and_reserved_height() {
+    let mut bytes = golden_value().to_canonical_bytes().to_vec();
+    for length in 0..ConsensusValueV0::BYTE_LENGTH {
+        assert_eq!(
+            ConsensusValueV0::from_canonical_bytes(&bytes[..length]),
+            Err(ConsensusValueError::InvalidLength {
+                actual: length,
+                expected: ConsensusValueV0::BYTE_LENGTH,
+            })
+        );
+    }
+    bytes.push(0);
+    assert_eq!(
+        ConsensusValueV0::from_canonical_bytes(&bytes),
+        Err(ConsensusValueError::InvalidLength {
+            actual: ConsensusValueV0::BYTE_LENGTH + 1,
+            expected: ConsensusValueV0::BYTE_LENGTH,
+        })
+    );
+    assert_eq!(
+        ConsensusValueV0::try_new(
+            golden_value().context(),
+            ConsensusHeight::new(0),
+            golden_value().parent_ancestry_id(),
+            golden_value().artifact_block(),
+            golden_value().post_consensus_state_commitment(),
+        ),
+        Err(ConsensusValueError::ReservedGenesisHeight)
+    );
+}
+
+#[test]
+fn minimum_envelope_verifies_reencodes_and_advances_only_its_snapshot() {
+    let fixture = fixture(9);
+    let predecessor_head = fixture.parent.head_block_id();
+    let predecessor_root = fixture.parent.artifact_set_root();
+    let verified = verify_fixture(&fixture, &fixture.bytes, fixture.payload.clone()).unwrap();
+
+    assert_eq!(VerifiedConsensusEnvelopeV0::MIN_BYTE_LENGTH, 696);
+    assert_eq!(VerifiedConsensusEnvelopeV0::MAX_BYTE_LENGTH, 25_176);
+    assert_eq!(
+        fixture.bytes.len(),
+        VerifiedConsensusEnvelopeV0::MIN_BYTE_LENGTH
+    );
+    assert_eq!(verified.value(), fixture.value);
+    assert_eq!(verified.position(), fixture.position);
+    assert_eq!(verified.to_canonical_bytes(), fixture.bytes);
+    assert_eq!(
+        verified.id().as_bytes(),
+        &domain_hash(b"naome:consensus-envelope:v0\0", &fixture.bytes)
+    );
+    assert_eq!(
+        verified.id().as_bytes(),
+        &hex_array::<32>("7a2e661ea2badef8f9c9424370edd4369f84de6ee2a83bc12f1adb2d998a77e7")
+    );
+    assert_eq!(
+        verified.artifact_successor().head_block_id(),
+        fixture.value.artifact_block().id()
+    );
+    assert_eq!(
+        verified.artifact_successor().artifact_set_root(),
+        fixture.value.artifact_block().resulting_artifact_set_root()
+    );
+    assert_eq!(fixture.parent.head_block_id(), predecessor_head);
+    assert_eq!(fixture.parent.artifact_set_root(), predecessor_root);
+}
+
+#[test]
+fn every_minimum_envelope_byte_is_bound_or_strictly_checked() {
+    let fixture = fixture(3);
+    assert_eq!(fixture.bytes.len(), 696);
+    for index in 0..fixture.bytes.len() {
+        let mut mutated = fixture.bytes.clone();
+        mutated[index] ^= 1;
+        assert!(
+            verify_fixture(&fixture, &mutated, fixture.payload.clone()).is_err(),
+            "mutated envelope byte {index} was accepted"
+        );
+    }
+    assert_ne!(
+        fixture.parent.head_block_id(),
+        fixture.value.artifact_block().id()
+    );
+}
+
+#[test]
+fn envelope_bounds_precede_child_decoding() {
+    let fixture = fixture(4);
+    for length in 0..VerifiedConsensusEnvelopeV0::MIN_BYTE_LENGTH {
+        assert!(matches!(
+            verify_fixture(&fixture, &fixture.bytes[..length], fixture.payload.clone()),
+            Err(ConsensusEnvelopeVerifyError::InvalidLength { actual, minimum })
+                if actual == length && minimum == VerifiedConsensusEnvelopeV0::MIN_BYTE_LENGTH
+        ));
+    }
+
+    let mut trailing = fixture.bytes.clone();
+    trailing.push(0);
+    assert!(matches!(
+        verify_fixture(&fixture, &trailing, fixture.payload.clone()),
+        Err(ConsensusEnvelopeVerifyError::PrecommitCertificate(
+            PrecommitCertificateVerifyError::LengthMismatch { .. }
+        ))
+    ));
+
+    let oversized = vec![0_u8; VerifiedConsensusEnvelopeV0::MAX_BYTE_LENGTH + 1];
+    assert!(matches!(
+        verify_fixture(&fixture, &oversized, fixture.payload.clone()),
+        Err(ConsensusEnvelopeVerifyError::InputTooLong { actual, maximum })
+            if actual == VerifiedConsensusEnvelopeV0::MAX_BYTE_LENGTH + 1
+                && maximum == VerifiedConsensusEnvelopeV0::MAX_BYTE_LENGTH
+    ));
+}
+
+#[test]
+fn caller_context_parent_and_state_checks_precede_evidence() {
+    let fixture = fixture(5);
+    let other_context = context(ArtifactChainId::from_bytes([0xee; 32]), 0x42, 7);
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &fixture.bytes,
+            other_context,
+            consensus_key(&fixture.proposer),
+            &fixture.snapshot,
+            None,
+            fixture.expected_state,
+            &fixture.parent,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::ChainIdMismatch { .. })
+    ));
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &fixture.bytes,
+            context(fixture.context.chain_id(), 0x43, 7),
+            consensus_key(&fixture.proposer),
+            &fixture.snapshot,
+            None,
+            fixture.expected_state,
+            &fixture.parent,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::GenesisIdMismatch { .. })
+    ));
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &fixture.bytes,
+            context(fixture.context.chain_id(), 0x42, 8),
+            consensus_key(&fixture.proposer),
+            &fixture.snapshot,
+            None,
+            fixture.expected_state,
+            &fixture.parent,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::ProtocolVersionMismatch { .. })
+    ));
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &fixture.bytes,
+            fixture.context,
+            consensus_key(&fixture.proposer),
+            &fixture.snapshot,
+            Some(ConsensusAncestryId::from_bytes([0xaa; 32])),
+            fixture.expected_state,
+            &fixture.parent,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::UnexpectedPriorAncestryAtFirstHeight { actual })
+            if actual == ConsensusAncestryId::from_bytes([0xaa; 32])
+    ));
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &fixture.bytes,
+            fixture.context,
+            consensus_key(&fixture.proposer),
+            &fixture.snapshot,
+            None,
+            ConsensusStateCommitment::from_bytes([0xbb; 32]),
+            &fixture.parent,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::PostConsensusStateCommitmentMismatch {
+            expected,
+            actual,
+        })
+            if expected == ConsensusStateCommitment::from_bytes([0xbb; 32])
+                && actual == fixture.expected_state
+    ));
+
+    let wrong_parent_value = ConsensusValueV0::try_new(
+        fixture.context,
+        fixture.position.height(),
+        ConsensusAncestryId::from_bytes([0xa5; 32]),
+        fixture.value.artifact_block(),
+        fixture.expected_state,
+    )
+    .unwrap();
+    let wrong_parent_bytes = envelope_bytes(
+        wrong_parent_value,
+        fixture.position,
+        &fixture.proposer,
+        &[&fixture.proposer],
+    );
+    assert!(matches!(
+        verify_fixture(&fixture, &wrong_parent_bytes, fixture.payload.clone()),
+        Err(ConsensusEnvelopeVerifyError::ParentAncestryMismatch { .. })
+    ));
+}
+
+#[test]
+fn later_height_requires_the_exact_caller_expected_parent() {
+    let base = fixture(6);
+    let parent = ConsensusAncestryId::from_bytes([0x91; 32]);
+    let value = ConsensusValueV0::try_new(
+        base.context,
+        ConsensusHeight::new(2),
+        parent,
+        base.value.artifact_block(),
+        base.expected_state,
+    )
+    .unwrap();
+    let position = position(2, 6);
+    let snapshot = snapshot(position, &[(&base.proposer, 1)]);
+    let bytes = envelope_bytes(value, position, &base.proposer, &[&base.proposer]);
+
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &bytes,
+            base.context,
+            consensus_key(&base.proposer),
+            &snapshot,
+            None,
+            base.expected_state,
+            &base.parent,
+            base.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::MissingPriorAncestry { height })
+            if height == ConsensusHeight::new(2)
+    ));
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &bytes,
+            base.context,
+            consensus_key(&base.proposer),
+            &snapshot,
+            Some(ConsensusAncestryId::from_bytes([0x92; 32])),
+            base.expected_state,
+            &base.parent,
+            base.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::ParentAncestryMismatch { .. })
+    ));
+    let verified = VerifiedConsensusEnvelopeV0::decode_and_verify(
+        &bytes,
+        base.context,
+        consensus_key(&base.proposer),
+        &snapshot,
+        Some(parent),
+        base.expected_state,
+        &base.parent,
+        base.payload,
+    )
+    .unwrap();
+    assert_eq!(verified.value().parent_ancestry_id(), parent);
+}
+
+#[test]
+fn producer_and_precommit_roots_join_only_to_the_derived_value_root() {
+    let fixture = fixture(7);
+    let wrong = ProposalSigningRoot::from_bytes([0xcc; 32]);
+
+    let wrong_authorization = envelope_bytes_with_roots(
+        fixture.value,
+        fixture.position,
+        &fixture.proposer,
+        &[&fixture.proposer],
+        wrong,
+        fixture.value.proposal_signing_root(),
+    );
+    assert!(matches!(
+        verify_fixture(&fixture, &wrong_authorization, fixture.payload.clone()),
+        Err(ConsensusEnvelopeVerifyError::ProducerAuthorizationRootMismatch { .. })
+    ));
+
+    let wrong_certificate = envelope_bytes_with_roots(
+        fixture.value,
+        fixture.position,
+        &fixture.proposer,
+        &[&fixture.proposer],
+        fixture.value.proposal_signing_root(),
+        wrong,
+    );
+    assert!(matches!(
+        verify_fixture(&fixture, &wrong_certificate, fixture.payload.clone()),
+        Err(ConsensusEnvelopeVerifyError::PrecommitCertificateRootMismatch { .. })
+    ));
+
+    let both_wrong = envelope_bytes_with_roots(
+        fixture.value,
+        fixture.position,
+        &fixture.proposer,
+        &[&fixture.proposer],
+        wrong,
+        wrong,
+    );
+    assert!(matches!(
+        verify_fixture(&fixture, &both_wrong, fixture.payload.clone()),
+        Err(ConsensusEnvelopeVerifyError::ProducerAuthorizationRootMismatch { .. })
+    ));
+}
+
+#[test]
+fn envelope_rejects_mixed_positions_snapshots_and_proposer_authority() {
+    let fixture = fixture(11);
+    let later_position = position(
+        fixture.position.height().value(),
+        fixture.position.round().value() + 1,
+    );
+    let later_snapshot = snapshot(later_position, &[(&fixture.proposer, 1)]);
+
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &fixture.bytes,
+            fixture.context,
+            consensus_key(&fixture.proposer),
+            &later_snapshot,
+            None,
+            fixture.expected_state,
+            &fixture.parent,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::ProducerAuthorization(
+            ProducerAuthorizationVerifyError::SnapshotPositionMismatch { .. }
+        ))
+    ));
+
+    let authorization = authorization_bytes(
+        fixture.context,
+        fixture.position,
+        fixture.value.proposal_signing_root(),
+        &fixture.proposer,
+    );
+    let later_certificate = certificate_bytes(
+        fixture.context,
+        later_position,
+        fixture.value.proposal_signing_root(),
+        &[&fixture.proposer],
+    );
+    let mut mixed = Vec::new();
+    mixed.extend_from_slice(&fixture.value.to_canonical_bytes());
+    mixed.extend_from_slice(&authorization);
+    mixed.extend_from_slice(&later_certificate);
+    assert!(matches!(
+        verify_fixture(&fixture, &mixed, fixture.payload.clone()),
+        Err(ConsensusEnvelopeVerifyError::PrecommitCertificate(
+            PrecommitCertificateVerifyError::SnapshotPositionMismatch { .. }
+        ))
+    ));
+
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &fixture.bytes,
+            fixture.context,
+            consensus_key(&signing_key(2)),
+            &fixture.snapshot,
+            None,
+            fixture.expected_state,
+            &fixture.parent,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::ProducerAuthorization(
+            ProducerAuthorizationVerifyError::UnexpectedProposer { .. }
+        ))
+    ));
+
+    let wrong_height_snapshot = snapshot(position(2, 11), &[(&fixture.proposer, 1)]);
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &fixture.bytes,
+            fixture.context,
+            consensus_key(&fixture.proposer),
+            &wrong_height_snapshot,
+            None,
+            fixture.expected_state,
+            &fixture.parent,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::SnapshotHeightMismatch { .. })
+    ));
+}
+
+#[test]
+fn artifact_parent_chain_is_explicit_authority_and_remains_immutable() {
+    let fixture = fixture(12);
+    let other_state = ArtifactChainState::new(ArtifactChainDefinition::new([0xf1; 32]));
+    let other_parent = other_state.branch_snapshot();
+    let expected_head = other_parent.head_block_id();
+    let expected_root = other_parent.artifact_set_root();
+
+    assert!(matches!(
+        VerifiedConsensusEnvelopeV0::decode_and_verify(
+            &fixture.bytes,
+            fixture.context,
+            consensus_key(&fixture.proposer),
+            &fixture.snapshot,
+            None,
+            fixture.expected_state,
+            &other_parent,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusEnvelopeVerifyError::ArtifactChainMismatch { .. })
+    ));
+    assert_eq!(other_parent.head_block_id(), expected_head);
+    assert_eq!(other_parent.artifact_set_root(), expected_root);
+}
+
+#[test]
+fn authenticated_invalid_artifact_and_payload_fail_without_changing_predecessor() {
+    let fixture = fixture(8);
+    let predecessor_head = fixture.parent.head_block_id();
+    let predecessor_root = fixture.parent.artifact_set_root();
+
+    let mut wrong_payload = fixture.payload.clone();
+    wrong_payload[0] ^= 1;
+    assert!(matches!(
+        verify_fixture(&fixture, &fixture.bytes, wrong_payload),
+        Err(ConsensusEnvelopeVerifyError::ArtifactValidation(_))
+    ));
+
+    let invalid_block = ArtifactBlock::new(
+        ArtifactBlockId::from_bytes([0xdd; 32]),
+        fixture.value.artifact_block().previous_artifact_set_root(),
+        fixture.value.artifact_block().resulting_artifact_set_root(),
+        fixture.value.artifact_block().artifact_id(),
+    );
+    let invalid_value = ConsensusValueV0::try_new(
+        fixture.context,
+        fixture.position.height(),
+        fixture.value.parent_ancestry_id(),
+        invalid_block,
+        fixture.expected_state,
+    )
+    .unwrap();
+    let invalid_envelope = envelope_bytes(
+        invalid_value,
+        fixture.position,
+        &fixture.proposer,
+        &[&fixture.proposer],
+    );
+    assert!(matches!(
+        verify_fixture(&fixture, &invalid_envelope, fixture.payload.clone()),
+        Err(ConsensusEnvelopeVerifyError::ArtifactValidation(
+            ArtifactBlockApplyError::ParentBlockIdMismatch { .. }
+        ))
+    ));
+    assert_eq!(fixture.parent.head_block_id(), predecessor_head);
+    assert_eq!(fixture.parent.artifact_set_root(), predecessor_root);
+}
+
+#[test]
+fn round_and_evidence_variants_preserve_value_identities_but_change_envelopes() {
+    let definition = ArtifactChainDefinition::new([0x61; 32]);
+    let context = context(definition.id(), 0x62, 3);
+    let payload = proof_payload(ZfcAxiom::Union);
+    let state = ArtifactChainState::new(definition);
+    let block = state.prepare_block(artifact_id_for(&payload)).unwrap();
+    let parent = state.branch_snapshot();
+    let expected_state = ConsensusStateCommitment::from_bytes([0x63; 32]);
+    let value = ConsensusValueV0::try_new(
+        context,
+        ConsensusHeight::new(1),
+        ConsensusAncestryId::virtual_genesis(context),
+        block,
+        expected_state,
+    )
+    .unwrap();
+    let keys = [
+        signing_key(10),
+        signing_key(11),
+        signing_key(12),
+        signing_key(13),
+    ];
+    let first_position = position(1, 1);
+    let second_position = position(1, 2);
+    let first_snapshot = snapshot(
+        first_position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+    let second_snapshot = snapshot(
+        second_position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+    let first_bytes = envelope_bytes(
+        value,
+        first_position,
+        &keys[0],
+        &[&keys[0], &keys[1], &keys[2]],
+    );
+    let variant_bytes = envelope_bytes(
+        value,
+        first_position,
+        &keys[0],
+        &[&keys[0], &keys[1], &keys[3]],
+    );
+    let later_round_bytes = envelope_bytes(
+        value,
+        second_position,
+        &keys[0],
+        &[&keys[0], &keys[1], &keys[2]],
+    );
+    let producer_variant_bytes = envelope_bytes(
+        value,
+        first_position,
+        &keys[1],
+        &[&keys[0], &keys[1], &keys[2]],
+    );
+
+    let first = VerifiedConsensusEnvelopeV0::decode_and_verify(
+        &first_bytes,
+        context,
+        consensus_key(&keys[0]),
+        &first_snapshot,
+        None,
+        expected_state,
+        &parent,
+        payload.clone(),
+    )
+    .unwrap();
+    let variant = VerifiedConsensusEnvelopeV0::decode_and_verify(
+        &variant_bytes,
+        context,
+        consensus_key(&keys[0]),
+        &first_snapshot,
+        None,
+        expected_state,
+        &parent,
+        payload.clone(),
+    )
+    .unwrap();
+    let later_round = VerifiedConsensusEnvelopeV0::decode_and_verify(
+        &later_round_bytes,
+        context,
+        consensus_key(&keys[0]),
+        &second_snapshot,
+        None,
+        expected_state,
+        &parent,
+        payload,
+    )
+    .unwrap();
+    let producer_variant = VerifiedConsensusEnvelopeV0::decode_and_verify(
+        &producer_variant_bytes,
+        context,
+        consensus_key(&keys[1]),
+        &first_snapshot,
+        None,
+        expected_state,
+        &parent,
+        proof_payload(ZfcAxiom::Union),
+    )
+    .unwrap();
+
+    for verified in [&first, &variant, &later_round, &producer_variant] {
+        assert_eq!(
+            verified.value().proposal_signing_root(),
+            value.proposal_signing_root()
+        );
+        assert_eq!(verified.value().ancestry_id(), value.ancestry_id());
+        assert_eq!(
+            verified.artifact_successor().head_block_id(),
+            value.artifact_block().id()
+        );
+    }
+    assert_ne!(first.id(), variant.id());
+    assert_ne!(first.id(), later_round.id());
+    assert_ne!(first.id(), producer_variant.id());
+    assert_ne!(
+        first.precommit_certificate().id(),
+        variant.precommit_certificate().id()
+    );
+    assert_eq!(
+        first.precommit_certificate().id(),
+        producer_variant.precommit_certificate().id()
+    );
+}
+
+#[test]
+fn exact_maximum_signer_envelope_verifies_without_exceeding_the_bound() {
+    let fixture = fixture(u64::MAX);
+    let keys = (0_u16..256).map(signing_key).collect::<Vec<_>>();
+    let weighted = keys.iter().map(|key| (key, 1)).collect::<Vec<_>>();
+    let snapshot = snapshot(fixture.position, &weighted);
+    let signers = keys.iter().collect::<Vec<_>>();
+    let bytes = envelope_bytes(fixture.value, fixture.position, &keys[0], &signers);
+    assert_eq!(bytes.len(), VerifiedConsensusEnvelopeV0::MAX_BYTE_LENGTH);
+
+    let verified = VerifiedConsensusEnvelopeV0::decode_and_verify(
+        &bytes,
+        fixture.context,
+        consensus_key(&keys[0]),
+        &snapshot,
+        None,
+        fixture.expected_state,
+        &fixture.parent,
+        fixture.payload.clone(),
+    )
+    .unwrap();
+    assert_eq!(verified.precommit_certificate().signer_count(), 256);
+    assert_eq!(verified.to_canonical_bytes(), bytes);
+}
+
+#[test]
+fn zero_state_commitment_and_owned_output_are_exact() {
+    let fixture = fixture(10);
+    let value = ConsensusValueV0::try_new(
+        fixture.context,
+        fixture.position.height(),
+        fixture.value.parent_ancestry_id(),
+        fixture.value.artifact_block(),
+        ConsensusStateCommitment::from_bytes([0; 32]),
+    )
+    .unwrap();
+    let mut bytes = envelope_bytes(
+        value,
+        fixture.position,
+        &fixture.proposer,
+        &[&fixture.proposer],
+    );
+    let verified = VerifiedConsensusEnvelopeV0::decode_and_verify(
+        &bytes,
+        fixture.context,
+        consensus_key(&fixture.proposer),
+        &fixture.snapshot,
+        None,
+        ConsensusStateCommitment::from_bytes([0; 32]),
+        &fixture.parent,
+        fixture.payload.clone(),
+    )
+    .unwrap();
+    let accepted = verified.to_canonical_bytes();
+    bytes.fill(0xff);
+    assert_eq!(verified.to_canonical_bytes(), accepted);
+    assert_eq!(
+        verified
+            .value()
+            .post_consensus_state_commitment()
+            .as_bytes(),
+        &[0; 32]
+    );
+}

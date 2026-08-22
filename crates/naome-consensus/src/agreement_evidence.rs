@@ -633,6 +633,14 @@ impl<'snapshot> VerifiedPrecommitCertificateV0<'snapshot> {
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
         self.core.to_canonical_bytes()
     }
+
+    pub(crate) fn canonical_byte_length(&self) -> usize {
+        CERTIFICATE_ENTRIES_OFFSET + self.core.entries.len() * CERTIFICATE_ENTRY_BYTES
+    }
+
+    pub(crate) fn append_canonical_bytes_to(&self, bytes: &mut Vec<u8>) {
+        self.core.append_canonical_bytes_to(bytes);
+    }
 }
 
 impl<'snapshot> From<VerifiedPrecommitCertificateV0<'snapshot>>
@@ -650,6 +658,12 @@ impl VerifiedCertificateCore<'_> {
         let mut bytes = Vec::with_capacity(
             CERTIFICATE_ENTRIES_OFFSET + self.entries.len() * CERTIFICATE_ENTRY_BYTES,
         );
+        self.append_canonical_bytes_to(&mut bytes);
+        bytes
+    }
+
+    fn append_canonical_bytes_to(&self, bytes: &mut Vec<u8>) {
+        bytes.reserve(CERTIFICATE_ENTRIES_OFFSET + self.entries.len() * CERTIFICATE_ENTRY_BYTES);
         bytes.extend_from_slice(&self.body.to_canonical_bytes());
         bytes.extend_from_slice(
             &u16::try_from(self.entries.len())
@@ -660,7 +674,6 @@ impl VerifiedCertificateCore<'_> {
             bytes.extend_from_slice(entry.signer.as_bytes());
             bytes.extend_from_slice(entry.signature.as_bytes());
         }
-        bytes
     }
 }
 
