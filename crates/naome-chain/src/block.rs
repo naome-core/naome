@@ -533,6 +533,16 @@ impl ArtifactChainBranchSnapshot {
         self.state.artifact_dag().artifact_set_root()
     }
 
+    /// Returns whether this is the exact empty virtual-genesis snapshot.
+    ///
+    /// Only [`ArtifactChainState::new`] can create this state. A successfully
+    /// validated child has a non-genesis head and a non-empty checked artifact
+    /// DAG. This query does not install or authenticate a consensus genesis.
+    pub fn is_virtual_genesis(&self) -> bool {
+        self.state.head_block_id() == self.state.chain_id().virtual_genesis_block_id()
+            && self.state.artifact_dag().is_empty()
+    }
+
     /// Strictly validates one direct child and returns its immutable state.
     ///
     /// Validation preserves the same parent, root, duplicate, projected-root,

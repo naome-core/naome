@@ -224,6 +224,7 @@ fn branch_snapshots_advance_functionally_and_keep_siblings_isolated() {
     assert_eq!(snapshot.chain_id(), state.chain_id());
     assert_eq!(anchor, state.head_block_id());
     assert_eq!(empty_root, state.artifact_dag().artifact_set_root());
+    assert!(snapshot.is_virtual_genesis());
 
     let pairing_snapshot = snapshot
         .validate_child(&pairing_block, payload(&pairing))
@@ -232,6 +233,8 @@ fn branch_snapshots_advance_functionally_and_keep_siblings_isolated() {
         .validate_child(&union_block, payload(&union))
         .unwrap();
 
+    assert!(!pairing_snapshot.is_virtual_genesis());
+    assert!(!union_snapshot.is_virtual_genesis());
     assert_eq!(pairing_snapshot.head_block_id(), pairing_block.id());
     assert_eq!(
         pairing_snapshot.artifact_set_root(),

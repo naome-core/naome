@@ -1,36 +1,32 @@
-//! Numeric coordinate, position-scoped weighted agreement arithmetic, and
-//! authenticated agreement-evidence, producer-authorization, and canonical
-//! consensus-value envelope verification for NAOME consensus.
+//! Numeric consensus projections, authenticated agreement evidence, and one
+//! typed fixed-validator artifact-consensus branch kernel for NAOME.
 //!
 //! This crate projects caller-supplied positive height values into numeric
 //! non-genesis epochs, evaluates a caller-supplied epoch's numeric linear
 //! genesis-bootstrap cap, compares caller-supplied checkpoint and
 //! operator-minimum epochs through a numeric freshness window, and checks a
 //! caller-supplied upgrade activation epoch against a numeric minimum delay. It
-//! also accepts an already selected active validator set, freezes its exact
-//! position and weights, evaluates strict greater-than-one-third and
-//! greater-than-two-thirds weight thresholds without renormalizing offline
-//! weight; verifies canonical signed prevotes, precommits, and bounded
-//! role-complete quorum certificates against that exact caller-supplied
-//! snapshot; and verifies one fixed producer authorization for an opaque
-//! proposal signing root against a caller-designated active proposer at the
-//! same position. It also derives one evidence-free proposal signing root and
-//! consensus-ancestry identity from a strict V0 value, then verifies that one
-//! producer authorization and one non-nil precommit certificate authenticate
-//! that exact value before validating its artifact transition against a
-//! caller-supplied immutable branch snapshot. It does not establish canonical
-//! checkpoints, genesis allocations, consensus-state-commitment derivation,
-//! selected validator-set or proposer provenance, durable finality, genesis
-//! state, or persistence; select validators; create signatures; authorize
-//! cancellation; mutate a selected chain; or run a Byzantine-fault-tolerant
-//! state machine.
+//! also freezes already selected agreement snapshots for standalone threshold
+//! and evidence verification. Its typed V0 branch constructs one caller-selected
+//! fixed set only at a matching artifact virtual genesis; derives exact
+//! height-anchored weighted-round-robin proposers, sequential round snapshots,
+//! and complete fixed-validator artifact-only V0 branch-state projections; and
+//! verifies producer authorization, non-nil precommit evidence, consensus
+//! ancestry, and one strict artifact child before publishing an immutable
+//! successor. It does not prove that the caller-selected genesis or fixed set
+//! is canonical; select or change validators;
+//! execute locking, timeouts, or conflict handling; install durable finality;
+//! persist or recover state; create signatures; trust peers; mutate a selected
+//! chain; or execute economics.
 
 use std::error::Error;
 use std::fmt;
 
 mod agreement_evidence;
 mod consensus_value;
+mod fixed_consensus_branch;
 mod producer_authorization;
+mod proposer_selection;
 
 pub use agreement_evidence::{
     CONSENSUS_SIGNATURE_BYTES, ConsensusContextV0, ConsensusGenesisId, ConsensusProtocolVersion,
@@ -42,10 +38,17 @@ pub use agreement_evidence::{
 };
 pub use consensus_value::{
     ConsensusAncestryId, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,
-    ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0, VerifiedConsensusEnvelopeV0,
+    ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0,
+};
+pub use fixed_consensus_branch::{
+    FixedConsensusBranchV0, FixedConsensusGenesisError, FixedConsensusRoundV0,
+    VerifiedFixedConsensusTransitionV0,
 };
 pub use producer_authorization::{
     ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,
+};
+pub use proposer_selection::{
+    FixedAgreementSetId, ProposerPriorityStateId, ProposerSelectionError,
 };
 
 /// Exact width of one opaque consensus-key address.

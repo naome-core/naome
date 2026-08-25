@@ -6,7 +6,10 @@ use naome_foundation::ZfcAxiom;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 
 use super::*;
-use crate::{ActiveAgreementEntry, AgreementWeight, CONSENSUS_KEY_BYTES, ConsensusRound};
+use crate::{
+    ActiveAgreementEntry, AgreementWeight, CONSENSUS_KEY_BYTES, ConsensusRound,
+    FixedConsensusBranchV0,
+};
 
 const AUTHORIZATION_BODY_BYTES: usize = 116;
 const AUTHORIZATION_PROPOSER_OFFSET: usize = AUTHORIZATION_BODY_BYTES;
@@ -352,7 +355,10 @@ fn minimum_envelope_verifies_reencodes_and_advances_only_its_snapshot() {
         VerifiedConsensusEnvelopeV0::MIN_BYTE_LENGTH
     );
     assert_eq!(verified.value(), fixture.value);
-    assert_eq!(verified.position(), fixture.position);
+    assert_eq!(
+        verified.producer_authorization().position(),
+        fixture.position
+    );
     assert_eq!(verified.to_canonical_bytes(), fixture.bytes);
     assert_eq!(
         verified.id().as_bytes(),
@@ -957,4 +963,345 @@ fn zero_state_commitment_and_owned_output_are_exact() {
             .as_bytes(),
         &[0; 32]
     );
+}
+
+#[test]
+fn typed_branch_derives_all_authority_and_publishes_one_direct_child() {
+    let definition = ArtifactChainDefinition::new([0x91; 32]);
+    let context = context(definition.id(), 0x42, 7);
+    let proposer = signing_key(41);
+    let entries = [ActiveAgreementEntry::new(
+        consensus_key(&proposer),
+        AgreementWeight::new(1),
+    )];
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let artifact_state = ArtifactChainState::new(definition);
+    let block = artifact_state
+        .prepare_block(artifact_id_for(&payload))
+        .unwrap();
+    let parent_head = artifact_state.head_block_id();
+    let parent_root = artifact_state.artifact_dag().artifact_set_root();
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        context,
+        &entries,
+        artifact_state.branch_snapshot(),
+    )
+    .unwrap();
+    let round = branch.begin_round_zero().unwrap();
+    let next_priority_state = round.post_height_proposer_priority_state_id();
+    let value = round.value_for_artifact_block(block);
+    let bytes = envelope_bytes(value, round.position(), &proposer, &[&proposer]);
+
+    let verified = round.decode_and_verify(&bytes, payload.clone()).unwrap();
+    assert_eq!(verified.value(), value);
+    assert_eq!(
+        verified.producer_authorization().proposer(),
+        round.proposer()
+    );
+    assert_eq!(verified.precommit_certificate().signer_count(), 1);
+    assert_eq!(verified.artifact_successor().head_block_id(), block.id());
+
+    let child = verified.into_branch();
+    assert_eq!(child.context(), context);
+    assert_eq!(child.verified_height(), Some(ConsensusHeight::new(1)));
+    assert_eq!(child.ancestry_id(), value.ancestry_id());
+    assert_eq!(child.artifact_snapshot().head_block_id(), block.id());
+    assert_eq!(child.proposer_priority_state_id(), next_priority_state);
+    assert_eq!(branch.verified_height(), None);
+    assert_eq!(branch.artifact_snapshot().head_block_id(), parent_head);
+    assert_eq!(branch.artifact_snapshot().artifact_set_root(), parent_root);
+}
+
+#[test]
+fn typed_branch_rejects_an_active_unscheduled_proposer_and_remains_retryable() {
+    let definition = ArtifactChainDefinition::new([0x96; 32]);
+    let context = context(definition.id(), 0x47, 7);
+    let mut keys = [signing_key(91), signing_key(92)];
+    keys.sort_unstable_by_key(consensus_key);
+    let entries = [
+        ActiveAgreementEntry::new(consensus_key(&keys[0]), AgreementWeight::new(1)),
+        ActiveAgreementEntry::new(consensus_key(&keys[1]), AgreementWeight::new(1)),
+    ];
+    let payload = proof_payload(ZfcAxiom::Infinity);
+    let artifact_state = ArtifactChainState::new(definition);
+    let block = artifact_state
+        .prepare_block(artifact_id_for(&payload))
+        .unwrap();
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        context,
+        &entries,
+        artifact_state.branch_snapshot(),
+    )
+    .unwrap();
+    let round = branch.begin_round_zero().unwrap();
+    assert_eq!(round.proposer(), consensus_key(&keys[0]));
+    let value = round.value_for_artifact_block(block);
+    let signer_refs = [&keys[0], &keys[1]];
+
+    let wrong_bytes = envelope_bytes(value, round.position(), &keys[1], &signer_refs);
+    assert!(matches!(
+        round.decode_and_verify(&wrong_bytes, payload.clone()),
+        Err(ConsensusEnvelopeVerifyError::ProducerAuthorization(
+            ProducerAuthorizationVerifyError::UnexpectedProposer { expected, actual }
+        )) if expected == consensus_key(&keys[0]) && actual == consensus_key(&keys[1])
+    ));
+    assert_eq!(branch.verified_height(), None);
+    assert!(branch.artifact_snapshot().is_virtual_genesis());
+
+    let valid_bytes = envelope_bytes(value, round.position(), &keys[0], &signer_refs);
+    let child = round
+        .decode_and_verify(&valid_bytes, payload)
+        .unwrap()
+        .into_branch();
+    assert_eq!(child.verified_height(), Some(ConsensusHeight::new(1)));
+    assert_eq!(child.ancestry_id(), value.ancestry_id());
+    assert_eq!(child.artifact_snapshot().head_block_id(), block.id());
+}
+
+#[test]
+fn later_round_evidence_keeps_one_value_and_one_next_height_base() {
+    let definition = ArtifactChainDefinition::new([0x92; 32]);
+    let context = context(definition.id(), 0x43, 7);
+    let mut keys = [signing_key(51), signing_key(52)];
+    keys.sort_unstable_by_key(consensus_key);
+    let entries = [
+        ActiveAgreementEntry::new(consensus_key(&keys[0]), AgreementWeight::new(1)),
+        ActiveAgreementEntry::new(consensus_key(&keys[1]), AgreementWeight::new(3)),
+    ];
+    let payload = proof_payload(ZfcAxiom::Union);
+    let artifact_state = ArtifactChainState::new(definition);
+    let block = artifact_state
+        .prepare_block(artifact_id_for(&payload))
+        .unwrap();
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        context,
+        &entries,
+        artifact_state.branch_snapshot(),
+    )
+    .unwrap();
+    let round_zero = branch.begin_round_zero().unwrap();
+    let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
+    assert_eq!(round_zero.proposer(), consensus_key(&keys[1]));
+    assert_eq!(round_one.proposer(), consensus_key(&keys[0]));
+    assert_eq!(
+        round_zero.post_height_proposer_priority_state_id(),
+        round_one.post_height_proposer_priority_state_id()
+    );
+    let value = round_zero.value_for_artifact_block(block);
+    assert_eq!(round_one.value_for_artifact_block(block), value);
+
+    let round_zero_bytes = envelope_bytes(value, round_zero.position(), &keys[1], &[&keys[1]]);
+    let round_one_bytes = envelope_bytes(value, round_one.position(), &keys[0], &[&keys[1]]);
+    let round_zero_verified = round_zero
+        .decode_and_verify(&round_zero_bytes, payload.clone())
+        .unwrap();
+    let round_one_verified = round_one
+        .decode_and_verify(&round_one_bytes, payload)
+        .unwrap();
+    assert_ne!(
+        round_zero_verified.envelope_id(),
+        round_one_verified.envelope_id()
+    );
+
+    let round_zero_child = round_zero_verified.into_branch();
+    let round_one_child = round_one_verified.into_branch();
+    assert_eq!(
+        round_zero_child.ancestry_id(),
+        round_one_child.ancestry_id()
+    );
+    assert_eq!(
+        round_zero_child.artifact_snapshot().head_block_id(),
+        round_one_child.artifact_snapshot().head_block_id()
+    );
+    assert_eq!(
+        round_zero_child.proposer_priority_state_id(),
+        round_one_child.proposer_priority_state_id()
+    );
+}
+
+#[test]
+fn typed_branch_rejects_a_changed_commitment_before_invalidated_evidence() {
+    let definition = ArtifactChainDefinition::new([0x93; 32]);
+    let context = context(definition.id(), 0x44, 7);
+    let proposer = signing_key(61);
+    let entries = [ActiveAgreementEntry::new(
+        consensus_key(&proposer),
+        AgreementWeight::new(1),
+    )];
+    let payload = proof_payload(ZfcAxiom::PowerSet);
+    let artifact_state = ArtifactChainState::new(definition);
+    let block = artifact_state
+        .prepare_block(artifact_id_for(&payload))
+        .unwrap();
+    let parent_head = artifact_state.head_block_id();
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        context,
+        &entries,
+        artifact_state.branch_snapshot(),
+    )
+    .unwrap();
+    let round = branch.begin_round_zero().unwrap();
+    let value = round.value_for_artifact_block(block);
+    let expected = value.post_consensus_state_commitment();
+    let mut bytes = envelope_bytes(value, round.position(), &proposer, &[&proposer]);
+    bytes[POST_CONSENSUS_STATE_OFFSET] ^= 0x80;
+    let actual = ConsensusStateCommitment::from_bytes(
+        bytes[POST_CONSENSUS_STATE_OFFSET..CONSENSUS_VALUE_BYTES]
+            .try_into()
+            .unwrap(),
+    );
+
+    assert!(matches!(
+        round.decode_and_verify(&bytes, payload),
+        Err(ConsensusEnvelopeVerifyError::PostConsensusStateCommitmentMismatch {
+            expected: error_expected,
+            actual: error_actual,
+        }) if error_expected == expected && error_actual == actual
+    ));
+    assert_eq!(branch.verified_height(), None);
+    assert_eq!(branch.artifact_snapshot().head_block_id(), parent_head);
+}
+
+#[test]
+fn typed_sibling_branches_cannot_mix_consensus_and_artifact_parents() {
+    let definition = ArtifactChainDefinition::new([0x94; 32]);
+    let context = context(definition.id(), 0x45, 7);
+    let proposer = signing_key(71);
+    let entries = [ActiveAgreementEntry::new(
+        consensus_key(&proposer),
+        AgreementWeight::new(1),
+    )];
+    let pairing = proof_payload(ZfcAxiom::Pairing);
+    let union = proof_payload(ZfcAxiom::Union);
+    let infinity = proof_payload(ZfcAxiom::Infinity);
+    let mut selected_a = ArtifactChainState::new(definition);
+    let pairing_block = selected_a.prepare_block(artifact_id_for(&pairing)).unwrap();
+    let union_block = selected_a.prepare_block(artifact_id_for(&union)).unwrap();
+    let genesis = FixedConsensusBranchV0::try_from_virtual_genesis(
+        context,
+        &entries,
+        selected_a.branch_snapshot(),
+    )
+    .unwrap();
+    let first_round = genesis.begin_round_zero().unwrap();
+
+    let pairing_value = first_round.value_for_artifact_block(pairing_block);
+    let pairing_bytes = envelope_bytes(
+        pairing_value,
+        first_round.position(),
+        &proposer,
+        &[&proposer],
+    );
+    let pairing_branch = first_round
+        .decode_and_verify(&pairing_bytes, pairing.clone())
+        .unwrap()
+        .into_branch();
+    let union_value = first_round.value_for_artifact_block(union_block);
+    let union_bytes = envelope_bytes(union_value, first_round.position(), &proposer, &[&proposer]);
+    let union_branch = first_round
+        .decode_and_verify(&union_bytes, union)
+        .unwrap()
+        .into_branch();
+
+    selected_a.apply_block(&pairing_block, pairing).unwrap();
+    let infinity_block = selected_a
+        .prepare_block(artifact_id_for(&infinity))
+        .unwrap();
+    let pairing_round = pairing_branch.begin_round_zero().unwrap();
+    let union_round = union_branch.begin_round_zero().unwrap();
+    let pairing_child_value = pairing_round.value_for_artifact_block(infinity_block);
+    let pairing_child_bytes = envelope_bytes(
+        pairing_child_value,
+        pairing_round.position(),
+        &proposer,
+        &[&proposer],
+    );
+
+    assert!(matches!(
+        union_round.decode_and_verify(&pairing_child_bytes, infinity.clone()),
+        Err(ConsensusEnvelopeVerifyError::ParentAncestryMismatch {
+            expected,
+            actual,
+        }) if expected == union_branch.ancestry_id() && actual == pairing_branch.ancestry_id()
+    ));
+
+    let mixed_value = union_round.value_for_artifact_block(infinity_block);
+    let mixed_bytes = envelope_bytes(mixed_value, union_round.position(), &proposer, &[&proposer]);
+    assert!(matches!(
+        union_round.decode_and_verify(&mixed_bytes, infinity),
+        Err(ConsensusEnvelopeVerifyError::ArtifactValidation(
+            ArtifactBlockApplyError::ParentBlockIdMismatch { .. }
+        ))
+    ));
+    assert_eq!(
+        union_branch.verified_height(),
+        Some(ConsensusHeight::new(1))
+    );
+    assert_eq!(
+        union_branch.artifact_snapshot().head_block_id(),
+        union_block.id()
+    );
+}
+
+#[test]
+fn typed_branch_advances_only_exact_direct_heights() {
+    let definition = ArtifactChainDefinition::new([0x95; 32]);
+    let context = context(definition.id(), 0x46, 7);
+    let proposer = signing_key(81);
+    let entries = [ActiveAgreementEntry::new(
+        consensus_key(&proposer),
+        AgreementWeight::new(1),
+    )];
+    let pairing = proof_payload(ZfcAxiom::Pairing);
+    let union = proof_payload(ZfcAxiom::Union);
+    let mut selected = ArtifactChainState::new(definition);
+    let first_block = selected.prepare_block(artifact_id_for(&pairing)).unwrap();
+    let genesis = FixedConsensusBranchV0::try_from_virtual_genesis(
+        context,
+        &entries,
+        selected.branch_snapshot(),
+    )
+    .unwrap();
+    let first_round = genesis.begin_round_zero().unwrap();
+    let first_value = first_round.value_for_artifact_block(first_block);
+    let first_bytes = envelope_bytes(first_value, first_round.position(), &proposer, &[&proposer]);
+    let first_child = first_round
+        .decode_and_verify(&first_bytes, pairing.clone())
+        .unwrap()
+        .into_branch();
+
+    selected.apply_block(&first_block, pairing).unwrap();
+    let second_block = selected.prepare_block(artifact_id_for(&union)).unwrap();
+    let second_round = first_child.begin_round_zero().unwrap();
+    assert_eq!(second_round.position().height(), ConsensusHeight::new(2));
+    let second_value = second_round.value_for_artifact_block(second_block);
+    assert_eq!(second_value.parent_ancestry_id(), first_child.ancestry_id());
+    let second_bytes = envelope_bytes(
+        second_value,
+        second_round.position(),
+        &proposer,
+        &[&proposer],
+    );
+    let second_child = second_round
+        .decode_and_verify(&second_bytes, union)
+        .unwrap()
+        .into_branch();
+    assert_eq!(
+        second_child.verified_height(),
+        Some(ConsensusHeight::new(2))
+    );
+    assert_eq!(second_child.ancestry_id(), second_value.ancestry_id());
+    assert_eq!(
+        second_child.artifact_snapshot().head_block_id(),
+        second_block.id()
+    );
+
+    let stale_round = first_child.begin_round_zero().unwrap();
+    assert!(matches!(
+        stale_round.decode_and_verify(&first_bytes, proof_payload(ZfcAxiom::Pairing)),
+        Err(ConsensusEnvelopeVerifyError::SnapshotHeightMismatch {
+            value,
+            snapshot,
+        }) if value == ConsensusHeight::new(1) && snapshot.height() == ConsensusHeight::new(2)
+    ));
 }

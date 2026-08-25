@@ -1,4 +1,4 @@
-//! Canonical evidence-free consensus values and stateless envelope verification.
+//! Canonical evidence-free values and branch-bound envelope composition.
 
 use std::error::Error;
 use std::fmt;
@@ -12,15 +12,17 @@ use sha2::{Digest, Sha256};
 use super::agreement_evidence::{ContextMismatch, verify_context};
 use super::{
     ActiveAgreementSnapshot, ConsensusContextV0, ConsensusGenesisId, ConsensusHeight, ConsensusKey,
-    ConsensusPosition, ConsensusProtocolVersion, PrecommitCertificateVerifyError,
-    ProducerAuthorizationVerifyError, ProposalSigningRoot, VerifiedPrecommitCertificateV0,
-    VerifiedProducerAuthorizationV0,
+    ConsensusPosition, ConsensusProtocolVersion, FixedAgreementSetId,
+    PrecommitCertificateVerifyError, ProducerAuthorizationVerifyError, ProposalSigningRoot,
+    ProposerPriorityStateId, VerifiedPrecommitCertificateV0, VerifiedProducerAuthorizationV0,
 };
 
 const PROPOSAL_SIGNING_ROOT_DOMAIN: &[u8] = b"naome:consensus-proposal-signing-root:v0\0";
 const CONSENSUS_ANCESTRY_DOMAIN: &[u8] = b"naome:consensus-ancestry:v0\0";
 const CONSENSUS_GENESIS_ANCESTRY_DOMAIN: &[u8] = b"naome:consensus-ancestry-genesis:v0\0";
 const CONSENSUS_ENVELOPE_DOMAIN: &[u8] = b"naome:consensus-envelope:v0\0";
+const FIXED_VALIDATOR_ARTIFACT_STATE_DOMAIN: &[u8] =
+    b"naome:consensus-state-commitment:fixed-validator-artifact:v0\0";
 
 const CHAIN_ID_OFFSET: usize = 0;
 const GENESIS_ID_OFFSET: usize = CHAIN_ID_OFFSET + ArtifactChainId::BYTE_LENGTH;
@@ -79,28 +81,52 @@ impl ConsensusAncestryId {
     }
 }
 
-/// Opaque commitment to post-transition consensus state.
+/// Commitment to one exact post-transition consensus-state projection.
 ///
-/// Every 32-byte value is representable, including all zeroes. This V0 bridge
-/// compares the value with caller-supplied expected bytes but does not derive,
-/// interpret, or install consensus state.
+/// Every 32-byte value remains representable for strict value decoding. The
+/// fixed-validator branch verifier accepts only the domain-separated digest it
+/// derives from the exact context, direct child height, parent ancestry,
+/// artifact block, fixed agreement set, and once-advanced proposer base. The
+/// commitment does not install that state or address the complete future
+/// consensus state machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
 pub struct ConsensusStateCommitment([u8; Self::BYTE_LENGTH]);
 
 impl ConsensusStateCommitment {
-    /// Exact width of one opaque consensus-state commitment.
+    /// Exact width of one consensus-state commitment.
     pub const BYTE_LENGTH: usize = 32;
 
-    /// Constructs an observed opaque commitment from raw bytes.
+    /// Constructs an observed commitment from raw bytes.
     pub const fn from_bytes(bytes: [u8; Self::BYTE_LENGTH]) -> Self {
         Self(bytes)
     }
 
-    /// Returns the raw opaque commitment bytes.
+    /// Returns the raw commitment bytes.
     pub const fn as_bytes(&self) -> &[u8; Self::BYTE_LENGTH] {
         &self.0
     }
+}
+
+pub(crate) fn derive_fixed_validator_artifact_state_commitment(
+    context: ConsensusContextV0,
+    child_height: ConsensusHeight,
+    parent_ancestry_id: ConsensusAncestryId,
+    artifact_block: ArtifactBlock,
+    fixed_agreement_set_id: FixedAgreementSetId,
+    proposer_priority_state_id: ProposerPriorityStateId,
+) -> ConsensusStateCommitment {
+    let mut hasher = Sha256::new();
+    hasher.update(FIXED_VALIDATOR_ARTIFACT_STATE_DOMAIN);
+    hasher.update(context.chain_id().as_bytes());
+    hasher.update(context.genesis_id().as_bytes());
+    hasher.update(context.protocol_version().value().to_be_bytes());
+    hasher.update(child_height.value().to_be_bytes());
+    hasher.update(parent_ancestry_id.as_bytes());
+    hasher.update(artifact_block.to_canonical_bytes());
+    hasher.update(fixed_agreement_set_id.as_bytes());
+    hasher.update(proposer_priority_state_id.as_bytes());
+    ConsensusStateCommitment::from_bytes(hasher.finalize().into())
 }
 
 /// Evidence-variant identity of one complete canonical V0 consensus envelope.
@@ -130,8 +156,10 @@ impl ConsensusEnvelopeId {
 /// One canonical evidence-free V0 consensus value.
 ///
 /// The value binds context, positive height, consensus parent, the exact
-/// unchanged 128-byte artifact block, and an opaque post-consensus-state
-/// commitment. Tendermint round and all producer/precommit evidence remain
+/// unchanged 128-byte artifact block, and a post-consensus-state commitment.
+/// Strict decoding treats that commitment as observed bytes; typed branch
+/// verification requires the exact fixed-validator artifact-only V0 branch-state
+/// projection. Tendermint round and all producer/precommit evidence remain
 /// outside these bytes so the same value can be re-proposed in a later round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
@@ -242,7 +270,7 @@ impl ConsensusValueV0 {
         self.artifact_block
     }
 
-    /// Returns the opaque post-consensus-state commitment.
+    /// Returns the embedded post-consensus-state commitment.
     pub const fn post_consensus_state_commitment(self) -> ConsensusStateCommitment {
         self.post_consensus_state_commitment
     }
@@ -287,14 +315,15 @@ impl ConsensusValueV0 {
 /// One canonical V0 envelope whose value, producer authorization, precommit
 /// certificate, and artifact transition were verified together.
 ///
-/// Both evidence objects borrow the same caller-supplied active snapshot. The
-/// artifact successor is an immutable memory-only candidate derived from the
-/// caller-supplied parent snapshot. Success proves this bounded composition
-/// only; it does not establish canonical snapshot or proposer provenance,
-/// derive the opaque consensus-state commitment, install finality, mutate a
-/// selected journal, persist evidence, or resolve conflicting certificates.
+/// Both evidence objects borrow the same typed round cursor's derived active
+/// snapshot. The artifact successor is an immutable memory-only candidate
+/// derived from the same typed branch parent that supplied ancestry, height,
+/// proposer, and state-commitment authority. Success proves this bounded
+/// composition only; it does not select a canonical branch, install finality,
+/// mutate a selected journal, persist evidence, or resolve conflicting
+/// certificates.
 #[must_use]
-pub struct VerifiedConsensusEnvelopeV0<'snapshot> {
+pub(crate) struct VerifiedConsensusEnvelopeV0<'snapshot> {
     value: ConsensusValueV0,
     producer_authorization: VerifiedProducerAuthorizationV0<'snapshot>,
     precommit_certificate: VerifiedPrecommitCertificateV0<'snapshot>,
@@ -304,21 +333,22 @@ pub struct VerifiedConsensusEnvelopeV0<'snapshot> {
 
 impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
     /// Smallest canonical envelope width, containing one precommit signer.
-    pub const MIN_BYTE_LENGTH: usize = MIN_ENVELOPE_BYTES;
+    pub(crate) const MIN_BYTE_LENGTH: usize = MIN_ENVELOPE_BYTES;
 
     /// Largest canonical envelope width, containing 256 precommit signers.
-    pub const MAX_BYTE_LENGTH: usize = MAX_ENVELOPE_BYTES;
+    pub(crate) const MAX_BYTE_LENGTH: usize = MAX_ENVELOPE_BYTES;
 
-    /// Strictly decodes and verifies one complete V0 envelope and artifact.
+    /// Composes one complete V0 envelope against explicit internal expectations.
     ///
-    /// `expected_prior_ancestry` must be `None` exactly at height one and
-    /// `Some` at every later height. All expected values are caller-held
-    /// authority; this verifier does not derive canonical consensus state.
+    /// The public typed round boundary derives every expectation before calling
+    /// this crate-private helper. Keeping this function non-public prevents
+    /// independent proposer, ancestry, state-commitment, and artifact-parent
+    /// inputs from bypassing the coupled branch contract.
     #[allow(
         clippy::too_many_arguments,
-        reason = "each independent expected authority is explicit at the consensus boundary"
+        reason = "the private composition helper keeps every derived authority check explicit"
     )]
-    pub fn decode_and_verify(
+    pub(crate) fn decode_and_verify(
         bytes: &[u8],
         expected_context: ConsensusContextV0,
         expected_proposer: ConsensusKey,
@@ -328,20 +358,7 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
         artifact_parent: &ArtifactChainBranchSnapshot,
         canonical_artifact_bytes: Vec<u8>,
     ) -> Result<Self, ConsensusEnvelopeVerifyError> {
-        if bytes.len() > MAX_ENVELOPE_BYTES {
-            return Err(ConsensusEnvelopeVerifyError::InputTooLong {
-                actual: bytes.len(),
-                maximum: MAX_ENVELOPE_BYTES,
-            });
-        }
-        if bytes.len() < MIN_ENVELOPE_BYTES {
-            return Err(ConsensusEnvelopeVerifyError::InvalidLength {
-                actual: bytes.len(),
-                minimum: MIN_ENVELOPE_BYTES,
-            });
-        }
-
-        let value = ConsensusValueV0::from_canonical_bytes(&bytes[..CONSENSUS_VALUE_BYTES])?;
+        let value = Self::decode_value(bytes)?;
         verify_context(value.context(), expected_context)
             .map_err(ConsensusEnvelopeVerifyError::from)?;
         if value.height() != snapshot.position().height() {
@@ -428,43 +445,59 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
         })
     }
 
+    pub(crate) fn decode_value(
+        bytes: &[u8],
+    ) -> Result<ConsensusValueV0, ConsensusEnvelopeVerifyError> {
+        if bytes.len() > MAX_ENVELOPE_BYTES {
+            return Err(ConsensusEnvelopeVerifyError::InputTooLong {
+                actual: bytes.len(),
+                maximum: MAX_ENVELOPE_BYTES,
+            });
+        }
+        if bytes.len() < MIN_ENVELOPE_BYTES {
+            return Err(ConsensusEnvelopeVerifyError::InvalidLength {
+                actual: bytes.len(),
+                minimum: MIN_ENVELOPE_BYTES,
+            });
+        }
+        ConsensusValueV0::from_canonical_bytes(&bytes[..CONSENSUS_VALUE_BYTES])
+            .map_err(ConsensusEnvelopeVerifyError::from)
+    }
+
     /// Returns the exact verified evidence-free value.
-    pub const fn value(&self) -> ConsensusValueV0 {
+    pub(crate) const fn value(&self) -> ConsensusValueV0 {
         self.value
     }
 
-    /// Returns the exact round-bearing position authenticated by both evidence objects.
-    pub const fn position(&self) -> ConsensusPosition {
-        self.producer_authorization.position()
-    }
-
     /// Returns the verified producer authorization.
-    pub const fn producer_authorization(&self) -> &VerifiedProducerAuthorizationV0<'snapshot> {
+    pub(crate) const fn producer_authorization(
+        &self,
+    ) -> &VerifiedProducerAuthorizationV0<'snapshot> {
         &self.producer_authorization
     }
 
     /// Returns the verified non-nil precommit certificate.
-    pub const fn precommit_certificate(&self) -> &VerifiedPrecommitCertificateV0<'snapshot> {
+    pub(crate) const fn precommit_certificate(&self) -> &VerifiedPrecommitCertificateV0<'snapshot> {
         &self.precommit_certificate
     }
 
     /// Returns the immutable artifact state after the verified transition.
-    pub const fn artifact_successor(&self) -> &ArtifactChainBranchSnapshot {
+    pub(crate) const fn artifact_successor(&self) -> &ArtifactChainBranchSnapshot {
         &self.artifact_successor
     }
 
     /// Consumes the envelope and returns its immutable artifact successor.
-    pub fn into_artifact_successor(self) -> ArtifactChainBranchSnapshot {
+    pub(crate) fn into_artifact_successor(self) -> ArtifactChainBranchSnapshot {
         self.artifact_successor
     }
 
     /// Returns the evidence-variant identity of the complete envelope bytes.
-    pub const fn id(&self) -> ConsensusEnvelopeId {
+    pub(crate) const fn id(&self) -> ConsensusEnvelopeId {
         self.id
     }
 
     /// Re-encodes the complete verified envelope byte-identically.
-    pub fn to_canonical_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_canonical_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(
             PRECOMMIT_CERTIFICATE_OFFSET + self.precommit_certificate.canonical_byte_length(),
         );
@@ -547,7 +580,7 @@ pub enum ConsensusEnvelopeVerifyError {
         expected: ConsensusAncestryId,
         actual: ConsensusAncestryId,
     },
-    /// The opaque state commitment differs from caller-expected bytes.
+    /// The embedded state commitment differs from the branch-derived digest.
     PostConsensusStateCommitmentMismatch {
         expected: ConsensusStateCommitment,
         actual: ConsensusStateCommitment,
