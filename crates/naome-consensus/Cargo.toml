@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 ed25519-dalek.workspace = true
 naome-chain = { path = "../naome-chain" }
+num-bigint.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
