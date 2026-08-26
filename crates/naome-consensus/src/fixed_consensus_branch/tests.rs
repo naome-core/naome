@@ -75,6 +75,27 @@ fn genesis_binds_context_set_zero_priorities_and_virtual_artifact_state() {
     );
     assert!(branch.artifact_snapshot().is_virtual_genesis());
 
+    let coordinate = branch.coordinate();
+    assert_eq!(coordinate.context(), context);
+    assert_eq!(coordinate.verified_height(), None);
+    assert_eq!(coordinate.ancestry_id(), branch.ancestry_id());
+    assert_eq!(
+        coordinate.artifact_head_block_id(),
+        branch.artifact_snapshot().head_block_id()
+    );
+    assert_eq!(
+        coordinate.artifact_set_root(),
+        branch.artifact_snapshot().artifact_set_root()
+    );
+    assert_eq!(
+        coordinate.fixed_agreement_set_id(),
+        branch.fixed_agreement_set_id()
+    );
+    assert_eq!(
+        coordinate.proposer_priority_state_id(),
+        branch.proposer_priority_state_id()
+    );
+
     let canonical =
         FixedProposerStateV0::try_from_preselected(&[entry(1, 1), entry(2, 3)]).unwrap();
     assert_eq!(branch.fixed_agreement_set_id(), canonical.fixed_set_id());

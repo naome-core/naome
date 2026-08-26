@@ -1817,8 +1817,10 @@ dependencies = [
 name = "naome-storage"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "naome-chain",
  "naome-checker",
+ "naome-consensus",
  "naome-foundation",
  "naome-ledger",
  "naome-proof",

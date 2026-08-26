@@ -987,6 +987,7 @@ fn typed_branch_derives_all_authority_and_publishes_one_direct_child() {
         artifact_state.branch_snapshot(),
     )
     .unwrap();
+    let parent_coordinate = branch.coordinate();
     let round = branch.begin_round_zero().unwrap();
     let next_priority_state = round.post_height_proposer_priority_state_id();
     let value = round.value_for_artifact_block(block);
@@ -1001,7 +1002,17 @@ fn typed_branch_derives_all_authority_and_publishes_one_direct_child() {
     assert_eq!(verified.precommit_certificate().signer_count(), 1);
     assert_eq!(verified.artifact_successor().head_block_id(), block.id());
 
-    let child = verified.into_branch();
+    let envelope_id = verified.envelope_id();
+    let verified_position = round.position();
+    let owned = verified.into_owned();
+    assert_eq!(owned.parent_coordinate(), parent_coordinate);
+    assert_eq!(owned.position(), verified_position);
+    assert_eq!(owned.value(), value);
+    assert_eq!(owned.envelope_id(), envelope_id);
+    assert_eq!(owned.canonical_envelope_bytes(), bytes);
+    assert_eq!(owned.canonical_artifact_bytes(), payload);
+
+    let child = owned.into_branch();
     assert_eq!(child.context(), context);
     assert_eq!(child.verified_height(), Some(ConsensusHeight::new(1)));
     assert_eq!(child.ancestry_id(), value.ancestry_id());

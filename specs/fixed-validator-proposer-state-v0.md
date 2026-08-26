@@ -18,11 +18,13 @@ priority vector, fixed-set identity, or expected state commitment. Later branch
 states arise only from a complete envelope verified as one direct child of an
 existing typed branch.
 
-The result is intentionally immutable, memory-only, and branchable. It does not
-select a canonical sibling, install finality, resolve conflicting certificates,
-mutate a journal, persist or recover state, provide signing safety, execute
+The branch result is intentionally immutable, memory-only, and branchable. It
+does not by itself select a canonical sibling, install finality, resolve
+conflicting certificates, mutate a journal, provide signing safety, execute
 locking or timeout rules, change the validator set, fetch data, trust peers, or
-execute economics.
+execute economics. The separate fixed-validator finality journal is the sole V0
+boundary that may consume a sealed verified transition and durably select and
+replay its exact branch state.
 
 ## Fixed agreement set
 
@@ -255,7 +257,13 @@ projection for that candidate block. Complete envelope verification then:
 Every envelope-verification failure leaves the branch, round cursor, artifact
 journal, and selected state unchanged. Successful verification may be repeated
 to construct explicit sibling candidates; it grants no preference or finality
-between them.
+between them. Only a synchronized fixed-validator finality-journal record may
+publish one such child as the operable fixed-V0 head. Strict replay derives the
+same height, ancestry, artifact snapshot, fixed set, and proposer base from the
+retained envelope and payload; a durable conflict halt exposes no next-round
+cursor or operable head. On a healthy halted journal only its terminal halt
+summary and exact local journal-state identity remain diagnostic; branch,
+record, length, parent, and commit access are denied.
 
 ## Resource and product boundary
 
@@ -265,8 +273,10 @@ Full envelope verification retains the existing 25,176-byte bound, verifies one
 producer and at most 256 precommit signatures, and validates one artifact child.
 
 This V0 completes a fixed-set, branch-relative proposer and transition kernel.
-Dynamic validator selection and transitions, finite-window proposer-gap proofs,
-Tendermint locking and valid-value state, anti-equivocation signing state,
-canonical branch selection, conflicting-certificate halt, durable atomic
-finality, persistence, restart recovery, networking, peer trust, availability,
-and economics remain separate required product work.
+The separate fixed-validator finality journal adds exact-format durable
+selection, replay, and conflict halt without changing this branch API's
+authority. Dynamic validator selection and transitions, finite-window
+proposer-gap proofs, Tendermint locking and valid-value state,
+anti-equivocation signing state, general consensus persistence and recovery,
+networking, peer trust, availability, and economics remain separate required
+product work.

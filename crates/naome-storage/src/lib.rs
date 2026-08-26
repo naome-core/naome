@@ -14,6 +14,14 @@
 //! not make bytes selected or reusable as checked records; consumers must
 //! validate them again in their target artifact context.
 //!
+//! [`FixedValidatorFinalityJournalV0`] is the separate fixed-validator V0
+//! durable authority for coupling one strictly verified consensus transition
+//! to its exact artifact successor. It cleanly replaces the artifact-only
+//! journal within one prerelease directory, retains the first exact finality
+//! proof per selected height, and requires an externally retained exact
+//! [`FixedValidatorFinalityJournalStateIdV0`] for operational reopen. A distinct
+//! verified sibling produces a durable terminal halt rather than fork choice.
+//!
 //! [`ArtifactBlockCandidateStore`] retains chain-scoped structural blocks,
 //! including siblings and blocks with unavailable parents, without validating
 //! or selecting a candidate history. These stores define no reorganization,
@@ -33,6 +41,7 @@ mod candidate_branch_reconstruction;
 mod candidate_branch_recovery_bundle;
 #[cfg(test)]
 mod fault_io;
+mod fixed_validator_finality_journal;
 mod payload_store;
 
 pub use block_candidate_store::{
@@ -60,6 +69,12 @@ pub use candidate_branch_reconstruction::{
     CandidateBranchReconstructionCursor, CandidateBranchReconstructionError,
     CandidateBranchReconstructionLimits, CandidateBranchReconstructionLimitsError,
     CandidateBranchReconstructionProgress, ReconstructedCandidateBranch,
+};
+pub use fixed_validator_finality_journal::{
+    FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityHaltV0,
+    FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
+    FixedValidatorFinalityJournalV0, FixedValidatorFinalityRecordV0,
+    FixedValidatorFinalityReplayLimitErrorV0, FixedValidatorFinalityReplayLimitV0,
 };
 
 pub use payload_store::{

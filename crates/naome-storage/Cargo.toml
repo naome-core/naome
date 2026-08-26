@@ -9,12 +9,14 @@ publish.workspace = true
 
 [dependencies]
 naome-chain = { path = "../naome-chain" }
+naome-consensus = { path = "../naome-consensus" }
 naome-foundation = { path = "../naome-foundation" }
 naome-ledger = { path = "../naome-ledger" }
 naome-proof = { path = "../naome-proof" }
 sha2.workspace = true
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
 naome-checker = { path = "../naome-checker" }
 
 [lints]
