@@ -6,8 +6,8 @@ use std::fmt;
 use naome::block_exchange::ArtifactBlockRequest;
 use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactChainId, ArtifactSetRoot};
 use naome_storage::{
-    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, ArtifactChainJournal,
-    ArtifactChainJournalError,
+    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, ArtifactChainJournalError,
+    SelectedArtifactHistory, SelectedArtifactHistoryError,
 };
 
 use super::{
@@ -16,7 +16,6 @@ use super::{
     block_ancestry::{
         ArtifactBlockAncestryShapeContext, ArtifactBlockAncestryShapeError, retain_ancestry_block,
     },
-    selected_context_contains_block,
 };
 
 /// One durable candidate-store ancestry fill awaiting an exact block terminal.
@@ -59,6 +58,17 @@ struct ArtifactBlockCandidateAncestryFallbackPeers {
     next_peer_index: usize,
 }
 
+fn selected_history_contains_block(
+    selected: &dyn SelectedArtifactHistory,
+    current_head: ArtifactBlockId,
+    virtual_genesis: ArtifactBlockId,
+    block_id: ArtifactBlockId,
+) -> Result<bool, SelectedArtifactHistoryError> {
+    Ok(block_id == current_head
+        || block_id == virtual_genesis
+        || selected.selected_branch_snapshot_at(block_id)?.is_some())
+}
+
 impl StaticArtifactNetwork {
     /// Starts or resumes one durable bounded ancestry fill.
     ///
@@ -69,7 +79,7 @@ impl StaticArtifactNetwork {
     /// journal supplies only a read-only anchor and divergence checks.
     pub fn start_artifact_block_candidate_ancestry_fill<'store>(
         &mut self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         candidates: &'store mut ArtifactBlockCandidateStore,
         block_peer_id: PeerId,
         target_block_id: ArtifactBlockId,
@@ -102,7 +112,7 @@ impl StaticArtifactNetwork {
     /// remains a no-fallback operation.
     pub fn start_artifact_block_candidate_ancestry_fill_with_peer_fallback<'store>(
         &mut self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         candidates: &'store mut ArtifactBlockCandidateStore,
         block_peer_ids: &[PeerId],
         target_block_id: ArtifactBlockId,
@@ -139,7 +149,7 @@ impl StaticArtifactNetwork {
     /// requested, with no peer fallback or retry.
     pub fn start_artifact_block_candidate_ancestry_fill_from_selected_anchor<'store>(
         &mut self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         candidates: &'store mut ArtifactBlockCandidateStore,
         block_peer_id: PeerId,
         selected_anchor_block_id: ArtifactBlockId,
@@ -175,7 +185,7 @@ impl StaticArtifactNetwork {
         'store,
     >(
         &mut self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         candidates: &'store mut ArtifactBlockCandidateStore,
         block_peer_ids: &[PeerId],
         selected_anchor_block_id: ArtifactBlockId,
@@ -202,11 +212,11 @@ impl StaticArtifactNetwork {
 
 impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
     fn new_current_head(
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         candidates: &'store mut ArtifactBlockCandidateStore,
         target_block_id: ArtifactBlockId,
     ) -> Result<Self, ArtifactBlockCandidateAncestryFillError> {
-        let selected_chain_id = selected.chain_id();
+        let selected_chain_id = selected.selected_chain_id();
         let candidate_chain_id = candidates.chain_id();
         if selected_chain_id != candidate_chain_id {
             return Err(ArtifactBlockCandidateAncestryFillError::ChainIdMismatch {
@@ -216,10 +226,10 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
         }
 
         let anchor_block_id = selected
-            .head_block_id()
+            .selected_head_block_id()
             .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?;
         let virtual_genesis_block_id = selected_chain_id.virtual_genesis_block_id();
-        if selected_context_contains_block(
+        if selected_history_contains_block(
             selected,
             anchor_block_id,
             virtual_genesis_block_id,
@@ -234,7 +244,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
             );
         }
         let anchor_artifact_set_root = selected
-            .artifact_set_root()
+            .selected_artifact_set_root()
             .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?;
 
         Ok(Self {
@@ -249,12 +259,12 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
     }
 
     fn new_explicit_selected(
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         candidates: &'store mut ArtifactBlockCandidateStore,
         anchor_block_id: ArtifactBlockId,
         target_block_id: ArtifactBlockId,
     ) -> Result<Self, ArtifactBlockCandidateAncestryFillError> {
-        let selected_chain_id = selected.chain_id();
+        let selected_chain_id = selected.selected_chain_id();
         let candidate_chain_id = candidates.chain_id();
         if selected_chain_id != candidate_chain_id {
             return Err(ArtifactBlockCandidateAncestryFillError::ChainIdMismatch {
@@ -264,7 +274,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
         }
 
         let anchor = selected
-            .branch_snapshot_at(anchor_block_id)
+            .selected_branch_snapshot_at(anchor_block_id)
             .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?
             .ok_or(
                 ArtifactBlockCandidateAncestryFillError::SelectedAnchorNotRetained {
@@ -272,7 +282,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
                 },
             )?;
         let virtual_genesis_block_id = selected_chain_id.virtual_genesis_block_id();
-        if selected_context_contains_block(
+        if selected_history_contains_block(
             selected,
             anchor_block_id,
             virtual_genesis_block_id,
@@ -300,7 +310,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
 
     fn scan(
         mut self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         mut block_id: ArtifactBlockId,
     ) -> Result<Option<(Self, ArtifactBlockId)>, ArtifactBlockCandidateAncestryFillError> {
         loop {
@@ -316,8 +326,12 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
             };
 
             let next_block_id =
-                retain_ancestry_block(selected, self.shape_context(), &mut self.blocks, block)
-                    .map_err(ArtifactBlockCandidateAncestryFillError::from_shape)?;
+                retain_ancestry_block(self.shape_context(), &mut self.blocks, block, |block_id| {
+                    selected
+                        .selected_branch_snapshot_at(block_id)
+                        .map(|snapshot| snapshot.is_some())
+                })
+                .map_err(ArtifactBlockCandidateAncestryFillError::from_shape)?;
             let Some(next_block_id) = next_block_id else {
                 return Ok(None);
             };
@@ -327,7 +341,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
 
     fn require_explicit_path_position_unselected(
         &self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         block_id: ArtifactBlockId,
     ) -> Result<(), ArtifactBlockCandidateAncestryFillError> {
         if !matches!(
@@ -336,7 +350,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
         ) {
             return Ok(());
         }
-        if selected_context_contains_block(
+        if selected_history_contains_block(
             selected,
             self.anchor_block_id,
             self.virtual_genesis_block_id,
@@ -354,7 +368,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
 
     fn require_explicit_anchor_and_path(
         &self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         pending_block_id: ArtifactBlockId,
     ) -> Result<(), ArtifactBlockCandidateAncestryFillError> {
         if !matches!(
@@ -365,7 +379,7 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
         }
 
         let anchor = selected
-            .branch_snapshot_at(self.anchor_block_id)
+            .selected_branch_snapshot_at(self.anchor_block_id)
             .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?
             .ok_or(
                 ArtifactBlockCandidateAncestryFillError::SelectedAnchorNotRetained {
@@ -385,14 +399,14 @@ impl<'store> ArtifactBlockCandidateAncestryFillState<'store> {
 
     fn require_current_head(
         &self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
     ) -> Result<(), ArtifactBlockCandidateAncestryFillError> {
         debug_assert!(matches!(
             self.anchor_mode,
             ArtifactBlockCandidateAncestryAnchorMode::CurrentHead
         ));
         let actual_head = selected
-            .head_block_id()
+            .selected_head_block_id()
             .map_err(ArtifactBlockCandidateAncestryFillError::selected_state)?;
         if actual_head != self.anchor_block_id {
             return Err(
@@ -570,7 +584,7 @@ impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
     pub fn on_event(
         self,
         network: &mut StaticArtifactNetwork,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         event: NetworkEvent,
     ) -> Result<
         ArtifactBlockCandidateAncestryFillProgress<'store>,
@@ -630,9 +644,17 @@ impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
             state.require_current_head(selected)?;
         }
 
-        let next_block_id =
-            retain_ancestry_block(selected, state.shape_context(), &mut state.blocks, block)
-                .map_err(ArtifactBlockCandidateAncestryFillError::from_shape)?;
+        let next_block_id = retain_ancestry_block(
+            state.shape_context(),
+            &mut state.blocks,
+            block,
+            |block_id| {
+                selected
+                    .selected_branch_snapshot_at(block_id)
+                    .map(|snapshot| snapshot.is_some())
+            },
+        )
+        .map_err(ArtifactBlockCandidateAncestryFillError::from_shape)?;
         let _ = state.candidates.insert(&block).map_err(|source| {
             ArtifactBlockCandidateAncestryFillError::CandidateStoreInsert {
                 block_id,
@@ -689,9 +711,13 @@ pub enum ArtifactBlockCandidateAncestryFillError {
         selected: ArtifactChainId,
         candidates: ArtifactChainId,
     },
-    /// The selected journal failed a required read.
+    /// The artifact-only selected journal failed a required read.
     SelectedState {
         source: Box<ArtifactChainJournalError>,
+    },
+    /// Another sealed selected-history owner failed a required read.
+    SelectedHistoryState {
+        source: Box<SelectedArtifactHistoryError>,
     },
     /// The explicit anchor is neither virtual genesis nor a retained selected block.
     SelectedAnchorNotRetained { block_id: ArtifactBlockId },
@@ -753,13 +779,18 @@ pub enum ArtifactBlockCandidateAncestryFillError {
 }
 
 impl ArtifactBlockCandidateAncestryFillError {
-    fn selected_state(source: ArtifactChainJournalError) -> Self {
-        Self::SelectedState {
-            source: Box::new(source),
+    fn selected_state(source: SelectedArtifactHistoryError) -> Self {
+        match source {
+            SelectedArtifactHistoryError::ArtifactChainJournal { source } => {
+                Self::SelectedState { source }
+            }
+            source => Self::SelectedHistoryState {
+                source: Box::new(source),
+            },
         }
     }
 
-    fn from_shape(error: ArtifactBlockAncestryShapeError) -> Self {
+    fn from_shape(error: ArtifactBlockAncestryShapeError<SelectedArtifactHistoryError>) -> Self {
         match error {
             ArtifactBlockAncestryShapeError::SelectedState(source) => Self::selected_state(source),
             ArtifactBlockAncestryShapeError::ArtifactSetRootMismatch {
@@ -820,6 +851,10 @@ impl fmt::Display for ArtifactBlockCandidateAncestryFillError {
             Self::SelectedState { source } => write!(
                 formatter,
                 "candidate ancestry fill cannot use selected state: {source}"
+            ),
+            Self::SelectedHistoryState { source } => write!(
+                formatter,
+                "candidate ancestry fill cannot use selected history: {source}"
             ),
             Self::SelectedAnchorNotRetained { block_id } => write!(
                 formatter,
@@ -897,6 +932,7 @@ impl Error for ArtifactBlockCandidateAncestryFillError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::SelectedState { source } => Some(source.as_ref()),
+            Self::SelectedHistoryState { source } => Some(source.as_ref()),
             Self::CandidateStoreRead { source, .. } | Self::CandidateStoreInsert { source, .. } => {
                 Some(source.as_ref())
             }

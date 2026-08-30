@@ -1,12 +1,16 @@
 //! Crash-consistent fixed-validator V0 finality installation.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, SeekFrom};
 use std::path::Path;
 
-use naome_chain::{ArtifactChainDefinition, ArtifactChainState};
+use naome_chain::{
+    ArtifactBlockId, ArtifactChainBranchSnapshot, ArtifactChainDefinition, ArtifactChainId,
+    ArtifactChainState, ArtifactSetRoot,
+};
 use naome_consensus::{
     ActiveAgreementEntry, ConsensusAncestryId, ConsensusContextV0, ConsensusEnvelopeId,
     ConsensusEnvelopeVerifyError, ConsensusHeight, ConsensusPosition, ConsensusValueError,
@@ -18,8 +22,8 @@ use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
 use sha2::{Digest, Sha256};
 
 use super::{
-    AppendPhase, ExclusiveLockError, JOURNAL_FILE_NAME, LOCK_FILE_NAME, StoreIo,
-    open_exclusive_lock,
+    AppendPhase, ExclusiveLockError, JOURNAL_FILE_NAME, LOCK_FILE_NAME, SelectedArtifactHistory,
+    SelectedArtifactHistoryError, StoreIo, open_exclusive_lock, selected_artifact_history_sealed,
 };
 
 const JOURNAL_HEADER: &[u8] = b"naome:fixed-validator-finality-journal:v0\0";
@@ -267,6 +271,7 @@ impl FixedValidatorFinalityJournalV0 {
             }
         })?;
         branches.push(branch);
+        let snapshot_index = genesis_snapshot_index(&branches)?;
 
         let directory = directory.as_ref();
         let lock = open_shared_lock(directory)?;
@@ -287,6 +292,7 @@ impl FixedValidatorFinalityJournalV0 {
                 context,
                 replay_limit,
                 branches,
+                snapshot_index,
                 state_id,
             ),
         })
@@ -372,6 +378,60 @@ impl FixedValidatorFinalityJournalV0 {
             .expect("every journal retains its virtual-genesis branch"))
     }
 
+    /// Returns the exact selected artifact-chain identity while operable.
+    pub fn artifact_chain_id(
+        &self,
+    ) -> Result<ArtifactChainId, FixedValidatorFinalityJournalErrorV0> {
+        self.core.ensure_operational()?;
+        Ok(self.core.context.chain_id())
+    }
+
+    /// Returns the exact finalized artifact head while operable.
+    pub fn artifact_head_block_id(
+        &self,
+    ) -> Result<ArtifactBlockId, FixedValidatorFinalityJournalErrorV0> {
+        self.core.ensure_operational()?;
+        Ok(self
+            .core
+            .branches
+            .last()
+            .expect("every journal retains its virtual-genesis branch")
+            .artifact_snapshot()
+            .head_block_id())
+    }
+
+    /// Returns the authenticated finalized artifact-set root while operable.
+    pub fn artifact_set_root(
+        &self,
+    ) -> Result<ArtifactSetRoot, FixedValidatorFinalityJournalErrorV0> {
+        self.core.ensure_operational()?;
+        Ok(self
+            .core
+            .branches
+            .last()
+            .expect("every journal retains its virtual-genesis branch")
+            .artifact_snapshot()
+            .artifact_set_root())
+    }
+
+    /// Returns one owned finalized artifact snapshot by exact selected head.
+    ///
+    /// Virtual genesis and every replayed or durably committed finality step are
+    /// retained. Unknown or non-selected addresses return `None`; terminal halt
+    /// and poisoned handles deny the lookup before inspecting history.
+    pub fn artifact_branch_snapshot_at(
+        &self,
+        block_id: ArtifactBlockId,
+    ) -> Result<Option<ArtifactChainBranchSnapshot>, FixedValidatorFinalityJournalErrorV0> {
+        self.core.ensure_operational()?;
+        Ok(self
+            .core
+            .snapshot_index
+            .get(&block_id)
+            .and_then(|index| self.core.branches.get(*index))
+            .map(|branch| branch.artifact_snapshot().clone()))
+    }
+
     /// Returns the retained selected parent required to verify one height.
     pub fn parent_for_height(
         &self,
@@ -417,16 +477,62 @@ impl FixedValidatorFinalityJournalV0 {
     }
 }
 
+impl selected_artifact_history_sealed::Sealed for FixedValidatorFinalityJournalV0 {}
+
+impl SelectedArtifactHistory for FixedValidatorFinalityJournalV0 {
+    fn selected_chain_id(&self) -> ArtifactChainId {
+        self.core.context.chain_id()
+    }
+
+    fn selected_head_block_id(&self) -> Result<ArtifactBlockId, SelectedArtifactHistoryError> {
+        self.artifact_head_block_id()
+            .map_err(SelectedArtifactHistoryError::fixed_validator_finality)
+    }
+
+    fn selected_artifact_set_root(&self) -> Result<ArtifactSetRoot, SelectedArtifactHistoryError> {
+        self.artifact_set_root()
+            .map_err(SelectedArtifactHistoryError::fixed_validator_finality)
+    }
+
+    fn selected_branch_snapshot_at(
+        &self,
+        block_id: ArtifactBlockId,
+    ) -> Result<Option<ArtifactChainBranchSnapshot>, SelectedArtifactHistoryError> {
+        self.artifact_branch_snapshot_at(block_id)
+            .map_err(SelectedArtifactHistoryError::fixed_validator_finality)
+    }
+}
+
 struct FixedValidatorFinalityJournalCore<F> {
     file: F,
     context: ConsensusContextV0,
     replay_limit: FixedValidatorFinalityReplayLimitV0,
     branches: Vec<FixedConsensusBranchV0>,
+    snapshot_index: HashMap<ArtifactBlockId, usize>,
     records: Vec<FixedValidatorFinalityRecordV0>,
     halt: Option<FixedValidatorFinalityHaltV0>,
     state_id: FixedValidatorFinalityJournalStateIdV0,
     committed_end: u64,
     poisoned: bool,
+}
+
+fn genesis_snapshot_index(
+    branches: &[FixedConsensusBranchV0],
+) -> Result<HashMap<ArtifactBlockId, usize>, FixedValidatorFinalityJournalErrorV0> {
+    let genesis = branches
+        .first()
+        .expect("every new joint journal receives its virtual-genesis branch")
+        .artifact_snapshot()
+        .head_block_id();
+    let mut snapshot_index = HashMap::new();
+    snapshot_index.try_reserve(1).map_err(|_| {
+        FixedValidatorFinalityJournalErrorV0::SnapshotIndexAllocation {
+            entry: 0,
+            retained_snapshots: 0,
+        }
+    })?;
+    snapshot_index.insert(genesis, 0);
+    Ok(snapshot_index)
 }
 
 impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
@@ -435,13 +541,16 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
         context: ConsensusContextV0,
         replay_limit: FixedValidatorFinalityReplayLimitV0,
         branches: Vec<FixedConsensusBranchV0>,
+        snapshot_index: HashMap<ArtifactBlockId, usize>,
         state_id: FixedValidatorFinalityJournalStateIdV0,
     ) -> Self {
+        debug_assert_eq!(snapshot_index.len(), 1);
         Self {
             file,
             context,
             replay_limit,
             branches,
+            snapshot_index,
             records: Vec::new(),
             halt: None,
             state_id,
@@ -480,7 +589,15 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
         }
 
         let state_id = genesis_state_id(&actual_prefix);
-        let mut core = Self::empty(file, context, replay_limit, branches, state_id);
+        let snapshot_index = genesis_snapshot_index(&branches)?;
+        let mut core = Self::empty(
+            file,
+            context,
+            replay_limit,
+            branches,
+            snapshot_index,
+            state_id,
+        );
         let mut entry_start = JOURNAL_PREFIX_BYTES as u64;
         let mut entry = 0_u64;
         let mut recovery_offset = None;
@@ -665,9 +782,20 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
                         bytes: std::mem::size_of::<FixedValidatorFinalityRecordV0>(),
                     }
                 })?;
+                self.snapshot_index.try_reserve(1).map_err(|_| {
+                    FixedValidatorFinalityJournalErrorV0::SnapshotIndexAllocation {
+                        entry,
+                        retained_snapshots: self.snapshot_index.len(),
+                    }
+                })?;
                 let record = record_from_transition(&transition, state_id, body);
+                let branch = transition.into_branch();
+                let artifact_head = branch.artifact_snapshot().head_block_id();
                 self.records.push(record);
-                self.branches.push(transition.into_branch());
+                let branch_index = self.branches.len();
+                self.branches.push(branch);
+                let replaced = self.snapshot_index.insert(artifact_head, branch_index);
+                debug_assert!(replaced.is_none());
             }
             CONFLICT_HALT_RECORD => {
                 let selected = self.records.get(parent_index).ok_or(
@@ -767,6 +895,12 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
                 bytes: std::mem::size_of::<FixedValidatorFinalityRecordV0>(),
             }
         })?;
+        self.snapshot_index.try_reserve(1).map_err(|_| {
+            FixedValidatorFinalityJournalErrorV0::SnapshotIndexAllocation {
+                entry,
+                retained_snapshots: self.snapshot_index.len(),
+            }
+        })?;
         let body = canonical_record_body(FINALIZE_RECORD, &transition, entry)?;
         let body_length = u32::try_from(body.len())
             .expect("bounded fixed-validator journal record length fits u32");
@@ -780,8 +914,13 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
             envelope_id,
             entry,
         )?;
+        let branch = transition.into_branch();
+        let artifact_head = branch.artifact_snapshot().head_block_id();
         self.records.push(record);
-        self.branches.push(transition.into_branch());
+        let branch_index = self.branches.len();
+        self.branches.push(branch);
+        let replaced = self.snapshot_index.insert(artifact_head, branch_index);
+        debug_assert!(replaced.is_none());
         self.state_id = next_state_id;
         Ok(FixedValidatorFinalityCommitOutcomeV0::Finalized {
             position,
@@ -1144,6 +1283,11 @@ pub enum FixedValidatorFinalityJournalErrorV0 {
     EntryOffsetOverflow { entry: u64, offset: u64 },
     /// A bounded replay or retained-evidence allocation failed.
     Allocation { entry: u64, bytes: usize },
+    /// The selected artifact-snapshot lookup index could not grow.
+    SnapshotIndexAllocation {
+        entry: u64,
+        retained_snapshots: usize,
+    },
     /// A complete record used an unsupported semantic tag.
     InvalidRecordTag { entry: u64, offset: u64, actual: u8 },
     /// A complete record declared an unsupported envelope length.
@@ -1245,6 +1389,13 @@ impl fmt::Display for FixedValidatorFinalityJournalErrorV0 {
             Self::Allocation { entry, bytes } => write!(
                 formatter,
                 "finality record {entry} could not allocate {bytes} bytes"
+            ),
+            Self::SnapshotIndexAllocation {
+                entry,
+                retained_snapshots,
+            } => write!(
+                formatter,
+                "finality record {entry} could not grow the selected snapshot index beyond {retained_snapshots} entries"
             ),
             Self::InvalidRecordTag { entry, offset, actual } => write!(
                 formatter,
@@ -1366,6 +1517,7 @@ impl Error for FixedValidatorFinalityJournalErrorV0 {
             | Self::InvalidRecordLength { .. }
             | Self::EntryOffsetOverflow { .. }
             | Self::Allocation { .. }
+            | Self::SnapshotIndexAllocation { .. }
             | Self::InvalidRecordTag { .. }
             | Self::InvalidEnvelopeLength { .. }
             | Self::InvalidPayloadLength { .. }

@@ -167,7 +167,6 @@ impl ArtifactChainJournal {
             })?
             .expect("the healthy current selected head always retains its snapshot");
         let path = collect_candidate_branch_path(
-            self,
             target_block_id,
             candidates,
             limits.max_blocks,
@@ -175,6 +174,7 @@ impl ArtifactChainJournal {
                 block_id: anchor_block_id,
                 snapshot: anchor_snapshot,
             },
+            |block_id| self.branch_snapshot_at(block_id),
         )
         .map_err(|source| {
             CandidateBranchArchiveImportError::preflight(
@@ -454,7 +454,7 @@ impl CandidateBranchArchiveImportPreflightError {
         }
     }
 
-    fn from_path(error: CandidateBranchPathError) -> Self {
+    fn from_path(error: CandidateBranchPathError<ArtifactChainJournalError>) -> Self {
         match error {
             CandidateBranchPathError::SelectedState { source } => Self::SelectedState { source },
             CandidateBranchPathError::TargetAlreadySelected { block_id } => {

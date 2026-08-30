@@ -21,8 +21,9 @@ use tokio::time::timeout;
 use super::*;
 use crate::codec::ArtifactBlockWireResponse;
 use crate::tests::{
-    TestDirectory, apply_fresh_blocks, assert_snapshot, connected_pair, create_journal,
-    pairing_bytes, snapshot, test_chain_definition, test_network_for_peers, union_bytes,
+    FinalityFixture, TestDirectory, apply_fresh_blocks, assert_finality_snapshot, assert_snapshot,
+    connected_pair, create_journal, finality_snapshot, pairing_bytes, snapshot,
+    test_chain_definition, test_network_for_peers, union_bytes,
 };
 use crate::{
     ExchangeRequestId, Keypair, MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS, MAX_PENDING_REQUESTS,
@@ -256,6 +257,191 @@ fn awaiting(
 
 fn assert_complete(progress: ArtifactBlockCandidateAncestryFillProgress<'_>) {
     assert!(progress.is_none());
+}
+
+#[test]
+fn finality_history_supports_current_and_historical_candidate_fills_read_only() {
+    let directory = TestDirectory::new("candidate-fill-finality-current-historical");
+    let mut fixture = FinalityFixture::new();
+    let mut selected = fixture.create(&directory);
+    let historical = fixture.commit_payload(&mut selected, pairing_bytes());
+    let historical_root = selected.artifact_set_root().unwrap();
+    let _ = fixture.commit_payload(&mut selected, union_bytes());
+    let current = selected.artifact_head_block_id().unwrap();
+    let current_root = selected.artifact_set_root().unwrap();
+    let before = finality_snapshot(&directory, &selected);
+
+    let peers = peer_ids(3);
+    let mut network = test_network_for_peers(&peers);
+    let mut candidates = candidate_store(&directory, test_chain_definition(), 2);
+
+    let current_target = extension(current, current_root, 1).remove(0);
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill(
+                &selected,
+                &mut candidates,
+                peers[0],
+                current_target.id(),
+            )
+            .unwrap(),
+    );
+    let event = block_response_event(&mut network, peers[0], &current_target);
+    assert_complete(fill.on_event(&mut network, &selected, event).unwrap());
+
+    let historical_target = extension(historical, historical_root, 1).remove(0);
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
+                &selected,
+                &mut candidates,
+                &peers[1..],
+                historical,
+                historical_target.id(),
+            )
+            .unwrap(),
+    );
+    let unavailable = unavailable_event(&mut network, peers[1]);
+    let fill = awaiting(fill.on_event(&mut network, &selected, unavailable).unwrap());
+    assert_eq!(fill.pending_peer_id(), peers[2]);
+    let event = block_response_event(&mut network, peers[2], &historical_target);
+    assert_complete(fill.on_event(&mut network, &selected, event).unwrap());
+
+    assert_eq!(
+        candidates.get(current_target.id()).unwrap(),
+        Some(current_target)
+    );
+    assert_eq!(
+        candidates.get(historical_target.id()).unwrap(),
+        Some(historical_target)
+    );
+    assert_finality_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn finality_head_drift_and_halt_fail_before_candidate_insertion_or_request() {
+    let drift_directory = TestDirectory::new("candidate-fill-finality-drift");
+    let mut drift_fixture = FinalityFixture::new();
+    let mut drifted = drift_fixture.create(&drift_directory);
+    let target = extension(
+        drifted.artifact_head_block_id().unwrap(),
+        drifted.artifact_set_root().unwrap(),
+        1,
+    )
+    .remove(0);
+    let peer_id = peer_ids(1)[0];
+    let mut network = test_network_for_peers(&[peer_id]);
+    let mut candidates = candidate_store(&drift_directory, test_chain_definition(), 1);
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_ancestry_fill(
+                &drifted,
+                &mut candidates,
+                peer_id,
+                target.id(),
+            )
+            .unwrap(),
+    );
+    let _ = drift_fixture.commit_payload(&mut drifted, pairing_bytes());
+    let after_drift = finality_snapshot(&drift_directory, &drifted);
+    let actual = drifted.artifact_head_block_id().unwrap();
+    let event = block_response_event(&mut network, peer_id, &target);
+    assert!(matches!(
+        fill.on_event(&mut network, &drifted, event),
+        Err(ArtifactBlockCandidateAncestryFillError::SelectedHeadChanged {
+            actual: observed,
+            ..
+        }) if observed == actual
+    ));
+    assert!(candidates.get(target.id()).unwrap().is_none());
+    assert_finality_snapshot(&drift_directory, &drifted, &after_drift);
+
+    let halted_directory = TestDirectory::new("candidate-fill-finality-halt");
+    let mut halted_fixture = FinalityFixture::new();
+    let mut halted = halted_fixture.create(&halted_directory);
+    halted_fixture.halt_with_conflict(&mut halted, pairing_bytes(), union_bytes());
+    let halted_bytes = halted_directory.journal_bytes();
+    let halted_state_id = halted.state_id().unwrap();
+    let halted_summary = halted.halt().unwrap();
+    let halted_target = extension(
+        test_chain_definition().id().virtual_genesis_block_id(),
+        ArtifactChainState::new(test_chain_definition())
+            .artifact_dag()
+            .artifact_set_root(),
+        1,
+    )
+    .remove(0);
+    let mut halted_candidates = candidate_store(&halted_directory, test_chain_definition(), 1);
+    let unknown_peer = peer_ids(1)[0];
+    let mut halted_network = test_network_for_peers(&[]);
+    let foreign_directory = TestDirectory::new("candidate-fill-finality-halt-foreign");
+    let foreign_definition = ArtifactChainDefinition::new([0x98; 32]);
+    let foreign_chain_id = foreign_definition.id();
+    let mut foreign_candidates = candidate_store(&foreign_directory, foreign_definition, 1);
+    assert!(matches!(
+        halted_network.start_artifact_block_candidate_ancestry_fill(
+            &halted,
+            &mut foreign_candidates,
+            unknown_peer,
+            halted_target.id(),
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::ChainIdMismatch {
+            selected,
+            candidates,
+        }) if selected == test_chain_definition().id() && candidates == foreign_chain_id
+    ));
+    assert!(matches!(
+        halted_network.start_artifact_block_candidate_ancestry_fill(
+            &halted,
+            &mut halted_candidates,
+            unknown_peer,
+            halted_target.id(),
+        ),
+        Err(ArtifactBlockCandidateAncestryFillError::SelectedHistoryState { .. })
+    ));
+    assert_eq!(halted_network.pending.len(), 0);
+    assert!(halted_candidates.get(halted_target.id()).unwrap().is_none());
+    assert_eq!(halted_directory.journal_bytes(), halted_bytes);
+    assert_eq!(halted.state_id().unwrap(), halted_state_id);
+    assert_eq!(halted.halt().unwrap(), halted_summary);
+}
+
+#[test]
+fn finality_history_preserves_the_fixed_candidate_ancestry_limit() {
+    let directory = TestDirectory::new("candidate-fill-finality-limit");
+    let fixture = FinalityFixture::new();
+    let selected = fixture.create(&directory);
+    let before = finality_snapshot(&directory, &selected);
+    let blocks = extension(
+        selected.artifact_head_block_id().unwrap(),
+        selected.artifact_set_root().unwrap(),
+        MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS + 1,
+    );
+    let target = blocks.last().unwrap().id();
+    let mut candidates = candidate_store(
+        &directory,
+        test_chain_definition(),
+        MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS + 1,
+    );
+    retain(&mut candidates, blocks);
+    let mut network = test_network_for_peers(&[]);
+    let unknown_peer = peer_ids(1)[0];
+    assert!(matches!(
+        network.start_artifact_block_candidate_ancestry_fill(
+            &selected,
+            &mut candidates,
+            unknown_peer,
+            target,
+        ),
+        Err(
+            ArtifactBlockCandidateAncestryFillError::AncestryLimitExceeded {
+                maximum: MAX_ARTIFACT_BLOCK_ANCESTRY_BLOCKS,
+                ..
+            }
+        )
+    ));
+    assert_eq!(network.pending.len(), 0);
+    assert_finality_snapshot(&directory, &selected, &before);
 }
 
 #[test]

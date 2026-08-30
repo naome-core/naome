@@ -129,8 +129,10 @@ impl StaticArtifactNetwork {
                         block_id,
                     },
                 )?;
-            let next_block_id = retain_ancestry_block(selected, shape, &mut blocks, block)
-                .map_err(ArtifactBlockCandidateAncestryImportStartError::from_shape)?;
+            let next_block_id = retain_ancestry_block(shape, &mut blocks, block, |block_id| {
+                selected.block(block_id).map(|block| block.is_some())
+            })
+            .map_err(ArtifactBlockCandidateAncestryImportStartError::from_shape)?;
             let Some(next_block_id) = next_block_id else {
                 break;
             };
@@ -377,7 +379,7 @@ impl ArtifactBlockCandidateAncestryImportStartError {
         }
     }
 
-    fn from_shape(error: ArtifactBlockAncestryShapeError) -> Self {
+    fn from_shape(error: ArtifactBlockAncestryShapeError<ArtifactChainJournalError>) -> Self {
         match error {
             ArtifactBlockAncestryShapeError::SelectedState(source) => Self::selected_state(source),
             ArtifactBlockAncestryShapeError::ArtifactSetRootMismatch {

@@ -184,13 +184,54 @@ reopening with the new ID also fails closed. The journal never adopts its own
 latest footer as trust, rolls back a committed suffix, repairs an anchor,
 selects a checkpoint, or automatically recovers either crash gap.
 
+## Read-only selected-artifact history
+
+The journal retains the immutable artifact snapshot coupled to virtual genesis
+and to every locally finalized fixed-validator V0 branch. Creation, strict
+replay, and each successful `commit_verified` step maintain an in-memory exact
+`ArtifactBlockId` lookup over those snapshots. An unknown address returns no
+snapshot. A returned `ArtifactChainBranchSnapshot` is an owned artifact-state
+view only; it does not expose or reconstruct a candidate consensus envelope,
+value, certificate, or ancestry.
+
+The sealed `SelectedArtifactHistory` capability exposes the already bound
+`ArtifactChainId` as immutable chain context so a caller can reject a mismatched
+candidate store before an operable selected-state read. Its selected artifact
+head, artifact-set root, and exact-position snapshot reads require a healthy,
+non-halted journal. Terminal halt and poison deny those reads before selected
+history is inspected, both on the live handle and after strict reopen; the
+immutable journal context and the existing halt and state-ID diagnostics retain
+their separately defined availability.
+
+One caller may use this capability to reconstruct one exact caller-selected
+retained candidate target from a virtual-genesis, historical, or current local
+finality anchor. Reconstruction integrity-reads the caller-routed candidate and
+payload stores under a positive caller-local block limit, strictly revalidates
+the artifact children forward, and publishes only a complete memory-resident
+snapshot. The journal is read-only throughout. Candidate ancestry fill may
+separately durably insert an exact missing candidate block, and candidate-branch
+payload fill may separately durably insert a strictly validated payload into
+the payload archive; neither flow changes this journal. This journal advances
+only through `commit_verified`.
+
+The target, selected anchor, peer or peer order, and whether to start or restart
+either network flow remain caller choices. The view grants no consensus-branch
+or fork selection, global finality, provenance, payload availability, peer-truth,
+external-anchor persistence, rollback, checkpoint, bootstrap, migration,
+backup, or cross-store atomicity claim. Candidate-block ancestry fill checks
+identity and structural parent/root continuity only; payload validity is
+established later by strict artifact replay, not by block retrieval.
+
 ## Product boundary
 
 This V0 supplies local fixed-validator artifact-only durable selection, exact
 first-evidence retention, strict caller-anchored replay, and terminal conflict
-halt. It does not supply a general consensus-block format, Tendermint locking or
-valid-value transitions, timeout progression, dynamic validator selection or
-changes, signature creation or anti-equivocation signing state, multi-node
-finality, networking, data availability, peer trust, checkpoint/bootstrap,
-external-anchor persistence, rollback or recovery policy, provenance authority,
-economics, pruning, compaction, or backup policy.
+halt. Its sealed read-only selected-artifact history can anchor the existing
+caller-driven candidate reconstruction and bounded network fill workflows, but
+the journal itself does not choose or start them. It does not supply a general
+consensus-block format, Tendermint locking or valid-value transitions, timeout
+progression, dynamic validator selection or changes, signature creation or
+anti-equivocation signing state, multi-node finality, automatic networking or
+recovery policy, data availability, peer truth or trust, checkpoint/bootstrap,
+external-anchor persistence, rollback, provenance authority, economics,
+pruning, compaction, migration, or backup policy.

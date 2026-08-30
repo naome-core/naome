@@ -11,7 +11,8 @@ use naome_proof::ArtifactId;
 use crate::{
     ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, ArtifactChainJournal,
     ArtifactChainJournalError, CandidateBranchPayloadArchiveError, CanonicalArtifactPayloadStore,
-    CanonicalArtifactPayloadStoreError,
+    CanonicalArtifactPayloadStoreError, FixedValidatorFinalityJournalV0, SelectedArtifactHistory,
+    SelectedArtifactHistoryError,
 };
 
 /// Caller-local work bound for one candidate-branch reconstruction.
@@ -245,9 +246,9 @@ pub(super) struct CandidateBranchPath {
 }
 
 #[derive(Debug)]
-pub(super) enum CandidateBranchPathError {
+pub(super) enum CandidateBranchPathError<SelectedError> {
     SelectedState {
-        source: Box<ArtifactChainJournalError>,
+        source: Box<SelectedError>,
     },
     TargetAlreadySelected {
         block_id: ArtifactBlockId,
@@ -281,15 +282,17 @@ pub(super) enum CandidateBranchPathError {
     },
 }
 
-pub(super) fn collect_candidate_branch_path(
-    selected: &ArtifactChainJournal,
+pub(super) fn collect_candidate_branch_path<SelectedError>(
     target_block_id: ArtifactBlockId,
     candidates: &mut ArtifactBlockCandidateStore,
     max_blocks: usize,
     anchor: CandidateBranchPathAnchor,
-) -> Result<CandidateBranchPath, CandidateBranchPathError> {
-    if selected
-        .branch_snapshot_at(target_block_id)
+    mut selected_snapshot_at: impl FnMut(
+        ArtifactBlockId,
+    )
+        -> Result<Option<ArtifactChainBranchSnapshot>, SelectedError>,
+) -> Result<CandidateBranchPath, CandidateBranchPathError<SelectedError>> {
+    if selected_snapshot_at(target_block_id)
         .map_err(CandidateBranchPathError::selected_state)?
         .is_some()
     {
@@ -340,8 +343,7 @@ pub(super) fn collect_candidate_branch_path(
         let parent_block_id = block.parent_block_id();
         match &anchor {
             CandidateBranchPathAnchor::NearestSelected => {
-                if let Some(selected_snapshot) = selected
-                    .branch_snapshot_at(parent_block_id)
+                if let Some(selected_snapshot) = selected_snapshot_at(parent_block_id)
                     .map_err(CandidateBranchPathError::selected_state)?
                 {
                     require_root_continuity(
@@ -366,8 +368,7 @@ pub(super) fn collect_candidate_branch_path(
                     reverse_blocks.push(block);
                     break (*exact_anchor_block_id, exact_anchor_snapshot.clone());
                 }
-                if selected
-                    .branch_snapshot_at(parent_block_id)
+                if selected_snapshot_at(parent_block_id)
                     .map_err(CandidateBranchPathError::selected_state)?
                     .is_some()
                 {
@@ -404,28 +405,133 @@ pub(super) fn collect_candidate_branch_path(
     })
 }
 
-impl CandidateBranchPathError {
-    fn selected_state(source: ArtifactChainJournalError) -> Self {
+impl<SelectedError> CandidateBranchPathError<SelectedError> {
+    fn selected_state(source: SelectedError) -> Self {
         Self::SelectedState {
             source: Box::new(source),
         }
     }
 }
 
+/// Starts one exact retained candidate-branch reconstruction from selected history.
+///
+/// The caller chooses `target_block_id`. This function follows and shape-checks
+/// the complete exact parent path backward through `candidates` to the nearest
+/// storage-owned selected position. It then integrity-loads payloads and strictly
+/// validates blocks forward from the owned selected snapshot. The first missing
+/// payload returns an opaque cursor bound to this exact payload archive.
+///
+/// Starting never writes selected history, promotes a block, or grants consensus,
+/// finality, availability, provenance, or peer-trust authority.
+pub fn start_candidate_branch_reconstruction<'store>(
+    selected: &dyn SelectedArtifactHistory,
+    target_block_id: ArtifactBlockId,
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &'store mut CanonicalArtifactPayloadStore,
+    limits: CandidateBranchReconstructionLimits,
+) -> Result<CandidateBranchReconstructionProgress<'store>, CandidateBranchReconstructionError> {
+    let selected_chain_id = selected.selected_chain_id();
+    let candidate_chain_id = candidates.chain_id();
+    if selected_chain_id != candidate_chain_id {
+        return Err(CandidateBranchReconstructionError::ChainIdMismatch {
+            selected: selected_chain_id,
+            candidates: candidate_chain_id,
+        });
+    }
+
+    let path = collect_candidate_branch_path(
+        target_block_id,
+        candidates,
+        limits.max_blocks,
+        CandidateBranchPathAnchor::NearestSelected,
+        |block_id| selected.selected_branch_snapshot_at(block_id),
+    )
+    .map_err(CandidateBranchReconstructionError::from_path)?;
+    let block_count = path.blocks.len();
+    advance_candidate_branch_reconstruction(
+        path.anchor_block_id,
+        target_block_id,
+        block_count,
+        path.snapshot,
+        path.blocks.into_iter(),
+        payloads,
+    )
+}
+
+/// Reconstructs one exact retained candidate branch without writing storage.
+///
+/// Success is all-or-nothing and returns only a memory-resident snapshot. Every
+/// selected-history read is made through the sealed read-only capability and
+/// every candidate block is strictly revalidated against its reconstructed
+/// predecessor.
+pub fn reconstruct_candidate_branch(
+    selected: &dyn SelectedArtifactHistory,
+    target_block_id: ArtifactBlockId,
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    limits: CandidateBranchReconstructionLimits,
+) -> Result<ReconstructedCandidateBranch, CandidateBranchReconstructionError> {
+    match start_candidate_branch_reconstruction(
+        selected,
+        target_block_id,
+        candidates,
+        payloads,
+        limits,
+    )? {
+        CandidateBranchReconstructionProgress::Complete(reconstructed) => Ok(reconstructed),
+        CandidateBranchReconstructionProgress::AwaitingPayload(cursor) => {
+            Err(CandidateBranchReconstructionError::PayloadNotRetained {
+                block_id: cursor.pending_block_id(),
+                artifact_id: cursor.pending_artifact_id(),
+            })
+        }
+    }
+}
+
+macro_rules! impl_candidate_branch_reconstruction_source {
+    ($journal:ty) => {
+        impl $journal {
+            /// Starts one exact retained candidate-branch reconstruction.
+            pub fn start_candidate_branch_reconstruction<'store>(
+                &self,
+                target_block_id: ArtifactBlockId,
+                candidates: &mut ArtifactBlockCandidateStore,
+                payloads: &'store mut CanonicalArtifactPayloadStore,
+                limits: CandidateBranchReconstructionLimits,
+            ) -> Result<
+                CandidateBranchReconstructionProgress<'store>,
+                CandidateBranchReconstructionError,
+            > {
+                start_candidate_branch_reconstruction(
+                    self,
+                    target_block_id,
+                    candidates,
+                    payloads,
+                    limits,
+                )
+            }
+
+            /// Reconstructs one exact retained candidate branch without writes.
+            pub fn reconstruct_candidate_branch(
+                &self,
+                target_block_id: ArtifactBlockId,
+                candidates: &mut ArtifactBlockCandidateStore,
+                payloads: &mut CanonicalArtifactPayloadStore,
+                limits: CandidateBranchReconstructionLimits,
+            ) -> Result<ReconstructedCandidateBranch, CandidateBranchReconstructionError> {
+                reconstruct_candidate_branch(self, target_block_id, candidates, payloads, limits)
+            }
+        }
+    };
+}
+
+impl_candidate_branch_reconstruction_source!(FixedValidatorFinalityJournalV0);
+
 impl ArtifactChainJournal {
     /// Starts one exact retained candidate-branch reconstruction.
     ///
-    /// The caller chooses `target_block_id`. This method first follows and
-    /// shape-checks the complete exact parent path backward through `candidates`
-    /// to the nearest selected journal position. Only then does it integrity-load
-    /// payloads and strictly validate blocks forward from that replay-built
-    /// snapshot. The first missing payload returns an opaque cursor addressed to
-    /// the exact block and artifact and exclusively bound to this same payload
-    /// archive; no partial snapshot is exposed.
-    ///
-    /// Starting never writes any store, selects or promotes any block, or grants
-    /// consensus or finality authority. Candidate and payload integrity-read
-    /// failures retain their existing poison-and-reopen semantics.
+    /// The immutable chain-context mismatch remains observable before journal
+    /// health for compatibility with the artifact-only journal API.
     pub fn start_candidate_branch_reconstruction<'store>(
         &self,
         target_block_id: ArtifactBlockId,
@@ -442,37 +548,10 @@ impl ArtifactChainJournal {
                 candidates: candidate_chain_id,
             });
         }
-
-        let path = collect_candidate_branch_path(
-            self,
-            target_block_id,
-            candidates,
-            limits.max_blocks,
-            CandidateBranchPathAnchor::NearestSelected,
-        )
-        .map_err(CandidateBranchReconstructionError::from_path)?;
-        let block_count = path.blocks.len();
-        advance_candidate_branch_reconstruction(
-            path.anchor_block_id,
-            target_block_id,
-            block_count,
-            path.snapshot,
-            path.blocks.into_iter(),
-            payloads,
-        )
+        start_candidate_branch_reconstruction(self, target_block_id, candidates, payloads, limits)
     }
 
-    /// Reconstructs one exact retained candidate branch without writing storage.
-    ///
-    /// The caller chooses `target_block_id`. The reconstruction follows exact
-    /// parent addresses backward through `candidates` until the nearest selected
-    /// journal position, then integrity-loads every committed payload and applies
-    /// the complete strict block checks forward from that replay-built snapshot.
-    /// Success is all-or-nothing and returns only a memory-resident snapshot.
-    ///
-    /// The method never inserts, selects, promotes, or persists a block or
-    /// snapshot. Candidate and payload integrity-read failures retain their
-    /// existing poison-and-reopen semantics.
+    /// Reconstructs one exact retained candidate branch without writes.
     pub fn reconstruct_candidate_branch(
         &self,
         target_block_id: ArtifactBlockId,
@@ -480,20 +559,15 @@ impl ArtifactChainJournal {
         payloads: &mut CanonicalArtifactPayloadStore,
         limits: CandidateBranchReconstructionLimits,
     ) -> Result<ReconstructedCandidateBranch, CandidateBranchReconstructionError> {
-        match self.start_candidate_branch_reconstruction(
-            target_block_id,
-            candidates,
-            payloads,
-            limits,
-        )? {
-            CandidateBranchReconstructionProgress::Complete(reconstructed) => Ok(reconstructed),
-            CandidateBranchReconstructionProgress::AwaitingPayload(cursor) => {
-                Err(CandidateBranchReconstructionError::PayloadNotRetained {
-                    block_id: cursor.pending_block_id(),
-                    artifact_id: cursor.pending_artifact_id(),
-                })
-            }
+        let selected_chain_id = self.chain_id();
+        let candidate_chain_id = candidates.chain_id();
+        if selected_chain_id != candidate_chain_id {
+            return Err(CandidateBranchReconstructionError::ChainIdMismatch {
+                selected: selected_chain_id,
+                candidates: candidate_chain_id,
+            });
         }
+        reconstruct_candidate_branch(self, target_block_id, candidates, payloads, limits)
     }
 }
 
@@ -550,11 +624,11 @@ fn advance_candidate_branch_reconstruction<'store>(
     ))
 }
 
-fn require_root_continuity(
+fn require_root_continuity<SelectedError>(
     preceding_block_id: ArtifactBlockId,
     expected: ArtifactSetRoot,
     actual: ArtifactSetRoot,
-) -> Result<(), CandidateBranchPathError> {
+) -> Result<(), CandidateBranchPathError<SelectedError>> {
     if expected != actual {
         return Err(CandidateBranchPathError::ArtifactSetRootMismatch {
             preceding_block_id,
@@ -574,9 +648,13 @@ pub enum CandidateBranchReconstructionError {
         selected: ArtifactChainId,
         candidates: ArtifactChainId,
     },
-    /// The selected journal failed a required health or position lookup.
+    /// The artifact-only selected journal failed a required health or position lookup.
     SelectedState {
         source: Box<ArtifactChainJournalError>,
+    },
+    /// Another sealed selected-history owner failed a required read.
+    SelectedHistoryState {
+        source: Box<SelectedArtifactHistoryError>,
     },
     /// The caller-supplied target is already selected, including virtual genesis.
     TargetAlreadySelected { block_id: ArtifactBlockId },
@@ -630,9 +708,20 @@ pub enum CandidateBranchReconstructionError {
 }
 
 impl CandidateBranchReconstructionError {
-    fn from_path(error: CandidateBranchPathError) -> Self {
+    fn selected_state(source: SelectedArtifactHistoryError) -> Self {
+        match source {
+            SelectedArtifactHistoryError::ArtifactChainJournal { source } => {
+                Self::SelectedState { source }
+            }
+            source => Self::SelectedHistoryState {
+                source: Box::new(source),
+            },
+        }
+    }
+
+    fn from_path(error: CandidateBranchPathError<SelectedArtifactHistoryError>) -> Self {
         match error {
-            CandidateBranchPathError::SelectedState { source } => Self::SelectedState { source },
+            CandidateBranchPathError::SelectedState { source } => Self::selected_state(*source),
             CandidateBranchPathError::TargetAlreadySelected { block_id } => {
                 Self::TargetAlreadySelected { block_id }
             }
@@ -691,6 +780,10 @@ impl fmt::Display for CandidateBranchReconstructionError {
                     "candidate branch selected-state read failed: {source}"
                 )
             }
+            Self::SelectedHistoryState { source } => write!(
+                formatter,
+                "candidate branch selected-history read failed: {source}"
+            ),
             Self::TargetAlreadySelected { block_id } => write!(
                 formatter,
                 "candidate branch target {block_id:?} is already selected"
@@ -764,6 +857,7 @@ impl Error for CandidateBranchReconstructionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::SelectedState { source } => Some(source.as_ref()),
+            Self::SelectedHistoryState { source } => Some(source.as_ref()),
             Self::CandidateStoreRead { source, .. } => Some(source.as_ref()),
             Self::PayloadStoreRead { source, .. } => Some(source.as_ref()),
             Self::PayloadArchive { source, .. } => Some(source.as_ref()),

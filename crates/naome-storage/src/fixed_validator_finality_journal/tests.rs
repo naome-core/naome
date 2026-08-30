@@ -5,18 +5,24 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::{Signer, SigningKey};
-use naome_chain::{ArtifactChainDefinition, ArtifactChainState, ArtifactDag};
+use naome_chain::{
+    ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactDag,
+};
 use naome_consensus::{
     ActiveAgreementEntry, AgreementWeight, ConsensusContextV0, ConsensusGenesisId, ConsensusKey,
     ConsensusProtocolVersion, ConsensusValueV0, OwnedVerifiedFixedConsensusTransitionV0,
     ProposalSigningRoot, VerifiedProducerAuthorizationV0,
 };
-use naome_foundation::ZfcAxiom;
+use naome_foundation::{FreeVariable, ZfcAxiom};
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 
 use super::*;
-use crate::ArtifactChainJournal;
 use crate::fault_io::{Fault, ScriptedIo, all_append_faults};
+use crate::{
+    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreLimits, ArtifactChainJournal,
+    ArtifactPayloadStoreLimits, CandidateBranchReconstructionError,
+    CandidateBranchReconstructionLimits, CanonicalArtifactPayloadStore,
+};
 
 const AUTHORIZATION_BODY_BYTES: usize = 116;
 const VOTE_BODY_BYTES: usize = 118;
@@ -76,6 +82,33 @@ fn artifact_id(payload: &[u8]) -> ArtifactId {
         .apply_canonical_artifact_bytes(payload.to_vec())
         .unwrap()
         .artifact_id()
+}
+
+fn dependency_payloads(root_axiom: ZfcAxiom) -> ([Vec<u8>; 2], [ArtifactId; 2]) {
+    let mut dag = ArtifactDag::new();
+    let root = proof_payload(root_axiom);
+    let root_record = dag.apply_canonical_artifact_bytes(root.clone()).unwrap();
+    let root_id = root_record.artifact_id();
+    let root_proof_id = root_record.as_proof().unwrap().proof_id();
+    let child = ProofCertificate::new(vec![
+        ProofStep::ProofReference {
+            proof_id: root_proof_id,
+        },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: FreeVariable::new(1),
+        },
+    ])
+    .unwrap()
+    .into_unchecked_normal_form()
+    .certificate()
+    .clone();
+    let child = ArtifactPayload::Proof(child).to_canonical_bytes();
+    let child_id = dag
+        .apply_canonical_artifact_bytes(child.clone())
+        .unwrap()
+        .artifact_id();
+    ([root, child], [root_id, child_id])
 }
 
 fn authorization_bytes(
@@ -248,6 +281,231 @@ fn finalizes_two_heights_and_reopens_exact_head() {
 }
 
 #[test]
+fn reopened_finality_history_reconstructs_current_and_historical_candidate_anchors_read_only() {
+    let fixture = Fixture::new();
+    let directory = TestDirectory::new("candidate-recovery");
+    let mut journal = fixture.create(&directory);
+    let genesis = fixture.definition.id().virtual_genesis_block_id();
+    let mut selected = ArtifactChainState::new(fixture.definition);
+
+    let first = fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+    let first_block = first.value().artifact_block();
+    let first_payload = first.canonical_artifact_bytes().to_vec();
+    let _ = journal.commit_verified(first).unwrap();
+    selected.apply_block(&first_block, first_payload).unwrap();
+    let mut historical_branch = selected.clone();
+
+    let second = fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Union, 0);
+    let second_block = second.value().artifact_block();
+    let second_payload = second.canonical_artifact_bytes().to_vec();
+    let _ = journal.commit_verified(second).unwrap();
+    selected.apply_block(&second_block, second_payload).unwrap();
+
+    let (historical_payloads, historical_artifact_ids) = dependency_payloads(ZfcAxiom::PowerSet);
+    let premature_dependency = historical_branch
+        .prepare_block(historical_artifact_ids[1])
+        .unwrap();
+    let historical_root = historical_branch
+        .prepare_block(historical_artifact_ids[0])
+        .unwrap();
+    historical_branch
+        .apply_block(&historical_root, historical_payloads[0].clone())
+        .unwrap();
+    let historical_target = historical_branch
+        .prepare_block(historical_artifact_ids[1])
+        .unwrap();
+    historical_branch
+        .apply_block(&historical_target, historical_payloads[1].clone())
+        .unwrap();
+    let historical_target_root = historical_branch.artifact_dag().artifact_set_root();
+
+    let current_payload = proof_payload(ZfcAxiom::Choice);
+    let current_target = selected
+        .prepare_block(artifact_id(&current_payload))
+        .unwrap();
+    let current_successor = selected
+        .branch_snapshot()
+        .validate_child(&current_target, current_payload.clone())
+        .unwrap();
+
+    let expected_state = journal.state_id().unwrap();
+    let expected_head = journal.artifact_head_block_id().unwrap();
+    let expected_root = journal.artifact_set_root().unwrap();
+    let journal_image = fs::read(directory.journal()).unwrap();
+    drop(journal);
+
+    let reopened = fixture.open(&directory, expected_state).unwrap();
+    assert_eq!(
+        reopened.artifact_chain_id().unwrap(),
+        fixture.definition.id()
+    );
+    assert_eq!(reopened.artifact_head_block_id().unwrap(), expected_head);
+    assert_eq!(reopened.artifact_set_root().unwrap(), expected_root);
+    assert_eq!(reopened.core.snapshot_index.len(), 3);
+    assert_eq!(reopened.core.snapshot_index.get(&genesis), Some(&0));
+    assert_eq!(
+        reopened.core.snapshot_index.get(&first_block.id()),
+        Some(&1)
+    );
+    assert_eq!(
+        reopened.core.snapshot_index.get(&second_block.id()),
+        Some(&2)
+    );
+    assert!(
+        reopened
+            .artifact_branch_snapshot_at(genesis)
+            .unwrap()
+            .unwrap()
+            .is_virtual_genesis()
+    );
+    let historical_snapshot = reopened
+        .artifact_branch_snapshot_at(first_block.id())
+        .unwrap()
+        .unwrap();
+    let current_snapshot = reopened
+        .artifact_branch_snapshot_at(second_block.id())
+        .unwrap()
+        .unwrap();
+    assert_eq!(current_snapshot.head_block_id(), expected_head);
+    assert!(
+        reopened
+            .artifact_branch_snapshot_at(ArtifactBlockId::from_bytes([0xee; 32]))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        historical_snapshot
+            .validate_child(&premature_dependency, historical_payloads[1].clone())
+            .is_err(),
+        "the historical snapshot must not resolve a dependency absent from that branch"
+    );
+
+    let candidate_limits = ArtifactBlockCandidateStoreLimits::new(4).unwrap();
+    let mut candidates =
+        ArtifactBlockCandidateStore::create(&directory.0, fixture.definition, candidate_limits)
+            .unwrap();
+    for block in [historical_root, historical_target, current_target] {
+        let _ = candidates.insert(&block).unwrap();
+    }
+    let payload_byte_limit = historical_payloads
+        .iter()
+        .map(|payload| u64::try_from(payload.len()).unwrap())
+        .sum::<u64>()
+        + u64::try_from(current_payload.len()).unwrap();
+    let payload_limits = ArtifactPayloadStoreLimits::new(3, payload_byte_limit).unwrap();
+    let mut payloads = CanonicalArtifactPayloadStore::create(&directory.0, payload_limits).unwrap();
+    let historical_root_outcome = payloads
+        .validate_and_insert_branch_payload(
+            &historical_snapshot,
+            &historical_root,
+            historical_payloads[0].clone(),
+        )
+        .unwrap();
+    let _ = payloads
+        .validate_and_insert_branch_payload(
+            historical_root_outcome.successor(),
+            &historical_target,
+            historical_payloads[1].clone(),
+        )
+        .unwrap();
+    let _ = payloads
+        .validate_and_insert_branch_payload(&current_snapshot, &current_target, current_payload)
+        .unwrap();
+    let payload_image = fs::read(directory.0.join("artifact-payload-store.log")).unwrap();
+
+    let historical = reopened
+        .reconstruct_candidate_branch(
+            historical_target.id(),
+            &mut candidates,
+            &mut payloads,
+            CandidateBranchReconstructionLimits::new(2).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(historical.anchor_block_id(), first_block.id());
+    assert_eq!(historical.block_count(), 2);
+    assert_eq!(
+        historical.snapshot().artifact_set_root(),
+        historical_target_root
+    );
+
+    let current = reopened
+        .reconstruct_candidate_branch(
+            current_target.id(),
+            &mut candidates,
+            &mut payloads,
+            CandidateBranchReconstructionLimits::new(1).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(current.anchor_block_id(), second_block.id());
+    assert_eq!(current.block_count(), 1);
+    assert_eq!(
+        current.snapshot().artifact_set_root(),
+        current_successor.artifact_set_root()
+    );
+
+    let unknown_parent = ArtifactBlockId::from_bytes([0xdd; 32]);
+    let unknown_anchor = ArtifactBlock::new(
+        unknown_parent,
+        current_target.previous_artifact_set_root(),
+        current_target.resulting_artifact_set_root(),
+        current_target.artifact_id(),
+    );
+    let _ = candidates.insert(&unknown_anchor).unwrap();
+    let candidate_image = fs::read(directory.0.join("artifact-block-candidate-store.log")).unwrap();
+    assert!(matches!(
+        reopened.reconstruct_candidate_branch(
+            unknown_anchor.id(),
+            &mut candidates,
+            &mut payloads,
+            CandidateBranchReconstructionLimits::new(2).unwrap(),
+        ),
+        Err(CandidateBranchReconstructionError::CandidateNotRetained { block_id })
+            if block_id == unknown_parent
+    ));
+
+    let mismatch_directory = TestDirectory::new("candidate-recovery-mismatch");
+    let mismatch_definition = ArtifactChainDefinition::new([0x99; 32]);
+    let mut mismatch_candidates = ArtifactBlockCandidateStore::create(
+        &mismatch_directory.0,
+        mismatch_definition,
+        ArtifactBlockCandidateStoreLimits::new(1).unwrap(),
+    )
+    .unwrap();
+    let mut mismatch_payloads = CanonicalArtifactPayloadStore::create(
+        &mismatch_directory.0,
+        ArtifactPayloadStoreLimits::new(1, 1).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        reopened.reconstruct_candidate_branch(
+            ArtifactBlockId::from_bytes([0xcc; 32]),
+            &mut mismatch_candidates,
+            &mut mismatch_payloads,
+            CandidateBranchReconstructionLimits::new(1).unwrap(),
+        ),
+        Err(CandidateBranchReconstructionError::ChainIdMismatch {
+            selected: actual_selected,
+            candidates: actual_candidates,
+        }) if actual_selected == fixture.definition.id()
+            && actual_candidates == mismatch_definition.id()
+    ));
+
+    assert_eq!(reopened.state_id().unwrap(), expected_state);
+    assert_eq!(reopened.finalized_len().unwrap(), 2);
+    assert_eq!(reopened.artifact_head_block_id().unwrap(), expected_head);
+    assert_eq!(reopened.artifact_set_root().unwrap(), expected_root);
+    assert_eq!(fs::read(directory.journal()).unwrap(), journal_image);
+    assert_eq!(
+        fs::read(directory.0.join("artifact-block-candidate-store.log")).unwrap(),
+        candidate_image
+    );
+    assert_eq!(
+        fs::read(directory.0.join("artifact-payload-store.log")).unwrap(),
+        payload_image
+    );
+}
+
+#[test]
 fn state_id_goldens_cover_genesis_and_two_steps() {
     let fixture = Fixture::new();
     let directory = TestDirectory::new("goldens");
@@ -330,6 +588,22 @@ fn conflicting_valid_sibling_durably_halts_and_denies_head() {
         Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
     ));
     assert!(matches!(
+        journal.artifact_chain_id(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        journal.artifact_head_block_id(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        journal.artifact_set_root(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        journal.artifact_branch_snapshot_at(fixture.definition.id().virtual_genesis_block_id()),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
         journal.parent_for_height(ConsensusHeight::new(1)),
         Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
     ));
@@ -352,6 +626,22 @@ fn conflicting_valid_sibling_durably_halts_and_denies_head() {
     assert_eq!(reopened.halt().unwrap(), Some(halt));
     assert!(matches!(
         reopened.head(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        reopened.artifact_chain_id(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        reopened.artifact_head_block_id(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        reopened.artifact_set_root(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        reopened.artifact_branch_snapshot_at(fixture.definition.id().virtual_genesis_block_id()),
         Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
     ));
     assert!(matches!(
@@ -714,8 +1004,10 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
     )
     .unwrap();
     let genesis_id = genesis_state_id(&prefix);
+    let genesis_block_id = fixture.definition.id().virtual_genesis_block_id();
     let mut selected = ArtifactChainState::new(fixture.definition);
     let probe = fixture.transition(&genesis_branch, &mut selected, ZfcAxiom::Pairing, 0);
+    let proposed_block_id = probe.value().artifact_block().id();
     let body = canonical_record_body(FINALIZE_RECORD, &probe, 0).unwrap();
     let body_length_bytes = u32::try_from(body.len()).unwrap().to_be_bytes();
     let proposed_state = step_state_id(genesis_id, body_length_bytes, &body);
@@ -726,11 +1018,14 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
     ) {
         let branch = fixed_genesis(fixture.definition, fixture.context, &fixture.entries).unwrap();
         let io = ScriptedIo::new(prefix.clone(), Some(fault.clone()));
+        let branches = vec![branch];
+        let snapshot_index = genesis_snapshot_index(&branches).unwrap();
         let mut core = FixedValidatorFinalityJournalCore::empty(
             io,
             fixture.context,
             fixture.limit,
-            vec![branch],
+            branches,
+            snapshot_index,
             genesis_id,
         );
         let mut selected = ArtifactChainState::new(fixture.definition);
@@ -751,6 +1046,12 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
         assert_eq!(core.state_id, genesis_id, "fault={fault:?}");
         assert_eq!(core.records.len(), 0, "fault={fault:?}");
         assert_eq!(core.branches.len(), 1, "fault={fault:?}");
+        assert_eq!(core.snapshot_index.len(), 1, "fault={fault:?}");
+        assert_eq!(
+            core.snapshot_index.get(&genesis_block_id),
+            Some(&0),
+            "fault={fault:?}"
+        );
         assert!(
             matches!(
                 core.ensure_operational(),
@@ -780,7 +1081,10 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
                 Err(FixedValidatorFinalityJournalErrorV0::ExpectedStateIdMismatch { .. })
             ));
         } else {
-            assert_eq!(old_anchor.unwrap().state_id, genesis_id);
+            let old_anchor = old_anchor.unwrap();
+            assert_eq!(old_anchor.state_id, genesis_id);
+            assert_eq!(old_anchor.snapshot_index.len(), 1);
+            assert_eq!(old_anchor.snapshot_index.get(&genesis_block_id), Some(&0));
         }
 
         let new_anchor = FixedValidatorFinalityJournalCore::replay(
@@ -792,7 +1096,11 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
             proposed_state,
         );
         if durable_commit {
-            assert_eq!(new_anchor.unwrap().state_id, proposed_state);
+            let new_anchor = new_anchor.unwrap();
+            assert_eq!(new_anchor.state_id, proposed_state);
+            assert_eq!(new_anchor.snapshot_index.len(), 2);
+            assert_eq!(new_anchor.snapshot_index.get(&genesis_block_id), Some(&0));
+            assert_eq!(new_anchor.snapshot_index.get(&proposed_block_id), Some(&1));
         } else {
             assert!(matches!(
                 new_anchor,

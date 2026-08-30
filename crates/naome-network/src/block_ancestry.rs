@@ -39,8 +39,8 @@ impl ArtifactBlockAncestryShapeContext {
     }
 }
 
-pub(super) enum ArtifactBlockAncestryShapeError {
-    SelectedState(ArtifactChainJournalError),
+pub(super) enum ArtifactBlockAncestryShapeError<E> {
+    SelectedState(E),
     ArtifactSetRootMismatch {
         preceding_block_id: ArtifactBlockId,
         expected: ArtifactSetRoot,
@@ -59,12 +59,12 @@ pub(super) enum ArtifactBlockAncestryShapeError {
     },
 }
 
-pub(super) fn retain_ancestry_block(
-    selected: &ArtifactChainJournal,
+pub(super) fn retain_ancestry_block<E>(
     context: ArtifactBlockAncestryShapeContext,
     blocks: &mut Vec<ArtifactBlock>,
     block: ArtifactBlock,
-) -> Result<Option<ArtifactBlockId>, ArtifactBlockAncestryShapeError> {
+    mut selected_contains: impl FnMut(ArtifactBlockId) -> Result<bool, E>,
+) -> Result<Option<ArtifactBlockId>, ArtifactBlockAncestryShapeError<E>> {
     let block_id = block.id();
 
     if let Some(child) = blocks.last() {
@@ -97,10 +97,8 @@ pub(super) fn retain_ancestry_block(
         });
     }
     if parent_block_id == context.virtual_genesis_block_id
-        || selected
-            .block(parent_block_id)
+        || selected_contains(parent_block_id)
             .map_err(ArtifactBlockAncestryShapeError::SelectedState)?
-            .is_some()
     {
         return Err(ArtifactBlockAncestryShapeError::DivergentAncestry {
             expected_anchor: context.anchor_block_id,
@@ -120,11 +118,11 @@ pub(super) fn retain_ancestry_block(
     Ok(Some(parent_block_id))
 }
 
-fn require_root_continuity(
+fn require_root_continuity<E>(
     preceding_block_id: ArtifactBlockId,
     expected: ArtifactSetRoot,
     actual: ArtifactSetRoot,
-) -> Result<(), ArtifactBlockAncestryShapeError> {
+) -> Result<(), ArtifactBlockAncestryShapeError<E>> {
     if expected != actual {
         return Err(ArtifactBlockAncestryShapeError::ArtifactSetRootMismatch {
             preceding_block_id,
@@ -292,7 +290,6 @@ impl ArtifactBlockAncestryPull {
         }
 
         let next_block_id = retain_ancestry_block(
-            selected,
             ArtifactBlockAncestryShapeContext::new(
                 anchor_block_id,
                 anchor_artifact_set_root,
@@ -301,6 +298,7 @@ impl ArtifactBlockAncestryPull {
             ),
             &mut blocks,
             block,
+            |block_id| selected.block(block_id).map(|block| block.is_some()),
         )
         .map_err(ArtifactBlockAncestryPullError::from_shape)?;
         let Some(parent_block_id) = next_block_id else {
@@ -493,7 +491,7 @@ impl ArtifactBlockAncestryPullError {
         }
     }
 
-    fn from_shape(error: ArtifactBlockAncestryShapeError) -> Self {
+    fn from_shape(error: ArtifactBlockAncestryShapeError<ArtifactChainJournalError>) -> Self {
         match error {
             ArtifactBlockAncestryShapeError::SelectedState(source) => Self::selected_state(source),
             ArtifactBlockAncestryShapeError::ArtifactSetRootMismatch {
