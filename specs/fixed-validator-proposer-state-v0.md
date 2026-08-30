@@ -273,10 +273,11 @@ Full envelope verification retains the existing 25,176-byte bound, verifies one
 producer and at most 256 precommit signatures, and validates one artifact child.
 
 This V0 completes a fixed-set, branch-relative proposer and transition kernel.
-The separate fixed-validator finality journal adds exact-format durable
-selection, replay, and conflict halt without changing this branch API's
-authority. Dynamic validator selection and transitions, finite-window
-proposer-gap proofs, Tendermint locking and valid-value state,
-anti-equivocation signing state, general consensus persistence and recovery,
-networking, peer trust, availability, and economics remain separate required
-product work.
+The separate fixed-validator proposal-control contract adds typed proposal
+admission plus unsigned in-memory lock and valid-value effects without changing
+this branch API's authority. The separate fixed-validator finality journal adds
+exact-format durable selection, replay, and conflict halt. Dynamic validator
+selection and transitions, finite-window proposer-gap proofs, durable
+Tendermint lock, valid-value, phase, and anti-equivocation signing state,
+general consensus persistence and recovery, networking, peer trust,
+availability, and economics remain separate required product work.

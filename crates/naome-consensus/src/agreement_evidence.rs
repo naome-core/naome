@@ -471,6 +471,55 @@ impl<'snapshot> VerifiedQuorumCertificateV0<'snapshot> {
         .map_err(QuorumCertificateVerifyError::from_shared)
     }
 
+    /// Strictly decodes the canonical certificate framing needed to locate its
+    /// embedded position before an exact positioned snapshot can be derived.
+    ///
+    /// This crate-private peek establishes no signature, membership, quorum,
+    /// role, target, or context authority. Callers must still pass the complete
+    /// bytes to [`Self::decode_and_verify`] with the derived snapshot.
+    pub(crate) fn strictly_peek_position(
+        bytes: &[u8],
+    ) -> Result<ConsensusPosition, QuorumCertificateVerifyError> {
+        if bytes.len() > MAX_CERTIFICATE_BYTES {
+            return Err(QuorumCertificateVerifyError::InputTooLong {
+                actual: bytes.len(),
+                maximum: MAX_CERTIFICATE_BYTES,
+            });
+        }
+        if bytes.len() < CERTIFICATE_ENTRIES_OFFSET {
+            return Err(QuorumCertificateVerifyError::InvalidLength {
+                actual: bytes.len(),
+                minimum: CERTIFICATE_ENTRIES_OFFSET,
+            });
+        }
+
+        let body = decode_vote_body(&bytes[..VOTE_BODY_BYTES])
+            .map_err(QuorumCertificateVerifyError::VoteBody)?;
+        let signer_count = usize::from(u16::from_be_bytes(
+            bytes[CERTIFICATE_COUNT_OFFSET..CERTIFICATE_ENTRIES_OFFSET]
+                .try_into()
+                .expect("the fixed certificate count field is two bytes"),
+        ));
+        if signer_count == 0 {
+            return Err(QuorumCertificateVerifyError::EmptySignerSet);
+        }
+        if signer_count > MAX_ACTIVE_VALIDATORS {
+            return Err(QuorumCertificateVerifyError::TooManySigners {
+                actual: signer_count,
+                maximum: MAX_ACTIVE_VALIDATORS,
+            });
+        }
+
+        let expected_length = CERTIFICATE_ENTRIES_OFFSET + signer_count * CERTIFICATE_ENTRY_BYTES;
+        if bytes.len() != expected_length {
+            return Err(QuorumCertificateVerifyError::LengthMismatch {
+                actual: bytes.len(),
+                expected: expected_length,
+            });
+        }
+        Ok(body.position)
+    }
+
     /// Returns the exact embedded verification context.
     pub const fn context(&self) -> ConsensusContextV0 {
         self.core.body.context

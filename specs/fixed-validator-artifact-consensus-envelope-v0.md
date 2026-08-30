@@ -35,16 +35,20 @@ canonical artifact payload, and verified child for transfer to the fixed-V0
 finality journal. The owned proof alone still selects no sibling and mutates no
 state.
 
-This component does not prove that the caller-selected genesis context or fixed
-set is globally canonical, execute Tendermint locking or timeout transitions,
-create signatures, provide signing safety, change validators, provide data
-availability, gossip or fetch data, grant peer authority, or execute economics.
-Only the separate fixed-validator finality-journal contract may consume the
-sealed owned form to install durable selection, retain the exact first envelope
-and payload, apply same-value no-write idempotence, and commit a
-conflicting-certificate halt for this exact V0 format. The owned proof itself
-remains non-authoritative. A libp2p `PeerId` authenticates transport only and
-remains unrelated to a consensus key.
+This envelope component does not prove that the caller-selected genesis context
+or fixed set is globally canonical, execute Tendermint locking or timeout
+transitions, create signatures, provide signing safety, change validators,
+provide data availability, gossip or fetch data, grant peer authority, or
+execute economics. The separate fixed-validator proposal-control V0 contract
+admits a complete proposal and provides only unsigned in-memory lock and
+valid-value effects before reconstructing this unchanged final envelope from a
+matching current-round precommit certificate. Only the separate
+fixed-validator finality-journal contract may consume the sealed owned form to
+install durable selection, retain the exact first envelope and payload, apply
+same-value no-write idempotence, and commit a conflicting-certificate halt for
+this exact V0 format. The owned proof itself remains non-authoritative. A
+libp2p `PeerId` authenticates transport only and remains unrelated to a
+consensus key.
 
 ## Primitive values
 
@@ -183,6 +187,8 @@ There is no additional version tag, count, or length prefix. The certificate's
 embedded signer count must consume the exact remaining bytes. The complete
 minimum is 696 bytes for one signer and the maximum is 25,176 bytes for 256
 signers. Truncation, trailing bytes, and inputs above the maximum are rejected.
+The proposal-control proof tag and any earlier-round prevote certificate are
+never appended to this envelope; they are proposal-admission evidence only.
 
 The trailing-NUL complete-envelope identity domain is:
 
@@ -264,8 +270,11 @@ identity domains, and strict decoder; they must not be appended to or silently
 reinterpreted as V0. This prerelease format has no production-data compatibility
 promise.
 
-Dynamic validator selection and transitions, finite-window proposer-gap proofs,
-locking and valid-value state, anti-equivocation signing state, general
+The bounded unsigned in-memory fixed-validator lock and valid-value kernel is
+specified separately in `fixed-validator-proposal-control-v0.md`; it does not
+change this envelope or grant this component state-machine authority. Dynamic
+validator selection and transitions, finite-window proposer-gap proofs,
+durable locking, valid-value and anti-equivocation signing state, general
 consensus-block formats, dynamic-set or multi-node finality,
 checkpoint/bootstrap and external-anchor recovery, networking, peer trust,
 data availability, and economics remain required product work outside this

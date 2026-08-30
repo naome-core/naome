@@ -19,9 +19,11 @@ valid, or is available; derive the canonical active snapshot; run weighted
 round-robin or prove that the caller designated the canonical proposer; create
 a signature or provide anti-equivocation durability; select or finalize a
 block; mutate or persist state; define a signed proposal control message or
-consensus-block envelope; grant a network peer validator authority; or
-establish any economic result. A libp2p `PeerId` authenticates transport only
-and is unrelated to a consensus key.
+consensus-block envelope by itself; grant a network peer validator authority;
+or establish any economic result. The separately specified fixed-validator
+proposal-control V0 wrapper reuses this complete authorization unchanged after
+typed value and branch admission. A libp2p `PeerId` authenticates transport
+only and is unrelated to a consensus key.
 
 ## Primitive values
 
@@ -123,7 +125,10 @@ transcript used by the verification library.
 
 This is a prerelease V0 format with no production-data compatibility promise.
 Any incompatible successor must use a new signing domain and a newly specified
-canonical decoder. A future proposal-root derivation, signed-proposal codec,
-proposer-selection algorithm, canonical consensus-block envelope, snapshot
-derivation, signing subsystem, Tendermint state machine, network protocol, or
-durable finalized-state transition must not reinterpret these bytes silently.
+canonical decoder. The proposal-control wrapper specified in
+`fixed-validator-proposal-control-v0.md` adds no new producer signature or
+signing domain and does not reinterpret these bytes. Any successor
+proposal-root derivation or proposal codec, proposer-selection algorithm,
+canonical consensus-block envelope, snapshot derivation, signing subsystem,
+network protocol, or durable consensus or finalized-state transition must not
+reinterpret these bytes silently.

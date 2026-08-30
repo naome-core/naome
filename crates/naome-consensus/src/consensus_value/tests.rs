@@ -8,7 +8,7 @@ use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 use super::*;
 use crate::{
     ActiveAgreementEntry, AgreementWeight, CONSENSUS_KEY_BYTES, ConsensusRound,
-    FixedConsensusBranchV0,
+    FixedConsensusBranchV0, FixedValidatorLockPhaseV0, FixedValidatorLockStateV0,
 };
 
 const AUTHORIZATION_BODY_BYTES: usize = 116;
@@ -92,15 +92,41 @@ fn certificate_bytes(
     root: ProposalSigningRoot,
     signers: &[&SigningKey],
 ) -> Vec<u8> {
+    quorum_certificate_bytes(
+        context,
+        position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(root),
+        signers,
+    )
+}
+
+fn quorum_certificate_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signers: &[&SigningKey],
+) -> Vec<u8> {
     let mut body = [0_u8; VOTE_BODY_BYTES];
-    body[0] = 2;
+    body[0] = match role {
+        ConsensusVoteRole::Prevote => 1,
+        ConsensusVoteRole::Precommit => 2,
+    };
     body[1..33].copy_from_slice(context.chain_id().as_bytes());
     body[33..65].copy_from_slice(context.genesis_id().as_bytes());
     body[65..69].copy_from_slice(&context.protocol_version().value().to_be_bytes());
     body[69..77].copy_from_slice(&position.height().value().to_be_bytes());
     body[77..85].copy_from_slice(&position.round().value().to_be_bytes());
-    body[85] = 1;
-    body[86..].copy_from_slice(root.as_bytes());
+    match target {
+        ConsensusVoteTarget::Nil => {
+            body[85] = 0;
+        }
+        ConsensusVoteTarget::Proposal(root) => {
+            body[85] = 1;
+            body[86..].copy_from_slice(root.as_bytes());
+        }
+    }
 
     let mut signers = signers.to_vec();
     signers.sort_unstable_by_key(|signer| consensus_key(signer));
@@ -110,11 +136,44 @@ fn certificate_bytes(
     for signer in signers {
         let key = consensus_key(signer);
         let mut transcript = Vec::new();
-        transcript.extend_from_slice(b"naome:consensus-precommit-signing:v0\0");
+        transcript.extend_from_slice(match role {
+            ConsensusVoteRole::Prevote => b"naome:consensus-prevote-signing:v0\0".as_slice(),
+            ConsensusVoteRole::Precommit => b"naome:consensus-precommit-signing:v0\0".as_slice(),
+        });
         transcript.extend_from_slice(&body);
         transcript.extend_from_slice(key.as_bytes());
         bytes.extend_from_slice(key.as_bytes());
         bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
+    }
+    bytes
+}
+
+fn proposal_control_bytes(
+    value: ConsensusValueV0,
+    position: ConsensusPosition,
+    proposer: &SigningKey,
+    valid_round_certificate: Option<&[u8]>,
+) -> Vec<u8> {
+    let authorization = authorization_bytes(
+        value.context(),
+        position,
+        value.proposal_signing_root(),
+        proposer,
+    );
+    let mut bytes = Vec::with_capacity(
+        ConsensusValueV0::BYTE_LENGTH
+            + authorization.len()
+            + 1
+            + valid_round_certificate.map_or(0, <[u8]>::len),
+    );
+    bytes.extend_from_slice(&value.to_canonical_bytes());
+    bytes.extend_from_slice(&authorization);
+    match valid_round_certificate {
+        Some(certificate) => {
+            bytes.push(1);
+            bytes.extend_from_slice(certificate);
+        }
+        None => bytes.push(0),
     }
     bytes
 }
@@ -234,6 +293,24 @@ fn verify_fixture<'snapshot>(
         fixture.expected_state,
         &fixture.parent,
         payload,
+    )
+}
+
+fn verify_proposal_fixture<'snapshot>(
+    fixture: &'snapshot Fixture,
+    bytes: &[u8],
+    payload: Vec<u8>,
+) -> Result<VerifiedConsensusProposalV0<'snapshot>, ConsensusProposalVerifyError> {
+    VerifiedConsensusProposalV0::decode_and_verify(
+        bytes,
+        fixture.context,
+        consensus_key(&fixture.proposer),
+        &fixture.snapshot,
+        None,
+        fixture.expected_state,
+        &fixture.parent,
+        payload,
+        |proof_position| snapshot(proof_position, &[(&fixture.proposer, 1)]),
     )
 }
 
@@ -1314,5 +1391,615 @@ fn typed_branch_advances_only_exact_direct_heights() {
             value,
             snapshot,
         }) if value == ConsensusHeight::new(1) && snapshot.height() == ConsensusHeight::new(2)
+    ));
+}
+
+#[test]
+fn proposal_control_tag_zero_and_proof_derived_tag_one_are_exact() {
+    let fixture = fixture(3);
+    let without_proof =
+        proposal_control_bytes(fixture.value, fixture.position, &fixture.proposer, None);
+    assert_eq!(
+        without_proof.len(),
+        VerifiedConsensusProposalV0::NO_VALID_ROUND_BYTE_LENGTH
+    );
+    assert_eq!(without_proof.len(), 481);
+    assert_eq!(without_proof[VALID_ROUND_PROOF_TAG_OFFSET], 0);
+    let admitted =
+        verify_proposal_fixture(&fixture, &without_proof, fixture.payload.clone()).unwrap();
+    assert_eq!(admitted.value(), fixture.value);
+    assert_eq!(admitted.valid_round(), None);
+    assert_eq!(admitted.valid_round_certificate_id(), None);
+    assert_eq!(admitted.valid_round_certificate_bytes(), None);
+    assert_eq!(admitted.canonical_proposal_control_bytes(), without_proof);
+
+    let valid_round = ConsensusRound::new(0);
+    let certificate = quorum_certificate_bytes(
+        fixture.context,
+        position(fixture.position.height().value(), valid_round.value()),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(fixture.value.proposal_signing_root()),
+        &[&fixture.proposer],
+    );
+    let with_proof = proposal_control_bytes(
+        fixture.value,
+        fixture.position,
+        &fixture.proposer,
+        Some(&certificate),
+    );
+    assert_eq!(with_proof[VALID_ROUND_PROOF_TAG_OFFSET], 1);
+    assert_eq!(
+        with_proof.len(),
+        PROPOSAL_CONTROL_PREFIX_BYTES + VerifiedQuorumCertificateV0::MIN_BYTE_LENGTH
+    );
+    assert_eq!(with_proof.len(), 697);
+    let admitted = verify_proposal_fixture(&fixture, &with_proof, fixture.payload.clone()).unwrap();
+    let expected_id: [u8; QuorumCertificateId::BYTE_LENGTH] = Sha256::digest(&certificate).into();
+    assert_eq!(admitted.valid_round(), Some(valid_round));
+    assert_eq!(
+        admitted.valid_round_certificate_id().unwrap().as_bytes(),
+        &expected_id
+    );
+    assert_eq!(
+        admitted.valid_round_certificate_bytes(),
+        Some(certificate.as_slice())
+    );
+    assert_eq!(admitted.canonical_proposal_control_bytes(), with_proof);
+    assert_eq!(admitted.canonical_artifact_bytes(), fixture.payload);
+}
+
+#[test]
+fn exact_maximum_signer_proposal_control_verifies_at_the_frozen_bound() {
+    let fixture = fixture(u64::MAX);
+    let keys = (0_u16..256).map(signing_key).collect::<Vec<_>>();
+    let weighted = keys.iter().map(|key| (key, 1)).collect::<Vec<_>>();
+    let current_snapshot = snapshot(fixture.position, &weighted);
+    let proof_position = position(1, u64::MAX - 1);
+    let signers = keys.iter().collect::<Vec<_>>();
+    let certificate = quorum_certificate_bytes(
+        fixture.context,
+        proof_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(fixture.value.proposal_signing_root()),
+        &signers,
+    );
+    assert_eq!(
+        certificate.len(),
+        VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH
+    );
+    let control = proposal_control_bytes(
+        fixture.value,
+        fixture.position,
+        &keys[0],
+        Some(&certificate),
+    );
+    assert_eq!(control.len(), 25_177);
+    assert_eq!(control.len(), VerifiedConsensusProposalV0::MAX_BYTE_LENGTH);
+
+    let admitted = VerifiedConsensusProposalV0::decode_and_verify(
+        &control,
+        fixture.context,
+        consensus_key(&keys[0]),
+        &current_snapshot,
+        None,
+        fixture.expected_state,
+        &fixture.parent,
+        fixture.payload,
+        |position| snapshot(position, &weighted),
+    )
+    .unwrap();
+    assert_eq!(admitted.valid_round(), Some(proof_position.round()));
+    assert_eq!(
+        admitted.valid_round_certificate_bytes(),
+        Some(certificate.as_slice())
+    );
+}
+
+#[test]
+fn proposal_control_tags_and_remainder_framing_are_strict() {
+    let fixture = fixture(3);
+    let control = proposal_control_bytes(fixture.value, fixture.position, &fixture.proposer, None);
+    for length in 0..VerifiedConsensusProposalV0::NO_VALID_ROUND_BYTE_LENGTH {
+        assert!(matches!(
+            verify_proposal_fixture(&fixture, &control[..length], fixture.payload.clone()),
+            Err(ConsensusProposalVerifyError::InvalidLength { actual, minimum })
+                if actual == length
+                    && minimum == VerifiedConsensusProposalV0::NO_VALID_ROUND_BYTE_LENGTH
+        ));
+    }
+
+    let mut unknown = control.clone();
+    unknown[VALID_ROUND_PROOF_TAG_OFFSET] = 2;
+    assert_eq!(
+        verify_proposal_fixture(&fixture, &unknown, fixture.payload.clone()).err(),
+        Some(ConsensusProposalVerifyError::UnknownValidRoundProofTag { actual: 2 })
+    );
+
+    let mut trailing_without_proof = control.clone();
+    trailing_without_proof.push(0);
+    assert!(matches!(
+        verify_proposal_fixture(
+            &fixture,
+            &trailing_without_proof,
+            fixture.payload.clone(),
+        ),
+        Err(ConsensusProposalVerifyError::TrailingBytesWithoutValidRoundProof {
+            actual,
+            expected,
+        }) if actual == control.len() + 1 && expected == control.len()
+    ));
+
+    let mut missing_certificate = control;
+    missing_certificate[VALID_ROUND_PROOF_TAG_OFFSET] = 1;
+    assert!(matches!(
+        verify_proposal_fixture(&fixture, &missing_certificate, fixture.payload.clone()),
+        Err(ConsensusProposalVerifyError::ValidRoundCertificate(
+            QuorumCertificateVerifyError::InvalidLength { actual: 0, .. }
+        ))
+    ));
+
+    let certificate = quorum_certificate_bytes(
+        fixture.context,
+        position(1, 1),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(fixture.value.proposal_signing_root()),
+        &[&fixture.proposer],
+    );
+    let mut trailing_certificate = proposal_control_bytes(
+        fixture.value,
+        fixture.position,
+        &fixture.proposer,
+        Some(&certificate),
+    );
+    trailing_certificate.push(0);
+    assert!(matches!(
+        verify_proposal_fixture(&fixture, &trailing_certificate, fixture.payload.clone(),),
+        Err(ConsensusProposalVerifyError::ValidRoundCertificate(
+            QuorumCertificateVerifyError::LengthMismatch { .. }
+        ))
+    ));
+
+    let oversized = vec![0_u8; VerifiedConsensusProposalV0::MAX_BYTE_LENGTH + 1];
+    assert!(matches!(
+        verify_proposal_fixture(&fixture, &oversized, fixture.payload.clone()),
+        Err(ConsensusProposalVerifyError::InputTooLong { actual, maximum })
+            if actual == VerifiedConsensusProposalV0::MAX_BYTE_LENGTH + 1
+                && maximum == VerifiedConsensusProposalV0::MAX_BYTE_LENGTH
+    ));
+}
+
+#[test]
+fn proposal_admission_rejects_nonprior_and_other_height_valid_rounds() {
+    let fixture = fixture(3);
+    for proof_round in [3, 4] {
+        let certificate = quorum_certificate_bytes(
+            fixture.context,
+            position(1, proof_round),
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Proposal(fixture.value.proposal_signing_root()),
+            &[&fixture.proposer],
+        );
+        let control = proposal_control_bytes(
+            fixture.value,
+            fixture.position,
+            &fixture.proposer,
+            Some(&certificate),
+        );
+        assert!(matches!(
+            verify_proposal_fixture(&fixture, &control, fixture.payload.clone()),
+            Err(ConsensusProposalVerifyError::ValidRoundNotEarlier {
+                valid_round,
+                current_round,
+            }) if valid_round == ConsensusRound::new(proof_round)
+                && current_round == fixture.position.round()
+        ));
+    }
+
+    let other_height = quorum_certificate_bytes(
+        fixture.context,
+        position(2, 1),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(fixture.value.proposal_signing_root()),
+        &[&fixture.proposer],
+    );
+    let control = proposal_control_bytes(
+        fixture.value,
+        fixture.position,
+        &fixture.proposer,
+        Some(&other_height),
+    );
+    assert!(matches!(
+        verify_proposal_fixture(&fixture, &control, fixture.payload.clone()),
+        Err(ConsensusProposalVerifyError::ValidRoundHeightMismatch {
+            proposal,
+            certificate,
+        }) if proposal == fixture.position && certificate == position(2, 1)
+    ));
+}
+
+#[test]
+fn valid_round_proof_requires_exact_context_prevote_and_proposal_root() {
+    let fixture = fixture(3);
+    let proof_position = position(1, 1);
+    let other_context = context(ArtifactChainId::from_bytes([0xee; 32]), 0x42, 7);
+    let cases = [
+        (
+            quorum_certificate_bytes(
+                other_context,
+                proof_position,
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(fixture.value.proposal_signing_root()),
+                &[&fixture.proposer],
+            ),
+            0,
+        ),
+        (
+            quorum_certificate_bytes(
+                fixture.context,
+                proof_position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(fixture.value.proposal_signing_root()),
+                &[&fixture.proposer],
+            ),
+            1,
+        ),
+        (
+            quorum_certificate_bytes(
+                fixture.context,
+                proof_position,
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                &[&fixture.proposer],
+            ),
+            2,
+        ),
+        (
+            quorum_certificate_bytes(
+                fixture.context,
+                proof_position,
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(ProposalSigningRoot::from_bytes([0xcc; 32])),
+                &[&fixture.proposer],
+            ),
+            3,
+        ),
+    ];
+
+    for (certificate, case) in cases {
+        let control = proposal_control_bytes(
+            fixture.value,
+            fixture.position,
+            &fixture.proposer,
+            Some(&certificate),
+        );
+        let error = verify_proposal_fixture(&fixture, &control, fixture.payload.clone())
+            .err()
+            .unwrap();
+        match case {
+            0 => assert!(matches!(
+                error,
+                ConsensusProposalVerifyError::ValidRoundCertificate(
+                    QuorumCertificateVerifyError::ChainIdMismatch { .. }
+                )
+            )),
+            1 => assert_eq!(
+                error,
+                ConsensusProposalVerifyError::ValidRoundWrongVoteRole {
+                    actual: ConsensusVoteRole::Precommit,
+                }
+            ),
+            2 => assert_eq!(error, ConsensusProposalVerifyError::ValidRoundNilTarget),
+            3 => assert!(matches!(
+                error,
+                ConsensusProposalVerifyError::ValidRoundRootMismatch { .. }
+            )),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn typed_proposal_rejects_prior_round_proof_from_another_fixed_set() {
+    let fixture = fixture(2);
+    let entries = [ActiveAgreementEntry::new(
+        consensus_key(&fixture.proposer),
+        AgreementWeight::new(1),
+    )];
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        fixture.context,
+        &entries,
+        fixture.parent.clone(),
+    )
+    .unwrap();
+    let round = branch
+        .begin_round_zero()
+        .unwrap()
+        .advance_round()
+        .unwrap()
+        .advance_round()
+        .unwrap();
+    let value = round.value_for_artifact_block(fixture.value.artifact_block());
+    let attacker = signing_key(909);
+    let certificate = quorum_certificate_bytes(
+        fixture.context,
+        position(round.position().height().value(), 1),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &[&attacker],
+    );
+    let control = proposal_control_bytes(
+        value,
+        round.position(),
+        &fixture.proposer,
+        Some(&certificate),
+    );
+
+    assert!(matches!(
+        round.decode_and_verify_proposal_control(&control, fixture.payload),
+        Err(ConsensusProposalVerifyError::ValidRoundCertificate(
+            QuorumCertificateVerifyError::UnknownSigner { signer }
+        )) if signer == consensus_key(&attacker)
+    ));
+}
+
+#[test]
+fn invalid_artifact_precedes_optional_valid_round_certificate_work() {
+    let fixture = fixture(3);
+    let mut control =
+        proposal_control_bytes(fixture.value, fixture.position, &fixture.proposer, None);
+    control[VALID_ROUND_PROOF_TAG_OFFSET] = 1;
+    control.extend_from_slice(&[0xff; 7]);
+    let mut invalid_payload = fixture.payload.clone();
+    invalid_payload[0] ^= 1;
+
+    assert!(matches!(
+        verify_proposal_fixture(&fixture, &control, invalid_payload),
+        Err(ConsensusProposalVerifyError::ArtifactValidation(_))
+    ));
+}
+
+#[test]
+fn valid_round_evidence_variants_preserve_value_and_round_but_not_proof_identity() {
+    let fixture = fixture(4);
+    let keys = [
+        signing_key(20),
+        signing_key(21),
+        signing_key(22),
+        signing_key(23),
+    ];
+    let current_snapshot = snapshot(
+        fixture.position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+    let value = fixture.value;
+    let first_certificate = quorum_certificate_bytes(
+        fixture.context,
+        position(1, 2),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &[&keys[0], &keys[1], &keys[2]],
+    );
+    let second_certificate = quorum_certificate_bytes(
+        fixture.context,
+        position(1, 2),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &[&keys[0], &keys[1], &keys[3]],
+    );
+
+    let verify = |certificate: &[u8]| {
+        let control = proposal_control_bytes(value, fixture.position, &keys[0], Some(certificate));
+        VerifiedConsensusProposalV0::decode_and_verify(
+            &control,
+            fixture.context,
+            consensus_key(&keys[0]),
+            &current_snapshot,
+            None,
+            fixture.expected_state,
+            &fixture.parent,
+            fixture.payload.clone(),
+            |proof_position| {
+                snapshot(
+                    proof_position,
+                    &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+                )
+            },
+        )
+        .unwrap()
+    };
+    let first = verify(&first_certificate);
+    let second = verify(&second_certificate);
+    assert_eq!(first.value(), second.value());
+    assert_eq!(first.valid_round(), second.valid_round());
+    assert_ne!(
+        first.valid_round_certificate_id(),
+        second.valid_round_certificate_id()
+    );
+    assert_ne!(
+        first.valid_round_certificate_bytes(),
+        second.valid_round_certificate_bytes()
+    );
+}
+
+#[test]
+fn typed_two_stage_admission_seals_to_the_legacy_envelope_byte_identically() {
+    let definition = ArtifactChainDefinition::new([0x99; 32]);
+    let context = context(definition.id(), 0x42, 7);
+    let proposer = signing_key(101);
+    let entries = [ActiveAgreementEntry::new(
+        consensus_key(&proposer),
+        AgreementWeight::new(1),
+    )];
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let artifact_state = ArtifactChainState::new(definition);
+    let block = artifact_state
+        .prepare_block(artifact_id_for(&payload))
+        .unwrap();
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        context,
+        &entries,
+        artifact_state.branch_snapshot(),
+    )
+    .unwrap();
+    let round = branch
+        .begin_round_zero()
+        .unwrap()
+        .advance_round()
+        .unwrap()
+        .advance_round()
+        .unwrap();
+    let value = round.value_for_artifact_block(block);
+    let envelope = envelope_bytes(value, round.position(), &proposer, &[&proposer]);
+    let valid_round_certificate = quorum_certificate_bytes(
+        context,
+        position(1, 1),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &[&proposer],
+    );
+    let control = proposal_control_bytes(
+        value,
+        round.position(),
+        &proposer,
+        Some(&valid_round_certificate),
+    );
+
+    let legacy = round.decode_and_verify(&envelope, payload.clone()).unwrap();
+    let staged = round
+        .decode_and_verify_proposal_control(&control, payload)
+        .unwrap();
+    assert_eq!(staged.position(), round.position());
+    assert_eq!(staged.value(), value);
+    assert_eq!(
+        staged.proposal_signing_root(),
+        value.proposal_signing_root()
+    );
+    assert_eq!(staged.valid_round(), Some(ConsensusRound::new(1)));
+    let sealed = staged
+        .seal_with_precommit_certificate(&envelope[PRECOMMIT_CERTIFICATE_OFFSET..])
+        .unwrap();
+
+    assert_eq!(sealed.to_canonical_bytes(), envelope);
+    assert_eq!(sealed.to_canonical_bytes(), legacy.to_canonical_bytes());
+    assert_eq!(sealed.envelope_id(), legacy.envelope_id());
+    assert_eq!(sealed.value(), legacy.value());
+    assert_eq!(
+        sealed.artifact_successor().head_block_id(),
+        legacy.artifact_successor().head_block_id()
+    );
+}
+
+#[test]
+fn admitted_proposal_drives_public_prevote_and_precommit_lock_paths() {
+    let fixture = fixture(0);
+    let entries = [ActiveAgreementEntry::new(
+        consensus_key(&fixture.proposer),
+        AgreementWeight::new(1),
+    )];
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        fixture.context,
+        &entries,
+        fixture.parent.clone(),
+    )
+    .unwrap();
+    let round = branch.begin_round_zero().unwrap();
+    let value = round.value_for_artifact_block(fixture.value.artifact_block());
+    let control = proposal_control_bytes(value, round.position(), &fixture.proposer, None);
+    let proposal = round
+        .decode_and_verify_proposal_control(&control, fixture.payload)
+        .unwrap();
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round).unwrap();
+
+    let prevote = state.decide_prevote_for_proposal(&proposal).unwrap();
+    assert_eq!(prevote.position(), round.position());
+    assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
+    assert_eq!(
+        prevote.target(),
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root())
+    );
+
+    let certificate = quorum_certificate_bytes(
+        fixture.context,
+        round.position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &[&fixture.proposer],
+    );
+    let precommit = state
+        .decide_precommit_for_proposal_quorum(&round, &proposal, &certificate)
+        .unwrap();
+    assert_eq!(precommit.position(), round.position());
+    assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+    assert_eq!(precommit.target(), prevote.target());
+    assert_eq!(state.phase(), FixedValidatorLockPhaseV0::Precommit);
+    let locked = state.locked_value().unwrap();
+    assert_eq!(locked.value(), value);
+    assert_eq!(locked.round(), ConsensusRound::new(0));
+    let valid = state.valid_value().unwrap();
+    assert_eq!(valid.value(), value);
+    assert_eq!(valid.round(), ConsensusRound::new(0));
+    assert_eq!(valid.canonical_prevote_certificate(), certificate);
+}
+
+#[test]
+fn sealing_requires_a_matching_current_round_nonnil_precommit() {
+    let fixture = fixture(3);
+    let control = proposal_control_bytes(fixture.value, fixture.position, &fixture.proposer, None);
+    let wrong_root = certificate_bytes(
+        fixture.context,
+        fixture.position,
+        ProposalSigningRoot::from_bytes([0xdd; 32]),
+        &[&fixture.proposer],
+    );
+    let proposal = verify_proposal_fixture(&fixture, &control, fixture.payload.clone()).unwrap();
+    assert!(matches!(
+        proposal.seal_with_precommit_certificate(&wrong_root, &fixture.snapshot),
+        Err(ConsensusEnvelopeVerifyError::PrecommitCertificateRootMismatch { .. })
+    ));
+
+    let prior_round = certificate_bytes(
+        fixture.context,
+        position(1, 2),
+        fixture.value.proposal_signing_root(),
+        &[&fixture.proposer],
+    );
+    let proposal = verify_proposal_fixture(&fixture, &control, fixture.payload.clone()).unwrap();
+    assert!(matches!(
+        proposal.seal_with_precommit_certificate(&prior_round, &fixture.snapshot),
+        Err(ConsensusEnvelopeVerifyError::PrecommitCertificate(
+            PrecommitCertificateVerifyError::SnapshotPositionMismatch { .. }
+        ))
+    ));
+
+    let prevote = quorum_certificate_bytes(
+        fixture.context,
+        fixture.position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(fixture.value.proposal_signing_root()),
+        &[&fixture.proposer],
+    );
+    let proposal = verify_proposal_fixture(&fixture, &control, fixture.payload.clone()).unwrap();
+    assert!(matches!(
+        proposal.seal_with_precommit_certificate(&prevote, &fixture.snapshot),
+        Err(ConsensusEnvelopeVerifyError::PrecommitCertificate(
+            PrecommitCertificateVerifyError::WrongVoteRole {
+                actual: ConsensusVoteRole::Prevote,
+            }
+        ))
+    ));
+}
+
+#[test]
+fn legacy_envelope_preserves_certificate_before_artifact_error_precedence() {
+    let fixture = fixture(3);
+    let mut invalid_certificate = fixture.bytes.clone();
+    *invalid_certificate.last_mut().unwrap() ^= 1;
+    let mut invalid_payload = fixture.payload.clone();
+    invalid_payload[0] ^= 1;
+    assert!(matches!(
+        verify_fixture(&fixture, &invalid_certificate, invalid_payload),
+        Err(ConsensusEnvelopeVerifyError::PrecommitCertificate(
+            PrecommitCertificateVerifyError::InvalidSignature { .. }
+        ))
     ));
 }

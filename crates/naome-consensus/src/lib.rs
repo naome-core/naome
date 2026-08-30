@@ -10,14 +10,14 @@
 //! and evidence verification. Its typed V0 branch constructs one caller-selected
 //! fixed set only at a matching artifact virtual genesis; derives exact
 //! height-anchored weighted-round-robin proposers, sequential round snapshots,
-//! and complete fixed-validator artifact-only V0 branch-state projections; and
-//! verifies producer authorization, non-nil precommit evidence, consensus
-//! ancestry, and one strict artifact child before publishing an immutable
+//! and complete fixed-validator artifact-only V0 branch-state projections;
+//! admits proof-derived proposal controls before voting; applies volatile,
+//! unsigned locking and valid-value effects; and seals a fully admitted proposal
+//! only with matching non-nil precommit evidence before publishing an immutable
 //! successor. It does not prove that the caller-selected genesis or fixed set
-//! is canonical; select or change validators;
-//! execute locking, timeouts, or conflict handling; install durable finality;
-//! persist or recover state; create signatures; trust peers; mutate a selected
-//! chain; or execute economics.
+//! is canonical; select or change validators; persist locking or signing-safety
+//! state; schedule timeouts; install durable finality; create or release
+//! signatures; trust peers; mutate a selected chain; or execute economics.
 
 use std::error::Error;
 use std::fmt;
@@ -25,6 +25,7 @@ use std::fmt;
 mod agreement_evidence;
 mod consensus_value;
 mod fixed_consensus_branch;
+mod fixed_validator_lock_state;
 mod producer_authorization;
 mod proposer_selection;
 
@@ -38,12 +39,16 @@ pub use agreement_evidence::{
 };
 pub use consensus_value::{
     ConsensusAncestryId, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,
-    ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0,
+    ConsensusProposalVerifyError, ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0,
 };
 pub use fixed_consensus_branch::{
     FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusGenesisError,
     FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0,
-    VerifiedFixedConsensusTransitionV0,
+    VerifiedFixedConsensusProposalV0, VerifiedFixedConsensusTransitionV0,
+};
+pub use fixed_validator_lock_state::{
+    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, FixedValidatorLockStateV0,
+    FixedValidatorLockedValueV0, FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0,
 };
 pub use producer_authorization::{
     ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,
