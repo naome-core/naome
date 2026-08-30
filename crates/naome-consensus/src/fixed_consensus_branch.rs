@@ -8,15 +8,17 @@ use naome_chain::{
 };
 
 use super::consensus_value::{
-    VerifiedConsensusEnvelopeV0, derive_fixed_validator_artifact_state_commitment,
+    ConsensusProposalVerifyError, VerifiedConsensusEnvelopeV0, VerifiedConsensusProposalV0,
+    derive_fixed_validator_artifact_state_commitment,
 };
 use super::proposer_selection::FixedProposerStateV0;
 use super::{
     ActiveAgreementEntry, ActiveAgreementSnapshot, ActiveAgreementSnapshotError,
     ConsensusAncestryId, ConsensusContextV0, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,
     ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusRound, ConsensusValueV0,
-    FixedAgreementSetId, ProposerPriorityStateId, ProposerSelectionError,
-    VerifiedPrecommitCertificateV0, VerifiedProducerAuthorizationV0,
+    FixedAgreementSetId, ProposalSigningRoot, ProposerPriorityStateId, ProposerSelectionError,
+    QuorumCertificateId, QuorumCertificateVerifyError, VerifiedPrecommitCertificateV0,
+    VerifiedProducerAuthorizationV0, VerifiedQuorumCertificateV0,
 };
 
 /// One immutable in-memory fixed-validator consensus branch.
@@ -216,6 +218,11 @@ pub struct FixedConsensusRoundV0<'branch> {
 }
 
 impl<'branch> FixedConsensusRoundV0<'branch> {
+    /// Returns the exact caller-selected branch context behind this round.
+    pub const fn context(&self) -> ConsensusContextV0 {
+        self.branch.context
+    }
+
     /// Returns the exact derived height and round.
     pub const fn position(&self) -> ConsensusPosition {
         self.position
@@ -224,6 +231,25 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
     /// Returns the exact derived proposer.
     pub const fn proposer(&self) -> ConsensusKey {
         self.proposer
+    }
+
+    /// Returns the complete semantic parent coordinate behind this round.
+    pub fn parent_coordinate(&self) -> FixedConsensusBranchCoordinateV0 {
+        self.branch.coordinate()
+    }
+
+    /// Verifies one generic quorum certificate against this exact typed round's
+    /// caller-selected context and immutable fixed agreement snapshot.
+    ///
+    /// This crate-private bridge prevents internal state machines from pairing
+    /// raw certificate bytes with independently supplied context or membership.
+    /// The resulting evidence remains role/target data and grants no locking,
+    /// selection, transition, finality, persistence, or peer-trust authority.
+    pub(crate) fn decode_and_verify_quorum_certificate<'round>(
+        &'round self,
+        bytes: &[u8],
+    ) -> Result<VerifiedQuorumCertificateV0<'round>, QuorumCertificateVerifyError> {
+        VerifiedQuorumCertificateV0::decode_and_verify(bytes, self.branch.context, &self.snapshot)
     }
 
     /// Returns the proposer-priority base carried to the next height on success.
@@ -275,13 +301,60 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
         Ok(self)
     }
 
-    /// Strictly verifies one complete envelope as this branch's exact child.
+    /// Strictly admits one exact proposal control before any current-round
+    /// precommit certificate exists.
+    ///
+    /// Value context, direct height, parent ancestry, branch-derived state
+    /// commitment, the scheduled current proposer, complete artifact child and
+    /// payload, and optional proof-derived valid round are verified together.
+    /// The optional certificate is checked against the same immutable fixed set
+    /// positioned at its embedded earlier round. Success publishes only a
+    /// branch-relative proposal token; it does not vote, lock, select, persist,
+    /// relay, trust a peer, or establish finality.
+    pub fn decode_and_verify_proposal_control<'round>(
+        &'round self,
+        bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+    ) -> Result<VerifiedFixedConsensusProposalV0<'round, 'branch>, ConsensusProposalVerifyError>
+    where
+        'branch: 'round,
+    {
+        let value = VerifiedConsensusProposalV0::decode_value(bytes)?;
+        let expected_commitment = derive_fixed_validator_artifact_state_commitment(
+            self.branch.context,
+            self.position.height(),
+            self.branch.ancestry_id,
+            value.artifact_block(),
+            self.height_successor_base.fixed_set_id(),
+            self.height_successor_base.id(),
+        );
+        let expected_prior_ancestry = self.branch.verified_height.map(|_| self.branch.ancestry_id);
+        let proposal = VerifiedConsensusProposalV0::decode_and_verify(
+            bytes,
+            self.branch.context,
+            self.proposer,
+            &self.snapshot,
+            expected_prior_ancestry,
+            expected_commitment,
+            &self.branch.artifact_snapshot,
+            canonical_artifact_bytes,
+            |position| self.round_state.positioned_snapshot(position),
+        )?;
+        Ok(VerifiedFixedConsensusProposalV0 {
+            round: self,
+            proposal,
+        })
+    }
+
+    /// Strictly verifies one legacy complete envelope as this branch's exact child.
     ///
     /// Context, height, ancestry, proposer, active snapshot, the complete
     /// fixed-validator artifact-only V0 branch-state projection, and artifact
     /// parent are derived from this cursor and cannot be independently supplied.
-    /// Success remains an immutable, branch-relative in-memory result rather
-    /// than installed finality.
+    /// This compatibility wrapper composes the same admitted-proposal and
+    /// current-round sealing stages while retaining the established envelope
+    /// bytes and failure precedence. Success remains an immutable,
+    /// branch-relative in-memory result rather than installed finality.
     pub fn decode_and_verify<'round>(
         &'round self,
         bytes: &[u8],
@@ -326,6 +399,118 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
 pub struct VerifiedFixedConsensusTransitionV0<'round, 'branch> {
     round: &'round FixedConsensusRoundV0<'branch>,
     envelope: VerifiedConsensusEnvelopeV0<'round>,
+}
+
+/// One complete proposal admitted against a typed fixed consensus round.
+///
+/// The private fields and absence of a raw constructor prevent callers from
+/// manufacturing proposal validity, proposer authority, branch ancestry,
+/// artifact availability, or a valid round. Possession remains branch-relative
+/// and does not itself grant voting, locking, finality, persistence, relay, or
+/// peer-trust authority.
+#[must_use]
+pub struct VerifiedFixedConsensusProposalV0<'round, 'branch> {
+    round: &'round FixedConsensusRoundV0<'branch>,
+    proposal: VerifiedConsensusProposalV0<'round>,
+}
+
+impl<'round, 'branch> VerifiedFixedConsensusProposalV0<'round, 'branch> {
+    /// Canonical discriminator for a proposal without prior-round proof.
+    pub const NO_VALID_ROUND_PROOF_TAG: u8 = 0x00;
+
+    /// Canonical discriminator for one attached prevote proposal certificate.
+    pub const VALID_ROUND_PROOF_TAG: u8 = 0x01;
+
+    /// Smallest proposal-control width, carrying the no-valid-round tag.
+    pub const MIN_BYTE_LENGTH: usize = VerifiedConsensusProposalV0::NO_VALID_ROUND_BYTE_LENGTH;
+
+    /// Exact proposal-control width when no valid-round proof is present.
+    pub const NO_VALID_ROUND_BYTE_LENGTH: usize =
+        VerifiedConsensusProposalV0::NO_VALID_ROUND_BYTE_LENGTH;
+
+    /// Largest proposal-control width, containing a 256-signer valid-round proof.
+    pub const MAX_BYTE_LENGTH: usize = VerifiedConsensusProposalV0::MAX_BYTE_LENGTH;
+
+    /// Returns the exact branch context used for admission.
+    pub const fn context(&self) -> ConsensusContextV0 {
+        self.round.context()
+    }
+
+    /// Returns the exact current height and round used for admission.
+    pub const fn position(&self) -> ConsensusPosition {
+        self.round.position()
+    }
+
+    /// Returns the complete semantic parent coordinate used for admission.
+    pub fn parent_coordinate(&self) -> FixedConsensusBranchCoordinateV0 {
+        self.round.parent_coordinate()
+    }
+
+    /// Returns the exact verified evidence-free value.
+    pub const fn value(&self) -> ConsensusValueV0 {
+        self.proposal.value()
+    }
+
+    /// Returns the signing root derived exclusively from the verified value.
+    pub fn proposal_signing_root(&self) -> ProposalSigningRoot {
+        self.proposal.value().proposal_signing_root()
+    }
+
+    /// Returns the verified current-round producer authorization.
+    pub const fn producer_authorization(&self) -> &VerifiedProducerAuthorizationV0<'_> {
+        self.proposal.producer_authorization()
+    }
+
+    /// Returns the optional proof-derived prior round.
+    pub const fn valid_round(&self) -> Option<ConsensusRound> {
+        self.proposal.valid_round()
+    }
+
+    /// Returns the optional evidence-variant identity of the valid-round proof.
+    pub const fn valid_round_certificate_id(&self) -> Option<QuorumCertificateId> {
+        self.proposal.valid_round_certificate_id()
+    }
+
+    /// Returns the optional exact canonical valid-round certificate bytes.
+    pub fn valid_round_certificate_bytes(&self) -> Option<&[u8]> {
+        self.proposal.valid_round_certificate_bytes()
+    }
+
+    /// Returns the exact canonical proposal-control bytes that were admitted.
+    pub fn canonical_proposal_control_bytes(&self) -> &[u8] {
+        self.proposal.canonical_proposal_control_bytes()
+    }
+
+    /// Returns the complete canonical artifact payload admitted with the proposal.
+    pub fn canonical_artifact_bytes(&self) -> &[u8] {
+        self.proposal.canonical_artifact_bytes()
+    }
+
+    /// Returns the immutable artifact state after the admitted candidate.
+    pub const fn artifact_successor(&self) -> &ArtifactChainBranchSnapshot {
+        self.proposal.artifact_successor()
+    }
+
+    /// Seals this admitted proposal with a matching current-round non-nil
+    /// precommit quorum certificate.
+    ///
+    /// The returned transition uses the pre-existing finality-envelope bytes:
+    /// value, producer authorization, and the supplied precommit certificate.
+    /// Optional valid-round evidence remains proposal-control evidence and is
+    /// not silently added to that established finality format.
+    pub fn seal_with_precommit_certificate(
+        self,
+        certificate_bytes: &[u8],
+    ) -> Result<VerifiedFixedConsensusTransitionV0<'round, 'branch>, ConsensusEnvelopeVerifyError>
+    where
+        'branch: 'round,
+    {
+        let round = self.round;
+        let envelope = self
+            .proposal
+            .seal_with_precommit_certificate(certificate_bytes, &round.snapshot)?;
+        Ok(VerifiedFixedConsensusTransitionV0 { round, envelope })
+    }
 }
 
 /// One owned, sealed transition produced by complete typed branch verification.

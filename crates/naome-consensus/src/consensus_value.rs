@@ -12,9 +12,11 @@ use sha2::{Digest, Sha256};
 use super::agreement_evidence::{ContextMismatch, verify_context};
 use super::{
     ActiveAgreementSnapshot, ConsensusContextV0, ConsensusGenesisId, ConsensusHeight, ConsensusKey,
-    ConsensusPosition, ConsensusProtocolVersion, FixedAgreementSetId,
-    PrecommitCertificateVerifyError, ProducerAuthorizationVerifyError, ProposalSigningRoot,
-    ProposerPriorityStateId, VerifiedPrecommitCertificateV0, VerifiedProducerAuthorizationV0,
+    ConsensusPosition, ConsensusProtocolVersion, ConsensusRound, ConsensusVoteRole,
+    ConsensusVoteTarget, FixedAgreementSetId, PrecommitCertificateVerifyError,
+    ProducerAuthorizationVerifyError, ProposalSigningRoot, ProposerPriorityStateId,
+    QuorumCertificateId, QuorumCertificateVerifyError, VerifiedPrecommitCertificateV0,
+    VerifiedProducerAuthorizationV0, VerifiedQuorumCertificateV0,
 };
 
 const PROPOSAL_SIGNING_ROOT_DOMAIN: &[u8] = b"naome:consensus-proposal-signing-root:v0\0";
@@ -35,6 +37,14 @@ const CONSENSUS_VALUE_BYTES: usize =
     POST_CONSENSUS_STATE_OFFSET + ConsensusStateCommitment::BYTE_LENGTH;
 
 const PRODUCER_AUTHORIZATION_OFFSET: usize = CONSENSUS_VALUE_BYTES;
+const VALID_ROUND_PROOF_TAG_OFFSET: usize =
+    PRODUCER_AUTHORIZATION_OFFSET + VerifiedProducerAuthorizationV0::BYTE_LENGTH;
+const PROPOSAL_CONTROL_PREFIX_BYTES: usize = VALID_ROUND_PROOF_TAG_OFFSET + 1;
+const NO_VALID_ROUND_PROOF_TAG: u8 = 0x00;
+const VALID_ROUND_PROOF_TAG: u8 = 0x01;
+const MIN_PROPOSAL_CONTROL_BYTES: usize = PROPOSAL_CONTROL_PREFIX_BYTES;
+const MAX_PROPOSAL_CONTROL_BYTES: usize =
+    PROPOSAL_CONTROL_PREFIX_BYTES + VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH;
 const PRECOMMIT_CERTIFICATE_OFFSET: usize =
     PRODUCER_AUTHORIZATION_OFFSET + VerifiedProducerAuthorizationV0::BYTE_LENGTH;
 const MIN_ENVELOPE_BYTES: usize =
@@ -312,6 +322,317 @@ impl ConsensusValueV0 {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct VerifiedValidRoundProofV0 {
+    round: ConsensusRound,
+    id: QuorumCertificateId,
+}
+
+/// One proposal control whose value, current producer authorization, optional
+/// proof-derived valid round, and complete artifact child were verified
+/// together against branch-derived authority.
+///
+/// The exact bytes are `ConsensusValueV0[268] ||
+/// VerifiedProducerAuthorizationV0[212] || proof_tag[1] || proof?`. Tag zero
+/// requires end of input. Tag one requires exactly one canonical prevote
+/// proposal quorum certificate consuming the remainder. No separately supplied
+/// `valid_round` exists: the optional round is derived only from that verified
+/// certificate. Success does not itself vote, lock, advance a round, select a
+/// branch, install finality, persist state, or trust a peer.
+#[must_use]
+pub(crate) struct VerifiedConsensusProposalV0<'snapshot> {
+    value: ConsensusValueV0,
+    producer_authorization: VerifiedProducerAuthorizationV0<'snapshot>,
+    valid_round_proof: Option<VerifiedValidRoundProofV0>,
+    artifact_successor: ArtifactChainBranchSnapshot,
+    canonical_proposal_control_bytes: Vec<u8>,
+    canonical_artifact_bytes: Vec<u8>,
+}
+
+impl<'snapshot> VerifiedConsensusProposalV0<'snapshot> {
+    /// Exact width of proposal control without prior-round proof.
+    pub(crate) const NO_VALID_ROUND_BYTE_LENGTH: usize = MIN_PROPOSAL_CONTROL_BYTES;
+
+    /// Largest proposal-control width, containing a 256-signer prior-round proof.
+    pub(crate) const MAX_BYTE_LENGTH: usize = MAX_PROPOSAL_CONTROL_BYTES;
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the private composition helper keeps every derived authority check explicit"
+    )]
+    pub(crate) fn decode_and_verify<F>(
+        bytes: &[u8],
+        expected_context: ConsensusContextV0,
+        expected_proposer: ConsensusKey,
+        current_snapshot: &'snapshot ActiveAgreementSnapshot,
+        expected_prior_ancestry: Option<ConsensusAncestryId>,
+        expected_post_consensus_state_commitment: ConsensusStateCommitment,
+        artifact_parent: &ArtifactChainBranchSnapshot,
+        canonical_artifact_bytes: Vec<u8>,
+        positioned_fixed_snapshot: F,
+    ) -> Result<Self, ConsensusProposalVerifyError>
+    where
+        F: FnOnce(ConsensusPosition) -> ActiveAgreementSnapshot,
+    {
+        let value = Self::decode_value(bytes)?;
+        let proof_tag = bytes[VALID_ROUND_PROOF_TAG_OFFSET];
+
+        verify_value_and_parent(
+            value,
+            expected_context,
+            current_snapshot,
+            expected_prior_ancestry,
+            expected_post_consensus_state_commitment,
+            artifact_parent,
+        )
+        .map_err(ConsensusProposalVerifyError::from_common_envelope_error)?;
+
+        let proposal_signing_root = value.proposal_signing_root();
+        let producer_authorization = VerifiedProducerAuthorizationV0::decode_and_verify(
+            &bytes[PRODUCER_AUTHORIZATION_OFFSET..VALID_ROUND_PROOF_TAG_OFFSET],
+            expected_context,
+            expected_proposer,
+            current_snapshot,
+        )
+        .map_err(ConsensusProposalVerifyError::ProducerAuthorization)?;
+        if producer_authorization.proposal_signing_root() != proposal_signing_root {
+            return Err(
+                ConsensusProposalVerifyError::ProducerAuthorizationRootMismatch {
+                    expected: proposal_signing_root,
+                    actual: producer_authorization.proposal_signing_root(),
+                },
+            );
+        }
+
+        // Availability and artifact semantics belong to proposal admission and
+        // deliberately precede any optional prior-round certificate work.
+        let artifact_successor = artifact_parent
+            .validate_child(&value.artifact_block(), canonical_artifact_bytes.clone())
+            .map_err(ConsensusProposalVerifyError::ArtifactValidation)?;
+
+        let valid_round_proof = if proof_tag == NO_VALID_ROUND_PROOF_TAG {
+            None
+        } else {
+            let proof_bytes = &bytes[PROPOSAL_CONTROL_PREFIX_BYTES..];
+            let proof_position = VerifiedQuorumCertificateV0::strictly_peek_position(proof_bytes)
+                .map_err(ConsensusProposalVerifyError::ValidRoundCertificate)?;
+            if proof_position.height() != current_snapshot.position().height() {
+                return Err(ConsensusProposalVerifyError::ValidRoundHeightMismatch {
+                    proposal: current_snapshot.position(),
+                    certificate: proof_position,
+                });
+            }
+            if proof_position.round() >= current_snapshot.position().round() {
+                return Err(ConsensusProposalVerifyError::ValidRoundNotEarlier {
+                    valid_round: proof_position.round(),
+                    current_round: current_snapshot.position().round(),
+                });
+            }
+
+            let proof_snapshot = positioned_fixed_snapshot(proof_position);
+            let certificate = VerifiedQuorumCertificateV0::decode_and_verify(
+                proof_bytes,
+                expected_context,
+                &proof_snapshot,
+            )
+            .map_err(ConsensusProposalVerifyError::ValidRoundCertificate)?;
+            if certificate.role() != ConsensusVoteRole::Prevote {
+                return Err(ConsensusProposalVerifyError::ValidRoundWrongVoteRole {
+                    actual: certificate.role(),
+                });
+            }
+            match certificate.target() {
+                ConsensusVoteTarget::Nil => {
+                    return Err(ConsensusProposalVerifyError::ValidRoundNilTarget);
+                }
+                ConsensusVoteTarget::Proposal(actual) if actual != proposal_signing_root => {
+                    return Err(ConsensusProposalVerifyError::ValidRoundRootMismatch {
+                        expected: proposal_signing_root,
+                        actual,
+                    });
+                }
+                ConsensusVoteTarget::Proposal(_) => {}
+            }
+            Some(VerifiedValidRoundProofV0 {
+                round: proof_position.round(),
+                id: certificate.id(),
+            })
+        };
+
+        Ok(Self {
+            value,
+            producer_authorization,
+            valid_round_proof,
+            artifact_successor,
+            canonical_proposal_control_bytes: bytes.to_vec(),
+            canonical_artifact_bytes,
+        })
+    }
+
+    pub(crate) fn decode_value(
+        bytes: &[u8],
+    ) -> Result<ConsensusValueV0, ConsensusProposalVerifyError> {
+        if bytes.len() > MAX_PROPOSAL_CONTROL_BYTES {
+            return Err(ConsensusProposalVerifyError::InputTooLong {
+                actual: bytes.len(),
+                maximum: MAX_PROPOSAL_CONTROL_BYTES,
+            });
+        }
+        if bytes.len() < MIN_PROPOSAL_CONTROL_BYTES {
+            return Err(ConsensusProposalVerifyError::InvalidLength {
+                actual: bytes.len(),
+                minimum: MIN_PROPOSAL_CONTROL_BYTES,
+            });
+        }
+
+        let proof_tag = bytes[VALID_ROUND_PROOF_TAG_OFFSET];
+        match proof_tag {
+            NO_VALID_ROUND_PROOF_TAG if bytes.len() != MIN_PROPOSAL_CONTROL_BYTES => {
+                return Err(
+                    ConsensusProposalVerifyError::TrailingBytesWithoutValidRoundProof {
+                        actual: bytes.len(),
+                        expected: MIN_PROPOSAL_CONTROL_BYTES,
+                    },
+                );
+            }
+            NO_VALID_ROUND_PROOF_TAG | VALID_ROUND_PROOF_TAG => {}
+            actual => {
+                return Err(ConsensusProposalVerifyError::UnknownValidRoundProofTag { actual });
+            }
+        }
+
+        ConsensusValueV0::from_canonical_bytes(&bytes[..CONSENSUS_VALUE_BYTES])
+            .map_err(ConsensusProposalVerifyError::Value)
+    }
+
+    pub(crate) const fn value(&self) -> ConsensusValueV0 {
+        self.value
+    }
+
+    pub(crate) const fn producer_authorization(
+        &self,
+    ) -> &VerifiedProducerAuthorizationV0<'snapshot> {
+        &self.producer_authorization
+    }
+
+    pub(crate) const fn valid_round(&self) -> Option<ConsensusRound> {
+        match &self.valid_round_proof {
+            Some(proof) => Some(proof.round),
+            None => None,
+        }
+    }
+
+    pub(crate) const fn valid_round_certificate_id(&self) -> Option<QuorumCertificateId> {
+        match &self.valid_round_proof {
+            Some(proof) => Some(proof.id),
+            None => None,
+        }
+    }
+
+    pub(crate) fn valid_round_certificate_bytes(&self) -> Option<&[u8]> {
+        self.valid_round_proof
+            .as_ref()
+            .map(|_| &self.canonical_proposal_control_bytes[PROPOSAL_CONTROL_PREFIX_BYTES..])
+    }
+
+    pub(crate) const fn artifact_successor(&self) -> &ArtifactChainBranchSnapshot {
+        &self.artifact_successor
+    }
+
+    pub(crate) fn canonical_proposal_control_bytes(&self) -> &[u8] {
+        &self.canonical_proposal_control_bytes
+    }
+
+    pub(crate) fn canonical_artifact_bytes(&self) -> &[u8] {
+        &self.canonical_artifact_bytes
+    }
+
+    pub(crate) fn seal_with_precommit_certificate(
+        self,
+        certificate_bytes: &[u8],
+        current_snapshot: &'snapshot ActiveAgreementSnapshot,
+    ) -> Result<VerifiedConsensusEnvelopeV0<'snapshot>, ConsensusEnvelopeVerifyError> {
+        let precommit_certificate = VerifiedPrecommitCertificateV0::decode_and_verify(
+            certificate_bytes,
+            self.value.context(),
+            current_snapshot,
+        )?;
+        let expected = self.value.proposal_signing_root();
+        if precommit_certificate.proposal_signing_root() != expected {
+            return Err(
+                ConsensusEnvelopeVerifyError::PrecommitCertificateRootMismatch {
+                    expected,
+                    actual: precommit_certificate.proposal_signing_root(),
+                },
+            );
+        }
+        Ok(self.seal_with_verified_precommit(precommit_certificate))
+    }
+
+    fn seal_with_verified_precommit(
+        self,
+        precommit_certificate: VerifiedPrecommitCertificateV0<'snapshot>,
+    ) -> VerifiedConsensusEnvelopeV0<'snapshot> {
+        debug_assert_eq!(
+            precommit_certificate.proposal_signing_root(),
+            self.value.proposal_signing_root()
+        );
+        VerifiedConsensusEnvelopeV0::from_verified_parts(self, precommit_certificate)
+    }
+}
+
+fn verify_value_and_parent(
+    value: ConsensusValueV0,
+    expected_context: ConsensusContextV0,
+    snapshot: &ActiveAgreementSnapshot,
+    expected_prior_ancestry: Option<ConsensusAncestryId>,
+    expected_post_consensus_state_commitment: ConsensusStateCommitment,
+    artifact_parent: &ArtifactChainBranchSnapshot,
+) -> Result<(), ConsensusEnvelopeVerifyError> {
+    verify_context(value.context(), expected_context)
+        .map_err(ConsensusEnvelopeVerifyError::from)?;
+    if value.height() != snapshot.position().height() {
+        return Err(ConsensusEnvelopeVerifyError::SnapshotHeightMismatch {
+            value: value.height(),
+            snapshot: snapshot.position(),
+        });
+    }
+
+    let expected_parent = if value.height().value() == 1 {
+        if let Some(actual) = expected_prior_ancestry {
+            return Err(
+                ConsensusEnvelopeVerifyError::UnexpectedPriorAncestryAtFirstHeight { actual },
+            );
+        }
+        ConsensusAncestryId::virtual_genesis(expected_context)
+    } else {
+        expected_prior_ancestry.ok_or(ConsensusEnvelopeVerifyError::MissingPriorAncestry {
+            height: value.height(),
+        })?
+    };
+    if value.parent_ancestry_id() != expected_parent {
+        return Err(ConsensusEnvelopeVerifyError::ParentAncestryMismatch {
+            expected: expected_parent,
+            actual: value.parent_ancestry_id(),
+        });
+    }
+    if value.post_consensus_state_commitment() != expected_post_consensus_state_commitment {
+        return Err(
+            ConsensusEnvelopeVerifyError::PostConsensusStateCommitmentMismatch {
+                expected: expected_post_consensus_state_commitment,
+                actual: value.post_consensus_state_commitment(),
+            },
+        );
+    }
+    if artifact_parent.chain_id() != expected_context.chain_id() {
+        return Err(ConsensusEnvelopeVerifyError::ArtifactChainMismatch {
+            expected: expected_context.chain_id(),
+            actual: artifact_parent.chain_id(),
+        });
+    }
+    Ok(())
+}
+
 /// One canonical V0 envelope whose value, producer authorization, precommit
 /// certificate, and artifact transition were verified together.
 ///
@@ -324,12 +645,9 @@ impl ConsensusValueV0 {
 /// certificates.
 #[must_use]
 pub(crate) struct VerifiedConsensusEnvelopeV0<'snapshot> {
-    value: ConsensusValueV0,
-    producer_authorization: VerifiedProducerAuthorizationV0<'snapshot>,
+    proposal: VerifiedConsensusProposalV0<'snapshot>,
     precommit_certificate: VerifiedPrecommitCertificateV0<'snapshot>,
-    artifact_successor: ArtifactChainBranchSnapshot,
     canonical_envelope_bytes: Vec<u8>,
-    canonical_artifact_bytes: Vec<u8>,
     id: ConsensusEnvelopeId,
 }
 
@@ -361,47 +679,14 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
         canonical_artifact_bytes: Vec<u8>,
     ) -> Result<Self, ConsensusEnvelopeVerifyError> {
         let value = Self::decode_value(bytes)?;
-        verify_context(value.context(), expected_context)
-            .map_err(ConsensusEnvelopeVerifyError::from)?;
-        if value.height() != snapshot.position().height() {
-            return Err(ConsensusEnvelopeVerifyError::SnapshotHeightMismatch {
-                value: value.height(),
-                snapshot: snapshot.position(),
-            });
-        }
-
-        let expected_parent = if value.height().value() == 1 {
-            if let Some(actual) = expected_prior_ancestry {
-                return Err(
-                    ConsensusEnvelopeVerifyError::UnexpectedPriorAncestryAtFirstHeight { actual },
-                );
-            }
-            ConsensusAncestryId::virtual_genesis(expected_context)
-        } else {
-            expected_prior_ancestry.ok_or(ConsensusEnvelopeVerifyError::MissingPriorAncestry {
-                height: value.height(),
-            })?
-        };
-        if value.parent_ancestry_id() != expected_parent {
-            return Err(ConsensusEnvelopeVerifyError::ParentAncestryMismatch {
-                expected: expected_parent,
-                actual: value.parent_ancestry_id(),
-            });
-        }
-        if value.post_consensus_state_commitment() != expected_post_consensus_state_commitment {
-            return Err(
-                ConsensusEnvelopeVerifyError::PostConsensusStateCommitmentMismatch {
-                    expected: expected_post_consensus_state_commitment,
-                    actual: value.post_consensus_state_commitment(),
-                },
-            );
-        }
-        if artifact_parent.chain_id() != expected_context.chain_id() {
-            return Err(ConsensusEnvelopeVerifyError::ArtifactChainMismatch {
-                expected: expected_context.chain_id(),
-                actual: artifact_parent.chain_id(),
-            });
-        }
+        verify_value_and_parent(
+            value,
+            expected_context,
+            snapshot,
+            expected_prior_ancestry,
+            expected_post_consensus_state_commitment,
+            artifact_parent,
+        )?;
 
         let proposal_signing_root = value.proposal_signing_root();
         let producer_authorization = VerifiedProducerAuthorizationV0::decode_and_verify(
@@ -436,17 +721,46 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
         let artifact_successor = artifact_parent
             .validate_child(&value.artifact_block(), canonical_artifact_bytes.clone())
             .map_err(ConsensusEnvelopeVerifyError::ArtifactValidation)?;
-        let id = ConsensusEnvelopeId::from_bytes(domain_hash(CONSENSUS_ENVELOPE_DOMAIN, bytes));
 
-        Ok(Self {
+        let mut canonical_proposal_control_bytes = Vec::with_capacity(MIN_PROPOSAL_CONTROL_BYTES);
+        canonical_proposal_control_bytes.extend_from_slice(&value.to_canonical_bytes());
+        canonical_proposal_control_bytes
+            .extend_from_slice(&producer_authorization.to_canonical_bytes());
+        canonical_proposal_control_bytes.push(NO_VALID_ROUND_PROOF_TAG);
+        let proposal = VerifiedConsensusProposalV0 {
             value,
             producer_authorization,
-            precommit_certificate,
+            valid_round_proof: None,
             artifact_successor,
-            canonical_envelope_bytes: bytes.to_vec(),
+            canonical_proposal_control_bytes,
             canonical_artifact_bytes,
+        };
+        let envelope = proposal.seal_with_verified_precommit(precommit_certificate);
+        debug_assert_eq!(envelope.canonical_envelope_bytes, bytes);
+        Ok(envelope)
+    }
+
+    fn from_verified_parts(
+        proposal: VerifiedConsensusProposalV0<'snapshot>,
+        precommit_certificate: VerifiedPrecommitCertificateV0<'snapshot>,
+    ) -> Self {
+        let mut canonical_envelope_bytes = Vec::with_capacity(
+            PRECOMMIT_CERTIFICATE_OFFSET + precommit_certificate.canonical_byte_length(),
+        );
+        canonical_envelope_bytes.extend_from_slice(&proposal.value.to_canonical_bytes());
+        canonical_envelope_bytes
+            .extend_from_slice(&proposal.producer_authorization.to_canonical_bytes());
+        precommit_certificate.append_canonical_bytes_to(&mut canonical_envelope_bytes);
+        let id = ConsensusEnvelopeId::from_bytes(domain_hash(
+            CONSENSUS_ENVELOPE_DOMAIN,
+            &canonical_envelope_bytes,
+        ));
+        Self {
+            proposal,
+            precommit_certificate,
+            canonical_envelope_bytes,
             id,
-        })
+        }
     }
 
     pub(crate) fn decode_value(
@@ -470,14 +784,14 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
 
     /// Returns the exact verified evidence-free value.
     pub(crate) const fn value(&self) -> ConsensusValueV0 {
-        self.value
+        self.proposal.value()
     }
 
     /// Returns the verified producer authorization.
     pub(crate) const fn producer_authorization(
         &self,
     ) -> &VerifiedProducerAuthorizationV0<'snapshot> {
-        &self.producer_authorization
+        self.proposal.producer_authorization()
     }
 
     /// Returns the verified non-nil precommit certificate.
@@ -487,7 +801,7 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
 
     /// Returns the immutable artifact state after the verified transition.
     pub(crate) const fn artifact_successor(&self) -> &ArtifactChainBranchSnapshot {
-        &self.artifact_successor
+        self.proposal.artifact_successor()
     }
 
     /// Consumes the proof into the exact owned components needed by a sealed
@@ -501,12 +815,20 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
         Vec<u8>,
         ArtifactChainBranchSnapshot,
     ) {
+        let VerifiedConsensusProposalV0 {
+            value,
+            producer_authorization: _,
+            valid_round_proof: _,
+            artifact_successor,
+            canonical_proposal_control_bytes: _,
+            canonical_artifact_bytes,
+        } = self.proposal;
         (
-            self.value,
+            value,
             self.id,
             self.canonical_envelope_bytes,
-            self.canonical_artifact_bytes,
-            self.artifact_successor,
+            canonical_artifact_bytes,
+            artifact_successor,
         )
     }
 
@@ -520,8 +842,8 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
         let mut bytes = Vec::with_capacity(
             PRECOMMIT_CERTIFICATE_OFFSET + self.precommit_certificate.canonical_byte_length(),
         );
-        bytes.extend_from_slice(&self.value.to_canonical_bytes());
-        bytes.extend_from_slice(&self.producer_authorization.to_canonical_bytes());
+        bytes.extend_from_slice(&self.proposal.value.to_canonical_bytes());
+        bytes.extend_from_slice(&self.proposal.producer_authorization.to_canonical_bytes());
         self.precommit_certificate
             .append_canonical_bytes_to(&mut bytes);
         debug_assert_eq!(bytes, self.canonical_envelope_bytes);
@@ -560,6 +882,246 @@ impl fmt::Display for ConsensusValueError {
 }
 
 impl Error for ConsensusValueError {}
+
+/// A failure to admit one canonical proposal control against a typed branch round.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConsensusProposalVerifyError {
+    /// The complete proposal control exceeds the 256-signer proof bound.
+    InputTooLong { actual: usize, maximum: usize },
+    /// The input cannot contain a value, authorization, and proof tag.
+    InvalidLength { actual: usize, minimum: usize },
+    /// The valid-round proof discriminator is unsupported.
+    UnknownValidRoundProofTag { actual: u8 },
+    /// Tag zero was followed by bytes rather than exact end of input.
+    TrailingBytesWithoutValidRoundProof { actual: usize, expected: usize },
+    /// The evidence-free value is malformed.
+    Value(ConsensusValueError),
+    /// The value's chain differs from the caller-selected chain.
+    ChainIdMismatch {
+        expected: ArtifactChainId,
+        actual: ArtifactChainId,
+    },
+    /// The value's final genesis differs from the caller-selected genesis.
+    GenesisIdMismatch {
+        expected: ConsensusGenesisId,
+        actual: ConsensusGenesisId,
+    },
+    /// The value's protocol version differs from the caller-selected version.
+    ProtocolVersionMismatch {
+        expected: ConsensusProtocolVersion,
+        actual: ConsensusProtocolVersion,
+    },
+    /// The value height differs from the current typed-round snapshot.
+    SnapshotHeightMismatch {
+        value: ConsensusHeight,
+        snapshot: ConsensusPosition,
+    },
+    /// Height one was supplied with a prior-value expectation instead of genesis.
+    UnexpectedPriorAncestryAtFirstHeight { actual: ConsensusAncestryId },
+    /// A later height has no caller-expected prior ancestry identity.
+    MissingPriorAncestry { height: ConsensusHeight },
+    /// The embedded consensus parent differs from the required branch parent.
+    ParentAncestryMismatch {
+        expected: ConsensusAncestryId,
+        actual: ConsensusAncestryId,
+    },
+    /// The embedded state commitment differs from the branch-derived digest.
+    PostConsensusStateCommitmentMismatch {
+        expected: ConsensusStateCommitment,
+        actual: ConsensusStateCommitment,
+    },
+    /// The artifact snapshot belongs to another chain.
+    ArtifactChainMismatch {
+        expected: ArtifactChainId,
+        actual: ArtifactChainId,
+    },
+    /// Producer-authorization decoding or authentication failed.
+    ProducerAuthorization(ProducerAuthorizationVerifyError),
+    /// Producer evidence authenticates another proposal root.
+    ProducerAuthorizationRootMismatch {
+        expected: ProposalSigningRoot,
+        actual: ProposalSigningRoot,
+    },
+    /// Strict immutable artifact-child validation failed.
+    ArtifactValidation(ArtifactBlockApplyError),
+    /// Prior-round quorum-certificate decoding or authentication failed.
+    ValidRoundCertificate(QuorumCertificateVerifyError),
+    /// The proof belongs to another consensus height.
+    ValidRoundHeightMismatch {
+        proposal: ConsensusPosition,
+        certificate: ConsensusPosition,
+    },
+    /// The proof round is not strictly earlier than the proposal round.
+    ValidRoundNotEarlier {
+        valid_round: ConsensusRound,
+        current_round: ConsensusRound,
+    },
+    /// The proof carries precommits rather than prevotes.
+    ValidRoundWrongVoteRole { actual: ConsensusVoteRole },
+    /// The proof authenticates nil rather than this proposal.
+    ValidRoundNilTarget,
+    /// The proof authenticates another proposal signing root.
+    ValidRoundRootMismatch {
+        expected: ProposalSigningRoot,
+        actual: ProposalSigningRoot,
+    },
+}
+
+impl ConsensusProposalVerifyError {
+    fn from_common_envelope_error(error: ConsensusEnvelopeVerifyError) -> Self {
+        match error {
+            ConsensusEnvelopeVerifyError::Value(error) => Self::Value(error),
+            ConsensusEnvelopeVerifyError::ChainIdMismatch { expected, actual } => {
+                Self::ChainIdMismatch { expected, actual }
+            }
+            ConsensusEnvelopeVerifyError::GenesisIdMismatch { expected, actual } => {
+                Self::GenesisIdMismatch { expected, actual }
+            }
+            ConsensusEnvelopeVerifyError::ProtocolVersionMismatch { expected, actual } => {
+                Self::ProtocolVersionMismatch { expected, actual }
+            }
+            ConsensusEnvelopeVerifyError::SnapshotHeightMismatch { value, snapshot } => {
+                Self::SnapshotHeightMismatch { value, snapshot }
+            }
+            ConsensusEnvelopeVerifyError::UnexpectedPriorAncestryAtFirstHeight { actual } => {
+                Self::UnexpectedPriorAncestryAtFirstHeight { actual }
+            }
+            ConsensusEnvelopeVerifyError::MissingPriorAncestry { height } => {
+                Self::MissingPriorAncestry { height }
+            }
+            ConsensusEnvelopeVerifyError::ParentAncestryMismatch { expected, actual } => {
+                Self::ParentAncestryMismatch { expected, actual }
+            }
+            ConsensusEnvelopeVerifyError::PostConsensusStateCommitmentMismatch {
+                expected,
+                actual,
+            } => Self::PostConsensusStateCommitmentMismatch { expected, actual },
+            ConsensusEnvelopeVerifyError::ArtifactChainMismatch { expected, actual } => {
+                Self::ArtifactChainMismatch { expected, actual }
+            }
+            ConsensusEnvelopeVerifyError::InputTooLong { .. }
+            | ConsensusEnvelopeVerifyError::InvalidLength { .. }
+            | ConsensusEnvelopeVerifyError::ProducerAuthorization(_)
+            | ConsensusEnvelopeVerifyError::ProducerAuthorizationRootMismatch { .. }
+            | ConsensusEnvelopeVerifyError::PrecommitCertificate(_)
+            | ConsensusEnvelopeVerifyError::PrecommitCertificateRootMismatch { .. }
+            | ConsensusEnvelopeVerifyError::ArtifactValidation(_) => {
+                unreachable!("the common value verifier cannot emit evidence or framing errors")
+            }
+        }
+    }
+}
+
+impl fmt::Display for ConsensusProposalVerifyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InputTooLong { actual, maximum } => write!(
+                formatter,
+                "proposal-control length {actual} exceeds {maximum} bytes"
+            ),
+            Self::InvalidLength { actual, minimum } => write!(
+                formatter,
+                "proposal-control length {actual} is shorter than {minimum} bytes"
+            ),
+            Self::UnknownValidRoundProofTag { actual } => {
+                write!(
+                    formatter,
+                    "proposal-control valid-round proof tag {actual:#04x} is unknown"
+                )
+            }
+            Self::TrailingBytesWithoutValidRoundProof { actual, expected } => write!(
+                formatter,
+                "proposal-control tag zero requires exactly {expected} bytes, not {actual}"
+            ),
+            Self::Value(error) => error.fmt(formatter),
+            Self::ChainIdMismatch { expected, actual } => write!(
+                formatter,
+                "consensus value chain identity mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::GenesisIdMismatch { expected, actual } => write!(
+                formatter,
+                "consensus value genesis identity mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::ProtocolVersionMismatch { expected, actual } => write!(
+                formatter,
+                "consensus value protocol version mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::SnapshotHeightMismatch { value, snapshot } => write!(
+                formatter,
+                "consensus value height {value:?} differs from snapshot position {snapshot:?}"
+            ),
+            Self::UnexpectedPriorAncestryAtFirstHeight { actual } => write!(
+                formatter,
+                "first consensus height cannot use caller-supplied prior ancestry {actual:?}"
+            ),
+            Self::MissingPriorAncestry { height } => write!(
+                formatter,
+                "consensus height {height:?} requires one caller-expected prior ancestry identity"
+            ),
+            Self::ParentAncestryMismatch { expected, actual } => write!(
+                formatter,
+                "consensus parent ancestry mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::PostConsensusStateCommitmentMismatch { expected, actual } => write!(
+                formatter,
+                "post-consensus-state commitment mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::ArtifactChainMismatch { expected, actual } => write!(
+                formatter,
+                "artifact snapshot chain identity mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::ProducerAuthorization(error) => error.fmt(formatter),
+            Self::ProducerAuthorizationRootMismatch { expected, actual } => write!(
+                formatter,
+                "producer authorization proposal root mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::ArtifactValidation(error) => {
+                write!(
+                    formatter,
+                    "proposal-control artifact validation failed: {error}"
+                )
+            }
+            Self::ValidRoundCertificate(error) => error.fmt(formatter),
+            Self::ValidRoundHeightMismatch {
+                proposal,
+                certificate,
+            } => write!(
+                formatter,
+                "valid-round certificate position {certificate:?} differs from proposal height at {proposal:?}"
+            ),
+            Self::ValidRoundNotEarlier {
+                valid_round,
+                current_round,
+            } => write!(
+                formatter,
+                "valid round {valid_round:?} is not earlier than current round {current_round:?}"
+            ),
+            Self::ValidRoundWrongVoteRole { actual } => write!(
+                formatter,
+                "valid-round certificate carries the wrong vote role: {actual:?}"
+            ),
+            Self::ValidRoundNilTarget => formatter
+                .write_str("valid-round certificate must prevote for the admitted proposal"),
+            Self::ValidRoundRootMismatch { expected, actual } => write!(
+                formatter,
+                "valid-round certificate proposal root mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+        }
+    }
+}
+
+impl Error for ConsensusProposalVerifyError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Value(error) => Some(error),
+            Self::ProducerAuthorization(error) => Some(error),
+            Self::ArtifactValidation(error) => Some(error),
+            Self::ValidRoundCertificate(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// A failure to verify one canonical consensus envelope and artifact transition.
 #[derive(Debug, PartialEq, Eq)]

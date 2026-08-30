@@ -145,6 +145,12 @@ combination may also publish `VerifiedPrecommitCertificateV0`. A verified
 prevote or nil certificate does not itself lock, unlock, update a valid value,
 advance a phase or round, or finalize anything.
 
+The separately specified fixed-validator proposal-control and lock-state V0
+kernel may consume an already fully verified certificate under additional
+typed position, proposal-admission, phase, and lock-state requirements. That
+consumer supplies the state transition; generic certificate verification alone
+still supplies none.
+
 `signer_count` is in `1..=256`. Entries are strictly ascending by the raw 32
 consensus-key bytes. Equal keys are duplicates and rejected. Descending or
 otherwise unsorted keys are noncanonical and rejected rather than reordered.
@@ -225,7 +231,10 @@ pass the fixed bounds.
 
 This is a prerelease V0 format with no production-data compatibility promise.
 Any incompatible successor must use new role signing domains and a newly
-specified canonical decoder. A future proposal-message codec, proposal-root
-derivation, canonical consensus-block envelope, validator-snapshot derivation,
-signing subsystem, Tendermint state machine, network protocol, or durable
-finalized-state transition must not reinterpret these bytes silently.
+specified canonical decoder. The fixed-validator proposal-control V0 wrapper
+specified in `fixed-validator-proposal-control-v0.md` reuses one complete
+certificate without reinterpreting its bytes or signatures. Any successor
+proposal codec, proposal-root derivation, canonical consensus-block envelope,
+validator-snapshot derivation, signing subsystem, network protocol, or durable
+consensus or finalized-state transition must not reinterpret these bytes
+silently.
