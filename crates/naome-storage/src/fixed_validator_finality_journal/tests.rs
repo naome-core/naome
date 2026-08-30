@@ -316,6 +316,8 @@ fn conflicting_valid_sibling_durably_halts_and_denies_head() {
     let conflict = fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Union, 0);
     let denied_commit =
         fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 1);
+    let reopened_denied_commit =
+        fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 2);
     let _ = journal.commit_verified(first).unwrap();
     let pre_halt_image = fs::read(directory.journal()).unwrap();
     let halt = match journal.commit_verified(conflict).unwrap() {
@@ -350,6 +352,23 @@ fn conflicting_valid_sibling_durably_halts_and_denies_head() {
     assert_eq!(reopened.halt().unwrap(), Some(halt));
     assert!(matches!(
         reopened.head(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        reopened.parent_for_height(ConsensusHeight::new(1)),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        reopened.finality_record(ConsensusHeight::new(1)),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        reopened.finalized_len(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    let mut reopened = reopened;
+    assert!(matches!(
+        reopened.commit_verified(reopened_denied_commit),
         Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
     ));
     drop(reopened);

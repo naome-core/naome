@@ -134,7 +134,8 @@ The two synchronization points define a framed durable commit boundary; they do
 not claim that one whole variable-length record is written atomically by the
 filesystem. Any append I/O failure poisons the handle and returns the proposed
 state ID only as ambiguity information, not as proof that the record committed.
-No further read or commit is authoritative until strict reopen.
+No journal-state or history read and no commit is authoritative until strict
+reopen; the immutable context and replay-limit configuration remain inspectable.
 
 ## Evidence variants and terminal conflict
 
@@ -151,12 +152,13 @@ the exact conflicting envelope and payload. After its footer becomes durable,
 there is no operable selected head. Future commits fail until separately
 specified recovery tooling is explicitly invoked.
 
-On a healthy halted handle only `halt()` and `state_id()` remain diagnostic.
-`head()`, `parent_for_height()`, `finality_record()`, `finalized_len()`, and
-`commit_verified()` all return the terminal-halt error. The halt summary names
-the height, both distinct ancestry identities, both envelope identities, and
-the halt state ID; it does not choose a winner or expose either sibling as the
-operable chain.
+On a healthy halted handle, `halt()` and `state_id()` remain the only operational
+or history-state diagnostics; immutable `context()` and `replay_limit()` bindings
+also remain inspectable. `head()`, `parent_for_height()`, `finality_record()`,
+`finalized_len()`, and `commit_verified()` all return the terminal-halt error.
+The halt summary names the height, both distinct ancestry identities, both
+envelope identities, and the halt state ID; it does not choose a winner or
+expose either sibling as the operable chain.
 
 ## Strict operational reopen
 
