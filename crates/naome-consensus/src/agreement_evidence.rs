@@ -301,6 +301,43 @@ impl VoteBody {
     }
 }
 
+pub(crate) fn canonical_unsigned_vote_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signer: ConsensusKey,
+) -> [u8; VOTE_SIGNATURE_OFFSET] {
+    let body = VoteBody {
+        context,
+        position,
+        role,
+        target,
+    };
+    let mut bytes = [0_u8; VOTE_SIGNATURE_OFFSET];
+    bytes[..VOTE_BODY_BYTES].copy_from_slice(&body.to_canonical_bytes());
+    bytes[VOTE_KEY_OFFSET..].copy_from_slice(signer.as_bytes());
+    bytes
+}
+
+pub(crate) fn exact_vote_signing_transcript(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signer: ConsensusKey,
+) -> Vec<u8> {
+    signing_transcript(
+        VoteBody {
+            context,
+            position,
+            role,
+            target,
+        },
+        signer,
+    )
+}
+
 /// One canonical signed vote whose Ed25519 signature has been verified.
 ///
 /// Verification binds the exact embedded role, context, position, signer, and
@@ -439,6 +476,88 @@ enum CertificateBodyPolicy {
 #[must_use]
 pub struct VerifiedQuorumCertificateV0<'snapshot> {
     core: VerifiedCertificateCore<'snapshot>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalQuorumCertificateHeader {
+    pub(crate) context: ConsensusContextV0,
+    pub(crate) position: ConsensusPosition,
+    pub(crate) role: ConsensusVoteRole,
+    pub(crate) target: ConsensusVoteTarget,
+    pub(crate) id: QuorumCertificateId,
+}
+
+pub(crate) fn decode_canonical_quorum_certificate_header(
+    bytes: &[u8],
+) -> Result<CanonicalQuorumCertificateHeader, QuorumCertificateVerifyError> {
+    if bytes.len() > MAX_CERTIFICATE_BYTES {
+        return Err(QuorumCertificateVerifyError::InputTooLong {
+            actual: bytes.len(),
+            maximum: MAX_CERTIFICATE_BYTES,
+        });
+    }
+    if bytes.len() < CERTIFICATE_ENTRIES_OFFSET {
+        return Err(QuorumCertificateVerifyError::InvalidLength {
+            actual: bytes.len(),
+            minimum: CERTIFICATE_ENTRIES_OFFSET,
+        });
+    }
+
+    let body = decode_vote_body(&bytes[..VOTE_BODY_BYTES])
+        .map_err(QuorumCertificateVerifyError::VoteBody)?;
+    let signer_count = usize::from(u16::from_be_bytes(
+        bytes[CERTIFICATE_COUNT_OFFSET..CERTIFICATE_ENTRIES_OFFSET]
+            .try_into()
+            .expect("the fixed certificate count field is two bytes"),
+    ));
+    if signer_count == 0 {
+        return Err(QuorumCertificateVerifyError::EmptySignerSet);
+    }
+    if signer_count > MAX_ACTIVE_VALIDATORS {
+        return Err(QuorumCertificateVerifyError::TooManySigners {
+            actual: signer_count,
+            maximum: MAX_ACTIVE_VALIDATORS,
+        });
+    }
+    let expected_length = CERTIFICATE_ENTRIES_OFFSET + signer_count * CERTIFICATE_ENTRY_BYTES;
+    if bytes.len() != expected_length {
+        return Err(QuorumCertificateVerifyError::LengthMismatch {
+            actual: bytes.len(),
+            expected: expected_length,
+        });
+    }
+
+    let mut previous = None;
+    for index in 0..signer_count {
+        let start = CERTIFICATE_ENTRIES_OFFSET + index * CERTIFICATE_ENTRY_BYTES;
+        let signer = ConsensusKey::from_bytes(
+            bytes[start..start + super::CONSENSUS_KEY_BYTES]
+                .try_into()
+                .expect("one certificate key field is 32 bytes"),
+        );
+        if let Some(previous) = previous {
+            if previous == signer {
+                return Err(QuorumCertificateVerifyError::DuplicateSigner { signer });
+            }
+            if previous > signer {
+                return Err(QuorumCertificateVerifyError::NonAscendingSignerOrder {
+                    previous,
+                    actual: signer,
+                });
+            }
+        }
+        previous = Some(signer);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(CanonicalQuorumCertificateHeader {
+        context: body.context,
+        position: body.position,
+        role: body.role,
+        target: body.target,
+        id: QuorumCertificateId(hasher.finalize().into()),
+    })
 }
 
 impl<'snapshot> VerifiedQuorumCertificateV0<'snapshot> {

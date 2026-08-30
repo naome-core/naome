@@ -27,6 +27,15 @@ gossip, or fetch a proposal or vote; authenticate or trust a peer; select a
 global branch; or finalize or persist a block. A libp2p `PeerId` remains only a
 transport identity and cannot supply validator or consensus authority.
 
+The separately specified `fixed-validator-vote-safety-journal-v0.md` may issue
+one signing session that privately owns this kernel, derives its canonical
+post-effect state-and-vote intents internally, and provides local per-key
+prepare-before-sign, explicit external-anchor acknowledgement, complete-before-
+release, and caller-anchored restart safety. The key-owning public path does not
+accept a caller-created intent or mutable replacement kernel. That signer
+boundary does not make a separate volatile kernel or unsigned effect
+independently durable or signable.
+
 ## Canonical proposal-control bytes
 
 One fixed-validator proposal-control V0 value is exactly:
@@ -256,8 +265,13 @@ decoder and checker resource contract.
 This prerelease V0 format has no production-data compatibility promise. An
 incompatible successor must use a newly specified canonical decoder and any
 new signature role must use a separately specified signing domain. Durable
-lock, valid-value, phase, and anti-equivocation state; restart and rollback
-protection; timeout and arbitrary higher-round advancement; networking,
-availability, peer trust, global branch selection, dynamic-validator consensus,
-and global finality remain required components whose authority is not granted
-by this in-memory kernel.
+lock, valid-value, phase, and anti-equivocation state plus conditional rollback
+detection are supplied only when the separate vote-safety journal's single
+issued session synchronizes the complete sealed post-effect intent under its
+exact external-anchor contract. That session may move to a child height only by
+consuming a matching branch-relative verified transition; it neither selects a
+sibling nor durably installs finality. Timeout and arbitrary higher-round
+advancement, external-anchor storage and recovery, networking, availability,
+peer trust, global branch selection, dynamic-validator consensus, and durable
+global-finality recovery remain required components whose authority is not
+granted by this in-memory kernel or inferred from the signing journal.

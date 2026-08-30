@@ -49,6 +49,8 @@ pub use fixed_consensus_branch::{
 pub use fixed_validator_lock_state::{
     FixedValidatorLockPhaseV0, FixedValidatorLockStateError, FixedValidatorLockStateV0,
     FixedValidatorLockedValueV0, FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0,
+    FixedValidatorVoteIntentError, FixedValidatorVoteIntentV0, ObservedFixedValidatorVoteIntentV0,
+    VerifiedReplayFixedValidatorVoteIntentV0,
 };
 pub use producer_authorization::{
     ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,

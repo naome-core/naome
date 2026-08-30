@@ -1,8 +1,10 @@
 use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::{
-    ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactSetRoot,
+    ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactDag,
+    ArtifactSetRoot,
 };
-use naome_proof::ArtifactId;
+use naome_foundation::ZfcAxiom;
+use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 
 use super::*;
 use crate::{
@@ -11,6 +13,7 @@ use crate::{
 };
 
 const VOTE_BODY_BYTES: usize = 118;
+const AUTHORIZATION_BODY_BYTES: usize = 116;
 
 fn signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
@@ -119,6 +122,91 @@ fn certificate_bytes(
     bytes.extend_from_slice(signer.as_bytes());
     bytes.extend_from_slice(&signature);
     bytes
+}
+
+fn authorization_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    root: ProposalSigningRoot,
+    proposer: &SigningKey,
+) -> Vec<u8> {
+    let mut body = [0_u8; AUTHORIZATION_BODY_BYTES];
+    body[..32].copy_from_slice(context.chain_id().as_bytes());
+    body[32..64].copy_from_slice(context.genesis_id().as_bytes());
+    body[64..68].copy_from_slice(&context.protocol_version().value().to_be_bytes());
+    body[68..76].copy_from_slice(&position.height().value().to_be_bytes());
+    body[76..84].copy_from_slice(&position.round().value().to_be_bytes());
+    body[84..].copy_from_slice(root.as_bytes());
+
+    let proposer_key = consensus_key(proposer);
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"naome:consensus-producer-authorization:v0\0");
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(proposer_key.as_bytes());
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(proposer_key.as_bytes());
+    bytes.extend_from_slice(&proposer.sign(&transcript).to_bytes());
+    bytes
+}
+
+fn proof_payload() -> Vec<u8> {
+    let certificate = ProofCertificate::new(vec![ProofStep::ZfcAxiom(ZfcAxiom::Pairing)])
+        .unwrap()
+        .into_unchecked_normal_form()
+        .certificate()
+        .clone();
+    ArtifactPayload::Proof(certificate).to_canonical_bytes()
+}
+
+fn artifact_id_for(payload: &[u8]) -> ArtifactId {
+    ArtifactDag::new()
+        .apply_canonical_artifact_bytes(payload.to_vec())
+        .unwrap()
+        .artifact_id()
+}
+
+fn owned_transition(chain_seed: u8) -> OwnedVerifiedFixedConsensusTransitionV0 {
+    let definition = ArtifactChainDefinition::new([chain_seed; 32]);
+    let context = context(definition.id());
+    let proposer = signing_key(chain_seed);
+    let payload = proof_payload();
+    let artifact_state = ArtifactChainState::new(definition);
+    let block = artifact_state
+        .prepare_block(artifact_id_for(&payload))
+        .unwrap();
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        context,
+        &[ActiveAgreementEntry::new(
+            consensus_key(&proposer),
+            AgreementWeight::new(1),
+        )],
+        artifact_state.branch_snapshot(),
+    )
+    .unwrap();
+    let round = branch.begin_round_zero().unwrap();
+    let value = round.value_for_artifact_block(block);
+    let root = value.proposal_signing_root();
+    let mut envelope = Vec::new();
+    envelope.extend_from_slice(&value.to_canonical_bytes());
+    envelope.extend_from_slice(&authorization_bytes(
+        context,
+        round.position(),
+        root,
+        &proposer,
+    ));
+    envelope.extend_from_slice(&certificate_bytes(
+        context,
+        round.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(root),
+        &proposer,
+    ));
+    round
+        .decode_and_verify(&envelope, payload)
+        .unwrap()
+        .into_owned()
 }
 
 fn quorum<'snapshot>(
@@ -858,5 +946,456 @@ fn later_round_cannot_initialize_empty_state() {
         FixedValidatorLockStateV0::try_from_round_zero(&round_one),
         Err(FixedValidatorLockStateError::InitialRoundNotZero { actual })
             if actual == ConsensusRound::new(1)
+    ));
+}
+
+#[test]
+fn verified_child_height_reset_clears_parent_lock_and_returns_exact_child() {
+    let chain_seed = 0x37;
+    let (branch, signing_key, context) = fixture(chain_seed);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let proposed = value(&round_zero, 0x97);
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    lock_current_proposal(&mut state, proposed, context, &signing_key);
+    assert_eq!(state.phase(), FixedValidatorLockPhaseV0::Precommit);
+    assert!(state.locked_value().is_some());
+    assert!(state.valid_value().is_some());
+
+    let transition = owned_transition(chain_seed);
+    let expected_ancestry = transition.value().ancestry_id();
+    let child = state
+        .advance_height_with_verified_transition(transition)
+        .unwrap();
+    let child_round_zero = child.begin_round_zero().unwrap();
+
+    assert_eq!(child.verified_height(), Some(ConsensusHeight::new(1)));
+    assert_eq!(child.ancestry_id(), expected_ancestry);
+    assert_eq!(state.parent_coordinate, child.coordinate());
+    assert_eq!(state.position(), child_round_zero.position());
+    assert_eq!(state.position().height(), ConsensusHeight::new(2));
+    assert_eq!(state.position().round(), ConsensusRound::new(0));
+    assert_eq!(state.phase(), FixedValidatorLockPhaseV0::Proposal);
+    assert_eq!(state.locked_value(), None);
+    assert_eq!(state.valid_value(), None);
+    state.validate_current_round(&child_round_zero).unwrap();
+}
+
+#[test]
+fn verified_child_height_reset_rejects_another_parent_without_mutation() {
+    let (branch, signing_key, context) = fixture(0x38);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let proposed = value(&round_zero, 0x98);
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    lock_current_proposal(&mut state, proposed, context, &signing_key);
+    let position = state.position();
+    let phase = state.phase();
+    let locked = state.locked_value();
+    let valid = valid_snapshot(&state);
+
+    assert!(matches!(
+        state.advance_height_with_verified_transition(owned_transition(0x39)),
+        Err(FixedValidatorLockStateError::HeightTransitionParentMismatch)
+    ));
+    assert_eq!(state.position(), position);
+    assert_eq!(state.phase(), phase);
+    assert_eq!(state.locked_value(), locked);
+    assert_eq!(valid_snapshot(&state), valid);
+}
+
+#[test]
+fn verified_child_height_reset_rejects_a_different_current_height_without_mutation() {
+    let chain_seed = 0x3a;
+    let (branch, _, _) = fixture(chain_seed);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    state.position = ConsensusPosition::new(ConsensusHeight::new(2), ConsensusRound::new(0));
+
+    assert!(matches!(
+        state.advance_height_with_verified_transition(owned_transition(chain_seed)),
+        Err(FixedValidatorLockStateError::HeightTransitionHeightMismatch {
+            expected,
+            actual,
+        }) if expected == ConsensusHeight::new(2) && actual == ConsensusHeight::new(1)
+    ));
+    assert_eq!(
+        state.position(),
+        ConsensusPosition::new(ConsensusHeight::new(2), ConsensusRound::new(0))
+    );
+    assert_eq!(state.phase(), FixedValidatorLockPhaseV0::Proposal);
+    assert_eq!(state.locked_value(), None);
+    assert_eq!(state.valid_value(), None);
+}
+
+#[test]
+fn runtime_vote_intent_round_trips_and_completes_exact_existing_vote() {
+    let (branch, signing_key, context) = fixture(0x31);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let effect = state.decide_prevote_without_proposal().unwrap();
+    let signer = consensus_key(&signing_key);
+    let intent = state
+        .prepare_vote_intent(&round_zero, effect.clone(), signer)
+        .unwrap();
+
+    assert_eq!(
+        intent.canonical_state_and_vote_intent_bytes().len(),
+        FixedValidatorVoteIntentV0::MIN_BYTE_LENGTH
+    );
+    assert_eq!(FixedValidatorVoteIntentV0::MIN_BYTE_LENGTH, 391);
+    assert_eq!(FixedValidatorVoteIntentV0::MAX_BYTE_LENGTH, 25_675);
+    assert_eq!(intent.context(), context);
+    assert_eq!(intent.position(), round_zero.position());
+    assert_eq!(intent.position(), effect.position());
+    assert_eq!(intent.role(), effect.role());
+    assert_eq!(intent.target(), effect.target());
+    assert_eq!(intent.signer(), signer);
+    assert_eq!(intent.signing_transcript().len(), 35 + 118 + 32);
+    let canonical = intent.canonical_state_and_vote_intent_bytes();
+    assert_eq!(&canonical[..37], VOTE_INTENT_HEADER);
+    assert_eq!(&canonical[37..69], context.chain_id().as_bytes());
+    assert_eq!(&canonical[69..101], context.genesis_id().as_bytes());
+    assert_eq!(
+        &canonical[101..105],
+        &context.protocol_version().value().to_be_bytes()
+    );
+    assert_eq!(canonical[105], ABSENT_TAG);
+    assert_eq!(&canonical[106..114], &0_u64.to_be_bytes());
+    assert_eq!(canonical[322], PREVOTE_PHASE_TAG);
+    assert_eq!(canonical[323], ABSENT_TAG);
+    assert_eq!(canonical[324], ABSENT_TAG);
+    assert_eq!(canonical[325], PREVOTE_ROLE_TAG);
+    assert_eq!(canonical[326], NIL_TARGET_TAG);
+    assert_eq!(&canonical[327..359], &[0_u8; 32]);
+    assert_eq!(&canonical[359..391], signer.as_bytes());
+
+    let observed = ObservedFixedValidatorVoteIntentV0::decode_and_verify(
+        intent.canonical_state_and_vote_intent_bytes(),
+        context,
+        branch.fixed_agreement_set_id(),
+        signer,
+    )
+    .unwrap();
+    assert_eq!(
+        observed.canonical_state_and_vote_intent_bytes(),
+        intent.canonical_state_and_vote_intent_bytes()
+    );
+    let replay = observed.verify_for_round(&round_zero).unwrap();
+    assert_eq!(replay.lock_state().position(), state.position());
+    assert_eq!(replay.lock_state().phase(), state.phase());
+    assert_eq!(replay.lock_state().locked_value(), state.locked_value());
+    assert_eq!(valid_snapshot(replay.lock_state()), valid_snapshot(&state));
+
+    let signature =
+        ConsensusSignature::from_bytes(signing_key.sign(intent.signing_transcript()).to_bytes());
+    let completed = intent.complete_with_signature(signature).unwrap();
+    assert_eq!(completed.context(), context);
+    assert_eq!(completed.position(), effect.position());
+    assert_eq!(completed.role(), effect.role());
+    assert_eq!(completed.target(), effect.target());
+    assert_eq!(completed.signer(), signer);
+    assert_eq!(completed.signature(), signature);
+    assert_eq!(completed.to_canonical_bytes().len(), 214);
+    assert!(matches!(
+        intent.complete_with_signature(ConsensusSignature::from_bytes([0x55; 64])),
+        Err(ConsensusVoteVerifyError::InvalidSignature { signer: actual }) if actual == signer
+    ));
+}
+
+#[test]
+fn locked_vote_intent_retains_exact_qc_and_reconstructs_only_for_exact_round() {
+    let (branch, signing_key, context) = fixture(0x32);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let proposed = value(&round_zero, 0x72);
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let _ = state
+        .decide_prevote_for_observation(proposal_observation(&state, proposed, None))
+        .unwrap();
+    let positioned = snapshot(context, state.position(), &signing_key);
+    let certificate = quorum(
+        context,
+        state.position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(proposed.proposal_signing_root()),
+        &signing_key,
+        &positioned,
+    );
+    let certificate_bytes = certificate.to_canonical_bytes();
+    let effect = state
+        .decide_precommit_for_proposal_observation(
+            proposal_observation(&state, proposed, None),
+            PrevoteQuorumObservation::from_verified(&certificate, certificate_bytes.clone()),
+        )
+        .unwrap();
+    let signer = consensus_key(&signing_key);
+    let intent = state
+        .prepare_vote_intent(&round_zero, effect, signer)
+        .unwrap();
+    assert_eq!(
+        intent.canonical_state_and_vote_intent_bytes().len(),
+        FixedValidatorVoteIntentV0::MIN_BYTE_LENGTH
+            + LOCK_SNAPSHOT_BYTES
+            + VALID_SNAPSHOT_FIXED_BYTES
+            + certificate_bytes.len()
+    );
+
+    let replay = VerifiedReplayFixedValidatorVoteIntentV0::decode_and_verify_for_round(
+        intent.canonical_state_and_vote_intent_bytes(),
+        &round_zero,
+        signer,
+    )
+    .unwrap();
+    assert_eq!(replay.lock_state().locked_value(), state.locked_value());
+    assert_eq!(
+        replay
+            .lock_state()
+            .valid_value()
+            .unwrap()
+            .canonical_prevote_certificate(),
+        certificate_bytes
+    );
+
+    let round_one = round_zero.advance_round().unwrap();
+    assert!(matches!(
+        VerifiedReplayFixedValidatorVoteIntentV0::decode_and_verify_for_round(
+            intent.canonical_state_and_vote_intent_bytes(),
+            &round_one,
+            signer,
+        ),
+        Err(FixedValidatorVoteIntentError::RoundPositionMismatch { .. })
+    ));
+
+    let mut wrong_id = intent.canonical_state_and_vote_intent_bytes().to_vec();
+    let certificate_start = wrong_id
+        .windows(certificate_bytes.len())
+        .position(|window| window == certificate_bytes)
+        .unwrap();
+    wrong_id[certificate_start - 4 - QuorumCertificateId::BYTE_LENGTH] ^= 0x80;
+    assert!(matches!(
+        ObservedFixedValidatorVoteIntentV0::decode_and_verify(
+            &wrong_id,
+            context,
+            branch.fixed_agreement_set_id(),
+            signer,
+        ),
+        Err(FixedValidatorVoteIntentError::RetainedCertificateIdMismatch)
+    ));
+}
+
+#[test]
+fn stale_effect_and_nonmember_signer_cannot_prepare_vote_intent() {
+    let (branch, validator_key, context) = fixture(0x33);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let stale_prevote = state.decide_prevote_without_proposal().unwrap();
+    let current_precommit = state.decide_precommit_without_quorum().unwrap();
+    let signer = consensus_key(&validator_key);
+
+    assert!(matches!(
+        state.prepare_vote_intent(&round_zero, stale_prevote, signer),
+        Err(FixedValidatorVoteIntentError::EffectStateMismatch)
+    ));
+    assert!(
+        state
+            .prepare_vote_intent(&round_zero, current_precommit.clone(), signer)
+            .is_ok()
+    );
+
+    let outsider = consensus_key(&signing_key(0xf3));
+    assert!(matches!(
+        state.prepare_vote_intent(&round_zero, current_precommit.clone(), outsider),
+        Err(FixedValidatorVoteIntentError::SignerNotInFixedSet { signer: actual })
+            if actual == outsider
+    ));
+
+    let proposed = value(&round_zero, 0x93);
+    let mut different_state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let _ = different_state
+        .decide_prevote_for_observation(proposal_observation(&different_state, proposed, None))
+        .unwrap();
+    let positioned = snapshot(context, different_state.position(), &validator_key);
+    let certificate = quorum(
+        context,
+        different_state.position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(proposed.proposal_signing_root()),
+        &validator_key,
+        &positioned,
+    );
+    let _ = different_state
+        .decide_precommit_for_proposal_observation(
+            proposal_observation(&different_state, proposed, None),
+            PrevoteQuorumObservation::from_verified(&certificate, certificate.to_canonical_bytes()),
+        )
+        .unwrap();
+    assert!(matches!(
+        different_state.prepare_vote_intent(&round_zero, current_precommit, signer),
+        Err(FixedValidatorVoteIntentError::EffectStateMismatch)
+    ));
+}
+
+#[test]
+fn same_post_state_effect_from_parallel_lineage_cannot_prepare_vote_intent() {
+    let (branch, validator_key, _) = fixture(0x3a);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let signer = consensus_key(&validator_key);
+
+    let mut nil_lineage = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let nil_effect = nil_lineage.decide_prevote_without_proposal().unwrap();
+
+    let proposed = value(&round_zero, 0x9a);
+    let mut proposal_lineage = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let proposal_effect = proposal_lineage
+        .decide_prevote_for_observation(proposal_observation(&proposal_lineage, proposed, None))
+        .unwrap();
+
+    assert_eq!(
+        vote_effect_state_binding(&vote_snapshot_from_lock_state(&nil_lineage)),
+        vote_effect_state_binding(&vote_snapshot_from_lock_state(&proposal_lineage))
+    );
+    assert_ne!(nil_effect.target(), proposal_effect.target());
+    assert!(matches!(
+        nil_lineage.prepare_vote_intent(&round_zero, proposal_effect, signer),
+        Err(FixedValidatorVoteIntentError::EffectLineageMismatch)
+    ));
+    assert!(
+        nil_lineage
+            .prepare_vote_intent(&round_zero, nil_effect, signer)
+            .is_ok()
+    );
+}
+
+#[test]
+fn old_lock_and_missing_current_quorum_can_prepare_nil_precommit_intent() {
+    let (branch, signing_key, context) = fixture(0x35);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let proposed = value(&round_zero, 0x95);
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    lock_current_proposal(&mut state, proposed, context, &signing_key);
+    let round_one = round_zero.advance_round().unwrap();
+    state.advance_round(&round_one).unwrap();
+    let _ = state.decide_prevote_without_proposal().unwrap();
+    let effect = state.decide_precommit_without_quorum().unwrap();
+
+    assert_eq!(effect.role(), ConsensusVoteRole::Precommit);
+    assert_eq!(effect.target(), ConsensusVoteTarget::Nil);
+    assert_eq!(
+        state.locked_value().unwrap().round(),
+        ConsensusRound::new(0)
+    );
+    let signer = consensus_key(&signing_key);
+    let intent = state
+        .prepare_vote_intent(&round_one, effect, signer)
+        .unwrap();
+    assert_eq!(intent.role(), ConsensusVoteRole::Precommit);
+    assert_eq!(intent.target(), ConsensusVoteTarget::Nil);
+    let replay = VerifiedReplayFixedValidatorVoteIntentV0::decode_and_verify_for_round(
+        intent.canonical_state_and_vote_intent_bytes(),
+        &round_one,
+        signer,
+    )
+    .unwrap();
+    assert_eq!(replay.lock_state().locked_value(), state.locked_value());
+}
+
+#[test]
+fn structural_replay_rejects_unreachable_effects_and_record_bounds() {
+    let (branch, signing_key, context) = fixture(0x34);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let _ = state.decide_prevote_without_proposal().unwrap();
+    let _ = state.decide_precommit_without_quorum().unwrap();
+    let snapshot = vote_snapshot_from_lock_state(&state);
+    let signer = consensus_key(&signing_key);
+    let forged = FixedValidatorUnsignedVoteEffectV0::from_snapshot(
+        &snapshot,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(ProposalSigningRoot::from_bytes([0x91; 32])),
+    );
+    let forged_bytes = encode_state_and_vote_intent(&snapshot, &forged, signer).unwrap();
+    assert!(matches!(
+        ObservedFixedValidatorVoteIntentV0::decode_and_verify(
+            &forged_bytes,
+            context,
+            branch.fixed_agreement_set_id(),
+            signer,
+        ),
+        Err(FixedValidatorVoteIntentError::EffectTargetMismatch)
+    ));
+
+    let too_short = vec![0_u8; ObservedFixedValidatorVoteIntentV0::MIN_BYTE_LENGTH - 1];
+    assert!(matches!(
+        ObservedFixedValidatorVoteIntentV0::decode_and_verify(
+            &too_short,
+            context,
+            branch.fixed_agreement_set_id(),
+            signer,
+        ),
+        Err(FixedValidatorVoteIntentError::InputTooShort { .. })
+    ));
+    let too_long = vec![0_u8; ObservedFixedValidatorVoteIntentV0::MAX_BYTE_LENGTH + 1];
+    assert!(matches!(
+        ObservedFixedValidatorVoteIntentV0::decode_and_verify(
+            &too_long,
+            context,
+            branch.fixed_agreement_set_id(),
+            signer,
+        ),
+        Err(FixedValidatorVoteIntentError::InputTooLong { .. })
+    ));
+}
+
+#[test]
+fn structural_replay_rejects_old_lock_with_newer_different_valid_value() {
+    let (branch, signing_key, context) = fixture(0x36);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let locked = value(&round_zero, 0x96);
+    let conflicting = value(&round_zero, 0xa6);
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    lock_current_proposal(&mut state, locked, context, &signing_key);
+    let round_one = round_zero.advance_round().unwrap();
+    state.advance_round(&round_one).unwrap();
+    let _ = state.decide_prevote_without_proposal().unwrap();
+    let _ = state.decide_precommit_without_quorum().unwrap();
+    let round_two = round_one.advance_round().unwrap();
+    state.advance_round(&round_two).unwrap();
+    let _ = state.decide_prevote_without_proposal().unwrap();
+
+    let valid_position = ConsensusPosition::new(state.position().height(), ConsensusRound::new(1));
+    let positioned = snapshot(context, valid_position, &signing_key);
+    let certificate = quorum(
+        context,
+        valid_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(conflicting.proposal_signing_root()),
+        &signing_key,
+        &positioned,
+    );
+    let certificate_bytes = certificate.to_canonical_bytes();
+    let mut unreachable = vote_snapshot_from_lock_state(&state);
+    unreachable.valid = Some(FixedValidatorValidValueV0 {
+        value: conflicting,
+        round: ConsensusRound::new(1),
+        prevote_certificate_id: certificate.id(),
+        canonical_prevote_certificate: certificate_bytes,
+    });
+    let effect = FixedValidatorUnsignedVoteEffectV0::from_snapshot(
+        &unreachable,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(locked.proposal_signing_root()),
+    );
+    let signer = consensus_key(&signing_key);
+    let bytes = encode_state_and_vote_intent(&unreachable, &effect, signer).unwrap();
+    assert!(matches!(
+        ObservedFixedValidatorVoteIntentV0::decode_and_verify(
+            &bytes,
+            context,
+            branch.fixed_agreement_set_id(),
+            signer,
+        ),
+        Err(FixedValidatorVoteIntentError::LockValidValueMismatch {
+            locked_round,
+            valid_round,
+        }) if locked_round == ConsensusRound::new(0)
+            && valid_round == ConsensusRound::new(1)
     ));
 }

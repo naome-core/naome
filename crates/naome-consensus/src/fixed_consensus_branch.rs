@@ -252,6 +252,28 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
         VerifiedQuorumCertificateV0::decode_and_verify(bytes, self.branch.context, &self.snapshot)
     }
 
+    pub(crate) fn verifies_consensus_signer(&self, signer: ConsensusKey) -> bool {
+        self.snapshot
+            .entries()
+            .iter()
+            .any(|entry| entry.consensus_key() == signer)
+    }
+
+    pub(crate) fn verify_retained_prevote_certificate(
+        &self,
+        bytes: &[u8],
+        position: ConsensusPosition,
+        target: super::ConsensusVoteTarget,
+        id: QuorumCertificateId,
+    ) -> Result<bool, QuorumCertificateVerifyError> {
+        let snapshot = self.round_state.positioned_snapshot(position);
+        let certificate =
+            VerifiedQuorumCertificateV0::decode_and_verify(bytes, self.branch.context, &snapshot)?;
+        Ok(certificate.role() == super::ConsensusVoteRole::Prevote
+            && certificate.target() == target
+            && certificate.id() == id)
+    }
+
     /// Returns the proposer-priority base carried to the next height on success.
     ///
     /// This identity is anchored to the first proposer step for this height and
