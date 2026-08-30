@@ -28,14 +28,23 @@ expected proposer, agreement snapshot, ancestry, state commitment, or artifact
 parent. The lower-level independently parameterized composition helper is
 crate-private so it cannot bypass the typed branch boundary.
 
-Success publishes a separate immutable child branch. It does not prove that the
-caller-selected genesis context or fixed set is globally canonical, select one
-sibling, execute Tendermint locking or timeout transitions, resolve conflicting
-certificates, install durable finality, mutate a selected journal, persist or
-recover a branch, provide data availability, gossip or fetch data, grant peer
-authority, create signatures, provide signing safety, change validators, or
-execute economics. A libp2p `PeerId` authenticates transport only and remains
-unrelated to a consensus key.
+Success publishes a separate immutable child branch. Consuming that proof into
+`OwnedVerifiedFixedConsensusTransitionV0` seals its exact parent coordinate,
+authenticated position, value, envelope identity, canonical envelope bytes,
+canonical artifact payload, and verified child for transfer to the fixed-V0
+finality journal. The owned proof alone still selects no sibling and mutates no
+state.
+
+This component does not prove that the caller-selected genesis context or fixed
+set is globally canonical, execute Tendermint locking or timeout transitions,
+create signatures, provide signing safety, change validators, provide data
+availability, gossip or fetch data, grant peer authority, or execute economics.
+Only the separate fixed-validator finality-journal contract may consume the
+sealed owned form to install durable selection, retain the exact first envelope
+and payload, apply same-value no-write idempotence, and commit a
+conflicting-certificate halt for this exact V0 format. The owned proof itself
+remains non-authoritative. A libp2p `PeerId` authenticates transport only and
+remains unrelated to a consensus key.
 
 ## Primitive values
 
@@ -225,11 +234,14 @@ All-or-nothing verification returns failures with this observable precedence:
     bytes as one child of the artifact snapshot coupled to the consensus parent.
 13. Publish one verified transition only after every prior check succeeds.
 
-Consuming the verified transition returns a separate `FixedConsensusBranchV0`
-whose verified height is the value height, ancestry is the value ancestry,
-artifact snapshot is the strict child successor, fixed set is unchanged, and
-next-height proposer base is the height's once-advanced base. The original
-branch, round cursor, and every journal remain unchanged on success or failure.
+Consuming the verified transition can return either a separate
+`FixedConsensusBranchV0` or one sealed owned transition. The owned form retains
+the exact verified byte inputs and the complete semantic parent coordinate;
+callers cannot construct or retarget it from raw fields. Its child branch has
+the value height and ancestry, the strict artifact successor, the unchanged
+fixed set, and the height's once-advanced next-height proposer base. The
+original branch, round cursor, and every journal remain unchanged on success or
+failure.
 
 This coupling closes the previous composition gap in which independent caller
 inputs could name consensus ancestry from one branch and an artifact parent
@@ -253,7 +265,10 @@ reinterpreted as V0. This prerelease format has no production-data compatibility
 promise.
 
 Dynamic validator selection and transitions, finite-window proposer-gap proofs,
-locking and valid-value state, anti-equivocation signing state, canonical branch
-selection, conflicting-certificate halt, durable atomic finality, persistence,
-restart recovery, networking, peer trust, data availability, and economics
-remain required product work outside this component's authority.
+locking and valid-value state, anti-equivocation signing state, general
+consensus-block formats, dynamic-set or multi-node finality,
+checkpoint/bootstrap and external-anchor recovery, networking, peer trust,
+data availability, and economics remain required product work outside this
+component's authority. Fixed-artifact-V0 local durable installation,
+caller-anchored strict replay, and conflict halt are specified separately in
+`fixed-validator-finality-journal-v0.md`.

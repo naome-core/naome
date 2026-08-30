@@ -328,6 +328,8 @@ pub(crate) struct VerifiedConsensusEnvelopeV0<'snapshot> {
     producer_authorization: VerifiedProducerAuthorizationV0<'snapshot>,
     precommit_certificate: VerifiedPrecommitCertificateV0<'snapshot>,
     artifact_successor: ArtifactChainBranchSnapshot,
+    canonical_envelope_bytes: Vec<u8>,
+    canonical_artifact_bytes: Vec<u8>,
     id: ConsensusEnvelopeId,
 }
 
@@ -432,7 +434,7 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
         }
 
         let artifact_successor = artifact_parent
-            .validate_child(&value.artifact_block(), canonical_artifact_bytes)
+            .validate_child(&value.artifact_block(), canonical_artifact_bytes.clone())
             .map_err(ConsensusEnvelopeVerifyError::ArtifactValidation)?;
         let id = ConsensusEnvelopeId::from_bytes(domain_hash(CONSENSUS_ENVELOPE_DOMAIN, bytes));
 
@@ -441,6 +443,8 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
             producer_authorization,
             precommit_certificate,
             artifact_successor,
+            canonical_envelope_bytes: bytes.to_vec(),
+            canonical_artifact_bytes,
             id,
         })
     }
@@ -486,9 +490,24 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
         &self.artifact_successor
     }
 
-    /// Consumes the envelope and returns its immutable artifact successor.
-    pub(crate) fn into_artifact_successor(self) -> ArtifactChainBranchSnapshot {
-        self.artifact_successor
+    /// Consumes the proof into the exact owned components needed by a sealed
+    /// branch transition without cloning its retained byte inputs.
+    pub(crate) fn into_owned_components(
+        self,
+    ) -> (
+        ConsensusValueV0,
+        ConsensusEnvelopeId,
+        Vec<u8>,
+        Vec<u8>,
+        ArtifactChainBranchSnapshot,
+    ) {
+        (
+            self.value,
+            self.id,
+            self.canonical_envelope_bytes,
+            self.canonical_artifact_bytes,
+            self.artifact_successor,
+        )
     }
 
     /// Returns the evidence-variant identity of the complete envelope bytes.
@@ -505,6 +524,7 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
         bytes.extend_from_slice(&self.producer_authorization.to_canonical_bytes());
         self.precommit_certificate
             .append_canonical_bytes_to(&mut bytes);
+        debug_assert_eq!(bytes, self.canonical_envelope_bytes);
         bytes
     }
 }

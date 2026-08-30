@@ -9,7 +9,20 @@ defines fork choice, consensus, or finality.
 
 `ArtifactChainJournal` privately owns one `ArtifactChainState`: exact head,
 checked proof and definition resolver state, authenticated artifact DAG, and an
-index of committed blocks. It is the sole durable selected-state owner.
+index of committed blocks. It is the sole durable owner for this artifact-only
+journal workflow.
+
+When fixed-validator artifact-consensus V0 is enabled, this artifact-only
+journal is not an independent consensus-selected-head or finality authority.
+`FixedValidatorFinalityJournalV0` instead stores the exact verified consensus
+envelope and artifact payload together and reconstructs their coupled state
+from one history. Implementations must not compose two independently committed
+artifact and consensus journals and call the result atomic. The artifact-only
+journal remains available only in a separately provisioned directory for the
+explicitly caller-selected recovery, candidate-validation, and offline-transfer
+workflows defined below; those workflows continue to grant no consensus or
+finality authority. Because both formats use the same file and exclusive-lock
+names, they are mutually exclusive within one directory.
 
 The journal accepts exactly one `ArtifactBlock` and its exact tagged proof or
 definition payload per append. Replay invokes the same strict block application
@@ -403,6 +416,12 @@ reopen is the only recovery path.
 The `v1` header and `canonical-definition-v1` chain identity are a clean
 prerelease cutover. Earlier journals have no legacy reader or migration; remove
 and recreate local data.
+
+The fixed-validator joint-finality V0 header is a separate clean prerelease
+replacement in the same file and lock namespace. An artifact-only journal is
+not migrated, reinterpreted, or opened beside it in one directory; the caller
+must provision a fresh directory or explicitly recreate the local data under
+the selected format.
 
 The journal does not define durable candidate-branch storage, rollback,
 reorganization, pruning, candidate-snapshot retention or eviction policy,

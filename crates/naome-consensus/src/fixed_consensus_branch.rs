@@ -3,7 +3,9 @@
 use std::error::Error;
 use std::fmt;
 
-use naome_chain::{ArtifactBlock, ArtifactChainBranchSnapshot, ArtifactChainId};
+use naome_chain::{
+    ArtifactBlock, ArtifactBlockId, ArtifactChainBranchSnapshot, ArtifactChainId, ArtifactSetRoot,
+};
 
 use super::consensus_value::{
     VerifiedConsensusEnvelopeV0, derive_fixed_validator_artifact_state_commitment,
@@ -33,6 +35,61 @@ pub struct FixedConsensusBranchV0 {
     ancestry_id: ConsensusAncestryId,
     artifact_snapshot: ArtifactChainBranchSnapshot,
     proposer_base: FixedProposerStateV0,
+}
+
+/// Complete semantic coordinate of one fixed-validator consensus branch.
+///
+/// The coordinate binds every parent component needed to reject a verified
+/// transition prepared from another branch. It is descriptive identity only:
+/// callers cannot construct it from raw fields, and possessing one does not
+/// establish selection, finality, persistence, or signing authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[must_use]
+pub struct FixedConsensusBranchCoordinateV0 {
+    context: ConsensusContextV0,
+    verified_height: Option<ConsensusHeight>,
+    ancestry_id: ConsensusAncestryId,
+    artifact_head_block_id: ArtifactBlockId,
+    artifact_set_root: ArtifactSetRoot,
+    fixed_agreement_set_id: FixedAgreementSetId,
+    proposer_priority_state_id: ProposerPriorityStateId,
+}
+
+impl FixedConsensusBranchCoordinateV0 {
+    /// Returns the exact consensus context.
+    pub const fn context(self) -> ConsensusContextV0 {
+        self.context
+    }
+
+    /// Returns the last verified height, or `None` at virtual genesis.
+    pub const fn verified_height(self) -> Option<ConsensusHeight> {
+        self.verified_height
+    }
+
+    /// Returns the exact consensus ancestry identity.
+    pub const fn ancestry_id(self) -> ConsensusAncestryId {
+        self.ancestry_id
+    }
+
+    /// Returns the artifact block at this branch's exact head.
+    pub const fn artifact_head_block_id(self) -> ArtifactBlockId {
+        self.artifact_head_block_id
+    }
+
+    /// Returns the authenticated artifact-set root at this branch's exact head.
+    pub const fn artifact_set_root(self) -> ArtifactSetRoot {
+        self.artifact_set_root
+    }
+
+    /// Returns the immutable fixed validator-set identity.
+    pub const fn fixed_agreement_set_id(self) -> FixedAgreementSetId {
+        self.fixed_agreement_set_id
+    }
+
+    /// Returns the proposer-priority base identity for the next height.
+    pub const fn proposer_priority_state_id(self) -> ProposerPriorityStateId {
+        self.proposer_priority_state_id
+    }
 }
 
 impl FixedConsensusBranchV0 {
@@ -95,6 +152,19 @@ impl FixedConsensusBranchV0 {
     /// Returns the next height's exact proposer-priority base identity.
     pub const fn proposer_priority_state_id(&self) -> ProposerPriorityStateId {
         self.proposer_base.id()
+    }
+
+    /// Returns this branch's complete semantic parent coordinate.
+    pub fn coordinate(&self) -> FixedConsensusBranchCoordinateV0 {
+        FixedConsensusBranchCoordinateV0 {
+            context: self.context,
+            verified_height: self.verified_height,
+            ancestry_id: self.ancestry_id,
+            artifact_head_block_id: self.artifact_snapshot.head_block_id(),
+            artifact_set_root: self.artifact_snapshot.artifact_set_root(),
+            fixed_agreement_set_id: self.proposer_base.fixed_set_id(),
+            proposer_priority_state_id: self.proposer_base.id(),
+        }
     }
 
     /// Returns the exact next positive child height.
@@ -258,6 +328,60 @@ pub struct VerifiedFixedConsensusTransitionV0<'round, 'branch> {
     envelope: VerifiedConsensusEnvelopeV0<'round>,
 }
 
+/// One owned, sealed transition produced by complete typed branch verification.
+///
+/// This transferable result retains the exact canonical envelope and artifact
+/// payload together with its semantic parent coordinate and immutable child.
+/// Its fields are private and it has no raw constructor, so downstream storage
+/// can require this proof object without accepting caller-assembled authority.
+#[must_use]
+pub struct OwnedVerifiedFixedConsensusTransitionV0 {
+    parent_coordinate: FixedConsensusBranchCoordinateV0,
+    position: ConsensusPosition,
+    value: ConsensusValueV0,
+    envelope_id: ConsensusEnvelopeId,
+    canonical_envelope_bytes: Vec<u8>,
+    canonical_artifact_bytes: Vec<u8>,
+    child_branch: FixedConsensusBranchV0,
+}
+
+impl OwnedVerifiedFixedConsensusTransitionV0 {
+    /// Returns the exact semantic branch coordinate used during verification.
+    pub const fn parent_coordinate(&self) -> FixedConsensusBranchCoordinateV0 {
+        self.parent_coordinate
+    }
+
+    /// Returns the exact authenticated height and round of this transition.
+    pub const fn position(&self) -> ConsensusPosition {
+        self.position
+    }
+
+    /// Returns the verified evidence-free value.
+    pub const fn value(&self) -> ConsensusValueV0 {
+        self.value
+    }
+
+    /// Returns the evidence-variant identity of the complete envelope.
+    pub const fn envelope_id(&self) -> ConsensusEnvelopeId {
+        self.envelope_id
+    }
+
+    /// Returns the exact canonical envelope bytes that were verified.
+    pub fn canonical_envelope_bytes(&self) -> &[u8] {
+        &self.canonical_envelope_bytes
+    }
+
+    /// Returns the exact canonical artifact payload verified with the envelope.
+    pub fn canonical_artifact_bytes(&self) -> &[u8] {
+        &self.canonical_artifact_bytes
+    }
+
+    /// Consumes this proof and publishes its immutable child branch.
+    pub fn into_branch(self) -> FixedConsensusBranchV0 {
+        self.child_branch
+    }
+}
+
 impl VerifiedFixedConsensusTransitionV0<'_, '_> {
     /// Smallest canonical envelope width, containing one precommit signer.
     pub const MIN_BYTE_LENGTH: usize = VerifiedConsensusEnvelopeV0::MIN_BYTE_LENGTH;
@@ -295,21 +419,46 @@ impl VerifiedFixedConsensusTransitionV0<'_, '_> {
         self.envelope.to_canonical_bytes()
     }
 
+    /// Consumes this borrowed proof into a transferable sealed transition.
+    ///
+    /// The owned result preserves the exact parent coordinate and both byte
+    /// inputs admitted by the same verification operation. It remains only a
+    /// branch-relative proof and does not itself install durable finality.
+    pub fn into_owned(self) -> OwnedVerifiedFixedConsensusTransitionV0 {
+        let parent_coordinate = self.round.branch.coordinate();
+        let position = self.round.position;
+        let (
+            value,
+            envelope_id,
+            canonical_envelope_bytes,
+            canonical_artifact_bytes,
+            artifact_snapshot,
+        ) = self.envelope.into_owned_components();
+        let child_branch = FixedConsensusBranchV0 {
+            context: self.round.branch.context,
+            verified_height: Some(value.height()),
+            ancestry_id: value.ancestry_id(),
+            artifact_snapshot,
+            proposer_base: self.round.height_successor_base.clone(),
+        };
+        OwnedVerifiedFixedConsensusTransitionV0 {
+            parent_coordinate,
+            position,
+            value,
+            envelope_id,
+            canonical_envelope_bytes,
+            canonical_artifact_bytes,
+            child_branch,
+        }
+    }
+
     /// Consumes this verified transition and publishes its immutable child branch.
     ///
     /// The next height carries the proposer base derived by exactly the round-
     /// zero step, regardless of the later round whose evidence authenticated the
     /// unchanged value.
     pub fn into_branch(self) -> FixedConsensusBranchV0 {
-        let value = self.envelope.value();
-        let artifact_snapshot = self.envelope.into_artifact_successor();
-        FixedConsensusBranchV0 {
-            context: self.round.branch.context,
-            verified_height: Some(value.height()),
-            ancestry_id: value.ancestry_id(),
-            artifact_snapshot,
-            proposer_base: self.round.height_successor_base.clone(),
-        }
+        self.into_owned().into_branch()
     }
 }
 

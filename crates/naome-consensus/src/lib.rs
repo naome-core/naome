@@ -41,7 +41,8 @@ pub use consensus_value::{
     ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0,
 };
 pub use fixed_consensus_branch::{
-    FixedConsensusBranchV0, FixedConsensusGenesisError, FixedConsensusRoundV0,
+    FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusGenesisError,
+    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0,
     VerifiedFixedConsensusTransitionV0,
 };
 pub use producer_authorization::{
