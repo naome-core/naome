@@ -1793,10 +1793,12 @@ name = "naome-network"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "ed25519-dalek",
  "getrandom 0.3.4",
  "libp2p",
  "naome",
  "naome-chain",
+ "naome-consensus",
  "naome-foundation",
  "naome-ledger",
  "naome-proof",

@@ -8,6 +8,18 @@ requires an explicit caller-selected peer set, chain context, or target block.
 None groups matching observations into a quorum, ranks branches, chooses a
 target, performs discovery, or establishes consensus or finality.
 
+The durable candidate ancestry-fill and candidate-branch payload-fill
+workflows accept the sealed read-only `SelectedArtifactHistory` capability. The
+storage crate supplies it only for `ArtifactChainJournal` and
+`FixedValidatorFinalityJournalV0`; peer or candidate state cannot implement it.
+Its immutable `ArtifactChainId` permits mismatch rejection before an operable
+selected-state read, while head, root, and exact-position snapshot access remain
+subject to the source's health rules. For a finality journal, every such
+position is one local fixed-validator V0 finalized artifact snapshot. A reopened
+source is operable only after exact replay equals the caller's separately
+trusted journal-state ID; neither a live created handle nor a verified reopen is
+a global-finality or peer-truth statement.
+
 Workflows advance only when the caller routes an exact correlated
 `NetworkEvent`. `accepts_event` is the non-consuming routing predicate.
 The caller retains an event when that predicate is false and must not pass it
@@ -148,16 +160,19 @@ Any failure releases retained blocks and changes no journal state.
 
 `StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill` accepts
 one exact target, one caller-routed chain-scoped
-`ArtifactBlockCandidateStore`, the selected journal, and one caller-supplied
-peer identity used only if an exact candidate address is missing. The returned
+`ArtifactBlockCandidateStore`, one selected-artifact history source, and one
+caller-supplied peer identity used only if an exact candidate address is
+missing. The returned
 `ArtifactBlockCandidateAncestryFill` exclusively borrows that exact store for
 its lifetime, so one fill cannot silently assemble a completion claim across
 substituted same-chain stores.
 
-Start compares the store and journal `ArtifactChainId` values before any health
-or disk read. It then reads the selected head, rejects a target already equal to
-the head, virtual genesis, or another committed block, and snapshots the
-selected artifact-set root. Beginning at the target, it integrity-reads each
+Start compares the store and source's immutable `ArtifactChainId` values before
+an operable selected-state health check or candidate-store disk read. It then
+reads the selected head, rejects a target already equal to the head, virtual
+genesis, or another selected block, and snapshots the selected artifact-set
+root. A poisoned or terminally halted finality history therefore fails before
+candidate reads or peer inspection. Beginning at the target, the workflow integrity-reads each
 already retained exact candidate and applies the shared ancestry checks in
 order: child/root continuity; anchor/root completion; repeated parent;
 divergent virtual-genesis or other selected history, including a typed
@@ -192,17 +207,18 @@ readable and shape-valid, resume at the first missing address, possibly with
 another caller-selected configured peer. This is durable partial progress, not
 automatic retry or scheduling. Candidate read failures and ambiguous insert
 failures retain the store's typed poison-and-reopen boundary. The fill never
-requests an artifact payload, mutates the journal, imports or promotes a
-candidate, records peer provenance, chooses a target, peer, chain, store,
-journal, or branch, relays or gossips, or establishes artifact validity,
-payload availability, rollback, reorganization, consensus, or finality.
+requests an artifact payload, mutates the selected-history owner, imports or
+promotes a candidate, records peer provenance, chooses a target, peer, chain,
+store, history source, or branch, relays or gossips, or establishes artifact
+validity, payload availability, rollback, reorganization, consensus, or
+finality.
 
 ### Caller-ordered fallback fill
 
 `StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill_with_peer_fallback`
 is a separate opt-in mode. It accepts the same exact target, candidate store,
-and selected journal plus one caller-ordered peer-identity slice. The direct
-single-peer start above keeps its no-retry behavior unchanged.
+and selected-artifact history source plus one caller-ordered peer-identity
+slice. The direct single-peer start above keeps its no-retry behavior unchanged.
 
 Retained candidates are read and shape-checked before the fallback slice is
 inspected. A fully retained path therefore completes without validating or
@@ -231,29 +247,31 @@ must durably acknowledge the block before the full caller-ordered attempt set
 is reset for a missing parent. Head, shape, candidate-read, and candidate-insert
 errors are terminal. An error after an acknowledged insertion preserves that
 insertion exactly as in the direct fill. The fallback records no peer
-provenance, requests no artifact payload, mutates no journal, promotes no
-candidate, and establishes no peer trust, reachability, target or branch
-selection, background retry schedule, network-wide availability, consensus,
-finality, or economic authority.
+provenance, requests no artifact payload, mutates no selected-history owner,
+promotes no candidate, and establishes no peer trust, reachability, target or
+branch selection, background retry schedule, network-wide availability,
+consensus, finality, or economic authority.
 
 ### Explicit historical selected-anchor fill
 
 `StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill_from_selected_anchor`
 is a separate direct-peer mode for recovering a candidate path to one exact
-caller-selected historical position in the selected journal. The caller
+caller-selected historical position in selected-artifact history. The caller
 supplies the exact candidate target, exact selected anchor, matching
-chain-scoped candidate store and selected journal, and one peer identity used
-only when an exact candidate address is absent. The anchor may be the journal's
-virtual genesis or any retained selected block; it need not be the current
-selected head.
+chain-scoped candidate store and history source, and one peer identity used only
+when an exact candidate address is absent. The anchor may be virtual genesis or
+any retained selected block; it need not be the current selected head. With a
+joint journal it is a caller-chosen local finalized artifact position, not a
+consensus fork-choice or global-finality decision.
 
-Start compares candidate-store and journal chain IDs before health or disk
-reads, then obtains the anchor's immutable replay-built snapshot through
-`ArtifactChainJournal::branch_snapshot_at`. An unknown, candidate-only,
-other-chain, or otherwise unretained anchor is terminal. The snapshot supplies
-the exact anchor `ArtifactSetRoot`; the mode never substitutes the current head
-or another selected position. A later selected-head advance does not invalidate
-or retarget this historical anchor.
+Start compares candidate-store and immutable history-source chain IDs before
+operable history health or candidate-store disk reads, then obtains the anchor's
+immutable replay-built snapshot through
+`SelectedArtifactHistory::selected_branch_snapshot_at`. An unknown,
+candidate-only, other-chain, or otherwise unretained anchor is terminal. The
+snapshot supplies the exact anchor `ArtifactSetRoot`; the mode never substitutes
+the current head or another selected position. A later selected-head advance
+does not invalidate or retarget this historical anchor.
 
 Beginning at the target, the mode applies the ordinary candidate ancestry
 integrity and shape checks while walking backward toward that exact anchor. It
@@ -285,19 +303,20 @@ block-peer slice is inspected only at the first store miss. It is independent
 of any payload-peer identity or order the caller may later supply.
 
 After block completion, the caller may explicitly start the existing
-candidate-branch payload fill against the target, stores, journal, and a
-separately chosen direct payload peer or caller-ordered payload-peer slice. That
-second start repeats its own complete selected-context, retained-path, archive,
-and strict artifact-validation checks. There is no combined coordinator,
-automatic phase transition, shared peer provenance, or atomic claim spanning
-the two workflows. In particular, block-fill completion cannot be reused as a
-payload-validation token and does not freeze the selected context for a later
-payload start.
+candidate-branch payload fill against the target, stores, selected-artifact
+history source, and a separately chosen direct payload peer or caller-ordered
+payload-peer slice. That second start repeats its own complete selected-context,
+retained-path, archive, and strict artifact-validation checks. There is no
+combined coordinator, automatic phase transition, shared peer provenance, or
+atomic claim spanning the two workflows. In particular, block-fill completion
+cannot be reused as a payload-validation token and does not freeze the selected
+context for a later payload start.
 
-Both explicit-anchor modes leave the selected journal read-only and never
+Both explicit-anchor modes leave the selected-history owner read-only and never
 request an artifact payload, import, promote, select, rank, persist an executed
 branch, reorganize, roll back, define retention or trust policy, or establish
-consensus, finality, or economic authority.
+consensus, global finality, or economic authority. A finality journal advances
+only through its separate `commit_verified` boundary.
 
 ### Explicit canonical-payload-archive serving
 
@@ -383,19 +402,22 @@ economic authority.
 `StaticArtifactNetwork::start_artifact_block_candidate_branch_payload_fill`
 extends the direct archive workflow to one fully retained candidate ancestry.
 The caller supplies one exact target, one caller-routed chain-scoped
-`ArtifactBlockCandidateStore`, one matching selected journal, one
-Foundation-scoped `CanonicalArtifactPayloadStore`, one peer identity used only
-at an archive miss, and positive caller-local
+`ArtifactBlockCandidateStore`, one matching selected-artifact history source,
+one Foundation-scoped `CanonicalArtifactPayloadStore`, one peer identity used
+only at an archive miss, and positive caller-local
 `CandidateBranchReconstructionLimits`. The workflow chooses none of them. The
 limit bounds this one reconstruction attempt only; it does not create a
 protocol branch-depth, retention, or verification-work rule.
 
 Start first delegates to the storage reconstruction cursor. Candidate-store and
-journal chain context are compared before health or disk reads, and the complete
-retained block path is integrity-read and structurally checked back to its
-nearest selected ancestor before any payload request or archive write. A
-missing block is terminal and is never requested by this workflow. The caller
-may first run the separate candidate-ancestry fill and then explicitly restart.
+immutable selected-history chain context are compared before operable history
+health or store disk reads, and the complete retained block path is
+integrity-read and structurally checked back to its nearest selected ancestor
+before any payload request or archive write. A poisoned or terminally halted
+finality history and an exceeded reconstruction limit therefore fail before
+payload-peer inspection or archive mutation. A missing block is terminal and is
+never requested by this workflow. The caller may first run the separate
+candidate-ancestry fill and then explicitly restart.
 
 The reconstruction cursor advances forward from its owned immutable snapshot.
 Every exact archive hit is integrity-read and fully revalidated read-only
@@ -428,19 +450,22 @@ failure or request-start error. A fresh explicit start integrity-reads and
 revalidates those hits and can resume at the next archive miss if the target is
 still reconstructable in the new selected context. An ambiguous archive write
 retains the archive's poison-and-reopen boundary. The workflow never requests
-an absent block, mutates the candidate store or journal, persists a branch
-snapshot, imports, promotes, selects, ranks, reorganizes, or rolls back a
-branch, records peer provenance, chooses a target or peer, starts background
-work, or establishes global availability, peer trust, consensus ancestry,
-consensus, finality, economics, or protocol-wide resource authority.
+an absent block, mutates the candidate store or selected-history owner,
+persists a branch snapshot, imports, promotes, selects, ranks, reorganizes, or
+rolls back a branch, records peer provenance, chooses a target or peer, starts
+background work, or establishes global availability, peer trust, consensus
+ancestry, consensus, global finality, economics, or protocol-wide resource
+authority. A finality journal remains read-only and advances only through its
+separate `commit_verified` boundary; acknowledged payload-archive writes are
+not one cross-store transaction with that journal or the candidate store.
 
 ### Caller-ordered candidate-branch payload fallback
 
 `StaticArtifactNetwork::start_artifact_block_candidate_branch_payload_fill_with_peer_fallback`
 is a separate opt-in mode. It accepts the same exact target, caller-routed
-stores and journal, and positive local reconstruction limit as the direct mode,
-plus one caller-ordered payload-peer slice. The direct single-peer API and its
-no-fallback behavior remain unchanged.
+stores and selected-artifact history source, and positive local reconstruction
+limit as the direct mode, plus one caller-ordered payload-peer slice. The direct
+single-peer API and its no-fallback behavior remain unchanged.
 
 The complete candidate-block path is integrity-read and structurally checked
 before payload traffic exactly as in the direct mode. The reconstruction cursor
@@ -477,10 +502,11 @@ Every acknowledged archive entry survives a later ordinary failure. A fresh
 explicit caller start revalidates that durable prefix and can resume at the next
 miss. The fallback records no peer provenance and defines no automatic retry,
 resume, scheduling, or background task. It does not fetch an absent candidate
-block, mutate the candidate store or journal, persist, import, promote, select,
-rank, reorganize, or roll back a branch, choose the target or peer order, or
-establish peer trust, reachability, global availability, consensus ancestry,
-consensus, finality, economics, or protocol-wide resource authority.
+block, mutate the candidate store or selected-history owner, persist, import,
+promote, select, rank, reorganize, or roll back a branch, choose the target or
+peer order, or establish peer trust, reachability, global availability,
+consensus ancestry, consensus, finality, economics, or protocol-wide resource
+authority.
 
 ## Sequential ancestry import
 

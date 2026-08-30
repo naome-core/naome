@@ -27,6 +27,8 @@ sha2.workspace = true
 tokio = { version = "1", default-features = false, features = ["macros", "time"] }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
+naome-consensus = { path = "../naome-consensus" }
 naome-foundation = { path = "../naome-foundation" }
 naome-ledger = { path = "../naome-ledger" }
 tokio = { version = "1", default-features = false, features = [

@@ -658,7 +658,6 @@ impl ArtifactChainJournal {
             .expect("a healthy current selected head retains its exact snapshot");
 
         let path = collect_candidate_branch_path(
-            self,
             target_block_id,
             candidates,
             limits.max_blocks,
@@ -666,6 +665,7 @@ impl ArtifactChainJournal {
                 block_id: anchor_block_id,
                 snapshot: anchor_snapshot,
             },
+            |block_id| self.branch_snapshot_at(block_id),
         )
         .map_err(CandidateBranchRecoveryBundleExportError::from_path)?;
         debug_assert_eq!(path.anchor_block_id, anchor_block_id);
@@ -715,11 +715,11 @@ impl ArtifactChainJournal {
     ) -> Result<CandidateBranchRecoveryBundleV0, CandidateBranchRecoveryBundleExportError> {
         let selected_chain_id = self.recovery_bundle_chain_id(candidates)?;
         let path = collect_candidate_branch_path(
-            self,
             target_block_id,
             candidates,
             limits.max_blocks,
             CandidateBranchPathAnchor::NearestSelected,
+            |block_id| self.branch_snapshot_at(block_id),
         )
         .map_err(CandidateBranchRecoveryBundleExportError::from_path)?;
         let candidate_block_count = path.blocks.len();
@@ -1131,7 +1131,7 @@ impl CandidateBranchRecoveryBundleExportError {
         }
     }
 
-    fn from_path(error: CandidateBranchPathError) -> Self {
+    fn from_path(error: CandidateBranchPathError<ArtifactChainJournalError>) -> Self {
         match error {
             CandidateBranchPathError::SelectedState { source } => Self::SelectedState { source },
             CandidateBranchPathError::TargetAlreadySelected { block_id } => {

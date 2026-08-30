@@ -5,7 +5,9 @@ use std::time::Duration;
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
 use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
-use naome_chain::{ArtifactBlock, ArtifactChainState, ArtifactDag, ArtifactSetRoot};
+use naome_chain::{
+    ArtifactBlock, ArtifactChainDefinition, ArtifactChainState, ArtifactDag, ArtifactSetRoot,
+};
 use naome_foundation::FreeVariable;
 use naome_proof::{ArtifactPayload, ProofCertificate, ProofStep};
 use naome_storage::{
@@ -18,8 +20,9 @@ use tokio::time::timeout;
 
 use super::*;
 use crate::tests::{
-    TestDirectory, address, apply_fresh_blocks, assert_snapshot, create_journal, listening_address,
-    pairing_bytes, snapshot, test_chain_definition, test_network_for_peers, union_bytes,
+    FinalityFixture, TestDirectory, address, apply_fresh_blocks, assert_finality_snapshot,
+    assert_snapshot, create_journal, finality_snapshot, listening_address, pairing_bytes, snapshot,
+    test_chain_definition, test_network_for_peers, union_bytes,
 };
 use crate::{
     ExchangeRequestId, Keypair, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent,
@@ -368,6 +371,213 @@ async fn complete_fallback_branch_fill<'store>(
     .await
     .expect("candidate branch payload fallback timed out");
     (reconstructed, attempts)
+}
+
+#[test]
+fn finality_history_drives_direct_branch_payload_recovery_read_only() {
+    let directory = TestDirectory::new("candidate-branch-payload-finality-direct");
+    let fixture = FinalityFixture::new();
+    let selected = fixture.create(&directory);
+    let before = finality_snapshot(&directory, &selected);
+    let branch = dependency_branch();
+    let target = branch.blocks[1].id();
+    let mut candidates = candidate_store(&directory);
+    insert_candidates(&mut candidates, &branch.blocks);
+    let candidate_bytes = candidate_store_bytes(&directory);
+    let mut payloads = payload_store(&directory);
+    let peer_id = peer_ids(1)[0];
+    let mut network = test_network_for_peers(&[peer_id]);
+
+    let fill = awaiting(
+        network
+            .start_artifact_block_candidate_branch_payload_fill(
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                peer_id,
+                target,
+                reconstruction_limits(2),
+            )
+            .unwrap(),
+    );
+    assert_eq!(fill.pending_block_id(), branch.blocks[0].id());
+    let event = artifact_response_event(&mut network, peer_id, branch.payloads[0].clone());
+    let fill = awaiting(fill.on_event(&mut network, event).unwrap());
+    assert_eq!(fill.pending_block_id(), branch.blocks[1].id());
+    let event = artifact_response_event(&mut network, peer_id, branch.payloads[1].clone());
+    let reconstructed = complete(fill.on_event(&mut network, event).unwrap());
+
+    assert_eq!(reconstructed.target_block_id(), target);
+    assert_eq!(reconstructed.snapshot().artifact_set_root(), branch.root);
+    assert_eq!(candidate_store_bytes(&directory), candidate_bytes);
+    assert_finality_snapshot(&directory, &selected, &before);
+}
+
+#[test]
+fn finality_history_preserves_caller_order_and_captured_snapshot_after_head_drift() {
+    let fallback_directory = TestDirectory::new("candidate-branch-payload-finality-fallback");
+    let fallback_fixture = FinalityFixture::new();
+    let fallback_selected = fallback_fixture.create(&fallback_directory);
+    let fallback_before = finality_snapshot(&fallback_directory, &fallback_selected);
+    let fallback_branch = dependency_branch();
+    let fallback_target = fallback_branch.blocks[0].id();
+    let mut fallback_candidates = candidate_store(&fallback_directory);
+    insert_candidates(&mut fallback_candidates, &fallback_branch.blocks[..1]);
+    let mut fallback_payloads = payload_store(&fallback_directory);
+    let fallback_peers = peer_ids(2);
+    let mut fallback_network = test_network_for_peers(&fallback_peers);
+    let fill = awaiting(
+        fallback_network
+            .start_artifact_block_candidate_branch_payload_fill_with_peer_fallback(
+                &fallback_selected,
+                &mut fallback_candidates,
+                &mut fallback_payloads,
+                &fallback_peers,
+                fallback_target,
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    assert_eq!(fill.pending_peer_id(), fallback_peers[0]);
+    let unavailable = artifact_response_event(&mut fallback_network, fallback_peers[0], Vec::new());
+    let fill = awaiting(fill.on_event(&mut fallback_network, unavailable).unwrap());
+    assert_eq!(fill.pending_peer_id(), fallback_peers[1]);
+    let event = artifact_response_event(
+        &mut fallback_network,
+        fallback_peers[1],
+        fallback_branch.payloads[0].clone(),
+    );
+    let reconstructed = complete(fill.on_event(&mut fallback_network, event).unwrap());
+    assert_eq!(reconstructed.target_block_id(), fallback_target);
+    assert_finality_snapshot(&fallback_directory, &fallback_selected, &fallback_before);
+
+    let drift_directory = TestDirectory::new("candidate-branch-payload-finality-drift");
+    let mut drift_fixture = FinalityFixture::new();
+    let mut drifted = drift_fixture.create(&drift_directory);
+    let drift_branch = dependency_branch();
+    let drift_target = drift_branch.blocks[0].id();
+    let mut drift_candidates = candidate_store(&drift_directory);
+    insert_candidates(&mut drift_candidates, &drift_branch.blocks[..1]);
+    let mut drift_payloads = payload_store(&drift_directory);
+    let drift_peer = peer_ids(1)[0];
+    let mut drift_network = test_network_for_peers(&[drift_peer]);
+    let fill = awaiting(
+        drift_network
+            .start_artifact_block_candidate_branch_payload_fill(
+                &drifted,
+                &mut drift_candidates,
+                &mut drift_payloads,
+                drift_peer,
+                drift_target,
+                reconstruction_limits(1),
+            )
+            .unwrap(),
+    );
+    let _ = drift_fixture.commit_payload(&mut drifted, union_bytes());
+    let after_drift = finality_snapshot(&drift_directory, &drifted);
+    assert_ne!(drifted.artifact_head_block_id().unwrap(), drift_target);
+    let event = artifact_response_event(
+        &mut drift_network,
+        drift_peer,
+        drift_branch.payloads[0].clone(),
+    );
+    let reconstructed = complete(fill.on_event(&mut drift_network, event).unwrap());
+    assert_eq!(reconstructed.target_block_id(), drift_target);
+    assert_finality_snapshot(&drift_directory, &drifted, &after_drift);
+}
+
+#[test]
+fn finality_halt_and_reconstruction_limit_precede_payload_request_and_write() {
+    let halted_directory = TestDirectory::new("candidate-branch-payload-finality-halt");
+    let mut halted_fixture = FinalityFixture::new();
+    let mut halted = halted_fixture.create(&halted_directory);
+    halted_fixture.halt_with_conflict(&mut halted, pairing_bytes(), union_bytes());
+    let halted_bytes = halted_directory.journal_bytes();
+    let halted_state_id = halted.state_id().unwrap();
+    let halted_summary = halted.halt().unwrap();
+    let branch = dependency_branch();
+    let mut candidates = candidate_store(&halted_directory);
+    insert_candidates(&mut candidates, &branch.blocks[..1]);
+    let mut payloads = payload_store(&halted_directory);
+    let payload_bytes = payload_store_bytes(&halted_directory);
+    let unknown_peer = peer_ids(1)[0];
+    let mut network = test_network_for_peers(&[]);
+    let foreign_directory = TestDirectory::new("candidate-branch-payload-finality-halt-foreign");
+    let foreign_definition = ArtifactChainDefinition::new([0x98; 32]);
+    let foreign_chain_id = foreign_definition.id();
+    let mut foreign_candidates = ArtifactBlockCandidateStore::create(
+        foreign_directory.path(),
+        foreign_definition,
+        ArtifactBlockCandidateStoreLimits::new(1).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        network.start_artifact_block_candidate_branch_payload_fill(
+            &halted,
+            &mut foreign_candidates,
+            &mut payloads,
+            unknown_peer,
+            branch.blocks[0].id(),
+            reconstruction_limits(1),
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::Reconstruction { source })
+            if matches!(
+                source.as_ref(),
+                CandidateBranchReconstructionError::ChainIdMismatch {
+                    selected,
+                    candidates,
+                } if *selected == test_chain_definition().id() && *candidates == foreign_chain_id
+            )
+    ));
+    assert!(matches!(
+        network.start_artifact_block_candidate_branch_payload_fill(
+            &halted,
+            &mut candidates,
+            &mut payloads,
+            unknown_peer,
+            branch.blocks[0].id(),
+            reconstruction_limits(1),
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::Reconstruction { source })
+            if matches!(
+                source.as_ref(),
+                CandidateBranchReconstructionError::SelectedHistoryState { .. }
+            )
+    ));
+    assert_eq!(network.pending.len(), 0);
+    assert_eq!(payload_store_bytes(&halted_directory), payload_bytes);
+    assert_eq!(halted_directory.journal_bytes(), halted_bytes);
+    assert_eq!(halted.state_id().unwrap(), halted_state_id);
+    assert_eq!(halted.halt().unwrap(), halted_summary);
+
+    let limit_directory = TestDirectory::new("candidate-branch-payload-finality-limit");
+    let limit_fixture = FinalityFixture::new();
+    let limit_selected = limit_fixture.create(&limit_directory);
+    let limit_before = finality_snapshot(&limit_directory, &limit_selected);
+    let limit_branch = dependency_branch();
+    let mut limit_candidates = candidate_store(&limit_directory);
+    insert_candidates(&mut limit_candidates, &limit_branch.blocks);
+    let mut limit_payloads = payload_store(&limit_directory);
+    let limit_payload_bytes = payload_store_bytes(&limit_directory);
+    let mut limit_network = test_network_for_peers(&[]);
+    assert!(matches!(
+        limit_network.start_artifact_block_candidate_branch_payload_fill(
+            &limit_selected,
+            &mut limit_candidates,
+            &mut limit_payloads,
+            unknown_peer,
+            limit_branch.blocks[1].id(),
+            reconstruction_limits(1),
+        ),
+        Err(ArtifactBlockCandidateBranchPayloadFillError::Reconstruction { source })
+            if matches!(
+                source.as_ref(),
+                CandidateBranchReconstructionError::BlockLimitExceeded { maximum: 1, .. }
+            )
+    ));
+    assert_eq!(limit_network.pending.len(), 0);
+    assert_eq!(payload_store_bytes(&limit_directory), limit_payload_bytes);
+    assert_finality_snapshot(&limit_directory, &limit_selected, &limit_before);
 }
 
 #[test]

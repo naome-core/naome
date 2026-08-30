@@ -6,10 +6,10 @@ use std::fmt;
 use naome_chain::ArtifactBlockId;
 use naome_proof::ArtifactId;
 use naome_storage::{
-    ArtifactBlockCandidateStore, ArtifactChainJournal, CandidateBranchReconstructionCursor,
+    ArtifactBlockCandidateStore, CandidateBranchReconstructionCursor,
     CandidateBranchReconstructionError, CandidateBranchReconstructionLimits,
     CandidateBranchReconstructionProgress, CanonicalArtifactPayloadStore,
-    ReconstructedCandidateBranch,
+    ReconstructedCandidateBranch, SelectedArtifactHistory, start_candidate_branch_reconstruction,
 };
 
 use super::block_import::{ArtifactPayloadRequest, ArtifactPayloadRequestStarter};
@@ -85,7 +85,7 @@ impl StaticArtifactNetwork {
     /// peer-trust authority.
     pub fn start_artifact_block_candidate_branch_payload_fill<'store>(
         &mut self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         candidates: &mut ArtifactBlockCandidateStore,
         payloads: &'store mut CanonicalArtifactPayloadStore,
         payload_peer_id: PeerId,
@@ -95,9 +95,14 @@ impl StaticArtifactNetwork {
         ArtifactBlockCandidateBranchPayloadFillProgress<'store>,
         ArtifactBlockCandidateBranchPayloadFillError,
     > {
-        let reconstruction = selected
-            .start_candidate_branch_reconstruction(target_block_id, candidates, payloads, limits)
-            .map_err(ArtifactBlockCandidateBranchPayloadFillError::reconstruction)?;
+        let reconstruction = start_candidate_branch_reconstruction(
+            selected,
+            target_block_id,
+            candidates,
+            payloads,
+            limits,
+        )
+        .map_err(ArtifactBlockCandidateBranchPayloadFillError::reconstruction)?;
         ArtifactBlockCandidateBranchPayloadFill::advance(
             self,
             ArtifactBlockCandidateBranchPayloadFillPeers::Direct(payload_peer_id),
@@ -121,7 +126,7 @@ impl StaticArtifactNetwork {
     /// peer-trust, consensus, finality, or economic authority.
     pub fn start_artifact_block_candidate_branch_payload_fill_with_peer_fallback<'store>(
         &mut self,
-        selected: &ArtifactChainJournal,
+        selected: &dyn SelectedArtifactHistory,
         candidates: &mut ArtifactBlockCandidateStore,
         payloads: &'store mut CanonicalArtifactPayloadStore,
         payload_peer_ids: &[PeerId],
@@ -131,9 +136,14 @@ impl StaticArtifactNetwork {
         ArtifactBlockCandidateBranchPayloadFillProgress<'store>,
         ArtifactBlockCandidateBranchPayloadFillError,
     > {
-        let reconstruction = selected
-            .start_candidate_branch_reconstruction(target_block_id, candidates, payloads, limits)
-            .map_err(ArtifactBlockCandidateBranchPayloadFillError::reconstruction)?;
+        let reconstruction = start_candidate_branch_reconstruction(
+            selected,
+            target_block_id,
+            candidates,
+            payloads,
+            limits,
+        )
+        .map_err(ArtifactBlockCandidateBranchPayloadFillError::reconstruction)?;
         ArtifactBlockCandidateBranchPayloadFill::advance_with_unvalidated_fallback(
             self,
             payload_peer_ids,

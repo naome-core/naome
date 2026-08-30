@@ -7,13 +7,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
+use ed25519_dalek::{Signer, SigningKey};
 use libp2p::core::{Endpoint, transport::PortUse};
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, ToSwarm};
 use naome::artifact_exchange::ArtifactRequest;
-use naome_chain::{ArtifactBlockId, ArtifactChainDefinition, ArtifactDag, ArtifactSetRoot};
+use naome_chain::{
+    ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactDag, ArtifactSetRoot,
+};
+use naome_consensus::{
+    ActiveAgreementEntry, AgreementWeight, ConsensusContextV0, ConsensusGenesisId, ConsensusKey,
+    ConsensusPosition, ConsensusProtocolVersion, ConsensusValueV0,
+    OwnedVerifiedFixedConsensusTransitionV0, ProposalSigningRoot, VerifiedProducerAuthorizationV0,
+};
 use naome_foundation::FreeVariable;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
-use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
+use naome_storage::{
+    ArtifactChainJournal, ArtifactChainJournalError, FixedValidatorFinalityCommitOutcomeV0,
+    FixedValidatorFinalityJournalStateIdV0, FixedValidatorFinalityJournalV0,
+    FixedValidatorFinalityReplayLimitV0,
+};
 use tokio::time::{Instant, timeout};
 
 use super::{
@@ -23,6 +35,8 @@ use super::{
 };
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
+const CONSENSUS_AUTHORIZATION_BODY_BYTES: usize = 116;
+const CONSENSUS_VOTE_BODY_BYTES: usize = 118;
 
 pub(crate) struct TestDirectory {
     path: PathBuf,
@@ -32,6 +46,23 @@ pub(crate) struct JournalSnapshot {
     pub(crate) head: ArtifactBlockId,
     pub(crate) root: ArtifactSetRoot,
     pub(crate) len: usize,
+}
+
+pub(crate) struct FinalityJournalSnapshot {
+    bytes: Vec<u8>,
+    state_id: FixedValidatorFinalityJournalStateIdV0,
+    head: ArtifactBlockId,
+    root: ArtifactSetRoot,
+    finalized_len: usize,
+}
+
+pub(crate) struct FinalityFixture {
+    definition: ArtifactChainDefinition,
+    context: ConsensusContextV0,
+    proposer: SigningKey,
+    entries: [ActiveAgreementEntry; 1],
+    replay_limit: FixedValidatorFinalityReplayLimitV0,
+    selected: ArtifactChainState,
 }
 
 pub(crate) fn snapshot(
@@ -55,6 +86,129 @@ pub(crate) fn assert_snapshot(
     assert_eq!(journal.head_block_id().unwrap(), expected.head);
     assert_eq!(journal.artifact_set_root().unwrap(), expected.root);
     assert_eq!(journal.len().unwrap(), expected.len);
+}
+
+pub(crate) fn finality_snapshot(
+    directory: &TestDirectory,
+    journal: &FixedValidatorFinalityJournalV0,
+) -> FinalityJournalSnapshot {
+    FinalityJournalSnapshot {
+        bytes: directory.journal_bytes(),
+        state_id: journal.state_id().unwrap(),
+        head: journal.artifact_head_block_id().unwrap(),
+        root: journal.artifact_set_root().unwrap(),
+        finalized_len: journal.finalized_len().unwrap(),
+    }
+}
+
+pub(crate) fn assert_finality_snapshot(
+    directory: &TestDirectory,
+    journal: &FixedValidatorFinalityJournalV0,
+    expected: &FinalityJournalSnapshot,
+) {
+    assert_eq!(directory.journal_bytes(), expected.bytes);
+    assert_eq!(journal.state_id().unwrap(), expected.state_id);
+    assert_eq!(journal.artifact_head_block_id().unwrap(), expected.head);
+    assert_eq!(journal.artifact_set_root().unwrap(), expected.root);
+    assert_eq!(journal.finalized_len().unwrap(), expected.finalized_len);
+}
+
+impl FinalityFixture {
+    pub(crate) fn new() -> Self {
+        let definition = test_chain_definition();
+        let context = ConsensusContextV0::new(
+            definition.id(),
+            ConsensusGenesisId::from_bytes([0x52; 32]),
+            ConsensusProtocolVersion::new(1),
+        );
+        let proposer = consensus_signing_key();
+        let entries = [ActiveAgreementEntry::new(
+            ConsensusKey::from_bytes(proposer.verifying_key().to_bytes()),
+            AgreementWeight::new(1),
+        )];
+        Self {
+            definition,
+            context,
+            proposer,
+            entries,
+            replay_limit: FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
+            selected: ArtifactChainState::new(definition),
+        }
+    }
+
+    pub(crate) fn create(&self, directory: &TestDirectory) -> FixedValidatorFinalityJournalV0 {
+        FixedValidatorFinalityJournalV0::create(
+            directory.path(),
+            self.definition,
+            self.context,
+            &self.entries,
+            self.replay_limit,
+        )
+        .unwrap()
+    }
+
+    pub(crate) fn commit_payload(
+        &mut self,
+        journal: &mut FixedValidatorFinalityJournalV0,
+        payload: Vec<u8>,
+    ) -> ArtifactBlockId {
+        let transition = self.transition(journal, payload, 0);
+        let block = transition.value().artifact_block();
+        let block_id = block.id();
+        let payload = transition.canonical_artifact_bytes().to_vec();
+        assert!(matches!(
+            journal.commit_verified(transition).unwrap(),
+            FixedValidatorFinalityCommitOutcomeV0::Finalized { .. }
+        ));
+        self.selected.apply_block(&block, payload).unwrap();
+        block_id
+    }
+
+    pub(crate) fn halt_with_conflict(
+        &mut self,
+        journal: &mut FixedValidatorFinalityJournalV0,
+        selected_payload: Vec<u8>,
+        conflicting_payload: Vec<u8>,
+    ) {
+        let selected = self.transition(journal, selected_payload, 0);
+        let conflicting = self.transition(journal, conflicting_payload, 1);
+        let selected_block = selected.value().artifact_block();
+        let selected_payload = selected.canonical_artifact_bytes().to_vec();
+        assert!(matches!(
+            journal.commit_verified(selected).unwrap(),
+            FixedValidatorFinalityCommitOutcomeV0::Finalized { .. }
+        ));
+        self.selected
+            .apply_block(&selected_block, selected_payload)
+            .unwrap();
+        assert!(matches!(
+            journal.commit_verified(conflicting).unwrap(),
+            FixedValidatorFinalityCommitOutcomeV0::Halted(_)
+        ));
+    }
+
+    fn transition(
+        &self,
+        journal: &FixedValidatorFinalityJournalV0,
+        payload: Vec<u8>,
+        round: u64,
+    ) -> OwnedVerifiedFixedConsensusTransitionV0 {
+        let artifact_id = ArtifactDag::new()
+            .apply_canonical_artifact_bytes(payload.clone())
+            .unwrap()
+            .artifact_id();
+        let block = self.selected.prepare_block(artifact_id).unwrap();
+        let mut cursor = journal.head().unwrap().begin_round_zero().unwrap();
+        for _ in 0..round {
+            cursor = cursor.advance_round().unwrap();
+        }
+        let value = cursor.value_for_artifact_block(block);
+        let bytes = consensus_envelope_bytes(value, cursor.position(), &self.proposer);
+        cursor
+            .decode_and_verify(&bytes, payload)
+            .unwrap()
+            .into_owned()
+    }
 }
 
 impl TestDirectory {
@@ -125,6 +279,80 @@ pub(crate) fn create_journal(
 
 pub(crate) fn test_chain_definition() -> ArtifactChainDefinition {
     ArtifactChainDefinition::new([0x41; 32])
+}
+
+fn consensus_signing_key() -> SigningKey {
+    let mut seed = [0_u8; 32];
+    seed[..2].copy_from_slice(&1_u16.to_be_bytes());
+    seed[2] = 0xa5;
+    SigningKey::from_bytes(&seed)
+}
+
+fn consensus_authorization_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    root: ProposalSigningRoot,
+    proposer: &SigningKey,
+) -> [u8; VerifiedProducerAuthorizationV0::BYTE_LENGTH] {
+    let mut body = [0_u8; CONSENSUS_AUTHORIZATION_BODY_BYTES];
+    body[..32].copy_from_slice(context.chain_id().as_bytes());
+    body[32..64].copy_from_slice(context.genesis_id().as_bytes());
+    body[64..68].copy_from_slice(&context.protocol_version().value().to_be_bytes());
+    body[68..76].copy_from_slice(&position.height().value().to_be_bytes());
+    body[76..84].copy_from_slice(&position.round().value().to_be_bytes());
+    body[84..].copy_from_slice(root.as_bytes());
+    let proposer_key = ConsensusKey::from_bytes(proposer.verifying_key().to_bytes());
+    let mut transcript = b"naome:consensus-producer-authorization:v0\0".to_vec();
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(proposer_key.as_bytes());
+    let mut bytes = [0_u8; VerifiedProducerAuthorizationV0::BYTE_LENGTH];
+    bytes[..CONSENSUS_AUTHORIZATION_BODY_BYTES].copy_from_slice(&body);
+    bytes[CONSENSUS_AUTHORIZATION_BODY_BYTES..CONSENSUS_AUTHORIZATION_BODY_BYTES + 32]
+        .copy_from_slice(proposer_key.as_bytes());
+    bytes[CONSENSUS_AUTHORIZATION_BODY_BYTES + 32..]
+        .copy_from_slice(&proposer.sign(&transcript).to_bytes());
+    bytes
+}
+
+fn consensus_certificate_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    root: ProposalSigningRoot,
+    signer: &SigningKey,
+) -> Vec<u8> {
+    let mut body = [0_u8; CONSENSUS_VOTE_BODY_BYTES];
+    body[0] = 2;
+    body[1..33].copy_from_slice(context.chain_id().as_bytes());
+    body[33..65].copy_from_slice(context.genesis_id().as_bytes());
+    body[65..69].copy_from_slice(&context.protocol_version().value().to_be_bytes());
+    body[69..77].copy_from_slice(&position.height().value().to_be_bytes());
+    body[77..85].copy_from_slice(&position.round().value().to_be_bytes());
+    body[85] = 1;
+    body[86..].copy_from_slice(root.as_bytes());
+    let key = ConsensusKey::from_bytes(signer.verifying_key().to_bytes());
+    let mut transcript = b"naome:consensus-precommit-signing:v0\0".to_vec();
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(key.as_bytes());
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(&1_u16.to_be_bytes());
+    bytes.extend_from_slice(key.as_bytes());
+    bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
+    bytes
+}
+
+fn consensus_envelope_bytes(
+    value: ConsensusValueV0,
+    position: ConsensusPosition,
+    proposer: &SigningKey,
+) -> Vec<u8> {
+    let root = value.proposal_signing_root();
+    let authorization = consensus_authorization_bytes(value.context(), position, root, proposer);
+    let certificate = consensus_certificate_bytes(value.context(), position, root, proposer);
+    let mut bytes = value.to_canonical_bytes().to_vec();
+    bytes.extend_from_slice(&authorization);
+    bytes.extend_from_slice(&certificate);
+    bytes
 }
 
 pub(crate) fn apply_fresh_blocks(
