@@ -10,17 +10,18 @@ use std::sync::Arc;
 
 use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
-    ConsensusContextV0, ConsensusKey, ConsensusPosition, ConsensusSignature, ConsensusVoteId,
-    ConsensusVoteRole, ConsensusVoteTarget, ConsensusVoteVerifyError, FixedAgreementSetId,
-    FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, FixedValidatorLockStateV0, FixedValidatorLockedValueV0,
-    FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0, FixedValidatorVoteIntentError,
-    FixedValidatorVoteIntentV0, ObservedFixedValidatorVoteIntentV0,
-    OwnedVerifiedFixedConsensusTransitionV0, VerifiedConsensusVoteV0,
-    VerifiedFixedConsensusProposalV0, VerifiedReplayFixedValidatorVoteIntentV0,
+    ConsensusContextV0, ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusSignature,
+    ConsensusVoteId, ConsensusVoteRole, ConsensusVoteTarget, ConsensusVoteVerifyError,
+    FixedAgreementSetId, FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0,
+    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorLockStateError,
+    FixedValidatorLockStateV0, FixedValidatorLockedValueV0, FixedValidatorUnsignedVoteEffectV0,
+    FixedValidatorValidValueV0, FixedValidatorVoteIntentError, FixedValidatorVoteIntentV0,
+    ObservedFixedValidatorVoteIntentV0, VerifiedConsensusVoteV0, VerifiedFixedConsensusProposalV0,
+    VerifiedReplayFixedValidatorVoteIntentV0,
 };
 use sha2::{Digest, Sha256};
 
+use super::fixed_validator_finality_journal::FixedValidatorDurableFinalityTransitionV0;
 use super::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
 const JOURNAL_HEADER: &[u8] = b"naome:fixed-validator-vote-safety-journal:v0\0";
@@ -47,6 +48,11 @@ const JOURNAL_PREFIX_BYTES: usize = JOURNAL_HEADER.len() + HEADER_FIELDS_BYTES;
 const PREPARE_RECORD: u8 = 1;
 const COMPLETE_RECORD: u8 = 2;
 const CONFLICT_HALT_RECORD: u8 = 3;
+const SIGNING_LINEAGE_RECORD: u8 = 4;
+const SIGNING_LINEAGE_DOMAIN: &[u8] = b"naome:fixed-validator-vote-safety-signing-lineage:v0\0";
+const SIGNING_LINEAGE_ID_BYTES: usize = 32;
+const SIGNING_LINEAGE_PAYLOAD_BYTES: usize = 8 + SIGNING_LINEAGE_ID_BYTES;
+const SIGNING_LINEAGE_BODY_BYTES: usize = 1 + SIGNING_LINEAGE_PAYLOAD_BYTES;
 const RECORD_LENGTH_BYTES: u64 = 4;
 const STATE_ID_BYTES: u64 = FixedValidatorVoteSafetyJournalStateIdV0::BYTE_LENGTH as u64;
 const ENTRY_FIXED_BYTES: u64 = RECORD_LENGTH_BYTES + STATE_ID_BYTES;
@@ -97,9 +103,9 @@ impl Error for FixedValidatorVoteSafetyReplayLimitErrorV0 {}
 /// Chained identity of one exact durable vote-safety journal state.
 ///
 /// The genesis identity commits the synchronized header. Every later identity
-/// commits the preceding identity and one exact prepare, completion, or halt
-/// record. This local persistence identity is not consensus ancestry, a vote
-/// identity, finality, or a globally trusted checkpoint.
+/// commits the preceding identity and one exact prepare, completion, halt, or
+/// signing-lineage record. This local persistence identity is not consensus
+/// ancestry, a vote identity, finality, or a globally trusted checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
 pub struct FixedValidatorVoteSafetyJournalStateIdV0([u8; Self::BYTE_LENGTH]);
@@ -123,6 +129,16 @@ impl FixedValidatorVoteSafetyJournalStateIdV0 {
 struct VoteSlot {
     position: ConsensusPosition,
     role: ConsensusVoteRole,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SigningLineageIdV0([u8; SIGNING_LINEAGE_ID_BYTES]);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RetainedSigningLineageV0 {
+    height: ConsensusHeight,
+    id: SigningLineageIdV0,
+    state_id: FixedValidatorVoteSafetyJournalStateIdV0,
 }
 
 impl VoteSlot {
@@ -332,6 +348,26 @@ pub struct FixedValidatorDurablePrepareAcknowledgementV0 {
     session_seal: Arc<()>,
 }
 
+/// One exact durable signer-height advance awaiting external acknowledgement.
+///
+/// The private finality capability keeps its issuing finality journal borrowed
+/// from strict reconstruction through external anchoring and live signer
+/// advancement. Dropping or forgetting this value requires an anchored journal
+/// reopen before the persisted child lineage can issue another session.
+#[must_use]
+pub struct FixedValidatorPreparedHeightAdvanceV0<'finality> {
+    transition: FixedValidatorDurableFinalityTransitionV0<'finality>,
+    prepared_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    session_seal: Arc<()>,
+}
+
+impl FixedValidatorPreparedHeightAdvanceV0<'_> {
+    /// Returns the vote-journal state identity that must be externally durable.
+    pub const fn state_id(&self) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+        self.prepared_state_id
+    }
+}
+
 /// The sole journal-issued fixed-validator lock-state and signing lineage.
 ///
 /// One open journal handle issues at most one session, and issuance is never
@@ -342,6 +378,7 @@ pub struct FixedValidatorDurablePrepareAcknowledgementV0 {
 pub struct FixedValidatorVoteSafetySigningSessionV0<'journal> {
     journal: &'journal mut FixedValidatorVoteSafetyJournalV0,
     lock_state: FixedValidatorLockStateV0,
+    pending_height_advance: Option<FixedValidatorVoteSafetyJournalStateIdV0>,
 }
 
 #[derive(Debug)]
@@ -476,17 +513,39 @@ impl FixedValidatorVoteSafetyJournalV0 {
         self.core.replay_limit
     }
 
+    /// Durably binds the exact current branch lineage used by signing recovery.
+    ///
+    /// A new or legacy journal without a lineage record appends one synchronized
+    /// content binding after strictly constructing or replaying the supplied
+    /// typed round. An exact existing binding is no-write idempotence. A
+    /// different branch or height fails without replacing it. The returned
+    /// state identity must be externally durable before session issuance.
+    pub fn bind_signing_lineage(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.core.ensure_healthy()?;
+        if self.session_issued {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionAlreadyIssued);
+        }
+        self.core.bind_signing_lineage(round)
+    }
+
     /// Issues the only signing session available from this open journal handle.
     ///
-    /// An empty journal starts from the supplied exact branch-derived round-zero
-    /// cursor. A journal whose latest vote is durably completed reconstructs
-    /// that exact post-effect state against the supplied typed round. A pending
-    /// preparation or terminal halt cannot issue a session. The issuance latch
-    /// is monotonic for this handle: dropping or forgetting the returned value
-    /// does not permit a replacement session.
+    /// The supplied typed round must match the retained signing-lineage record.
+    /// An empty current lineage starts from exact branch-derived round zero; a
+    /// lineage with a latest durably completed vote reconstructs that exact
+    /// post-effect state. The caller must explicitly assert the exact current
+    /// journal state as externally durable. A pending preparation or terminal
+    /// halt cannot issue a session. The issuance latch is monotonic for this
+    /// handle: dropping or forgetting the returned value does not permit a
+    /// replacement session.
     pub fn issue_signing_session(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
+        externally_durable_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
     ) -> Result<FixedValidatorVoteSafetySigningSessionV0<'_>, FixedValidatorVoteSafetyJournalErrorV0>
     {
         self.core.ensure_healthy()?;
@@ -494,41 +553,21 @@ impl FixedValidatorVoteSafetyJournalV0 {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionAlreadyIssued);
         }
         self.core.ensure_recoverable()?;
-        if round.context() != self.core.context
-            || round.parent_coordinate().fixed_agreement_set_id() != self.core.fixed_set_id
-        {
-            return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionRoundMismatch);
+        if externally_durable_state_id != self.core.state_id {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ExternalSessionAnchorMismatch {
+                    required: self.core.state_id,
+                    acknowledged: externally_durable_state_id,
+                },
+            );
         }
-
-        let lock_state = match self.core.latest_slot {
-            None => FixedValidatorLockStateV0::try_from_round_zero(round)
-                .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)?,
-            Some(latest) => {
-                let retained = self
-                    .core
-                    .votes
-                    .get(&latest)
-                    .expect("the latest completed vote remains retained");
-                retained
-                    .signed
-                    .as_ref()
-                    .expect("a recoverable latest vote is durably completed");
-                VerifiedReplayFixedValidatorVoteIntentV0::decode_and_verify_for_round(
-                    retained
-                        .observed_intent
-                        .canonical_state_and_vote_intent_bytes(),
-                    round,
-                    self.core.signer,
-                )
-                .map_err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionIntent)?
-                .into_lock_state()
-            }
-        };
+        let lock_state = self.core.recover_lock_state_for_round(round)?;
 
         self.session_issued = true;
         Ok(FixedValidatorVoteSafetySigningSessionV0 {
             journal: self,
             lock_state,
+            pending_height_advance: None,
         })
     }
 
@@ -729,19 +768,83 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
             .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)
     }
 
-    /// Advances the sole local lineage through one caller-selected verified child.
+    /// Persists one exact finalized child before advancing signer memory.
     ///
-    /// The underlying kernel verifies the exact parent and height transition,
-    /// clears height-local lock/valid state, and returns the immutable child
-    /// branch. This does not grant global branch-selection or finality authority.
-    pub fn advance_height_with_verified_transition(
+    /// Parent, height, and child round zero are preflighted before the vote
+    /// journal appends its next signing-lineage record. The returned capability
+    /// keeps the finality journal immutably borrowed until the caller has made
+    /// the new vote-journal state externally durable and acknowledges it.
+    pub fn prepare_height_with_durable_finality<'finality>(
         &mut self,
-        transition: OwnedVerifiedFixedConsensusTransitionV0,
-    ) -> Result<FixedConsensusBranchV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        transition: FixedValidatorDurableFinalityTransitionV0<'finality>,
+    ) -> Result<
+        FixedValidatorPreparedHeightAdvanceV0<'finality>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
         self.ensure_mutable()?;
-        self.lock_state
-            .advance_height_with_verified_transition(transition)
-            .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)
+        let child_position = self
+            .lock_state
+            .validate_height_transition(transition.verified_transition())
+            .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)?;
+        let child_lineage_id = signing_lineage_id(
+            transition.verified_transition().child_coordinate(),
+            child_position.height(),
+            self.journal.signer(),
+        );
+        let prepared_state_id = self
+            .journal
+            .core
+            .append_signing_lineage(child_position.height(), child_lineage_id)?;
+        self.pending_height_advance = Some(prepared_state_id);
+        Ok(FixedValidatorPreparedHeightAdvanceV0 {
+            transition,
+            prepared_state_id,
+            session_seal: Arc::clone(&self.journal.session_seal),
+        })
+    }
+
+    /// Acknowledges the persisted child lineage and advances signer memory.
+    ///
+    /// The exact vote-journal state, session provenance, and still-live
+    /// finality capability are rechecked before consuming the transition and
+    /// advancing this live session. Finality authorization is point-in-time:
+    /// once this exact child-lineage state is externally anchored, a later
+    /// finality-journal halt does not retroactively revoke it. If the token is
+    /// dropped before this live acknowledgement, strict reopen resumes the
+    /// anchored child without a new token.
+    pub fn acknowledge_prepared_height_is_externally_durable(
+        &mut self,
+        prepared: FixedValidatorPreparedHeightAdvanceV0<'_>,
+        externally_durable_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<FixedConsensusBranchV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        if externally_durable_state_id != prepared.prepared_state_id {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ExternalHeightAnchorMismatch {
+                    prepared: prepared.prepared_state_id,
+                    acknowledged: externally_durable_state_id,
+                },
+            );
+        }
+        if !Arc::ptr_eq(&self.journal.session_seal, &prepared.session_seal) {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::ForeignHeightAdvance);
+        }
+        self.journal.core.ensure_operational()?;
+        if self.pending_height_advance != Some(prepared.prepared_state_id)
+            || self.journal.core.state_id != prepared.prepared_state_id
+            || self
+                .journal
+                .core
+                .lineage
+                .is_none_or(|lineage| lineage.state_id != prepared.prepared_state_id)
+        {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::StaleHeightAdvance);
+        }
+        let child = self
+            .lock_state
+            .advance_height_with_verified_transition(prepared.transition.into_verified_transition())
+            .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)?;
+        self.pending_height_advance = None;
+        Ok(child)
     }
 
     /// Durably prepares the exact effect produced by this session's private state.
@@ -755,6 +858,7 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
         effect: FixedValidatorUnsignedVoteEffectV0,
     ) -> Result<FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0> {
         self.journal.core.ensure_operational()?;
+        self.ensure_no_pending_height_advance()?;
         let intent = self
             .lock_state
             .prepare_vote_intent(round, effect, self.journal.signer())
@@ -813,6 +917,7 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
 
     fn ensure_mutable(&self) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
         self.journal.core.ensure_operational()?;
+        self.ensure_no_pending_height_advance()?;
         if let Some(pending) = self.journal.core.pending {
             Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
                 position: pending.position,
@@ -821,6 +926,15 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
         } else {
             Ok(())
         }
+    }
+
+    fn ensure_no_pending_height_advance(
+        &self,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        if let Some(state_id) = self.pending_height_advance {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::PendingHeightAdvance { state_id });
+        }
+        Ok(())
     }
 }
 
@@ -834,6 +948,7 @@ struct FixedValidatorVoteSafetyJournalCore<F> {
     pending: Option<VoteSlot>,
     live_pending_intent: Option<FixedValidatorVoteIntentV0>,
     latest_slot: Option<VoteSlot>,
+    lineage: Option<RetainedSigningLineageV0>,
     prepared_count: u64,
     halt: Option<FixedValidatorVoteSafetyHaltV0>,
     state_id: FixedValidatorVoteSafetyJournalStateIdV0,
@@ -860,6 +975,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             pending: None,
             live_pending_intent: None,
             latest_slot: None,
+            lineage: None,
             prepared_count: 0,
             halt: None,
             state_id,
@@ -915,6 +1031,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 .expect("every u32 record length fits supported Rust targets");
             if !(MIN_RECORD_BODY_BYTES..=MAX_RECORD_BODY_BYTES).contains(&body_length)
                 && body_length != SIGNED_VOTE_BODY_BYTES
+                && body_length != SIGNING_LINEAGE_BODY_BYTES
             {
                 return Err(
                     FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordLength {
@@ -1022,12 +1139,95 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             PREPARE_RECORD => self.replay_prepare(entry, offset, payload, state_id),
             COMPLETE_RECORD => self.replay_completion(entry, offset, payload, state_id),
             CONFLICT_HALT_RECORD => self.replay_halt(entry, offset, payload, state_id),
+            SIGNING_LINEAGE_RECORD => self.replay_signing_lineage(entry, payload, state_id),
             actual => Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordTag {
                 entry,
                 offset,
                 actual,
             }),
         }
+    }
+
+    fn replay_signing_lineage(
+        &mut self,
+        entry: u64,
+        payload: &[u8],
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        if payload.len() != SIGNING_LINEAGE_PAYLOAD_BYTES {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::InvalidSigningLineageLength {
+                    entry,
+                    actual: payload.len(),
+                },
+            );
+        }
+        if self.pending.is_some() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::SigningLineageWhilePending { entry },
+            );
+        }
+        let height = ConsensusHeight::new(u64::from_be_bytes(
+            payload[..8]
+                .try_into()
+                .expect("the signing-lineage height has exact width"),
+        ));
+        if height.value() == 0 {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::InvalidSigningLineageHeight {
+                    entry,
+                    actual: height,
+                },
+            );
+        }
+        let id = SigningLineageIdV0(
+            payload[8..]
+                .try_into()
+                .expect("the signing-lineage identity has exact width"),
+        );
+        match self.lineage {
+            Some(previous) => {
+                let expected = previous
+                    .height
+                    .value()
+                    .checked_add(1)
+                    .map(ConsensusHeight::new)
+                    .ok_or(
+                        FixedValidatorVoteSafetyJournalErrorV0::SigningLineageHeightExhausted {
+                            entry,
+                            previous: previous.height,
+                        },
+                    )?;
+                if height != expected {
+                    return Err(
+                        FixedValidatorVoteSafetyJournalErrorV0::NonSequentialSigningLineage {
+                            entry,
+                            expected,
+                            actual: height,
+                        },
+                    );
+                }
+            }
+            None => {
+                if let Some(latest) = self.latest_slot
+                    && height != latest.position.height()
+                {
+                    return Err(
+                        FixedValidatorVoteSafetyJournalErrorV0::NonSequentialSigningLineage {
+                            entry,
+                            expected: latest.position.height(),
+                            actual: height,
+                        },
+                    );
+                }
+            }
+        }
+        self.lineage = Some(RetainedSigningLineageV0 {
+            height,
+            id,
+            state_id,
+        });
+        Ok(())
     }
 
     fn replay_prepare(
@@ -1050,6 +1250,17 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         }
         let intent = self.decode_observed_intent(payload, entry, offset)?;
         let slot = observed_intent_slot(&intent);
+        if let Some(lineage) = self.lineage
+            && slot.position.height() != lineage.height
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::VoteOutsideSigningLineage {
+                    entry,
+                    lineage_height: lineage.height,
+                    vote_height: slot.position.height(),
+                },
+            );
+        }
         if self.votes.contains_key(&slot) {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::DuplicatePrepare { entry });
         }
@@ -1163,6 +1374,137 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         Ok(())
     }
 
+    fn bind_signing_lineage(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.ensure_recoverable()?;
+        let lock_state = self.restore_lock_state_for_round(round)?;
+        let height = lock_state.position().height();
+        let id = signing_lineage_id(round.parent_coordinate(), height, self.signer);
+        if let Some(lineage) = self.lineage {
+            if lineage.height == height && lineage.id == id {
+                return Ok(self.state_id);
+            }
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::SigningLineageMismatch {
+                    expected_height: lineage.height,
+                    actual_height: height,
+                },
+            );
+        }
+        self.append_signing_lineage(height, id)
+    }
+
+    fn recover_lock_state_for_round(
+        &self,
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<FixedValidatorLockStateV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.ensure_recoverable()?;
+        let lineage = self
+            .lineage
+            .ok_or(FixedValidatorVoteSafetyJournalErrorV0::SigningLineageRequired)?;
+        let lock_state = self.restore_lock_state_for_round(round)?;
+        let height = lock_state.position().height();
+        let id = signing_lineage_id(round.parent_coordinate(), height, self.signer);
+        if lineage.height != height || lineage.id != id {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::SigningLineageMismatch {
+                    expected_height: lineage.height,
+                    actual_height: height,
+                },
+            );
+        }
+        Ok(lock_state)
+    }
+
+    fn restore_lock_state_for_round(
+        &self,
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<FixedValidatorLockStateV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        if round.context() != self.context
+            || round.parent_coordinate().fixed_agreement_set_id() != self.fixed_set_id
+        {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionRoundMismatch);
+        }
+        let latest_at_current_lineage = match (self.latest_slot, self.lineage) {
+            (Some(latest), Some(lineage)) => latest.position.height() == lineage.height,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if !latest_at_current_lineage {
+            return FixedValidatorLockStateV0::try_from_round_zero(round)
+                .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState);
+        }
+        let latest = self
+            .latest_slot
+            .expect("a current-lineage completed vote was classified");
+        let retained = self
+            .votes
+            .get(&latest)
+            .expect("the latest completed vote remains retained");
+        retained
+            .signed
+            .as_ref()
+            .expect("a recoverable latest vote is durably completed");
+        VerifiedReplayFixedValidatorVoteIntentV0::decode_and_verify_for_round(
+            retained
+                .observed_intent
+                .canonical_state_and_vote_intent_bytes(),
+            round,
+            self.signer,
+        )
+        .map_err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionIntent)
+        .map(VerifiedReplayFixedValidatorVoteIntentV0::into_lock_state)
+    }
+
+    fn append_signing_lineage(
+        &mut self,
+        height: ConsensusHeight,
+        id: SigningLineageIdV0,
+    ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.ensure_operational()?;
+        if let Some(pending) = self.pending {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
+                position: pending.position,
+                role: pending.role,
+            });
+        }
+        if let Some(previous) = self.lineage {
+            let expected = previous
+                .height
+                .value()
+                .checked_add(1)
+                .map(ConsensusHeight::new)
+                .ok_or(
+                    FixedValidatorVoteSafetyJournalErrorV0::SigningLineageHeightExhausted {
+                        entry: self.prepared_count,
+                        previous: previous.height,
+                    },
+                )?;
+            if height != expected {
+                return Err(
+                    FixedValidatorVoteSafetyJournalErrorV0::NonSequentialSigningLineage {
+                        entry: self.prepared_count,
+                        expected,
+                        actual: height,
+                    },
+                );
+            }
+        }
+        let body = signing_lineage_record(height, id, self.prepared_count)?;
+        let next_state_id = self.append_record(&body, self.prepared_count)?;
+        self.lineage = Some(RetainedSigningLineageV0 {
+            height,
+            id,
+            state_id: next_state_id,
+        });
+        self.state_id = next_state_id;
+        Ok(next_state_id)
+    }
+
     fn prepare_vote(
         &mut self,
         intent: FixedValidatorVoteIntentV0,
@@ -1177,6 +1519,17 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         let canonical_intent = intent.canonical_state_and_vote_intent_bytes();
         let observed = self.decode_observed_intent(canonical_intent, self.prepared_count, 0)?;
         let slot = observed_intent_slot(&observed);
+        if let Some(lineage) = self.lineage
+            && slot.position.height() != lineage.height
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::VoteOutsideSigningLineage {
+                    entry: self.prepared_count,
+                    lineage_height: lineage.height,
+                    vote_height: slot.position.height(),
+                },
+            );
+        }
         let target = observed.target();
         if let Some(retained) = self.votes.get(&slot) {
             if retained
@@ -1550,6 +1903,48 @@ fn require_verified_vote(
     Ok(())
 }
 
+fn signing_lineage_id(
+    coordinate: FixedConsensusBranchCoordinateV0,
+    height: ConsensusHeight,
+    signer: ConsensusKey,
+) -> SigningLineageIdV0 {
+    let context = coordinate.context();
+    let mut hasher = Sha256::new();
+    hasher.update(SIGNING_LINEAGE_DOMAIN);
+    hasher.update(context.chain_id().as_bytes());
+    hasher.update(context.genesis_id().as_bytes());
+    hasher.update(context.protocol_version().value().to_be_bytes());
+    match coordinate.verified_height() {
+        None => {
+            hasher.update([0]);
+            hasher.update(0_u64.to_be_bytes());
+        }
+        Some(parent_height) => {
+            hasher.update([1]);
+            hasher.update(parent_height.value().to_be_bytes());
+        }
+    }
+    hasher.update(coordinate.ancestry_id().as_bytes());
+    hasher.update(coordinate.artifact_head_block_id().as_bytes());
+    hasher.update(coordinate.artifact_set_root().as_bytes());
+    hasher.update(coordinate.fixed_agreement_set_id().as_bytes());
+    hasher.update(coordinate.proposer_priority_state_id().as_bytes());
+    hasher.update(height.value().to_be_bytes());
+    hasher.update(signer.as_bytes());
+    SigningLineageIdV0(hasher.finalize().into())
+}
+
+fn signing_lineage_record(
+    height: ConsensusHeight,
+    id: SigningLineageIdV0,
+    entry: u64,
+) -> Result<Vec<u8>, FixedValidatorVoteSafetyJournalErrorV0> {
+    let mut payload = [0_u8; SIGNING_LINEAGE_PAYLOAD_BYTES];
+    payload[..8].copy_from_slice(&height.value().to_be_bytes());
+    payload[8..].copy_from_slice(&id.0);
+    tagged_record(SIGNING_LINEAGE_RECORD, &payload, entry)
+}
+
 fn tagged_record(
     tag: u8,
     payload: &[u8],
@@ -1741,6 +2136,31 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         offset: u64,
         actual: u8,
     },
+    InvalidSigningLineageLength {
+        entry: u64,
+        actual: usize,
+    },
+    InvalidSigningLineageHeight {
+        entry: u64,
+        actual: ConsensusHeight,
+    },
+    SigningLineageWhilePending {
+        entry: u64,
+    },
+    SigningLineageHeightExhausted {
+        entry: u64,
+        previous: ConsensusHeight,
+    },
+    NonSequentialSigningLineage {
+        entry: u64,
+        expected: ConsensusHeight,
+        actual: ConsensusHeight,
+    },
+    VoteOutsideSigningLineage {
+        entry: u64,
+        lineage_height: ConsensusHeight,
+        vote_height: ConsensusHeight,
+    },
     RecordStateIdMismatch {
         entry: u64,
         offset: u64,
@@ -1755,6 +2175,15 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
     IntentHeaderMismatch,
     SigningSessionAlreadyIssued,
     SigningSessionRoundMismatch,
+    SigningLineageRequired,
+    SigningLineageMismatch {
+        expected_height: ConsensusHeight,
+        actual_height: ConsensusHeight,
+    },
+    ExternalSessionAnchorMismatch {
+        required: FixedValidatorVoteSafetyJournalStateIdV0,
+        acknowledged: FixedValidatorVoteSafetyJournalStateIdV0,
+    },
     LockState(FixedValidatorLockStateError),
     SigningSessionIntent(FixedValidatorVoteIntentError),
     ExternalPrepareAnchorMismatch {
@@ -1816,6 +2245,15 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         position: ConsensusPosition,
         role: ConsensusVoteRole,
     },
+    PendingHeightAdvance {
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    },
+    ExternalHeightAnchorMismatch {
+        prepared: FixedValidatorVoteSafetyJournalStateIdV0,
+        acknowledged: FixedValidatorVoteSafetyJournalStateIdV0,
+    },
+    ForeignHeightAdvance,
+    StaleHeightAdvance,
     PendingRecoveryDenied {
         position: ConsensusPosition,
         role: ConsensusVoteRole,
@@ -1860,16 +2298,25 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::Read { offset, source } => write!(formatter, "vote-safety journal read failed at byte {offset}: {source}"),
             Self::InvalidHeader => formatter.write_str("invalid fixed-validator vote-safety journal header"),
             Self::HeaderMismatch => formatter.write_str("vote-safety journal header does not match the expected context, fixed set, signer, and replay limit"),
-            Self::InvalidRecordLength { entry, offset, actual, minimum, maximum } => write!(formatter, "vote-safety record {entry} at byte {offset} has body length {actual}, expected {minimum}..={maximum} or the exact signed-vote record width"),
+            Self::InvalidRecordLength { entry, offset, actual, minimum, maximum } => write!(formatter, "vote-safety record {entry} at byte {offset} has body length {actual}, expected {minimum}..={maximum}, the exact signed-vote width, or the exact signing-lineage width"),
             Self::EntryOffsetOverflow { entry, offset } => write!(formatter, "vote-safety record {entry} at byte {offset} exceeds the offset range"),
             Self::Allocation { entry, bytes } => write!(formatter, "vote-safety record {entry} could not allocate {bytes} bytes"),
             Self::HistoryAllocation { entry, retained_votes } => write!(formatter, "vote-safety record {entry} could not grow history beyond {retained_votes} prepared votes"),
             Self::InvalidRecordTag { entry, offset, actual } => write!(formatter, "vote-safety record {entry} at byte {offset} has unsupported tag {actual}"),
+            Self::InvalidSigningLineageLength { entry, actual } => write!(formatter, "signing-lineage record {entry} has {actual} payload bytes"),
+            Self::InvalidSigningLineageHeight { entry, actual } => write!(formatter, "signing-lineage record {entry} has reserved height {}", actual.value()),
+            Self::SigningLineageWhilePending { entry } => write!(formatter, "signing-lineage record {entry} follows an uncompleted vote preparation"),
+            Self::SigningLineageHeightExhausted { entry, previous } => write!(formatter, "signing-lineage record {entry} cannot advance exhausted height {}", previous.value()),
+            Self::NonSequentialSigningLineage { entry, expected, actual } => write!(formatter, "signing-lineage record {entry} has height {}, expected {}", actual.value(), expected.value()),
+            Self::VoteOutsideSigningLineage { entry, lineage_height, vote_height } => write!(formatter, "vote record {entry} has height {}, outside retained signing-lineage height {}", vote_height.value(), lineage_height.value()),
             Self::RecordStateIdMismatch { entry, offset, expected, actual } => write!(formatter, "vote-safety record {entry} at byte {offset} commits state {actual:?}, expected {expected:?}"),
             Self::Intent { entry, offset, source } => write!(formatter, "vote-safety intent record {entry} at byte {offset} failed strict replay: {source}"),
             Self::IntentHeaderMismatch => formatter.write_str("sealed vote intent does not match this journal's exact context, fixed set, and signer"),
             Self::SigningSessionAlreadyIssued => formatter.write_str("this open vote-safety journal handle has already issued its sole signing session"),
             Self::SigningSessionRoundMismatch => formatter.write_str("signing-session round does not match this journal's exact context and fixed set"),
+            Self::SigningLineageRequired => formatter.write_str("a durable signing-lineage binding is required before session issuance"),
+            Self::SigningLineageMismatch { expected_height, actual_height } => write!(formatter, "signing-session lineage at height {} does not match retained height {}", actual_height.value(), expected_height.value()),
+            Self::ExternalSessionAnchorMismatch { required, acknowledged } => write!(formatter, "external session acknowledgement names state {acknowledged:?}, expected current state {required:?}"),
             Self::LockState(source) => write!(formatter, "vote-safety signing-session lock-state transition failed: {source}"),
             Self::SigningSessionIntent(source) => write!(formatter, "vote-safety signing session could not seal or restore its exact intent state: {source}"),
             Self::ExternalPrepareAnchorMismatch { prepared, acknowledged } => write!(formatter, "external durability acknowledgement names state {acknowledged:?}, expected prepared state {prepared:?}"),
@@ -1888,6 +2335,10 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::Recovery { offset, source } => write!(formatter, "incomplete vote-safety tail at byte {offset} could not be recovered: {source}"),
             Self::Stabilize { source } => write!(formatter, "replayed vote-safety journal stabilization failed: {source}"),
             Self::PendingPreparation { position, role } => write!(formatter, "vote {position:?}/{role:?} must complete before another slot can prepare"),
+            Self::PendingHeightAdvance { state_id } => write!(formatter, "signer-height advance at vote-journal state {state_id:?} must be externally acknowledged before another transition"),
+            Self::ExternalHeightAnchorMismatch { prepared, acknowledged } => write!(formatter, "external height-advance acknowledgement names state {acknowledged:?}, expected prepared state {prepared:?}"),
+            Self::ForeignHeightAdvance => formatter.write_str("prepared signer-height advance belongs to another signing session"),
+            Self::StaleHeightAdvance => formatter.write_str("prepared signer-height advance does not match the current durable lineage"),
             Self::PendingRecoveryDenied { position, role } => write!(formatter, "completed lock-state recovery is denied behind pending vote {position:?}/{role:?}"),
             Self::PrepareLimitExceeded { maximum } => write!(formatter, "prepared-vote ceiling {maximum} is exhausted"),
             Self::NonMonotonicSlot { previous, previous_role, actual, actual_role } => write!(formatter, "vote slot {actual:?}/{actual_role:?} does not follow retained {previous:?}/{previous_role:?}"),

@@ -28,49 +28,99 @@ This is local signing safety rather than consensus authority. The journal does
 not prove that its chain, final genesis, protocol version, fixed agreement set,
 branch, lock state, valid value, or vote target is globally canonical. Those
 values enter only through the typed fixed-validator branch and lock kernel.
+After a session is issued, its lineage advances to a new height only through an
+externally acknowledged transition reconstructed by a caller-selected local
+finality journal from retained selected history. Before the first session, the
+caller-selected round-zero bootstrap coordinate is itself persisted as an exact
+signing-lineage record and externally anchored. The caller retains authority for
+selecting and attesting that initial coordinate; a later reopen no longer has
+authority to replace it.
 
 ## Journal-issued signing lineage
 
 One successfully created or strictly reopened key-owning handle may issue at
 most one non-clone signing session. The issuance latch is monotonic for that
 handle and is not released by dropping or forgetting the session. A failed
-attempt using a mismatching typed round does not consume the latch, but once a
-session has been returned there is no second session, raw-intent preparation,
-or direct key-signing path through that handle.
+attempt using a wrong external state identity or mismatching typed round does
+not consume the latch, but once a session has been returned there is no second
+session, raw-intent preparation, or direct key-signing path through that handle.
 
-An empty journal issues its first session only from an exact branch-derived
-round-zero cursor whose context and fixed agreement-set identity match the
-journal header. A healthy completed journal issues a session only by strictly
-decoding the latest completed post-effect intent against the caller-supplied
-exact typed round and reconstructing that one state. Historical completed
-states are not selectable. A pending, halted, poisoned, or header-mismatching
-journal issues no session.
+A header-only journal is provisioning state, not signing authority.
+`bind_signing_lineage` first strictly derives or restores the supplied typed
+round, then appends and synchronizes one exact lineage record when none exists.
+An exact existing binding is no-write idempotence; a different branch or height
+cannot replace it. The caller must externally persist the returned exact current
+journal-state identity. `issue_signing_session` accepts only that exact current
+identity and a typed round whose parent coordinate, signing height, context,
+fixed set, and signer reproduce the retained lineage binding.
+
+At the current retained lineage height, a healthy completed journal strictly
+decodes the latest completed post-effect intent against the supplied exact typed
+round and reconstructs that one state. When the latest completed vote belongs
+to an older lineage, the exact retained current branch starts at round zero.
+Historical completed states are not selectable. A pending, halted, poisoned,
+header-mismatching, unbound, wrongly anchored, or lineage-mismatching journal
+issues no session.
 
 The session exclusively owns the recoverable lock state. It exposes the current
 position, phase, lock, and valid value read-only and delegates only the fixed
-kernel's proposal, prevote, precommit, sequential-round, and verified-child
+kernel's proposal, prevote, precommit, sequential-round, and durable-finality
 transition operations. It exposes no mutable state reference, unchecked state
-replacement, generic mutation closure, raw-intent submission, secret key, or
-raw or unacknowledged signing method. A caller may calculate with a separate
-fresh lock kernel, but its effects cannot enter this journal's key-owning path: session
-preparation recomputes the hidden state binding and requires the effect's
-private volatile lineage seal to be pointer-identical to the session's exact
-lock-state instance.
+replacement, generic mutation closure, raw-intent submission, secret key, raw
+verified-child height transition, or raw or unacknowledged signing method. A
+caller may calculate with a separate fresh lock kernel, but its effects cannot
+enter this journal's key-owning path: session preparation recomputes the hidden
+state binding and requires the effect's private volatile lineage seal to be
+pointer-identical to the session's exact lock-state instance.
 
-Moving to the next height consumes one
-`OwnedVerifiedFixedConsensusTransitionV0`. The session requires the
-transition's exact parent coordinate to equal its current parent and the
-transition height to equal its current height, consumes the proof, derives
-round zero only from the proof's internally sealed child branch, clears the
-old-height lock and valid value, and returns that exact child branch for later
-typed cursors. It never accepts a separately supplied or cloned child branch.
-This operation binds the one local signing lineage to a caller-selected,
-branch-relative non-nil precommit-quorum transition; it neither chooses that
-transition among siblings nor claims that the caller durably installed global
-finality. A crash before the first completed child vote reconstructs the older
-completed state and requires the transition to be verified and consumed again.
-After a child vote completes, its canonical intent binds the child coordinate
-and only that exact typed round may restore the session.
+Moving the key-owning lineage to the next height starts with one non-clone
+`FixedValidatorDurableFinalityTransitionV0<'journal>`. Only the finality journal's
+`acknowledge_signer_height_transition_is_externally_durable` may produce that
+token after matching its exact current state identity and strictly
+reconstructing an operable retained selected child. The token immutably borrows
+that journal through lineage persistence, external vote-journal acknowledgement,
+and successful consumption. The signing session has no public raw
+`OwnedVerifiedFixedConsensusTransitionV0` height path. The non-key-owning
+consensus lock kernel may still consume that proof as a branch-relative
+transition; doing so creates no signing authority.
+
+`prepare_height_with_durable_finality` first requires the transition's exact
+parent coordinate and height to match the private current state and derives only
+the sealed child's round zero. Before changing signer memory, it appends and
+synchronizes a `0x04` record for that exact child lineage and returns an opaque
+`FixedValidatorPreparedHeightAdvanceV0` carrying the still-live finality token,
+the new vote-journal state identity, and private signing-session provenance.
+Every vote, round, or second height transition is blocked while this live height
+advance awaits acknowledgement.
+
+The caller next advances its separate vote-journal anchor to that exact state
+identity. For the current live session,
+`acknowledge_prepared_height_is_externally_durable` rechecks the identity,
+session provenance, current record, and live finality token before it consumes
+the verified transition, derives the same child round zero, clears the old-height
+lock and valid value, and returns that exact child branch. It never accepts a
+separately supplied or cloned child branch. A wrong acknowledgement returns no
+child and consumes the one-shot capability; the anchored journal must be
+reopened to resume the already persisted child lineage.
+
+The handoff is ordered rather than cross-file atomic: finality and its external
+anchor complete first, then the child signing-lineage record and vote anchor,
+then volatile signer-memory advancement. The exact external child-lineage anchor
+is the durable recovery boundary. A crash or token drop after that boundary but
+before live acknowledgement reopens directly at that exact child round zero
+without a fresh finality token and without repeating bootstrap selection. An old
+anchor rejects a complete child-lineage suffix; an anchor ahead of durable bytes
+also fails closed. Once a child vote is prepared, the ordinary pending-vote
+recovery rule applies. Neither journal rolls the other back or repairs an
+external-anchor gap.
+
+Finality authorization is point-in-time. Once the exact child-lineage state is
+externally anchored, a later finality-journal conflict halt does not
+retroactively revoke that durable signer lineage or its subsequent votes. This
+holds whether the same live session successfully consumes the token or the token
+is dropped and an exact reopen recovers the anchored child. An operator policy
+that must stop such signing requires a separate coordinated halt signal and is
+not inferred by these local journals.
 
 ## Canonical post-effect vote intent
 
@@ -227,11 +277,48 @@ The first body byte is the record tag and has exactly these meanings:
 | `0x01` | one exact canonical `FixedValidatorVoteIntentV0` | prepared post-effect state and vote intent |
 | `0x02` | one exact canonical signed vote `[214]` | completed signature for the immediately pending prepared intent |
 | `0x03` | one exact canonical `FixedValidatorVoteIntentV0` | observed non-identical intent for an already retained vote slot; terminal local halt |
+| `0x04` | `signing_height_u64_be[8] || SigningLineageIdV0[32]` | exact initial or sequential child signing-lineage binding |
 
 A completion body is exactly 215 bytes and its complete frame is 251 bytes.
+One signing-lineage body is exactly 41 bytes and its complete frame is 77 bytes.
 Prepare and halt bodies are 392..=25,676 bytes and their complete frames are
 428..=25,712 bytes. Every `body_length` outside the exact range for its tag is
 rejected before payload allocation.
+
+`SigningLineageIdV0` is the exact SHA-256 result:
+
+```text
+SHA256(
+  "naome:fixed-validator-vote-safety-signing-lineage:v0\0"
+  || ArtifactChainId[32]
+  || ConsensusGenesisId[32]
+  || ConsensusProtocolVersion_u32_be[4]
+  || parent_verified_height_tag_u8[1]
+  || parent_verified_height_u64_be[8]
+  || ConsensusAncestryId[32]
+  || parent_ArtifactBlockId[32]
+  || parent_ArtifactSetRoot[32]
+  || FixedAgreementSetId[32]
+  || parent_ProposerPriorityStateId[32]
+  || signing_height_u64_be[8]
+  || ConsensusKey[32]
+)
+```
+
+The parent-height tag is `0x00` with a zero height for virtual genesis and
+`0x01` with a positive height otherwise. The committed coordinate is the exact
+parent coordinate from which the signing height's round zero is derived; the
+round is therefore implicitly zero and is not a separately caller-supplied
+field.
+
+The first lineage record may appear only with no pending vote. If completed
+legacy V0 vote records precede it, its height must equal the latest retained vote
+height. Every later lineage record must be exactly one height greater than the
+previous lineage and may appear only with no pending vote. When a lineage exists,
+every prepare record must be at its current height. A duplicate, replacement,
+skipped or exhausted lineage height, lineage while pending, vote at another
+height, malformed payload, or any record after halt fails strict replay. Lineage
+records do not consume the header's distinct-prepared-vote ceiling.
 
 A completion is valid only when strict verification proves that its signer,
 context, position, role, target, and transcript exactly match the one pending
@@ -264,7 +351,7 @@ SHA256(
 )
 ```
 
-Each prepare, completion, or halt record derives its footer as:
+Every prepare, completion, halt, or signing-lineage record derives its footer as:
 
 ```text
 SHA256(
@@ -277,8 +364,8 @@ SHA256(
 
 The resulting identity is stored as the record's 32-byte footer and becomes the
 prior identity for the next record. The footer is excluded from its own
-preimage. A byte-identical idempotent preparation or completed replay writes no
-record and leaves the state identity unchanged.
+preimage. A byte-identical idempotent preparation, completed replay, or exact
+current-lineage binding writes no record and leaves the state identity unchanged.
 
 This unkeyed digest detects history changes relative to an independently
 trusted expected identity; it is not a secret authenticator and cannot make the
@@ -289,23 +376,28 @@ mechanism.
 The caller must retain the genesis identity and every later identity it accepts
 in a separately protected monotonic anchor, advancing only to an identity
 returned after that record's footer synchronization. It must never resume this
-key from an older accepted identity. Before any private-key operation, the
-caller must separately persist the exact prepared state identity and explicitly
-acknowledge that exact identity as externally durable through the session's
-prepare-bound acknowledgement capability. A wrong or stale identity is rejected
-before key use or a completion append. The journal verifies identity and
-ordering, but the acknowledgement is a caller assertion: the journal cannot
-prove that the external store is durable, monotonic, honest, or unavailable to
-an attacker. A false acknowledgement violates this signing contract.
+key from an older accepted identity. The exact initial signing-lineage identity
+must be anchored before session issuance; every child signing-lineage identity
+must be anchored before volatile height advancement; and every prepared-vote
+identity must be anchored before private-key use. Each corresponding API
+requires explicit acknowledgement of that exact still-current identity. A wrong
+or stale identity is rejected before session publication, height publication,
+key use, or a completion append. The journal verifies identity and ordering,
+but each acknowledgement is a caller assertion: the journal cannot prove that
+the external store is durable, monotonic, honest, or unavailable to an attacker.
+A false acknowledgement violates this signing contract.
 
 Operational reopen requires the exact separately trusted expected terminal
 state identity. Replay validates the header, framing, every chained footer,
-intent, signed vote, preparation/completion relation, preparation ceiling, and
-terminality before exposing any journal state. It returns a key-owning handle
-only when the final recomputed identity equals that external expectation. If
-the final state is a terminal halt or prepared-but-uncompleted intent, that
-handle is diagnostic only: every signing operation remains fail-closed and no
-live prepared capability is reconstructed.
+lineage sequence, intent, signed vote, preparation/completion relation,
+preparation ceiling, and terminality before exposing any journal state. It
+returns a key-owning handle only when the final recomputed identity equals that
+external expectation. When its current complete final record is an exact child-
+lineage binding, issuance reconstructs that child's round-zero session without
+recreating or requiring the consumed
+finality token. If the final state is a terminal halt or prepared-but-uncompleted
+vote intent, the handle is diagnostic only: every signing operation remains
+fail-closed and no live prepared-vote capability is reconstructed.
 
 At most one framing-incomplete final record may be truncated only after the
 strictly replayed complete prefix already equals the expected identity. A
@@ -371,18 +463,20 @@ byte-identical re-release of the retained strictly verified signed vote. The
 implementation does not infer delivery, broadcast, certificate inclusion, or
 finality from either case.
 
-On a healthy non-halted reopened journal with no pending preparation, session
-issuance internally retrieves the exact canonical state-and-intent bytes only
-for the latest retained slot, which must have its durable completion. No public
-coordinate-based, raw-state, or historical completed-state lookup exists:
-recovery cannot resume an older lock state and then advance to a greater slot
-past newer retained state. The caller supplies the exact typed
-`FixedConsensusRoundV0`; only strict
-`VerifiedReplayFixedValidatorVoteIntentV0` verification may reconstruct the
-retained lock, valid value, proof, and phase inside the returned session. The
-replay value exposes no signing transcript or completion method. Replay fixes
-the latest slot; storage does not choose the round cursor or grant global branch
-authority.
+On a healthy non-halted reopened journal with no pending vote, session issuance
+first matches the exact current lineage and external state identity. If the
+latest retained vote is at that lineage height, issuance internally retrieves
+only its exact canonical state-and-intent bytes, and that vote must have a
+durable completion. If the current lineage is newer, issuance instead requires
+its exact caller-supplied child round zero and carries no older-height lock or
+valid state forward. No public coordinate-based, raw-state, or historical
+completed-state lookup exists: recovery cannot resume an older lock state and
+then advance past newer retained state. Only strict
+`VerifiedReplayFixedValidatorVoteIntentV0` verification may reconstruct a
+same-lineage retained lock, valid value, proof, and phase inside the returned
+session. The replay value exposes no signing transcript or completion method.
+Storage verifies but does not choose the typed round cursor or grant global
+branch authority.
 
 An incomplete preparation surviving restart exposes only its position, role,
 target, prepare-state identity, and the fact that it is non-signable. Its full
@@ -414,8 +508,10 @@ role: a validator may abstain from a signature and later sign a session-
 authorized higher slot, but it cannot return to fill the skipped slot afterward.
 This persistence order does not itself authorize a skipped round, higher-round
 jump, or new height. The same journal-issued session must carry every supported
-lock transition; a new height additionally requires the consumed verified-
-child transition defined above.
+lock transition. Advancing the current live session to a new height requires the
+consumed externally acknowledged durable-finality transition defined above;
+after the exact child lineage is externally anchored, an exact reopen may resume
+that already persisted height without recreating or consuming the token.
 
 Any non-identical canonical intent for an already retained slot is rejected
 before the private key signs it. The handle first durably appends the `0x03`
@@ -441,26 +537,40 @@ vote. Signature work is one local Ed25519 signature plus one strict verification
 The positive header ceiling bounds distinct prepared votes admitted to one
 journal; exact replays do not consume another slot. Completion through the same
 uninterrupted live handle and a terminal halt remain permitted for already
-admitted state so the cap cannot prevent fail-closed conflict recording. A
-process crash may intentionally strand an incomplete preparation because V0
-prefers loss of liveness to reconstructed signing authority.
+admitted state so the cap cannot prevent fail-closed conflict recording.
+Signing-lineage records do not consume this vote-preparation ceiling; their
+strict positive sequential-height rule is the separate bound. A process crash
+may intentionally strand an incomplete vote preparation because V0 prefers loss
+of liveness to reconstructed signing authority.
 
 The journal is append-only and retains its complete accepted signing history.
-It provides no pruning, compaction, migration, cross-key transaction, automatic
-rotation, or backup policy. This prerelease V0 has no production-data
+It provides no pruning, compaction, automatic or incompatible-format migration,
+cross-key transaction, automatic rotation, or backup policy. This prerelease V0 has no production-data
 compatibility promise. Any incompatible successor must use new filenames,
 header and state-ID domains, strict decoder, and—if the existing signed-vote
 meaning changes—new role signing domains rather than reinterpreting these
 bytes.
 
+The `0x04` record is a backward-readable extension of the existing V0 header and
+state chain: the current implementation strictly opens older header-only and
+prepare/complete histories that contain no lineage record. Such a history has no
+new signing session authority until `bind_signing_lineage` appends one exact
+current binding. For a legacy completed history, the supplied typed round must
+strictly replay its latest completed intent and the first binding height must
+equal that latest vote height. After the first lineage record, every later
+binding is sequential and the legacy no-lineage path is permanently closed.
+Older binaries that do not recognize tag `0x04` are not forward compatible with
+newly extended journals; this prerelease format makes no such promise.
+
 The journal does not implement timeout scheduling, arbitrary higher-round
 certificate jumps, dynamic validator sets, selection among verified sibling
 branches, durable installation or recovery of global finality, global safety or
 liveness, networking, peer discovery or trust, proposal production, artifact
-availability, external-anchor storage, key-seed exclusivity proof, hardware-
-backed custody, economics, slashing evidence, or a durable receipt handoff from
-the separate finality journal. It consumes the caller-selected verified child
-transition only to keep the local signing lineage continuous. It supplies the
-explicit local fixed-validator V0 journal-issued lineage, prepare-before-sign,
-external-anchor acknowledgement, complete-before-release, exact replay, and
+availability, external-anchor storage or attestation, key-seed exclusivity
+proof, hardware-backed custody, economics, slashing evidence, or cross-journal
+atomicity. It consumes only the separate finality journal's externally
+acknowledged exact selected-child transition to keep the local signing lineage
+continuous. It supplies the explicit local fixed-validator V0 journal-issued
+lineage, mandatory durable-finality lineage-advancement gate, prepare-before-sign,
+vote-anchor acknowledgement, complete-before-release, exact replay, and
 anchored restart boundary described above.

@@ -87,6 +87,12 @@ impl ScriptedIo {
         self.fault.as_ref()
     }
 
+    pub(crate) fn inject_fault(&mut self, fault: Fault) {
+        self.fault = Some(fault);
+        self.body_written = 0;
+        self.commit_written = 0;
+    }
+
     fn phase_written(&mut self, phase: AppendPhase) -> &mut usize {
         match phase {
             AppendPhase::Body => &mut self.body_written,

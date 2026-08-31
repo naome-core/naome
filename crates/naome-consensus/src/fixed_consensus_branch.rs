@@ -558,6 +558,14 @@ impl OwnedVerifiedFixedConsensusTransitionV0 {
         self.parent_coordinate
     }
 
+    /// Returns the exact semantic coordinate of the verified child branch.
+    ///
+    /// This is descriptive identity only and does not expose or clone the
+    /// transition's sealed child branch.
+    pub fn child_coordinate(&self) -> FixedConsensusBranchCoordinateV0 {
+        self.child_branch.coordinate()
+    }
+
     /// Returns the exact authenticated height and round of this transition.
     pub const fn position(&self) -> ConsensusPosition {
         self.position
@@ -581,6 +589,14 @@ impl OwnedVerifiedFixedConsensusTransitionV0 {
     /// Returns the exact canonical artifact payload verified with the envelope.
     pub fn canonical_artifact_bytes(&self) -> &[u8] {
         &self.canonical_artifact_bytes
+    }
+
+    pub(crate) fn child_round_zero_position(
+        &self,
+    ) -> Result<ConsensusPosition, ProposerSelectionError> {
+        self.child_branch
+            .begin_round_zero()
+            .map(|round| round.position())
     }
 
     /// Consumes this proof and publishes its immutable child branch.

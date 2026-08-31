@@ -234,6 +234,27 @@ pub enum FixedValidatorFinalityCommitOutcomeV0 {
     Halted(FixedValidatorFinalityHaltV0),
 }
 
+/// A retained selected transition whose exact finality state was acknowledged.
+///
+/// Private fields prevent caller construction. The live immutable journal
+/// borrow keeps the issuing finality lineage operational and unchanged until a
+/// key-owning vote-safety session consumes the capability.
+#[must_use]
+pub struct FixedValidatorDurableFinalityTransitionV0<'journal> {
+    _journal: &'journal FixedValidatorFinalityJournalV0,
+    transition: OwnedVerifiedFixedConsensusTransitionV0,
+}
+
+impl FixedValidatorDurableFinalityTransitionV0<'_> {
+    pub(crate) const fn verified_transition(&self) -> &OwnedVerifiedFixedConsensusTransitionV0 {
+        &self.transition
+    }
+
+    pub(crate) fn into_verified_transition(self) -> OwnedVerifiedFixedConsensusTransitionV0 {
+        self.transition
+    }
+}
+
 /// One exclusively opened joint fixed-validator consensus-and-artifact journal.
 ///
 /// The journal reuses the artifact-chain journal file and lock namespace as a
@@ -466,6 +487,36 @@ impl FixedValidatorFinalityJournalV0 {
     pub fn finalized_len(&self) -> Result<usize, FixedValidatorFinalityJournalErrorV0> {
         self.core.ensure_operational()?;
         Ok(self.core.records.len())
+    }
+
+    /// Acknowledges and reconstructs one retained signer-height transition.
+    ///
+    /// The caller must first persist the journal's exact current state identity
+    /// in a separately protected monotonic anchor. This method rechecks that
+    /// asserted identity before reconstructing the retained first envelope and
+    /// artifact payload against the selected parent. The returned capability
+    /// immutably borrows this healthy journal until a key-owning vote-safety
+    /// session consumes it, preventing an intervening commit or conflict halt.
+    pub fn acknowledge_signer_height_transition_is_externally_durable(
+        &self,
+        height: ConsensusHeight,
+        externally_durable_state_id: FixedValidatorFinalityJournalStateIdV0,
+    ) -> Result<FixedValidatorDurableFinalityTransitionV0<'_>, FixedValidatorFinalityJournalErrorV0>
+    {
+        self.core.ensure_operational()?;
+        if externally_durable_state_id != self.core.state_id {
+            return Err(
+                FixedValidatorFinalityJournalErrorV0::ExternalFinalityAnchorMismatch {
+                    required: self.core.state_id,
+                    acknowledged: externally_durable_state_id,
+                },
+            );
+        }
+        let transition = self.core.reconstruct_selected_transition(height)?;
+        Ok(FixedValidatorDurableFinalityTransitionV0 {
+            _journal: self,
+            transition,
+        })
     }
 
     /// Consumes one sealed verified transition and classifies it against history.
@@ -979,6 +1030,46 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
         Ok(())
     }
 
+    fn reconstruct_selected_transition(
+        &self,
+        height: ConsensusHeight,
+    ) -> Result<OwnedVerifiedFixedConsensusTransitionV0, FixedValidatorFinalityJournalErrorV0> {
+        self.ensure_operational()?;
+        let height_index = height_index(height).map_err(|()| {
+            FixedValidatorFinalityJournalErrorV0::SignerHandoffHeightIndexOverflow { height }
+        })?;
+        let Some(record_index) = height_index.checked_sub(1) else {
+            return Err(FixedValidatorFinalityJournalErrorV0::SignerHandoffUnavailable { height });
+        };
+        let Some(record) = self.records.get(record_index) else {
+            return Err(FixedValidatorFinalityJournalErrorV0::SignerHandoffUnavailable { height });
+        };
+        let parent = self
+            .branches
+            .get(record_index)
+            .expect("each retained finality record has its selected parent");
+        let mut round = parent
+            .begin_round_zero()
+            .map_err(FixedValidatorFinalityJournalErrorV0::Proposer)?;
+        for _ in 0..record.position.round().value() {
+            round = round
+                .advance_round()
+                .map_err(FixedValidatorFinalityJournalErrorV0::Proposer)?;
+        }
+        debug_assert_eq!(record.position, round.position());
+        let entry = u64::try_from(record_index).expect("retained record index fits u64");
+        let payload = clone_bytes(record.canonical_artifact_bytes(), entry)?;
+        round
+            .decode_and_verify(record.canonical_envelope_bytes(), payload)
+            .map_err(
+                |source| FixedValidatorFinalityJournalErrorV0::SignerHandoffReplay {
+                    height,
+                    source: Box::new(source),
+                },
+            )
+            .map(VerifiedFixedConsensusTransitionV0::into_owned)
+    }
+
     fn ensure_healthy(&self) -> Result<(), FixedValidatorFinalityJournalErrorV0> {
         if self.poisoned {
             Err(FixedValidatorFinalityJournalErrorV0::Poisoned)
@@ -1345,6 +1436,20 @@ pub enum FixedValidatorFinalityJournalErrorV0 {
     UnselectedParent { height: ConsensusHeight },
     /// A verified transition height could not index this platform.
     CommitHeightIndexOverflow { height: ConsensusHeight },
+    /// A requested signer-handoff height could not index this platform.
+    SignerHandoffHeightIndexOverflow { height: ConsensusHeight },
+    /// No retained selected transition exists at the requested positive height.
+    SignerHandoffUnavailable { height: ConsensusHeight },
+    /// Strict reconstruction of a retained signer handoff unexpectedly failed.
+    SignerHandoffReplay {
+        height: ConsensusHeight,
+        source: Box<ConsensusEnvelopeVerifyError>,
+    },
+    /// The asserted external finality anchor did not name the required state.
+    ExternalFinalityAnchorMismatch {
+        required: FixedValidatorFinalityJournalStateIdV0,
+        acknowledged: FixedValidatorFinalityJournalStateIdV0,
+    },
     /// The journal has durably halted and exposes no operational branch access.
     TerminalHalt { height: ConsensusHeight },
     /// An append failed after durability may have changed.
@@ -1478,6 +1583,25 @@ impl fmt::Display for FixedValidatorFinalityJournalErrorV0 {
                 "verified transition height {} cannot index this platform",
                 height.value()
             ),
+            Self::SignerHandoffHeightIndexOverflow { height } => write!(
+                formatter,
+                "signer-handoff height {} cannot index this platform",
+                height.value()
+            ),
+            Self::SignerHandoffUnavailable { height } => write!(
+                formatter,
+                "no retained selected transition is available at signer-handoff height {}",
+                height.value()
+            ),
+            Self::SignerHandoffReplay { height, source } => write!(
+                formatter,
+                "retained signer-handoff transition at height {} failed strict reconstruction: {source}",
+                height.value()
+            ),
+            Self::ExternalFinalityAnchorMismatch { required, acknowledged } => write!(
+                formatter,
+                "external finality acknowledgement names state {acknowledged:?}, expected current state {required:?}"
+            ),
             Self::TerminalHalt { height } => write!(
                 formatter,
                 "fixed-validator finality is terminally halted at height {}",
@@ -1509,6 +1633,7 @@ impl Error for FixedValidatorFinalityJournalErrorV0 {
             | Self::Commit { source, .. } => Some(source),
             Self::Value { source, .. } => Some(source),
             Self::Replay { source, .. } => Some(source.as_ref()),
+            Self::SignerHandoffReplay { source, .. } => Some(source.as_ref()),
             Self::Genesis(source) => Some(source),
             Self::Proposer(source) => Some(source),
             Self::Locked
@@ -1533,6 +1658,9 @@ impl Error for FixedValidatorFinalityJournalErrorV0 {
             | Self::RoundLimitExceeded { .. }
             | Self::UnselectedParent { .. }
             | Self::CommitHeightIndexOverflow { .. }
+            | Self::SignerHandoffHeightIndexOverflow { .. }
+            | Self::SignerHandoffUnavailable { .. }
+            | Self::ExternalFinalityAnchorMismatch { .. }
             | Self::TerminalHalt { .. }
             | Self::Poisoned => None,
         }

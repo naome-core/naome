@@ -11,6 +11,15 @@ committed together. This is a fixed-set, caller-anchored local V0 boundary. It
 does not establish that the supplied genesis context or agreement set is
 globally canonical.
 
+The same durable history is the only source for advancing an already-issued
+key-owning signing lineage to a child height. The caller first persists the
+journal's exact current state identity in its separate monotonic finality
+anchor. Only
+`acknowledge_signer_height_transition_is_externally_durable` with that exact
+identity may strictly reconstruct an opaque
+`FixedValidatorDurableFinalityTransitionV0<'journal>` for the vote-safety
+signing session.
+
 ## Authority and clean replacement
 
 `FixedValidatorFinalityJournalV0` is the sole selected/finalized artifact-state
@@ -32,6 +41,12 @@ This prerelease cutover has no legacy reader, migration, parallel journal, or
 automatic upgrade. Old artifact-only bytes fail the joint header check. Local
 data that must move to the joint format is recreated or explicitly reimported
 through a separately specified caller workflow; it is never reinterpreted.
+
+Issuing a signer-height transition does not add a second selection path. The
+journal derives it only from its already retained first finalized record and
+coupled child branch. The caller still chooses which sealed verified transition
+to submit to `commit_verified`; the transition capability neither chooses among
+siblings nor turns this local selection into globally canonical finality.
 
 ## Header and caller anchors
 
@@ -128,7 +143,8 @@ again. Only after the footer synchronization succeeds does it publish the new
 finality record, coupled consensus-and-artifact child branch, and state ID in
 memory. The outcome returns the exact position, ancestry, envelope identity,
 and new journal-state identity so the caller can update its separate trusted
-anchor.
+anchor. No signer-height capability is usable until that exact state identity
+has also passed the durability acknowledgement defined below.
 
 The two synchronization points define a framed durable commit boundary; they do
 not claim that one whole variable-length record is written atomically by the
@@ -137,6 +153,75 @@ state ID only as ambiguity information, not as proof that the record committed.
 No journal-state or history read and no commit is authoritative until strict
 reopen; the immutable context and replay-limit configuration remain inspectable.
 
+## Mandatory durable signer-height advancement
+
+After a finality footer synchronizes, the caller reads the healthy journal's
+current state identity and persists it in a separately protected monotonic
+anchor. It then calls
+`acknowledge_signer_height_transition_is_externally_durable(height,
+exact_state_id)`. The journal first requires a healthy non-halted handle and
+exact equality between `exact_state_id` and its still-current state. A wrong or
+stale identity fails before retained evidence is reconstructed.
+
+For an exact positive retained height, the method then strictly re-verifies the
+first retained envelope and artifact payload against their selected parent and
+reconstructs the replay-coupled child. The current acknowledged identity may be
+from a later healthy height because its chained history commits every earlier
+retained child. A same-value evidence variant never replaces the first retained
+envelope used by this reconstruction. Height zero, unknown height, poison,
+terminal halt, ambiguous commit, reconstruction failure, or any non-operable
+state returns no capability.
+
+Success returns one opaque non-clone
+`FixedValidatorDurableFinalityTransitionV0<'journal>` that immutably borrows the
+issuing journal. Safe code therefore cannot commit another child or append a
+conflict halt while the key-owning session validates the child, persists its
+exact vote-journal signing-lineage record, waits for acknowledgement of that
+record's externally durable state identity, and retains the token. The token
+carries only the strictly reconstructed transition; it accepts no caller-
+supplied child fields. `prepare_height_with_durable_finality` checks the exact
+direct parent and height before persisting the child lineage, while advancing
+the current live session requires
+`acknowledge_prepared_height_is_externally_durable` to consume the token only
+after the exact vote-journal anchor acknowledgement and then clear old-height
+lock and valid-value state. Dropping the token after that exact anchor does not
+erase the durable child binding: strict reopen resumes it without a new token.
+No raw `OwnedVerifiedFixedConsensusTransitionV0` enters the public key-owning
+height-advance path.
+
+This requirement governs advancement of an already-issued signing lineage. A
+header-only vote journal still receives its first branch-derived round-zero
+cursor under explicit caller provisioning authority, but it persists and
+externally anchors that exact initial lineage before issuing a session.
+Selecting and attesting the initial branch remains outside this finality
+handoff; replacing it after a crash is not permitted.
+
+The caller also selects which healthy finality-journal handle supplies the
+token. The signer checks the reconstructed semantic parent and height, not a
+unique directory or device identity; independently opened journals with the
+same acknowledged retained history are content-equivalent for this local
+handoff. Requiring one uniquely attested journal source would be a separate
+provenance policy and is not inferred here.
+
+This is an ordered two-journal protocol, not a cross-file transaction. Finality
+and its external anchor complete first; the vote journal then synchronizes the
+exact child signing-lineage record and its caller-controlled anchor; only then
+does signer memory advance. The exact external child-lineage anchor is the
+durable recovery boundary. A crash or token drop after that boundary but before
+live acknowledgement reopens directly at that child round zero without a fresh
+finality token. A complete child record beyond an older vote anchor fails closed,
+as does an anchor ahead of durable bytes. The live code cannot detect a caller
+that falsely claims external durability; such a lie violates this contract and
+may leave live advancement unprotected. Neither journal rolls the other back,
+repairs an anchor gap, or claims atomic durability across the two files.
+
+The token's borrow ends after successful consumption or drop. Once the exact
+child lineage is externally anchored, a distinct sibling may then durably halt
+the finality journal before or after live acknowledgement, but the halt does not
+retroactively revoke that anchored signer lineage. Exact reopen may therefore
+resume the child after a post-anchor, pre-acknowledgement halt. Coordinated stop
+authority is a separate operator or protocol policy.
+
 ## Evidence variants and terminal conflict
 
 If a later sealed transition at an already selected height carries the exact
@@ -144,7 +229,8 @@ same `ConsensusValueV0`, the journal reports it as already finalized. It retains
 the first exact envelope, returns that retained envelope identity and the
 unchanged state ID, and writes nothing. A later valid signer, signature, or
 round evidence variant therefore cannot replace or accumulate beside the first
-committing envelope.
+committing envelope or become the evidence identity in a signer-height
+transition.
 
 If the transition instead carries a distinct valid value at that same height,
 the journal appends and synchronizes a terminal conflict-halt record containing
@@ -172,6 +258,15 @@ envelope and payload, direct selected-parent sequence, fixed proposer state,
 first-value retention, conflict-halt terminality, and end of file. It returns a
 handle only if the final recomputed state ID equals the separately supplied
 expected ID. A complete mismatch or corruption exposes no state.
+
+Because a successful strict reopen already proves equality to the separately
+supplied expected identity, the caller may acknowledge that exact current
+identity and reconstruct a fresh transition for a retained finalized child when
+starting a not-yet-persisted signer handoff. The caller supplies no child fields,
+and the signing session repeats its direct-parent and direct-height checks.
+Reissuance changes neither finality-journal bytes nor state identity and cannot
+revive a halted journal. When the vote journal has already anchored that child
+lineage, its exact reopen resumes directly and does not require token reissuance.
 
 At most one framing-incomplete final record may be removed, and only after the
 strictly replayed committed prefix already equals the trusted expected ID.
@@ -226,12 +321,15 @@ established later by strict artifact replay, not by block retrieval.
 
 This V0 supplies local fixed-validator artifact-only durable selection, exact
 first-evidence retention, strict caller-anchored replay, and terminal conflict
-halt. Its sealed read-only selected-artifact history can anchor the existing
+halt. It also supplies the mandatory, externally acknowledged transition for
+advancing the sole vote-safety signing lineage from one exact retained local-
+finality child. Its sealed read-only selected-artifact history can anchor the existing
 caller-driven candidate reconstruction and bounded network fill workflows, but
 the journal itself does not choose or start them. It does not supply a general
 consensus-block format, Tendermint locking or valid-value transitions, timeout
 progression, dynamic validator selection or changes, signature creation or
-anti-equivocation signing state, multi-node finality, automatic networking or
-recovery policy, data availability, peer truth or trust, checkpoint/bootstrap,
-external-anchor persistence, rollback, provenance authority, economics,
-pruning, compaction, migration, or backup policy.
+anti-equivocation signing state, multi-node or global finality, automatic
+networking or recovery policy, data availability, peer truth or trust,
+checkpoint/bootstrap, external-anchor persistence or attestation, cross-journal
+atomicity, rollback, provenance authority, economics, pruning, compaction,
+migration, or backup policy.

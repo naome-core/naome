@@ -711,6 +711,36 @@ impl FixedValidatorLockStateV0 {
         Ok(())
     }
 
+    /// Validates one owned verified direct-child transition without mutation.
+    ///
+    /// The transition must have been verified from this state's exact parent
+    /// coordinate and current height, and its sealed child must derive an exact
+    /// round-zero cursor. The returned position describes that cursor without
+    /// exposing or consuming the child branch.
+    ///
+    /// Validation grants no signing, persistence, branch-selection, finality,
+    /// networking, or peer-trust authority.
+    pub fn validate_height_transition(
+        &self,
+        transition: &OwnedVerifiedFixedConsensusTransitionV0,
+    ) -> Result<ConsensusPosition, FixedValidatorLockStateError> {
+        if transition.parent_coordinate() != self.parent_coordinate {
+            return Err(FixedValidatorLockStateError::HeightTransitionParentMismatch);
+        }
+
+        let actual = transition.position().height();
+        let expected = self.position.height();
+        if actual != expected {
+            return Err(
+                FixedValidatorLockStateError::HeightTransitionHeightMismatch { expected, actual },
+            );
+        }
+
+        transition
+            .child_round_zero_position()
+            .map_err(FixedValidatorLockStateError::HeightTransitionRoundZero)
+    }
+
     /// Resets this local lock state at one exact verified direct child height.
     ///
     /// The supplied transition must have been verified from this state's exact
@@ -728,22 +758,13 @@ impl FixedValidatorLockStateV0 {
         &mut self,
         transition: OwnedVerifiedFixedConsensusTransitionV0,
     ) -> Result<FixedConsensusBranchV0, FixedValidatorLockStateError> {
-        if transition.parent_coordinate() != self.parent_coordinate {
-            return Err(FixedValidatorLockStateError::HeightTransitionParentMismatch);
-        }
-
-        let actual = transition.position().height();
-        let expected = self.position.height();
-        if actual != expected {
-            return Err(
-                FixedValidatorLockStateError::HeightTransitionHeightMismatch { expected, actual },
-            );
-        }
+        let expected_position = self.validate_height_transition(&transition)?;
 
         let child = transition.into_branch();
         let round_zero = child
             .begin_round_zero()
-            .map_err(FixedValidatorLockStateError::HeightTransitionRoundZero)?;
+            .expect("a validated child still derives its exact round-zero cursor");
+        debug_assert_eq!(round_zero.position(), expected_position);
         let next_state = Self::try_from_round_zero(&round_zero)
             .expect("a child branch always derives an exact round-zero cursor");
         *self = next_state;
