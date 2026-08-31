@@ -224,6 +224,30 @@ recoverability, selection, provenance, truth, consensus, finality, or peer
 trust. The transport never indexes, announces, discovers, relays, retries, or
 automatically imports a bundle.
 
+The source-aware acknowledgement form returns the same allocation in an
+`AcknowledgedRecoveryBundlePush` paired with the observed authenticated
+immediate `PeerId`. Its caller may separately provide an exact expected source,
+selected anchor, and unselected target through
+`RecoveryBundleStageSelection`, then route the bytes to the strict unselected
+staging contract in
+[Candidate-Branch Recovery Bundle V0](candidate-branch-recovery-bundle.md).
+The source check precedes bundle decoding or a store write. Complete staging
+re-decodes and validates the whole bundle against sealed selected history,
+preflights both destination stores, and retains only the unselected suffix as
+candidate blocks followed by validated payloads. Candidate and payload
+acknowledgements are independent durable prefixes with no cross-store
+atomicity; explicit retry is idempotent after reopen. The already-sent `01`
+receipt remains only stream acceptance and is neither delayed until nor
+upgraded by staging success. The stores retain no peer identity, and the
+observed source grants no provenance, truth, availability, selection,
+consensus, or finality authority.
+
+This composition performs no automatic inbound processing, durable bundle
+inbox, caller-intent persistence, background retry, peer or branch choice,
+selected-history mutation, promotion, relay, gossip, or receipt of durable
+storage. A caller that needs any such policy must define it separately rather
+than infer it from transport acknowledgement or unselected retention.
+
 The eight shared application permits jointly bound outbound pending requests,
 quarantined artifact candidates, decoded blocks, heads, recovery-bundle pushes,
 and their terminal events. The separate inbound recovery-bundle envelope bounds

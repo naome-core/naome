@@ -6,6 +6,13 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use libp2p::request_response;
+use naome_chain::ArtifactBlockId;
+use naome_storage::{
+    ArtifactBlockCandidateStore, CandidateBranchRecoveryBundleLimits,
+    CandidateBranchRecoveryBundleStageError, CandidateBranchRecoveryBundleStageOutcome,
+    CanonicalArtifactPayloadStore, SelectedArtifactHistory,
+    stage_candidate_branch_recovery_bundle_v0,
+};
 
 use super::{
     ExchangeRequestId, MAX_STATIC_PEERS, NetworkEvent, PeerId, PendingBudget, PendingPermit,
@@ -262,6 +269,229 @@ impl fmt::Debug for InboundRecoveryBundlePush {
     }
 }
 
+/// One source-bound stream acceptance with its exact caller-owned bundle bytes.
+///
+/// The authenticated immediate peer remains only a transport observation. The
+/// receipt already sent for this value means stream acceptance, not decoding,
+/// validation, persistence, provenance, selection, consensus, or finality.
+#[must_use]
+pub struct AcknowledgedRecoveryBundlePush {
+    peer_id: PeerId,
+    bundle_bytes: Vec<u8>,
+}
+
+/// The exact transport source and branch endpoints selected by the caller for staging.
+///
+/// The expected peer is only a source constraint. It grants no provenance,
+/// selection, consensus, or finality authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryBundleStageSelection {
+    expected_peer_id: PeerId,
+    anchor_block_id: ArtifactBlockId,
+    target_block_id: ArtifactBlockId,
+}
+
+impl RecoveryBundleStageSelection {
+    pub const fn new(
+        expected_peer_id: PeerId,
+        anchor_block_id: ArtifactBlockId,
+        target_block_id: ArtifactBlockId,
+    ) -> Self {
+        Self {
+            expected_peer_id,
+            anchor_block_id,
+            target_block_id,
+        }
+    }
+
+    pub const fn expected_peer_id(&self) -> PeerId {
+        self.expected_peer_id
+    }
+
+    pub const fn anchor_block_id(&self) -> ArtifactBlockId {
+        self.anchor_block_id
+    }
+
+    pub const fn target_block_id(&self) -> ArtifactBlockId {
+        self.target_block_id
+    }
+}
+
+impl AcknowledgedRecoveryBundlePush {
+    pub const fn peer_id(&self) -> PeerId {
+        self.peer_id
+    }
+    pub fn encoded_bytes(&self) -> usize {
+        self.bundle_bytes.len()
+    }
+    pub fn bundle_bytes(&self) -> &[u8] {
+        &self.bundle_bytes
+    }
+    pub fn into_bundle_bytes(self) -> Vec<u8> {
+        self.bundle_bytes
+    }
+
+    /// Stages this accepted stream only for the exact caller-selected source,
+    /// selected anchor, and unselected target.
+    ///
+    /// Complete staging preserves the source observation only in the returned
+    /// memory value; neither durable store records peer provenance. A mismatch
+    /// or staging failure returns the exact owned bytes.
+    pub fn stage_candidate_branch(
+        self,
+        selection: RecoveryBundleStageSelection,
+        selected: &dyn SelectedArtifactHistory,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        limits: CandidateBranchRecoveryBundleLimits,
+    ) -> Result<AcknowledgedRecoveryBundleStageOutcome, Box<AcknowledgedRecoveryBundleStageError>>
+    {
+        if self.peer_id != selection.expected_peer_id {
+            return Err(Box::new(
+                AcknowledgedRecoveryBundleStageError::UnexpectedPeer {
+                    expected: selection.expected_peer_id,
+                    actual: self.peer_id,
+                    acknowledged: self,
+                },
+            ));
+        }
+        let peer_id = self.peer_id;
+        match stage_candidate_branch_recovery_bundle_v0(
+            self.bundle_bytes,
+            selection.anchor_block_id,
+            selection.target_block_id,
+            selected,
+            candidates,
+            payloads,
+            limits,
+        ) {
+            Ok(staging) => Ok(AcknowledgedRecoveryBundleStageOutcome { peer_id, staging }),
+            Err(source) => Err(Box::new(AcknowledgedRecoveryBundleStageError::Staging {
+                peer_id,
+                source,
+            })),
+        }
+    }
+}
+
+impl fmt::Debug for AcknowledgedRecoveryBundlePush {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AcknowledgedRecoveryBundlePush")
+            .field("peer_id", &self.peer_id)
+            .field("encoded_bytes", &self.bundle_bytes.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Complete unselected staging bound to the observed authenticated source.
+#[must_use]
+pub struct AcknowledgedRecoveryBundleStageOutcome {
+    peer_id: PeerId,
+    staging: CandidateBranchRecoveryBundleStageOutcome,
+}
+
+impl AcknowledgedRecoveryBundleStageOutcome {
+    pub const fn peer_id(&self) -> PeerId {
+        self.peer_id
+    }
+    pub const fn staging(&self) -> &CandidateBranchRecoveryBundleStageOutcome {
+        &self.staging
+    }
+    pub fn into_staging(self) -> CandidateBranchRecoveryBundleStageOutcome {
+        self.staging
+    }
+}
+
+impl fmt::Debug for AcknowledgedRecoveryBundleStageOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AcknowledgedRecoveryBundleStageOutcome")
+            .field("peer_id", &self.peer_id)
+            .field("staging", &self.staging)
+            .finish()
+    }
+}
+
+/// A source-authorization or strict unselected-staging failure.
+#[must_use]
+pub enum AcknowledgedRecoveryBundleStageError {
+    UnexpectedPeer {
+        expected: PeerId,
+        actual: PeerId,
+        acknowledged: AcknowledgedRecoveryBundlePush,
+    },
+    Staging {
+        peer_id: PeerId,
+        source: CandidateBranchRecoveryBundleStageError,
+    },
+}
+
+impl AcknowledgedRecoveryBundleStageError {
+    pub fn bundle_bytes(&self) -> &[u8] {
+        match self {
+            Self::UnexpectedPeer { acknowledged, .. } => acknowledged.bundle_bytes(),
+            Self::Staging { source, .. } => source.bundle_bytes(),
+        }
+    }
+    pub fn into_bundle_bytes(self) -> Vec<u8> {
+        match self {
+            Self::UnexpectedPeer { acknowledged, .. } => acknowledged.into_bundle_bytes(),
+            Self::Staging { source, .. } => source.into_bundle_bytes(),
+        }
+    }
+}
+
+impl fmt::Debug for AcknowledgedRecoveryBundleStageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnexpectedPeer {
+                expected,
+                actual,
+                acknowledged,
+            } => formatter
+                .debug_struct("AcknowledgedRecoveryBundleStageError::UnexpectedPeer")
+                .field("expected", expected)
+                .field("actual", actual)
+                .field("acknowledged", acknowledged)
+                .finish(),
+            Self::Staging { peer_id, source } => formatter
+                .debug_struct("AcknowledgedRecoveryBundleStageError::Staging")
+                .field("peer_id", peer_id)
+                .field("source", source)
+                .finish(),
+        }
+    }
+}
+
+impl fmt::Display for AcknowledgedRecoveryBundleStageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnexpectedPeer {
+                expected, actual, ..
+            } => write!(
+                formatter,
+                "acknowledged recovery bundle came from {actual}, expected caller-selected {expected}"
+            ),
+            Self::Staging { peer_id, source } => {
+                write!(
+                    formatter,
+                    "recovery bundle from {peer_id} was not staged: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for AcknowledgedRecoveryBundleStageError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::UnexpectedPeer { .. } => None,
+            Self::Staging { source, .. } => Some(source),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RecoveryBundlePushReceipt;
 /// Receipt only confirms that the authenticated receiver accepted this stream; it says nothing about the bundle's bytes or any state.
@@ -392,6 +622,16 @@ impl StaticArtifactNetwork {
         &mut self,
         inbound: InboundRecoveryBundlePush,
     ) -> Result<Vec<u8>, RecoveryBundlePushAcknowledgeError> {
+        self.acknowledge_recovery_bundle_push_with_source(inbound)
+            .map(AcknowledgedRecoveryBundlePush::into_bundle_bytes)
+    }
+
+    /// Sends the stream-only receipt and preserves the authenticated immediate
+    /// source alongside the exact owned bytes for explicit caller policy.
+    pub fn acknowledge_recovery_bundle_push_with_source(
+        &mut self,
+        inbound: InboundRecoveryBundlePush,
+    ) -> Result<AcknowledgedRecoveryBundlePush, RecoveryBundlePushAcknowledgeError> {
         let InboundRecoveryBundlePush {
             peer_id,
             request,
@@ -405,7 +645,10 @@ impl StaticArtifactNetwork {
             .recovery_bundle_push
             .send_response(channel, RecoveryBundlePushReceipt)
         {
-            Ok(()) => Ok(bundle_bytes),
+            Ok(()) => Ok(AcknowledgedRecoveryBundlePush {
+                peer_id,
+                bundle_bytes,
+            }),
             Err(_) => Err(RecoveryBundlePushAcknowledgeError {
                 peer_id,
                 bundle_bytes,
@@ -566,10 +809,112 @@ impl Error for RecoveryBundlePushAcknowledgeError {}
 mod tests {
     use super::*;
     use libp2p::swarm::ConnectionId;
+    use naome_chain::{ArtifactBlock, ArtifactChainState, ArtifactDag};
+    use naome_storage::{
+        ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStoreLimits,
+        ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits,
+        CandidateBranchRecoveryBundleStageFailure,
+    };
     use std::time::Duration;
     use tokio::time::timeout;
 
     use crate::Keypair;
+
+    struct BundleFixture {
+        definition: naome_chain::ArtifactChainDefinition,
+        blocks: Vec<ArtifactBlock>,
+        payloads: Vec<Vec<u8>>,
+        limits: CandidateBranchRecoveryBundleLimits,
+        bytes: Vec<u8>,
+    }
+
+    impl BundleFixture {
+        fn anchor(&self) -> ArtifactBlockId {
+            self.definition.id().virtual_genesis_block_id()
+        }
+
+        fn target(&self) -> ArtifactBlockId {
+            self.blocks.last().unwrap().id()
+        }
+
+        fn payload_bytes(&self) -> u64 {
+            u64::try_from(self.payloads.iter().map(Vec::len).sum::<usize>()).unwrap()
+        }
+    }
+
+    fn bundle_fixture() -> BundleFixture {
+        let definition = crate::tests::test_chain_definition();
+        let payloads = vec![crate::tests::pairing_bytes(), crate::tests::union_bytes()];
+        let mut dag = ArtifactDag::new();
+        let artifact_ids = payloads
+            .iter()
+            .map(|payload| {
+                dag.apply_canonical_artifact_bytes(payload.clone())
+                    .unwrap()
+                    .artifact_id()
+            })
+            .collect::<Vec<_>>();
+        let mut branch = ArtifactChainState::new(definition);
+        let mut blocks = Vec::new();
+        for (&artifact_id, payload) in artifact_ids.iter().zip(&payloads) {
+            let block = branch.prepare_block(artifact_id).unwrap();
+            branch.apply_block(&block, payload.clone()).unwrap();
+            blocks.push(block);
+        }
+        let payload_bytes = payloads.iter().map(Vec::len).sum::<usize>();
+        let limits = CandidateBranchRecoveryBundleLimits::new(
+            blocks.len(),
+            u64::try_from(payload_bytes).unwrap(),
+            RECOVERY_BUNDLE_PUSH_MAX_BYTES as u64,
+        )
+        .unwrap();
+        let source = crate::tests::TestDirectory::new("recovery-bundle-stage-source");
+        let journal = crate::tests::create_journal(source.path()).unwrap();
+        let mut candidates = ArtifactBlockCandidateStore::create(
+            source.path(),
+            definition,
+            ArtifactBlockCandidateStoreLimits::new(blocks.len()).unwrap(),
+        )
+        .unwrap();
+        for block in &blocks {
+            assert_eq!(
+                candidates.insert(block).unwrap(),
+                ArtifactBlockCandidateInsertOutcome::Inserted
+            );
+        }
+        let mut payload_store = CanonicalArtifactPayloadStore::create(
+            source.path(),
+            ArtifactPayloadStoreLimits::new(payloads.len(), u64::try_from(payload_bytes).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let mut accepted = ArtifactDag::new();
+        for payload in &payloads {
+            let record = accepted
+                .apply_canonical_artifact_bytes(payload.clone())
+                .unwrap();
+            assert_eq!(
+                payload_store.insert(record).unwrap(),
+                ArtifactPayloadInsertOutcome::Inserted
+            );
+        }
+        let bytes = journal
+            .export_candidate_branch_recovery_bundle_v0(
+                blocks.last().unwrap().id(),
+                &mut candidates,
+                &mut payload_store,
+                limits,
+            )
+            .unwrap()
+            .into_canonical_bytes();
+        BundleFixture {
+            definition,
+            blocks,
+            payloads,
+            limits,
+            bytes,
+        }
+    }
 
     fn receipt_event(
         network: &mut StaticArtifactNetwork,
@@ -683,6 +1028,344 @@ mod tests {
                 }
             }
         }).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn acknowledged_authenticated_bundle_stages_unselected_data_without_mutating_history() {
+        let fixture = bundle_fixture();
+        let destination = crate::tests::TestDirectory::new("recovery-bundle-stage-destination");
+        let selected = crate::tests::create_journal(destination.path()).unwrap();
+        let selected_before = crate::tests::snapshot(&destination, &selected);
+        let mut candidates = ArtifactBlockCandidateStore::create(
+            destination.path(),
+            fixture.definition,
+            ArtifactBlockCandidateStoreLimits::new(fixture.blocks.len()).unwrap(),
+        )
+        .unwrap();
+        let mut payloads = CanonicalArtifactPayloadStore::create(
+            destination.path(),
+            ArtifactPayloadStoreLimits::new(fixture.payloads.len(), fixture.payload_bytes())
+                .unwrap(),
+        )
+        .unwrap();
+        let (mut sender, mut receiver, sender_peer, receiver_peer) =
+            crate::tests::connected_pair().await;
+        let expected_bytes = fixture.bytes.clone();
+        let anchor = fixture.anchor();
+        let target = fixture.target();
+        let mut ticket = Some(
+            sender
+                .push_recovery_bundle(receiver_peer, fixture.bytes)
+                .unwrap(),
+        );
+
+        timeout(Duration::from_secs(10), async {
+            let mut staged = false;
+            loop {
+                tokio::select! {
+                    event = receiver.next_event() => {
+                        if !staged && let NetworkEvent::InboundRecoveryBundlePush(inbound) = event {
+                            let inbound_pointer = inbound.bundle_bytes().as_ptr();
+                            let acknowledged = receiver
+                                .acknowledge_recovery_bundle_push_with_source(inbound)
+                                .unwrap();
+                            assert_eq!(acknowledged.peer_id(), sender_peer);
+                            assert_eq!(acknowledged.bundle_bytes().as_ptr(), inbound_pointer);
+                            let outcome = acknowledged
+                                .stage_candidate_branch(
+                                    RecoveryBundleStageSelection::new(sender_peer, anchor, target),
+                                    &selected,
+                                    &mut candidates,
+                                    &mut payloads,
+                                    fixture.limits,
+                                )
+                                .unwrap();
+                            assert_eq!(outcome.peer_id(), sender_peer);
+                            assert_eq!(outcome.staging().candidate_block_count(), 2);
+                            assert_eq!(outcome.staging().candidate_inserted_count(), 2);
+                            assert_eq!(outcome.staging().payload_inserted_count(), 2);
+                            assert_eq!(outcome.staging().bundle_bytes(), expected_bytes);
+                            assert_eq!(outcome.staging().bundle_bytes().as_ptr(), inbound_pointer);
+                            staged = true;
+                        }
+                    },
+                    event = sender.next_event() => {
+                        if staged && let NetworkEvent::OutboundRecoveryBundlePush(event) = event {
+                            let receipt = ticket.take().unwrap().complete(event).unwrap().unwrap();
+                            assert_eq!(receipt.peer_id(), receiver_peer);
+                            break;
+                        }
+                    },
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(candidates.len().unwrap(), 2);
+        assert_eq!(payloads.len().unwrap(), 2);
+        crate::tests::assert_snapshot(&destination, &selected, &selected_before);
+    }
+
+    #[tokio::test]
+    async fn stream_receipt_survives_strict_staging_rejection_and_attests_no_storage() {
+        let fixture = bundle_fixture();
+        let destination = crate::tests::TestDirectory::new("recovery-bundle-rejected-destination");
+        let selected = crate::tests::create_journal(destination.path()).unwrap();
+        let selected_before = crate::tests::snapshot(&destination, &selected);
+        let mut candidates = ArtifactBlockCandidateStore::create(
+            destination.path(),
+            fixture.definition,
+            ArtifactBlockCandidateStoreLimits::new(fixture.blocks.len()).unwrap(),
+        )
+        .unwrap();
+        let mut payloads = CanonicalArtifactPayloadStore::create(
+            destination.path(),
+            ArtifactPayloadStoreLimits::new(fixture.payloads.len(), fixture.payload_bytes())
+                .unwrap(),
+        )
+        .unwrap();
+        let (mut sender, mut receiver, sender_peer, receiver_peer) =
+            crate::tests::connected_pair().await;
+        let malformed = vec![0xff];
+        let ticket = sender
+            .push_recovery_bundle(receiver_peer, malformed)
+            .unwrap();
+
+        timeout(Duration::from_secs(10), async {
+            let mut rejected = false;
+            let mut receipt_received = false;
+            let mut ticket = Some(ticket);
+            loop {
+                tokio::select! {
+                    event = receiver.next_event() => {
+                        if !rejected && let NetworkEvent::InboundRecoveryBundlePush(inbound) = event {
+                            let inbound_pointer = inbound.bundle_bytes().as_ptr();
+                            let acknowledged = receiver
+                                .acknowledge_recovery_bundle_push_with_source(inbound)
+                                .unwrap();
+                            let error = acknowledged
+                                .stage_candidate_branch(
+                                    RecoveryBundleStageSelection::new(
+                                        sender_peer,
+                                        fixture.anchor(),
+                                        fixture.target(),
+                                    ),
+                                    &selected,
+                                    &mut candidates,
+                                    &mut payloads,
+                                    fixture.limits,
+                                )
+                                .unwrap_err();
+                            assert_eq!(error.bundle_bytes().as_ptr(), inbound_pointer);
+                            let AcknowledgedRecoveryBundleStageError::Staging { source, .. } = *error else {
+                                panic!("matching source must reach strict staging")
+                            };
+                            assert!(matches!(
+                                source.failure(),
+                                CandidateBranchRecoveryBundleStageFailure::Decode { .. }
+                            ));
+                            rejected = true;
+                            if receipt_received {
+                                break;
+                            }
+                        }
+                    },
+                    event = sender.next_event() => {
+                        if let NetworkEvent::OutboundRecoveryBundlePush(event) = event {
+                            let receipt = ticket.take().unwrap().complete(event).unwrap().unwrap();
+                            assert_eq!(receipt.peer_id(), receiver_peer);
+                            assert_eq!(receipt.encoded_bytes(), 1);
+                            receipt_received = true;
+                            if rejected {
+                                break;
+                            }
+                        }
+                    },
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(candidates.len().unwrap(), 0);
+        assert_eq!(payloads.len().unwrap(), 0);
+        crate::tests::assert_snapshot(&destination, &selected, &selected_before);
+    }
+
+    #[test]
+    fn operable_finality_history_stages_a_suffix_without_mutating_finality() {
+        let fixture = bundle_fixture();
+        let finality_directory =
+            crate::tests::TestDirectory::new("recovery-bundle-operable-finality");
+        let mut finality_fixture = crate::tests::FinalityFixture::new();
+        let mut finality = finality_fixture.create(&finality_directory);
+        let selected_block =
+            finality_fixture.commit_payload(&mut finality, crate::tests::pairing_bytes());
+        assert_eq!(selected_block, fixture.blocks[0].id());
+        let finality_before = crate::tests::finality_snapshot(&finality_directory, &finality);
+        let stores = crate::tests::TestDirectory::new("recovery-bundle-operable-stores");
+        let mut candidates = ArtifactBlockCandidateStore::create(
+            stores.path(),
+            fixture.definition,
+            ArtifactBlockCandidateStoreLimits::new(1).unwrap(),
+        )
+        .unwrap();
+        let mut payloads = CanonicalArtifactPayloadStore::create(
+            stores.path(),
+            ArtifactPayloadStoreLimits::new(1, u64::try_from(fixture.payloads[1].len()).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+        let anchor = fixture.anchor();
+        let target = fixture.target();
+        let limits = fixture.limits;
+        let acknowledged = AcknowledgedRecoveryBundlePush {
+            peer_id,
+            bundle_bytes: fixture.bytes,
+        };
+
+        let outcome = acknowledged
+            .stage_candidate_branch(
+                RecoveryBundleStageSelection::new(peer_id, anchor, target),
+                &finality,
+                &mut candidates,
+                &mut payloads,
+                limits,
+            )
+            .unwrap();
+
+        assert_eq!(outcome.staging().selected_prefix_count(), 1);
+        assert_eq!(outcome.staging().candidate_block_count(), 1);
+        assert_eq!(outcome.staging().candidate_inserted_count(), 1);
+        assert_eq!(outcome.staging().payload_inserted_count(), 1);
+        assert_eq!(candidates.len().unwrap(), 1);
+        assert_eq!(payloads.len().unwrap(), 1);
+        crate::tests::assert_finality_snapshot(&finality_directory, &finality, &finality_before);
+    }
+
+    #[test]
+    fn terminal_finality_history_rejects_staging_before_store_writes() {
+        let fixture = bundle_fixture();
+        let finality_directory = crate::tests::TestDirectory::new("recovery-bundle-stage-finality");
+        let mut finality_fixture = crate::tests::FinalityFixture::new();
+        let mut finality = finality_fixture.create(&finality_directory);
+        finality_fixture.halt_with_conflict(
+            &mut finality,
+            crate::tests::pairing_bytes(),
+            crate::tests::union_bytes(),
+        );
+        let finality_bytes = finality_directory.journal_bytes();
+        let finality_state_id = finality.state_id().unwrap();
+        let finality_halt = finality.halt().unwrap();
+        let stores = crate::tests::TestDirectory::new("recovery-bundle-stage-halted-stores");
+        let mut candidates = ArtifactBlockCandidateStore::create(
+            stores.path(),
+            fixture.definition,
+            ArtifactBlockCandidateStoreLimits::new(2).unwrap(),
+        )
+        .unwrap();
+        let mut payloads = CanonicalArtifactPayloadStore::create(
+            stores.path(),
+            ArtifactPayloadStoreLimits::new(2, fixture.payload_bytes()).unwrap(),
+        )
+        .unwrap();
+        let candidate_bytes =
+            std::fs::read(stores.path().join("artifact-block-candidate-store.log")).unwrap();
+        let payload_bytes =
+            std::fs::read(stores.path().join("artifact-payload-store.log")).unwrap();
+        let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+        let anchor = fixture.anchor();
+        let target = fixture.target();
+        let acknowledged = AcknowledgedRecoveryBundlePush {
+            peer_id,
+            bundle_bytes: fixture.bytes,
+        };
+        let error = acknowledged
+            .stage_candidate_branch(
+                RecoveryBundleStageSelection::new(peer_id, anchor, target),
+                &finality,
+                &mut candidates,
+                &mut payloads,
+                fixture.limits,
+            )
+            .unwrap_err();
+        let AcknowledgedRecoveryBundleStageError::Staging { source, .. } = *error else {
+            panic!("matching source must reach selected-history staging")
+        };
+        assert!(matches!(
+            source.failure(),
+            CandidateBranchRecoveryBundleStageFailure::SelectedHistory { .. }
+        ));
+        assert_eq!(source.candidate_acknowledged_count(), 0);
+        assert_eq!(candidates.len().unwrap(), 0);
+        assert_eq!(payloads.len().unwrap(), 0);
+        assert_eq!(
+            std::fs::read(stores.path().join("artifact-block-candidate-store.log")).unwrap(),
+            candidate_bytes
+        );
+        assert_eq!(
+            std::fs::read(stores.path().join("artifact-payload-store.log")).unwrap(),
+            payload_bytes
+        );
+        assert_eq!(finality_directory.journal_bytes(), finality_bytes);
+        assert_eq!(finality.state_id().unwrap(), finality_state_id);
+        assert_eq!(finality.halt().unwrap(), finality_halt);
+    }
+
+    #[test]
+    fn caller_selected_source_mismatch_preserves_bytes_and_writes_nothing() {
+        let fixture = bundle_fixture();
+        let destination = crate::tests::TestDirectory::new("recovery-bundle-wrong-source");
+        let selected = crate::tests::create_journal(destination.path()).unwrap();
+        let selected_before = crate::tests::snapshot(&destination, &selected);
+        let mut candidates = ArtifactBlockCandidateStore::create(
+            destination.path(),
+            fixture.definition,
+            ArtifactBlockCandidateStoreLimits::new(fixture.blocks.len()).unwrap(),
+        )
+        .unwrap();
+        let mut payloads = CanonicalArtifactPayloadStore::create(
+            destination.path(),
+            ArtifactPayloadStoreLimits::new(fixture.payloads.len(), fixture.payload_bytes())
+                .unwrap(),
+        )
+        .unwrap();
+        let actual_peer = Keypair::generate_ed25519().public().to_peer_id();
+        let expected_peer = Keypair::generate_ed25519().public().to_peer_id();
+        let anchor = fixture.anchor();
+        let target = fixture.target();
+        let limits = fixture.limits;
+        let malformed = vec![0xff];
+        let bundle_pointer = malformed.as_ptr();
+        let acknowledged = AcknowledgedRecoveryBundlePush {
+            peer_id: actual_peer,
+            bundle_bytes: malformed,
+        };
+
+        let error = acknowledged
+            .stage_candidate_branch(
+                RecoveryBundleStageSelection::new(expected_peer, anchor, target),
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                limits,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.bundle_bytes().as_ptr(), bundle_pointer);
+        assert!(matches!(
+            *error,
+            AcknowledgedRecoveryBundleStageError::UnexpectedPeer {
+                expected,
+                actual,
+                ..
+            } if expected == expected_peer && actual == actual_peer
+        ));
+        assert_eq!(candidates.len().unwrap(), 0);
+        assert_eq!(payloads.len().unwrap(), 0);
+        crate::tests::assert_snapshot(&destination, &selected, &selected_before);
     }
 
     #[tokio::test]

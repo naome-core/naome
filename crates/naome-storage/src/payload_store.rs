@@ -505,6 +505,11 @@ impl CanonicalArtifactPayloadStore {
     pub const fn limits(&self) -> ArtifactPayloadStoreLimits {
         self.core.limits
     }
+
+    #[cfg(test)]
+    pub(crate) fn poison_after_injected_ambiguous_commit(&mut self) {
+        self.core.poisoned = true;
+    }
 }
 
 fn open_and_lock(directory: &Path) -> Result<File, CanonicalArtifactPayloadStoreError> {

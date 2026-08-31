@@ -37,8 +37,8 @@ const MIN_BUNDLE_BYTES: usize = FIXED_METADATA_BYTES + DIGEST_BYTES;
 /// Caller-local bounds for one portable candidate-branch recovery bundle.
 ///
 /// These limits are not persisted policy, branch-retention policy, or consensus
-/// resource limits. Every bound is applied independently by export, decode, and
-/// import.
+/// resource limits. Every bound is applied independently by export, decode,
+/// selected import, and unselected staging.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CandidateBranchRecoveryBundleLimits {
     max_blocks: usize,
@@ -215,21 +215,21 @@ impl fmt::Debug for CandidateBranchRecoveryBundleV0 {
     }
 }
 
-struct DecodedBundleEntry {
-    block: ArtifactBlock,
-    payload_range: Range<usize>,
+pub(super) struct DecodedBundleEntry {
+    pub(super) block: ArtifactBlock,
+    pub(super) payload_range: Range<usize>,
 }
 
-struct DecodedBundle {
-    chain_id: ArtifactChainId,
-    anchor_block_id: ArtifactBlockId,
-    anchor_artifact_set_root: ArtifactSetRoot,
-    target_block_id: ArtifactBlockId,
-    total_payload_bytes: u64,
-    entries: Vec<DecodedBundleEntry>,
+pub(super) struct DecodedBundle {
+    pub(super) chain_id: ArtifactChainId,
+    pub(super) anchor_block_id: ArtifactBlockId,
+    pub(super) anchor_artifact_set_root: ArtifactSetRoot,
+    pub(super) target_block_id: ArtifactBlockId,
+    pub(super) total_payload_bytes: u64,
+    pub(super) entries: Vec<DecodedBundleEntry>,
 }
 
-fn decode_bundle(
+pub(super) fn decode_bundle(
     bytes: &[u8],
     limits: CandidateBranchRecoveryBundleLimits,
 ) -> Result<DecodedBundle, CandidateBranchRecoveryBundleDecodeError> {

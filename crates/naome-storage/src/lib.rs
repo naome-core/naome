@@ -62,11 +62,18 @@
 //! genesis-anchored exporter sources its selected prefix only from
 //! replay-accepted journal records; the wire bytes carry no anchor-mode or
 //! provenance authority and remain a caller-owned offline artifact.
+//! A separate strict staging operation re-decodes one caller-owned bundle
+//! against an exact caller-selected anchor, target, and sealed selected history,
+//! preflights both durable stores, and retains only its unselected suffix in the
+//! candidate store followed by the validated payload archive. Those stores
+//! expose independent acknowledged prefixes rather than cross-store atomicity;
+//! staging never mutates or selects history and retains no peer provenance.
 
 mod block_candidate_store;
 mod candidate_branch_archive_import;
 mod candidate_branch_reconstruction;
 mod candidate_branch_recovery_bundle;
+mod candidate_branch_recovery_staging;
 #[cfg(test)]
 mod fault_io;
 mod fixed_validator_finality_journal;
@@ -92,6 +99,11 @@ pub use candidate_branch_recovery_bundle::{
     CandidateBranchRecoveryBundleExportError, CandidateBranchRecoveryBundleImportError,
     CandidateBranchRecoveryBundleImportOutcome, CandidateBranchRecoveryBundleLimits,
     CandidateBranchRecoveryBundleLimitsError, CandidateBranchRecoveryBundleV0,
+};
+
+pub use candidate_branch_recovery_staging::{
+    CandidateBranchRecoveryBundleStageError, CandidateBranchRecoveryBundleStageFailure,
+    CandidateBranchRecoveryBundleStageOutcome, stage_candidate_branch_recovery_bundle_v0,
 };
 
 pub use candidate_branch_reconstruction::{

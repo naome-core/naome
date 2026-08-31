@@ -367,6 +367,16 @@ payload fill may separately durably insert a strictly validated payload into
 the payload archive; neither flow changes this journal. This journal advances
 only through `commit_verified`.
 
+The same capability may also be supplied to strict recovery-bundle staging.
+That operation requires one exact retained selected anchor and unselected
+target, repeats complete bundle validation from the returned immutable
+snapshot, and may then write only to caller-routed candidate and payload stores.
+A terminally halted or poisoned journal denies the first selected-history read,
+so staging returns before either store writes. The journal is borrowed only as
+sealed read-only history; successful or failed staging therefore cannot change
+its bytes, state identity, selected head, root, finalized length, or halt
+diagnostics.
+
 The target, selected anchor, peer or peer order, and whether to start or restart
 either network flow remain caller choices. The view grants no consensus-branch
 or fork selection, global finality, provenance, payload availability, peer-truth,

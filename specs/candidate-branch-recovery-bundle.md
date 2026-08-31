@@ -188,11 +188,56 @@ exact contiguous bundle prefix. Import verifies that prefix and fully preflights
 the remaining suffix before another append. A divergent, longer, or unrelated
 head is an error. A fully selected bundle succeeds without a new commit.
 
+## Unselected candidate and payload staging
+
+`stage_candidate_branch_recovery_bundle_v0` is a separate destination-side
+operation for retaining one bundle as unselected recovery material. The caller
+supplies the exact expected anchor and target, a sealed read-only
+`SelectedArtifactHistory`, a caller-routed matching chain-scoped
+`ArtifactBlockCandidateStore`, a caller-routed Foundation-scoped
+`CanonicalArtifactPayloadStore`, and destination-local bundle limits. The
+operation consumes the caller-owned canonical bytes directly; it does not first
+turn them into an authority-bearing decoded object.
+
+Before the first durable write, staging:
+
+1. strictly re-decodes the complete byte string under the destination limits;
+2. requires the selected history, candidate store, and bundle chain identities
+   to agree and the encoded anchor and target to equal the caller's selections;
+3. requires the anchor to be retained selected history with the exact encoded
+   root and the target to remain unselected;
+4. replays every selected-prefix and candidate-suffix block and payload through
+   complete immutable child validation from the selected anchor, requiring
+   every selected-prefix identity and root to match sealed selected history and
+   forbidding re-entry into selected history after the candidate suffix begins;
+   and
+5. preflights exact existing-value conflicts plus candidate entry capacity and
+   payload entry and aggregate-byte capacity for the entire unselected suffix.
+
+Only the non-selected suffix is retained. Staging first idempotently inserts all
+of its structural blocks into the candidate store, then revalidates and
+idempotently archives all of its canonical payloads in forward order. Existing
+exact entries are acknowledgements, not new writes. The candidate and payload
+stores have independent acknowledged and newly inserted prefixes; they are not
+one cross-store transaction. A commit failure returns those exact prefix counts
+and the original owned bundle bytes. After reopening any poisoned store, an
+explicit retry repeats complete decode, validation, and preflight, accepts only
+exact retained entries, and continues idempotently. No acknowledged prefix is
+rolled back.
+
+Success likewise returns the original allocation together with the exact
+anchor, target, selected-prefix count, candidate-suffix count, and new insertion
+counts. Staging never mutates selected history or preserves a transport source.
+Candidate and payload retention therefore grants no selected provenance,
+availability certificate, branch preference, fork choice, consensus, finality,
+peer trust, or economic authority.
+
 ## Non-goals
 
-This API does not choose a target or branch; export an already-selected target
+These APIs do not choose a target or branch; export an already-selected target
 as a backup or attest selected provenance; persist or resume caller intent;
-create node-managed competing-branch state; mutate candidate or payload stores;
+create node-managed competing-branch state; make selected import mutate
+candidate or payload stores; make unselected staging mutate selected history;
 fetch, relay, gossip, authenticate, or define a network protocol; import from an
 arbitrary historical anchor; make the whole branch one crash-atomic transaction;
 or establish availability, preference, fork choice, consensus, finality, peer
