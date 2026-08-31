@@ -10,19 +10,22 @@ use std::sync::Arc;
 
 use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
-    ConsensusContextV0, ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusRound,
-    ConsensusSignature, ConsensusVoteId, ConsensusVoteRole, ConsensusVoteTarget,
-    ConsensusVoteVerifyError, FixedAgreementSetId, FixedConsensusBranchCoordinateV0,
-    FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, FixedValidatorLockStateV0, FixedValidatorLockedValueV0,
-    FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0, FixedValidatorVoteIntentError,
-    FixedValidatorVoteIntentV0, ObservedFixedValidatorVoteIntentV0, ProposerSelectionError,
-    VerifiedConsensusVoteV0, VerifiedFixedConsensusProposalV0,
+    ConsensusAncestryId, ConsensusContextV0, ConsensusEnvelopeId, ConsensusHeight, ConsensusKey,
+    ConsensusPosition, ConsensusRound, ConsensusSignature, ConsensusVoteId, ConsensusVoteRole,
+    ConsensusVoteTarget, ConsensusVoteVerifyError, FixedAgreementSetId,
+    FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusRoundV0,
+    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, FixedValidatorLockStateV0,
+    FixedValidatorLockedValueV0, FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0,
+    FixedValidatorVoteIntentError, FixedValidatorVoteIntentV0, ObservedFixedValidatorVoteIntentV0,
+    ProposerSelectionError, VerifiedConsensusVoteV0, VerifiedFixedConsensusProposalV0,
     VerifiedReplayFixedValidatorVoteIntentV0,
 };
 use sha2::{Digest, Sha256};
 
-use super::fixed_validator_finality_journal::FixedValidatorDurableFinalityTransitionV0;
+use super::fixed_validator_finality_journal::{
+    FixedValidatorDurableFinalityConflictV0, FixedValidatorDurableFinalityTransitionV0,
+    FixedValidatorFinalityJournalStateIdV0,
+};
 use super::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
 const JOURNAL_HEADER: &[u8] = b"naome:fixed-validator-vote-safety-journal:v0\0";
@@ -50,10 +53,13 @@ const PREPARE_RECORD: u8 = 1;
 const COMPLETE_RECORD: u8 = 2;
 const CONFLICT_HALT_RECORD: u8 = 3;
 const SIGNING_LINEAGE_RECORD: u8 = 4;
+const FINALITY_CONFLICT_STOP_RECORD: u8 = 5;
 const SIGNING_LINEAGE_DOMAIN: &[u8] = b"naome:fixed-validator-vote-safety-signing-lineage:v0\0";
 const SIGNING_LINEAGE_ID_BYTES: usize = 32;
 const SIGNING_LINEAGE_PAYLOAD_BYTES: usize = 8 + SIGNING_LINEAGE_ID_BYTES;
 const SIGNING_LINEAGE_BODY_BYTES: usize = 1 + SIGNING_LINEAGE_PAYLOAD_BYTES;
+const FINALITY_CONFLICT_STOP_PAYLOAD_BYTES: usize = 32 + 8 + 32 + 32 + 32 + 32;
+const FINALITY_CONFLICT_STOP_BODY_BYTES: usize = 1 + FINALITY_CONFLICT_STOP_PAYLOAD_BYTES;
 const RECORD_LENGTH_BYTES: u64 = 4;
 const STATE_ID_BYTES: u64 = FixedValidatorVoteSafetyJournalStateIdV0::BYTE_LENGTH as u64;
 const ENTRY_FIXED_BYTES: u64 = RECORD_LENGTH_BYTES + STATE_ID_BYTES;
@@ -104,9 +110,10 @@ impl Error for FixedValidatorVoteSafetyReplayLimitErrorV0 {}
 /// Chained identity of one exact durable vote-safety journal state.
 ///
 /// The genesis identity commits the synchronized header. Every later identity
-/// commits the preceding identity and one exact prepare, completion, halt, or
-/// signing-lineage record. This local persistence identity is not consensus
-/// ancestry, a vote identity, finality, or a globally trusted checkpoint.
+/// commits the preceding identity and one exact prepare, completion, halt,
+/// signing-lineage, or finality-conflict stop record. This local persistence
+/// identity is not consensus ancestry, a vote identity, finality, or a globally
+/// trusted checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
 pub struct FixedValidatorVoteSafetyJournalStateIdV0([u8; Self::BYTE_LENGTH]);
@@ -309,6 +316,80 @@ impl FixedValidatorVoteSafetyHaltV0 {
     pub const fn state_id(self) -> FixedValidatorVoteSafetyJournalStateIdV0 {
         self.state_id
     }
+}
+
+/// Durable local signer stop derived from one exact finality conflict.
+///
+/// The referenced finality journal verified both siblings before issuing the
+/// consumed capability. This compact per-key record is an enforcement and
+/// audit marker, not a standalone replay-verifiable finality proof and not
+/// sibling-selection or rollback authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FixedValidatorFinalityConflictSignerStopV0 {
+    finality_state_id: FixedValidatorFinalityJournalStateIdV0,
+    height: ConsensusHeight,
+    selected_ancestry: ConsensusAncestryId,
+    selected_envelope_id: ConsensusEnvelopeId,
+    conflicting_ancestry: ConsensusAncestryId,
+    conflicting_envelope_id: ConsensusEnvelopeId,
+    vote_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+}
+
+impl FixedValidatorFinalityConflictSignerStopV0 {
+    /// Returns the exact anchored finality state that authorized this stop.
+    pub const fn finality_state_id(self) -> FixedValidatorFinalityJournalStateIdV0 {
+        self.finality_state_id
+    }
+
+    /// Returns the height at which finality selected distinct siblings.
+    pub const fn height(self) -> ConsensusHeight {
+        self.height
+    }
+
+    /// Returns the first selected value ancestry retained by finality.
+    pub const fn selected_ancestry(self) -> ConsensusAncestryId {
+        self.selected_ancestry
+    }
+
+    /// Returns the retained first finality-envelope identity.
+    pub const fn selected_envelope_id(self) -> ConsensusEnvelopeId {
+        self.selected_envelope_id
+    }
+
+    /// Returns the conflicting finalized value ancestry.
+    pub const fn conflicting_ancestry(self) -> ConsensusAncestryId {
+        self.conflicting_ancestry
+    }
+
+    /// Returns the conflicting finality-envelope identity.
+    pub const fn conflicting_envelope_id(self) -> ConsensusEnvelopeId {
+        self.conflicting_envelope_id
+    }
+
+    /// Returns the terminal vote-journal state published by this stop.
+    pub const fn vote_state_id(self) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+        self.vote_state_id
+    }
+
+    fn same_conflict(self, other: Self) -> bool {
+        self.finality_state_id == other.finality_state_id
+            && self.height == other.height
+            && self.selected_ancestry == other.selected_ancestry
+            && self.selected_envelope_id == other.selected_envelope_id
+            && self.conflicting_ancestry == other.conflicting_ancestry
+            && self.conflicting_envelope_id == other.conflicting_envelope_id
+    }
+}
+
+/// Outcome of explicitly routing finality-conflict authority into one signer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum FixedValidatorFinalityConflictSignerStopOutcomeV0 {
+    /// A new terminal stop record and chained state identity became durable.
+    Stopped(FixedValidatorFinalityConflictSignerStopV0),
+    /// The exact same finality conflict had already stopped this journal.
+    AlreadyStopped(FixedValidatorFinalityConflictSignerStopV0),
 }
 
 /// Outcome of durably preparing one exact consensus-provided vote intent.
@@ -678,9 +759,10 @@ impl FixedValidatorVoteSafetyJournalV0 {
     /// Issues authority to reconstruct this exact anchored signing lineage.
     ///
     /// The caller explicitly acknowledges the journal's complete current state
-    /// as externally durable. A pending vote, terminal halt, missing lineage, or
-    /// prior session issuance fails before capability publication. The returned
-    /// value accepts no caller-selected branch, height, signer, or round.
+    /// as externally durable. A pending vote, either terminal cause, missing
+    /// lineage, or prior session issuance fails before capability publication.
+    /// The returned value accepts no caller-selected branch, height, signer, or
+    /// round.
     pub fn acknowledge_signer_recovery_is_externally_durable(
         &self,
         externally_durable_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
@@ -794,13 +876,31 @@ impl FixedValidatorVoteSafetyJournalV0 {
         })
     }
 
-    /// Returns the current exact journal-state identity, including after halt.
+    /// Returns the current exact journal-state identity, including after either
+    /// terminal cause.
     pub fn state_id(
         &self,
     ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
     {
         self.core.ensure_healthy()?;
         Ok(self.core.state_id)
+    }
+
+    /// Durably stops this signer from one exact anchored finality conflict.
+    ///
+    /// This path remains available before session issuance and after a live
+    /// session is dropped. It accepts conflict authority only for this
+    /// journal's exact consensus context and fixed validator set. The stop is
+    /// monotonic, may preempt an unresolved preparation, and never performs a
+    /// key operation or selects either conflicting sibling.
+    pub fn stop_after_durable_finality_conflict(
+        &mut self,
+        conflict: FixedValidatorDurableFinalityConflictV0<'_>,
+    ) -> Result<
+        FixedValidatorFinalityConflictSignerStopOutcomeV0,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.core.stop_after_durable_finality_conflict(conflict)
     }
 
     /// Returns the durable terminal halt summary, if present.
@@ -810,6 +910,17 @@ impl FixedValidatorVoteSafetyJournalV0 {
     {
         self.core.ensure_healthy()?;
         Ok(self.core.halt)
+    }
+
+    /// Returns the durable finality-conflict signer stop, if present.
+    pub fn finality_conflict_stop(
+        &self,
+    ) -> Result<
+        Option<FixedValidatorFinalityConflictSignerStopV0>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.core.ensure_healthy()?;
+        Ok(self.core.finality_conflict_stop)
     }
 
     /// Returns a capability for the sole pending durable preparation.
@@ -854,8 +965,8 @@ impl FixedValidatorVoteSafetyJournalV0 {
 
     /// Returns one retained completed vote for local diagnostics or replay.
     ///
-    /// Exact bytes remain available behind a later pending preparation, but a
-    /// durable terminal halt denies every vote release.
+    /// Exact bytes remain available behind a later pending preparation, but
+    /// either durable terminal cause denies every vote release.
     pub fn retained_signed_vote(
         &self,
         position: ConsensusPosition,
@@ -876,7 +987,7 @@ impl FixedValidatorVoteSafetyJournalV0 {
     /// state. Historical completed state is deliberately not selectable: only
     /// the latest retained slot may resume the kernel. Pending records are
     /// withheld because V0 never permits a restarted caller to advance from an
-    /// unresolved prepare boundary. A durable terminal halt also denies
+    /// unresolved prepare boundary. Either durable terminal cause also denies
     /// operational recovery.
     #[cfg(test)]
     fn latest_completed_state_and_vote_intent_bytes(
@@ -922,6 +1033,27 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
     /// Returns the current retained valid value and proof, if any.
     pub const fn valid_value(&self) -> Option<&FixedValidatorValidValueV0> {
         self.lock_state.valid_value()
+    }
+
+    /// Durably stops this already-live signer from anchored finality conflict.
+    ///
+    /// Stop authority deliberately preempts pending vote or height work. Once
+    /// the terminal record synchronizes, every later session transition and
+    /// key-use path fails closed; bytes released before this call cannot be
+    /// retracted.
+    pub fn stop_after_durable_finality_conflict(
+        &mut self,
+        conflict: FixedValidatorDurableFinalityConflictV0<'_>,
+    ) -> Result<
+        FixedValidatorFinalityConflictSignerStopOutcomeV0,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        let outcome = self
+            .journal
+            .core
+            .stop_after_durable_finality_conflict(conflict)?;
+        self.pending_height_advance = None;
+        Ok(outcome)
     }
 
     /// Decides the current proposal path's prevote without exposing mutable state.
@@ -1032,9 +1164,10 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
     /// finality capability are rechecked before consuming the transition and
     /// advancing this live session. Finality authorization is point-in-time:
     /// once this exact child-lineage state is externally anchored, a later
-    /// finality-journal halt does not retroactively revoke it. If the token is
-    /// dropped before this live acknowledgement, strict reopen resumes the
-    /// anchored child without a new token.
+    /// finality-journal halt alone does not retroactively revoke it. An explicit
+    /// durable finality-conflict stop does. If the token is dropped before this
+    /// live acknowledgement, strict reopen resumes the anchored child without a
+    /// new token unless that stop has been applied.
     pub fn acknowledge_prepared_height_is_externally_durable(
         &mut self,
         prepared: FixedValidatorPreparedHeightAdvanceV0<'_>,
@@ -1174,6 +1307,7 @@ struct FixedValidatorVoteSafetyJournalCore<F> {
     lineage: Option<RetainedSigningLineageV0>,
     prepared_count: u64,
     halt: Option<FixedValidatorVoteSafetyHaltV0>,
+    finality_conflict_stop: Option<FixedValidatorFinalityConflictSignerStopV0>,
     state_id: FixedValidatorVoteSafetyJournalStateIdV0,
     committed_end: u64,
     poisoned: bool,
@@ -1201,6 +1335,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             lineage: None,
             prepared_count: 0,
             halt: None,
+            finality_conflict_stop: None,
             state_id,
             committed_end: JOURNAL_PREFIX_BYTES as u64,
             poisoned: false,
@@ -1255,6 +1390,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             if !(MIN_RECORD_BODY_BYTES..=MAX_RECORD_BODY_BYTES).contains(&body_length)
                 && body_length != SIGNED_VOTE_BODY_BYTES
                 && body_length != SIGNING_LINEAGE_BODY_BYTES
+                && body_length != FINALITY_CONFLICT_STOP_BODY_BYTES
             {
                 return Err(
                     FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordLength {
@@ -1286,7 +1422,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 recovery_offset = Some(entry_start);
                 break;
             }
-            if core.halt.is_some() {
+            if core.halt.is_some() || core.finality_conflict_stop.is_some() {
                 return Err(FixedValidatorVoteSafetyJournalErrorV0::RecordAfterHalt {
                     offset: entry_start,
                 });
@@ -1363,6 +1499,9 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             COMPLETE_RECORD => self.replay_completion(entry, offset, payload, state_id),
             CONFLICT_HALT_RECORD => self.replay_halt(entry, offset, payload, state_id),
             SIGNING_LINEAGE_RECORD => self.replay_signing_lineage(entry, payload, state_id),
+            FINALITY_CONFLICT_STOP_RECORD => {
+                self.replay_finality_conflict_stop(entry, payload, state_id)
+            }
             actual => Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordTag {
                 entry,
                 offset,
@@ -1595,6 +1734,124 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         });
         self.pending = None;
         Ok(())
+    }
+
+    fn replay_finality_conflict_stop(
+        &mut self,
+        entry: u64,
+        payload: &[u8],
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        if payload.len() != FINALITY_CONFLICT_STOP_PAYLOAD_BYTES {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::InvalidFinalityConflictSignerStopLength {
+                    entry,
+                    actual: payload.len(),
+                },
+            );
+        }
+        let finality_state_id = FixedValidatorFinalityJournalStateIdV0::from_bytes(
+            payload[..32]
+                .try_into()
+                .expect("the finality state identity has exact width"),
+        );
+        let height = ConsensusHeight::new(u64::from_be_bytes(
+            payload[32..40]
+                .try_into()
+                .expect("the finality-conflict height has exact width"),
+        ));
+        if height.value() == 0 {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::InvalidFinalityConflictSignerStop { entry },
+            );
+        }
+        let selected_ancestry = ConsensusAncestryId::from_bytes(
+            payload[40..72]
+                .try_into()
+                .expect("the selected ancestry has exact width"),
+        );
+        let selected_envelope_id = ConsensusEnvelopeId::from_bytes(
+            payload[72..104]
+                .try_into()
+                .expect("the selected envelope identity has exact width"),
+        );
+        let conflicting_ancestry = ConsensusAncestryId::from_bytes(
+            payload[104..136]
+                .try_into()
+                .expect("the conflicting ancestry has exact width"),
+        );
+        let conflicting_envelope_id = ConsensusEnvelopeId::from_bytes(
+            payload[136..168]
+                .try_into()
+                .expect("the conflicting envelope identity has exact width"),
+        );
+        self.finality_conflict_stop = Some(FixedValidatorFinalityConflictSignerStopV0 {
+            finality_state_id,
+            height,
+            selected_ancestry,
+            selected_envelope_id,
+            conflicting_ancestry,
+            conflicting_envelope_id,
+            vote_state_id: state_id,
+        });
+        Ok(())
+    }
+
+    fn stop_after_durable_finality_conflict(
+        &mut self,
+        conflict: FixedValidatorDurableFinalityConflictV0<'_>,
+    ) -> Result<
+        FixedValidatorFinalityConflictSignerStopOutcomeV0,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.ensure_healthy()?;
+        if conflict.context() != self.context {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::FinalityConflictContextMismatch);
+        }
+        if conflict.fixed_agreement_set_id() != self.fixed_set_id {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::FinalityConflictFixedSetMismatch);
+        }
+        let halt = conflict.halt();
+        let proposed = FixedValidatorFinalityConflictSignerStopV0 {
+            finality_state_id: halt.state_id(),
+            height: halt.height(),
+            selected_ancestry: halt.selected_ancestry(),
+            selected_envelope_id: halt.selected_envelope_id(),
+            conflicting_ancestry: halt.conflicting_ancestry(),
+            conflicting_envelope_id: halt.conflicting_envelope_id(),
+            vote_state_id: self.state_id,
+        };
+        if let Some(existing) = self.finality_conflict_stop {
+            if existing.same_conflict(proposed) {
+                return Ok(
+                    FixedValidatorFinalityConflictSignerStopOutcomeV0::AlreadyStopped(existing),
+                );
+            }
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ConflictingFinalityConflictSignerStop {
+                    retained_height: existing.height,
+                    incoming_height: proposed.height,
+                },
+            );
+        }
+        if let Some(existing) = self.halt {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::TerminalHalt {
+                position: existing.position,
+                role: existing.role,
+            });
+        }
+        let body = finality_conflict_stop_record(proposed, self.prepared_count)?;
+        let next_state_id = self.append_record(&body, self.prepared_count)?;
+        let stopped = FixedValidatorFinalityConflictSignerStopV0 {
+            vote_state_id: next_state_id,
+            ..proposed
+        };
+        self.finality_conflict_stop = Some(stopped);
+        self.live_pending_intent = None;
+        self.state_id = next_state_id;
+        Ok(FixedValidatorFinalityConflictSignerStopOutcomeV0::Stopped(
+            stopped,
+        ))
     }
 
     fn bind_signing_lineage(
@@ -2032,13 +2289,14 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
 
     fn ensure_operational(&self) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
         self.ensure_healthy()?;
+        self.ensure_not_halted()?;
         if let Some(pending) = self.restarted_pending() {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::RestartedPending {
                 position: pending.position,
                 role: pending.role,
             });
         }
-        self.ensure_not_halted()
+        Ok(())
     }
 
     fn ensure_not_halted(&self) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
@@ -2048,6 +2306,12 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 position: halt.position,
                 role: halt.role,
             })
+        } else if let Some(stop) = self.finality_conflict_stop {
+            Err(
+                FixedValidatorVoteSafetyJournalErrorV0::TerminalFinalityConflictSignerStop {
+                    height: stop.height,
+                },
+            )
         } else {
             Ok(())
         }
@@ -2173,6 +2437,20 @@ fn signing_lineage_record(
     payload[..8].copy_from_slice(&height.value().to_be_bytes());
     payload[8..].copy_from_slice(&id.0);
     tagged_record(SIGNING_LINEAGE_RECORD, &payload, entry)
+}
+
+fn finality_conflict_stop_record(
+    stop: FixedValidatorFinalityConflictSignerStopV0,
+    entry: u64,
+) -> Result<Vec<u8>, FixedValidatorVoteSafetyJournalErrorV0> {
+    let mut payload = [0_u8; FINALITY_CONFLICT_STOP_PAYLOAD_BYTES];
+    payload[..32].copy_from_slice(stop.finality_state_id.as_bytes());
+    payload[32..40].copy_from_slice(&stop.height.value().to_be_bytes());
+    payload[40..72].copy_from_slice(stop.selected_ancestry.as_bytes());
+    payload[72..104].copy_from_slice(stop.selected_envelope_id.as_bytes());
+    payload[104..136].copy_from_slice(stop.conflicting_ancestry.as_bytes());
+    payload[136..168].copy_from_slice(stop.conflicting_envelope_id.as_bytes());
+    tagged_record(FINALITY_CONFLICT_STOP_RECORD, &payload, entry)
 }
 
 fn tagged_record(
@@ -2403,6 +2681,8 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         source: FixedValidatorVoteIntentError,
     },
     IntentHeaderMismatch,
+    FinalityConflictContextMismatch,
+    FinalityConflictFixedSetMismatch,
     SigningSessionAlreadyIssued,
     SigningSessionRoundMismatch,
     SigningLineageRequired,
@@ -2459,6 +2739,17 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
     },
     InvalidConflictHalt {
         entry: u64,
+    },
+    InvalidFinalityConflictSignerStopLength {
+        entry: u64,
+        actual: usize,
+    },
+    InvalidFinalityConflictSignerStop {
+        entry: u64,
+    },
+    ConflictingFinalityConflictSignerStop {
+        retained_height: ConsensusHeight,
+        incoming_height: ConsensusHeight,
     },
     RecordAfterHalt {
         offset: u64,
@@ -2523,6 +2814,9 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         position: ConsensusPosition,
         role: ConsensusVoteRole,
     },
+    TerminalFinalityConflictSignerStop {
+        height: ConsensusHeight,
+    },
     Commit {
         proposed_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
         source: io::Error,
@@ -2542,7 +2836,7 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::Read { offset, source } => write!(formatter, "vote-safety journal read failed at byte {offset}: {source}"),
             Self::InvalidHeader => formatter.write_str("invalid fixed-validator vote-safety journal header"),
             Self::HeaderMismatch => formatter.write_str("vote-safety journal header does not match the expected context, fixed set, signer, and replay limit"),
-            Self::InvalidRecordLength { entry, offset, actual, minimum, maximum } => write!(formatter, "vote-safety record {entry} at byte {offset} has body length {actual}, expected {minimum}..={maximum}, the exact signed-vote width, or the exact signing-lineage width"),
+            Self::InvalidRecordLength { entry, offset, actual, minimum, maximum } => write!(formatter, "vote-safety record {entry} at byte {offset} has body length {actual}, expected {minimum}..={maximum}, the exact signed-vote width, signing-lineage width, or finality-stop width"),
             Self::EntryOffsetOverflow { entry, offset } => write!(formatter, "vote-safety record {entry} at byte {offset} exceeds the offset range"),
             Self::Allocation { entry, bytes } => write!(formatter, "vote-safety record {entry} could not allocate {bytes} bytes"),
             Self::HistoryAllocation { entry, retained_votes } => write!(formatter, "vote-safety record {entry} could not grow history beyond {retained_votes} prepared votes"),
@@ -2556,6 +2850,8 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::RecordStateIdMismatch { entry, offset, expected, actual } => write!(formatter, "vote-safety record {entry} at byte {offset} commits state {actual:?}, expected {expected:?}"),
             Self::Intent { entry, offset, source } => write!(formatter, "vote-safety intent record {entry} at byte {offset} failed strict replay: {source}"),
             Self::IntentHeaderMismatch => formatter.write_str("sealed vote intent does not match this journal's exact context, fixed set, and signer"),
+            Self::FinalityConflictContextMismatch => formatter.write_str("finality-conflict stop authority does not match this vote journal's exact consensus context"),
+            Self::FinalityConflictFixedSetMismatch => formatter.write_str("finality-conflict stop authority does not match this vote journal's fixed validator set"),
             Self::SigningSessionAlreadyIssued => formatter.write_str("this open vote-safety journal handle has already issued its sole signing session"),
             Self::SigningSessionRoundMismatch => formatter.write_str("signing-session round does not match this journal's exact context and fixed set"),
             Self::SigningLineageRequired => formatter.write_str("a durable signing-lineage binding is required before session issuance"),
@@ -2577,6 +2873,9 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::PrepareWhilePending { entry } => write!(formatter, "prepare record {entry} follows an uncompleted preparation"),
             Self::DuplicatePrepare { entry } => write!(formatter, "prepare record {entry} repeats an existing vote slot instead of using idempotent in-memory classification"),
             Self::InvalidConflictHalt { entry } => write!(formatter, "conflict record {entry} is not a non-identical intent at an existing vote slot"),
+            Self::InvalidFinalityConflictSignerStopLength { entry, actual } => write!(formatter, "finality-conflict signer-stop record {entry} has {actual} payload bytes"),
+            Self::InvalidFinalityConflictSignerStop { entry } => write!(formatter, "finality-conflict signer-stop record {entry} has an invalid reserved height"),
+            Self::ConflictingFinalityConflictSignerStop { retained_height, incoming_height } => write!(formatter, "signer already stopped for finality conflict at height {}, so conflict at height {} cannot replace it", retained_height.value(), incoming_height.value()),
             Self::RecordAfterHalt { offset } => write!(formatter, "vote-safety journal contains bytes after terminal halt at byte {offset}"),
             Self::ReplayLimitExceeded { entry, maximum } => write!(formatter, "prepare record {entry} exceeds replay ceiling {maximum}"),
             Self::NonMonotonicReplay { entry, previous, previous_role, actual, actual_role } => write!(formatter, "prepare record {entry} moves backward from {previous:?}/{previous_role:?} to {actual:?}/{actual_role:?}"),
@@ -2597,6 +2896,7 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::SelfVerification(source) => write!(formatter, "new local signature failed strict consensus self-verification: {source}"),
             Self::SelfVerificationMismatch(reason) => write!(formatter, "new local signature verified as the wrong prepared vote field: {reason:?}"),
             Self::TerminalHalt { position, role } => write!(formatter, "vote-safety journal is terminally halted at {position:?}/{role:?}"),
+            Self::TerminalFinalityConflictSignerStop { height } => write!(formatter, "vote-safety journal is terminally stopped by finality conflict at height {}", height.value()),
             Self::Commit { proposed_state_id, source } => write!(formatter, "vote-safety append proposing state {proposed_state_id:?} has unknown durability: {source}"),
             Self::Poisoned => formatter.write_str("vote-safety journal is poisoned after ambiguous I/O; drop it and reopen with a trusted state ID"),
         }

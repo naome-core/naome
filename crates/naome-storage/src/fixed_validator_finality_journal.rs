@@ -249,6 +249,35 @@ pub struct FixedValidatorDurableFinalityTransitionV0<'journal> {
     transition: OwnedVerifiedFixedConsensusTransitionV0,
 }
 
+/// Opaque authority to stop matching local signers after durable finality conflict.
+///
+/// Private fields prevent callers from fabricating or changing the conflict
+/// evidence. The live immutable journal borrow keeps the exact externally
+/// anchored terminal state healthy and unchanged until one vote-safety journal
+/// consumes this capability. It grants no sibling selection or rollback
+/// authority.
+#[must_use]
+pub struct FixedValidatorDurableFinalityConflictV0<'journal> {
+    _journal: &'journal FixedValidatorFinalityJournalV0,
+    context: ConsensusContextV0,
+    fixed_set_id: FixedAgreementSetId,
+    halt: FixedValidatorFinalityHaltV0,
+}
+
+impl FixedValidatorDurableFinalityConflictV0<'_> {
+    pub(crate) const fn context(&self) -> ConsensusContextV0 {
+        self.context
+    }
+
+    pub(crate) const fn fixed_agreement_set_id(&self) -> FixedAgreementSetId {
+        self.fixed_set_id
+    }
+
+    pub(crate) const fn halt(&self) -> FixedValidatorFinalityHaltV0 {
+        self.halt
+    }
+}
+
 impl FixedValidatorDurableFinalityTransitionV0<'_> {
     pub(crate) const fn verified_transition(&self) -> &OwnedVerifiedFixedConsensusTransitionV0 {
         &self.transition
@@ -523,13 +552,55 @@ impl FixedValidatorFinalityJournalV0 {
         })
     }
 
+    /// Issues explicit signer-stop authority for the exact anchored conflict.
+    ///
+    /// The finality journal must be healthy and terminally halted, and the
+    /// caller must first persist its exact current state identity in a
+    /// separately protected monotonic anchor. The returned non-clone value
+    /// carries only the journal-verified conflict and matching context/set; a
+    /// vote-safety journal must explicitly consume it to durably stop one local
+    /// signer. No branch is selected, rolled back, or exposed by this handoff.
+    pub fn acknowledge_signer_stop_is_externally_durable(
+        &self,
+        externally_durable_state_id: FixedValidatorFinalityJournalStateIdV0,
+    ) -> Result<FixedValidatorDurableFinalityConflictV0<'_>, FixedValidatorFinalityJournalErrorV0>
+    {
+        self.core.ensure_healthy()?;
+        let halt = self
+            .core
+            .halt
+            .ok_or(FixedValidatorFinalityJournalErrorV0::SignerStopConflictRequired)?;
+        if externally_durable_state_id != self.core.state_id {
+            return Err(
+                FixedValidatorFinalityJournalErrorV0::ExternalFinalityAnchorMismatch {
+                    required: self.core.state_id,
+                    acknowledged: externally_durable_state_id,
+                },
+            );
+        }
+        debug_assert_eq!(halt.state_id(), self.core.state_id);
+        let fixed_set_id = self
+            .core
+            .branches
+            .first()
+            .expect("every finality journal retains virtual genesis")
+            .fixed_agreement_set_id();
+        Ok(FixedValidatorDurableFinalityConflictV0 {
+            _journal: self,
+            context: self.core.context,
+            fixed_set_id,
+            halt,
+        })
+    }
+
     /// Recovers only the retained branch named by an anchored signer capability.
     ///
     /// Under the caller's point-in-time authorization contract, this narrow read
-    /// remains available after a later finality halt. The capability does not
-    /// establish that ordering. This method rejects poisoned state, missing
-    /// history, or any lineage mismatch and exposes no caller-selected height,
-    /// sibling, head, or general history API.
+    /// remains available after a later finality halt when the signer issued the
+    /// recovery capability before any explicit conflict stop. The capability
+    /// does not establish that ordering. This method rejects poisoned state,
+    /// missing history, or any lineage mismatch and exposes no caller-selected
+    /// height, sibling, head, or general history API.
     pub fn recover_anchored_signer_branch(
         &self,
         recovery: FixedValidatorAnchoredSignerRecoveryV0<'_>,
@@ -1493,6 +1564,8 @@ pub enum FixedValidatorFinalityJournalErrorV0 {
         required: FixedValidatorFinalityJournalStateIdV0,
         acknowledged: FixedValidatorFinalityJournalStateIdV0,
     },
+    /// Signer-stop authority requires one retained durable finality conflict.
+    SignerStopConflictRequired,
     /// An anchored signer height could not index this platform.
     SignerRecoveryHeightIndexOverflow { height: ConsensusHeight },
     /// Retained finality history has no branch for the anchored signer height.
@@ -1651,6 +1724,9 @@ impl fmt::Display for FixedValidatorFinalityJournalErrorV0 {
                 formatter,
                 "external finality acknowledgement names state {acknowledged:?}, expected current state {required:?}"
             ),
+            Self::SignerStopConflictRequired => formatter.write_str(
+                "signer-stop authority requires a durable finality conflict",
+            ),
             Self::SignerRecoveryHeightIndexOverflow { height } => write!(
                 formatter,
                 "anchored signer-recovery height {} cannot index this platform",
@@ -1725,6 +1801,7 @@ impl Error for FixedValidatorFinalityJournalErrorV0 {
             | Self::SignerHandoffHeightIndexOverflow { .. }
             | Self::SignerHandoffUnavailable { .. }
             | Self::ExternalFinalityAnchorMismatch { .. }
+            | Self::SignerStopConflictRequired
             | Self::SignerRecoveryHeightIndexOverflow { .. }
             | Self::SignerRecoveryUnavailable { .. }
             | Self::SignerRecoveryLineageMismatch { .. }
