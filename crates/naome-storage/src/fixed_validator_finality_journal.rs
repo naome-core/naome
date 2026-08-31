@@ -21,6 +21,10 @@ use naome_consensus::{
 use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
 use sha2::{Digest, Sha256};
 
+use super::fixed_validator_vote_safety_journal::{
+    FixedValidatorAnchoredSignerRecoveryV0, FixedValidatorRecoveredSignerBranchV0,
+    signing_lineage_id,
+};
 use super::{
     AppendPhase, ExclusiveLockError, JOURNAL_FILE_NAME, LOCK_FILE_NAME, SelectedArtifactHistory,
     SelectedArtifactHistoryError, StoreIo, open_exclusive_lock, selected_artifact_history_sealed,
@@ -517,6 +521,21 @@ impl FixedValidatorFinalityJournalV0 {
             _journal: self,
             transition,
         })
+    }
+
+    /// Recovers only the retained branch named by an anchored signer capability.
+    ///
+    /// Under the caller's point-in-time authorization contract, this narrow read
+    /// remains available after a later finality halt. The capability does not
+    /// establish that ordering. This method rejects poisoned state, missing
+    /// history, or any lineage mismatch and exposes no caller-selected height,
+    /// sibling, head, or general history API.
+    pub fn recover_anchored_signer_branch(
+        &self,
+        recovery: FixedValidatorAnchoredSignerRecoveryV0<'_>,
+    ) -> Result<FixedValidatorRecoveredSignerBranchV0, FixedValidatorFinalityJournalErrorV0> {
+        let branch = self.core.recover_anchored_signer_branch(&recovery)?;
+        Ok(recovery.into_recovered(branch))
     }
 
     /// Consumes one sealed verified transition and classifies it against history.
@@ -1070,6 +1089,30 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
             .map(VerifiedFixedConsensusTransitionV0::into_owned)
     }
 
+    fn recover_anchored_signer_branch(
+        &self,
+        recovery: &FixedValidatorAnchoredSignerRecoveryV0<'_>,
+    ) -> Result<FixedConsensusBranchV0, FixedValidatorFinalityJournalErrorV0> {
+        self.ensure_healthy()?;
+        let height = recovery.lineage.height;
+        let height_index = height_index(height).map_err(|()| {
+            FixedValidatorFinalityJournalErrorV0::SignerRecoveryHeightIndexOverflow { height }
+        })?;
+        let Some(branch_index) = height_index.checked_sub(1) else {
+            return Err(FixedValidatorFinalityJournalErrorV0::SignerRecoveryUnavailable { height });
+        };
+        let Some(branch) = self.branches.get(branch_index) else {
+            return Err(FixedValidatorFinalityJournalErrorV0::SignerRecoveryUnavailable { height });
+        };
+        let actual = signing_lineage_id(branch.coordinate(), height, recovery.signer);
+        if actual != recovery.lineage.id {
+            return Err(
+                FixedValidatorFinalityJournalErrorV0::SignerRecoveryLineageMismatch { height },
+            );
+        }
+        Ok(branch.clone())
+    }
+
     fn ensure_healthy(&self) -> Result<(), FixedValidatorFinalityJournalErrorV0> {
         if self.poisoned {
             Err(FixedValidatorFinalityJournalErrorV0::Poisoned)
@@ -1450,6 +1493,12 @@ pub enum FixedValidatorFinalityJournalErrorV0 {
         required: FixedValidatorFinalityJournalStateIdV0,
         acknowledged: FixedValidatorFinalityJournalStateIdV0,
     },
+    /// An anchored signer height could not index this platform.
+    SignerRecoveryHeightIndexOverflow { height: ConsensusHeight },
+    /// Retained finality history has no branch for the anchored signer height.
+    SignerRecoveryUnavailable { height: ConsensusHeight },
+    /// Retained history does not reproduce the exact anchored signer lineage.
+    SignerRecoveryLineageMismatch { height: ConsensusHeight },
     /// The journal has durably halted and exposes no operational branch access.
     TerminalHalt { height: ConsensusHeight },
     /// An append failed after durability may have changed.
@@ -1602,6 +1651,21 @@ impl fmt::Display for FixedValidatorFinalityJournalErrorV0 {
                 formatter,
                 "external finality acknowledgement names state {acknowledged:?}, expected current state {required:?}"
             ),
+            Self::SignerRecoveryHeightIndexOverflow { height } => write!(
+                formatter,
+                "anchored signer-recovery height {} cannot index this platform",
+                height.value()
+            ),
+            Self::SignerRecoveryUnavailable { height } => write!(
+                formatter,
+                "no retained finality branch is available for anchored signer-recovery height {}",
+                height.value()
+            ),
+            Self::SignerRecoveryLineageMismatch { height } => write!(
+                formatter,
+                "retained finality branch does not match the anchored signer lineage at height {}",
+                height.value()
+            ),
             Self::TerminalHalt { height } => write!(
                 formatter,
                 "fixed-validator finality is terminally halted at height {}",
@@ -1661,6 +1725,9 @@ impl Error for FixedValidatorFinalityJournalErrorV0 {
             | Self::SignerHandoffHeightIndexOverflow { .. }
             | Self::SignerHandoffUnavailable { .. }
             | Self::ExternalFinalityAnchorMismatch { .. }
+            | Self::SignerRecoveryHeightIndexOverflow { .. }
+            | Self::SignerRecoveryUnavailable { .. }
+            | Self::SignerRecoveryLineageMismatch { .. }
             | Self::TerminalHalt { .. }
             | Self::Poisoned => None,
         }

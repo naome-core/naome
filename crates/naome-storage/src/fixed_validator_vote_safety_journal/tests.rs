@@ -968,10 +968,7 @@ fn anchored_child_lineage_reopens_after_crash_before_live_height_acknowledgement
     let directory = TestDirectory::new("child-lineage-pre-ack-crash");
     let branch = fixture.branch();
     let parent_round = branch.begin_round_zero().unwrap();
-    let expected_child = fixture.owned_transition().into_branch();
-    let child_round = expected_child.begin_round_zero().unwrap();
-    let sibling_child = fixture.owned_transition_for(ZfcAxiom::Union).into_branch();
-    let sibling_round = sibling_child.begin_round_zero().unwrap();
+    let expected_child_coordinate = fixture.owned_transition().into_branch().coordinate();
 
     let mut finality = fixture.create_finality(&directory);
     let _ = finality
@@ -993,11 +990,12 @@ fn anchored_child_lineage_reopens_after_crash_before_live_height_acknowledgement
         .unwrap();
     let child_lineage_state = prepared_height.state_id();
     let (_, vote_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
-    let child_lineage_image = fs::read(&vote_path).unwrap();
 
     drop(prepared_height);
     drop(session);
     drop(vote_journal);
+    drop(parent_round);
+    drop(branch);
     assert_eq!(fs::read(&finality_path).unwrap(), finality_image);
 
     let halt = match finality
@@ -1010,30 +1008,45 @@ fn anchored_child_lineage_reopens_after_crash_before_live_height_acknowledgement
     assert_eq!(finality.halt().unwrap(), Some(halt));
     let halted_finality_image = fs::read(&finality_path).unwrap();
     assert_ne!(halted_finality_image, finality_image);
+    let halted_finality_state = halt.state_id();
     drop(finality);
 
+    let halted_finality = fixture.open_finality(&directory, halted_finality_state);
     let mut reopened = fixture.open(&directory, child_lineage_state).unwrap();
+    let vote_image_before_recovery = fs::read(&vote_path).unwrap();
     assert!(matches!(
-        reopened.issue_signing_session(&parent_round, child_lineage_state),
-        Err(FixedValidatorVoteSafetyJournalErrorV0::SigningLineageMismatch {
-            expected_height,
-            actual_height,
-        }) if expected_height == ConsensusHeight::new(2)
-            && actual_height == ConsensusHeight::new(1)
+        halted_finality.head(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
     ));
-    assert!(matches!(
-        reopened.issue_signing_session(&sibling_round, child_lineage_state),
-        Err(FixedValidatorVoteSafetyJournalErrorV0::SigningLineageMismatch {
-            expected_height,
-            actual_height,
-        }) if expected_height == ConsensusHeight::new(2)
-            && actual_height == ConsensusHeight::new(2)
-    ));
-    let mut session = reopened
-        .issue_signing_session(&child_round, child_lineage_state)
+    let recovery = reopened
+        .acknowledge_signer_recovery_is_externally_durable(child_lineage_state)
         .unwrap();
-    assert_eq!(session.position(), child_round.position());
-    assert_eq!(fs::read(&vote_path).unwrap(), child_lineage_image);
+    let recovered_branch = halted_finality
+        .recover_anchored_signer_branch(recovery)
+        .unwrap();
+    let recovered = reopened
+        .issue_recovered_signing_session(
+            recovered_branch,
+            child_lineage_state,
+            FixedValidatorSignerRecoveryRoundLimitV0::new(0),
+        )
+        .unwrap();
+    assert_eq!(recovered.branch().coordinate(), expected_child_coordinate);
+    assert_eq!(
+        recovered.session().position(),
+        ConsensusPosition::new(ConsensusHeight::new(2), ConsensusRound::new(0))
+    );
+    assert_eq!(
+        recovered.session().phase(),
+        FixedValidatorLockPhaseV0::Proposal
+    );
+    assert_eq!(fs::read(&vote_path).unwrap(), vote_image_before_recovery);
+    assert_eq!(fs::read(&finality_path).unwrap(), halted_finality_image);
+    assert_eq!(halted_finality.state_id().unwrap(), halted_finality_state);
+    assert_eq!(halted_finality.halt().unwrap(), Some(halt));
+
+    let (child, mut session) = recovered.into_parts();
+    let child_round = child.begin_round_zero().unwrap();
     let effect = session.decide_prevote_without_proposal().unwrap();
     let prepared = prepared(session.prepare_vote(&child_round, effect).unwrap());
     let acknowledgement = session
@@ -1041,6 +1054,460 @@ fn anchored_child_lineage_reopens_after_crash_before_live_height_acknowledgement
         .unwrap();
     let _ = session.sign_prepared_vote(acknowledgement).unwrap();
     assert_eq!(fs::read(finality_path).unwrap(), halted_finality_image);
+}
+
+#[test]
+fn recovered_signer_session_replays_latest_completed_round_with_bounded_work() {
+    let fixture = Fixture::new(8);
+    let directory = TestDirectory::new("completed-round-recovery");
+    let parent = fixture.branch();
+    let parent_round = parent.begin_round_zero().unwrap();
+
+    let mut finality = fixture.create_finality(&directory);
+    let first_transition = fixture.owned_transition();
+    let first_artifact_block = first_transition.value().artifact_block();
+    let _ = finality.commit_verified(first_transition).unwrap();
+    let finality_state = finality.state_id().unwrap();
+    let durable = finality
+        .acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            finality_state,
+        )
+        .unwrap();
+    let mut vote_journal = fixture.create(&directory);
+    let mut session = issue_session(&mut vote_journal, &parent_round);
+    let prepared_height = session
+        .prepare_height_with_durable_finality(durable)
+        .unwrap();
+    let child_lineage_state = prepared_height.state_id();
+    let child = session
+        .acknowledge_prepared_height_is_externally_durable(prepared_height, child_lineage_state)
+        .unwrap();
+    let child_coordinate = child.coordinate();
+    let child_round_zero = child.begin_round_zero().unwrap();
+    let child_round_one = child.begin_round_zero().unwrap().advance_round().unwrap();
+
+    let mut child_artifact_state = ArtifactChainState::new(fixture.definition);
+    child_artifact_state
+        .apply_block(&first_artifact_block, proof_payload())
+        .unwrap();
+    let second_payload = proof_payload_for(ZfcAxiom::Union);
+    let second_artifact_id = ArtifactDag::new()
+        .apply_canonical_artifact_bytes(second_payload.clone())
+        .unwrap()
+        .artifact_id();
+    let second_artifact_block = child_artifact_state
+        .prepare_block(second_artifact_id)
+        .unwrap();
+    let proposal_value = child_round_zero.value_for_artifact_block(second_artifact_block);
+    let proposal_root = proposal_value.proposal_signing_root();
+    let mut proposal_bytes = proposal_value.to_canonical_bytes().to_vec();
+    proposal_bytes.extend_from_slice(&authorization_bytes(
+        fixture.context,
+        child_round_zero.position(),
+        proposal_root,
+        &fixture.signing_key(),
+    ));
+    proposal_bytes.push(VerifiedFixedConsensusProposalV0::NO_VALID_ROUND_PROOF_TAG);
+    let proposal = child_round_zero
+        .decode_and_verify_proposal_control(&proposal_bytes, second_payload)
+        .unwrap();
+
+    let effect = session.decide_prevote_for_proposal(&proposal).unwrap();
+    let prepared_vote = prepared(session.prepare_vote(&child_round_zero, effect).unwrap());
+    let acknowledgement = session
+        .acknowledge_prepared_vote_is_externally_durable(prepared_vote, prepared_vote.state_id())
+        .unwrap();
+    let _ = session.sign_prepared_vote(acknowledgement).unwrap();
+    let prevote_quorum = certificate_bytes(
+        fixture.context,
+        child_round_zero.position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(proposal_root),
+        &fixture.signing_key(),
+    );
+    let effect = session
+        .decide_precommit_for_proposal_quorum(&child_round_zero, &proposal, &prevote_quorum)
+        .unwrap();
+    let prepared_vote = prepared(session.prepare_vote(&child_round_zero, effect).unwrap());
+    let acknowledgement = session
+        .acknowledge_prepared_vote_is_externally_durable(prepared_vote, prepared_vote.state_id())
+        .unwrap();
+    let _ = session.sign_prepared_vote(acknowledgement).unwrap();
+    session.advance_round(&child_round_one).unwrap();
+    let effect = session.decide_prevote_without_proposal().unwrap();
+    let prepared_vote = prepared(session.prepare_vote(&child_round_one, effect).unwrap());
+    let acknowledgement = session
+        .acknowledge_prepared_vote_is_externally_durable(prepared_vote, prepared_vote.state_id())
+        .unwrap();
+    let vote_state = session
+        .sign_prepared_vote(acknowledgement)
+        .unwrap()
+        .state_id();
+    let expected_locked = session.locked_value();
+    let expected_valid = session.valid_value().cloned();
+    assert!(expected_locked.is_some());
+    assert!(expected_valid.is_some());
+
+    let finality_path = directory.0.join(crate::JOURNAL_FILE_NAME);
+    let (_, vote_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    let finality_image = fs::read(&finality_path).unwrap();
+    let vote_image = fs::read(&vote_path).unwrap();
+    drop(session);
+    drop(vote_journal);
+    drop(child_round_one);
+    drop(child_round_zero);
+    drop(child);
+    drop(parent_round);
+    drop(parent);
+    drop(finality);
+
+    let finality = fixture.open_finality(&directory, finality_state);
+    let mut vote_journal = fixture.open(&directory, vote_state).unwrap();
+    let recovery = vote_journal
+        .acknowledge_signer_recovery_is_externally_durable(vote_state)
+        .unwrap();
+    let recovered_branch = finality.recover_anchored_signer_branch(recovery).unwrap();
+    assert!(matches!(
+        vote_journal.issue_recovered_signing_session(
+            recovered_branch,
+            vote_state,
+            FixedValidatorSignerRecoveryRoundLimitV0::new(0),
+        ),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::SignerRecoveryRoundLimitExceeded {
+                required: 1,
+                maximum: 0,
+            }
+        )
+    ));
+    assert_eq!(fs::read(&finality_path).unwrap(), finality_image);
+    assert_eq!(fs::read(&vote_path).unwrap(), vote_image);
+
+    let recovery = vote_journal
+        .acknowledge_signer_recovery_is_externally_durable(vote_state)
+        .unwrap();
+    let recovered_branch = finality.recover_anchored_signer_branch(recovery).unwrap();
+    let recovered = vote_journal
+        .issue_recovered_signing_session(
+            recovered_branch,
+            vote_state,
+            FixedValidatorSignerRecoveryRoundLimitV0::new(1),
+        )
+        .unwrap();
+    assert_eq!(recovered.branch().coordinate(), child_coordinate);
+    assert_eq!(
+        recovered.session().position(),
+        ConsensusPosition::new(ConsensusHeight::new(2), ConsensusRound::new(1))
+    );
+    assert_eq!(
+        recovered.session().phase(),
+        FixedValidatorLockPhaseV0::Prevote
+    );
+    assert_eq!(recovered.session().locked_value(), expected_locked);
+    assert_eq!(recovered.session().valid_value(), expected_valid.as_ref());
+    assert_eq!(fs::read(finality_path).unwrap(), finality_image);
+    assert_eq!(fs::read(vote_path).unwrap(), vote_image);
+}
+
+#[test]
+fn signer_recovery_rejects_mismatched_history_and_foreign_handle_provenance() {
+    let fixture = Fixture::new(2);
+    let directory = TestDirectory::new("recovery-provenance");
+    let missing_directory = TestDirectory::new("recovery-missing");
+    let mismatch_directory = TestDirectory::new("recovery-mismatch");
+    let equivalent_directory = TestDirectory::new("recovery-equivalent");
+    let parent = fixture.branch();
+    let parent_round = parent.begin_round_zero().unwrap();
+
+    let mut finality = fixture.create_finality(&directory);
+    let _ = finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let finality_state = finality.state_id().unwrap();
+    let finality_coordinate = finality.head().unwrap().coordinate();
+    let durable = finality
+        .acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            finality_state,
+        )
+        .unwrap();
+    let mut vote_journal = fixture.create(&directory);
+    let mut session = issue_session(&mut vote_journal, &parent_round);
+    let prepared_height = session
+        .prepare_height_with_durable_finality(durable)
+        .unwrap();
+    let vote_state = prepared_height.state_id();
+    drop(prepared_height);
+    drop(session);
+    drop(vote_journal);
+    drop(parent_round);
+    drop(parent);
+    drop(finality);
+
+    let finality_path = directory.0.join(crate::JOURNAL_FILE_NAME);
+    let finality_image = fs::read(&finality_path).unwrap();
+    let mut equivalent_finality = fixture.create_finality(&equivalent_directory);
+    let _ = equivalent_finality
+        .commit_verified(fixture.owned_transition_for_round(ZfcAxiom::Pairing, 1))
+        .unwrap();
+    let equivalent_state = equivalent_finality.state_id().unwrap();
+    assert_ne!(equivalent_state, finality_state);
+    assert_eq!(
+        equivalent_finality.head().unwrap().coordinate(),
+        finality_coordinate
+    );
+    let equivalent_path = equivalent_directory.0.join(crate::JOURNAL_FILE_NAME);
+    let equivalent_image = fs::read(&equivalent_path).unwrap();
+    assert_ne!(equivalent_image, finality_image);
+    drop(equivalent_finality);
+    let equivalent_finality = fixture.open_finality(&equivalent_directory, equivalent_state);
+
+    let missing_finality = fixture.create_finality(&missing_directory);
+    let missing_state = missing_finality.state_id().unwrap();
+    let missing_path = missing_directory.0.join(crate::JOURNAL_FILE_NAME);
+    let missing_image = fs::read(&missing_path).unwrap();
+
+    let mut mismatched_finality = fixture.create_finality(&mismatch_directory);
+    let _ = mismatched_finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::Union))
+        .unwrap();
+    let mismatched_state = mismatched_finality.state_id().unwrap();
+    let mismatched_image = fs::read(mismatch_directory.0.join(crate::JOURNAL_FILE_NAME)).unwrap();
+
+    let (_, vote_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    let vote_image = fs::read(&vote_path).unwrap();
+    let vote_journal = fixture.open(&directory, vote_state).unwrap();
+    let recovery = vote_journal
+        .acknowledge_signer_recovery_is_externally_durable(vote_state)
+        .unwrap();
+    assert!(matches!(
+        missing_finality.recover_anchored_signer_branch(recovery),
+        Err(FixedValidatorFinalityJournalErrorV0::SignerRecoveryUnavailable {
+            height,
+        }) if height == ConsensusHeight::new(2)
+    ));
+    assert_eq!(vote_journal.state_id().unwrap(), vote_state);
+    assert_eq!(missing_finality.state_id().unwrap(), missing_state);
+    assert_eq!(fs::read(&vote_path).unwrap(), vote_image);
+    assert_eq!(fs::read(&missing_path).unwrap(), missing_image);
+
+    let recovery = vote_journal
+        .acknowledge_signer_recovery_is_externally_durable(vote_state)
+        .unwrap();
+    assert!(matches!(
+        mismatched_finality.recover_anchored_signer_branch(recovery),
+        Err(FixedValidatorFinalityJournalErrorV0::SignerRecoveryLineageMismatch {
+            height,
+        }) if height == ConsensusHeight::new(2)
+    ));
+    assert_eq!(vote_journal.state_id().unwrap(), vote_state);
+    assert_eq!(mismatched_finality.state_id().unwrap(), mismatched_state);
+    assert_eq!(fs::read(&vote_path).unwrap(), vote_image);
+    assert_eq!(
+        fs::read(mismatch_directory.0.join(crate::JOURNAL_FILE_NAME)).unwrap(),
+        mismatched_image
+    );
+
+    let recovery = vote_journal
+        .acknowledge_signer_recovery_is_externally_durable(vote_state)
+        .unwrap();
+    let recovered_branch = equivalent_finality
+        .recover_anchored_signer_branch(recovery)
+        .unwrap();
+    drop(vote_journal);
+    let mut reopened = fixture.open(&directory, vote_state).unwrap();
+    assert!(matches!(
+        reopened.issue_recovered_signing_session(
+            recovered_branch,
+            vote_state,
+            FixedValidatorSignerRecoveryRoundLimitV0::new(0),
+        ),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::ForeignSignerRecovery)
+    ));
+    assert_eq!(fs::read(&vote_path).unwrap(), vote_image);
+    assert_eq!(fs::read(&equivalent_path).unwrap(), equivalent_image);
+    assert_eq!(fs::read(&finality_path).unwrap(), finality_image);
+
+    let recovery = reopened
+        .acknowledge_signer_recovery_is_externally_durable(vote_state)
+        .unwrap();
+    let recovered_branch = equivalent_finality
+        .recover_anchored_signer_branch(recovery)
+        .unwrap();
+    let recovered = reopened
+        .issue_recovered_signing_session(
+            recovered_branch,
+            vote_state,
+            FixedValidatorSignerRecoveryRoundLimitV0::new(0),
+        )
+        .unwrap();
+    assert_eq!(
+        recovered.session().position().height(),
+        ConsensusHeight::new(2)
+    );
+    assert_eq!(fs::read(vote_path).unwrap(), vote_image);
+    assert_eq!(fs::read(equivalent_path).unwrap(), equivalent_image);
+    assert_eq!(fs::read(finality_path).unwrap(), finality_image);
+}
+
+#[test]
+fn signer_recovery_capability_requires_a_live_exact_anchored_lineage() {
+    let fixture = Fixture::new(2);
+    let unbound_directory = TestDirectory::new("recovery-unbound");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let mut unbound = fixture.create(&unbound_directory);
+    let genesis = unbound.state_id().unwrap();
+    let (_, unbound_path) = keyed_paths(&unbound_directory.0, fixture.signer()).unwrap();
+    let genesis_image = fs::read(&unbound_path).unwrap();
+    assert!(matches!(
+        unbound.acknowledge_signer_recovery_is_externally_durable(
+            FixedValidatorVoteSafetyJournalStateIdV0::from_bytes([0xee; 32]),
+        ),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::ExternalSessionAnchorMismatch { .. })
+    ));
+    assert!(matches!(
+        unbound.acknowledge_signer_recovery_is_externally_durable(genesis),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::SigningLineageRequired)
+    ));
+    assert_eq!(unbound.state_id().unwrap(), genesis);
+    assert_eq!(fs::read(&unbound_path).unwrap(), genesis_image);
+    let bound = unbound.bind_signing_lineage(&round).unwrap();
+    let session = unbound.issue_signing_session(&round, bound).unwrap();
+    drop(session);
+    let bound_image = fs::read(&unbound_path).unwrap();
+    assert!(matches!(
+        unbound.acknowledge_signer_recovery_is_externally_durable(bound),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionAlreadyIssued)
+    ));
+    assert_eq!(unbound.state_id().unwrap(), bound);
+    assert_eq!(fs::read(&unbound_path).unwrap(), bound_image);
+
+    let pending_directory = TestDirectory::new("recovery-pending");
+    let mut pending = fixture.create(&pending_directory);
+    let mut session = issue_session(&mut pending, &round);
+    let effect = session.decide_prevote_without_proposal().unwrap();
+    let pending_vote = prepared(session.prepare_vote(&round, effect).unwrap());
+    let prepared_state = pending_vote.state_id();
+    drop(session);
+    drop(pending);
+    let pending = fixture.open(&pending_directory, prepared_state).unwrap();
+    let (_, pending_path) = keyed_paths(&pending_directory.0, fixture.signer()).unwrap();
+    let pending_image = fs::read(&pending_path).unwrap();
+    assert!(matches!(
+        pending.acknowledge_signer_recovery_is_externally_durable(prepared_state),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::PendingRecoveryDenied { .. })
+    ));
+    assert_eq!(pending.state_id().unwrap(), prepared_state);
+    assert_eq!(fs::read(&pending_path).unwrap(), pending_image);
+
+    let halted_directory = TestDirectory::new("recovery-vote-halt");
+    let mut halted = fixture.create(&halted_directory);
+    let _ = halted.bind_signing_lineage(&round).unwrap();
+    let prepared = prepared(halted.prepare_vote(fixture.nil_prevote_intent()).unwrap());
+    let _ = halted.sign_prepared_vote(prepared).unwrap();
+    let halt = match halted
+        .prepare_vote(fixture.proposal_prevote_intent())
+        .unwrap()
+    {
+        FixedValidatorVotePrepareOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected terminal halt, got {other:?}"),
+    };
+    let (_, halted_path) = keyed_paths(&halted_directory.0, fixture.signer()).unwrap();
+    let halted_image = fs::read(&halted_path).unwrap();
+    assert!(matches!(
+        halted.acknowledge_signer_recovery_is_externally_durable(halt.state_id()),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert_eq!(halted.state_id().unwrap(), halt.state_id());
+    assert_eq!(halted.halt().unwrap(), Some(halt));
+    assert_eq!(fs::read(halted_path).unwrap(), halted_image);
+}
+
+#[test]
+fn initial_lineage_recovery_reproduces_exact_configured_virtual_genesis() {
+    let fixture = Fixture::new(2);
+    let directory = TestDirectory::new("recovery-initial-lineage");
+    let mismatch_directory = TestDirectory::new("recovery-initial-mismatch");
+    let finality = fixture.create_finality(&directory);
+    let finality_state = finality.state_id().unwrap();
+    let mismatched_context = ConsensusContextV0::new(
+        fixture.context.chain_id(),
+        ConsensusGenesisId::from_bytes([0x43; 32]),
+        fixture.context.protocol_version(),
+    );
+    let mismatched_finality = FixedValidatorFinalityJournalV0::create(
+        &mismatch_directory.0,
+        fixture.definition,
+        mismatched_context,
+        &fixture.entries(),
+        FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
+    )
+    .unwrap();
+    let mismatched_state = mismatched_finality.state_id().unwrap();
+    let branch = fixture.branch();
+    let expected_coordinate = branch.coordinate();
+    let round = branch.begin_round_zero().unwrap();
+    let mut vote_journal = fixture.create(&directory);
+    let vote_state = vote_journal.bind_signing_lineage(&round).unwrap();
+    let finality_path = directory.0.join(crate::JOURNAL_FILE_NAME);
+    let mismatched_path = mismatch_directory.0.join(crate::JOURNAL_FILE_NAME);
+    let (_, vote_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    let finality_image = fs::read(&finality_path).unwrap();
+    let mismatched_image = fs::read(&mismatched_path).unwrap();
+    let vote_image = fs::read(&vote_path).unwrap();
+    drop(vote_journal);
+    drop(round);
+    drop(branch);
+    drop(finality);
+    drop(mismatched_finality);
+
+    let finality = fixture.open_finality(&directory, finality_state);
+    let mismatched_finality = FixedValidatorFinalityJournalV0::open_verified(
+        &mismatch_directory.0,
+        fixture.definition,
+        mismatched_context,
+        &fixture.entries(),
+        FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
+        mismatched_state,
+    )
+    .unwrap();
+    let mut vote_journal = fixture.open(&directory, vote_state).unwrap();
+    let recovery = vote_journal
+        .acknowledge_signer_recovery_is_externally_durable(vote_state)
+        .unwrap();
+    assert!(matches!(
+        mismatched_finality.recover_anchored_signer_branch(recovery),
+        Err(FixedValidatorFinalityJournalErrorV0::SignerRecoveryLineageMismatch {
+            height,
+        }) if height == ConsensusHeight::new(1)
+    ));
+    assert_eq!(mismatched_finality.state_id().unwrap(), mismatched_state);
+    assert_eq!(vote_journal.state_id().unwrap(), vote_state);
+    assert_eq!(fs::read(&mismatched_path).unwrap(), mismatched_image);
+    assert_eq!(fs::read(&vote_path).unwrap(), vote_image);
+
+    let recovery = vote_journal
+        .acknowledge_signer_recovery_is_externally_durable(vote_state)
+        .unwrap();
+    let recovered_branch = finality.recover_anchored_signer_branch(recovery).unwrap();
+    let recovered = vote_journal
+        .issue_recovered_signing_session(
+            recovered_branch,
+            vote_state,
+            FixedValidatorSignerRecoveryRoundLimitV0::new(0),
+        )
+        .unwrap();
+    assert_eq!(recovered.branch().coordinate(), expected_coordinate);
+    assert_eq!(
+        recovered.session().position(),
+        ConsensusPosition::new(ConsensusHeight::new(1), ConsensusRound::new(0))
+    );
+    assert_eq!(finality.state_id().unwrap(), finality_state);
+    assert_eq!(fs::read(&finality_path).unwrap(), finality_image);
+    assert_eq!(fs::read(&mismatched_path).unwrap(), mismatched_image);
+    assert_eq!(fs::read(&vote_path).unwrap(), vote_image);
 }
 
 #[test]

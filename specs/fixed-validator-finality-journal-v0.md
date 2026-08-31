@@ -18,7 +18,10 @@ anchor. Only
 `acknowledge_signer_height_transition_is_externally_durable` with that exact
 identity may strictly reconstruct an opaque
 `FixedValidatorDurableFinalityTransitionV0<'journal>` for the vote-safety
-signing session.
+signing session. After that child lineage is separately anchored, the vote
+journal may instead issue an opaque signer-recovery capability. This journal
+can consume it to recover only the exact retained branch that reproduces the
+anchored lineage, including after a later terminal conflict halt.
 
 ## Authority and clean replacement
 
@@ -207,20 +210,59 @@ This is an ordered two-journal protocol, not a cross-file transaction. Finality
 and its external anchor complete first; the vote journal then synchronizes the
 exact child signing-lineage record and its caller-controlled anchor; only then
 does signer memory advance. The exact external child-lineage anchor is the
-durable recovery boundary. A crash or token drop after that boundary but before
-live acknowledgement reopens directly at that child round zero without a fresh
-finality token. A complete child record beyond an older vote anchor fails closed,
-as does an anchor ahead of durable bytes. The live code cannot detect a caller
-that falsely claims external durability; such a lie violates this contract and
-may leave live advancement unprotected. Neither journal rolls the other back,
-repairs an anchor gap, or claims atomic durability across the two files.
+durable signer-authorization boundary. A crash or token drop after that boundary
+but before live acknowledgement needs no fresh height-transition token. A real
+process restart that no longer holds the branch combines the exact vote-issued
+recovery capability with this replay-retained history. A complete child record
+beyond an older vote anchor fails closed, as does an anchor ahead of durable
+bytes. The live code cannot detect a caller that falsely claims external
+durability; such a lie violates this contract and may leave live advancement
+unprotected. Neither journal rolls the other back, repairs an anchor gap, or
+claims atomic durability across the two files.
 
 The token's borrow ends after successful consumption or drop. Once the exact
 child lineage is externally anchored, a distinct sibling may then durably halt
 the finality journal before or after live acknowledgement, but the halt does not
 retroactively revoke that anchored signer lineage. Exact reopen may therefore
-resume the child after a post-anchor, pre-acknowledgement halt. Coordinated stop
-authority is a separate operator or protocol policy.
+resume the child through the capability-gated path after a post-anchor,
+pre-acknowledgement halt. The lineage does not commit a finality state identity
+or chronology, so the caller's point-in-time assertion remains a deployment
+condition rather than a cross-journal temporal proof. Coordinated stop authority
+is a separate operator or protocol policy.
+
+## Capability-gated signer restart
+
+`recover_anchored_signer_branch` accepts only one non-clone
+`FixedValidatorAnchoredSignerRecoveryV0` issued by an exact externally anchored,
+healthy, recoverable vote journal. It accepts no separate height, branch,
+coordinate, signer, fixed set, head, or history selector. The capability
+immutably borrows its vote-journal handle until consumption and privately binds
+the complete retained lineage digest, latest required position, exact current
+vote state, signer, and live-handle provenance.
+
+The finality journal requires healthy replay state but deliberately does not
+require operability for this one method. It indexes exactly the retained branch
+at `signing_height - 1`, recomputes the full signing-lineage digest from that
+branch's complete coordinate, the anchored height, and the capability signer,
+and requires exact equality. Unknown or unindexable height, missing history,
+lineage mismatch, or poison returns no branch. There is no fallback to the head,
+nearest height, another branch, or either conflict value.
+
+At signing height one the indexed branch is the journal's configured virtual
+genesis. It is accepted only when its complete coordinate and the capability
+signer reproduce the already persisted lineage digest. This recovers the exact
+bootstrap binding; it does not let the journal select, replace, or independently
+attest bootstrap configuration.
+
+Success returns only an opaque `FixedValidatorRecoveredSignerBranchV0`. The
+originating vote-journal handle must consume it, recheck the exact external vote
+anchor and pointer-identical handle provenance, derive the exact required round
+under its caller-local work ceiling, strictly replay the latest completed intent,
+and consume its sole session latch before the branch becomes visible beside the
+session. The recovery operation writes neither journal and changes no state ID,
+halt, retained history, or external anchor. Content-equivalent replayed finality
+histories remain valid semantic sources; unique directory, device, evidence
+variant, and chronology provenance are not inferred.
 
 ## Evidence variants and terminal conflict
 
@@ -238,13 +280,16 @@ the exact conflicting envelope and payload. After its footer becomes durable,
 there is no operable selected head. Future commits fail until separately
 specified recovery tooling is explicitly invoked.
 
-On a healthy halted handle, `halt()` and `state_id()` remain the only operational
-or history-state diagnostics; immutable `context()` and `replay_limit()` bindings
-also remain inspectable. `head()`, `parent_for_height()`, `finality_record()`,
-`finalized_len()`, and `commit_verified()` all return the terminal-halt error.
-The halt summary names the height, both distinct ancestry identities, both
-envelope identities, and the halt state ID; it does not choose a winner or
-expose either sibling as the operable chain.
+On a healthy halted handle, `halt()` and `state_id()` remain the only general
+operational or history-state diagnostics; immutable `context()` and
+`replay_limit()` bindings also remain inspectable. `head()`,
+`parent_for_height()`, `finality_record()`, `finalized_len()`, and
+`commit_verified()` all return the terminal-halt error. The sole exception is
+the capability-gated exact signer-branch reconstruction above; it exposes no
+caller-selectable history and does not revive operability. The halt summary
+names the height, both distinct ancestry identities, both envelope identities,
+and the halt state ID; it does not choose a winner or expose either sibling as
+the operable chain.
 
 ## Strict operational reopen
 
@@ -266,7 +311,10 @@ starting a not-yet-persisted signer handoff. The caller supplies no child fields
 and the signing session repeats its direct-parent and direct-height checks.
 Reissuance changes neither finality-journal bytes nor state identity and cannot
 revive a halted journal. When the vote journal has already anchored that child
-lineage, its exact reopen resumes directly and does not require token reissuance.
+lineage, its exact reopen does not require token reissuance; if no branch object
+survived the process restart, the separate capability-gated path above derives
+only the matching retained branch, including through an otherwise halted
+journal.
 
 At most one framing-incomplete final record may be removed, and only after the
 strictly replayed committed prefix already equals the trusted expected ID.
@@ -323,13 +371,14 @@ This V0 supplies local fixed-validator artifact-only durable selection, exact
 first-evidence retention, strict caller-anchored replay, and terminal conflict
 halt. It also supplies the mandatory, externally acknowledged transition for
 advancing the sole vote-safety signing lineage from one exact retained local-
-finality child. Its sealed read-only selected-artifact history can anchor the existing
-caller-driven candidate reconstruction and bounded network fill workflows, but
-the journal itself does not choose or start them. It does not supply a general
-consensus-block format, Tendermint locking or valid-value transitions, timeout
-progression, dynamic validator selection or changes, signature creation or
-anti-equivocation signing state, multi-node or global finality, automatic
-networking or recovery policy, data availability, peer truth or trust,
-checkpoint/bootstrap, external-anchor persistence or attestation, cross-journal
-atomicity, rollback, provenance authority, economics, pruning, compaction,
-migration, or backup policy.
+finality child and the narrow capability-gated reconstruction of that exact
+already anchored branch after process restart. Its sealed read-only selected-
+artifact history can anchor the existing caller-driven candidate reconstruction
+and bounded network fill workflows, but the journal itself does not choose or
+start them. It does not supply a general consensus-block format, Tendermint
+locking or valid-value transitions, timeout progression, dynamic validator
+selection or changes, signature creation or anti-equivocation signing state,
+multi-node or global finality, automatic networking or recovery policy, data
+availability, peer truth or trust, checkpoint/bootstrap, external-anchor
+persistence or attestation, cross-journal atomicity, rollback, provenance
+authority, economics, pruning, compaction, migration, or backup policy.

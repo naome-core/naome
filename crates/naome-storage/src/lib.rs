@@ -34,10 +34,15 @@
 //! Before session issuance, that anchor must also cover one exact persisted
 //! initial signing-lineage binding. Each later finality-authorized child lineage
 //! is appended and externally acknowledged before signer memory advances, so an
-//! exact anchored reopen can resume that child even if a crash preceded its
-//! first vote. The per-key chained log prevents replacement and same-slot state
-//! divergence, while an anchored reopen with an unresolved vote preparation
-//! remains deliberately non-signable.
+//! exact anchored reopen can authorize that child even if a crash preceded its
+//! first vote. When no branch object survives the process restart, the vote
+//! journal issues an opaque capability that lets finality history recover only
+//! the exact matching branch, including after a later finality halt; the vote
+//! journal then rechecks handle provenance and derives the latest completed
+//! round under a caller-local work ceiling before issuing its sole session. The
+//! per-key chained log prevents replacement and same-slot state divergence,
+//! while an anchored reopen with an unresolved vote preparation remains
+//! deliberately non-signable.
 //!
 //! [`ArtifactBlockCandidateStore`] retains chain-scoped structural blocks,
 //! including siblings and blocks with unavailable parents, without validating
@@ -97,9 +102,11 @@ pub use fixed_validator_finality_journal::{
     FixedValidatorFinalityReplayLimitV0,
 };
 pub use fixed_validator_vote_safety_journal::{
-    FixedValidatorDurablePrepareAcknowledgementV0, FixedValidatorPendingVoteV0,
-    FixedValidatorPreparedHeightAdvanceV0, FixedValidatorPreparedVoteV0,
-    FixedValidatorSignedVoteV0, FixedValidatorVoteCompletionMismatchV0,
+    FixedValidatorAnchoredSignerRecoveryV0, FixedValidatorDurablePrepareAcknowledgementV0,
+    FixedValidatorPendingVoteV0, FixedValidatorPreparedHeightAdvanceV0,
+    FixedValidatorPreparedVoteV0, FixedValidatorRecoveredSignerBranchV0,
+    FixedValidatorRecoveredSigningSessionV0, FixedValidatorSignedVoteV0,
+    FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVoteCompletionMismatchV0,
     FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyHaltV0,
     FixedValidatorVoteSafetyJournalErrorV0, FixedValidatorVoteSafetyJournalStateIdV0,
     FixedValidatorVoteSafetyJournalV0, FixedValidatorVoteSafetyReplayLimitErrorV0,
