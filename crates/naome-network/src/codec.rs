@@ -23,6 +23,9 @@ use crate::address_store::MAX_SIGNED_PEER_RECORD_BYTES;
 use crate::record_exchange::{
     MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
 };
+use crate::recovery_bundle_push::{
+    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RecoveryBundlePushReceipt, RecoveryBundlePushRequest,
+};
 
 pub(super) const ARTIFACT_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/artifact-exchange");
@@ -34,6 +37,8 @@ pub(super) const ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/artifact-chain-head-announcement");
 pub(super) const PEER_RECORD_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/peer-record-exchange");
+pub(super) const RECOVERY_BUNDLE_PUSH_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/naome/recovery-bundle-push-v0");
 
 #[derive(Clone)]
 pub(super) struct ArtifactCodec;
@@ -57,6 +62,8 @@ pub(super) struct PeerRecordCodec;
 
 #[derive(Clone)]
 pub(super) struct PeerRecordResponderCodec;
+#[derive(Clone)]
+pub(super) struct RecoveryBundlePushCodec;
 
 #[derive(Debug)]
 pub(super) enum PeerRecordResponderRequest {
@@ -611,6 +618,86 @@ where
         Ok(())
     } else {
         Err(io::Error::new(io::ErrorKind::InvalidData, message))
+    }
+}
+
+#[async_trait]
+impl request_response::Codec for RecoveryBundlePushCodec {
+    type Protocol = StreamProtocol;
+    type Request = RecoveryBundlePushRequest;
+    type Response = RecoveryBundlePushReceipt;
+    async fn read_request<T>(&mut self, _: &Self::Protocol, io: &mut T) -> io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut length = [0; 4];
+        io.read_exact(&mut length).await?;
+        let length = u32::from_be_bytes(length) as usize;
+        if length > RECOVERY_BUNDLE_PUSH_MAX_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recovery-bundle request exceeds maximum",
+            ));
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        bytes.resize(length, 0);
+        io.read_exact(&mut bytes).await?;
+        require_eof(io, "recovery-bundle request has trailing bytes").await?;
+        RecoveryBundlePushRequest::new(bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+    async fn read_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut receipt = [0; 1];
+        io.read_exact(&mut receipt).await?;
+        require_eof(io, "recovery-bundle receipt has trailing bytes").await?;
+        if receipt == [1] {
+            Ok(RecoveryBundlePushReceipt)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid recovery-bundle receipt",
+            ))
+        }
+    }
+    async fn write_request<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        request: Self::Request,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        let bytes = request.into_canonical_bundle_bytes();
+        let length = u32::try_from(bytes.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recovery-bundle request length does not fit u32",
+            )
+        })?;
+        io.write_all(&length.to_be_bytes()).await?;
+        io.write_all(&bytes).await
+    }
+    async fn write_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        _: Self::Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        io.write_all(&[1]).await
     }
 }
 

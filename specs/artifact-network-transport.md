@@ -161,7 +161,8 @@ One network instance enforces:
 | Pending outbound application requests per peer | 1 |
 | Streams per artifact, block, or head exchange per connection | 2 |
 | Head-announcement streams per connection | 1 |
-| Aggregate application streams per connection | 7 |
+| Recovery-bundle push streams per connection | 1 |
+| Aggregate application streams per connection | 8 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
 | TCP listen backlog | 16 |
@@ -187,8 +188,24 @@ Managed redial delays are `1, 2, 4, 8, 16, 32, 60` seconds and then remain at
 effectively disabled; static peer and connection caps bound retained sessions.
 Every timer requires continued caller polling.
 
+## Recovery-bundle push V0
+
+One caller-selected authenticated peer may receive one caller-owned canonical
+`CandidateBranchRecoveryBundleV0` byte string through
+`/naome/recovery-bundle-push-v0`. The request is `u32` big-endian encoded-byte
+length followed by exactly those bytes, with no trailing data. The length is at
+most 16 MiB. The response is exactly byte `01`.
+
+The receiver exposes the bounded bytes as an opaque inbound event. Its caller
+alone decides whether to decode them with the recovery-bundle limits and whether
+to persist or import them. Sending byte `01` confirms only stream acceptance;
+it establishes no decoding, validation, persistence, import, retention,
+recoverability, selection, provenance, truth, consensus, finality, or peer
+trust. The transport never indexes, announces, discovers, relays, retries, or
+automatically imports a bundle.
+
 The eight shared permits jointly bound pending requests, quarantined artifact
-candidates, decoded blocks, heads, and receipts. Each artifact response buffer
+candidates, decoded blocks, heads, recovery-bundle pushes, and receipts. Each artifact response buffer
 is capped at 4,194,305 body bytes, so eight caller-retained maximum responses
 can hold 33,554,440 body bytes in total. One block import and one opt-in
 candidate-branch payload fallback each try at most eight peers for one immutable
