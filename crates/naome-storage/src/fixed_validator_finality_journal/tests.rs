@@ -281,6 +281,85 @@ fn finalizes_two_heights_and_reopens_exact_head() {
 }
 
 #[test]
+fn signer_handoff_requires_retained_finality_and_exact_current_anchor() {
+    let fixture = Fixture::new();
+    let directory = TestDirectory::new("signer-handoff-anchor");
+    let mut journal = fixture.create(&directory);
+    let genesis_state = journal.state_id().unwrap();
+    assert!(matches!(
+        journal.acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(0),
+            genesis_state,
+        ),
+        Err(FixedValidatorFinalityJournalErrorV0::SignerHandoffUnavailable {
+            height,
+        }) if height == ConsensusHeight::new(0)
+    ));
+    assert!(matches!(
+        journal.acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            genesis_state,
+        ),
+        Err(FixedValidatorFinalityJournalErrorV0::SignerHandoffUnavailable {
+            height,
+        }) if height == ConsensusHeight::new(1)
+    ));
+
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let first = fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+    let first_position = first.position();
+    let first_ancestry = first.value().ancestry_id();
+    let first_envelope = first.envelope_id();
+    let first_block = first.value().artifact_block();
+    let first_payload = first.canonical_artifact_bytes().to_vec();
+    let _ = journal.commit_verified(first).unwrap();
+    let first_state = journal.state_id().unwrap();
+
+    assert!(matches!(
+        journal.acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            genesis_state,
+        ),
+        Err(FixedValidatorFinalityJournalErrorV0::ExternalFinalityAnchorMismatch {
+            required,
+            acknowledged,
+        }) if required == first_state && acknowledged == genesis_state
+    ));
+    let durable = journal
+        .acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            first_state,
+        )
+        .unwrap();
+    assert_eq!(durable.transition.position(), first_position);
+    assert_eq!(durable.transition.value().ancestry_id(), first_ancestry);
+    assert_eq!(durable.transition.envelope_id(), first_envelope);
+    drop(durable);
+
+    selected.apply_block(&first_block, first_payload).unwrap();
+    let second = fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Union, 0);
+    let _ = journal.commit_verified(second).unwrap();
+    let second_state = journal.state_id().unwrap();
+    assert!(matches!(
+        journal.acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            first_state,
+        ),
+        Err(FixedValidatorFinalityJournalErrorV0::ExternalFinalityAnchorMismatch {
+            required,
+            acknowledged,
+        }) if required == second_state && acknowledged == first_state
+    ));
+    let historical = journal
+        .acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            second_state,
+        )
+        .unwrap();
+    assert_eq!(historical.transition.value().ancestry_id(), first_ancestry);
+}
+
+#[test]
 fn reopened_finality_history_reconstructs_current_and_historical_candidate_anchors_read_only() {
     let fixture = Fixture::new();
     let directory = TestDirectory::new("candidate-recovery");
@@ -562,6 +641,11 @@ fn same_value_later_round_is_idempotent_without_write() {
     assert_eq!(retained.envelope_id(), first_envelope_id);
     assert_eq!(retained.canonical_envelope_bytes(), first_envelope);
     assert_eq!(retained.canonical_artifact_bytes(), first_payload);
+    let durable = journal
+        .acknowledge_signer_height_transition_is_externally_durable(ConsensusHeight::new(1), state)
+        .unwrap();
+    assert_eq!(durable.transition.position().round().value(), 0);
+    assert_eq!(durable.transition.envelope_id(), first_envelope_id);
 }
 
 #[test]
@@ -616,6 +700,13 @@ fn conflicting_valid_sibling_durably_halts_and_denies_head() {
         Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
     ));
     assert!(matches!(
+        journal.acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            journal.state_id().unwrap(),
+        ),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
         journal.commit_verified(denied_commit),
         Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
     ));
@@ -654,6 +745,13 @@ fn conflicting_valid_sibling_durably_halts_and_denies_head() {
     ));
     assert!(matches!(
         reopened.finalized_len(),
+        Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+    ));
+    assert!(matches!(
+        reopened.acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            reopened.state_id().unwrap(),
+        ),
         Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
     ));
     let mut reopened = reopened;
@@ -933,6 +1031,11 @@ fn round_limit_accepts_maximum_and_rejects_max_plus_one_before_io_and_replay() {
         ZfcAxiom::Pairing,
         fixture.limit.max_round(),
     );
+    let at_limit_position = at_limit.position();
+    let at_limit_ancestry = at_limit.value().ancestry_id();
+    let at_limit_envelope = at_limit.envelope_id();
+    let at_limit_envelope_bytes = at_limit.canonical_envelope_bytes().to_vec();
+    let at_limit_payload_bytes = at_limit.canonical_artifact_bytes().to_vec();
     let above_limit = fixture.transition(
         journal.head().unwrap(),
         &mut selected,
@@ -949,6 +1052,25 @@ fn round_limit_accepts_maximum_and_rejects_max_plus_one_before_io_and_replay() {
         journal.commit_verified(at_limit).unwrap(),
         FixedValidatorFinalityCommitOutcomeV0::Finalized { .. }
     ));
+    let committed_state = journal.state_id().unwrap();
+    let durable = journal
+        .acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            committed_state,
+        )
+        .unwrap();
+    assert_eq!(durable.transition.position(), at_limit_position);
+    assert_eq!(durable.transition.value().ancestry_id(), at_limit_ancestry);
+    assert_eq!(durable.transition.envelope_id(), at_limit_envelope);
+    assert_eq!(
+        durable.transition.canonical_envelope_bytes(),
+        at_limit_envelope_bytes
+    );
+    assert_eq!(
+        durable.transition.canonical_artifact_bytes(),
+        at_limit_payload_bytes
+    );
+    drop(durable);
     let committed_image = fs::read(directory.journal()).unwrap();
     assert!(matches!(
         journal.commit_verified(above_limit),
@@ -959,6 +1081,27 @@ fn round_limit_accepts_maximum_and_rejects_max_plus_one_before_io_and_replay() {
     ));
     assert_eq!(fs::read(directory.journal()).unwrap(), committed_image);
     drop(journal);
+
+    let reopened = fixture.open(&directory, committed_state).unwrap();
+    let durable = reopened
+        .acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            committed_state,
+        )
+        .unwrap();
+    assert_eq!(durable.transition.position(), at_limit_position);
+    assert_eq!(durable.transition.value().ancestry_id(), at_limit_ancestry);
+    assert_eq!(durable.transition.envelope_id(), at_limit_envelope);
+    assert_eq!(
+        durable.transition.canonical_envelope_bytes(),
+        at_limit_envelope_bytes
+    );
+    assert_eq!(
+        durable.transition.canonical_artifact_bytes(),
+        at_limit_payload_bytes
+    );
+    drop(durable);
+    drop(reopened);
 
     let branch = fixed_genesis(fixture.definition, fixture.context, &fixture.entries).unwrap();
     let prefix = canonical_prefix(
@@ -1059,6 +1202,13 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
             ),
             "fault={fault:?}"
         );
+        assert!(
+            matches!(
+                core.reconstruct_selected_transition(ConsensusHeight::new(1)),
+                Err(FixedValidatorFinalityJournalErrorV0::Poisoned)
+            ),
+            "fault={fault:?}"
+        );
 
         let durable = core.file.durable.clone();
         let durable_commit = matches!(
@@ -1101,6 +1251,11 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
             assert_eq!(new_anchor.snapshot_index.len(), 2);
             assert_eq!(new_anchor.snapshot_index.get(&genesis_block_id), Some(&0));
             assert_eq!(new_anchor.snapshot_index.get(&proposed_block_id), Some(&1));
+            assert!(
+                new_anchor
+                    .reconstruct_selected_transition(ConsensusHeight::new(1))
+                    .is_ok()
+            );
         } else {
             assert!(matches!(
                 new_anchor,

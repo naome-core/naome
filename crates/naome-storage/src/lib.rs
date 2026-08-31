@@ -21,15 +21,23 @@
 //! proof per selected height, and requires an externally retained exact
 //! [`FixedValidatorFinalityJournalStateIdV0`] for operational reopen. A distinct
 //! verified sibling produces a durable terminal halt rather than fork choice.
+//! Its retained selected transition is also the only source of a signer-height
+//! handoff: the caller must explicitly acknowledge the journal's exact current
+//! state identity as externally durable before the key-owning vote session can
+//! consume that child.
 //!
 //! [`FixedValidatorVoteSafetyJournalV0`] separately owns one local consensus
 //! signing key and enforces a two-sync prepare-then-complete protocol for exact
 //! kernel-sealed vote intents. The key is reachable only through the journal's
 //! sole lock-state session, and signing requires an explicit caller assertion
 //! that the exact prepared state ID is durable in a separate monotonic anchor.
-//! Its per-key chained log prevents replacement and same-slot state divergence,
-//! while an anchored reopen with an unresolved preparation remains deliberately
-//! non-signable.
+//! Before session issuance, that anchor must also cover one exact persisted
+//! initial signing-lineage binding. Each later finality-authorized child lineage
+//! is appended and externally acknowledged before signer memory advances, so an
+//! exact anchored reopen can resume that child even if a crash preceded its
+//! first vote. The per-key chained log prevents replacement and same-slot state
+//! divergence, while an anchored reopen with an unresolved vote preparation
+//! remains deliberately non-signable.
 //!
 //! [`ArtifactBlockCandidateStore`] retains chain-scoped structural blocks,
 //! including siblings and blocks with unavailable parents, without validating
@@ -82,19 +90,20 @@ pub use candidate_branch_reconstruction::{
     reconstruct_candidate_branch, start_candidate_branch_reconstruction,
 };
 pub use fixed_validator_finality_journal::{
-    FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityHaltV0,
-    FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
-    FixedValidatorFinalityJournalV0, FixedValidatorFinalityRecordV0,
-    FixedValidatorFinalityReplayLimitErrorV0, FixedValidatorFinalityReplayLimitV0,
+    FixedValidatorDurableFinalityTransitionV0, FixedValidatorFinalityCommitOutcomeV0,
+    FixedValidatorFinalityHaltV0, FixedValidatorFinalityJournalErrorV0,
+    FixedValidatorFinalityJournalStateIdV0, FixedValidatorFinalityJournalV0,
+    FixedValidatorFinalityRecordV0, FixedValidatorFinalityReplayLimitErrorV0,
+    FixedValidatorFinalityReplayLimitV0,
 };
 pub use fixed_validator_vote_safety_journal::{
     FixedValidatorDurablePrepareAcknowledgementV0, FixedValidatorPendingVoteV0,
-    FixedValidatorPreparedVoteV0, FixedValidatorSignedVoteV0,
-    FixedValidatorVoteCompletionMismatchV0, FixedValidatorVotePrepareOutcomeV0,
-    FixedValidatorVoteSafetyHaltV0, FixedValidatorVoteSafetyJournalErrorV0,
-    FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalV0,
-    FixedValidatorVoteSafetyReplayLimitErrorV0, FixedValidatorVoteSafetyReplayLimitV0,
-    FixedValidatorVoteSafetySigningSessionV0,
+    FixedValidatorPreparedHeightAdvanceV0, FixedValidatorPreparedVoteV0,
+    FixedValidatorSignedVoteV0, FixedValidatorVoteCompletionMismatchV0,
+    FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyHaltV0,
+    FixedValidatorVoteSafetyJournalErrorV0, FixedValidatorVoteSafetyJournalStateIdV0,
+    FixedValidatorVoteSafetyJournalV0, FixedValidatorVoteSafetyReplayLimitErrorV0,
+    FixedValidatorVoteSafetyReplayLimitV0, FixedValidatorVoteSafetySigningSessionV0,
 };
 
 pub use payload_store::{

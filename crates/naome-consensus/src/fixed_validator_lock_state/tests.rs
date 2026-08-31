@@ -963,11 +963,28 @@ fn verified_child_height_reset_clears_parent_lock_and_returns_exact_child() {
 
     let transition = owned_transition(chain_seed);
     let expected_ancestry = transition.value().ancestry_id();
+    let expected_child_coordinate = transition.child_coordinate();
+    let position = state.position();
+    let phase = state.phase();
+    let locked = state.locked_value();
+    let valid = valid_snapshot(&state);
+    let child_round_zero_position = state.validate_height_transition(&transition).unwrap();
+
+    assert_eq!(
+        child_round_zero_position,
+        ConsensusPosition::new(ConsensusHeight::new(2), ConsensusRound::new(0))
+    );
+    assert_eq!(state.position(), position);
+    assert_eq!(state.phase(), phase);
+    assert_eq!(state.locked_value(), locked);
+    assert_eq!(valid_snapshot(&state), valid);
+
     let child = state
         .advance_height_with_verified_transition(transition)
         .unwrap();
     let child_round_zero = child.begin_round_zero().unwrap();
 
+    assert_eq!(child.coordinate(), expected_child_coordinate);
     assert_eq!(child.verified_height(), Some(ConsensusHeight::new(1)));
     assert_eq!(child.ancestry_id(), expected_ancestry);
     assert_eq!(state.parent_coordinate, child.coordinate());
@@ -991,11 +1008,23 @@ fn verified_child_height_reset_rejects_another_parent_without_mutation() {
     let phase = state.phase();
     let locked = state.locked_value();
     let valid = valid_snapshot(&state);
+    let transition = owned_transition(0x39);
 
-    assert!(matches!(
-        state.advance_height_with_verified_transition(owned_transition(0x39)),
-        Err(FixedValidatorLockStateError::HeightTransitionParentMismatch)
-    ));
+    let validation_error = state.validate_height_transition(&transition).err().unwrap();
+    assert_eq!(
+        validation_error,
+        FixedValidatorLockStateError::HeightTransitionParentMismatch
+    );
+    assert_eq!(state.position(), position);
+    assert_eq!(state.phase(), phase);
+    assert_eq!(state.locked_value(), locked);
+    assert_eq!(valid_snapshot(&state), valid);
+
+    let advance_error = state
+        .advance_height_with_verified_transition(transition)
+        .err()
+        .unwrap();
+    assert_eq!(advance_error, validation_error);
     assert_eq!(state.position(), position);
     assert_eq!(state.phase(), phase);
     assert_eq!(state.locked_value(), locked);
@@ -1009,14 +1038,29 @@ fn verified_child_height_reset_rejects_a_different_current_height_without_mutati
     let round_zero = branch.begin_round_zero().unwrap();
     let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
     state.position = ConsensusPosition::new(ConsensusHeight::new(2), ConsensusRound::new(0));
+    let transition = owned_transition(chain_seed);
 
+    let validation_error = state.validate_height_transition(&transition).err().unwrap();
     assert!(matches!(
-        state.advance_height_with_verified_transition(owned_transition(chain_seed)),
-        Err(FixedValidatorLockStateError::HeightTransitionHeightMismatch {
+        validation_error,
+        FixedValidatorLockStateError::HeightTransitionHeightMismatch {
             expected,
             actual,
-        }) if expected == ConsensusHeight::new(2) && actual == ConsensusHeight::new(1)
+        } if expected == ConsensusHeight::new(2) && actual == ConsensusHeight::new(1)
     ));
+    assert_eq!(
+        state.position(),
+        ConsensusPosition::new(ConsensusHeight::new(2), ConsensusRound::new(0))
+    );
+    assert_eq!(state.phase(), FixedValidatorLockPhaseV0::Proposal);
+    assert_eq!(state.locked_value(), None);
+    assert_eq!(state.valid_value(), None);
+
+    let advance_error = state
+        .advance_height_with_verified_transition(transition)
+        .err()
+        .unwrap();
+    assert_eq!(advance_error, validation_error);
     assert_eq!(
         state.position(),
         ConsensusPosition::new(ConsensusHeight::new(2), ConsensusRound::new(0))
