@@ -37,10 +37,16 @@
 //! exact anchored reopen can authorize that child even if a crash preceded its
 //! first vote. When no branch object survives the process restart, the vote
 //! journal issues an opaque capability that lets finality history recover only
-//! the exact matching branch, including after a later finality halt; the vote
-//! journal then rechecks handle provenance and derives the latest completed
-//! round under a caller-local work ceiling before issuing its sole session. The
-//! per-key chained log prevents replacement and same-slot state divergence,
+//! the exact matching branch, including after a later finality halt when no
+//! explicit conflict stop has been applied; the vote journal then rechecks
+//! handle provenance and derives the latest completed round under a caller-local
+//! work ceiling before issuing its sole session. The
+//! finality journal can also issue opaque authority for an externally anchored
+//! durable conflict; explicit consumption appends a separate terminal stop to
+//! each matching local signer journal without selecting or rolling back either
+//! sibling. Until that authority is routed, prior point-in-time signer handoffs
+//! remain unchanged.
+//! The per-key chained log prevents replacement and same-slot state divergence,
 //! while an anchored reopen with an unresolved vote preparation remains
 //! deliberately non-signable.
 //!
@@ -95,14 +101,15 @@ pub use candidate_branch_reconstruction::{
     reconstruct_candidate_branch, start_candidate_branch_reconstruction,
 };
 pub use fixed_validator_finality_journal::{
-    FixedValidatorDurableFinalityTransitionV0, FixedValidatorFinalityCommitOutcomeV0,
-    FixedValidatorFinalityHaltV0, FixedValidatorFinalityJournalErrorV0,
-    FixedValidatorFinalityJournalStateIdV0, FixedValidatorFinalityJournalV0,
-    FixedValidatorFinalityRecordV0, FixedValidatorFinalityReplayLimitErrorV0,
-    FixedValidatorFinalityReplayLimitV0,
+    FixedValidatorDurableFinalityConflictV0, FixedValidatorDurableFinalityTransitionV0,
+    FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityHaltV0,
+    FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
+    FixedValidatorFinalityJournalV0, FixedValidatorFinalityRecordV0,
+    FixedValidatorFinalityReplayLimitErrorV0, FixedValidatorFinalityReplayLimitV0,
 };
 pub use fixed_validator_vote_safety_journal::{
     FixedValidatorAnchoredSignerRecoveryV0, FixedValidatorDurablePrepareAcknowledgementV0,
+    FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityConflictSignerStopV0,
     FixedValidatorPendingVoteV0, FixedValidatorPreparedHeightAdvanceV0,
     FixedValidatorPreparedVoteV0, FixedValidatorRecoveredSignerBranchV0,
     FixedValidatorRecoveredSigningSessionV0, FixedValidatorSignedVoteV0,

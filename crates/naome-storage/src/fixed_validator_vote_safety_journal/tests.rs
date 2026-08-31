@@ -1057,6 +1057,550 @@ fn anchored_child_lineage_reopens_after_crash_before_live_height_acknowledgement
 }
 
 #[test]
+fn durable_finality_conflict_preempts_live_prepared_vote_before_key_use() {
+    let fixture = Fixture::new(2);
+    let directory = TestDirectory::new("finality-stop-live-prepared");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let mut finality = fixture.create_finality(&directory);
+    let _ = finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let halt = match finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::Union))
+        .unwrap()
+    {
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected finality halt, got {other:?}"),
+    };
+
+    let mut vote_journal = fixture.create(&directory);
+    let (_, vote_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    let mut session = issue_session(&mut vote_journal, &round);
+    let effect = session.decide_prevote_without_proposal().unwrap();
+    let prepared = prepared(session.prepare_vote(&round, effect).unwrap());
+    let acknowledgement = session
+        .acknowledge_prepared_vote_is_externally_durable(prepared, prepared.state_id())
+        .unwrap();
+    let pre_stop_image = fs::read(&vote_path).unwrap();
+
+    let conflict = finality
+        .acknowledge_signer_stop_is_externally_durable(halt.state_id())
+        .unwrap();
+    let stopped = match session
+        .stop_after_durable_finality_conflict(conflict)
+        .unwrap()
+    {
+        FixedValidatorFinalityConflictSignerStopOutcomeV0::Stopped(stopped) => stopped,
+        other => panic!("expected new signer stop, got {other:?}"),
+    };
+    assert_eq!(stopped.finality_state_id(), halt.state_id());
+    assert_eq!(stopped.height(), halt.height());
+    assert_eq!(stopped.selected_ancestry(), halt.selected_ancestry());
+    assert_eq!(stopped.conflicting_ancestry(), halt.conflicting_ancestry());
+    let stopped_image = fs::read(&vote_path).unwrap();
+    assert_ne!(stopped_image, pre_stop_image);
+
+    assert!(matches!(
+        session.sign_prepared_vote(acknowledgement),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::TerminalFinalityConflictSignerStop {
+                height
+            }
+        ) if height == halt.height()
+    ));
+    assert!(matches!(
+        session.decide_prevote_without_proposal(),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::TerminalFinalityConflictSignerStop {
+                height
+            }
+        ) if height == halt.height()
+    ));
+    assert_eq!(session.journal.state_id().unwrap(), stopped.vote_state_id());
+    assert_eq!(
+        session.journal.finality_conflict_stop().unwrap(),
+        Some(stopped)
+    );
+    assert_eq!(fs::read(&vote_path).unwrap(), stopped_image);
+}
+
+#[test]
+fn exact_restart_preserves_finality_stop_and_exact_repeat_is_no_write() {
+    let fixture = Fixture::new(2);
+    let directory = TestDirectory::new("finality-stop-restart-repeat");
+    let alternate_finality_directory =
+        TestDirectory::new("finality-stop-restart-alternate-conflict");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let mut finality = fixture.create_finality(&directory);
+    let _ = finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let halt = match finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::Union))
+        .unwrap()
+    {
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected finality halt, got {other:?}"),
+    };
+
+    let mut vote_journal = fixture.create(&directory);
+    let prepared = prepared(
+        vote_journal
+            .prepare_vote(fixture.nil_prevote_intent())
+            .unwrap(),
+    );
+    let signed = signed(vote_journal.sign_prepared_vote(prepared).unwrap());
+    let conflict = finality
+        .acknowledge_signer_stop_is_externally_durable(halt.state_id())
+        .unwrap();
+    let stopped = match vote_journal
+        .stop_after_durable_finality_conflict(conflict)
+        .unwrap()
+    {
+        FixedValidatorFinalityConflictSignerStopOutcomeV0::Stopped(stopped) => stopped,
+        other => panic!("expected new signer stop, got {other:?}"),
+    };
+    let (_, vote_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    let stopped_image = fs::read(&vote_path).unwrap();
+    drop(vote_journal);
+    drop(finality);
+
+    let finality = fixture.open_finality(&directory, halt.state_id());
+    let mut reopened = fixture.open(&directory, stopped.vote_state_id()).unwrap();
+    assert_eq!(reopened.finality_conflict_stop().unwrap(), Some(stopped));
+    assert!(matches!(
+        reopened.issue_signing_session(&round, stopped.vote_state_id()),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::TerminalFinalityConflictSignerStop {
+                height
+            }
+        ) if height == halt.height()
+    ));
+    assert!(matches!(
+        reopened.retained_signed_vote(signed.position(), signed.role()),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::TerminalFinalityConflictSignerStop {
+                height
+            }
+        ) if height == halt.height()
+    ));
+    assert!(matches!(
+        reopened.acknowledge_signer_recovery_is_externally_durable(stopped.vote_state_id()),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::TerminalFinalityConflictSignerStop {
+                height
+            }
+        ) if height == halt.height()
+    ));
+
+    let repeated_conflict = finality
+        .acknowledge_signer_stop_is_externally_durable(halt.state_id())
+        .unwrap();
+    assert!(matches!(
+        reopened
+            .stop_after_durable_finality_conflict(repeated_conflict)
+            .unwrap(),
+        FixedValidatorFinalityConflictSignerStopOutcomeV0::AlreadyStopped(existing)
+            if existing == stopped
+    ));
+    assert_eq!(reopened.state_id().unwrap(), stopped.vote_state_id());
+    assert_eq!(fs::read(&vote_path).unwrap(), stopped_image);
+
+    let mut alternate_finality = fixture.create_finality(&alternate_finality_directory);
+    let _ = alternate_finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let alternate_halt = match alternate_finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::PowerSet))
+        .unwrap()
+    {
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected alternate finality halt, got {other:?}"),
+    };
+    let alternate_conflict = alternate_finality
+        .acknowledge_signer_stop_is_externally_durable(alternate_halt.state_id())
+        .unwrap();
+    assert!(matches!(
+        reopened.stop_after_durable_finality_conflict(alternate_conflict),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::ConflictingFinalityConflictSignerStop {
+                retained_height,
+                incoming_height,
+            }
+        ) if retained_height == halt.height() && incoming_height == alternate_halt.height()
+    ));
+    assert_eq!(reopened.state_id().unwrap(), stopped.vote_state_id());
+    assert_eq!(fs::read(vote_path).unwrap(), stopped_image);
+}
+
+#[test]
+fn unavailable_or_mismatched_finality_stop_authority_never_changes_vote_state() {
+    let fixture = Fixture::new(2);
+    let finality_directory = TestDirectory::new("finality-stop-mismatch-source");
+    let primary_directory = TestDirectory::new("finality-stop-mismatch-primary");
+    let context_directory = TestDirectory::new("finality-stop-mismatch-context");
+    let set_directory = TestDirectory::new("finality-stop-mismatch-set");
+    let mut finality = fixture.create_finality(&finality_directory);
+    let primary = fixture.create(&primary_directory);
+    let (_, primary_path) = keyed_paths(&primary_directory.0, fixture.signer()).unwrap();
+    let primary_state = primary.state_id().unwrap();
+    let primary_image = fs::read(&primary_path).unwrap();
+
+    assert!(matches!(
+        finality.acknowledge_signer_stop_is_externally_durable(finality.state_id().unwrap()),
+        Err(FixedValidatorFinalityJournalErrorV0::SignerStopConflictRequired)
+    ));
+    assert_eq!(primary.state_id().unwrap(), primary_state);
+    assert_eq!(fs::read(&primary_path).unwrap(), primary_image);
+
+    let _ = finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let halt = match finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::Union))
+        .unwrap()
+    {
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected finality halt, got {other:?}"),
+    };
+    let wrong_finality_anchor = FixedValidatorFinalityJournalStateIdV0::from_bytes([0x93; 32]);
+    assert!(matches!(
+        finality.acknowledge_signer_stop_is_externally_durable(wrong_finality_anchor),
+        Err(
+            FixedValidatorFinalityJournalErrorV0::ExternalFinalityAnchorMismatch {
+                required,
+                acknowledged,
+            }
+        ) if required == halt.state_id() && acknowledged == wrong_finality_anchor
+    ));
+    assert_eq!(primary.state_id().unwrap(), primary_state);
+    assert_eq!(fs::read(&primary_path).unwrap(), primary_image);
+
+    let wrong_context = ConsensusContextV0::new(
+        fixture.context.chain_id(),
+        ConsensusGenesisId::from_bytes([0x93; 32]),
+        fixture.context.protocol_version(),
+    );
+    let mut context_vote = FixedValidatorVoteSafetyJournalV0::create(
+        &context_directory.0,
+        wrong_context,
+        fixture.fixed_set_id(),
+        fixture.signing_key(),
+        fixture.replay_limit,
+    )
+    .unwrap();
+    let (_, context_path) = keyed_paths(&context_directory.0, fixture.signer()).unwrap();
+    let context_state = context_vote.state_id().unwrap();
+    let context_image = fs::read(&context_path).unwrap();
+    let conflict = finality
+        .acknowledge_signer_stop_is_externally_durable(halt.state_id())
+        .unwrap();
+    assert!(matches!(
+        context_vote.stop_after_durable_finality_conflict(conflict),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::FinalityConflictContextMismatch)
+    ));
+    assert_eq!(context_vote.state_id().unwrap(), context_state);
+    assert_eq!(fs::read(context_path).unwrap(), context_image);
+
+    let mut set_vote = FixedValidatorVoteSafetyJournalV0::create(
+        &set_directory.0,
+        fixture.context,
+        fixture.alternate_fixed_set_id(),
+        fixture.signing_key(),
+        fixture.replay_limit,
+    )
+    .unwrap();
+    let (_, set_path) = keyed_paths(&set_directory.0, fixture.signer()).unwrap();
+    let set_state = set_vote.state_id().unwrap();
+    let set_image = fs::read(&set_path).unwrap();
+    let conflict = finality
+        .acknowledge_signer_stop_is_externally_durable(halt.state_id())
+        .unwrap();
+    assert!(matches!(
+        set_vote.stop_after_durable_finality_conflict(conflict),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::FinalityConflictFixedSetMismatch)
+    ));
+    assert_eq!(set_vote.state_id().unwrap(), set_state);
+    assert_eq!(fs::read(set_path).unwrap(), set_image);
+}
+
+#[test]
+fn finality_stop_preempts_held_height_advance_authority() {
+    let fixture = Fixture::new(2);
+    let height_directory = TestDirectory::new("finality-stop-held-height-source");
+    let conflict_directory = TestDirectory::new("finality-stop-held-height-conflict");
+    let vote_directory = TestDirectory::new("finality-stop-held-height-vote");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+
+    let mut height_finality = fixture.create_finality(&height_directory);
+    let _ = height_finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let height_finality_state = height_finality.state_id().unwrap();
+    let durable_height = height_finality
+        .acknowledge_signer_height_transition_is_externally_durable(
+            ConsensusHeight::new(1),
+            height_finality_state,
+        )
+        .unwrap();
+
+    let mut conflict_finality = fixture.create_finality(&conflict_directory);
+    let _ = conflict_finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let halt = match conflict_finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::Union))
+        .unwrap()
+    {
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected finality halt, got {other:?}"),
+    };
+
+    let mut vote_journal = fixture.create(&vote_directory);
+    let (_, vote_path) = keyed_paths(&vote_directory.0, fixture.signer()).unwrap();
+    let mut session = issue_session(&mut vote_journal, &round);
+    let prepared_height = session
+        .prepare_height_with_durable_finality(durable_height)
+        .unwrap();
+    let prepared_state = prepared_height.state_id();
+    let parent_position = session.position();
+
+    let conflict = conflict_finality
+        .acknowledge_signer_stop_is_externally_durable(halt.state_id())
+        .unwrap();
+    let stopped = match session
+        .stop_after_durable_finality_conflict(conflict)
+        .unwrap()
+    {
+        FixedValidatorFinalityConflictSignerStopOutcomeV0::Stopped(stopped) => stopped,
+        other => panic!("expected new signer stop, got {other:?}"),
+    };
+    let stopped_image = fs::read(&vote_path).unwrap();
+
+    assert!(matches!(
+        session.acknowledge_prepared_height_is_externally_durable(
+            prepared_height,
+            prepared_state,
+        ),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::TerminalFinalityConflictSignerStop {
+                height
+            }
+        ) if height == halt.height()
+    ));
+    assert_eq!(session.position(), parent_position);
+    assert_eq!(session.journal.state_id().unwrap(), stopped.vote_state_id());
+    assert_eq!(fs::read(vote_path).unwrap(), stopped_image);
+}
+
+#[test]
+fn finality_stop_bypasses_exhausted_preparation_ceiling() {
+    let fixture = Fixture::new(1);
+    let finality_directory = TestDirectory::new("finality-stop-exhausted-source");
+    let vote_directory = TestDirectory::new("finality-stop-exhausted-vote");
+    let mut finality = fixture.create_finality(&finality_directory);
+    let _ = finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let halt = match finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::Union))
+        .unwrap()
+    {
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected finality halt, got {other:?}"),
+    };
+
+    let mut vote_journal = fixture.create(&vote_directory);
+    let prepared = prepared(
+        vote_journal
+            .prepare_vote(fixture.nil_prevote_intent())
+            .unwrap(),
+    );
+    let _ = vote_journal.sign_prepared_vote(prepared).unwrap();
+    assert!(matches!(
+        vote_journal.prepare_vote(fixture.round_one_nil_prevote_intent()),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::PrepareLimitExceeded { maximum: 1 })
+    ));
+    let (_, vote_path) = keyed_paths(&vote_directory.0, fixture.signer()).unwrap();
+    let exhausted_image = fs::read(&vote_path).unwrap();
+
+    let conflict = finality
+        .acknowledge_signer_stop_is_externally_durable(halt.state_id())
+        .unwrap();
+    let stopped = match vote_journal
+        .stop_after_durable_finality_conflict(conflict)
+        .unwrap()
+    {
+        FixedValidatorFinalityConflictSignerStopOutcomeV0::Stopped(stopped) => stopped,
+        other => panic!("expected new signer stop, got {other:?}"),
+    };
+    assert_ne!(fs::read(&vote_path).unwrap(), exhausted_image);
+    assert_eq!(vote_journal.state_id().unwrap(), stopped.vote_state_id());
+    assert!(matches!(
+        vote_journal.prepare_vote(fixture.round_one_nil_prevote_intent()),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::TerminalFinalityConflictSignerStop {
+                height
+            }
+        ) if height == halt.height()
+    ));
+}
+
+#[test]
+fn existing_same_slot_halt_cannot_be_replaced_by_finality_stop() {
+    let fixture = Fixture::new(2);
+    let finality_directory = TestDirectory::new("finality-stop-existing-halt-source");
+    let vote_directory = TestDirectory::new("finality-stop-existing-halt-vote");
+    let mut finality = fixture.create_finality(&finality_directory);
+    let _ = finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let finality_halt = match finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::Union))
+        .unwrap()
+    {
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected finality halt, got {other:?}"),
+    };
+
+    let mut vote_journal = fixture.create(&vote_directory);
+    let prepared = prepared(
+        vote_journal
+            .prepare_vote(fixture.nil_prevote_intent())
+            .unwrap(),
+    );
+    let _ = vote_journal.sign_prepared_vote(prepared).unwrap();
+    let vote_halt = match vote_journal
+        .prepare_vote(fixture.proposal_prevote_intent())
+        .unwrap()
+    {
+        FixedValidatorVotePrepareOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected vote-safety halt, got {other:?}"),
+    };
+    let (_, vote_path) = keyed_paths(&vote_directory.0, fixture.signer()).unwrap();
+    let halted_image = fs::read(&vote_path).unwrap();
+
+    let conflict = finality
+        .acknowledge_signer_stop_is_externally_durable(finality_halt.state_id())
+        .unwrap();
+    assert!(matches!(
+        vote_journal.stop_after_durable_finality_conflict(conflict),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::TerminalHalt {
+            position,
+            role,
+        }) if position == vote_halt.position() && role == vote_halt.role()
+    ));
+    assert_eq!(vote_journal.state_id().unwrap(), vote_halt.state_id());
+    assert_eq!(vote_journal.halt().unwrap(), Some(vote_halt));
+    assert_eq!(vote_journal.finality_conflict_stop().unwrap(), None);
+    assert_eq!(fs::read(vote_path).unwrap(), halted_image);
+}
+
+#[test]
+fn finality_stop_codec_has_an_independent_golden_and_strict_adversarial_replay() {
+    let fixture = Fixture::new(1);
+    let finality_directory = TestDirectory::new("finality-stop-codec-source");
+    let vote_directory = TestDirectory::new("finality-stop-codec-vote");
+    let mut finality = fixture.create_finality(&finality_directory);
+    let _ = finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let halt = match finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::Union))
+        .unwrap()
+    {
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected finality halt, got {other:?}"),
+    };
+
+    let prefix = fixture.prefix();
+    let genesis = genesis_state_id(&prefix);
+    let mut body = Vec::with_capacity(169);
+    body.push(0x05);
+    body.extend_from_slice(halt.state_id().as_bytes());
+    body.extend_from_slice(&halt.height().value().to_be_bytes());
+    body.extend_from_slice(halt.selected_ancestry().as_bytes());
+    body.extend_from_slice(halt.selected_envelope_id().as_bytes());
+    body.extend_from_slice(halt.conflicting_ancestry().as_bytes());
+    body.extend_from_slice(halt.conflicting_envelope_id().as_bytes());
+    assert_eq!(body.len(), 169);
+    let length = 169_u32.to_be_bytes();
+    let expected_state = step_state_id(genesis, length, &body);
+    assert_eq!(
+        expected_state,
+        FixedValidatorVoteSafetyJournalStateIdV0::from_bytes([
+            0xf1, 0x8b, 0xbd, 0x44, 0xc6, 0x81, 0x4c, 0xfa, 0x2e, 0xb8, 0xff, 0x4e, 0x53, 0xab,
+            0x52, 0x09, 0xc0, 0xae, 0xa7, 0xc1, 0x2f, 0x9c, 0x81, 0xb2, 0x14, 0x4a, 0x77, 0x2e,
+            0x7f, 0x24, 0xe3, 0x8f,
+        ])
+    );
+    let mut expected_image = prefix.clone();
+    expected_image.extend_from_slice(&length);
+    expected_image.extend_from_slice(&body);
+    expected_image.extend_from_slice(expected_state.as_bytes());
+    assert_eq!(expected_image.len() - prefix.len(), 205);
+
+    let mut vote_journal = fixture.create(&vote_directory);
+    let conflict = finality
+        .acknowledge_signer_stop_is_externally_durable(halt.state_id())
+        .unwrap();
+    let stopped = match vote_journal
+        .stop_after_durable_finality_conflict(conflict)
+        .unwrap()
+    {
+        FixedValidatorFinalityConflictSignerStopOutcomeV0::Stopped(stopped) => stopped,
+        other => panic!("expected new signer stop, got {other:?}"),
+    };
+    let (_, vote_path) = keyed_paths(&vote_directory.0, fixture.signer()).unwrap();
+    assert_eq!(stopped.vote_state_id(), expected_state);
+    assert_eq!(fs::read(vote_path).unwrap(), expected_image);
+
+    let mut wrong_width = prefix.clone();
+    let mut wrong_width_body = vec![0_u8; 41];
+    wrong_width_body[0] = 0x05;
+    let wrong_width_state = append_test_record(&mut wrong_width, genesis, &wrong_width_body);
+    let io = ScriptedIo::from_images(wrong_width.clone(), wrong_width);
+    assert!(matches!(
+        fixture.replay_scripted(io, wrong_width_state),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::InvalidFinalityConflictSignerStopLength {
+                entry: 0,
+                actual: 40,
+            }
+        )
+    ));
+
+    let mut zero_height = prefix.clone();
+    let mut zero_height_body = body.clone();
+    zero_height_body[33..41].fill(0);
+    let zero_height_state = append_test_record(&mut zero_height, genesis, &zero_height_body);
+    let io = ScriptedIo::from_images(zero_height.clone(), zero_height);
+    assert!(matches!(
+        fixture.replay_scripted(io, zero_height_state),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidFinalityConflictSignerStop { entry: 0 })
+    ));
+
+    let mut mutated_footer = expected_image.clone();
+    *mutated_footer.last_mut().unwrap() ^= 0x01;
+    let io = ScriptedIo::from_images(mutated_footer.clone(), mutated_footer);
+    assert!(matches!(
+        fixture.replay_scripted(io, expected_state),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::RecordStateIdMismatch { entry: 0, .. })
+    ));
+
+    let mut post_stop = expected_image;
+    let post_stop_state = append_test_record(&mut post_stop, expected_state, &body);
+    let io = ScriptedIo::from_images(post_stop.clone(), post_stop);
+    assert!(matches!(
+        fixture.replay_scripted(io, post_stop_state),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::RecordAfterHalt { .. })
+    ));
+}
+
+#[test]
 fn recovered_signer_session_replays_latest_completed_round_with_bounded_work() {
     let fixture = Fixture::new(8);
     let directory = TestDirectory::new("completed-round-recovery");
@@ -2716,6 +3260,100 @@ fn every_signing_lineage_append_fault_poisons_and_reopens_only_from_durable_anch
             let reopened = fixture.replay_scripted(replay_io, genesis).unwrap();
             assert!(reopened.lineage.is_none(), "fault {fault:?}");
             assert_eq!(reopened.file.volatile.get_ref(), &prefix, "fault {fault:?}");
+        }
+    }
+}
+
+#[test]
+fn every_finality_stop_append_fault_poisons_and_reopens_only_from_exact_anchor() {
+    let fixture = Fixture::new(1);
+    let finality_directory = TestDirectory::new("finality-stop-fault-source");
+    let mut finality = fixture.create_finality(&finality_directory);
+    let _ = finality
+        .commit_verified(fixture.owned_transition())
+        .unwrap();
+    let halt = match finality
+        .commit_verified(fixture.owned_transition_for(ZfcAxiom::Union))
+        .unwrap()
+    {
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected finality halt, got {other:?}"),
+    };
+    let prefix = fixture.prefix();
+    let genesis = genesis_state_id(&prefix);
+    let proposed = FixedValidatorFinalityConflictSignerStopV0 {
+        finality_state_id: halt.state_id(),
+        height: halt.height(),
+        selected_ancestry: halt.selected_ancestry(),
+        selected_envelope_id: halt.selected_envelope_id(),
+        conflicting_ancestry: halt.conflicting_ancestry(),
+        conflicting_envelope_id: halt.conflicting_envelope_id(),
+        vote_state_id: genesis,
+    };
+    let body = finality_conflict_stop_record(proposed, 0).unwrap();
+    let stopped_state = step_state_id(
+        genesis,
+        u32::try_from(body.len()).unwrap().to_be_bytes(),
+        &body,
+    );
+    let complete_length = prefix.len() + 4 + body.len() + 32;
+
+    for fault in all_append_faults(4 + body.len(), 32) {
+        let io = ScriptedIo::new(prefix.clone(), Some(fault.clone()));
+        let mut core = fixture.scripted_core(io);
+        let conflict = finality
+            .acknowledge_signer_stop_is_externally_durable(halt.state_id())
+            .unwrap();
+        assert!(
+            matches!(
+                core.stop_after_durable_finality_conflict(conflict),
+                Err(FixedValidatorVoteSafetyJournalErrorV0::Commit { .. })
+            ),
+            "fault {fault:?}"
+        );
+        assert!(core.finality_conflict_stop.is_none(), "fault {fault:?}");
+        assert_eq!(core.state_id, genesis, "fault {fault:?}");
+        assert!(matches!(
+            core.ensure_healthy(),
+            Err(FixedValidatorVoteSafetyJournalErrorV0::Poisoned)
+        ));
+
+        let durable = core.file.durable.clone();
+        if durable.len() == complete_length {
+            let stale = ScriptedIo::from_images(durable.clone(), durable.clone());
+            assert!(
+                matches!(
+                    fixture.replay_scripted(stale, genesis),
+                    Err(FixedValidatorVoteSafetyJournalErrorV0::ExpectedStateIdMismatch {
+                        expected,
+                        actual,
+                    }) if expected == genesis && actual == stopped_state
+                ),
+                "fault {fault:?}"
+            );
+            let exact = ScriptedIo::from_images(durable.clone(), durable);
+            let reopened = fixture.replay_scripted(exact, stopped_state).unwrap();
+            let stop = reopened
+                .finality_conflict_stop
+                .expect("the exact durable stop replays");
+            assert_eq!(stop.finality_state_id(), halt.state_id());
+            assert_eq!(stop.vote_state_id(), stopped_state);
+        } else {
+            let partial = ScriptedIo::from_images(durable.clone(), durable.clone());
+            let reopened = fixture.replay_scripted(partial, genesis).unwrap();
+            assert!(reopened.finality_conflict_stop.is_none(), "fault {fault:?}");
+            assert_eq!(reopened.file.volatile.get_ref(), &prefix, "fault {fault:?}");
+            let proposed = ScriptedIo::from_images(durable.clone(), durable);
+            assert!(
+                matches!(
+                    fixture.replay_scripted(proposed, stopped_state),
+                    Err(FixedValidatorVoteSafetyJournalErrorV0::ExpectedStateIdMismatch {
+                        expected,
+                        actual,
+                    }) if expected == stopped_state && actual == genesis
+                ),
+                "fault {fault:?}"
+            );
         }
     }
 }

@@ -21,7 +21,8 @@ identity may strictly reconstruct an opaque
 signing session. After that child lineage is separately anchored, the vote
 journal may instead issue an opaque signer-recovery capability. This journal
 can consume it to recover only the exact retained branch that reproduces the
-anchored lineage, including after a later terminal conflict halt.
+anchored lineage, including after a later terminal conflict halt when no
+explicit conflict stop has been applied to that signer.
 
 ## Authority and clean replacement
 
@@ -222,13 +223,13 @@ claims atomic durability across the two files.
 
 The token's borrow ends after successful consumption or drop. Once the exact
 child lineage is externally anchored, a distinct sibling may then durably halt
-the finality journal before or after live acknowledgement, but the halt does not
-retroactively revoke that anchored signer lineage. Exact reopen may therefore
-resume the child through the capability-gated path after a post-anchor,
-pre-acknowledgement halt. The lineage does not commit a finality state identity
-or chronology, so the caller's point-in-time assertion remains a deployment
-condition rather than a cross-journal temporal proof. Coordinated stop authority
-is a separate operator or protocol policy.
+the finality journal before or after live acknowledgement, but that halt alone
+does not retroactively revoke the anchored signer lineage. Exact reopen may
+therefore resume the child through the capability-gated path after a post-anchor,
+pre-acknowledgement halt unless a separate proof-backed signer stop has already
+been applied to the vote journal. The lineage does not commit a finality state
+identity or chronology, so the caller's point-in-time assertion remains a
+deployment condition rather than a cross-journal temporal proof.
 
 ## Capability-gated signer restart
 
@@ -280,13 +281,20 @@ the exact conflicting envelope and payload. After its footer becomes durable,
 there is no operable selected head. Future commits fail until separately
 specified recovery tooling is explicitly invoked.
 
-On a healthy halted handle, `halt()` and `state_id()` remain the only general
-operational or history-state diagnostics; immutable `context()` and
+On a healthy halted handle, `halt()` and `state_id()` remain the general
+history-state diagnostics; immutable `context()` and
 `replay_limit()` bindings also remain inspectable. `head()`,
 `parent_for_height()`, `finality_record()`, `finalized_len()`, and
-`commit_verified()` all return the terminal-halt error. The sole exception is
-the capability-gated exact signer-branch reconstruction above; it exposes no
-caller-selectable history and does not revive operability. The halt summary
+`commit_verified()` all return the terminal-halt error. Two narrow non-operable
+operations remain: capability-gated exact signer-branch reconstruction above,
+and `acknowledge_signer_stop_is_externally_durable`. The latter requires the
+exact current terminal state identity to be separately anchored and returns a
+non-clone `FixedValidatorDurableFinalityConflictV0` binding this live journal,
+its context and fixed set, and the complete halt summary. A matching vote journal
+or live signing session must explicitly consume that capability before one local
+signer is durably stopped. Fresh one-use capabilities may be issued for other
+local signers in the same fixed set. Neither operation exposes caller-selectable
+history or revives operability. The halt summary
 names the height, both distinct ancestry identities, both envelope identities,
 and the halt state ID; it does not choose a winner or expose either sibling as
 the operable chain.
@@ -306,15 +314,17 @@ expected ID. A complete mismatch or corruption exposes no state.
 
 Because a successful strict reopen already proves equality to the separately
 supplied expected identity, the caller may acknowledge that exact current
-identity and reconstruct a fresh transition for a retained finalized child when
-starting a not-yet-persisted signer handoff. The caller supplies no child fields,
-and the signing session repeats its direct-parent and direct-height checks.
-Reissuance changes neither finality-journal bytes nor state identity and cannot
-revive a halted journal. When the vote journal has already anchored that child
-lineage, its exact reopen does not require token reissuance; if no branch object
-survived the process restart, the separate capability-gated path above derives
-only the matching retained branch, including through an otherwise halted
-journal.
+operable identity and reconstruct a fresh transition for a retained finalized
+child when starting a not-yet-persisted signer handoff. The caller supplies no
+child fields, and the signing session repeats its direct-parent and direct-height
+checks. If the exact reopened state is instead terminal, the caller may reissue
+only the signer-stop capability bound to that conflict. Reissuance changes
+neither finality-journal bytes nor state identity and cannot revive the journal.
+When the vote journal has already anchored a child lineage, its exact reopen does
+not require transition-token reissuance; if no branch object survived process
+restart, the separate recovery path derives only the matching retained branch,
+including through an otherwise halted journal, unless the vote journal itself
+already carries a finality-conflict stop.
 
 At most one framing-incomplete final record may be removed, and only after the
 strictly replayed committed prefix already equals the trusted expected ID.
@@ -372,7 +382,10 @@ first-evidence retention, strict caller-anchored replay, and terminal conflict
 halt. It also supplies the mandatory, externally acknowledged transition for
 advancing the sole vote-safety signing lineage from one exact retained local-
 finality child and the narrow capability-gated reconstruction of that exact
-already anchored branch after process restart. Its sealed read-only selected-
+already anchored branch after process restart. An exact externally anchored
+terminal conflict may additionally issue explicit one-signer-at-a-time stop
+authority; the finality journal does not route it automatically, choose a
+conflicting sibling, or coordinate a signer fleet. Its sealed read-only selected-
 artifact history can anchor the existing caller-driven candidate reconstruction
 and bounded network fill workflows, but the journal itself does not choose or
 start them. It does not supply a general consensus-block format, Tendermint

@@ -147,15 +147,47 @@ pending-vote recovery rule applies. Neither journal rolls the other back or
 repairs an external-anchor gap.
 
 Finality authorization is point-in-time. Once the exact child-lineage state is
-externally anchored, a later finality-journal conflict halt does not
+externally anchored, a later finality-journal conflict halt alone does not
 retroactively revoke that durable signer lineage or its subsequent votes. This
 holds whether the same live session successfully consumes the token or the token
-is dropped and an exact reopen recovers the anchored child. An operator policy
-that must stop such signing requires a separate coordinated halt signal and is
-not inferred by these local journals. The vote lineage does not persist a
-finality state identity or clock, so this exception proves semantic branch
-agreement under the caller's point-in-time contract, not objective chronology,
-unique finality provenance, or cross-journal atomicity.
+is dropped and an exact reopen recovers the anchored child. Revocation becomes
+durable only when the caller externally anchors that exact conflict and
+explicitly routes the separate proof-backed stop capability below into this
+signer journal. The vote lineage does not otherwise persist a finality state
+identity or clock, so the pre-stop exception proves semantic branch agreement
+under the caller's point-in-time contract, not objective chronology, unique
+finality provenance, or cross-journal atomicity.
+
+## Explicit proof-backed finality-conflict stop
+
+After a finality journal durably records distinct finalized siblings and the
+caller separately anchors its exact terminal state identity,
+`acknowledge_signer_stop_is_externally_durable` may issue one non-clone
+`FixedValidatorDurableFinalityConflictV0`. Private fields bind the still-live
+halted journal, exact consensus context and fixed set, conflict height, both
+ancestry and envelope identities, and exact terminal finality state. The public
+copyable halt summary and raw constructible state IDs are diagnostics and cannot
+substitute for this capability.
+
+The caller must explicitly consume one capability into every local signer that
+must stop. `stop_after_durable_finality_conflict` accepts it on either the
+key-owning journal or its already-issued live session, requires exact context and
+fixed-set equality, and appends and synchronizes a terminal `0x05` record before
+publishing the stop. The conflict applies at any height to every signer in that
+fixed set; the destination does not compare it with one signer height or bind it
+to one key. Equivalent strictly verified finality histories may supply the same
+semantic authority. The handoff selects neither sibling and grants no rollback,
+fork-choice, peer, path, or device provenance authority.
+
+The stop preempts a pending preparation or pending height transition and blocks
+all later session transitions, key use, retained-vote release, session issuance,
+and recovery. It cannot retract signed bytes already returned to a caller. Exact
+repeat evidence is no-write idempotence; another finality conflict or an existing
+same-slot terminal halt cannot replace the first stop. State and stop diagnostics
+remain readable. The required order is finality-conflict sync, external finality
+anchor, borrowed capability, vote-stop sync, then external vote anchor. Neither
+journal can prove the caller's anchor persistence, update all configured signers
+automatically, or make these files and anchors one atomic transaction.
 
 ## Canonical post-effect vote intent
 
@@ -313,12 +345,16 @@ The first body byte is the record tag and has exactly these meanings:
 | `0x02` | one exact canonical signed vote `[214]` | completed signature for the immediately pending prepared intent |
 | `0x03` | one exact canonical `FixedValidatorVoteIntentV0` | observed non-identical intent for an already retained vote slot; terminal local halt |
 | `0x04` | `signing_height_u64_be[8] || SigningLineageIdV0[32]` | exact initial or sequential child signing-lineage binding |
+| `0x05` | `finality_state_id[32] || conflict_height_u64_be[8] || selected_ancestry[32] || selected_envelope[32] || conflicting_ancestry[32] || conflicting_envelope[32]` | terminal local signer stop transferred from one exact externally anchored finality conflict |
 
 A completion body is exactly 215 bytes and its complete frame is 251 bytes.
 One signing-lineage body is exactly 41 bytes and its complete frame is 77 bytes.
+One finality-conflict stop body is exactly 169 bytes and its complete frame is
+205 bytes.
 Prepare and halt bodies are 392..=25,676 bytes and their complete frames are
-428..=25,712 bytes. Every `body_length` outside the exact range for its tag is
-rejected before payload allocation.
+428..=25,712 bytes. Before allocation, every `body_length` must be in the bounded
+union of those admitted widths. After the bounded body is read, its tag-specific
+width and canonical framing are checked during tag dispatch before admission.
 
 `SigningLineageIdV0` is the exact SHA-256 result:
 
@@ -352,15 +388,25 @@ height. Every later lineage record must be exactly one height greater than the
 previous lineage and may appear only with no pending vote. When a lineage exists,
 every prepare record must be at its current height. A duplicate, replacement,
 skipped or exhausted lineage height, lineage while pending, vote at another
-height, malformed payload, or any record after halt fails strict replay. Lineage
+height, malformed payload, or any record after either terminal cause fails
+strict replay. Lineage
 records do not consume the header's distinct-prepared-vote ceiling.
+
+A finality-conflict stop is the sole record that may intentionally follow a
+pending preparation. Its positive conflict height and exact fixed width are
+validated under the context and fixed set already bound by the journal header;
+the compact record is a durable enforcement and audit marker, not an independent
+reverification of both full finality envelopes. It invalidates any held live
+prepare or height authority and consumes no prepared-vote capacity. No record may
+follow it.
 
 A completion is valid only when strict verification proves that its signer,
 context, position, role, target, and transcript exactly match the one pending
 prepared intent. A halt body retains the newly observed conflicting intent; the
 earlier prepare record retains the already accepted intent. No completion may
 appear without exactly one pending prepare, no second distinct completion may
-replace the retained signed bytes, and no record may follow a terminal halt.
+replace the retained signed bytes, and no record may follow either terminal
+cause.
 At most one prepared intent may be incomplete at a time. Byte-identical
 re-preparation through the same uninterrupted live handle is idempotent,
 but no later slot, role, or round may be prepared until the pending intent is
@@ -386,7 +432,8 @@ SHA256(
 )
 ```
 
-Every prepare, completion, halt, or signing-lineage record derives its footer as:
+Every prepare, completion, halt, signing-lineage, or finality-conflict stop
+record derives its footer as:
 
 ```text
 SHA256(
@@ -399,8 +446,9 @@ SHA256(
 
 The resulting identity is stored as the record's 32-byte footer and becomes the
 prior identity for the next record. The footer is excluded from its own
-preimage. A byte-identical idempotent preparation, completed replay, or exact
-current-lineage binding writes no record and leaves the state identity unchanged.
+preimage. A byte-identical idempotent preparation, completed replay, exact
+current-lineage binding, or exact repeated finality-conflict stop writes no
+record and leaves the state identity unchanged.
 
 This unkeyed digest detects history changes relative to an independently
 trusted expected identity; it is not a secret authenticator and cannot make the
@@ -413,8 +461,10 @@ in a separately protected monotonic anchor, advancing only to an identity
 returned after that record's footer synchronization. It must never resume this
 key from an older accepted identity. The exact initial signing-lineage identity
 must be anchored before session issuance; every child signing-lineage identity
-must be anchored before volatile height advancement; and every prepared-vote
-identity must be anchored before private-key use. Each corresponding API
+must be anchored before volatile height advancement; every prepared-vote
+identity must be anchored before private-key use; and a terminal
+finality-conflict stop identity must be anchored before treating that local key
+as durably stopped. Each corresponding API
 requires explicit acknowledgement of that exact still-current identity. A wrong
 or stale identity is rejected before session publication, height publication,
 key use, or a completion append. The journal verifies identity and ordering,
@@ -432,10 +482,10 @@ lineage binding, the handle can authorize reconstruction without recreating the
 consumed height-transition token. It still needs either the exact caller-held
 typed branch through ordinary issuance or the capability-gated matching branch
 from retained finality history; the 41-byte lineage record does not encode the
-branch itself. If the final state is a terminal halt or prepared-but-uncompleted
-vote intent, the handle is diagnostic only: every signing and signer-recovery
-capability path remains fail-closed and no live prepared-vote capability is
-reconstructed.
+branch itself. If the final state is either terminal cause or a
+prepared-but-uncompleted vote intent, the handle is diagnostic only: every
+signing and signer-recovery capability path remains fail-closed and no live
+prepared-vote capability is reconstructed.
 
 At most one framing-incomplete final record may be truncated only after the
 strictly replayed complete prefix already equals the expected identity. A
@@ -531,7 +581,7 @@ became durable, reopen with the new anchor also fails closed. The journal does
 not select between those ambiguous states or weaken the expected identity so
 that signing can continue.
 
-## Exact replay and terminal local halt
+## Exact replay and terminal local stops
 
 A vote slot is the exact `(context, height, round, role)` for the journal's
 fixed signer key. Only a byte-identical complete prepared intent is idempotent
@@ -562,12 +612,15 @@ phase, branch, or intent byte is not a second objective vote target, but it is
 still a local restart-safety inconsistency and halts rather than silently
 replacing the state that authorized the first vote.
 
-After halt, no vote may be prepared, signed, completed, or released. The halt
-summary and exact state identity remain diagnostic; they identify the retained
-and observed slots and targets without choosing a valid branch, claiming that
-either vote was broadcast, or converting the unsigned observed intent into
-public equivocation evidence. Recovery, key replacement, evidence publication,
-and operator policy require separately specified authority.
+After either same-slot halt or finality-conflict stop, no vote may be prepared,
+signed, completed, or released. The applicable summary and exact state identity
+remain diagnostic. A same-slot halt identifies retained and observed slots and
+targets without choosing a valid branch, claiming that either vote was
+broadcast, or converting the unsigned observed intent into public equivocation
+evidence. A finality-conflict stop identifies only the compact evidence address
+transferred by the live capability and is not a standalone proof. Recovery, key
+replacement, evidence publication, and fleet coordination require separately
+specified authority.
 
 ## Resource and compatibility boundary
 
@@ -576,7 +629,7 @@ valid-value certificate, one 118-byte vote body, and one 214-byte completed
 vote. Signature work is one local Ed25519 signature plus one strict verification.
 The positive header ceiling bounds distinct prepared votes admitted to one
 journal; exact replays do not consume another slot. Completion through the same
-uninterrupted live handle and a terminal halt remain permitted for already
+uninterrupted live handle and either terminal record remain permitted for already
 admitted state so the cap cannot prevent fail-closed conflict recording.
 Signing-lineage records do not consume this vote-preparation ceiling; their
 strict positive sequential-height rule is the separate bound. A process crash
@@ -599,8 +652,10 @@ current binding. For a legacy completed history, the supplied typed round must
 strictly replay its latest completed intent and the first binding height must
 equal that latest vote height. After the first lineage record, every later
 binding is sequential and the legacy no-lineage path is permanently closed.
-Older binaries that do not recognize tag `0x04` are not forward compatible with
-newly extended journals; this prerelease format makes no such promise.
+The additive `0x05` stop record is likewise readable by the current decoder but
+is intentionally rejected by older binaries that do not recognize it. Older
+binaries are not forward compatible with newly extended journals; this
+prerelease format makes no such promise.
 
 The journal does not implement timeout scheduling, arbitrary higher-round
 certificate jumps, dynamic validator sets, selection among verified sibling
@@ -611,7 +666,10 @@ proof, hardware-backed custody, economics, slashing evidence, or cross-journal
 atomicity. It consumes only the separate finality journal's externally
 acknowledged exact selected-child transition to keep the local signing lineage
 continuous, and uses only its capability-gated exact retained branch for real
-restart reconstruction. It supplies the explicit local fixed-validator V0
+restart reconstruction. It also consumes explicitly routed proof-backed stop
+authority from an exact externally anchored finality conflict, but it does not
+discover that conflict, route it across a signer fleet, or choose a sibling. It
+supplies the explicit local fixed-validator V0
 journal-issued lineage, mandatory durable-finality lineage-advancement gate,
 prepare-before-sign, vote-anchor acknowledgement, complete-before-release,
 exact replay, and anchored restart boundary described above.
