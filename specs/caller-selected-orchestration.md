@@ -574,6 +574,32 @@ The 16-block bound makes catch-up intentionally partial. A caller may choose a
 new explicit target or another bounded workflow afterward, but no workflow
 automatically continues, reorganizes, or selects a competing history.
 
+## Recovery-bundle unselected staging
+
+An inbound recovery-bundle push remains opaque until its caller explicitly
+acknowledges the stream. The source-aware acknowledgement preserves the exact
+owned bytes and authenticated immediate source while sending only the existing
+stream-acceptance receipt. The caller separately selects the expected source,
+one exact retained selected anchor, one exact unselected target, a sealed
+read-only selected history, matching candidate store, Foundation-scoped payload
+archive, and destination-local bundle limits.
+
+Staging rejects a source mismatch before bundle or store access. Otherwise it
+strictly re-decodes and completely validates the caller-selected bundle against
+the retained selected anchor and any exact selected prefix, then preflights
+both destination stores before writing. It retains only the non-selected suffix,
+first as structural candidate blocks and then as strictly validated canonical
+payloads. Candidate and payload stores have separate acknowledged prefixes;
+there is no cross-store transaction, rollback, or implicit resume. A fresh
+explicit retry after reopen repeats the entire preflight and idempotently
+accepts only exact durable entries.
+
+Neither acknowledgement nor staging chooses the source, anchor, target, stores,
+limits, candidate, or branch. The transport source is not durable provenance,
+the stream receipt does not attest decoding or storage, and no step mutates
+selected history, promotes a candidate, persists caller intent, schedules a
+retry, or starts background work.
+
 ## Trust boundary
 
 Authenticated sources prevent peer-ID substitution; exact tickets prevent

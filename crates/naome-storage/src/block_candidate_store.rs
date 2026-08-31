@@ -354,6 +354,11 @@ impl ArtifactBlockCandidateStore {
     pub const fn limits(&self) -> ArtifactBlockCandidateStoreLimits {
         self.core.limits
     }
+
+    #[cfg(test)]
+    pub(crate) fn poison_after_injected_ambiguous_commit(&mut self) {
+        self.core.poisoned = true;
+    }
 }
 
 fn open_and_lock(directory: &Path) -> Result<File, ArtifactBlockCandidateStoreError> {

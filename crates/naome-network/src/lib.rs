@@ -49,6 +49,13 @@
 //! a separate bounded caller-ordered fallback sequence with one absolute
 //! deadline per missing address; every acknowledged archive prefix is durable,
 //! but no partial branch snapshot is exposed. The caller also explicitly
+//! accepts one bounded recovery-bundle stream, may bind its authenticated
+//! immediate source plus exact selected anchor and unselected target, and may
+//! stage only its fully validated unselected suffix into caller-routed candidate
+//! and payload stores with independent durable prefixes. The stream receipt is
+//! sent before and remains independent of staging; neither the source nor either
+//! store grants selection, provenance, consensus, or finality authority. The
+//! caller also explicitly
 //! admits a peer-record batch and may derive one owned canonical publication
 //! from exact fresh subjects retained by a peer-address store. The responder
 //! never reads that peer-address store and remains immutable after construction.
@@ -204,12 +211,13 @@ pub use record_exchange::{
     PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
 };
 pub use recovery_bundle_push::{
-    AuthenticatedRecoveryBundlePushReceipt, InboundRecoveryBundlePush,
-    OutboundRecoveryBundlePushEvent, OutboundRecoveryBundlePushFailure,
+    AcknowledgedRecoveryBundlePush, AcknowledgedRecoveryBundleStageError,
+    AcknowledgedRecoveryBundleStageOutcome, AuthenticatedRecoveryBundlePushReceipt,
+    InboundRecoveryBundlePush, OutboundRecoveryBundlePushEvent, OutboundRecoveryBundlePushFailure,
     RECOVERY_BUNDLE_PUSH_MAX_BYTES, RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
     RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS, RecoveryBundlePushAcknowledgeError,
     RecoveryBundlePushEventMismatch, RecoveryBundlePushRequestError, RecoveryBundlePushStartError,
-    RecoveryBundlePushTicket,
+    RecoveryBundlePushTicket, RecoveryBundleStageSelection,
 };
 pub use responder::{
     PeerRecordBootstrapResponder, PeerRecordBootstrapResponderBuildError,

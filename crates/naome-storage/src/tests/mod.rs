@@ -27,6 +27,7 @@ mod branch_snapshots;
 mod candidate_branch_import;
 mod candidate_branch_reconstruction;
 mod candidate_branch_recovery_bundle;
+mod candidate_branch_recovery_staging;
 mod candidate_validation;
 mod faults;
 mod replay;
