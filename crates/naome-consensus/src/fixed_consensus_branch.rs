@@ -329,6 +329,20 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
             .any(|entry| entry.consensus_key() == signer)
     }
 
+    pub(crate) fn derive_next_round(
+        &self,
+    ) -> Result<FixedConsensusRoundV0<'branch>, ProposerSelectionError> {
+        FixedConsensusRoundV0 {
+            branch: self.branch,
+            position: self.position,
+            snapshot: self.snapshot.clone(),
+            proposer: self.proposer,
+            round_state: self.round_state.clone(),
+            height_successor_base: self.height_successor_base.clone(),
+        }
+        .advance_round()
+    }
+
     pub(crate) fn verify_retained_prevote_certificate(
         &self,
         bytes: &[u8],

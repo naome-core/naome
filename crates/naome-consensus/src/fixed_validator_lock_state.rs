@@ -4,8 +4,9 @@
 //! through proposal, prevote, and precommit effects at one exact position. It
 //! retains exact locked and valid values, but creates no signatures and grants
 //! no persistence, timeout, networking, peer-trust, branch-selection, or
-//! finality authority. Direct jumps to arbitrary higher rounds are deliberately
-//! outside V0; callers must supply the next branch-derived sequential cursor.
+//! finality authority. One strictly verified current-round precommit/nil quorum
+//! may advance to the next branch-derived sequential cursor, but direct jumps to
+//! arbitrary higher rounds are deliberately outside V0.
 
 use std::error::Error;
 use std::fmt;
@@ -683,7 +684,60 @@ impl FixedValidatorLockStateV0 {
         next_round: &FixedConsensusRoundV0<'_>,
     ) -> Result<(), FixedValidatorLockStateError> {
         self.require_phase(FixedValidatorLockPhaseV0::Precommit)?;
+        let next_position = self.validate_next_round(next_round)?;
 
+        self.apply_round_advance(next_position);
+        Ok(())
+    }
+
+    /// Advances after one exact current-round precommit/nil quorum.
+    ///
+    /// The current cursor is checked and its exact sequential successor is
+    /// derived before certificate work. The canonical certificate is then
+    /// strictly verified against the current cursor's private positioned
+    /// fixed-set snapshot and must authenticate a strict-supermajority
+    /// precommit for nil. That evidence may preempt the local Proposal, Prevote,
+    /// or Precommit phase, but it can move only to the internally derived next
+    /// same-branch round. Lock and complete valid-value state are preserved, and
+    /// no value is finalized.
+    ///
+    /// This operation does not infer or schedule a timeout, create a signature,
+    /// persist evidence, select a branch, or trust a peer.
+    pub fn advance_round_for_nil_precommit_quorum<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+    ) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorLockStateError> {
+        self.validate_current_round(current_round)?;
+        let next_round = current_round
+            .derive_next_round()
+            .map_err(FixedValidatorLockStateError::NextRoundDerivation)?;
+        let certificate = current_round
+            .decode_and_verify_quorum_certificate(canonical_certificate)
+            .map_err(FixedValidatorLockStateError::QuorumVerification)?;
+        if certificate.role() != ConsensusVoteRole::Precommit {
+            return Err(
+                FixedValidatorLockStateError::NilPrecommitQuorumRoleMismatch {
+                    actual: certificate.role(),
+                },
+            );
+        }
+        if certificate.target() != ConsensusVoteTarget::Nil {
+            return Err(
+                FixedValidatorLockStateError::NilPrecommitQuorumTargetMismatch {
+                    actual: certificate.target(),
+                },
+            );
+        }
+
+        self.apply_round_advance(next_round.position());
+        Ok(next_round)
+    }
+
+    fn validate_next_round(
+        &self,
+        next_round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<ConsensusPosition, FixedValidatorLockStateError> {
         if next_round.parent_coordinate() != self.parent_coordinate
             || next_round.post_height_proposer_priority_state_id()
                 != self.post_height_proposer_priority_state_id
@@ -706,9 +760,12 @@ impl FixedValidatorLockStateV0 {
             });
         }
 
-        self.position = expected;
+        Ok(expected)
+    }
+
+    fn apply_round_advance(&mut self, next_position: ConsensusPosition) {
+        self.position = next_position;
         self.phase = FixedValidatorLockPhaseV0::Proposal;
-        Ok(())
     }
 
     /// Validates one owned verified direct-child transition without mutation.
@@ -1931,6 +1988,10 @@ pub enum FixedValidatorLockStateError {
         expected: ConsensusVoteTarget,
         actual: ConsensusVoteTarget,
     },
+    /// Nil-precommit round advancement received another quorum vote role.
+    NilPrecommitQuorumRoleMismatch { actual: ConsensusVoteRole },
+    /// Nil-precommit round advancement received a non-nil quorum target.
+    NilPrecommitQuorumTargetMismatch { actual: ConsensusVoteTarget },
     /// A sequential cursor belongs to another parent branch or height base.
     RoundBranchMismatch,
     /// The supplied current-round cursor belongs to another parent or height base.
@@ -1942,6 +2003,8 @@ pub enum FixedValidatorLockStateError {
     },
     /// The current round cannot be incremented without overflow.
     RoundExhausted,
+    /// The exact next branch-derived round could not be constructed.
+    NextRoundDerivation(ProposerSelectionError),
     /// The supplied cursor is not the exact next position.
     NonSequentialRound {
         expected: ConsensusPosition,
@@ -2010,6 +2073,14 @@ impl fmt::Display for FixedValidatorLockStateError {
                 formatter,
                 "prevote quorum target {actual:?} differs from expected target {expected:?}"
             ),
+            Self::NilPrecommitQuorumRoleMismatch { actual } => write!(
+                formatter,
+                "round advancement requires precommit quorum evidence, not {actual:?}"
+            ),
+            Self::NilPrecommitQuorumTargetMismatch { actual } => write!(
+                formatter,
+                "round advancement requires a nil precommit quorum, not {actual:?}"
+            ),
             Self::RoundBranchMismatch => formatter.write_str(
                 "sequential round cursor belongs to another fixed consensus parent branch",
             ),
@@ -2021,6 +2092,12 @@ impl fmt::Display for FixedValidatorLockStateError {
             ),
             Self::RoundExhausted => formatter
                 .write_str("fixed-validator lock state cannot advance beyond the terminal round"),
+            Self::NextRoundDerivation(error) => {
+                write!(
+                    formatter,
+                    "next fixed-validator round cannot be derived: {error}"
+                )
+            }
             Self::NonSequentialRound { expected, actual } => write!(
                 formatter,
                 "next round cursor position {actual:?} differs from exact successor {expected:?}"
@@ -2047,6 +2124,7 @@ impl Error for FixedValidatorLockStateError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::QuorumVerification(error) => Some(error),
+            Self::NextRoundDerivation(error) => Some(error),
             Self::HeightTransitionRoundZero(error) => Some(error),
             _ => None,
         }

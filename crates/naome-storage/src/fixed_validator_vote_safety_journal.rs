@@ -1123,6 +1123,28 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
             .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)
     }
 
+    /// Advances after one exact current-round precommit/nil quorum.
+    ///
+    /// Journal health and pending vote or height work are checked before the
+    /// kernel verifies the canonical certificate and exact sequential cursors.
+    /// Success changes only this session's volatile lock state. Any later vote
+    /// at the advanced round still passes through the unchanged durable prepare,
+    /// external-anchor acknowledgement, completion, and release boundary.
+    ///
+    /// This method does not persist the observed quorum, schedule or infer a
+    /// timeout, finalize a value, select a branch, or grant networking or peer
+    /// authority.
+    pub fn advance_round_for_nil_precommit_quorum<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+    ) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.ensure_mutable()?;
+        self.lock_state
+            .advance_round_for_nil_precommit_quorum(current_round, canonical_certificate)
+            .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)
+    }
+
     /// Persists one exact finalized child before advancing signer memory.
     ///
     /// Parent, height, and child round zero are preflighted before the vote
