@@ -782,6 +782,13 @@ impl<'snapshot> VerifiedConsensusEnvelopeV0<'snapshot> {
             .map_err(ConsensusEnvelopeVerifyError::from)
     }
 
+    pub(crate) fn decode_value_and_precommit_certificate_bytes(
+        bytes: &[u8],
+    ) -> Result<(ConsensusValueV0, &[u8]), ConsensusEnvelopeVerifyError> {
+        let value = Self::decode_value(bytes)?;
+        Ok((value, &bytes[PRECOMMIT_CERTIFICATE_OFFSET..]))
+    }
+
     /// Returns the exact verified evidence-free value.
     pub(crate) const fn value(&self) -> ConsensusValueV0 {
         self.proposal.value()

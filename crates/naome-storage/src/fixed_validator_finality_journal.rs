@@ -13,12 +13,13 @@ use naome_chain::{
 };
 use naome_consensus::{
     ActiveAgreementEntry, ConsensusAncestryId, ConsensusContextV0, ConsensusEnvelopeId,
-    ConsensusEnvelopeVerifyError, ConsensusHeight, ConsensusPosition, ConsensusValueError,
-    ConsensusValueV0, FixedAgreementSetId, FixedConsensusBranchV0, FixedConsensusGenesisError,
+    ConsensusEnvelopeVerifyError, ConsensusHeight, ConsensusPosition, ConsensusRound,
+    ConsensusValueError, ConsensusValueV0, FixedAgreementSetId,
+    FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBranchV0, FixedConsensusGenesisError,
     OwnedVerifiedFixedConsensusTransitionV0, ProposerSelectionError,
     VerifiedFixedConsensusTransitionV0,
 };
-use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
+use naome_proof::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId};
 use sha2::{Digest, Sha256};
 
 use super::fixed_validator_vote_safety_journal::{
@@ -26,8 +27,10 @@ use super::fixed_validator_vote_safety_journal::{
     signing_lineage_id,
 };
 use super::{
-    AppendPhase, ExclusiveLockError, JOURNAL_FILE_NAME, LOCK_FILE_NAME, SelectedArtifactHistory,
-    SelectedArtifactHistoryError, StoreIo, open_exclusive_lock, selected_artifact_history_sealed,
+    AppendPhase, ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError,
+    CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError, ExclusiveLockError,
+    JOURNAL_FILE_NAME, LOCK_FILE_NAME, SelectedArtifactHistory, SelectedArtifactHistoryError,
+    StoreIo, open_exclusive_lock, selected_artifact_history_sealed,
 };
 
 const JOURNAL_HEADER: &[u8] = b"naome:fixed-validator-finality-journal:v0\0";
@@ -236,6 +239,140 @@ pub enum FixedValidatorFinalityCommitOutcomeV0 {
     },
     /// A distinct valid sibling was durably recorded and operation halted.
     Halted(FixedValidatorFinalityHaltV0),
+}
+
+/// One exact candidate-backed direct child installed as durable finality.
+///
+/// Candidate and payload stores supplied availability only. The complete
+/// authenticated envelope remains the sole authority for this finality
+/// transition, and the source-store entries remain retained and unmodified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct CandidateBackedFinalityCommitV0 {
+    target: ArtifactBlockId,
+    position: ConsensusPosition,
+    ancestry_id: ConsensusAncestryId,
+    envelope_id: ConsensusEnvelopeId,
+    state_id: FixedValidatorFinalityJournalStateIdV0,
+}
+
+impl CandidateBackedFinalityCommitV0 {
+    /// Returns the exact caller-selected block that became finalized.
+    pub const fn target(self) -> ArtifactBlockId {
+        self.target
+    }
+
+    /// Returns the authenticated height and round.
+    pub const fn position(self) -> ConsensusPosition {
+        self.position
+    }
+
+    /// Returns the installed consensus ancestry identity.
+    pub const fn ancestry_id(self) -> ConsensusAncestryId {
+        self.ancestry_id
+    }
+
+    /// Returns the retained complete-envelope identity.
+    pub const fn envelope_id(self) -> ConsensusEnvelopeId {
+        self.envelope_id
+    }
+
+    /// Returns the new durable finality-journal state identity.
+    pub const fn state_id(self) -> FixedValidatorFinalityJournalStateIdV0 {
+        self.state_id
+    }
+}
+
+/// A rejection or durable-finality failure at the candidate-backed boundary.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CandidateBackedFinalityErrorV0 {
+    /// The finality journal is not healthy and operable.
+    FinalityJournal(FixedValidatorFinalityJournalErrorV0),
+    /// The operation-local work ceiling exceeds the journal's persisted ceiling.
+    RoundWorkLimitExceedsJournal { requested: u64, journal: u64 },
+    /// The candidate store belongs to another artifact chain.
+    CandidateChainMismatch {
+        expected: ArtifactChainId,
+        actual: ArtifactChainId,
+    },
+    /// Exact candidate lookup or integrity verification failed.
+    CandidateStore(ArtifactBlockCandidateStoreError),
+    /// The exact caller-selected candidate is not retained.
+    CandidateUnavailable { target: ArtifactBlockId },
+    /// The envelope embeds another block address than the caller-selected target.
+    EnvelopeTargetMismatch {
+        expected: ArtifactBlockId,
+        actual: ArtifactBlockId,
+    },
+    /// The retained candidate bytes differ from the envelope's exact block.
+    CandidateBlockMismatch { target: ArtifactBlockId },
+    /// Exact payload lookup or integrity verification failed.
+    PayloadStore(CanonicalArtifactPayloadStoreError),
+    /// The retained candidate's exact committed payload is unavailable.
+    PayloadUnavailable { artifact_id: ArtifactId },
+    /// Bounded complete-envelope verification against the current head failed.
+    Envelope(FixedConsensusBoundedEnvelopeVerifyError),
+    /// An unreachable lower-level idempotent outcome violated this direct-child API.
+    UnexpectedAlreadyFinalized { height: ConsensusHeight },
+    /// An unreachable lower-level conflict outcome violated this direct-child API.
+    UnexpectedConflictHalt { height: ConsensusHeight },
+}
+
+impl fmt::Display for CandidateBackedFinalityErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FinalityJournal(error) => error.fmt(formatter),
+            Self::RoundWorkLimitExceedsJournal { requested, journal } => write!(
+                formatter,
+                "candidate-backed finality work ceiling {requested} exceeds journal replay ceiling {journal}"
+            ),
+            Self::CandidateChainMismatch { expected, actual } => write!(
+                formatter,
+                "candidate store chain mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::CandidateStore(error) => error.fmt(formatter),
+            Self::CandidateUnavailable { target } => {
+                write!(formatter, "candidate block {target:?} is not retained")
+            }
+            Self::EnvelopeTargetMismatch { expected, actual } => write!(
+                formatter,
+                "consensus envelope block mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::CandidateBlockMismatch { target } => write!(
+                formatter,
+                "retained candidate bytes differ from consensus envelope block {target:?}"
+            ),
+            Self::PayloadStore(error) => error.fmt(formatter),
+            Self::PayloadUnavailable { artifact_id } => write!(
+                formatter,
+                "candidate artifact payload {artifact_id:?} is not retained"
+            ),
+            Self::Envelope(error) => error.fmt(formatter),
+            Self::UnexpectedAlreadyFinalized { height } => write!(
+                formatter,
+                "candidate-backed direct child unexpectedly resolved as already finalized at height {}",
+                height.value()
+            ),
+            Self::UnexpectedConflictHalt { height } => write!(
+                formatter,
+                "candidate-backed direct child unexpectedly produced a conflict halt at height {}",
+                height.value()
+            ),
+        }
+    }
+}
+
+impl Error for CandidateBackedFinalityErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::FinalityJournal(error) => Some(error),
+            Self::CandidateStore(error) => Some(error),
+            Self::PayloadStore(error) => Some(error),
+            Self::Envelope(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 /// A retained selected transition whose exact finality state was acknowledged.
@@ -616,6 +753,199 @@ impl FixedValidatorFinalityJournalV0 {
     ) -> Result<FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityJournalErrorV0> {
         self.core.commit_verified(transition)
     }
+}
+
+/// Strictly installs one exact retained candidate as the current head's next child.
+///
+/// The caller selects `expected_target`; that choice grants no preference or
+/// finality authority. This operation requires an operable fixed-validator
+/// journal, the matching chain-scoped candidate, its exact archived Foundation
+/// payload, and one complete canonical envelope. It bounds the envelope's sole
+/// embedded round by both the caller-local ceiling and the journal ceiling,
+/// fully verifies the envelope against the exact current head, and delegates
+/// only the resulting sealed transition to the journal's durable commit.
+///
+/// Success changes only the finality journal. Candidate and payload entries are
+/// integrity-read but never removed, marked, or rewritten. The operation does
+/// no discovery, ranking, fork choice, sibling-conflict admission, rollback,
+/// peer trust, or multi-height promotion.
+pub fn commit_candidate_backed_finality_v0(
+    journal: &mut FixedValidatorFinalityJournalV0,
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    expected_target: ArtifactBlockId,
+    canonical_envelope_bytes: &[u8],
+    inclusive_maximum_round: ConsensusRound,
+) -> Result<CandidateBackedFinalityCommitV0, CandidateBackedFinalityErrorV0> {
+    commit_candidate_backed_finality_core_v0(
+        &mut journal.core,
+        candidates,
+        payloads,
+        expected_target,
+        canonical_envelope_bytes,
+        inclusive_maximum_round,
+    )
+}
+
+fn commit_candidate_backed_finality_core_v0<F: StoreIo>(
+    journal: &mut FixedValidatorFinalityJournalCore<F>,
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    expected_target: ArtifactBlockId,
+    canonical_envelope_bytes: &[u8],
+    inclusive_maximum_round: ConsensusRound,
+) -> Result<CandidateBackedFinalityCommitV0, CandidateBackedFinalityErrorV0> {
+    journal
+        .ensure_operational()
+        .map_err(CandidateBackedFinalityErrorV0::FinalityJournal)?;
+    if inclusive_maximum_round.value() > journal.replay_limit.max_round() {
+        return Err(
+            CandidateBackedFinalityErrorV0::RoundWorkLimitExceedsJournal {
+                requested: inclusive_maximum_round.value(),
+                journal: journal.replay_limit.max_round(),
+            },
+        );
+    }
+    let head = journal
+        .branches
+        .last()
+        .expect("every finality journal retains its virtual-genesis branch");
+    let envelope_value =
+        decode_candidate_backed_envelope_value(head, canonical_envelope_bytes, expected_target)?;
+
+    if candidates.chain_id() != journal.context.chain_id() {
+        return Err(CandidateBackedFinalityErrorV0::CandidateChainMismatch {
+            expected: journal.context.chain_id(),
+            actual: candidates.chain_id(),
+        });
+    }
+    let candidate = candidates
+        .get(expected_target)
+        .map_err(CandidateBackedFinalityErrorV0::CandidateStore)?
+        .ok_or(CandidateBackedFinalityErrorV0::CandidateUnavailable {
+            target: expected_target,
+        })?;
+    if candidate != envelope_value.artifact_block() {
+        return Err(CandidateBackedFinalityErrorV0::CandidateBlockMismatch {
+            target: expected_target,
+        });
+    }
+
+    let artifact_id = candidate.artifact_id();
+    let payload = payloads
+        .get(artifact_id)
+        .map_err(CandidateBackedFinalityErrorV0::PayloadStore)?
+        .ok_or(CandidateBackedFinalityErrorV0::PayloadUnavailable { artifact_id })?;
+    debug_assert_eq!(payload.artifact_id(), artifact_id);
+
+    let transition = head
+        .decode_and_verify_envelope_with_round_limit(
+            canonical_envelope_bytes,
+            payload.into_canonical_artifact_bytes().into_vec(),
+            inclusive_maximum_round,
+        )
+        .map_err(CandidateBackedFinalityErrorV0::Envelope)?;
+    let outcome = journal
+        .commit_verified(transition)
+        .map_err(CandidateBackedFinalityErrorV0::FinalityJournal)?;
+    match outcome {
+        FixedValidatorFinalityCommitOutcomeV0::Finalized {
+            position,
+            ancestry_id,
+            envelope_id,
+            state_id,
+        } => Ok(CandidateBackedFinalityCommitV0 {
+            target: expected_target,
+            position,
+            ancestry_id,
+            envelope_id,
+            state_id,
+        }),
+        FixedValidatorFinalityCommitOutcomeV0::AlreadyFinalized { height, .. } => {
+            Err(CandidateBackedFinalityErrorV0::UnexpectedAlreadyFinalized { height })
+        }
+        FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => {
+            Err(CandidateBackedFinalityErrorV0::UnexpectedConflictHalt {
+                height: halt.height(),
+            })
+        }
+    }
+}
+
+fn decode_candidate_backed_envelope_value(
+    head: &FixedConsensusBranchV0,
+    canonical_envelope_bytes: &[u8],
+    expected_target: ArtifactBlockId,
+) -> Result<ConsensusValueV0, CandidateBackedFinalityErrorV0> {
+    let envelope_error = |error| {
+        CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::Envelope(error),
+        )
+    };
+    if canonical_envelope_bytes.len() > VerifiedFixedConsensusTransitionV0::MAX_BYTE_LENGTH {
+        return Err(envelope_error(ConsensusEnvelopeVerifyError::InputTooLong {
+            actual: canonical_envelope_bytes.len(),
+            maximum: VerifiedFixedConsensusTransitionV0::MAX_BYTE_LENGTH,
+        }));
+    }
+    if canonical_envelope_bytes.len() < VerifiedFixedConsensusTransitionV0::MIN_BYTE_LENGTH {
+        return Err(envelope_error(
+            ConsensusEnvelopeVerifyError::InvalidLength {
+                actual: canonical_envelope_bytes.len(),
+                minimum: VerifiedFixedConsensusTransitionV0::MIN_BYTE_LENGTH,
+            },
+        ));
+    }
+    let value = ConsensusValueV0::from_canonical_bytes(
+        &canonical_envelope_bytes[..ConsensusValueV0::BYTE_LENGTH],
+    )
+    .map_err(|error| envelope_error(ConsensusEnvelopeVerifyError::Value(error)))?;
+    let expected_context = head.context();
+    let actual_context = value.context();
+    if actual_context.chain_id() != expected_context.chain_id() {
+        return Err(envelope_error(
+            ConsensusEnvelopeVerifyError::ChainIdMismatch {
+                expected: expected_context.chain_id(),
+                actual: actual_context.chain_id(),
+            },
+        ));
+    }
+    if actual_context.genesis_id() != expected_context.genesis_id() {
+        return Err(envelope_error(
+            ConsensusEnvelopeVerifyError::GenesisIdMismatch {
+                expected: expected_context.genesis_id(),
+                actual: actual_context.genesis_id(),
+            },
+        ));
+    }
+    if actual_context.protocol_version() != expected_context.protocol_version() {
+        return Err(envelope_error(
+            ConsensusEnvelopeVerifyError::ProtocolVersionMismatch {
+                expected: expected_context.protocol_version(),
+                actual: actual_context.protocol_version(),
+            },
+        ));
+    }
+    let expected_height = head
+        .next_height()
+        .map_err(FixedConsensusBoundedEnvelopeVerifyError::Proposer)
+        .map_err(CandidateBackedFinalityErrorV0::Envelope)?;
+    if value.height() != expected_height {
+        return Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::ValueHeightMismatch {
+                expected: expected_height,
+                actual: value.height(),
+            },
+        ));
+    }
+    let actual_target = value.artifact_block().id();
+    if actual_target != expected_target {
+        return Err(CandidateBackedFinalityErrorV0::EnvelopeTargetMismatch {
+            expected: expected_target,
+            actual: actual_target,
+        });
+    }
+    Ok(value)
 }
 
 impl selected_artifact_history_sealed::Sealed for FixedValidatorFinalityJournalV0 {}

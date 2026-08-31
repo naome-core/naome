@@ -68,6 +68,13 @@
 //! candidate store followed by the validated payload archive. Those stores
 //! expose independent acknowledged prefixes rather than cross-store atomicity;
 //! staging never mutates or selects history and retains no peer provenance.
+//! One separate candidate-backed finality boundary accepts an exact
+//! caller-selected retained block, its archived payload, a complete canonical
+//! finality envelope, and a caller-local round-work ceiling. It revalidates the
+//! complete envelope against the current operable fixed-validator journal head
+//! and delegates only the resulting sealed transition to durable finality.
+//! Source-store presence grants no selection authority and neither source is
+//! mutated; each staged height requires its own independently certified call.
 
 mod block_candidate_store;
 mod candidate_branch_archive_import;
@@ -113,11 +120,13 @@ pub use candidate_branch_reconstruction::{
     reconstruct_candidate_branch, start_candidate_branch_reconstruction,
 };
 pub use fixed_validator_finality_journal::{
+    CandidateBackedFinalityCommitV0, CandidateBackedFinalityErrorV0,
     FixedValidatorDurableFinalityConflictV0, FixedValidatorDurableFinalityTransitionV0,
     FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityHaltV0,
     FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
     FixedValidatorFinalityJournalV0, FixedValidatorFinalityRecordV0,
     FixedValidatorFinalityReplayLimitErrorV0, FixedValidatorFinalityReplayLimitV0,
+    commit_candidate_backed_finality_v0,
 };
 pub use fixed_validator_vote_safety_journal::{
     FixedValidatorAnchoredSignerRecoveryV0, FixedValidatorDurablePrepareAcknowledgementV0,

@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -9,11 +9,11 @@ use naome_chain::{
     ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactDag,
 };
 use naome_consensus::{
-    ActiveAgreementEntry, AgreementWeight, ConsensusContextV0, ConsensusGenesisId, ConsensusKey,
-    ConsensusProtocolVersion, ConsensusValueV0, OwnedVerifiedFixedConsensusTransitionV0,
-    ProposalSigningRoot, VerifiedProducerAuthorizationV0,
+    ActiveAgreementEntry, AgreementWeight, CONSENSUS_KEY_BYTES, ConsensusContextV0,
+    ConsensusGenesisId, ConsensusKey, ConsensusProtocolVersion, ConsensusRound, ConsensusValueV0,
+    OwnedVerifiedFixedConsensusTransitionV0, ProposalSigningRoot, VerifiedProducerAuthorizationV0,
 };
-use naome_foundation::{FreeVariable, ZfcAxiom};
+use naome_foundation::{FOUNDATION_ID, FreeVariable, ZfcAxiom};
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 
 use super::*;
@@ -255,6 +255,66 @@ impl Fixture {
     }
 }
 
+fn create_candidate_store(
+    directory: &TestDirectory,
+    definition: ArtifactChainDefinition,
+) -> ArtifactBlockCandidateStore {
+    ArtifactBlockCandidateStore::create(
+        &directory.0,
+        definition,
+        ArtifactBlockCandidateStoreLimits::new(16).unwrap(),
+    )
+    .unwrap()
+}
+
+fn create_payload_store(directory: &TestDirectory) -> CanonicalArtifactPayloadStore {
+    CanonicalArtifactPayloadStore::create(
+        &directory.0,
+        ArtifactPayloadStoreLimits::new(16, 1024 * 1024).unwrap(),
+    )
+    .unwrap()
+}
+
+fn retain_transition_inputs(
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    parent: &FixedConsensusBranchV0,
+    transition: &OwnedVerifiedFixedConsensusTransitionV0,
+) {
+    let block = transition.value().artifact_block();
+    let _ = candidates.insert(&block).unwrap();
+    let _ = payloads
+        .validate_and_insert_branch_payload(
+            parent.artifact_snapshot(),
+            &block,
+            transition.canonical_artifact_bytes().to_vec(),
+        )
+        .unwrap();
+}
+
+fn candidate_image(directory: &TestDirectory) -> Vec<u8> {
+    fs::read(directory.0.join("artifact-block-candidate-store.log")).unwrap()
+}
+
+fn payload_image(directory: &TestDirectory) -> Vec<u8> {
+    fs::read(directory.0.join("artifact-payload-store.log")).unwrap()
+}
+
+fn flip_byte(path: PathBuf, offset: u64) {
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    let mut byte = [0_u8; 1];
+    io::Read::read_exact(&mut file, &mut byte).unwrap();
+    byte[0] ^= 0xff;
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&byte).unwrap();
+    file.sync_all().unwrap();
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -278,6 +338,723 @@ fn finalizes_two_heights_and_reopens_exact_head() {
     let reopened = fixture.open(&directory, state).unwrap();
     assert_eq!(reopened.finalized_len().unwrap(), 2);
     assert_eq!(reopened.head().unwrap().ancestry_id(), expected_head);
+}
+
+#[test]
+fn candidate_backed_finality_installs_one_exact_direct_child_without_mutating_sources() {
+    let fixture = Fixture::new();
+    let finality_directory = TestDirectory::new("candidate-backed-success-finality");
+    let candidate_directory = TestDirectory::new("candidate-backed-success-candidates");
+    let payload_directory = TestDirectory::new("candidate-backed-success-payloads");
+    let mut journal = fixture.create(&finality_directory);
+    let mut candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut payloads = create_payload_store(&payload_directory);
+    let mut selected = ArtifactChainState::new(fixture.definition);
+
+    let first = fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+    let first_block = first.value().artifact_block();
+    let first_payload = first.canonical_artifact_bytes().to_vec();
+    let _ = journal.commit_verified(first).unwrap();
+    selected.apply_block(&first_block, first_payload).unwrap();
+
+    let second = fixture.transition(
+        journal.head().unwrap(),
+        &mut selected,
+        ZfcAxiom::Union,
+        fixture.limit.max_round(),
+    );
+    let block = second.value().artifact_block();
+    let target = block.id();
+    let envelope = second.canonical_envelope_bytes().to_vec();
+    let artifact_bytes = second.canonical_artifact_bytes().to_vec();
+    let expected_position = second.position();
+    let expected_ancestry = second.value().ancestry_id();
+    let expected_envelope_id = second.envelope_id();
+    retain_transition_inputs(
+        &mut candidates,
+        &mut payloads,
+        journal.head().unwrap(),
+        &second,
+    );
+
+    let old_state = journal.state_id().unwrap();
+    let old_finality = fs::read(finality_directory.journal()).unwrap();
+    let candidate_before = candidate_image(&candidate_directory);
+    let payload_before = payload_image(&payload_directory);
+    let body = canonical_record_body(FINALIZE_RECORD, &second, 1).unwrap();
+    let body_length = u32::try_from(body.len()).unwrap().to_be_bytes();
+    let expected_state = step_state_id(old_state, body_length, &body);
+
+    let outcome = commit_candidate_backed_finality_v0(
+        &mut journal,
+        &mut candidates,
+        &mut payloads,
+        target,
+        &envelope,
+        ConsensusRound::new(fixture.limit.max_round()),
+    )
+    .unwrap();
+
+    assert_eq!(outcome.target(), target);
+    assert_eq!(outcome.position(), expected_position);
+    assert_eq!(outcome.ancestry_id(), expected_ancestry);
+    assert_eq!(outcome.envelope_id(), expected_envelope_id);
+    assert_eq!(outcome.state_id(), expected_state);
+    assert_eq!(journal.state_id().unwrap(), expected_state);
+    assert_eq!(journal.finalized_len().unwrap(), 2);
+    assert_eq!(
+        journal.head().unwrap().artifact_snapshot().head_block_id(),
+        target
+    );
+    let record = journal
+        .finality_record(expected_position.height())
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.position(), expected_position);
+    assert_eq!(record.canonical_envelope_bytes(), envelope);
+    assert_eq!(record.canonical_artifact_bytes(), artifact_bytes);
+
+    let mut expected_finality = old_finality;
+    expected_finality.extend_from_slice(&body_length);
+    expected_finality.extend_from_slice(&body);
+    expected_finality.extend_from_slice(expected_state.as_bytes());
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        expected_finality
+    );
+    assert_eq!(candidate_image(&candidate_directory), candidate_before);
+    assert_eq!(payload_image(&payload_directory), payload_before);
+    assert_eq!(candidates.get(target).unwrap(), Some(block));
+    let retained_payload = payloads.get(block.artifact_id()).unwrap().unwrap();
+    assert_eq!(retained_payload.canonical_artifact_bytes(), artifact_bytes);
+
+    drop(journal);
+    assert!(matches!(
+        fixture.open(&finality_directory, old_state),
+        Err(FixedValidatorFinalityJournalErrorV0::ExpectedStateIdMismatch { .. })
+    ));
+    let reopened = fixture.open(&finality_directory, expected_state).unwrap();
+    assert_eq!(reopened.finalized_len().unwrap(), 2);
+    assert_eq!(
+        reopened.head().unwrap().artifact_snapshot().head_block_id(),
+        target
+    );
+}
+
+#[test]
+fn candidate_backed_finality_rejects_missing_misdirected_and_unbounded_inputs_without_writes() {
+    let fixture = Fixture::new();
+    let finality_directory = TestDirectory::new("candidate-backed-reject-finality");
+    let candidate_directory = TestDirectory::new("candidate-backed-reject-candidates");
+    let payload_directory = TestDirectory::new("candidate-backed-reject-payloads");
+    let mut journal = fixture.create(&finality_directory);
+    let mut candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut payloads = create_payload_store(&payload_directory);
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let transition =
+        fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 1);
+    let block = transition.value().artifact_block();
+    let target = block.id();
+    let envelope = transition.canonical_envelope_bytes().to_vec();
+    let finality_before = fs::read(finality_directory.journal()).unwrap();
+
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &envelope,
+            ConsensusRound::new(1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::CandidateUnavailable { target: actual })
+            if actual == target
+    ));
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        finality_before
+    );
+
+    let _ = candidates.insert(&block).unwrap();
+    let candidate_only = candidate_image(&candidate_directory);
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &envelope,
+            ConsensusRound::new(1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::PayloadUnavailable { artifact_id })
+            if artifact_id == block.artifact_id()
+    ));
+    assert_eq!(candidate_image(&candidate_directory), candidate_only);
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        finality_before
+    );
+
+    let _ = payloads
+        .validate_and_insert_branch_payload(
+            journal.head().unwrap().artifact_snapshot(),
+            &block,
+            transition.canonical_artifact_bytes().to_vec(),
+        )
+        .unwrap();
+    let candidate_before = candidate_image(&candidate_directory);
+    let payload_before = payload_image(&payload_directory);
+
+    let wrong_target = ArtifactBlockId::from_bytes([0x99; 32]);
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            wrong_target,
+            &envelope,
+            ConsensusRound::new(1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::EnvelopeTargetMismatch {
+            expected,
+            actual,
+        }) if expected == wrong_target && actual == target
+    ));
+
+    let mut trailing = envelope.clone();
+    trailing.push(0);
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &trailing,
+            ConsensusRound::new(1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(_))
+    ));
+
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &envelope,
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::RoundLimitExceeded { round, maximum }
+        )) if round == ConsensusRound::new(1) && maximum == ConsensusRound::new(0)
+    ));
+
+    let mut attacker_round = envelope.clone();
+    let round_offset =
+        ConsensusValueV0::BYTE_LENGTH + VerifiedProducerAuthorizationV0::BYTE_LENGTH + 77;
+    attacker_round[round_offset..round_offset + 8].copy_from_slice(&u64::MAX.to_be_bytes());
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &attacker_round,
+            ConsensusRound::new(fixture.limit.max_round()),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::RoundLimitExceeded { round, maximum }
+        )) if round == ConsensusRound::new(u64::MAX)
+            && maximum == ConsensusRound::new(fixture.limit.max_round())
+    ));
+
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &envelope,
+            ConsensusRound::new(fixture.limit.max_round() + 1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::RoundWorkLimitExceedsJournal {
+            requested,
+            journal,
+        }) if requested == fixture.limit.max_round() + 1
+            && journal == fixture.limit.max_round()
+    ));
+
+    assert_eq!(journal.finalized_len().unwrap(), 0);
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        finality_before
+    );
+    assert_eq!(candidate_image(&candidate_directory), candidate_before);
+    assert_eq!(payload_image(&payload_directory), payload_before);
+}
+
+#[test]
+fn candidate_backed_finality_requires_one_independent_certificate_per_height() {
+    let fixture = Fixture::new();
+    let finality_directory = TestDirectory::new("candidate-backed-sequential-finality");
+    let candidate_directory = TestDirectory::new("candidate-backed-sequential-candidates");
+    let payload_directory = TestDirectory::new("candidate-backed-sequential-payloads");
+    let mut journal = fixture.create(&finality_directory);
+    let mut candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut payloads = create_payload_store(&payload_directory);
+    let mut selected = ArtifactChainState::new(fixture.definition);
+
+    let first_for_child =
+        fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+    let child = first_for_child.into_branch();
+    let first = fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+    let first_block = first.value().artifact_block();
+    selected
+        .apply_block(&first_block, first.canonical_artifact_bytes().to_vec())
+        .unwrap();
+    let second = fixture.transition(&child, &mut selected, ZfcAxiom::Union, 0);
+    let second_block = second.value().artifact_block();
+
+    let _ = candidates.insert(&first_block).unwrap();
+    let _ = candidates.insert(&second_block).unwrap();
+    let _ = payloads
+        .validate_and_insert_branch_payload(
+            journal.head().unwrap().artifact_snapshot(),
+            &first_block,
+            first.canonical_artifact_bytes().to_vec(),
+        )
+        .unwrap();
+    let _ = payloads
+        .validate_and_insert_branch_payload(
+            child.artifact_snapshot(),
+            &second_block,
+            second.canonical_artifact_bytes().to_vec(),
+        )
+        .unwrap();
+    let candidate_before = candidate_image(&candidate_directory);
+    let payload_before = payload_image(&payload_directory);
+    let genesis_finality = fs::read(finality_directory.journal()).unwrap();
+
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            second_block.id(),
+            second.canonical_envelope_bytes(),
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::ValueHeightMismatch { expected, actual }
+        )) if expected == ConsensusHeight::new(1) && actual == ConsensusHeight::new(2)
+    ));
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        genesis_finality
+    );
+
+    let first_outcome = commit_candidate_backed_finality_v0(
+        &mut journal,
+        &mut candidates,
+        &mut payloads,
+        first_block.id(),
+        first.canonical_envelope_bytes(),
+        ConsensusRound::new(0),
+    )
+    .unwrap();
+    assert_eq!(first_outcome.position().height(), ConsensusHeight::new(1));
+    let second_outcome = commit_candidate_backed_finality_v0(
+        &mut journal,
+        &mut candidates,
+        &mut payloads,
+        second_block.id(),
+        second.canonical_envelope_bytes(),
+        ConsensusRound::new(0),
+    )
+    .unwrap();
+    assert_eq!(second_outcome.position().height(), ConsensusHeight::new(2));
+    assert_eq!(journal.finalized_len().unwrap(), 2);
+    assert_eq!(
+        journal.head().unwrap().artifact_snapshot().head_block_id(),
+        second_block.id()
+    );
+    assert_eq!(candidate_image(&candidate_directory), candidate_before);
+    assert_eq!(payload_image(&payload_directory), payload_before);
+}
+
+#[test]
+fn candidate_backed_finality_reauthenticates_evidence_and_artifact_parent() {
+    let fixture = Fixture::new();
+    let finality_directory = TestDirectory::new("candidate-backed-verify-finality");
+    let candidate_directory = TestDirectory::new("candidate-backed-verify-candidates");
+    let payload_directory = TestDirectory::new("candidate-backed-verify-payloads");
+    let mut journal = fixture.create(&finality_directory);
+    let mut candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut payloads = create_payload_store(&payload_directory);
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let transition =
+        fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 1);
+    retain_transition_inputs(
+        &mut candidates,
+        &mut payloads,
+        journal.head().unwrap(),
+        &transition,
+    );
+    let block = transition.value().artifact_block();
+    let target = block.id();
+    let envelope = transition.canonical_envelope_bytes();
+    let finality_before = fs::read(finality_directory.journal()).unwrap();
+    let candidate_before = candidate_image(&candidate_directory);
+    let payload_before = payload_image(&payload_directory);
+
+    let mut invalid_authorization = envelope.to_vec();
+    let signature_offset =
+        ConsensusValueV0::BYTE_LENGTH + AUTHORIZATION_BODY_BYTES + CONSENSUS_KEY_BYTES;
+    invalid_authorization[signature_offset] ^= 0xff;
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &invalid_authorization,
+            ConsensusRound::new(1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::Envelope(
+                ConsensusEnvelopeVerifyError::ProducerAuthorization(_)
+            )
+        ))
+    ));
+
+    let mut wrong_role = envelope.to_vec();
+    let certificate_offset =
+        ConsensusValueV0::BYTE_LENGTH + VerifiedProducerAuthorizationV0::BYTE_LENGTH;
+    wrong_role[certificate_offset] = 1;
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &wrong_role,
+            ConsensusRound::new(1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::Envelope(
+                ConsensusEnvelopeVerifyError::PrecommitCertificate(_)
+            )
+        ))
+    ));
+
+    let mut wrong_certificate_height = envelope.to_vec();
+    wrong_certificate_height[certificate_offset + 69..certificate_offset + 77]
+        .copy_from_slice(&2_u64.to_be_bytes());
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &wrong_certificate_height,
+            ConsensusRound::new(1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::CertificateHeightMismatch {
+                expected,
+                actual,
+            }
+        )) if expected == ConsensusHeight::new(1) && actual == ConsensusHeight::new(2)
+    ));
+
+    let mut foreign_context = envelope.to_vec();
+    foreign_context[0] ^= 0xff;
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            target,
+            &foreign_context,
+            ConsensusRound::new(1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::Envelope(
+                ConsensusEnvelopeVerifyError::ChainIdMismatch { .. }
+            )
+        ))
+    ));
+
+    let wrong_parent = ArtifactBlock::new(
+        ArtifactBlockId::from_bytes([0xa7; 32]),
+        block.previous_artifact_set_root(),
+        block.resulting_artifact_set_root(),
+        block.artifact_id(),
+    );
+    let round = journal.head().unwrap().begin_round_zero().unwrap();
+    let wrong_parent_value = round.value_for_artifact_block(wrong_parent);
+    let wrong_parent_envelope =
+        envelope_bytes(wrong_parent_value, round.position(), &fixture.proposer);
+    let _ = candidates.insert(&wrong_parent).unwrap();
+    let candidate_with_wrong_parent = candidate_image(&candidate_directory);
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            wrong_parent.id(),
+            &wrong_parent_envelope,
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::Envelope(
+                ConsensusEnvelopeVerifyError::ArtifactValidation(_)
+            )
+        ))
+    ));
+
+    assert_eq!(journal.finalized_len().unwrap(), 0);
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        finality_before
+    );
+    assert_eq!(
+        candidate_image(&candidate_directory),
+        candidate_with_wrong_parent
+    );
+    assert_ne!(candidate_with_wrong_parent, candidate_before);
+    assert_eq!(payload_image(&payload_directory), payload_before);
+}
+
+#[test]
+fn candidate_backed_finality_rejects_foreign_candidate_store_before_source_reads() {
+    let fixture = Fixture::new();
+    let finality_directory = TestDirectory::new("candidate-backed-foreign-finality");
+    let candidate_directory = TestDirectory::new("candidate-backed-foreign-candidates");
+    let payload_directory = TestDirectory::new("candidate-backed-foreign-payloads");
+    let mut journal = fixture.create(&finality_directory);
+    let foreign_definition = ArtifactChainDefinition::new([0x91; 32]);
+    let mut candidates = create_candidate_store(&candidate_directory, foreign_definition);
+    let mut payloads = create_payload_store(&payload_directory);
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let transition =
+        fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+    let finality_before = fs::read(finality_directory.journal()).unwrap();
+    candidates.poison_after_injected_ambiguous_commit();
+    payloads.poison_after_injected_ambiguous_commit();
+
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            transition.value().artifact_block().id(),
+            transition.canonical_envelope_bytes(),
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::CandidateChainMismatch {
+            expected,
+            actual,
+        }) if expected == fixture.definition.id() && actual == foreign_definition.id()
+    ));
+    assert_eq!(journal.finalized_len().unwrap(), 0);
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        finality_before
+    );
+}
+
+#[test]
+fn candidate_backed_finality_rejects_stale_and_halted_journals_before_selection() {
+    let fixture = Fixture::new();
+    let finality_directory = TestDirectory::new("candidate-backed-stale-finality");
+    let candidate_directory = TestDirectory::new("candidate-backed-stale-candidates");
+    let payload_directory = TestDirectory::new("candidate-backed-stale-payloads");
+    let mut journal = fixture.create(&finality_directory);
+    let mut candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut payloads = create_payload_store(&payload_directory);
+    let mut selected = ArtifactChainState::new(fixture.definition);
+
+    let stale = fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+    retain_transition_inputs(
+        &mut candidates,
+        &mut payloads,
+        journal.head().unwrap(),
+        &stale,
+    );
+    let selected_transition =
+        fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Union, 0);
+    let conflicting_transition = fixture.transition(
+        journal.head().unwrap(),
+        &mut selected,
+        ZfcAxiom::PowerSet,
+        0,
+    );
+    let _ = journal.commit_verified(selected_transition).unwrap();
+    let finality_before_stale = fs::read(finality_directory.journal()).unwrap();
+    let stale_target = stale.value().artifact_block().id();
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            stale_target,
+            stale.canonical_envelope_bytes(),
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Envelope(
+            FixedConsensusBoundedEnvelopeVerifyError::ValueHeightMismatch { expected, actual }
+        )) if expected == ConsensusHeight::new(2) && actual == ConsensusHeight::new(1)
+    ));
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        finality_before_stale
+    );
+    assert_eq!(journal.finalized_len().unwrap(), 1);
+    assert!(journal.halt().unwrap().is_none());
+
+    assert!(matches!(
+        journal.commit_verified(conflicting_transition).unwrap(),
+        FixedValidatorFinalityCommitOutcomeV0::Halted(_)
+    ));
+    let halted_image = fs::read(finality_directory.journal()).unwrap();
+    candidates.poison_after_injected_ambiguous_commit();
+    payloads.poison_after_injected_ambiguous_commit();
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            stale_target,
+            stale.canonical_envelope_bytes(),
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::FinalityJournal(
+            FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. }
+        ))
+    ));
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        halted_image
+    );
+}
+
+#[test]
+fn candidate_backed_finality_store_integrity_failures_poison_only_the_owning_source() {
+    let fixture = Fixture::new();
+    let mut selected = ArtifactChainState::new(fixture.definition);
+
+    let candidate_finality_directory =
+        TestDirectory::new("candidate-backed-corrupt-candidate-finality");
+    let candidate_directory = TestDirectory::new("candidate-backed-corrupt-candidate-store");
+    let candidate_payload_directory =
+        TestDirectory::new("candidate-backed-corrupt-candidate-payloads");
+    let mut candidate_journal = fixture.create(&candidate_finality_directory);
+    let mut corrupt_candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut healthy_payloads = create_payload_store(&candidate_payload_directory);
+    let transition = fixture.transition(
+        candidate_journal.head().unwrap(),
+        &mut selected,
+        ZfcAxiom::Pairing,
+        0,
+    );
+    retain_transition_inputs(
+        &mut corrupt_candidates,
+        &mut healthy_payloads,
+        candidate_journal.head().unwrap(),
+        &transition,
+    );
+    let block = transition.value().artifact_block();
+    let target = block.id();
+    let candidate_finality_before = fs::read(candidate_finality_directory.journal()).unwrap();
+    let candidate_payload_before = payload_image(&candidate_payload_directory);
+    let candidate_path = candidate_directory
+        .0
+        .join("artifact-block-candidate-store.log");
+    let candidate_body_offset = b"naome:artifact-block-candidate-store:v0\0".len() as u64
+        + ArtifactChainId::BYTE_LENGTH as u64;
+    flip_byte(candidate_path, candidate_body_offset);
+    let corrupted_candidate_image = candidate_image(&candidate_directory);
+
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut candidate_journal,
+            &mut corrupt_candidates,
+            &mut healthy_payloads,
+            target,
+            transition.canonical_envelope_bytes(),
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::CandidateStore(_))
+    ));
+    assert!(matches!(
+        corrupt_candidates.get(target),
+        Err(ArtifactBlockCandidateStoreError::Poisoned)
+    ));
+    assert!(healthy_payloads.get(block.artifact_id()).unwrap().is_some());
+    assert_eq!(
+        fs::read(candidate_finality_directory.journal()).unwrap(),
+        candidate_finality_before
+    );
+    assert_eq!(
+        candidate_image(&candidate_directory),
+        corrupted_candidate_image
+    );
+    assert_eq!(
+        payload_image(&candidate_payload_directory),
+        candidate_payload_before
+    );
+
+    let payload_finality_directory =
+        TestDirectory::new("candidate-backed-corrupt-payload-finality");
+    let payload_candidate_directory =
+        TestDirectory::new("candidate-backed-corrupt-payload-candidates");
+    let payload_directory = TestDirectory::new("candidate-backed-corrupt-payload-store");
+    let mut payload_journal = fixture.create(&payload_finality_directory);
+    let mut healthy_candidates =
+        create_candidate_store(&payload_candidate_directory, fixture.definition);
+    let mut corrupt_payloads = create_payload_store(&payload_directory);
+    retain_transition_inputs(
+        &mut healthy_candidates,
+        &mut corrupt_payloads,
+        payload_journal.head().unwrap(),
+        &transition,
+    );
+    let payload_finality_before = fs::read(payload_finality_directory.journal()).unwrap();
+    let payload_candidate_before = candidate_image(&payload_candidate_directory);
+    let payload_path = payload_directory.0.join("artifact-payload-store.log");
+    let payload_body_offset = b"naome:artifact-payload-store:v1\0".len() as u64
+        + FOUNDATION_ID.len() as u64
+        + 4
+        + ArtifactId::BYTE_LENGTH as u64;
+    flip_byte(payload_path, payload_body_offset);
+    let corrupted_payload_image = payload_image(&payload_directory);
+
+    assert!(matches!(
+        commit_candidate_backed_finality_v0(
+            &mut payload_journal,
+            &mut healthy_candidates,
+            &mut corrupt_payloads,
+            target,
+            transition.canonical_envelope_bytes(),
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::PayloadStore(_))
+    ));
+    assert_eq!(healthy_candidates.get(target).unwrap(), Some(block));
+    assert!(matches!(
+        corrupt_payloads.get(block.artifact_id()),
+        Err(CanonicalArtifactPayloadStoreError::Poisoned)
+    ));
+    assert_eq!(
+        fs::read(payload_finality_directory.journal()).unwrap(),
+        payload_finality_before
+    );
+    assert_eq!(
+        candidate_image(&payload_candidate_directory),
+        payload_candidate_before
+    );
+    assert_eq!(payload_image(&payload_directory), corrupted_payload_image);
 }
 
 #[test]
@@ -1136,8 +1913,12 @@ fn round_limit_accepts_maximum_and_rejects_max_plus_one_before_io_and_replay() {
 }
 
 #[test]
-fn every_append_fault_poisons_and_never_publishes_memory_state() {
+fn every_candidate_backed_append_fault_poisons_only_finality_and_reopens_exactly() {
     let fixture = Fixture::new();
+    let candidate_directory = TestDirectory::new("candidate-backed-fault-candidates");
+    let payload_directory = TestDirectory::new("candidate-backed-fault-payloads");
+    let mut candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut payloads = create_payload_store(&payload_directory);
     let genesis_branch =
         fixed_genesis(fixture.definition, fixture.context, &fixture.entries).unwrap();
     let prefix = canonical_prefix(
@@ -1151,6 +1932,10 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
     let mut selected = ArtifactChainState::new(fixture.definition);
     let probe = fixture.transition(&genesis_branch, &mut selected, ZfcAxiom::Pairing, 0);
     let proposed_block_id = probe.value().artifact_block().id();
+    let canonical_envelope = probe.canonical_envelope_bytes().to_vec();
+    retain_transition_inputs(&mut candidates, &mut payloads, &genesis_branch, &probe);
+    let candidate_before = candidate_image(&candidate_directory);
+    let payload_before = payload_image(&payload_directory);
     let body = canonical_record_body(FINALIZE_RECORD, &probe, 0).unwrap();
     let body_length_bytes = u32::try_from(body.len()).unwrap().to_be_bytes();
     let proposed_state = step_state_id(genesis_id, body_length_bytes, &body);
@@ -1171,17 +1956,24 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
             snapshot_index,
             genesis_id,
         );
-        let mut selected = ArtifactChainState::new(fixture.definition);
-        let transition = fixture.transition(
-            core.branches.last().unwrap(),
-            &mut selected,
-            ZfcAxiom::Pairing,
-            0,
-        );
         assert!(
             matches!(
-                core.commit_verified(transition),
-                Err(FixedValidatorFinalityJournalErrorV0::Commit { .. })
+                commit_candidate_backed_finality_core_v0(
+                    &mut core,
+                    &mut candidates,
+                    &mut payloads,
+                    proposed_block_id,
+                    &canonical_envelope,
+                    ConsensusRound::new(0),
+                ),
+                Err(CandidateBackedFinalityErrorV0::FinalityJournal(
+                    FixedValidatorFinalityJournalErrorV0::Commit {
+                        envelope_id,
+                        proposed_state_id,
+                        ..
+                    }
+                )) if envelope_id == probe.envelope_id()
+                    && proposed_state_id == proposed_state
             ),
             "fault={fault:?}"
         );
@@ -1207,6 +1999,28 @@ fn every_append_fault_poisons_and_never_publishes_memory_state() {
                 core.reconstruct_selected_transition(ConsensusHeight::new(1)),
                 Err(FixedValidatorFinalityJournalErrorV0::Poisoned)
             ),
+            "fault={fault:?}"
+        );
+        assert_eq!(
+            candidate_image(&candidate_directory),
+            candidate_before,
+            "fault={fault:?}"
+        );
+        assert_eq!(
+            payload_image(&payload_directory),
+            payload_before,
+            "fault={fault:?}"
+        );
+        assert_eq!(
+            candidates.get(proposed_block_id).unwrap(),
+            Some(probe.value().artifact_block()),
+            "fault={fault:?}"
+        );
+        assert!(
+            payloads
+                .get(probe.value().artifact_block().artifact_id())
+                .unwrap()
+                .is_some(),
             "fault={fault:?}"
         );
 
