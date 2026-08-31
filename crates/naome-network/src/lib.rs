@@ -206,7 +206,8 @@ pub use record_exchange::{
 pub use recovery_bundle_push::{
     AuthenticatedRecoveryBundlePushReceipt, InboundRecoveryBundlePush,
     OutboundRecoveryBundlePushEvent, OutboundRecoveryBundlePushFailure,
-    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RecoveryBundlePushAcknowledgeError,
+    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
+    RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS, RecoveryBundlePushAcknowledgeError,
     RecoveryBundlePushEventMismatch, RecoveryBundlePushRequestError, RecoveryBundlePushStartError,
     RecoveryBundlePushTicket,
 };
@@ -237,9 +238,12 @@ pub const MAX_PENDING_REQUESTS: usize = 8;
 pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
 /// Maximum concurrent head-announcement streams on one connection.
 pub const MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION: usize = 1;
+/// Maximum concurrent recovery-bundle push streams on one connection.
+pub const MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION: usize = 1;
 /// Maximum concurrent application-exchange streams on one connection.
-pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize =
-    MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION * 3 + MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION * 2;
+pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION * 3
+    + MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION
+    + MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION;
 /// Maximum total Yamux substreams on one connection.
 pub const MAX_YAMUX_STREAMS_PER_CONNECTION: usize = 8;
 /// Configured TCP listen backlog.
@@ -454,14 +458,16 @@ impl StaticArtifactNetwork {
             announcement_config,
         );
         let recovery_bundle_push = request_response::Behaviour::with_codec(
-            RecoveryBundlePushCodec,
+            RecoveryBundlePushCodec::new(Arc::new(
+                recovery_bundle_push::RecoveryBundlePushInboundBudget::default(),
+            )),
             [(
                 RECOVERY_BUNDLE_PUSH_PROTOCOL,
                 request_response::ProtocolSupport::Full,
             )],
             request_response::Config::default()
                 .with_request_timeout(REQUEST_TIMEOUT)
-                .with_max_concurrent_streams(MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION),
+                .with_max_concurrent_streams(MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION),
         );
 
         let behaviour = Behaviour {

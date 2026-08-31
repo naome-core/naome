@@ -23,6 +23,10 @@ use naome::chain_head_exchange::{
 };
 use naome_chain::{ArtifactBlockId, ArtifactChainId};
 
+use crate::recovery_bundle_push::{
+    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS,
+    RecoveryBundlePushInboundBudget, RecoveryBundlePushReceipt, RecoveryBundlePushRequest,
+};
 use crate::{MAX_PEER_RECORDS_PER_BATCH, MAX_SIGNED_PEER_RECORD_BYTES, PeerRecordBatch};
 
 use super::{
@@ -30,8 +34,13 @@ use super::{
     ARTIFACT_CHAIN_HEAD_PROTOCOL, ARTIFACT_PROTOCOL, ArtifactBlockCodec, ArtifactBlockWireResponse,
     ArtifactChainHeadAnnouncementCodec, ArtifactChainHeadAnnouncementReceipt,
     ArtifactChainHeadCodec, ArtifactCodec, PEER_RECORD_PROTOCOL, PeerRecordCodec,
-    PeerRecordResponderCodec, PeerRecordResponderRequest,
+    PeerRecordResponderCodec, PeerRecordResponderRequest, RECOVERY_BUNDLE_PUSH_PROTOCOL,
+    RecoveryBundlePushCodec,
 };
+
+fn recovery_bundle_push_codec() -> RecoveryBundlePushCodec {
+    RecoveryBundlePushCodec::new(Arc::new(RecoveryBundlePushInboundBudget::default()))
+}
 
 struct PendingReader;
 
@@ -655,6 +664,196 @@ fn artifact_chain_head_announcement_rejects_every_noncanonical_frame() {
         .kind(),
         io::ErrorKind::InvalidData
     );
+}
+
+#[test]
+fn recovery_bundle_push_has_exact_request_and_receipt_frames() {
+    assert_eq!(
+        RECOVERY_BUNDLE_PUSH_PROTOCOL.as_ref(),
+        "/naome/recovery-bundle-push-v0"
+    );
+    let mut codec = recovery_bundle_push_codec();
+    let maximum_length = u32::try_from(RECOVERY_BUNDLE_PUSH_MAX_BYTES)
+        .unwrap()
+        .to_be_bytes();
+    let mut encoded_request = Cursor::new(Vec::new());
+    block_on(codec.write_request(
+        &RECOVERY_BUNDLE_PUSH_PROTOCOL,
+        &mut encoded_request,
+        RecoveryBundlePushRequest::new(vec![0xa5; RECOVERY_BUNDLE_PUSH_MAX_BYTES]).unwrap(),
+    ))
+    .unwrap();
+    let encoded_request = encoded_request.into_inner();
+    assert_eq!(encoded_request.len(), 4 + RECOVERY_BUNDLE_PUSH_MAX_BYTES);
+    assert_eq!(&encoded_request[..4], &maximum_length);
+    assert!(encoded_request[4..].iter().all(|byte| *byte == 0xa5));
+
+    let mut maximum = Cursor::new(encoded_request);
+    let decoded =
+        block_on(codec.read_request(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut maximum)).unwrap();
+    assert_eq!(decoded.bundle_bytes().len(), RECOVERY_BUNDLE_PUSH_MAX_BYTES);
+    assert_eq!(decoded.bundle_bytes()[0], 0xa5);
+    assert_eq!(
+        decoded.bundle_bytes()[RECOVERY_BUNDLE_PUSH_MAX_BYTES - 1],
+        0xa5
+    );
+    drop(decoded);
+
+    let mut receipt = Cursor::new(vec![0x01]);
+    assert_eq!(
+        block_on(codec.read_response(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut receipt)).unwrap(),
+        RecoveryBundlePushReceipt
+    );
+    let mut encoded_receipt = Cursor::new(Vec::new());
+    block_on(codec.write_response(
+        &RECOVERY_BUNDLE_PUSH_PROTOCOL,
+        &mut encoded_receipt,
+        RecoveryBundlePushReceipt,
+    ))
+    .unwrap();
+    assert_eq!(encoded_receipt.into_inner(), [0x01]);
+}
+
+#[test]
+fn recovery_bundle_push_rejects_noncanonical_request_frames() {
+    let mut codec = recovery_bundle_push_codec();
+    for length in 0..4 {
+        let prefix = 1_u32.to_be_bytes();
+        let mut truncated = Cursor::new(prefix[..length].to_vec());
+        assert_eq!(
+            block_on(codec.read_request(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut truncated))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof,
+            "accepted truncated length prefix of {length} bytes"
+        );
+    }
+
+    let oversized = u32::try_from(RECOVERY_BUNDLE_PUSH_MAX_BYTES + 1)
+        .unwrap()
+        .to_be_bytes();
+    let mut oversized = Cursor::new(oversized.to_vec());
+    assert_eq!(
+        block_on(codec.read_request(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut oversized))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(oversized.position(), 4, "read an oversized request body");
+
+    let mut truncated_body = Cursor::new(vec![0, 0, 0, 2, 0xa5]);
+    assert_eq!(
+        block_on(codec.read_request(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut truncated_body))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+
+    let mut trailing = Cursor::new(vec![0, 0, 0, 1, 0xa5, 0xff]);
+    assert_eq!(
+        block_on(codec.read_request(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut trailing))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn recovery_bundle_push_rejects_noncanonical_receipts() {
+    let mut codec = recovery_bundle_push_codec();
+    let mut missing = Cursor::new(Vec::<u8>::new());
+    assert_eq!(
+        block_on(codec.read_response(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut missing))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+
+    let mut invalid = Cursor::new(vec![0x00]);
+    assert_eq!(
+        block_on(codec.read_response(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut invalid))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+
+    let mut trailing = Cursor::new(vec![0x01, 0xff]);
+    assert_eq!(
+        block_on(codec.read_response(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut trailing))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn recovery_bundle_push_retention_budget_precedes_body_allocation() {
+    let budget = Arc::new(RecoveryBundlePushInboundBudget::default());
+    let retained_peer_slots: Vec<_> = (1..RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS)
+        .map(|_| {
+            RecoveryBundlePushInboundBudget::try_acquire(&budget, RECOVERY_BUNDLE_PUSH_MAX_BYTES)
+                .unwrap()
+        })
+        .collect();
+    let mut codec = RecoveryBundlePushCodec::new(Arc::clone(&budget));
+    let mut maximum = Vec::with_capacity(4 + RECOVERY_BUNDLE_PUSH_MAX_BYTES);
+    maximum.extend_from_slice(
+        &u32::try_from(RECOVERY_BUNDLE_PUSH_MAX_BYTES)
+            .unwrap()
+            .to_be_bytes(),
+    );
+    maximum.resize(4 + RECOVERY_BUNDLE_PUSH_MAX_BYTES, 0xa5);
+    let retained_maximum =
+        block_on(codec.read_request(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut Cursor::new(maximum)))
+            .unwrap();
+
+    let mut blocked_body = Cursor::new(vec![0, 0, 0, 1, 0x5a]);
+    assert_eq!(
+        block_on(codec.read_request(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut blocked_body))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::OutOfMemory
+    );
+    assert_eq!(
+        blocked_body.position(),
+        4,
+        "read a body without a byte permit"
+    );
+    drop(retained_maximum);
+
+    let admitted_nonzero = block_on(codec.read_request(
+        &RECOVERY_BUNDLE_PUSH_PROTOCOL,
+        &mut Cursor::new(vec![0, 0, 0, 1, 0x5a]),
+    ))
+    .unwrap();
+    assert_eq!(admitted_nonzero.bundle_bytes(), [0x5a]);
+    drop(admitted_nonzero);
+    drop(retained_peer_slots);
+
+    let mut retained_empty = Vec::new();
+    for _ in 0..RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS {
+        retained_empty.push(
+            block_on(codec.read_request(
+                &RECOVERY_BUNDLE_PUSH_PROTOCOL,
+                &mut Cursor::new(vec![0, 0, 0, 0]),
+            ))
+            .unwrap(),
+        );
+    }
+    let mut blocked_empty = Cursor::new(vec![0, 0, 0, 0]);
+    assert_eq!(
+        block_on(codec.read_request(&RECOVERY_BUNDLE_PUSH_PROTOCOL, &mut blocked_empty))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::OutOfMemory
+    );
+    assert_eq!(blocked_empty.position(), 4);
+    retained_empty.pop();
+    let _ = block_on(codec.read_request(
+        &RECOVERY_BUNDLE_PUSH_PROTOCOL,
+        &mut Cursor::new(vec![0, 0, 0, 0]),
+    ))
+    .unwrap();
 }
 
 #[test]

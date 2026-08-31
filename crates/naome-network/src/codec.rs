@@ -24,7 +24,8 @@ use crate::record_exchange::{
     MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
 };
 use crate::recovery_bundle_push::{
-    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RecoveryBundlePushReceipt, RecoveryBundlePushRequest,
+    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RecoveryBundlePushInboundBudget, RecoveryBundlePushReceipt,
+    RecoveryBundlePushRequest,
 };
 
 pub(super) const ARTIFACT_PROTOCOL: StreamProtocol =
@@ -63,7 +64,15 @@ pub(super) struct PeerRecordCodec;
 #[derive(Clone)]
 pub(super) struct PeerRecordResponderCodec;
 #[derive(Clone)]
-pub(super) struct RecoveryBundlePushCodec;
+pub(super) struct RecoveryBundlePushCodec {
+    inbound_budget: Arc<RecoveryBundlePushInboundBudget>,
+}
+
+impl RecoveryBundlePushCodec {
+    pub(super) const fn new(inbound_budget: Arc<RecoveryBundlePushInboundBudget>) -> Self {
+        Self { inbound_budget }
+    }
+}
 
 #[derive(Debug)]
 pub(super) enum PeerRecordResponderRequest {
@@ -639,6 +648,13 @@ impl request_response::Codec for RecoveryBundlePushCodec {
                 "recovery-bundle request exceeds maximum",
             ));
         }
+        let permit = RecoveryBundlePushInboundBudget::try_acquire(&self.inbound_budget, length)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    "inbound recovery-bundle retention budget exhausted",
+                )
+            })?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(length)
@@ -646,8 +662,7 @@ impl request_response::Codec for RecoveryBundlePushCodec {
         bytes.resize(length, 0);
         io.read_exact(&mut bytes).await?;
         require_eof(io, "recovery-bundle request has trailing bytes").await?;
-        RecoveryBundlePushRequest::new(bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        Ok(RecoveryBundlePushRequest::from_inbound(bytes, permit))
     }
     async fn read_response<T>(
         &mut self,
@@ -678,7 +693,7 @@ impl request_response::Codec for RecoveryBundlePushCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        let bytes = request.into_canonical_bundle_bytes();
+        let bytes = request.into_bundle_bytes();
         let length = u32::try_from(bytes.len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
