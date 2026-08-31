@@ -146,11 +146,18 @@ authorization is never reused.
 
 The empty state can be constructed only from the exact branch-derived round-zero
 cursor for one context and positive height. Its `FixedValidatorLockPhaseV0`
-advances only from exact sequential round `R` to `R + 1` after a precommit
-effect; round overflow fails closed. Sequential advancement preserves both lock
-and valid-value slots and resets only the consumed round-local phase. There is
-no random-access round constructor, attacker-sized fast-forward loop, or
-certificate-triggered jump to an arbitrary higher round.
+ordinary sequential-round path advances only from exact round `R` to `R + 1`
+after a local precommit effect. Separately, one canonical current-round
+precommit/nil quorum strictly verified against that cursor's private positioned
+fixed-set snapshot may preempt the local Proposal, Prevote, or Precommit phase.
+That evidence-bound path derives the same-branch `R + 1` cursor internally,
+rather than accepting a caller-selected destination, and finalizes no value.
+Both paths fail closed on round overflow, preserve the exact lock and complete
+valid-value proof, reset only the consumed round-local phase, and make any
+previously issued unsigned effect stale. There is no random-access round
+constructor, attacker-sized fast-forward loop, or certificate-triggered jump to
+an arbitrary higher round. Timeout expiry and scheduling are separate authority
+and are not inferred from a nil certificate.
 
 Every reachable nonempty lock has a valid value and `V >= L`. Proposal-quorum
 effects create or replace both slots at the same current round, optional proof

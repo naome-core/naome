@@ -832,6 +832,123 @@ fn session_preserves_lineage_across_skipped_unsigned_roles_and_rounds() {
 }
 
 #[test]
+fn nil_precommit_quorum_advances_session_and_next_vote_reopens_at_exact_anchor() {
+    let fixture = Fixture::new(3);
+    let directory = TestDirectory::new("nil-precommit-round-advance");
+    let branch = fixture.branch();
+    let round_zero = branch.begin_round_zero().unwrap();
+    let mut journal = fixture.create(&directory);
+    let bound = journal.bind_signing_lineage(&round_zero).unwrap();
+    let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    let bound_image = fs::read(&journal_path).unwrap();
+    let mut session = journal.issue_signing_session(&round_zero, bound).unwrap();
+    let certificate = certificate_bytes(
+        fixture.context,
+        round_zero.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+
+    let round_one = session
+        .advance_round_for_nil_precommit_quorum(&round_zero, &certificate)
+        .unwrap();
+
+    assert_eq!(
+        round_one.position().height(),
+        round_zero.position().height()
+    );
+    assert_eq!(
+        round_one.position().round(),
+        ConsensusRound::new(round_zero.position().round().value() + 1)
+    );
+    assert_eq!(session.position(), round_one.position());
+    assert_eq!(session.phase(), FixedValidatorLockPhaseV0::Proposal);
+    assert_eq!(session.locked_value(), None);
+    assert_eq!(session.valid_value(), None);
+    assert_eq!(fs::read(&journal_path).unwrap(), bound_image);
+
+    let effect = session.decide_prevote_without_proposal().unwrap();
+    let prepared = prepared(session.prepare_vote(&round_one, effect).unwrap());
+    assert_eq!(prepared.position(), round_one.position());
+    assert_eq!(prepared.role(), ConsensusVoteRole::Prevote);
+    let prepared_image = fs::read(&journal_path).unwrap();
+    assert_ne!(prepared_image, bound_image);
+    let acknowledgement = session
+        .acknowledge_prepared_vote_is_externally_durable(prepared, prepared.state_id())
+        .unwrap();
+    let signed = session.sign_prepared_vote(acknowledgement).unwrap();
+    let completed_state = signed.state_id();
+    assert_eq!(signed.position(), round_one.position());
+    assert_eq!(signed.role(), ConsensusVoteRole::Prevote);
+    assert_eq!(signed.target(), ConsensusVoteTarget::Nil);
+    drop(session);
+
+    assert_eq!(journal.state_id().unwrap(), completed_state);
+    assert_eq!(
+        journal
+            .retained_signed_vote(round_one.position(), ConsensusVoteRole::Prevote)
+            .unwrap(),
+        Some(signed.clone())
+    );
+    drop(journal);
+
+    let mut reopened = fixture.open(&directory, completed_state).unwrap();
+    assert_eq!(
+        reopened
+            .retained_signed_vote(round_one.position(), ConsensusVoteRole::Prevote)
+            .unwrap(),
+        Some(signed)
+    );
+    let resumed = reopened
+        .issue_signing_session(&round_one, completed_state)
+        .unwrap();
+    assert_eq!(resumed.position(), round_one.position());
+    assert_eq!(resumed.phase(), FixedValidatorLockPhaseV0::Prevote);
+    assert_eq!(resumed.locked_value(), None);
+    assert_eq!(resumed.valid_value(), None);
+}
+
+#[test]
+fn pending_preparation_blocks_nil_precommit_quorum_advance_without_mutation() {
+    let fixture = Fixture::new(2);
+    let directory = TestDirectory::new("nil-precommit-pending-vote");
+    let branch = fixture.branch();
+    let round_zero = branch.begin_round_zero().unwrap();
+    let mut journal = fixture.create(&directory);
+    let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    let mut session = issue_session(&mut journal, &round_zero);
+    let _ = session.decide_prevote_without_proposal().unwrap();
+    let effect = session.decide_precommit_without_quorum().unwrap();
+    let _prepared = prepared(session.prepare_vote(&round_zero, effect).unwrap());
+    let prepared_image = fs::read(&journal_path).unwrap();
+    let before_position = session.position();
+    let before_phase = session.phase();
+    let before_lock = session.locked_value();
+    assert_eq!(session.valid_value(), None);
+    let certificate = certificate_bytes(
+        fixture.context,
+        round_zero.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+
+    assert!(matches!(
+        session.advance_round_for_nil_precommit_quorum(&round_zero, &certificate),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
+            position,
+            role: ConsensusVoteRole::Precommit,
+        }) if position == round_zero.position()
+    ));
+    assert_eq!(session.position(), before_position);
+    assert_eq!(session.phase(), before_phase);
+    assert_eq!(session.locked_value(), before_lock);
+    assert_eq!(session.valid_value(), None);
+    assert_eq!(fs::read(&journal_path).unwrap(), prepared_image);
+}
+
+#[test]
 fn session_advances_only_with_externally_anchored_durable_finality() {
     let fixture = Fixture::new(2);
     let directory = TestDirectory::new("session-child-height");
@@ -2081,6 +2198,9 @@ fn pending_height_advance_blocks_mutation_and_wrong_anchor_recovers_only_by_reop
         .unwrap();
     let prepared_state = prepared_height.state_id();
     let position = session.position();
+    let phase = session.phase();
+    let locked = session.locked_value();
+    let valid = session.valid_value().cloned();
     let (_, vote_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
     let prepared_image = fs::read(&vote_path).unwrap();
 
@@ -2092,6 +2212,19 @@ fn pending_height_advance_blocks_mutation_and_wrong_anchor_recovers_only_by_reop
     ));
     assert!(matches!(
         session.advance_round(&round_one),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::PendingHeightAdvance {
+            state_id,
+        }) if state_id == prepared_state
+    ));
+    let nil_precommit_quorum = certificate_bytes(
+        fixture.context,
+        round.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    assert!(matches!(
+        session.advance_round_for_nil_precommit_quorum(&round, &nil_precommit_quorum),
         Err(FixedValidatorVoteSafetyJournalErrorV0::PendingHeightAdvance {
             state_id,
         }) if state_id == prepared_state
@@ -2109,6 +2242,9 @@ fn pending_height_advance_blocks_mutation_and_wrong_anchor_recovers_only_by_reop
         }) if state_id == prepared_state
     ));
     assert_eq!(session.position(), position);
+    assert_eq!(session.phase(), phase);
+    assert_eq!(session.locked_value(), locked);
+    assert_eq!(session.valid_value(), valid.as_ref());
     assert_eq!(fs::read(&vote_path).unwrap(), prepared_image);
 
     let wrong_state = FixedValidatorVoteSafetyJournalStateIdV0::from_bytes([0x7c; 32]);

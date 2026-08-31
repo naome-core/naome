@@ -568,6 +568,23 @@ instead obtains the sole matching branch from retained finality history and
 internally derives the exact cursor under the caller-local round-work ceiling.
 Neither path grants global branch authority or permits historical state choice.
 
+While such a session is healthy and has neither a pending vote preparation nor
+a pending height transition, it may apply one canonical current-round
+precommit/nil quorum through the kernel's evidence-bound sequential-round path.
+The kernel verifies the certificate against the exact current cursor, derives
+the same-branch `R + 1` cursor internally, may preempt any local round phase, and
+preserves the exact lock and complete valid-value proof. This volatile
+advancement appends no journal record, changes no journal state identity, and
+releases no signature. Any later vote at `R + 1` must still pass through the
+ordinary prepare, external-anchor acknowledgement, private-key use, completion,
+and release sequence above. If the process restarts before any later vote is
+prepared, strict reopen reconstructs only the latest completed durable state;
+the caller must re-observe and re-supply the quorum to apply the volatile
+advance again. A crash after a later preparation begins remains governed by the
+existing non-signable pending-preparation rule and cannot resume by reapplying
+the quorum. The journal neither retains that quorum nor infers timeout expiry,
+scheduling, finality, networking, peer trust, or branch selection from it.
+
 An incomplete preparation surviving restart exposes only its position, role,
 target, prepare-state identity, and the fact that it is non-signable. Its full
 intent bytes are not exposed through the operational API, so a caller cannot
