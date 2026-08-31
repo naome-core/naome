@@ -276,8 +276,16 @@ This V0 completes a fixed-set, branch-relative proposer and transition kernel.
 The separate fixed-validator proposal-control contract adds typed proposal
 admission plus unsigned in-memory lock and valid-value effects without changing
 this branch API's authority. The separate fixed-validator finality journal adds
-exact-format durable selection, replay, and conflict halt. Dynamic validator
-selection and transitions, finite-window proposer-gap proofs, durable
-Tendermint lock, valid-value, phase, and anti-equivocation signing state,
-general consensus persistence and recovery, networking, peer trust,
-availability, and economics remain separate required product work.
+exact-format durable selection, replay, and conflict halt. The separate
+fixed-validator vote-safety journal can issue one private lock-state lineage,
+bind each internally derived post-effect intent to a local key before signing,
+require explicit acknowledgement of the exact externally durable prepare
+identity, durably bind the completed vote before release, and recover only its
+latest completed state through an exact typed round cursor. Its height handoff
+consumes a matching owned verified transition and derives that transition's
+child internally; this selects one local signing lineage but adds no global
+sibling preference or durable-finality installation authority here. Dynamic
+validator selection and transitions, finite-window proposer-gap proofs,
+arbitrary higher-round and timeout progression, general consensus persistence
+and recovery, external-anchor storage, networking, peer trust, availability,
+and economics remain separate required product work.

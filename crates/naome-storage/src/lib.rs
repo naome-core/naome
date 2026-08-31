@@ -22,6 +22,15 @@
 //! [`FixedValidatorFinalityJournalStateIdV0`] for operational reopen. A distinct
 //! verified sibling produces a durable terminal halt rather than fork choice.
 //!
+//! [`FixedValidatorVoteSafetyJournalV0`] separately owns one local consensus
+//! signing key and enforces a two-sync prepare-then-complete protocol for exact
+//! kernel-sealed vote intents. The key is reachable only through the journal's
+//! sole lock-state session, and signing requires an explicit caller assertion
+//! that the exact prepared state ID is durable in a separate monotonic anchor.
+//! Its per-key chained log prevents replacement and same-slot state divergence,
+//! while an anchored reopen with an unresolved preparation remains deliberately
+//! non-signable.
+//!
 //! [`ArtifactBlockCandidateStore`] retains chain-scoped structural blocks,
 //! including siblings and blocks with unavailable parents, without validating
 //! or selecting a candidate history. These stores define no reorganization,
@@ -42,6 +51,7 @@ mod candidate_branch_recovery_bundle;
 #[cfg(test)]
 mod fault_io;
 mod fixed_validator_finality_journal;
+mod fixed_validator_vote_safety_journal;
 mod payload_store;
 
 pub use block_candidate_store::{
@@ -76,6 +86,15 @@ pub use fixed_validator_finality_journal::{
     FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
     FixedValidatorFinalityJournalV0, FixedValidatorFinalityRecordV0,
     FixedValidatorFinalityReplayLimitErrorV0, FixedValidatorFinalityReplayLimitV0,
+};
+pub use fixed_validator_vote_safety_journal::{
+    FixedValidatorDurablePrepareAcknowledgementV0, FixedValidatorPendingVoteV0,
+    FixedValidatorPreparedVoteV0, FixedValidatorSignedVoteV0,
+    FixedValidatorVoteCompletionMismatchV0, FixedValidatorVotePrepareOutcomeV0,
+    FixedValidatorVoteSafetyHaltV0, FixedValidatorVoteSafetyJournalErrorV0,
+    FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalV0,
+    FixedValidatorVoteSafetyReplayLimitErrorV0, FixedValidatorVoteSafetyReplayLimitV0,
+    FixedValidatorVoteSafetySigningSessionV0,
 };
 
 pub use payload_store::{
