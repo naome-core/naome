@@ -34,7 +34,15 @@ finality journal from retained selected history. Before the first session, the
 caller-selected round-zero bootstrap coordinate is itself persisted as an exact
 signing-lineage record and externally anchored. The caller retains authority for
 selecting and attesting that initial coordinate; a later reopen no longer has
-authority to replace it.
+authority to replace it. An exact anchored reopen may instead issue one opaque
+signer-recovery capability whose fields are derived entirely from the retained
+lineage and latest completed vote. A finality journal may consume that
+capability to recover only the matching branch retained by the configured
+finality journal; callers cannot supply its height, coordinate, signer, fixed
+set, or round. At initial height one this is the journal's configured
+virtual-genesis branch, accepted only when its complete coordinate reproduces
+the already persisted lineage digest. Recovery therefore reproduces the exact
+bootstrap binding and cannot replace, reselect, or independently attest it.
 
 ## Journal-issued signing lineage
 
@@ -61,6 +69,28 @@ to an older lineage, the exact retained current branch starts at round zero.
 Historical completed states are not selectable. A pending, halted, poisoned,
 header-mismatching, unbound, wrongly anchored, or lineage-mismatching journal
 issues no session.
+
+`acknowledge_signer_recovery_is_externally_durable` is the branch-independent
+restart path. It requires the exact complete current vote-journal state identity,
+the same healthy recoverable state required for ordinary session issuance, one
+retained lineage, and an unused handle issuance latch. Success returns one
+non-clone `FixedValidatorAnchoredSignerRecoveryV0` that immutably borrows the
+issuing journal. The capability privately binds the complete lineage digest,
+signer, required latest position, exact vote state, and live-handle provenance;
+it has no public constructor, serialization, or raw lineage accessor.
+
+One finality journal may consume that capability and return an opaque
+`FixedValidatorRecoveredSignerBranchV0` only when its replay-retained branch at
+exactly `signing_height - 1` reproduces the complete lineage digest. The vote
+journal then consumes that value through `issue_recovered_signing_session`,
+rechecks the exact current external vote anchor and pointer-identical handle
+provenance, derives round zero from the recovered branch, and advances
+sequentially to the retained latest same-lineage completed round. A caller-local
+inclusive `FixedValidatorSignerRecoveryRoundLimitV0` is checked before that
+loop; it bounds restart work without changing protocol validity or either
+journal's durable identity. Only after exact typed-intent replay succeeds does
+the handle consume its sole session latch and release the branch paired with the
+session.
 
 The session exclusively owns the recoverable lock state. It exposes the current
 position, phase, lock, and valid value read-only and delegates only the fixed
@@ -106,13 +136,15 @@ reopened to resume the already persisted child lineage.
 The handoff is ordered rather than cross-file atomic: finality and its external
 anchor complete first, then the child signing-lineage record and vote anchor,
 then volatile signer-memory advancement. The exact external child-lineage anchor
-is the durable recovery boundary. A crash or token drop after that boundary but
-before live acknowledgement reopens directly at that exact child round zero
-without a fresh finality token and without repeating bootstrap selection. An old
-anchor rejects a complete child-lineage suffix; an anchor ahead of durable bytes
-also fails closed. Once a child vote is prepared, the ordinary pending-vote
-recovery rule applies. Neither journal rolls the other back or repairs an
-external-anchor gap.
+is the durable signer-authorization boundary. A crash or token drop after that
+boundary but before live acknowledgement may reopen without reissuing the
+consumed height-transition token or repeating bootstrap selection. Real process
+restart reconstructs the missing branch only by combining the vote journal's
+opaque anchored recovery capability with matching replay-retained finality
+history. An old anchor rejects a complete child-lineage suffix; an anchor ahead
+of durable bytes also fails closed. Once a child vote is prepared, the ordinary
+pending-vote recovery rule applies. Neither journal rolls the other back or
+repairs an external-anchor gap.
 
 Finality authorization is point-in-time. Once the exact child-lineage state is
 externally anchored, a later finality-journal conflict halt does not
@@ -120,7 +152,10 @@ retroactively revoke that durable signer lineage or its subsequent votes. This
 holds whether the same live session successfully consumes the token or the token
 is dropped and an exact reopen recovers the anchored child. An operator policy
 that must stop such signing requires a separate coordinated halt signal and is
-not inferred by these local journals.
+not inferred by these local journals. The vote lineage does not persist a
+finality state identity or clock, so this exception proves semantic branch
+agreement under the caller's point-in-time contract, not objective chronology,
+unique finality provenance, or cross-journal atomicity.
 
 ## Canonical post-effect vote intent
 
@@ -393,11 +428,14 @@ lineage sequence, intent, signed vote, preparation/completion relation,
 preparation ceiling, and terminality before exposing any journal state. It
 returns a key-owning handle only when the final recomputed identity equals that
 external expectation. When its current complete final record is an exact child-
-lineage binding, issuance reconstructs that child's round-zero session without
-recreating or requiring the consumed
-finality token. If the final state is a terminal halt or prepared-but-uncompleted
-vote intent, the handle is diagnostic only: every signing operation remains
-fail-closed and no live prepared-vote capability is reconstructed.
+lineage binding, the handle can authorize reconstruction without recreating the
+consumed height-transition token. It still needs either the exact caller-held
+typed branch through ordinary issuance or the capability-gated matching branch
+from retained finality history; the 41-byte lineage record does not encode the
+branch itself. If the final state is a terminal halt or prepared-but-uncompleted
+vote intent, the handle is diagnostic only: every signing and signer-recovery
+capability path remains fail-closed and no live prepared-vote capability is
+reconstructed.
 
 At most one framing-incomplete final record may be truncated only after the
 strictly replayed complete prefix already equals the expected identity. A
@@ -475,8 +513,10 @@ then advance past newer retained state. Only strict
 `VerifiedReplayFixedValidatorVoteIntentV0` verification may reconstruct a
 same-lineage retained lock, valid value, proof, and phase inside the returned
 session. The replay value exposes no signing transcript or completion method.
-Storage verifies but does not choose the typed round cursor or grant global
-branch authority.
+Ordinary issuance verifies a caller-held typed cursor. Capability-gated restart
+instead obtains the sole matching branch from retained finality history and
+internally derives the exact cursor under the caller-local round-work ceiling.
+Neither path grants global branch authority or permits historical state choice.
 
 An incomplete preparation surviving restart exposes only its position, role,
 target, prepare-state identity, and the fact that it is non-signable. Its full
@@ -570,7 +610,8 @@ availability, external-anchor storage or attestation, key-seed exclusivity
 proof, hardware-backed custody, economics, slashing evidence, or cross-journal
 atomicity. It consumes only the separate finality journal's externally
 acknowledged exact selected-child transition to keep the local signing lineage
-continuous. It supplies the explicit local fixed-validator V0 journal-issued
-lineage, mandatory durable-finality lineage-advancement gate, prepare-before-sign,
-vote-anchor acknowledgement, complete-before-release, exact replay, and
-anchored restart boundary described above.
+continuous, and uses only its capability-gated exact retained branch for real
+restart reconstruction. It supplies the explicit local fixed-validator V0
+journal-issued lineage, mandatory durable-finality lineage-advancement gate,
+prepare-before-sign, vote-anchor acknowledgement, complete-before-release,
+exact replay, and anchored restart boundary described above.

@@ -10,13 +10,14 @@ use std::sync::Arc;
 
 use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
-    ConsensusContextV0, ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusSignature,
-    ConsensusVoteId, ConsensusVoteRole, ConsensusVoteTarget, ConsensusVoteVerifyError,
-    FixedAgreementSetId, FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0,
-    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorLockStateError,
-    FixedValidatorLockStateV0, FixedValidatorLockedValueV0, FixedValidatorUnsignedVoteEffectV0,
-    FixedValidatorValidValueV0, FixedValidatorVoteIntentError, FixedValidatorVoteIntentV0,
-    ObservedFixedValidatorVoteIntentV0, VerifiedConsensusVoteV0, VerifiedFixedConsensusProposalV0,
+    ConsensusContextV0, ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusRound,
+    ConsensusSignature, ConsensusVoteId, ConsensusVoteRole, ConsensusVoteTarget,
+    ConsensusVoteVerifyError, FixedAgreementSetId, FixedConsensusBranchCoordinateV0,
+    FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
+    FixedValidatorLockStateError, FixedValidatorLockStateV0, FixedValidatorLockedValueV0,
+    FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0, FixedValidatorVoteIntentError,
+    FixedValidatorVoteIntentV0, ObservedFixedValidatorVoteIntentV0, ProposerSelectionError,
+    VerifiedConsensusVoteV0, VerifiedFixedConsensusProposalV0,
     VerifiedReplayFixedValidatorVoteIntentV0,
 };
 use sha2::{Digest, Sha256};
@@ -132,12 +133,12 @@ struct VoteSlot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SigningLineageIdV0([u8; SIGNING_LINEAGE_ID_BYTES]);
+pub(crate) struct SigningLineageIdV0([u8; SIGNING_LINEAGE_ID_BYTES]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RetainedSigningLineageV0 {
-    height: ConsensusHeight,
-    id: SigningLineageIdV0,
+pub(crate) struct RetainedSigningLineageV0 {
+    pub(crate) height: ConsensusHeight,
+    pub(crate) id: SigningLineageIdV0,
     state_id: FixedValidatorVoteSafetyJournalStateIdV0,
 }
 
@@ -368,6 +369,109 @@ impl FixedValidatorPreparedHeightAdvanceV0<'_> {
     }
 }
 
+/// Inclusive caller-local ceiling for sequential signer-round reconstruction.
+///
+/// Recovery derives every round from the exact retained branch rather than
+/// accepting a caller-selected round. This limit bounds that read-only work;
+/// zero permits recovery only at round zero. It is an operator work limit, not
+/// consensus validity and not part of either journal's durable identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FixedValidatorSignerRecoveryRoundLimitV0(u64);
+
+impl FixedValidatorSignerRecoveryRoundLimitV0 {
+    /// Constructs an inclusive maximum recoverable round.
+    pub const fn new(maximum_round: u64) -> Self {
+        Self(maximum_round)
+    }
+
+    /// Returns the inclusive maximum recoverable round.
+    pub const fn maximum_round(self) -> u64 {
+        self.0
+    }
+}
+
+/// Opaque authority to recover one exact externally anchored signing lineage.
+///
+/// Only a healthy, recoverable vote journal at its exact externally durable
+/// state can issue this non-clone capability. It borrows that journal until a
+/// finality journal consumes it, preventing an intervening signer mutation.
+/// Private fields deny caller-selected branch, height, round, or signer input.
+#[must_use]
+pub struct FixedValidatorAnchoredSignerRecoveryV0<'journal> {
+    _journal: &'journal FixedValidatorVoteSafetyJournalV0,
+    pub(crate) lineage: RetainedSigningLineageV0,
+    pub(crate) required_position: ConsensusPosition,
+    pub(crate) vote_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    pub(crate) signer: ConsensusKey,
+    pub(crate) session_seal: Arc<()>,
+}
+
+impl FixedValidatorAnchoredSignerRecoveryV0<'_> {
+    pub(crate) fn into_recovered(
+        self,
+        branch: FixedConsensusBranchV0,
+    ) -> FixedValidatorRecoveredSignerBranchV0 {
+        FixedValidatorRecoveredSignerBranchV0 {
+            branch,
+            required_position: self.required_position,
+            vote_state_id: self.vote_state_id,
+            session_seal: self.session_seal,
+        }
+    }
+}
+
+/// Opaque branch reconstructed for one exact anchored signer lineage.
+///
+/// The value is neither cloneable nor directly inspectable. Only the vote
+/// journal that issued the originating capability can consume it to create its
+/// sole signing session and release the exact branch alongside that session.
+#[must_use]
+pub struct FixedValidatorRecoveredSignerBranchV0 {
+    pub(crate) branch: FixedConsensusBranchV0,
+    pub(crate) required_position: ConsensusPosition,
+    pub(crate) vote_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    pub(crate) session_seal: Arc<()>,
+}
+
+/// One exact recovered branch paired with the vote journal's sole live session.
+///
+/// Releasing the branch only after capability, lineage, anchor, provenance, and
+/// round replay checks prevents halted finality history from becoming a general
+/// branch-read API. The branch itself grants no selection or finality authority.
+#[must_use]
+pub struct FixedValidatorRecoveredSigningSessionV0<'journal> {
+    branch: FixedConsensusBranchV0,
+    session: FixedValidatorVoteSafetySigningSessionV0<'journal>,
+}
+
+impl<'journal> FixedValidatorRecoveredSigningSessionV0<'journal> {
+    /// Returns the exact branch whose next height is owned by this session.
+    pub const fn branch(&self) -> &FixedConsensusBranchV0 {
+        &self.branch
+    }
+
+    /// Returns read-only access to the recovered signing session.
+    pub const fn session(&self) -> &FixedValidatorVoteSafetySigningSessionV0<'journal> {
+        &self.session
+    }
+
+    /// Returns mutable access to the recovered signing session.
+    pub fn session_mut(&mut self) -> &mut FixedValidatorVoteSafetySigningSessionV0<'journal> {
+        &mut self.session
+    }
+
+    /// Separates the exact recovered branch and its sole signing session.
+    pub fn into_parts(
+        self,
+    ) -> (
+        FixedConsensusBranchV0,
+        FixedValidatorVoteSafetySigningSessionV0<'journal>,
+    ) {
+        (self.branch, self.session)
+    }
+}
+
 /// The sole journal-issued fixed-validator lock-state and signing lineage.
 ///
 /// One open journal handle issues at most one session, and issuance is never
@@ -568,6 +672,125 @@ impl FixedValidatorVoteSafetyJournalV0 {
             journal: self,
             lock_state,
             pending_height_advance: None,
+        })
+    }
+
+    /// Issues authority to reconstruct this exact anchored signing lineage.
+    ///
+    /// The caller explicitly acknowledges the journal's complete current state
+    /// as externally durable. A pending vote, terminal halt, missing lineage, or
+    /// prior session issuance fails before capability publication. The returned
+    /// value accepts no caller-selected branch, height, signer, or round.
+    pub fn acknowledge_signer_recovery_is_externally_durable(
+        &self,
+        externally_durable_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<FixedValidatorAnchoredSignerRecoveryV0<'_>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.core.ensure_healthy()?;
+        if self.session_issued {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionAlreadyIssued);
+        }
+        self.core.ensure_recoverable()?;
+        if externally_durable_state_id != self.core.state_id {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ExternalSessionAnchorMismatch {
+                    required: self.core.state_id,
+                    acknowledged: externally_durable_state_id,
+                },
+            );
+        }
+        let lineage = self
+            .core
+            .lineage
+            .ok_or(FixedValidatorVoteSafetyJournalErrorV0::SigningLineageRequired)?;
+        let required_position = self.core.signer_recovery_position(lineage);
+        Ok(FixedValidatorAnchoredSignerRecoveryV0 {
+            _journal: self,
+            lineage,
+            required_position,
+            vote_state_id: self.core.state_id,
+            signer: self.core.signer,
+            session_seal: Arc::clone(&self.session_seal),
+        })
+    }
+
+    /// Consumes one exact finality-reconstructed branch and issues one session.
+    ///
+    /// The recovered value must descend from this handle's own anchored
+    /// capability. The current external vote anchor, session provenance, exact
+    /// lineage, and latest completed round are rechecked before the monotonic
+    /// issuance latch changes. Sequential round reconstruction is bounded by the
+    /// caller-local inclusive work ceiling.
+    pub fn issue_recovered_signing_session(
+        &mut self,
+        recovered: FixedValidatorRecoveredSignerBranchV0,
+        externally_durable_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+        round_limit: FixedValidatorSignerRecoveryRoundLimitV0,
+    ) -> Result<FixedValidatorRecoveredSigningSessionV0<'_>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.core.ensure_healthy()?;
+        if self.session_issued {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionAlreadyIssued);
+        }
+        self.core.ensure_recoverable()?;
+        if externally_durable_state_id != self.core.state_id {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ExternalSessionAnchorMismatch {
+                    required: self.core.state_id,
+                    acknowledged: externally_durable_state_id,
+                },
+            );
+        }
+        if !Arc::ptr_eq(&self.session_seal, &recovered.session_seal) {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::ForeignSignerRecovery);
+        }
+        if recovered.vote_state_id != self.core.state_id {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::StaleSignerRecovery {
+                    recovered: recovered.vote_state_id,
+                    current: self.core.state_id,
+                },
+            );
+        }
+        let required_round = recovered.required_position.round().value();
+        if required_round > round_limit.maximum_round() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::SignerRecoveryRoundLimitExceeded {
+                    required: required_round,
+                    maximum: round_limit.maximum_round(),
+                },
+            );
+        }
+
+        let mut round = recovered
+            .branch
+            .begin_round_zero()
+            .map_err(FixedValidatorVoteSafetyJournalErrorV0::SignerRecoveryRound)?;
+        if round.position().height() != recovered.required_position.height() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::SignerRecoveryPositionMismatch {
+                    required: recovered.required_position,
+                    actual: round.position(),
+                },
+            );
+        }
+        for _ in 0..required_round {
+            round = round
+                .advance_round()
+                .map_err(FixedValidatorVoteSafetyJournalErrorV0::SignerRecoveryRound)?;
+        }
+        debug_assert_eq!(round.position(), recovered.required_position);
+        let lock_state = self.core.recover_lock_state_for_round(&round)?;
+        drop(round);
+
+        self.session_issued = true;
+        Ok(FixedValidatorRecoveredSigningSessionV0 {
+            branch: recovered.branch,
+            session: FixedValidatorVoteSafetySigningSessionV0 {
+                journal: self,
+                lock_state,
+                pending_height_advance: None,
+            },
         })
     }
 
@@ -1419,6 +1642,13 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         Ok(lock_state)
     }
 
+    fn signer_recovery_position(&self, lineage: RetainedSigningLineageV0) -> ConsensusPosition {
+        match self.latest_slot {
+            Some(latest) if latest.position.height() == lineage.height => latest.position,
+            _ => ConsensusPosition::new(lineage.height, ConsensusRound::new(0)),
+        }
+    }
+
     fn restore_lock_state_for_round(
         &self,
         round: &FixedConsensusRoundV0<'_>,
@@ -1903,7 +2133,7 @@ fn require_verified_vote(
     Ok(())
 }
 
-fn signing_lineage_id(
+pub(crate) fn signing_lineage_id(
     coordinate: FixedConsensusBranchCoordinateV0,
     height: ConsensusHeight,
     signer: ConsensusKey,
@@ -2184,6 +2414,20 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         required: FixedValidatorVoteSafetyJournalStateIdV0,
         acknowledged: FixedValidatorVoteSafetyJournalStateIdV0,
     },
+    ForeignSignerRecovery,
+    StaleSignerRecovery {
+        recovered: FixedValidatorVoteSafetyJournalStateIdV0,
+        current: FixedValidatorVoteSafetyJournalStateIdV0,
+    },
+    SignerRecoveryRoundLimitExceeded {
+        required: u64,
+        maximum: u64,
+    },
+    SignerRecoveryPositionMismatch {
+        required: ConsensusPosition,
+        actual: ConsensusPosition,
+    },
+    SignerRecoveryRound(ProposerSelectionError),
     LockState(FixedValidatorLockStateError),
     SigningSessionIntent(FixedValidatorVoteIntentError),
     ExternalPrepareAnchorMismatch {
@@ -2317,6 +2561,11 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::SigningLineageRequired => formatter.write_str("a durable signing-lineage binding is required before session issuance"),
             Self::SigningLineageMismatch { expected_height, actual_height } => write!(formatter, "signing-session lineage at height {} does not match retained height {}", actual_height.value(), expected_height.value()),
             Self::ExternalSessionAnchorMismatch { required, acknowledged } => write!(formatter, "external session acknowledgement names state {acknowledged:?}, expected current state {required:?}"),
+            Self::ForeignSignerRecovery => formatter.write_str("recovered signer branch belongs to another open vote-safety journal handle"),
+            Self::StaleSignerRecovery { recovered, current } => write!(formatter, "recovered signer branch names vote state {recovered:?}, but the current state is {current:?}"),
+            Self::SignerRecoveryRoundLimitExceeded { required, maximum } => write!(formatter, "signer recovery requires round {required}, above caller-local ceiling {maximum}"),
+            Self::SignerRecoveryPositionMismatch { required, actual } => write!(formatter, "recovered signer branch begins at {actual:?}, but anchored recovery requires {required:?}"),
+            Self::SignerRecoveryRound(source) => write!(formatter, "signer recovery could not derive its exact sequential round: {source}"),
             Self::LockState(source) => write!(formatter, "vote-safety signing-session lock-state transition failed: {source}"),
             Self::SigningSessionIntent(source) => write!(formatter, "vote-safety signing session could not seal or restore its exact intent state: {source}"),
             Self::ExternalPrepareAnchorMismatch { prepared, acknowledged } => write!(formatter, "external durability acknowledgement names state {acknowledged:?}, expected prepared state {prepared:?}"),
@@ -2366,6 +2615,7 @@ impl Error for FixedValidatorVoteSafetyJournalErrorV0 {
             | Self::Stabilize { source }
             | Self::Commit { source, .. } => Some(source),
             Self::Intent { source, .. } => Some(source),
+            Self::SignerRecoveryRound(source) => Some(source),
             Self::LockState(source) => Some(source),
             Self::SigningSessionIntent(source) => Some(source),
             Self::SignedVote { source, .. } | Self::SelfVerification(source) => Some(source),
