@@ -157,6 +157,54 @@ state ID only as ambiguity information, not as proof that the record committed.
 No journal-state or history read and no commit is authoritative until strict
 reopen; the immutable context and replay-limit configuration remain inspectable.
 
+## Candidate-backed direct-child finalization
+
+`commit_candidate_backed_finality_v0` is a narrow composition boundary for one
+caller-selected, locally retained candidate. The caller supplies an operable
+fixed-validator journal, one same-chain `ArtifactBlockCandidateStore`, one
+Foundation-scoped `CanonicalArtifactPayloadStore`, the exact expected
+`ArtifactBlockId`, one complete canonical finality envelope, and an inclusive
+caller-local round-work ceiling no greater than the journal's persisted replay
+ceiling. The expected target and store presence are routing and availability
+inputs only; neither grants selection, preference, or finality authority.
+
+The operation first requires the journal to be healthy and non-halted and the
+caller-local work ceiling to fit the journal ceiling. It strictly bounds and
+decodes the envelope value, requires its context and next height to match the
+exact current journal head, and requires its embedded artifact block address to
+equal the expected target before reading either source entry. It then requires
+the candidate store's exact chain, integrity-reads that exact retained block,
+requires byte equality with the envelope block, and integrity-reads the exact
+payload committed by that block.
+
+The envelope's canonically framed precommit certificate supplies its sole
+claimed height and round only to route bounded sequential proposer derivation.
+The claimed height must again equal the current head's next height, and the
+claimed round must not exceed the caller-local ceiling before round work begins.
+This preliminary position is not authenticated authority. The complete
+envelope is then verified once against the derived exact fixed-set round,
+including producer authorization, non-nil strict-supermajority precommit
+evidence, ancestry, state commitment, artifact parent and roots, and the loaded
+canonical payload. Only the resulting
+`OwnedVerifiedFixedConsensusTransitionV0` reaches `commit_verified`.
+
+One successful call installs exactly one current-head direct child and changes
+only the finality journal. Candidate and payload log bytes, entries, order, and
+retention remain unchanged. A source integrity/read failure can poison only
+that source's live handle under its existing contract; it does not write the
+source or finality journal. Every rejection before the journal append leaves
+the finality bytes and state unchanged. An ambiguous finality append poisons
+only the live finality handle and retains the existing exact-anchor reopen
+classification; it is not a transaction across the three stores.
+
+This boundary does not discover or rank candidates, promote a suffix, accept
+an already selected historical value, admit sibling-conflict evidence, choose
+a fork, roll back or reorganize history, prune source data, retain peer
+provenance, establish network or global availability, or define peer trust.
+Multiple staged heights require one independently certified successful call per
+height in selected order. The existing raw sealed-transition `commit_verified`
+path remains the separate boundary for authenticated sibling-conflict handling.
+
 ## Mandatory durable signer-height advancement
 
 After a finality footer synchronizes, the caller reads the healthy journal's

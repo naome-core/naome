@@ -14,10 +14,13 @@
 //! admits proof-derived proposal controls before voting; applies volatile,
 //! unsigned locking and valid-value effects; and seals a fully admitted proposal
 //! only with matching non-nil precommit evidence before publishing an immutable
-//! successor. It does not prove that the caller-selected genesis or fixed set
-//! is canonical; select or change validators; persist locking or signing-safety
-//! state; schedule timeouts; install durable finality; create or release
-//! signatures; trust peers; mutate a selected chain; or execute economics.
+//! successor. A bounded compatibility boundary can derive the one exact round
+//! claimed by a complete envelope under caller-local work policy before running
+//! that same full verification once. It does not prove that the caller-selected
+//! genesis or fixed set is canonical; select or change validators; persist
+//! locking or signing-safety state; schedule timeouts; install durable finality;
+//! create or release signatures; trust peers; mutate a selected chain; or
+//! execute economics.
 
 use std::error::Error;
 use std::fmt;
@@ -42,9 +45,10 @@ pub use consensus_value::{
     ConsensusProposalVerifyError, ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0,
 };
 pub use fixed_consensus_branch::{
-    FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusGenesisError,
-    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0,
-    VerifiedFixedConsensusProposalV0, VerifiedFixedConsensusTransitionV0,
+    FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBranchCoordinateV0,
+    FixedConsensusBranchV0, FixedConsensusGenesisError, FixedConsensusRoundV0,
+    OwnedVerifiedFixedConsensusTransitionV0, VerifiedFixedConsensusProposalV0,
+    VerifiedFixedConsensusTransitionV0,
 };
 pub use fixed_validator_lock_state::{
     FixedValidatorLockPhaseV0, FixedValidatorLockStateError, FixedValidatorLockStateV0,

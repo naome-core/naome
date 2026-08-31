@@ -200,6 +200,76 @@ impl FixedConsensusBranchV0 {
             height_successor_base,
         })
     }
+
+    /// Strictly verifies one complete envelope at its sole embedded round.
+    ///
+    /// The envelope is first bounded and canonically framed, then its embedded
+    /// certificate position is inspected only to choose the exact sequential
+    /// round cursor. That unauthenticated routing claim must name this branch's
+    /// next height and remain within `inclusive_maximum_round` before any
+    /// round-proposer work begins. Full producer authorization, non-nil
+    /// precommit quorum, branch state, and artifact validation still execute
+    /// together through [`FixedConsensusRoundV0::decode_and_verify`].
+    ///
+    /// The maximum is caller-local work policy, not a protocol-wide validity
+    /// rule. The caller never supplies the envelope's round independently.
+    pub fn decode_and_verify_envelope_with_round_limit(
+        &self,
+        canonical_envelope_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<OwnedVerifiedFixedConsensusTransitionV0, FixedConsensusBoundedEnvelopeVerifyError>
+    {
+        let (value, precommit_certificate_bytes) =
+            VerifiedConsensusEnvelopeV0::decode_value_and_precommit_certificate_bytes(
+                canonical_envelope_bytes,
+            )
+            .map_err(FixedConsensusBoundedEnvelopeVerifyError::Envelope)?;
+        let expected_height = self
+            .next_height()
+            .map_err(FixedConsensusBoundedEnvelopeVerifyError::Proposer)?;
+        if value.height() != expected_height {
+            return Err(
+                FixedConsensusBoundedEnvelopeVerifyError::ValueHeightMismatch {
+                    expected: expected_height,
+                    actual: value.height(),
+                },
+            );
+        }
+
+        let position =
+            VerifiedQuorumCertificateV0::strictly_peek_position(precommit_certificate_bytes)
+                .map_err(FixedConsensusBoundedEnvelopeVerifyError::EmbeddedCertificatePosition)?;
+        if position.height() != expected_height {
+            return Err(
+                FixedConsensusBoundedEnvelopeVerifyError::CertificateHeightMismatch {
+                    expected: expected_height,
+                    actual: position.height(),
+                },
+            );
+        }
+        if position.round() > inclusive_maximum_round {
+            return Err(
+                FixedConsensusBoundedEnvelopeVerifyError::RoundLimitExceeded {
+                    round: position.round(),
+                    maximum: inclusive_maximum_round,
+                },
+            );
+        }
+
+        let mut round = self
+            .begin_round_zero()
+            .map_err(FixedConsensusBoundedEnvelopeVerifyError::Proposer)?;
+        for _ in 0..position.round().value() {
+            round = round
+                .advance_round()
+                .map_err(FixedConsensusBoundedEnvelopeVerifyError::Proposer)?;
+        }
+        round
+            .decode_and_verify(canonical_envelope_bytes, canonical_artifact_bytes)
+            .map(VerifiedFixedConsensusTransitionV0::into_owned)
+            .map_err(FixedConsensusBoundedEnvelopeVerifyError::Envelope)
+    }
 }
 
 /// One exact sequential round cursor derived from a fixed consensus branch.
@@ -698,6 +768,80 @@ pub enum FixedConsensusGenesisError {
     ArtifactSnapshotNotVirtualGenesis,
     /// The caller-selected fixed validator entries are invalid.
     AgreementSnapshot(ActiveAgreementSnapshotError),
+}
+
+/// A failure to route and fully verify one bounded fixed-validator envelope.
+///
+/// Preliminary value and certificate-position parsing establishes only
+/// canonical framing and bounded work. The embedded position remains
+/// unauthenticated until the complete envelope reaches the final verification
+/// step.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixedConsensusBoundedEnvelopeVerifyError {
+    /// Complete-envelope framing, value decoding, or final authentication failed.
+    Envelope(ConsensusEnvelopeVerifyError),
+    /// The embedded certificate framing could not provide one canonical position.
+    EmbeddedCertificatePosition(QuorumCertificateVerifyError),
+    /// The evidence-free value does not name this branch's exact next height.
+    ValueHeightMismatch {
+        expected: ConsensusHeight,
+        actual: ConsensusHeight,
+    },
+    /// The certificate does not name this branch's exact next height.
+    CertificateHeightMismatch {
+        expected: ConsensusHeight,
+        actual: ConsensusHeight,
+    },
+    /// The embedded round exceeds the caller-local inclusive work ceiling.
+    RoundLimitExceeded {
+        round: ConsensusRound,
+        maximum: ConsensusRound,
+    },
+    /// Sequential proposer derivation could not reach the embedded position.
+    Proposer(ProposerSelectionError),
+}
+
+impl fmt::Display for FixedConsensusBoundedEnvelopeVerifyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Envelope(error) => error.fmt(formatter),
+            Self::EmbeddedCertificatePosition(error) => write!(
+                formatter,
+                "embedded precommit certificate position is malformed: {error}"
+            ),
+            Self::ValueHeightMismatch { expected, actual } => write!(
+                formatter,
+                "consensus value height {:?} does not equal next branch height {:?}",
+                actual, expected
+            ),
+            Self::CertificateHeightMismatch { expected, actual } => write!(
+                formatter,
+                "precommit certificate height {:?} does not equal next branch height {:?}",
+                actual, expected
+            ),
+            Self::RoundLimitExceeded { round, maximum } => write!(
+                formatter,
+                "embedded consensus round {} exceeds caller-local work ceiling {}",
+                round.value(),
+                maximum.value()
+            ),
+            Self::Proposer(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for FixedConsensusBoundedEnvelopeVerifyError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Envelope(error) => Some(error),
+            Self::EmbeddedCertificatePosition(error) => Some(error),
+            Self::Proposer(error) => Some(error),
+            Self::ValueHeightMismatch { .. }
+            | Self::CertificateHeightMismatch { .. }
+            | Self::RoundLimitExceeded { .. } => None,
+        }
+    }
 }
 
 impl fmt::Display for FixedConsensusGenesisError {
