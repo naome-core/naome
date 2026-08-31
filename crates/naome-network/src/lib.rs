@@ -80,6 +80,7 @@ mod local_issuer;
 mod payload_archive_transport;
 mod rate_limit;
 mod record_exchange;
+mod recovery_bundle_push;
 mod responder;
 mod session;
 mod snapshot_io;
@@ -98,6 +99,7 @@ use codec::{
     ARTIFACT_BLOCK_PROTOCOL, ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
     ARTIFACT_CHAIN_HEAD_PROTOCOL, ARTIFACT_PROTOCOL, ArtifactBlockCodec,
     ArtifactChainHeadAnnouncementCodec, ArtifactChainHeadCodec, ArtifactCodec,
+    RECOVERY_BUNDLE_PUSH_PROTOCOL, RecoveryBundlePushCodec,
 };
 use head_announcement::PendingArtifactChainHeadAnnouncement;
 use head_transport::PendingArtifactChainHeadRequest;
@@ -201,6 +203,14 @@ pub use record_exchange::{
     MAX_PEER_RECORDS_PER_BATCH, PEER_RECORD_BATCH_MAX_BYTES, PEER_RECORD_PULL_REQUEST_BYTES,
     PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
 };
+pub use recovery_bundle_push::{
+    AuthenticatedRecoveryBundlePushReceipt, InboundRecoveryBundlePush,
+    OutboundRecoveryBundlePushEvent, OutboundRecoveryBundlePushFailure,
+    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
+    RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS, RecoveryBundlePushAcknowledgeError,
+    RecoveryBundlePushEventMismatch, RecoveryBundlePushRequestError, RecoveryBundlePushStartError,
+    RecoveryBundlePushTicket,
+};
 pub use responder::{
     PeerRecordBootstrapResponder, PeerRecordBootstrapResponderBuildError,
     PeerRecordBootstrapResponderEvent, PeerRecordBootstrapResponderFailure,
@@ -228,9 +238,12 @@ pub const MAX_PENDING_REQUESTS: usize = 8;
 pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
 /// Maximum concurrent head-announcement streams on one connection.
 pub const MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION: usize = 1;
+/// Maximum concurrent recovery-bundle push streams on one connection.
+pub const MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION: usize = 1;
 /// Maximum concurrent application-exchange streams on one connection.
-pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize =
-    MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION * 3 + MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION;
+pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION * 3
+    + MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION
+    + MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION;
 /// Maximum total Yamux substreams on one connection.
 pub const MAX_YAMUX_STREAMS_PER_CONNECTION: usize = 8;
 /// Configured TCP listen backlog.
@@ -292,6 +305,7 @@ struct Behaviour {
     block_exchange: request_response::Behaviour<ArtifactBlockCodec>,
     head_exchange: request_response::Behaviour<ArtifactChainHeadCodec>,
     head_announcement: request_response::Behaviour<ArtifactChainHeadAnnouncementCodec>,
+    recovery_bundle_push: request_response::Behaviour<RecoveryBundlePushCodec>,
 }
 
 struct PendingArtifactRequest {
@@ -307,6 +321,7 @@ enum ExchangeRequestId {
     Block(request_response::OutboundRequestId),
     Head(request_response::OutboundRequestId),
     Announcement(request_response::OutboundRequestId),
+    RecoveryBundlePush(request_response::OutboundRequestId),
 }
 
 enum PendingRequest {
@@ -314,6 +329,7 @@ enum PendingRequest {
     Block(PendingArtifactBlockRequest),
     Head(PendingArtifactChainHeadRequest),
     Announcement(PendingArtifactChainHeadAnnouncement),
+    RecoveryBundlePush(recovery_bundle_push::PendingRecoveryBundlePush),
 }
 
 impl PendingRequest {
@@ -323,6 +339,7 @@ impl PendingRequest {
             Self::Block(pending) => pending.peer_index,
             Self::Head(pending) => pending.peer_index,
             Self::Announcement(pending) => pending.peer_index,
+            Self::RecoveryBundlePush(pending) => pending.peer_index,
         }
     }
 }
@@ -440,6 +457,18 @@ impl StaticArtifactNetwork {
             )],
             announcement_config,
         );
+        let recovery_bundle_push = request_response::Behaviour::with_codec(
+            RecoveryBundlePushCodec::new(Arc::new(
+                recovery_bundle_push::RecoveryBundlePushInboundBudget::default(),
+            )),
+            [(
+                RECOVERY_BUNDLE_PUSH_PROTOCOL,
+                request_response::ProtocolSupport::Full,
+            )],
+            request_response::Config::default()
+                .with_request_timeout(REQUEST_TIMEOUT)
+                .with_max_concurrent_streams(MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION),
+        );
 
         let behaviour = Behaviour {
             limits,
@@ -449,6 +478,7 @@ impl StaticArtifactNetwork {
             block_exchange,
             head_exchange,
             head_announcement,
+            recovery_bundle_push,
         };
         let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
@@ -571,6 +601,10 @@ impl StaticArtifactNetwork {
                     ExchangeRequestId::Announcement(_),
                     PendingRequest::Announcement(_)
                 )
+                | (
+                    ExchangeRequestId::RecoveryBundlePush(_),
+                    PendingRequest::RecoveryBundlePush(_)
+                )
         ));
         let replaced = self.pending.insert(key, pending);
         debug_assert!(replaced.is_none());
@@ -638,6 +672,11 @@ impl StaticArtifactNetwork {
                         return event;
                     }
                 }
+                SwarmEvent::Behaviour(BehaviourEvent::RecoveryBundlePush(event)) => {
+                    if let Some(event) = self.handle_recovery_bundle_push_event(event) {
+                        return event;
+                    }
+                }
                 SwarmEvent::Behaviour(BehaviourEvent::Sessions(event)) => {
                     return NetworkEvent::PeerSession(event);
                 }
@@ -673,7 +712,8 @@ impl StaticArtifactNetwork {
                 PendingRequest::Artifact(_)
                 | PendingRequest::Block(_)
                 | PendingRequest::Head(_)
-                | PendingRequest::Announcement(_) => None,
+                | PendingRequest::Announcement(_)
+                | PendingRequest::RecoveryBundlePush(_) => None,
             })
             .min()
     }
@@ -1079,6 +1119,8 @@ pub enum NetworkEvent {
     OutboundChainHead(OutboundArtifactChainHeadEvent),
     InboundChainHeadAnnouncement(InboundArtifactChainHeadAnnouncement),
     OutboundChainHeadAnnouncement(OutboundArtifactChainHeadAnnouncementEvent),
+    InboundRecoveryBundlePush(InboundRecoveryBundlePush),
+    OutboundRecoveryBundlePush(OutboundRecoveryBundlePushEvent),
     ArtifactCancellationDrained {
         peer_id: PeerId,
         request: ArtifactRequest,
@@ -1100,6 +1142,11 @@ pub enum NetworkEvent {
         error: request_response::InboundFailure,
     },
     InboundChainHeadAnnouncementFailure {
+        peer_id: PeerId,
+        request_id: request_response::InboundRequestId,
+        error: request_response::InboundFailure,
+    },
+    InboundRecoveryBundlePushFailure {
         peer_id: PeerId,
         request_id: request_response::InboundRequestId,
         error: request_response::InboundFailure,

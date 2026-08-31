@@ -115,6 +115,7 @@ response readers require the exact accepted body followed by end-of-stream.
 | Artifact block | `ArtifactBlockId[32]` | `length u8`, then `block[length]` | 1 or 129 |
 | Head pull | `ArtifactChainId[32]` | `length u8`, then `head[length]` | 1 or 33 |
 | Head announcement | `chain[32]`, then `head[32]` | receipt `01` | 1 |
+| Recovery-bundle push | `length u32be`, then `bundle[length]` | receipt `01` | 1 |
 
 Artifact response length is `0..=4,194,305`. Zero is unavailable. The prefix is
 framing and is not part of canonical artifact bytes.
@@ -142,7 +143,9 @@ fields; line breaks are presentation only:
 
 Head response length is exactly `0` or `32`. Its frames are `00` or `20`
 followed by 32 head bytes. Announcement receipt is exactly `01`. Oversized or
-impossible lengths are rejected before body allocation. All frames reject
+impossible lengths are rejected before body allocation. Recovery-bundle request
+length is `0..=16,777,216`; its prefix is framing and is not part of the opaque
+bundle bytes, and its receipt is exactly `01`. All frames reject
 truncated prefixes, truncated bodies, trailing bytes, and incomplete transport
 terminals; none of those become `Unavailable` or acknowledgement.
 
@@ -158,10 +161,14 @@ One network instance enforces:
 | Established connections, total | 8 |
 | Established connections per peer | 1 |
 | Pending or caller-retained application permits | 8 |
+| Transport-retained inbound recovery-bundle events | 8 |
+| Transport-retained inbound recovery-bundle events per authenticated peer | 1 |
+| Aggregate transport-retained inbound recovery-bundle bytes | 134,217,728 |
 | Pending outbound application requests per peer | 1 |
 | Streams per artifact, block, or head exchange per connection | 2 |
 | Head-announcement streams per connection | 1 |
-| Aggregate application streams per connection | 7 |
+| Recovery-bundle push streams per connection | 1 |
+| Aggregate application streams per connection | 8 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
 | TCP listen backlog | 16 |
@@ -187,10 +194,43 @@ Managed redial delays are `1, 2, 4, 8, 16, 32, 60` seconds and then remain at
 effectively disabled; static peer and connection caps bound retained sessions.
 Every timer requires continued caller polling.
 
-The eight shared permits jointly bound pending requests, quarantined artifact
-candidates, decoded blocks, heads, and receipts. Each artifact response buffer
-is capped at 4,194,305 body bytes, so eight caller-retained maximum responses
-can hold 33,554,440 body bytes in total. One block import and one opt-in
+## Recovery-bundle push V0
+
+One caller-selected authenticated peer may receive one caller-owned canonical
+`CandidateBranchRecoveryBundleV0` byte string through
+`/naome/recovery-bundle-push-v0`. The request is `u32` big-endian encoded-byte
+length followed by exactly those bytes, with no trailing data. The length is at
+most 16 MiB. The response is exactly byte `01`.
+
+The receiver exposes the bounded bytes as an opaque inbound event. Its caller
+alone decides whether to decode them with the recovery-bundle limits and whether
+to persist or import them. Before allocating or reading a declared request body,
+the transport reserves both one of eight inbound event slots and that request's
+declared bytes from a shared 128 MiB aggregate inbound retention budget. The
+aggregate is exactly eight maximum requests. After the complete frame is read,
+the permit binds to the authenticated immediate `PeerId`; if that peer already
+has a retained event, the second request is omitted instead of becoming another
+application event or receipt. The binding survives connection closure and
+reconnection until the retained event is dropped or consumed, leaving one
+full-size retained slot for each of the other seven configured peers. Aggregate
+exhaustion rejects the stream after its length prefix without reading its body
+or sending a receipt. Per-peer binding occurs after frame decoding, so it bounds
+retained application events rather than repeated ingress or allocation and is
+not DDoS protection or a byte-rate policy. Acknowledgement transfers the owned
+bytes back to the caller without copying; even a closed response channel returns
+those bytes in the acknowledgement error. Sending byte `01` confirms only stream acceptance;
+it establishes no decoding, validation, persistence, import, retention,
+recoverability, selection, provenance, truth, consensus, finality, or peer
+trust. The transport never indexes, announces, discovers, relays, retries, or
+automatically imports a bundle.
+
+The eight shared application permits jointly bound outbound pending requests,
+quarantined artifact candidates, decoded blocks, heads, recovery-bundle pushes,
+and their terminal events. The separate inbound recovery-bundle envelope bounds
+only buffers retained by the transport; bytes returned to application ownership
+are outside that envelope. Each artifact response buffer is capped at 4,194,305
+body bytes, so eight caller-retained maximum responses can hold 33,554,440 body
+bytes in total. One block import and one opt-in
 candidate-branch payload fallback each try at most eight peers for one immutable
 `ArtifactId`. Because a retryable codec failure can occur after reading its
 declared body, cumulative declared response-body ingress across those attempts

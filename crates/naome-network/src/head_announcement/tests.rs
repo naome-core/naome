@@ -80,7 +80,7 @@ fn announcement_failure_event(
 fn announcement_stream_and_application_budgets_remain_bounded() {
     assert_eq!(MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION, 2);
     assert_eq!(MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION, 1);
-    assert_eq!(MAX_EXCHANGE_STREAMS_PER_CONNECTION, 7);
+    assert_eq!(MAX_EXCHANGE_STREAMS_PER_CONNECTION, 8);
     assert_eq!(MAX_YAMUX_STREAMS_PER_CONNECTION, 8);
 }
 
