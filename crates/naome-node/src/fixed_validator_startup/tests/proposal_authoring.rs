@@ -122,6 +122,60 @@ fn flip_last_store_byte(directory: &PathBuf) {
     fs::write(path, bytes).unwrap();
 }
 
+fn establish_retained_valid_value<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+    fixture: &Fixture,
+    block: ArtifactBlock,
+    payload: &[u8],
+) -> (
+    FixedValidatorNodeSigningScopeV0<'node>,
+    ProposalSigningRoot,
+    Vec<u8>,
+) {
+    let branch = scope.branch().clone();
+    let round = branch.begin_round_zero().unwrap();
+    let root = round
+        .value_for_artifact_block(block)
+        .proposal_signing_root();
+    let (scope, authored) = expect_authored(
+        scope
+            .author_proposal(
+                FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block: block,
+                    canonical_artifact_bytes: payload.to_vec(),
+                },
+                ConsensusRound::new(0),
+            )
+            .unwrap(),
+    );
+    let scope = expect_signed_vote(
+        scope
+            .sign_prevote_for_proposal(
+                authored.canonical_proposal_control_bytes(),
+                payload.to_vec(),
+                ConsensusRound::new(0),
+            )
+            .unwrap(),
+    );
+    let certificate = prevote_certificate_bytes(
+        fixture.context,
+        round.position(),
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.signing_key(),
+    );
+    let scope = expect_signed_vote(
+        scope
+            .sign_precommit_for_proposal_quorum(
+                authored.canonical_proposal_control_bytes(),
+                payload.to_vec(),
+                &certificate,
+                ConsensusRound::new(0),
+            )
+            .unwrap(),
+    );
+    (scope, root, certificate)
+}
+
 #[test]
 fn fresh_proposal_authors_and_exact_replay_changes_no_durable_bytes() {
     let fixture = Fixture::new();
@@ -998,6 +1052,391 @@ fn invalid_fresh_payload_preserves_scope_and_all_durable_files_for_retry() {
                     .unwrap(),
             );
             assert!(!authored.canonical_proposal_control_bytes().is_empty());
+        })
+        .unwrap();
+}
+
+#[test]
+fn payload_store_backed_retained_proposal_authors_after_restart_and_replays_at_cap() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-retained-payload-restart-replay");
+    let selected = ArtifactChainState::new(fixture.definition);
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let block = selected.prepare_block(artifact_id(&payload)).unwrap();
+    let mut payloads = create_payload_store(&layout);
+    let _ = payloads
+        .validate_and_insert_branch_payload(&selected.branch_snapshot(), &block, payload.clone())
+        .unwrap();
+    let sources_before = layout.source_images();
+    let ready = fixture
+        .provision_with_proposal_limit(&layout, 8, 2)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    let (root, certificate) = ready
+        .run_with_signing_session(|scope| {
+            let (mut scope, root, certificate) =
+                establish_retained_valid_value(scope, &fixture, block, &payload);
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+            (root, certificate)
+        })
+        .unwrap();
+    let after_retention = layout.images();
+    assert_eq!(layout.source_images(), sources_before);
+
+    let restarted = expect_ready(
+        fixture
+            .provision_with_proposal_limit(&layout, 1, 2)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    let retained = restarted
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(
+                scope.signing_session().position().round(),
+                ConsensusRound::new(0)
+            );
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+            let branch = scope.branch().clone();
+            let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
+            scope.signing_session().advance_round(&round_one).unwrap();
+            let before_authoring = layout.images();
+
+            let (scope, authored) = expect_authored(
+                scope
+                    .author_payload_store_backed_retained_proposal(
+                        &mut payloads,
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            let verified = round_one
+                .decode_and_verify_proposal_control(
+                    authored.canonical_proposal_control_bytes(),
+                    payload.clone(),
+                )
+                .unwrap();
+            assert_eq!(verified.proposal_signing_root(), root);
+            assert_eq!(verified.valid_round(), Some(ConsensusRound::new(0)));
+            assert_eq!(
+                verified.valid_round_certificate_bytes(),
+                Some(certificate.as_slice())
+            );
+            let completed = layout.images();
+            assert_eq!(completed[0], before_authoring[0]);
+            assert_eq!(completed[1], before_authoring[1]);
+            assert_ne!(completed[2], before_authoring[2]);
+            assert_ne!(completed[3], before_authoring[3]);
+            assert_eq!(layout.source_images(), sources_before);
+
+            let (_, replay) = expect_authored(
+                scope
+                    .author_payload_store_backed_retained_proposal(
+                        &mut payloads,
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(replay, authored);
+            assert_eq!(layout.images(), completed);
+            assert_eq!(layout.source_images(), sources_before);
+            authored
+        })
+        .unwrap();
+    let completed = layout.images();
+    assert_eq!(completed[0], after_retention[0]);
+    assert_eq!(completed[1], after_retention[1]);
+    assert_ne!(completed[2], after_retention[2]);
+    assert_ne!(completed[3], after_retention[3]);
+
+    let reopened = expect_ready(
+        fixture
+            .provision_with_proposal_limit(&layout, 1, 2)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(
+                scope.signing_session().position().round(),
+                ConsensusRound::new(1)
+            );
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Proposal
+            );
+            let (_, replay) = expect_authored(
+                scope
+                    .author_payload_store_backed_retained_proposal(
+                        &mut payloads,
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(replay, retained);
+            assert_eq!(layout.images(), completed);
+            assert_eq!(layout.source_images(), sources_before);
+        })
+        .unwrap();
+}
+
+#[test]
+fn payload_store_backed_retained_missing_payload_preserves_scope_for_retry() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-retained-payload-missing-retry");
+    let selected = ArtifactChainState::new(fixture.definition);
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let block = selected.prepare_block(artifact_id(&payload)).unwrap();
+    let mut payloads = create_payload_store(&layout);
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (mut scope, root, certificate) =
+                establish_retained_valid_value(scope, &fixture, block, &payload);
+            let branch = scope.branch().clone();
+            let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
+            scope.signing_session().advance_round(&round_one).unwrap();
+            let node_before = layout.images();
+            let sources_before = layout.source_images();
+
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .author_payload_store_backed_retained_proposal(
+                        &mut payloads,
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeProposalAuthoringRejectionV0::PayloadUnavailable { target }
+                    if target == block.id()
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), sources_before);
+
+            let _ = payloads
+                .validate_and_insert_branch_payload(
+                    &selected.branch_snapshot(),
+                    &block,
+                    payload.clone(),
+                )
+                .unwrap();
+            let retained_sources = layout.source_images();
+            let (_, authored) = expect_authored(
+                scope
+                    .author_payload_store_backed_retained_proposal(
+                        &mut payloads,
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            let verified = round_one
+                .decode_and_verify_proposal_control(
+                    authored.canonical_proposal_control_bytes(),
+                    payload,
+                )
+                .unwrap();
+            assert_eq!(verified.proposal_signing_root(), root);
+            assert_eq!(
+                verified.valid_round_certificate_bytes(),
+                Some(certificate.as_slice())
+            );
+            let node_after = layout.images();
+            assert_eq!(node_after[0], node_before[0]);
+            assert_eq!(node_after[1], node_before[1]);
+            assert_ne!(node_after[2], node_before[2]);
+            assert_ne!(node_after[3], node_before[3]);
+            assert_eq!(layout.source_images(), retained_sources);
+        })
+        .unwrap();
+}
+
+#[test]
+fn retained_payload_preconditions_precede_a_corrupt_store_read() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-retained-payload-precedence");
+    let selected = ArtifactChainState::new(fixture.definition);
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let block = selected.prepare_block(artifact_id(&payload)).unwrap();
+    let mut payloads = create_payload_store(&layout);
+    let _ = payloads
+        .validate_and_insert_branch_payload(&selected.branch_snapshot(), &block, payload)
+        .unwrap();
+    flip_last_store_byte(&layout.payload_store);
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let sources_before = layout.source_images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let scope = expect_signed_vote(
+                scope
+                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let mut scope = expect_signed_vote(
+                scope
+                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let branch = scope.branch().clone();
+            let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
+            scope.signing_session().advance_round(&round_one).unwrap();
+            let node_before = layout.images();
+
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .author_payload_store_backed_retained_proposal(
+                        &mut payloads,
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeProposalAuthoringRejectionV0::RoundWorkLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(1) && maximum == ConsensusRound::new(0)
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), sources_before);
+
+            let (_, rejection) = expect_rejected(
+                scope
+                    .author_payload_store_backed_retained_proposal(
+                        &mut payloads,
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorProposalIntentErrorV0::FreshValueRequired
+                    )
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), sources_before);
+        })
+        .unwrap();
+
+    assert!(matches!(
+        payloads.get(block.artifact_id()),
+        Err(CanonicalArtifactPayloadStoreError::StoredEntryChanged { artifact_id })
+            if artifact_id == block.artifact_id()
+    ));
+}
+
+#[test]
+fn retained_payload_corruption_preserves_signer_for_direct_fallback() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-retained-payload-corrupt-fallback");
+    let selected = ArtifactChainState::new(fixture.definition);
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let block = selected.prepare_block(artifact_id(&payload)).unwrap();
+    let mut payloads = create_payload_store(&layout);
+    let _ = payloads
+        .validate_and_insert_branch_payload(&selected.branch_snapshot(), &block, payload.clone())
+        .unwrap();
+    flip_last_store_byte(&layout.payload_store);
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (mut scope, root, certificate) =
+                establish_retained_valid_value(scope, &fixture, block, &payload);
+            let branch = scope.branch().clone();
+            let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
+            scope.signing_session().advance_round(&round_one).unwrap();
+            let node_before = layout.images();
+            let sources_before = layout.source_images();
+
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .author_payload_store_backed_retained_proposal(
+                        &mut payloads,
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeProposalAuthoringRejectionV0::PayloadStore(source)
+                    if matches!(
+                        source.as_ref(),
+                        CanonicalArtifactPayloadStoreError::StoredEntryChanged { artifact_id }
+                            if *artifact_id == block.artifact_id()
+                    )
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), sources_before);
+            assert!(matches!(
+                payloads.contains(block.artifact_id()),
+                Err(CanonicalArtifactPayloadStoreError::Poisoned)
+            ));
+
+            let (_, authored) = expect_authored(
+                scope
+                    .author_proposal(
+                        FixedValidatorProposalSourceV0::RetainedValid {
+                            canonical_artifact_bytes: payload.clone(),
+                        },
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            let verified = round_one
+                .decode_and_verify_proposal_control(
+                    authored.canonical_proposal_control_bytes(),
+                    payload,
+                )
+                .unwrap();
+            assert_eq!(verified.proposal_signing_root(), root);
+            assert_eq!(
+                verified.valid_round_certificate_bytes(),
+                Some(certificate.as_slice())
+            );
+            let node_after = layout.images();
+            assert_eq!(node_after[0], node_before[0]);
+            assert_eq!(node_after[1], node_before[1]);
+            assert_ne!(node_after[2], node_before[2]);
+            assert_ne!(node_after[3], node_before[3]);
+            assert_eq!(layout.source_images(), sources_before);
         })
         .unwrap();
 }

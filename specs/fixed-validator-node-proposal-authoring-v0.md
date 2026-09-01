@@ -11,7 +11,8 @@ successful call returns canonical proposal-control bytes only after both the
 complete proposal intent and its producer authorization are durable and the
 independent signer anchor names each resulting journal state.
 
-The caller explicitly supplies one availability input:
+The direct `author_proposal` facade requires the caller to supply one
+availability input explicitly:
 
 - `Fresh`, containing one caller-selected `ArtifactBlock` and its owned
   canonical artifact payload, when the signer retains no valid value; or
@@ -30,9 +31,9 @@ The separate `author_candidate_backed_fresh_proposal` facade accepts one exact
 caller-selected `ArtifactBlockId`, one caller-routed artifact-block candidate
 store, one caller-routed canonical artifact-payload store, and the same
 inclusive local round-work ceiling. It is only an availability adapter for the
-`Fresh` path. The direct `author_proposal` facade remains the sole path for a
-`RetainedValid` source, so local candidate-store membership cannot become a new
-liveness requirement for a privately retained valid value.
+`Fresh` path. It never resolves a `RetainedValid` source, so local candidate-
+store membership cannot become a new liveness requirement for a privately
+retained valid value.
 
 Before either store is read, the adapter requires an operational session, an
 exact signer/branch height, both round ceilings, bounded reconstruction of the
@@ -50,6 +51,32 @@ store read or integrity errors, or complete proposal-validation rejection
 return the unchanged signing scope. Each source handle retains its existing
 error-specific poison-and-reopen boundary, but neither source failure poisons
 or mutates the signer, finality journal, branch, or other source store.
+
+### Retained payload-store adapter
+
+The separate `author_payload_store_backed_retained_proposal` facade accepts one
+caller-routed canonical artifact-payload store and the same inclusive local
+round-work ceiling. It accepts no caller target and reads no candidate store.
+The private retained valid value supplies the exact artifact block and therefore
+the sole payload address. The direct `author_proposal` facade remains available
+for caller-owned payload bytes, so local payload-store availability does not
+become a protocol liveness requirement.
+
+Before the payload store is read, the adapter requires the same operational
+session, signer/branch height, persisted and caller-local ceilings, exact round,
+Proposal phase, and scheduled local proposer as the direct path. It then
+requires a privately retained valid value and integrity-reads only that value's
+exact artifact address. Absence of retained state returns the existing
+`FreshValueRequired` rejection without reading the store.
+
+The owned payload is converted only into the existing `RetainedValid` source.
+The unchanged consensus path re-verifies the exact retained value, earlier-
+round prevote certificate and evidence identity, and complete payload against
+the node-owned branch before any signer-journal effect. Missing payload, store
+read or integrity failure, or complete retained-value validation rejection
+returns the unchanged signing scope. The payload handle retains its existing
+error-specific poison-and-reopen boundary, while the signer, finality journal,
+branch, and payload-store durable bytes remain unchanged by a failed read.
 
 ## Complete proposal intent
 
@@ -172,6 +199,12 @@ and 3 in this exact order: reject a retained valid value, compare the candidate
 store chain, load the exact caller target, then load that block's exact payload.
 Those reads grant availability only; step 3 remains the sole validity gate.
 
+For the retained payload-store adapter, source resolution is inserted between
+steps 2 and 3 in this exact order: require the private retained valid value,
+derive its artifact address, then load only that exact payload. This read grants
+availability only; step 3 remains the sole retained certificate, value, and
+payload validity gate.
+
 An exact live prepared repeat reuses only its matching preparation capability.
 An exact completed repeat returns byte-identical proposal-control bytes without
 another write or key operation. Any preparation, acknowledgement, key-use,
@@ -206,8 +239,8 @@ then classifies an incomplete proposal before issuing recovery authority. A
 healthy older journal is activated and anchored before recovery issuance. This
 ordered migration is not a header rewrite and is not cross-file atomic.
 
-The consuming direct and candidate-backed authoring facades have three outcome
-classes:
+The consuming direct, candidate-backed fresh, and payload-store-backed retained
+authoring facades have three outcome classes:
 
 - `Authored` returns the exact durable proposal and replacement scope;
 - `Rejected` returns the unchanged scope only for a caller round ceiling or
