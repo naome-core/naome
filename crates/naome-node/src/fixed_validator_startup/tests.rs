@@ -319,7 +319,7 @@ fn expect_ready(startup: FixedValidatorNodeStartupV0) -> FixedValidatorNodeReady
 }
 
 fn prepare_and_sign(
-    session: &mut FixedValidatorAnchoredVoteSafetySigningSessionV0<'_>,
+    session: &mut FixedValidatorNodeVotingSessionV0<'_>,
     round: &naome_consensus::FixedConsensusRoundV0<'_>,
     prepared: FixedValidatorPreparedVoteV0,
 ) {
@@ -819,3 +819,5 @@ fn public_scope_components_name_one_exact_recovered_branch() {
     assert_eq!(observed.1.round().value(), 0);
     assert_eq!(observed.0.context(), fixture.context);
 }
+
+mod finality;
