@@ -380,6 +380,7 @@ impl FixedValidatorNodeReadyV0 {
             signer_recovery_round_limit,
             signer_catch_up_height_limit,
         } = self;
+        let signer = vote.signer();
         match session_plan {
             FixedValidatorNodeSessionPlanV0::Initial(branch) => {
                 let round = branch
@@ -392,7 +393,10 @@ impl FixedValidatorNodeReadyV0 {
                 Ok(callback(FixedValidatorNodeSigningScopeV0 {
                     finality: &mut finality,
                     branch,
-                    signing_session: FixedValidatorNodeVotingSessionV0 { signing_session },
+                    signing_session: FixedValidatorNodeVotingSessionV0 {
+                        signer,
+                        signing_session,
+                    },
                 }))
             }
             FixedValidatorNodeSessionPlanV0::Recovered(recovered) => {
@@ -409,7 +413,10 @@ impl FixedValidatorNodeReadyV0 {
                 Ok(callback(FixedValidatorNodeSigningScopeV0 {
                     finality: &mut finality,
                     branch,
-                    signing_session: FixedValidatorNodeVotingSessionV0 { signing_session },
+                    signing_session: FixedValidatorNodeVotingSessionV0 {
+                        signer,
+                        signing_session,
+                    },
                 }))
             }
         }
@@ -635,6 +642,7 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
 /// ```
 #[must_use]
 pub struct FixedValidatorNodeVotingSessionV0<'node> {
+    signer: ConsensusKey,
     signing_session: FixedValidatorAnchoredVoteSafetySigningSessionV0<'node>,
 }
 
@@ -643,6 +651,11 @@ pub struct FixedValidatorNodeVotingSessionV0<'node> {
     reason = "the restricted facade preserves the established vote-safety error taxonomy"
 )]
 impl FixedValidatorNodeVotingSessionV0<'_> {
+    /// Returns the immutable public key bound to this private signing session.
+    pub(crate) const fn signer(&self) -> ConsensusKey {
+        self.signer
+    }
+
     /// Returns the exact current height and round of this signing lineage.
     pub const fn position(&self) -> ConsensusPosition {
         self.signing_session.position()

@@ -1,14 +1,17 @@
 use std::error::Error;
 use std::fmt;
 
+use naome_chain::{ArtifactBlockId, ArtifactChainId};
 use naome_consensus::{
     ConsensusHeight, ConsensusPosition, ConsensusRound, FixedConsensusBranchV0,
-    FixedConsensusRoundV0, FixedValidatorProposalIntentErrorV0, FixedValidatorProposalSourceV0,
-    ProposerSelectionError,
+    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorProposalIntentErrorV0,
+    FixedValidatorProposalSourceV0, ProposerSelectionError,
 };
 use naome_storage::{
-    FixedValidatorProposalPrepareOutcomeV0, FixedValidatorProposalSafetyHaltV0,
-    FixedValidatorSignedProposalV0, FixedValidatorVoteSafetyJournalErrorV0,
+    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, CanonicalArtifactPayloadStore,
+    CanonicalArtifactPayloadStoreError, FixedValidatorProposalPrepareOutcomeV0,
+    FixedValidatorProposalSafetyHaltV0, FixedValidatorSignedProposalV0,
+    FixedValidatorVoteSafetyJournalErrorV0,
 };
 
 use super::{
@@ -30,7 +33,7 @@ pub enum FixedValidatorNodeProposalAuthoringOutcomeV0<'node> {
         scope: Box<FixedValidatorNodeSigningScopeV0<'node>>,
         proposal: FixedValidatorSignedProposalV0,
     },
-    /// Explicit input was rejected before any durable signer effect.
+    /// A source or explicit input failed before any durable signer effect.
     Rejected {
         scope: Box<FixedValidatorNodeSigningScopeV0<'node>>,
         rejection: Box<FixedValidatorNodeProposalAuthoringRejectionV0>,
@@ -39,7 +42,7 @@ pub enum FixedValidatorNodeProposalAuthoringOutcomeV0<'node> {
     SignerStopped(FixedValidatorProposalSafetyHaltV0),
 }
 
-/// A pre-effect proposal-authoring rejection that preserves the signing scope.
+/// A pre-effect source or input failure that preserves the signing scope.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FixedValidatorNodeProposalAuthoringRejectionV0 {
@@ -48,6 +51,19 @@ pub enum FixedValidatorNodeProposalAuthoringRejectionV0 {
         required: ConsensusRound,
         maximum: ConsensusRound,
     },
+    /// The caller-routed candidate store belongs to another artifact chain.
+    CandidateChainMismatch {
+        expected: ArtifactChainId,
+        actual: ArtifactChainId,
+    },
+    /// The exact caller-routed candidate store could not serve the target.
+    CandidateStore(Box<ArtifactBlockCandidateStoreError>),
+    /// The exact caller-selected block candidate is not locally available.
+    CandidateUnavailable { target: ArtifactBlockId },
+    /// The exact caller-routed payload store could not serve the target.
+    PayloadStore(Box<CanonicalArtifactPayloadStoreError>),
+    /// The selected candidate's canonical artifact payload is not locally available.
+    PayloadUnavailable { target: ArtifactBlockId },
     /// The current phase, proposer, source, artifact, or retained value was invalid.
     Proposal(Box<FixedValidatorProposalIntentErrorV0>),
 }
@@ -58,6 +74,32 @@ impl fmt::Display for FixedValidatorNodeProposalAuthoringRejectionV0 {
             Self::RoundWorkLimitExceeded { required, maximum } => write!(
                 formatter,
                 "current signer round {required:?} exceeds local proposal-authoring ceiling {maximum:?}"
+            ),
+            Self::CandidateChainMismatch { expected, actual } => write!(
+                formatter,
+                "candidate-store chain {actual:?} differs from proposal chain {expected:?}"
+            ),
+            Self::CandidateStore(source) => {
+                write!(
+                    formatter,
+                    "candidate store could not serve proposal target: {source}"
+                )
+            }
+            Self::CandidateUnavailable { target } => {
+                write!(
+                    formatter,
+                    "proposal candidate {target:?} is not locally available"
+                )
+            }
+            Self::PayloadStore(source) => {
+                write!(
+                    formatter,
+                    "payload store could not serve proposal target: {source}"
+                )
+            }
+            Self::PayloadUnavailable { target } => write!(
+                formatter,
+                "canonical payload for proposal candidate {target:?} is not locally available"
             ),
             Self::Proposal(source) => {
                 write!(
@@ -72,8 +114,13 @@ impl fmt::Display for FixedValidatorNodeProposalAuthoringRejectionV0 {
 impl Error for FixedValidatorNodeProposalAuthoringRejectionV0 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::CandidateStore(source) => Some(source.as_ref()),
+            Self::PayloadStore(source) => Some(source.as_ref()),
             Self::Proposal(source) => Some(source.as_ref()),
-            Self::RoundWorkLimitExceeded { .. } => None,
+            Self::RoundWorkLimitExceeded { .. }
+            | Self::CandidateChainMismatch { .. }
+            | Self::CandidateUnavailable { .. }
+            | Self::PayloadUnavailable { .. } => None,
         }
     }
 }
@@ -171,9 +218,89 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     /// its scheduled proposer and current round, fully verifies the selected
     /// source, and releases proposal-control bytes only after durable completion.
     pub fn author_proposal(
-        mut self,
+        self,
         source: FixedValidatorProposalSourceV0,
         inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeProposalAuthoringOutcomeV0<'node>,
+        FixedValidatorNodeProposalAuthoringErrorV0,
+    > {
+        self.author_proposal_with_source(inclusive_maximum_round, |_, _| Ok(source))
+    }
+
+    /// Authors one caller-selected fresh proposal from exact local availability stores.
+    ///
+    /// The caller chooses the target and routes both stores. Proposal phase,
+    /// scheduled-proposer authority, and absence of a retained valid value are
+    /// established before either store is read. Store membership grants only
+    /// availability: the unchanged consensus path still completely validates
+    /// the block and payload before any durable signer effect.
+    pub fn author_candidate_backed_fresh_proposal(
+        self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: ArtifactBlockId,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeProposalAuthoringOutcomeV0<'node>,
+        FixedValidatorNodeProposalAuthoringErrorV0,
+    > {
+        self.author_proposal_with_source(inclusive_maximum_round, |round, signing_session| {
+            if signing_session.valid_value().is_some() {
+                return Err(FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(
+                    Box::new(FixedValidatorProposalIntentErrorV0::RetainedValidValueRequired),
+                ));
+            }
+
+            let expected_chain = round.context().chain_id();
+            let actual_chain = candidates.chain_id();
+            if actual_chain != expected_chain {
+                return Err(
+                    FixedValidatorNodeProposalAuthoringRejectionV0::CandidateChainMismatch {
+                        expected: expected_chain,
+                        actual: actual_chain,
+                    },
+                );
+            }
+
+            let artifact_block = candidates
+                .get(expected_target)
+                .map_err(|source| {
+                    FixedValidatorNodeProposalAuthoringRejectionV0::CandidateStore(Box::new(source))
+                })?
+                .ok_or(
+                    FixedValidatorNodeProposalAuthoringRejectionV0::CandidateUnavailable {
+                        target: expected_target,
+                    },
+                )?;
+            let payload = payloads
+                .get(artifact_block.artifact_id())
+                .map_err(|source| {
+                    FixedValidatorNodeProposalAuthoringRejectionV0::PayloadStore(Box::new(source))
+                })?
+                .ok_or(
+                    FixedValidatorNodeProposalAuthoringRejectionV0::PayloadUnavailable {
+                        target: expected_target,
+                    },
+                )?;
+
+            Ok(FixedValidatorProposalSourceV0::Fresh {
+                artifact_block,
+                canonical_artifact_bytes: payload.into_canonical_artifact_bytes().into_vec(),
+            })
+        })
+    }
+
+    fn author_proposal_with_source(
+        mut self,
+        inclusive_maximum_round: ConsensusRound,
+        resolve_source: impl FnOnce(
+            &FixedConsensusRoundV0<'_>,
+            &FixedValidatorNodeVotingSessionV0<'_>,
+        ) -> Result<
+            FixedValidatorProposalSourceV0,
+            FixedValidatorNodeProposalAuthoringRejectionV0,
+        >,
     ) -> Result<
         FixedValidatorNodeProposalAuthoringOutcomeV0<'node>,
         FixedValidatorNodeProposalAuthoringErrorV0,
@@ -190,6 +317,36 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
                 return Ok(rejected(self, rejection));
             }
             Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+        };
+
+        let phase = self.signing_session.phase();
+        if phase != FixedValidatorLockPhaseV0::Proposal {
+            drop(round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(Box::new(
+                    FixedValidatorProposalIntentErrorV0::WrongPhase { actual: phase },
+                )),
+            ));
+        }
+        let signer = self.signing_session.signer();
+        if round.proposer() != signer {
+            let scheduled = round.proposer();
+            drop(round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(Box::new(
+                    FixedValidatorProposalIntentErrorV0::NotScheduledProposer { scheduled, signer },
+                )),
+            ));
+        }
+
+        let source = match resolve_source(&round, &self.signing_session) {
+            Ok(source) => source,
+            Err(rejection) => {
+                drop(round);
+                return Ok(rejected(self, rejection));
+            }
         };
 
         let preparation = match self.signing_session.prepare_proposal(&round, source) {
