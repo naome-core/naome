@@ -7,9 +7,12 @@ does not accept raw caller-assembled consensus, artifact, or provenance fields.
 
 The journal makes one already verified direct child operable only after its
 exact consensus envelope and exact canonical artifact payload are durably
-committed together. This is a fixed-set, caller-anchored local V0 boundary. It
-does not establish that the supplied genesis context or agreement set is
-globally canonical.
+committed together. `FixedValidatorFinalityJournalV0` retains the original
+caller-anchored contract. `FixedValidatorAnchoredFinalityJournalV0` additionally
+owns the canonical file-backed anchor defined by
+`fixed-validator-external-anchor-v0.md` and advances it before publishing any
+state-changing outcome. Neither path establishes that the supplied genesis
+context or agreement set is globally canonical.
 
 The same durable history is the only source for advancing an already-issued
 key-owning signing lineage to a child height. The caller first persists the
@@ -34,6 +37,11 @@ lock names:
 artifact-chain.lock
 artifact-chain.journal
 ```
+
+The anchored wrapper does not create a second finality authority. It owns this
+same journal handle plus one separately locked finality anchor and exposes no
+raw journal reference, mutable escape hatch, or caller-constructible anchor
+transition. It acquires the journal lock before the anchor lock.
 
 The joint V0 format cleanly replaces the artifact-only journal format in that
 directory. Creation uses create-new semantics and never replaces either
@@ -73,9 +81,12 @@ admission and replay bound. Zero is invalid. A certificate above the bound is
 rejected by this journal without asserting that it is cryptographically invalid
 under a wider configuration or defining a protocol-wide maximum round.
 
-Creation synchronizes the complete prefix before success. Portable durability
-of the parent-directory entry and storage of every trusted journal-state anchor
-remain caller responsibilities.
+Raw creation synchronizes the complete prefix before success. Portable
+durability of its parent-directory entry and storage of every trusted
+journal-state anchor remain caller responsibilities. Anchored creation instead
+synchronizes the journal parent directory and then creates and synchronizes the
+independent typed genesis anchor before returning; its exact format, locks, and
+platform requirement are defined by `fixed-validator-external-anchor-v0.md`.
 
 ## Record framing
 
@@ -146,9 +157,11 @@ For a new direct height, the journal appends and synchronizes
 again. Only after the footer synchronization succeeds does it publish the new
 finality record, coupled consensus-and-artifact child branch, and state ID in
 memory. The outcome returns the exact position, ancestry, envelope identity,
-and new journal-state identity so the caller can update its separate trusted
-anchor. No signer-height capability is usable until that exact state identity
-has also passed the durability acknowledgement defined below.
+and new journal-state identity so a raw caller can update its separate trusted
+anchor. On the anchored wrapper, the journal-issued exact prior-to-next anchor
+transition is synchronously consumed before the same outcome is returned. No
+signer-height capability is usable until the applicable raw acknowledgement or
+internal anchor update has completed.
 
 The two synchronization points define a framed durable commit boundary; they do
 not claim that one whole variable-length record is written atomically by the
@@ -205,6 +218,11 @@ Multiple staged heights require one independently certified successful call per
 height in selected order. The existing raw sealed-transition `commit_verified`
 path remains the separate boundary for authenticated sibling-conflict handling.
 
+`commit_candidate_backed_anchored_finality_v0` applies the same verification,
+source-store, caller-selection, and one-height boundaries to
+`FixedValidatorAnchoredFinalityJournalV0`. Its successful finality frame also
+advances the paired anchor before the candidate-backed outcome is published.
+
 ## Mandatory durable signer-height advancement
 
 After a finality footer synchronizes, the caller reads the healthy journal's
@@ -214,6 +232,11 @@ anchor. It then calls
 exact_state_id)`. The journal first requires a healthy non-halted handle and
 exact equality between `exact_state_id` and its still-current state. A wrong or
 stale identity fails before retained evidence is reconstructed.
+
+On `FixedValidatorAnchoredFinalityJournalV0`, the successful finality append has
+already advanced the live paired anchor. Its
+`acknowledge_signer_height_transition(height)` accepts no state identity and
+derives the same capability only from that internally anchored current state.
 
 For an exact positive retained height, the method then strictly re-verifies the
 first retained envelope and artifact payload against their selected parent and
@@ -347,6 +370,10 @@ names the height, both distinct ancestry identities, both envelope identities,
 and the halt state ID; it does not choose a winner or expose either sibling as
 the operable chain.
 
+The anchored wrapper's `acknowledge_signer_stop()` accepts no caller identity;
+the halt frame and exact terminal anchor replacement must both have synchronized
+before `commit_verified` could have published the halt used by that method.
+
 ## Strict operational reopen
 
 `open_verified` requires the complete expected definition, context, fixed
@@ -385,6 +412,15 @@ reopening with the new ID also fails closed. The journal never adopts its own
 latest footer as trust, rolls back a committed suffix, repairs an anchor,
 selects a checkpoint, or automatically recovers either crash gap.
 
+`FixedValidatorAnchoredFinalityJournalV0::open` replaces that raw expected-ID
+input with the exact file-backed pair defined by
+`fixed-validator-external-anchor-v0.md`. Under journal-then-anchor exclusive
+locking, it requires the complete frame count and final state identity to match.
+Anchor behind, anchor ahead, and equal-sequence divergence are distinct errors;
+none chooses a winner or changes a complete file. After equality and the
+existing incomplete-tail rule, reopen synchronizes the anchor file and parent
+directory before publishing the wrapper.
+
 ## Read-only selected-artifact history
 
 The journal retains the immutable artifact snapshot coupled to virtual genesis
@@ -395,7 +431,8 @@ snapshot. A returned `ArtifactChainBranchSnapshot` is an owned artifact-state
 view only; it does not expose or reconstruct a candidate consensus envelope,
 value, certificate, or ancestry.
 
-The sealed `SelectedArtifactHistory` capability exposes the already bound
+The sealed `SelectedArtifactHistory` capability on both raw and anchored
+journals exposes the already bound
 `ArtifactChainId` as immutable chain context so a caller can reject a mismatched
 candidate store before an operable selected-state read. Its selected artifact
 head, artifact-set root, and exact-position snapshot reads require a healthy,
@@ -450,6 +487,9 @@ start them. It does not supply a general consensus-block format, Tendermint
 locking or valid-value transitions, timeout progression, dynamic validator
 selection or changes, signature creation or anti-equivocation signing state,
 multi-node or global finality, automatic networking or recovery policy, data
-availability, peer truth or trust, checkpoint/bootstrap, external-anchor
-persistence or attestation, cross-journal atomicity, rollback, provenance
-authority, economics, pruning, compaction, migration, or backup policy.
+availability, peer truth or trust, checkpoint/bootstrap, hardware-backed or
+adversarially rollback-resistant anchor attestation, coordinated journal-and-
+anchor rollback detection, automatic crash-gap repair, cross-journal atomicity,
+provenance authority, economics, pruning, compaction, migration, or backup
+policy. The anchored wrapper supplies only the bounded file-backed persistence
+contract defined by `fixed-validator-external-anchor-v0.md`.

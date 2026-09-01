@@ -10,6 +10,13 @@ session whose private `FixedValidatorLockStateV0` alone may prepare an intent;
 it does not accept caller-assembled lock, valid-value, phase, position, role,
 target, signing-transcript, or predecessor-lineage fields.
 
+`FixedValidatorVoteSafetyJournalV0` retains the original caller-anchored state-
+identity acknowledgements. `FixedValidatorAnchoredVoteSafetyJournalV0` owns the
+canonical per-key file-backed anchor defined by
+`fixed-validator-external-anchor-v0.md`, exposes no raw journal escape hatch,
+and advances that anchor before publishing any state-changing outcome, live
+height or round effect, key-use authority, terminal stop, or signed vote bytes.
+
 The journal owns one `ed25519_dalek::SigningKey` in memory, exposes no secret
 key getter or export path, and creates only the existing V0 prevote and
 precommit signatures for its matching `ConsensusKey`. It cannot create a
@@ -62,6 +69,10 @@ cannot replace it. The caller must externally persist the returned exact current
 journal-state identity. `issue_signing_session` accepts only that exact current
 identity and a typed round whose parent coordinate, signing height, context,
 fixed set, and signer reproduce the retained lineage binding.
+
+The anchored wrapper's lineage bind advances its paired anchor before returning,
+and its session-issuance method accepts no caller state identity. It derives the
+same check only from the still-live journal-and-anchor pair.
 
 At the current retained lineage height, a healthy completed journal strictly
 restores only its latest durable current-lineage state against the supplied
@@ -138,6 +149,11 @@ separately supplied or cloned child branch. A wrong acknowledgement returns no
 child and consumes the one-shot capability; the anchored journal must be
 reopened to resume the already persisted child lineage.
 
+On the anchored signing-session wrapper, preparation has already synchronized
+the child-lineage anchor before returning the capability. Its
+`acknowledge_prepared_height` therefore accepts no caller state identity and
+publishes only that internally anchored exact child.
+
 The handoff is ordered rather than cross-file atomic: finality and its external
 anchor complete first, then the child signing-lineage record and vote anchor,
 then volatile signer-memory advancement. The exact external child-lineage anchor
@@ -194,6 +210,11 @@ required order is finality-conflict sync, external finality anchor, borrowed
 capability, vote-stop sync, then external vote anchor. Neither journal can prove
 the caller's anchor persistence, update all configured signers automatically, or
 make these files and anchors one atomic transaction.
+
+When both sides use anchored wrappers, each applicable anchor update is internal
+to its own append boundary. `acknowledge_signer_stop` and the anchored vote stop
+still form an explicitly routed ordered handoff; they do not make the finality
+journal, finality anchor, vote journal, and vote anchor one transaction.
 
 ## Canonical post-effect vote intent
 
@@ -370,6 +391,10 @@ session. An older typed cursor fails; no historical checkpoint is selectable.
 Any append ambiguity poisons the live handle, and the existing proof-backed
 finality-conflict stop may preempt a pending checkpoint.
 
+On the anchored session wrapper, checkpoint preparation advances the paired
+anchor before returning. `acknowledge_prepared_higher_round` accepts no caller
+state identity and can publish only the exact internally anchored capability.
+
 ## Separate per-key files and header
 
 The journal uses a namespace separate from the selected finality journal. For
@@ -406,6 +431,13 @@ nonblockingly, writes the complete header, and synchronizes it before success.
 It never replaces another key's journal or either fixed-validator finality file.
 Portable durability of the parent-directory entry remains caller
 responsibility.
+
+Anchored creation additionally synchronizes the journal parent directory, then
+creates and synchronizes the independent per-key anchor before returning. The
+anchor filename, exclusive lock, 256-byte codec, exact signer binding, and
+platform durability requirement are defined by
+`fixed-validator-external-anchor-v0.md`. Paired construction and open acquire
+the journal lock before the anchor lock.
 
 Strict reopen requires the same key-owning `SigningKey`, context, fixed set,
 and local preparation ceiling. A wrong key selects a different filename and
@@ -582,6 +614,12 @@ but each acknowledgement is a caller assertion: the journal cannot prove that
 the external store is durable, monotonic, honest, or unavailable to an attacker.
 A false acknowledgement violates this signing contract.
 
+The anchored wrapper removes these caller assertions. Every state-changing
+frame advances the private paired anchor after the footer synchronization and
+before returning. Its lineage, prepare, height, checkpoint, and stop
+acknowledgement methods accept no caller state identity; raw state IDs remain
+diagnostics and cannot construct the private journal-to-anchor transition.
+
 Operational reopen requires the exact separately trusted expected terminal
 state identity. Replay validates the header, framing, every chained footer,
 lineage sequence, intent, signed vote, preparation/completion relation,
@@ -598,6 +636,14 @@ acknowledgement token is reconstructed. If the final state is either terminal
 cause or a prepared-but-uncompleted vote intent, the handle is diagnostic only:
 every signing and signer-recovery capability path remains fail-closed and no
 live prepared-vote capability is reconstructed.
+
+`FixedValidatorAnchoredVoteSafetyJournalV0::open` instead loads the exact per-key
+file-backed anchor under journal-then-anchor exclusive locking and requires both
+the complete frame count and state identity to match replay. Anchor behind,
+anchor ahead, and equal-sequence divergence fail separately without choosing or
+changing a complete side. Only after equality, the existing incomplete-tail
+rule, and synchronization of the anchor file and parent directory may the
+key-owning wrapper be published.
 
 At most one framing-incomplete final record may be truncated only after the
 strictly replayed complete prefix already equals the expected identity. A
@@ -636,6 +682,12 @@ order:
    state-ID footer, and synchronize again.
 7. Only after the complete completion footer is synchronized, publish the
    signed-vote bytes and resulting state identity to the caller.
+
+For the anchored session, step 2 also replaces and synchronizes the prepare
+anchor before returning. Its acknowledgement accepts only the opaque prepared
+capability. Step 6 likewise replaces and synchronizes the completion anchor;
+only then may step 7 release signed bytes. An anchor-update error poisons the
+pair and returns no signed vote even when the completion footer became durable.
 
 While a vote preparation is pending, the session admits no lock-state, round,
 higher-round checkpoint, or height mutation. An acknowledgement cannot be
@@ -821,8 +873,12 @@ higher-round progression, proposal or certificate buffering and routing,
 dynamic validator sets, selection among verified sibling branches, durable
 installation or recovery of global finality, global safety or liveness,
 networking, peer discovery or trust, proposal production, artifact availability,
-external-anchor storage or attestation, key-seed exclusivity proof, hardware-
-backed custody, economics, slashing evidence, or cross-journal atomicity. It
+hardware-backed or adversarially rollback-resistant anchor attestation,
+coordinated journal-and-anchor rollback detection, automatic crash-gap repair,
+key-seed exclusivity proof, hardware-backed custody, economics, slashing
+evidence, or cross-journal atomicity. The anchored wrapper supplies only the
+bounded file-backed persistence contract in
+`fixed-validator-external-anchor-v0.md`. It
 consumes only the separate finality journal's externally acknowledged exact
 selected-child transition to keep the local signing lineage continuous, and uses
 only its capability-gated exact retained branch for real restart reconstruction.

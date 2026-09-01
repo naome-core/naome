@@ -49,6 +49,10 @@ impl TestDirectory {
     fn journal(&self) -> PathBuf {
         self.0.join(JOURNAL_FILE_NAME)
     }
+
+    fn finality_anchor(&self) -> PathBuf {
+        self.0.join("fixed-validator-finality.anchor")
+    }
 }
 
 impl Drop for TestDirectory {
@@ -233,6 +237,40 @@ impl Fixture {
         )
     }
 
+    #[cfg(unix)]
+    fn create_anchored(
+        &self,
+        journal_directory: &TestDirectory,
+        anchor_directory: &TestDirectory,
+    ) -> FixedValidatorAnchoredFinalityJournalV0 {
+        FixedValidatorAnchoredFinalityJournalV0::create(
+            &journal_directory.0,
+            &anchor_directory.0,
+            self.definition,
+            self.context,
+            &self.entries,
+            self.limit,
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn open_anchored(
+        &self,
+        journal_directory: &TestDirectory,
+        anchor_directory: &TestDirectory,
+    ) -> Result<FixedValidatorAnchoredFinalityJournalV0, FixedValidatorAnchoredFinalityJournalErrorV0>
+    {
+        FixedValidatorAnchoredFinalityJournalV0::open(
+            &journal_directory.0,
+            &anchor_directory.0,
+            self.definition,
+            self.context,
+            &self.entries,
+            self.limit,
+        )
+    }
+
     fn transition(
         &self,
         branch: &FixedConsensusBranchV0,
@@ -340,6 +378,138 @@ fn finalizes_two_heights_and_reopens_exact_head() {
     assert_eq!(reopened.head().unwrap().ancestry_id(), expected_head);
 }
 
+#[cfg(unix)]
+#[test]
+fn anchored_finality_advances_before_publication_and_reopens_exactly() {
+    let fixture = Fixture::new();
+    let journal_directory = TestDirectory::new("anchored-finality-journal");
+    let anchor_directory = TestDirectory::new("anchored-finality-anchor");
+    let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+    assert_eq!(journal.journal.core.record_sequence, 0);
+    let genesis_anchor = fs::read(anchor_directory.finality_anchor()).unwrap();
+    assert_eq!(genesis_anchor.len(), 221);
+    assert_eq!(&genesis_anchor[149..157], &0_u64.to_be_bytes());
+    assert_eq!(
+        &genesis_anchor[157..189],
+        journal.state_id().unwrap().as_bytes()
+    );
+
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let parent = journal.head().unwrap().clone();
+    let first = fixture.transition(&parent, &mut selected, ZfcAxiom::Pairing, 0);
+    let duplicate = fixture.transition(&parent, &mut selected, ZfcAxiom::Pairing, 0);
+    let expected_head = first.value().artifact_block().id();
+    let expected_state = match journal.commit_verified(first).unwrap() {
+        FixedValidatorFinalityCommitOutcomeV0::Finalized { state_id, .. } => state_id,
+        FixedValidatorFinalityCommitOutcomeV0::AlreadyFinalized { .. }
+        | FixedValidatorFinalityCommitOutcomeV0::Halted(_) => {
+            panic!("the first direct child must finalize")
+        }
+    };
+    assert_eq!(journal.journal.core.record_sequence, 1);
+    let committed_anchor = fs::read(anchor_directory.finality_anchor()).unwrap();
+    assert_ne!(committed_anchor, genesis_anchor);
+    assert_eq!(&committed_anchor[149..157], &1_u64.to_be_bytes());
+    assert_eq!(&committed_anchor[157..189], expected_state.as_bytes());
+
+    assert!(matches!(
+        journal.commit_verified(duplicate).unwrap(),
+        FixedValidatorFinalityCommitOutcomeV0::AlreadyFinalized { state_id, .. }
+            if state_id == expected_state
+    ));
+    assert_eq!(journal.journal.core.record_sequence, 1);
+    assert_eq!(
+        fs::read(anchor_directory.finality_anchor()).unwrap(),
+        committed_anchor
+    );
+
+    drop(journal);
+    let reopened = fixture
+        .open_anchored(&journal_directory, &anchor_directory)
+        .unwrap();
+    assert_eq!(reopened.journal.core.record_sequence, 1);
+    assert_eq!(reopened.state_id().unwrap(), expected_state);
+    assert_eq!(
+        reopened.head().unwrap().artifact_snapshot().head_block_id(),
+        expected_head
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn anchored_finality_classifies_old_ahead_and_divergent_anchor_images() {
+    let fixture = Fixture::new();
+
+    let behind_journal = TestDirectory::new("anchor-behind-journal");
+    let behind_anchor = TestDirectory::new("anchor-behind-anchor");
+    let mut journal = fixture.create_anchored(&behind_journal, &behind_anchor);
+    let genesis_anchor = fs::read(behind_anchor.finality_anchor()).unwrap();
+    let genesis_journal = fs::read(behind_journal.journal()).unwrap();
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let transition =
+        fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+    let _ = journal.commit_verified(transition).unwrap();
+    let current_anchor = fs::read(behind_anchor.finality_anchor()).unwrap();
+    let current_journal = fs::read(behind_journal.journal()).unwrap();
+    drop(journal);
+    fs::write(behind_anchor.finality_anchor(), &genesis_anchor).unwrap();
+    assert!(matches!(
+        fixture.open_anchored(&behind_journal, &behind_anchor),
+        Err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal(
+            FixedValidatorFinalityJournalErrorV0::AnchorBehind {
+                anchored_sequence: 0,
+                journal_sequence: 1,
+            }
+        ))
+    ));
+    assert_eq!(fs::read(behind_journal.journal()).unwrap(), current_journal);
+
+    fs::write(behind_anchor.finality_anchor(), &current_anchor).unwrap();
+    fs::write(behind_journal.journal(), &genesis_journal).unwrap();
+    assert!(matches!(
+        fixture.open_anchored(&behind_journal, &behind_anchor),
+        Err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal(
+            FixedValidatorFinalityJournalErrorV0::AnchorAhead {
+                anchored_sequence: 1,
+                journal_sequence: 0,
+            }
+        ))
+    ));
+
+    let left_journal = TestDirectory::new("anchor-divergent-left-journal");
+    let left_anchor = TestDirectory::new("anchor-divergent-left-anchor");
+    let right_journal = TestDirectory::new("anchor-divergent-right-journal");
+    let right_anchor = TestDirectory::new("anchor-divergent-right-anchor");
+    let mut left = fixture.create_anchored(&left_journal, &left_anchor);
+    let mut right = fixture.create_anchored(&right_journal, &right_anchor);
+    let mut left_selected = ArtifactChainState::new(fixture.definition);
+    let mut right_selected = ArtifactChainState::new(fixture.definition);
+    let left_transition = fixture.transition(
+        left.head().unwrap(),
+        &mut left_selected,
+        ZfcAxiom::Pairing,
+        0,
+    );
+    let right_transition = fixture.transition(
+        right.head().unwrap(),
+        &mut right_selected,
+        ZfcAxiom::Union,
+        0,
+    );
+    let _ = left.commit_verified(left_transition).unwrap();
+    let _ = right.commit_verified(right_transition).unwrap();
+    let divergent_anchor = fs::read(right_anchor.finality_anchor()).unwrap();
+    drop(left);
+    drop(right);
+    fs::write(left_anchor.finality_anchor(), divergent_anchor).unwrap();
+    assert!(matches!(
+        fixture.open_anchored(&left_journal, &left_anchor),
+        Err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal(
+            FixedValidatorFinalityJournalErrorV0::AnchorStateMismatch { sequence: 1 }
+        ))
+    ));
+}
+
 #[test]
 fn candidate_backed_finality_installs_one_exact_direct_child_without_mutating_sources() {
     let fixture = Fixture::new();
@@ -437,6 +607,57 @@ fn candidate_backed_finality_installs_one_exact_direct_child_without_mutating_so
     assert_eq!(reopened.finalized_len().unwrap(), 2);
     assert_eq!(
         reopened.head().unwrap().artifact_snapshot().head_block_id(),
+        target
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn candidate_backed_anchored_finality_keeps_the_safe_product_path_composable() {
+    let fixture = Fixture::new();
+    let finality_directory = TestDirectory::new("anchored-candidate-finality");
+    let anchor_directory = TestDirectory::new("anchored-candidate-anchor");
+    let candidate_directory = TestDirectory::new("anchored-candidate-store");
+    let payload_directory = TestDirectory::new("anchored-candidate-payloads");
+    let mut journal = fixture.create_anchored(&finality_directory, &anchor_directory);
+    let mut candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut payloads = create_payload_store(&payload_directory);
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let transition =
+        fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+    let target = transition.value().artifact_block().id();
+    let envelope = transition.canonical_envelope_bytes().to_vec();
+    retain_transition_inputs(
+        &mut candidates,
+        &mut payloads,
+        journal.head().unwrap(),
+        &transition,
+    );
+    let candidate_before = candidate_image(&candidate_directory);
+    let payload_before = payload_image(&payload_directory);
+
+    let outcome = commit_candidate_backed_anchored_finality_v0(
+        &mut journal,
+        &mut candidates,
+        &mut payloads,
+        target,
+        &envelope,
+        ConsensusRound::new(0),
+    )
+    .unwrap();
+    assert_eq!(outcome.target(), target);
+    assert_eq!(journal.journal.core.record_sequence, 1);
+    assert_eq!(journal.state_id().unwrap(), outcome.state_id());
+    assert_eq!(candidate_image(&candidate_directory), candidate_before);
+    assert_eq!(payload_image(&payload_directory), payload_before);
+
+    drop(journal);
+    let reopened = fixture
+        .open_anchored(&finality_directory, &anchor_directory)
+        .unwrap();
+    assert_eq!(reopened.journal.core.record_sequence, 1);
+    assert_eq!(
+        SelectedArtifactHistory::selected_head_block_id(&reopened).unwrap(),
         target
     );
 }
@@ -1903,6 +2124,7 @@ fn round_limit_accepts_maximum_and_rejects_max_plus_one_before_io_and_replay() {
             prefix,
             vec![branch],
             state,
+            None,
         ),
         Err(FixedValidatorFinalityJournalErrorV0::ReplayRoundLimitExceeded {
             round,
@@ -2038,6 +2260,7 @@ fn every_candidate_backed_append_fault_poisons_only_finality_and_reopens_exactly
             prefix.clone(),
             vec![fixed_genesis(fixture.definition, fixture.context, &fixture.entries).unwrap()],
             genesis_id,
+            None,
         );
         if durable_commit {
             assert!(matches!(
@@ -2058,6 +2281,7 @@ fn every_candidate_backed_append_fault_poisons_only_finality_and_reopens_exactly
             prefix.clone(),
             vec![fixed_genesis(fixture.definition, fixture.context, &fixture.entries).unwrap()],
             proposed_state,
+            None,
         );
         if durable_commit {
             let new_anchor = new_anchor.unwrap();
@@ -2103,6 +2327,7 @@ fn replay_recovery_and_stabilization_io_fail_closed() {
             prefix.clone(),
             vec![branch.clone()],
             genesis,
+            None,
         ),
         Err(FixedValidatorFinalityJournalErrorV0::Recovery { .. })
     ));
@@ -2117,6 +2342,7 @@ fn replay_recovery_and_stabilization_io_fail_closed() {
             prefix,
             vec![branch],
             genesis,
+            None,
         ),
         Err(FixedValidatorFinalityJournalErrorV0::Stabilize { .. })
     ));
