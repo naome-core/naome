@@ -5,19 +5,31 @@ use std::path::Path;
 use ed25519_dalek::SigningKey;
 use naome_chain::{ArtifactChainDefinition, ArtifactChainState};
 use naome_consensus::{
-    ActiveAgreementEntry, ConsensusContextV0, ConsensusHeight, ConsensusKey,
-    FixedConsensusBranchV0, FixedConsensusGenesisError, ProposerSelectionError,
+    ActiveAgreementEntry, ConsensusContextV0, ConsensusHeight, ConsensusKey, ConsensusPosition,
+    ConsensusRound, FixedConsensusBranchV0, FixedConsensusGenesisError, FixedConsensusRoundV0,
+    FixedValidatorLockPhaseV0, FixedValidatorLockedValueV0, FixedValidatorUnsignedVoteEffectV0,
+    FixedValidatorValidValueV0, ProposerSelectionError, VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::{
     FixedValidatorAnchoredFinalityJournalErrorV0, FixedValidatorAnchoredFinalityJournalV0,
     FixedValidatorAnchoredVoteSafetyJournalErrorV0, FixedValidatorAnchoredVoteSafetyJournalV0,
     FixedValidatorAnchoredVoteSafetySigningSessionV0,
+    FixedValidatorDurablePrepareAcknowledgementV0,
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityConflictSignerStopV0,
     FixedValidatorFinalityHaltV0, FixedValidatorFinalityJournalErrorV0,
     FixedValidatorFinalityReplayLimitV0, FixedValidatorPendingVoteV0,
-    FixedValidatorRecoveredSignerBranchV0, FixedValidatorSignerRecoveryRoundLimitV0,
+    FixedValidatorPreparedHigherRoundAdvanceV0, FixedValidatorPreparedVoteV0,
+    FixedValidatorRecoveredSignerBranchV0, FixedValidatorSignedVoteV0,
+    FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVotePrepareOutcomeV0,
     FixedValidatorVoteSafetyHaltV0, FixedValidatorVoteSafetyJournalErrorV0,
     FixedValidatorVoteSafetyReplayLimitV0,
+};
+
+mod finality;
+
+pub use finality::{
+    FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
+    FixedValidatorNodeFinalitySelectionV0,
 };
 
 /// Four exact caller-owned storage namespaces used by one local signer.
@@ -315,7 +327,7 @@ impl FixedValidatorNodeReadyV0 {
         callback: impl for<'scope> FnOnce(FixedValidatorNodeSigningScopeV0<'scope>) -> R,
     ) -> Result<R, FixedValidatorNodeStartupErrorV0> {
         let Self {
-            finality,
+            mut finality,
             mut vote,
             session_plan,
             signer_recovery_round_limit,
@@ -331,9 +343,9 @@ impl FixedValidatorNodeReadyV0 {
                     .map_err(FixedValidatorNodeStartupErrorV0::vote)?;
                 drop(round);
                 Ok(callback(FixedValidatorNodeSigningScopeV0 {
-                    finality: &finality,
+                    finality: &mut finality,
                     branch,
-                    signing_session,
+                    signing_session: FixedValidatorNodeVotingSessionV0 { signing_session },
                 }))
             }
             FixedValidatorNodeSessionPlanV0::Recovered(recovered) => {
@@ -348,9 +360,9 @@ impl FixedValidatorNodeReadyV0 {
                     signer_catch_up_height_limit,
                 )?;
                 Ok(callback(FixedValidatorNodeSigningScopeV0 {
-                    finality: &finality,
+                    finality: &mut finality,
                     branch,
-                    signing_session,
+                    signing_session: FixedValidatorNodeVotingSessionV0 { signing_session },
                 }))
             }
         }
@@ -363,11 +375,71 @@ enum FixedValidatorNodeSessionPlanV0 {
 }
 
 /// One non-escaping fixed-validator signing scope and its exact branch.
+///
+/// External finality height authority cannot enter through `signing_session`:
+///
+/// ```compile_fail,E0599
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+/// use naome_storage::FixedValidatorDurableFinalityTransitionV0;
+///
+/// fn advance_from_foreign_journal<'node, 'finality>(
+///     scope: &mut FixedValidatorNodeSigningScopeV0<'node>,
+///     foreign: FixedValidatorDurableFinalityTransitionV0<'finality>,
+/// ) {
+///     let _ = scope
+///         .signing_session()
+///         .prepare_height_with_durable_finality(foreign);
+/// }
+/// ```
+///
+/// External finality stop authority cannot enter through `signing_session`:
+///
+/// ```compile_fail,E0599
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+/// use naome_storage::FixedValidatorDurableFinalityConflictV0;
+///
+/// fn stop_from_foreign_journal<'node, 'finality>(
+///     scope: &mut FixedValidatorNodeSigningScopeV0<'node>,
+///     foreign: FixedValidatorDurableFinalityConflictV0<'finality>,
+/// ) {
+///     let _ = scope
+///         .signing_session()
+///         .stop_after_durable_finality_conflict(foreign);
+/// }
+/// ```
+///
+/// The combined `parts` borrow exposes the same restricted surface:
+///
+/// ```compile_fail,E0599
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+/// use naome_storage::FixedValidatorDurableFinalityTransitionV0;
+///
+/// fn advance_from_foreign_parts<'node, 'finality>(
+///     scope: &mut FixedValidatorNodeSigningScopeV0<'node>,
+///     foreign: FixedValidatorDurableFinalityTransitionV0<'finality>,
+/// ) {
+///     let (_, _, session) = scope.parts();
+///     let _ = session.prepare_height_with_durable_finality(foreign);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+/// use naome_storage::FixedValidatorDurableFinalityConflictV0;
+///
+/// fn stop_from_foreign_parts<'node, 'finality>(
+///     scope: &mut FixedValidatorNodeSigningScopeV0<'node>,
+///     foreign: FixedValidatorDurableFinalityConflictV0<'finality>,
+/// ) {
+///     let (_, _, session) = scope.parts();
+///     let _ = session.stop_after_durable_finality_conflict(foreign);
+/// }
+/// ```
 #[must_use]
 pub struct FixedValidatorNodeSigningScopeV0<'node> {
-    finality: &'node FixedValidatorAnchoredFinalityJournalV0,
+    finality: &'node mut FixedValidatorAnchoredFinalityJournalV0,
     branch: FixedConsensusBranchV0,
-    signing_session: FixedValidatorAnchoredVoteSafetySigningSessionV0<'node>,
+    signing_session: FixedValidatorNodeVotingSessionV0<'node>,
 }
 
 impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
@@ -381,22 +453,176 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         self.finality
     }
 
-    /// Returns mutable access to the sole anchored signing session.
-    pub fn signing_session(
-        &mut self,
-    ) -> &mut FixedValidatorAnchoredVoteSafetySigningSessionV0<'node> {
+    /// Returns the sole node-scoped voting session.
+    ///
+    /// Height advancement and finality-conflict stop authority are deliberately
+    /// absent; only [`Self::commit_verified_finality`] may apply them.
+    pub fn signing_session(&mut self) -> &mut FixedValidatorNodeVotingSessionV0<'node> {
         &mut self.signing_session
     }
 
-    /// Borrows the read-only selected state and mutable signer together.
+    /// Borrows the read-only selected state and restricted voter together.
     pub fn parts(
         &mut self,
     ) -> (
         &FixedValidatorAnchoredFinalityJournalV0,
         &FixedConsensusBranchV0,
-        &mut FixedValidatorAnchoredVoteSafetySigningSessionV0<'node>,
+        &mut FixedValidatorNodeVotingSessionV0<'node>,
     ) {
         (self.finality, &self.branch, &mut self.signing_session)
+    }
+}
+
+/// Node-scoped ordinary voting access for one anchored signing lineage.
+///
+/// This facade owns the lower-level session but exposes only round, vote, and
+/// key-use operations. Finality height and conflict-stop capabilities remain
+/// private to the consuming node coordinator, so another matching finality
+/// journal cannot advance or stop this node signer through the public API.
+#[must_use]
+pub struct FixedValidatorNodeVotingSessionV0<'node> {
+    signing_session: FixedValidatorAnchoredVoteSafetySigningSessionV0<'node>,
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the restricted facade preserves the established vote-safety error taxonomy"
+)]
+impl FixedValidatorNodeVotingSessionV0<'_> {
+    /// Returns the exact current height and round of this signing lineage.
+    pub const fn position(&self) -> ConsensusPosition {
+        self.signing_session.position()
+    }
+
+    /// Returns the current fixed-validator kernel phase.
+    pub const fn phase(&self) -> FixedValidatorLockPhaseV0 {
+        self.signing_session.phase()
+    }
+
+    /// Returns the current locked value, if any.
+    pub const fn locked_value(&self) -> Option<FixedValidatorLockedValueV0> {
+        self.signing_session.locked_value()
+    }
+
+    /// Returns the current retained valid value and proof, if any.
+    pub const fn valid_value(&self) -> Option<&FixedValidatorValidValueV0> {
+        self.signing_session.valid_value()
+    }
+
+    /// Decides the current proposal path's prevote without persistence.
+    pub fn decide_prevote_for_proposal(
+        &mut self,
+        proposal: &VerifiedFixedConsensusProposalV0<'_, '_>,
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session.decide_prevote_for_proposal(proposal)
+    }
+
+    /// Decides the absent-or-rejected-proposal prevote path without persistence.
+    pub fn decide_prevote_without_proposal(
+        &mut self,
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session.decide_prevote_without_proposal()
+    }
+
+    /// Applies one proposal prevote quorum and decides precommit in memory.
+    pub fn decide_precommit_for_proposal_quorum(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        proposal: &VerifiedFixedConsensusProposalV0<'_, '_>,
+        canonical_certificate: &[u8],
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session.decide_precommit_for_proposal_quorum(
+            round,
+            proposal,
+            canonical_certificate,
+        )
+    }
+
+    /// Applies one nil prevote quorum and decides nil precommit in memory.
+    pub fn decide_precommit_for_nil_quorum(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        canonical_certificate: &[u8],
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session
+            .decide_precommit_for_nil_quorum(round, canonical_certificate)
+    }
+
+    /// Decides nil precommit without a current-round quorum in memory.
+    pub fn decide_precommit_without_quorum(
+        &mut self,
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session.decide_precommit_without_quorum()
+    }
+
+    /// Advances through one exact sequential typed round in memory.
+    pub fn advance_round(
+        &mut self,
+        next_round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session.advance_round(next_round)
+    }
+
+    /// Advances in memory after verifying one exact nil-precommit quorum.
+    pub fn advance_round_for_nil_precommit_quorum<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+    ) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session
+            .advance_round_for_nil_precommit_quorum(current_round, canonical_certificate)
+    }
+
+    /// Persists and anchors one verified higher-round checkpoint before return.
+    pub fn prepare_higher_round_quorum_advance<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.signing_session.prepare_higher_round_quorum_advance(
+            current_round,
+            canonical_certificate,
+            inclusive_maximum_round,
+        )
+    }
+
+    /// Publishes an already anchored higher-round checkpoint to live state.
+    pub fn acknowledge_prepared_higher_round<'branch>(
+        &mut self,
+        prepared: FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+    ) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session
+            .acknowledge_prepared_higher_round(prepared)
+    }
+
+    /// Persists and anchors the exact session-derived vote preparation.
+    pub fn prepare_vote(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        effect: FixedValidatorUnsignedVoteEffectV0,
+    ) -> Result<FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session.prepare_vote(round, effect)
+    }
+
+    /// Converts an already anchored live preparation into key-use authority.
+    pub fn acknowledge_prepared_vote(
+        &self,
+        prepared: FixedValidatorPreparedVoteV0,
+    ) -> Result<FixedValidatorDurablePrepareAcknowledgementV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.signing_session.acknowledge_prepared_vote(prepared)
+    }
+
+    /// Signs and anchors one acknowledged preparation before releasing bytes.
+    pub fn sign_prepared_vote(
+        &mut self,
+        acknowledgement: FixedValidatorDurablePrepareAcknowledgementV0,
+    ) -> Result<FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session.sign_prepared_vote(acknowledgement)
     }
 }
 
