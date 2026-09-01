@@ -1023,6 +1023,394 @@ fn nil_precommit_round_advance_strictly_verifies_threshold_framing_and_signature
 }
 
 #[test]
+fn higher_round_quorums_cross_every_phase_role_target_and_preserve_exact_state() {
+    let mut case = 0_u8;
+    for phase in [
+        FixedValidatorLockPhaseV0::Proposal,
+        FixedValidatorLockPhaseV0::Prevote,
+        FixedValidatorLockPhaseV0::Precommit,
+    ] {
+        for role in [ConsensusVoteRole::Prevote, ConsensusVoteRole::Precommit] {
+            for proposal_target in [false, true] {
+                for target_round_value in [2_u64, 4] {
+                    let (branch, signing_key, context) = fixture(0x80_u8.wrapping_add(case));
+                    case = case.wrapping_add(1);
+                    let round_zero = branch.begin_round_zero().unwrap();
+                    let proposed = value(&round_zero, 0xa0_u8.wrapping_add(case));
+                    let mut state =
+                        FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+                    lock_current_proposal(&mut state, proposed, context, &signing_key);
+                    let round_one = round_zero.advance_round().unwrap();
+                    state.advance_round(&round_one).unwrap();
+                    let stale_effect = match phase {
+                        FixedValidatorLockPhaseV0::Proposal => None,
+                        FixedValidatorLockPhaseV0::Prevote => {
+                            Some(state.decide_prevote_without_proposal().unwrap())
+                        }
+                        FixedValidatorLockPhaseV0::Precommit => {
+                            let _ = state.decide_prevote_without_proposal().unwrap();
+                            Some(state.decide_precommit_without_quorum().unwrap())
+                        }
+                    };
+                    let target = if proposal_target {
+                        ConsensusVoteTarget::Proposal(proposed.proposal_signing_root())
+                    } else {
+                        ConsensusVoteTarget::Nil
+                    };
+                    let target_position = ConsensusPosition::new(
+                        round_one.position().height(),
+                        ConsensusRound::new(target_round_value),
+                    );
+                    let certificate =
+                        certificate_bytes(context, target_position, role, target, &signing_key);
+                    let before = lock_state_snapshot(&state);
+
+                    let prepared = state
+                        .prepare_higher_round_quorum_advance(
+                            &round_one,
+                            &certificate,
+                            ConsensusRound::new(target_round_value),
+                        )
+                        .unwrap();
+                    assert_eq!(lock_state_snapshot(&state), before);
+                    assert_eq!(prepared.position(), target_position);
+                    assert_eq!(prepared.phase(), phase_for_role(role));
+                    assert_eq!(prepared.role(), role);
+                    assert_eq!(prepared.target(), target);
+                    assert_eq!(prepared.canonical_certificate(), certificate);
+                    let checkpoint_bytes = prepared.canonical_checkpoint_bytes().to_vec();
+
+                    let target_round = state
+                        .apply_prepared_higher_round_quorum_advance(prepared)
+                        .unwrap();
+                    assert_eq!(target_round.position(), target_position);
+                    assert_eq!(state.position(), target_position);
+                    assert_eq!(state.phase(), phase_for_role(role));
+                    assert_eq!(state.locked_value(), before.2);
+                    assert_eq!(valid_snapshot(&state), before.3);
+
+                    let observed =
+                        ObservedFixedValidatorHigherRoundCheckpointV0::decode_and_verify(
+                            &checkpoint_bytes,
+                            context,
+                            target_round.parent_coordinate().fixed_agreement_set_id(),
+                        )
+                        .unwrap();
+                    assert_eq!(observed.source_position(), round_one.position());
+                    assert_eq!(observed.source_phase(), phase);
+                    assert_eq!(observed.position(), target_position);
+                    assert_eq!(observed.canonical_certificate(), certificate);
+                    let replayed = observed.verify_for_round(&target_round).unwrap();
+                    assert_eq!(
+                        lock_state_snapshot(replayed.lock_state()),
+                        lock_state_snapshot(&state)
+                    );
+
+                    if let Some(stale_effect) = stale_effect {
+                        assert!(matches!(
+                            state.prepare_vote_intent(
+                                &target_round,
+                                stale_effect,
+                                consensus_key(&signing_key),
+                            ),
+                            Err(FixedValidatorVoteIntentError::EffectStateMismatch)
+                                | Err(FixedValidatorVoteIntentError::EffectPositionMismatch { .. })
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn higher_round_prepare_rejects_routing_bounds_and_invalid_quorum_without_mutation() {
+    let (branch, signing_keys, context) = three_validator_fixture(0x98);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let before = lock_state_snapshot(&state);
+    let target_position =
+        ConsensusPosition::new(round_zero.position().height(), ConsensusRound::new(3));
+    let complete = certificate_bytes_for_signers(
+        context,
+        target_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &[&signing_keys[0], &signing_keys[1], &signing_keys[2]],
+    );
+
+    assert_eq!(
+        state
+            .prepare_higher_round_quorum_advance(&round_zero, &complete, ConsensusRound::new(0),)
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::HigherRoundWorkLimitNotPositive
+    );
+    assert_eq!(lock_state_snapshot(&state), before);
+
+    let same_round = certificate_bytes_for_signers(
+        context,
+        round_zero.position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &[&signing_keys[0], &signing_keys[1], &signing_keys[2]],
+    );
+    assert_eq!(
+        state
+            .prepare_higher_round_quorum_advance(&round_zero, &same_round, ConsensusRound::new(3),)
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::HigherRoundNotStrictlyGreater {
+            current: ConsensusRound::new(0),
+            actual: ConsensusRound::new(0),
+        }
+    );
+
+    let mut later_state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let round_one_certificate = certificate_bytes_for_signers(
+        context,
+        round_zero.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Nil,
+        &[&signing_keys[0], &signing_keys[1], &signing_keys[2]],
+    );
+    let round_one = later_state
+        .advance_round_for_nil_precommit_quorum(&round_zero, &round_one_certificate)
+        .unwrap();
+    let round_two_certificate = certificate_bytes_for_signers(
+        context,
+        round_one.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Nil,
+        &[&signing_keys[0], &signing_keys[1], &signing_keys[2]],
+    );
+    let round_two = later_state
+        .advance_round_for_nil_precommit_quorum(&round_one, &round_two_certificate)
+        .unwrap();
+    let stale_certificate = certificate_bytes_for_signers(
+        context,
+        round_one.position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &[&signing_keys[0], &signing_keys[1], &signing_keys[2]],
+    );
+    let later_before = lock_state_snapshot(&later_state);
+    assert_eq!(
+        later_state
+            .prepare_higher_round_quorum_advance(
+                &round_two,
+                &stale_certificate,
+                ConsensusRound::new(3),
+            )
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::HigherRoundNotStrictlyGreater {
+            current: ConsensusRound::new(2),
+            actual: ConsensusRound::new(1),
+        }
+    );
+    assert_eq!(lock_state_snapshot(&later_state), later_before);
+
+    let wrong_height = ConsensusPosition::new(ConsensusHeight::new(2), ConsensusRound::new(3));
+    let wrong_height_certificate = certificate_bytes_for_signers(
+        context,
+        wrong_height,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &[&signing_keys[0], &signing_keys[1], &signing_keys[2]],
+    );
+    assert_eq!(
+        state
+            .prepare_higher_round_quorum_advance(
+                &round_zero,
+                &wrong_height_certificate,
+                ConsensusRound::new(3),
+            )
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::HigherRoundHeightMismatch {
+            expected: ConsensusHeight::new(1),
+            actual: ConsensusHeight::new(2),
+        }
+    );
+
+    let wrong_context = ConsensusContextV0::new(
+        naome_chain::ArtifactChainId::from_bytes([0xfe; 32]),
+        context.genesis_id(),
+        context.protocol_version(),
+    );
+    let foreign_context = certificate_bytes_for_signers(
+        wrong_context,
+        target_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &[&signing_keys[0], &signing_keys[1], &signing_keys[2]],
+    );
+    assert!(matches!(
+        state.prepare_higher_round_quorum_advance(
+            &round_zero,
+            &foreign_context,
+            ConsensusRound::new(3),
+        ),
+        Err(FixedValidatorLockStateError::QuorumVerification(
+            QuorumCertificateVerifyError::ChainIdMismatch { .. }
+        ))
+    ));
+
+    let outsider = signing_key(0xee);
+    let foreign_set = certificate_bytes(
+        context,
+        target_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &outsider,
+    );
+    assert_eq!(
+        state
+            .prepare_higher_round_quorum_advance(&round_zero, &foreign_set, ConsensusRound::new(3),)
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::QuorumVerification(
+            QuorumCertificateVerifyError::UnknownSigner {
+                signer: consensus_key(&outsider),
+            }
+        )
+    );
+
+    let (other_branch, _, _) = fixture(0x9a);
+    let other_round_zero = other_branch.begin_round_zero().unwrap();
+    assert_eq!(
+        state
+            .prepare_higher_round_quorum_advance(&other_round_zero, &[], ConsensusRound::new(3),)
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::CurrentRoundBranchMismatch
+    );
+
+    let mut invalid_above_limit = complete.clone();
+    *invalid_above_limit.last_mut().unwrap() ^= 0x80;
+    assert_eq!(
+        state
+            .prepare_higher_round_quorum_advance(
+                &round_zero,
+                &invalid_above_limit,
+                ConsensusRound::new(2),
+            )
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::HigherRoundLimitExceeded {
+            round: ConsensusRound::new(3),
+            maximum: ConsensusRound::new(2),
+        }
+    );
+
+    let exact_two_thirds = certificate_bytes_for_signers(
+        context,
+        target_position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Nil,
+        &[&signing_keys[0], &signing_keys[1]],
+    );
+    assert!(matches!(
+        state.prepare_higher_round_quorum_advance(
+            &round_zero,
+            &exact_two_thirds,
+            ConsensusRound::new(3),
+        ),
+        Err(FixedValidatorLockStateError::QuorumVerification(
+            QuorumCertificateVerifyError::InsufficientAgreementWeight { .. }
+        ))
+    ));
+    assert!(matches!(
+        state.prepare_higher_round_quorum_advance(&round_zero, &[], ConsensusRound::new(3),),
+        Err(
+            FixedValidatorLockStateError::HigherRoundCertificatePosition(
+                QuorumCertificateVerifyError::InvalidLength { .. }
+            )
+        )
+    ));
+    let mut trailing = complete.clone();
+    trailing.push(0);
+    assert!(matches!(
+        state.prepare_higher_round_quorum_advance(&round_zero, &trailing, ConsensusRound::new(3),),
+        Err(
+            FixedValidatorLockStateError::HigherRoundCertificatePosition(
+                QuorumCertificateVerifyError::LengthMismatch { .. }
+            )
+        )
+    ));
+    let mut invalid_signature = complete.clone();
+    *invalid_signature.last_mut().unwrap() ^= 0x40;
+    assert!(matches!(
+        state.prepare_higher_round_quorum_advance(
+            &round_zero,
+            &invalid_signature,
+            ConsensusRound::new(3),
+        ),
+        Err(FixedValidatorLockStateError::QuorumVerification(
+            QuorumCertificateVerifyError::InvalidSignature { .. }
+        ))
+    ));
+    assert_eq!(lock_state_snapshot(&state), before);
+}
+
+#[test]
+fn prepared_higher_round_transition_is_single_lineage_and_exact_source_bound() {
+    let (branch, signing_key, context) = fixture(0x99);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let position = ConsensusPosition::new(round_zero.position().height(), ConsensusRound::new(2));
+    let certificate = certificate_bytes(
+        context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &signing_key,
+    );
+    let mut first = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let mut parallel = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let foreign = first
+        .prepare_higher_round_quorum_advance(&round_zero, &certificate, ConsensusRound::new(2))
+        .unwrap();
+    assert_eq!(
+        parallel
+            .apply_prepared_higher_round_quorum_advance(foreign)
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::HigherRoundAdvanceLineageMismatch
+    );
+
+    let stale = first
+        .prepare_higher_round_quorum_advance(&round_zero, &certificate, ConsensusRound::new(2))
+        .unwrap();
+    let _ = first.decide_prevote_without_proposal().unwrap();
+    assert_eq!(
+        first
+            .apply_prepared_higher_round_quorum_advance(stale)
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::HigherRoundAdvanceStateMismatch
+    );
+
+    let mut clean = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let winner = clean
+        .prepare_higher_round_quorum_advance(&round_zero, &certificate, ConsensusRound::new(2))
+        .unwrap();
+    let loser = clean
+        .prepare_higher_round_quorum_advance(&round_zero, &certificate, ConsensusRound::new(2))
+        .unwrap();
+    let _ = clean
+        .apply_prepared_higher_round_quorum_advance(winner)
+        .unwrap();
+    assert_eq!(
+        clean
+            .apply_prepared_higher_round_quorum_advance(loser)
+            .err()
+            .unwrap(),
+        FixedValidatorLockStateError::HigherRoundAdvanceStateMismatch
+    );
+}
+
+#[test]
 fn wrong_quorum_target_leaves_phase_lock_and_valid_unchanged() {
     let (branch, signing_key, context) = fixture(0x1a);
     let round_zero = branch.begin_round_zero().unwrap();

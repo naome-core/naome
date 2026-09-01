@@ -147,8 +147,11 @@ p[selected] = p[selected] - W
 ```
 
 The resulting vector must fit the canonical signed-i256 representation before
-its identity is published. V0 exposes only a single-step transition; there is
-no `advance_by(round_count)` operation and no input-sized fast-forward loop.
+its identity is published. V0 exposes only a single-step proposer transition;
+there is no public `advance_by(round_count)` operation or caller-supplied
+random-access proposer state. A separate higher-round-certificate consumer may
+repeat this exact step internally only after it has strictly inspected a bounded
+certificate destination as specified below.
 
 ## Height anchoring and rounds
 
@@ -181,6 +184,18 @@ the evidence-free value and branch-state commitment.
 Height one derives only from the virtual-genesis branch. Every later cursor
 uses exactly `verified_height + 1`; height and round overflow halt rather than
 wrap. There is no random-access height or round constructor.
+
+The lock kernel has one bounded phase-only higher-round path. Given its exact
+current typed cursor at `(H, R)`, canonical generic quorum-certificate bytes,
+and a positive caller-local inclusive maximum round `M`, it strictly inspects
+only the certificate's exactly framed embedded position first. It requires the
+same height and `R < P <= M` before any proposer step or signature work. It then
+repeats the exact single-step transition internally from `R + 1` through `P`,
+fully verifies the same certificate bytes against the private fixed-set snapshot at
+the derived `(H, P)` cursor, and publishes no caller-selectable intermediate or
+destination proposer state. Failure before or during derivation publishes no
+cursor and changes no branch or lock state. The caller-local ceiling bounds
+work; it does not change proposer or certificate validity.
 
 ## Fixed-validator artifact-only branch-state projection
 
@@ -233,7 +248,10 @@ One `FixedConsensusBranchV0` couples:
 
 `begin_round_zero` derives the direct next height, exact active snapshot,
 scheduled proposer, and post-height proposer base. `advance_round` consumes one
-cursor and applies exactly one round-local step.
+cursor and applies exactly one round-local step. The higher-round lock path can
+derive multiple such steps only internally after its strict same-height,
+strictly-higher, inclusive-work-limit preflight; callers still receive no
+random-access round constructor or proposer-state fast-forward API.
 
 For a cursor, `value_for_artifact_block` constructs the sole evidence-free
 value fields and complete fixed-validator artifact-only V0 branch-state
@@ -281,11 +299,17 @@ fixed-validator vote-safety journal can issue one private lock-state lineage,
 bind each internally derived post-effect intent to a local key before signing,
 require explicit acknowledgement of the exact externally durable prepare
 identity, durably bind the completed vote before release, and recover only its
-latest completed state through an exact typed round cursor. Its height handoff
+latest durable current-lineage state—either a completed vote or an anchored
+higher-round checkpoint—through an exact typed round cursor. Its height handoff
 consumes a matching owned verified transition and derives that transition's
 child internally; this selects one local signing lineage but adds no global
-sibling preference or durable-finality installation authority here. Dynamic
-validator selection and transitions, finite-window proposer-gap proofs,
-arbitrary higher-round and timeout progression, general consensus persistence
-and recovery, external-anchor storage, networking, peer trust, availability,
-and economics remain separate required product work.
+sibling preference or durable-finality installation authority here. The lock
+kernel and vote-safety journal additionally implement one bounded,
+exact-certificate phase-only higher-round transition and its durable checkpoint
+and restart boundary. They do not buffer or route proposals or certificates,
+schedule timeouts, choose which observed certificate or branch wins, attest the
+external anchor, or mutate finality. Dynamic validator selection and
+transitions, finite-window proposer-gap proofs, timeout-driven progression,
+node-runtime orchestration, general consensus persistence and recovery,
+external-anchor storage, networking, peer trust, availability, and economics
+remain separate required product work.
