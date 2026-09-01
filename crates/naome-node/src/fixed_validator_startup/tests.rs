@@ -19,8 +19,8 @@ use naome_storage::{
     CanonicalArtifactPayloadStore, FixedValidatorAnchoredFinalityJournalV0,
     FixedValidatorAnchoredVoteSafetyJournalV0, FixedValidatorFinalityCommitOutcomeV0,
     FixedValidatorFinalityReplayLimitV0, FixedValidatorPreparedVoteV0,
-    FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVotePrepareOutcomeV0,
-    FixedValidatorVoteSafetyReplayLimitV0,
+    FixedValidatorProposalReplayLimitV0, FixedValidatorSignerRecoveryRoundLimitV0,
+    FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyReplayLimitV0,
 };
 
 use super::*;
@@ -180,6 +180,7 @@ impl Fixture {
             layout.directories(),
             FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
             FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+            FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
             FixedValidatorSignerRecoveryRoundLimitV0::new(recovery_round_limit),
             FixedValidatorSignerCatchUpHeightLimitV0::new(catch_up_height_limit),
         )
@@ -368,6 +369,7 @@ fn expect_ready(startup: FixedValidatorNodeStartupV0) -> FixedValidatorNodeReady
         FixedValidatorNodeStartupV0::Ready(ready) => *ready,
         FixedValidatorNodeStartupV0::FinalityStopped(_)
         | FixedValidatorNodeStartupV0::SignerStopped(_)
+        | FixedValidatorNodeStartupV0::PendingProposal(_)
         | FixedValidatorNodeStartupV0::PendingPreparation(_) => {
             panic!("expected a ready node startup")
         }
@@ -411,6 +413,7 @@ fn preflight_rejects_an_invalid_fixed_snapshot_before_file_access() {
         layout.directories(),
         FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
         FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
         FixedValidatorSignerRecoveryRoundLimitV0::new(8),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     );
@@ -547,7 +550,8 @@ fn incomplete_preparation_reopens_as_diagnostic_only() {
         }
         FixedValidatorNodeStartupV0::Ready(_)
         | FixedValidatorNodeStartupV0::FinalityStopped(_)
-        | FixedValidatorNodeStartupV0::SignerStopped(_) => {
+        | FixedValidatorNodeStartupV0::SignerStopped(_)
+        | FixedValidatorNodeStartupV0::PendingProposal(_) => {
             panic!("an incomplete preparation must not publish a ready signer")
         }
     }
@@ -654,6 +658,7 @@ fn anchored_finality_conflict_stops_the_signer_before_recovery() {
         }
         FixedValidatorNodeStartupV0::Ready(_)
         | FixedValidatorNodeStartupV0::SignerStopped(_)
+        | FixedValidatorNodeStartupV0::PendingProposal(_)
         | FixedValidatorNodeStartupV0::PendingPreparation(_) => {
             panic!("halted finality must stop the signer before recovery")
         }
@@ -776,6 +781,7 @@ fn mismatched_context_and_limits_never_publish_ready_state() {
         layout.directories(),
         FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
         FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
         FixedValidatorSignerRecoveryRoundLimitV0::new(8),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     );
@@ -791,6 +797,7 @@ fn mismatched_context_and_limits_never_publish_ready_state() {
         layout.directories(),
         FixedValidatorFinalityReplayLimitV0::new(7).unwrap(),
         FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
         FixedValidatorSignerRecoveryRoundLimitV0::new(8),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     );
@@ -806,6 +813,7 @@ fn mismatched_context_and_limits_never_publish_ready_state() {
         layout.directories(),
         FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
         FixedValidatorVoteSafetyReplayLimitV0::new(31).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
         FixedValidatorSignerRecoveryRoundLimitV0::new(8),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     );
@@ -877,5 +885,6 @@ fn public_scope_components_name_one_exact_recovered_branch() {
 }
 
 mod finality;
+mod proposal_authoring;
 mod round_progression;
 mod voting;

@@ -256,6 +256,7 @@ fn provision_with_finality_round_limit<'layout>(
         layout.directories(),
         FixedValidatorFinalityReplayLimitV0::new(finality_maximum_round).unwrap(),
         FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
         FixedValidatorSignerRecoveryRoundLimitV0::new(recovery_maximum_round),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     )
@@ -1611,6 +1612,7 @@ fn insufficient_current_round_precommits_preserve_scope_before_a_quorum_retry() 
         layout.directories(),
         FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
         FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
         FixedValidatorSignerRecoveryRoundLimitV0::new(8),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     )
@@ -1718,6 +1720,7 @@ fn insufficient_lower_round_precommits_preserve_scope_before_a_quorum_retry() {
         layout.directories(),
         FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
         FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
         FixedValidatorSignerRecoveryRoundLimitV0::new(8),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     )
@@ -2563,7 +2566,7 @@ fn signer_anchor_failure_preserves_known_finality_but_returns_no_scope() {
         .provision(&layout, 8)
         .create(fixture.signing_key())
         .unwrap();
-    let collision = next_anchor_collision(&layout.vote_anchor, 2);
+    let collision = next_anchor_collision(&layout.vote_anchor, 3);
     let error = ready
         .run_with_signing_session(|scope| {
             let selected = ArtifactChainState::new(fixture.definition);
@@ -2615,7 +2618,7 @@ fn conflict_stop_anchor_failure_returns_no_scope_and_no_false_terminal_outcome()
             let left = fixture.transition(scope.branch(), &selected, ZfcAxiom::Pairing, 0);
             let right = fixture.transition(scope.branch(), &selected, ZfcAxiom::Union, 0);
             let (scope, _) = expect_continuation(scope.commit_verified_finality(left).unwrap());
-            let collision = next_anchor_collision(&layout.vote_anchor, 3);
+            let collision = next_anchor_collision(&layout.vote_anchor, 4);
             let error = match scope.commit_verified_finality(right) {
                 Err(error) => error,
                 Ok(_) => panic!("the signer-stop anchor collision must fail closed"),

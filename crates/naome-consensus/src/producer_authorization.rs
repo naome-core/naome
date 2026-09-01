@@ -229,6 +229,43 @@ fn signing_transcript(body: AuthorizationBody, proposer: ConsensusKey) -> Vec<u8
     bytes
 }
 
+pub(crate) fn producer_authorization_signing_transcript(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    proposal_signing_root: ProposalSigningRoot,
+    proposer: ConsensusKey,
+) -> Vec<u8> {
+    signing_transcript(
+        AuthorizationBody {
+            context,
+            position,
+            proposal_signing_root,
+        },
+        proposer,
+    )
+}
+
+pub(crate) fn complete_producer_authorization(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    proposal_signing_root: ProposalSigningRoot,
+    proposer: ConsensusKey,
+    signature: ConsensusSignature,
+) -> Result<[u8; PRODUCER_AUTHORIZATION_BYTES], ProducerAuthorizationVerifyError> {
+    let body = AuthorizationBody {
+        context,
+        position,
+        proposal_signing_root,
+    };
+    verify_signature(body, proposer, signature)?;
+
+    let mut bytes = [0_u8; PRODUCER_AUTHORIZATION_BYTES];
+    bytes[..AUTHORIZATION_BODY_BYTES].copy_from_slice(&body.to_canonical_bytes());
+    bytes[PROPOSER_KEY_OFFSET..SIGNATURE_OFFSET].copy_from_slice(proposer.as_bytes());
+    bytes[SIGNATURE_OFFSET..].copy_from_slice(signature.as_bytes());
+    Ok(bytes)
+}
+
 fn verify_signature(
     body: AuthorizationBody,
     proposer: ConsensusKey,

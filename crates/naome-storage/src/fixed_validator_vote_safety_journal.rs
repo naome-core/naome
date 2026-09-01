@@ -10,15 +10,18 @@ use std::sync::Arc;
 
 use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
-    ConsensusAncestryId, ConsensusContextV0, ConsensusEnvelopeId, ConsensusHeight, ConsensusKey,
-    ConsensusPosition, ConsensusRound, ConsensusSignature, ConsensusVoteId, ConsensusVoteRole,
-    ConsensusVoteTarget, ConsensusVoteVerifyError, FixedAgreementSetId,
-    FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusRoundV0,
-    FixedValidatorHigherRoundCheckpointErrorV0, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, FixedValidatorLockStateV0, FixedValidatorLockedValueV0,
+    CompletedFixedValidatorProposalV0, ConsensusAncestryId, ConsensusContextV0,
+    ConsensusEnvelopeId, ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusRound,
+    ConsensusSignature, ConsensusVoteId, ConsensusVoteRole, ConsensusVoteTarget,
+    ConsensusVoteVerifyError, FixedAgreementSetId, FixedConsensusBranchCoordinateV0,
+    FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorHigherRoundCheckpointErrorV0,
+    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, FixedValidatorLockStateV0,
+    FixedValidatorLockedValueV0, FixedValidatorProposalIntentErrorV0,
+    FixedValidatorProposalIntentV0, FixedValidatorProposalSourceV0,
     FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0, FixedValidatorVoteIntentError,
     FixedValidatorVoteIntentV0, ObservedFixedValidatorHigherRoundCheckpointV0,
-    ObservedFixedValidatorVoteIntentV0, ProposerSelectionError, VerifiedConsensusVoteV0,
+    ObservedFixedValidatorProposalIntentV0, ObservedFixedValidatorVoteIntentV0,
+    ProposalSigningRoot, ProposerSelectionError, VerifiedConsensusVoteV0,
     VerifiedFixedConsensusProposalV0, VerifiedFixedValidatorHigherRoundAdvanceV0,
     VerifiedReplayFixedValidatorHigherRoundCheckpointV0, VerifiedReplayFixedValidatorVoteIntentV0,
 };
@@ -61,12 +64,18 @@ const CONFLICT_HALT_RECORD: u8 = 3;
 const SIGNING_LINEAGE_RECORD: u8 = 4;
 const FINALITY_CONFLICT_STOP_RECORD: u8 = 5;
 const HIGHER_ROUND_CHECKPOINT_RECORD: u8 = 6;
+const PROPOSAL_ACTIVATION_RECORD: u8 = 7;
+const PROPOSAL_PREPARE_RECORD: u8 = 8;
+const PROPOSAL_COMPLETE_RECORD: u8 = 9;
+const PROPOSAL_CONFLICT_HALT_RECORD: u8 = 10;
 const SIGNING_LINEAGE_DOMAIN: &[u8] = b"naome:fixed-validator-vote-safety-signing-lineage:v0\0";
 const SIGNING_LINEAGE_ID_BYTES: usize = 32;
 const SIGNING_LINEAGE_PAYLOAD_BYTES: usize = 8 + SIGNING_LINEAGE_ID_BYTES;
 const SIGNING_LINEAGE_BODY_BYTES: usize = 1 + SIGNING_LINEAGE_PAYLOAD_BYTES;
 const FINALITY_CONFLICT_STOP_PAYLOAD_BYTES: usize = 32 + 8 + 32 + 32 + 32 + 32;
 const FINALITY_CONFLICT_STOP_BODY_BYTES: usize = 1 + FINALITY_CONFLICT_STOP_PAYLOAD_BYTES;
+const PROPOSAL_ACTIVATION_PAYLOAD_BYTES: usize = 8;
+const PROPOSAL_ACTIVATION_BODY_BYTES: usize = 1 + PROPOSAL_ACTIVATION_PAYLOAD_BYTES;
 const RECORD_LENGTH_BYTES: u64 = 4;
 const STATE_ID_BYTES: u64 = FixedValidatorVoteSafetyJournalStateIdV0::BYTE_LENGTH as u64;
 const ENTRY_FIXED_BYTES: u64 = RECORD_LENGTH_BYTES + STATE_ID_BYTES;
@@ -77,9 +86,15 @@ const MIN_HIGHER_ROUND_CHECKPOINT_BODY_BYTES: usize =
     1 + ObservedFixedValidatorHigherRoundCheckpointV0::MIN_BYTE_LENGTH;
 const MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES: usize =
     1 + ObservedFixedValidatorHigherRoundCheckpointV0::MAX_BYTE_LENGTH;
+const MIN_PROPOSAL_INTENT_BODY_BYTES: usize =
+    1 + ObservedFixedValidatorProposalIntentV0::MIN_BYTE_LENGTH;
+const MAX_PROPOSAL_INTENT_BODY_BYTES: usize =
+    1 + ObservedFixedValidatorProposalIntentV0::MAX_BYTE_LENGTH;
+const COMPLETED_PROPOSAL_BODY_BYTES: usize =
+    1 + naome_consensus::VerifiedProducerAuthorizationV0::BYTE_LENGTH;
 const MAX_BOUNDED_RECORD_BODY_BYTES: usize =
-    if MAX_RECORD_BODY_BYTES > MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES {
-        MAX_RECORD_BODY_BYTES
+    if MAX_PROPOSAL_INTENT_BODY_BYTES > MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES {
+        MAX_PROPOSAL_INTENT_BODY_BYTES
     } else {
         MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES
     };
@@ -125,6 +140,45 @@ impl fmt::Display for FixedValidatorVoteSafetyReplayLimitErrorV0 {
 }
 
 impl Error for FixedValidatorVoteSafetyReplayLimitErrorV0 {}
+
+/// Positive caller-provisioned maximum number of distinct prepared proposals.
+///
+/// This independent cap becomes part of journal state through one explicit
+/// activation record. It does not consume or redefine the header-bound vote
+/// replay limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FixedValidatorProposalReplayLimitV0(u64);
+
+impl FixedValidatorProposalReplayLimitV0 {
+    /// Constructs one positive local prepared-proposal ceiling.
+    pub const fn new(
+        max_prepared_proposals: u64,
+    ) -> Result<Self, FixedValidatorProposalReplayLimitErrorV0> {
+        if max_prepared_proposals == 0 {
+            Err(FixedValidatorProposalReplayLimitErrorV0)
+        } else {
+            Ok(Self(max_prepared_proposals))
+        }
+    }
+
+    /// Returns the configured inclusive prepared-proposal ceiling.
+    pub const fn max_prepared_proposals(self) -> u64 {
+        self.0
+    }
+}
+
+/// A zero local prepared-proposal replay ceiling is invalid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FixedValidatorProposalReplayLimitErrorV0;
+
+impl fmt::Display for FixedValidatorProposalReplayLimitErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("fixed-validator proposal replay limit must be positive")
+    }
+}
+
+impl Error for FixedValidatorProposalReplayLimitErrorV0 {}
 
 /// Chained identity of one exact durable vote-safety journal state.
 ///
@@ -290,6 +344,123 @@ impl FixedValidatorSignedVoteV0 {
     }
 }
 
+/// Opaque identity of one exact durably prepared proposal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FixedValidatorPreparedProposalV0 {
+    position: ConsensusPosition,
+    proposal_signing_root: ProposalSigningRoot,
+    prepared_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+}
+
+impl FixedValidatorPreparedProposalV0 {
+    pub const fn position(self) -> ConsensusPosition {
+        self.position
+    }
+
+    pub const fn proposal_signing_root(self) -> ProposalSigningRoot {
+        self.proposal_signing_root
+    }
+
+    pub const fn state_id(self) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+        self.prepared_state_id
+    }
+}
+
+/// Read-only summary of a durable but uncompleted proposal preparation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FixedValidatorPendingProposalV0 {
+    position: ConsensusPosition,
+    proposal_signing_root: ProposalSigningRoot,
+    prepared_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+}
+
+impl FixedValidatorPendingProposalV0 {
+    pub const fn position(self) -> ConsensusPosition {
+        self.position
+    }
+
+    pub const fn proposal_signing_root(self) -> ProposalSigningRoot {
+        self.proposal_signing_root
+    }
+
+    pub const fn state_id(self) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+        self.prepared_state_id
+    }
+}
+
+/// One canonical proposal control released only after durable completion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FixedValidatorSignedProposalV0 {
+    position: ConsensusPosition,
+    proposal_signing_root: ProposalSigningRoot,
+    canonical_proposal_control_bytes: Vec<u8>,
+    state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+}
+
+impl FixedValidatorSignedProposalV0 {
+    pub const fn position(&self) -> ConsensusPosition {
+        self.position
+    }
+
+    pub const fn proposal_signing_root(&self) -> ProposalSigningRoot {
+        self.proposal_signing_root
+    }
+
+    pub fn canonical_proposal_control_bytes(&self) -> &[u8] {
+        &self.canonical_proposal_control_bytes
+    }
+
+    pub const fn state_id(&self) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+        self.state_id
+    }
+}
+
+/// Durable terminal summary for a second intent at one proposal slot.
+///
+/// The full retained and conflicting intent bytes remain chained in the
+/// journal. This summary is local safety diagnostics, not objective
+/// equivocation proof, signer attribution, peer evidence, or branch/finality
+/// authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FixedValidatorProposalSafetyHaltV0 {
+    position: ConsensusPosition,
+    retained_root: ProposalSigningRoot,
+    conflicting_root: ProposalSigningRoot,
+    retained_intent_digest: [u8; 32],
+    conflicting_intent_digest: [u8; 32],
+    state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+}
+
+impl FixedValidatorProposalSafetyHaltV0 {
+    pub const fn position(self) -> ConsensusPosition {
+        self.position
+    }
+
+    pub const fn retained_root(self) -> ProposalSigningRoot {
+        self.retained_root
+    }
+
+    pub const fn conflicting_root(self) -> ProposalSigningRoot {
+        self.conflicting_root
+    }
+
+    pub const fn retained_intent_digest(self) -> [u8; 32] {
+        self.retained_intent_digest
+    }
+
+    pub const fn conflicting_intent_digest(self) -> [u8; 32] {
+        self.conflicting_intent_digest
+    }
+
+    pub const fn state_id(self) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+        self.state_id
+    }
+}
+
 /// Durable terminal summary for a second non-identical intent at one vote slot.
 ///
 /// The full retained and conflicting intent bytes remain chained in the
@@ -425,6 +596,16 @@ pub enum FixedValidatorVotePrepareOutcomeV0 {
     Halted(FixedValidatorVoteSafetyHaltV0),
 }
 
+/// Outcome of durably preparing one exact proposal intent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum FixedValidatorProposalPrepareOutcomeV0 {
+    Prepared(FixedValidatorPreparedProposalV0),
+    AlreadyPrepared(FixedValidatorPreparedProposalV0),
+    AlreadySigned(FixedValidatorSignedProposalV0),
+    Halted(FixedValidatorProposalSafetyHaltV0),
+}
+
 /// Internal outcome of completing one exact durably prepared vote.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
@@ -446,6 +627,19 @@ enum FixedValidatorVoteSignOutcomeV0 {
 #[must_use]
 pub struct FixedValidatorDurablePrepareAcknowledgementV0 {
     prepared: FixedValidatorPreparedVoteV0,
+    session_seal: Arc<()>,
+}
+
+/// Opaque assertion that one exact proposal preparation is externally durable.
+///
+/// The journal checks that the assertion names its current live proposal
+/// preparation but cannot inspect the external monotonic store. The anchored
+/// wrapper supplies this assertion only after advancing its owned anchor.
+/// Private fields and a live-session seal prevent safe cross-session transfer.
+#[derive(Debug)]
+#[must_use]
+pub struct FixedValidatorDurableProposalPrepareAcknowledgementV0 {
+    prepared: FixedValidatorPreparedProposalV0,
     session_seal: Arc<()>,
 }
 
@@ -596,8 +790,9 @@ impl<'journal> FixedValidatorRecoveredSigningSessionV0<'journal> {
 ///
 /// One open journal handle issues at most one session, and issuance is never
 /// restored by dropping or forgetting the value. The session owns the private
-/// lock state and exposes only the fixed kernel's explicit transitions. It does
-/// not expose mutable state access, raw intent submission, or direct key use.
+/// lock state and exposes only the fixed kernel's explicit transitions,
+/// including branch-bound proposal intent preparation. It does not expose
+/// mutable state access, raw intent submission, or direct key use.
 #[must_use]
 pub struct FixedValidatorVoteSafetySigningSessionV0<'journal> {
     journal: &'journal mut FixedValidatorVoteSafetyJournalV0,
@@ -613,9 +808,20 @@ struct RetainedVote {
     signed: Option<FixedValidatorSignedVoteV0>,
 }
 
+#[derive(Debug)]
+struct RetainedProposal {
+    observed_intent: ObservedFixedValidatorProposalIntentV0,
+    prepared_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    signed: Option<FixedValidatorSignedProposalV0>,
+}
+
 #[derive(Clone, Debug)]
 enum RetainedCurrentLineageStateV0 {
     Vote(VoteSlot),
+    Proposal {
+        position: ConsensusPosition,
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    },
     HigherRound {
         checkpoint: Box<ObservedFixedValidatorHigherRoundCheckpointV0>,
         state_id: FixedValidatorVoteSafetyJournalStateIdV0,
@@ -626,6 +832,7 @@ impl RetainedCurrentLineageStateV0 {
     fn position(&self) -> ConsensusPosition {
         match self {
             Self::Vote(slot) => slot.position,
+            Self::Proposal { position, .. } => *position,
             Self::HigherRound { checkpoint, .. } => checkpoint.position(),
         }
     }
@@ -633,6 +840,7 @@ impl RetainedCurrentLineageStateV0 {
     fn phase(&self) -> FixedValidatorLockPhaseV0 {
         match self {
             Self::Vote(slot) => phase_for_vote_role(slot.role),
+            Self::Proposal { .. } => FixedValidatorLockPhaseV0::Proposal,
             Self::HigherRound { checkpoint, .. } => checkpoint.phase(),
         }
     }
@@ -643,11 +851,13 @@ impl RetainedCurrentLineageStateV0 {
 /// Construction consumes and privately retains the local [`SigningKey`]. The
 /// enabled `zeroize` feature clears its secret bytes on drop. Rust ownership
 /// cannot prove that no external seed or key copy exists; anti-equivocation
-/// requires this journal to be the sole operational vote-signing path.
+/// requires this journal to be the sole operational vote and
+/// producer-authorization signing path.
 ///
-/// The journal provides no producer authorization, remote-signing protocol,
-/// timeout scheduling, networking, peer trust, validator selection, branch
-/// choice, or finality authority.
+/// The journal authenticates only the exact producer authorization sealed by
+/// the current branch-bound proposal intent. It provides no proposal
+/// publication, remote-signing protocol, timeout scheduling, networking, peer
+/// trust, validator selection, branch choice, or finality authority.
 #[must_use]
 pub struct FixedValidatorVoteSafetyJournalV0 {
     _lock: File,
@@ -788,6 +998,28 @@ impl FixedValidatorVoteSafetyJournalV0 {
         self.core.replay_limit
     }
 
+    /// Returns the activated independent proposal ceiling, if present.
+    pub const fn proposal_replay_limit(&self) -> Option<FixedValidatorProposalReplayLimitV0> {
+        self.core.proposal_replay_limit
+    }
+
+    /// Activates proposal authoring once, before this handle issues a session.
+    ///
+    /// The positive cap is chained into the existing journal and anchor state.
+    /// Repeating the exact cap is no-write idempotence; changing it fails
+    /// closed. This does not grant proposer scheduling or publication authority.
+    pub fn activate_proposal_authoring(
+        &mut self,
+        limit: FixedValidatorProposalReplayLimitV0,
+    ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.core.ensure_healthy()?;
+        if self.session_issued {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionAlreadyIssued);
+        }
+        self.core.activate_proposal_authoring(limit)
+    }
+
     /// Durably binds the exact current branch lineage used by signing recovery.
     ///
     /// A new or legacy journal without a lineage record appends one synchronized
@@ -811,12 +1043,15 @@ impl FixedValidatorVoteSafetyJournalV0 {
     ///
     /// The supplied typed round must match the retained signing-lineage record.
     /// An empty current lineage starts from exact branch-derived round zero; a
-    /// lineage with a latest durably completed vote or higher-round checkpoint
-    /// reconstructs only that exact post-effect state after full typed replay.
+    /// lineage with a latest durably completed proposal, vote, or higher-round
+    /// checkpoint reconstructs only that exact post-effect state after full
+    /// typed replay.
     /// The caller must explicitly assert the exact current journal state as
     /// externally durable. A pending preparation or terminal halt cannot issue a
-    /// session. The issuance latch is monotonic for this handle: dropping or
-    /// forgetting the returned value does not permit a replacement session.
+    /// session. Proposal authoring must already have its independent positive
+    /// replay ceiling durably activated. The issuance latch is monotonic for
+    /// this handle: dropping or forgetting the returned value does not permit a
+    /// replacement session.
     pub fn issue_signing_session(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
@@ -828,6 +1063,7 @@ impl FixedValidatorVoteSafetyJournalV0 {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionAlreadyIssued);
         }
         self.core.ensure_recoverable()?;
+        self.core.ensure_proposal_authoring_activated()?;
         if externally_durable_state_id != self.core.state_id {
             return Err(
                 FixedValidatorVoteSafetyJournalErrorV0::ExternalSessionAnchorMismatch {
@@ -851,9 +1087,9 @@ impl FixedValidatorVoteSafetyJournalV0 {
     ///
     /// The caller explicitly acknowledges the journal's complete current state
     /// as externally durable. A pending vote, either terminal cause, missing
-    /// lineage, or prior session issuance fails before capability publication.
-    /// The returned value accepts no caller-selected branch, height, signer, or
-    /// round.
+    /// lineage, missing proposal activation, or prior session issuance fails
+    /// before capability publication. The returned value accepts no
+    /// caller-selected branch, height, signer, or round.
     pub fn acknowledge_signer_recovery_is_externally_durable(
         &self,
         externally_durable_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
@@ -864,6 +1100,7 @@ impl FixedValidatorVoteSafetyJournalV0 {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionAlreadyIssued);
         }
         self.core.ensure_recoverable()?;
+        self.core.ensure_proposal_authoring_activated()?;
         if externally_durable_state_id != self.core.state_id {
             return Err(
                 FixedValidatorVoteSafetyJournalErrorV0::ExternalSessionAnchorMismatch {
@@ -891,9 +1128,10 @@ impl FixedValidatorVoteSafetyJournalV0 {
     ///
     /// The recovered value must descend from this handle's own anchored
     /// capability. The current external vote anchor, session provenance, exact
-    /// lineage, and latest durable current-lineage position are rechecked before
-    /// the monotonic issuance latch changes. Sequential round reconstruction is
-    /// bounded by the caller-local inclusive work ceiling.
+    /// lineage, proposal activation, and latest durable current-lineage position
+    /// are rechecked before the monotonic issuance latch changes. Sequential
+    /// round reconstruction is bounded by the caller-local inclusive work
+    /// ceiling.
     pub fn issue_recovered_signing_session(
         &mut self,
         recovered: FixedValidatorRecoveredSignerBranchV0,
@@ -906,6 +1144,7 @@ impl FixedValidatorVoteSafetyJournalV0 {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionAlreadyIssued);
         }
         self.core.ensure_recoverable()?;
+        self.core.ensure_proposal_authoring_activated()?;
         if externally_durable_state_id != self.core.state_id {
             return Err(
                 FixedValidatorVoteSafetyJournalErrorV0::ExternalSessionAnchorMismatch {
@@ -1004,6 +1243,15 @@ impl FixedValidatorVoteSafetyJournalV0 {
         Ok(self.core.halt)
     }
 
+    /// Returns the durable proposal same-slot terminal halt, if present.
+    pub fn proposal_halt(
+        &self,
+    ) -> Result<Option<FixedValidatorProposalSafetyHaltV0>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.core.ensure_healthy()?;
+        Ok(self.core.proposal_halt)
+    }
+
     /// Returns the durable finality-conflict signer stop, if present.
     pub fn finality_conflict_stop(
         &self,
@@ -1035,6 +1283,15 @@ impl FixedValidatorVoteSafetyJournalV0 {
         Ok(self.core.pending_summary())
     }
 
+    /// Returns read-only diagnostics for an uncompleted proposal preparation.
+    pub fn pending_proposal(
+        &self,
+    ) -> Result<Option<FixedValidatorPendingProposalV0>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.core.ensure_healthy()?;
+        Ok(self.core.pending_proposal_summary())
+    }
+
     /// Durably appends and synchronizes one full consensus-provided intent.
     ///
     /// No signing occurs in this stage. Byte-identical repetition is
@@ -1055,6 +1312,22 @@ impl FixedValidatorVoteSafetyJournalV0 {
         self.core.sign_prepared_vote(&self.signing_key, prepared)
     }
 
+    fn prepare_proposal(
+        &mut self,
+        intent: FixedValidatorProposalIntentV0,
+    ) -> Result<FixedValidatorProposalPrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.core.prepare_proposal(intent)
+    }
+
+    fn sign_prepared_proposal(
+        &mut self,
+        prepared: FixedValidatorPreparedProposalV0,
+    ) -> Result<FixedValidatorSignedProposalV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.core
+            .sign_prepared_proposal(&self.signing_key, prepared)
+    }
+
     /// Returns one retained completed vote for local diagnostics or replay.
     ///
     /// Exact bytes remain available behind a later pending preparation, but
@@ -1069,6 +1342,20 @@ impl FixedValidatorVoteSafetyJournalV0 {
             .core
             .votes
             .get(&VoteSlot::new(position, role))
+            .and_then(|record| record.signed.clone()))
+    }
+
+    /// Returns one retained completed proposal unless a terminal cause denies it.
+    pub fn retained_signed_proposal(
+        &self,
+        position: ConsensusPosition,
+    ) -> Result<Option<FixedValidatorSignedProposalV0>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.core.ensure_not_halted()?;
+        Ok(self
+            .core
+            .proposals
+            .get(&position)
             .and_then(|record| record.signed.clone()))
     }
 
@@ -1224,12 +1511,26 @@ impl FixedValidatorAnchoredVoteSafetyJournalV0 {
         self.journal.replay_limit()
     }
 
+    /// Returns the activated independent proposal ceiling, if present.
+    pub const fn proposal_replay_limit(&self) -> Option<FixedValidatorProposalReplayLimitV0> {
+        self.journal.proposal_replay_limit()
+    }
+
     /// Returns the current healthy journal-state identity for diagnostics.
     pub fn state_id(
         &self,
     ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
     {
         self.journal.state_id()
+    }
+
+    /// Activates proposal authoring and advances the paired anchor before return.
+    pub fn activate_proposal_authoring(
+        &mut self,
+        limit: FixedValidatorProposalReplayLimitV0,
+    ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.journal.activate_proposal_authoring(limit)
     }
 
     /// Binds the initial lineage and advances the anchor before returning.
@@ -1312,6 +1613,14 @@ impl FixedValidatorAnchoredVoteSafetyJournalV0 {
         self.journal.halt()
     }
 
+    /// Returns the durable proposal same-slot terminal halt, if present.
+    pub fn proposal_halt(
+        &self,
+    ) -> Result<Option<FixedValidatorProposalSafetyHaltV0>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.journal.proposal_halt()
+    }
+
     /// Returns the durable proof-backed finality-conflict stop, if present.
     pub fn finality_conflict_stop(
         &self,
@@ -1329,6 +1638,14 @@ impl FixedValidatorAnchoredVoteSafetyJournalV0 {
         self.journal.pending_vote()
     }
 
+    /// Returns read-only diagnostics for an uncompleted proposal preparation.
+    pub fn pending_proposal(
+        &self,
+    ) -> Result<Option<FixedValidatorPendingProposalV0>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.journal.pending_proposal()
+    }
+
     /// Returns one retained completed vote unless either terminal cause denies it.
     pub fn retained_signed_vote(
         &self,
@@ -1336,6 +1653,15 @@ impl FixedValidatorAnchoredVoteSafetyJournalV0 {
         role: ConsensusVoteRole,
     ) -> Result<Option<FixedValidatorSignedVoteV0>, FixedValidatorVoteSafetyJournalErrorV0> {
         self.journal.retained_signed_vote(position, role)
+    }
+
+    /// Returns one retained completed proposal unless a terminal cause denies it.
+    pub fn retained_signed_proposal(
+        &self,
+        position: ConsensusPosition,
+    ) -> Result<Option<FixedValidatorSignedProposalV0>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.journal.retained_signed_proposal(position)
     }
 }
 
@@ -1358,6 +1684,77 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
     /// Returns the current retained valid value and proof, if any.
     pub const fn valid_value(&self) -> Option<&FixedValidatorValidValueV0> {
         self.lock_state.valid_value()
+    }
+
+    /// Validates and durably prepares the sole proposal allowed by private state.
+    ///
+    /// Scheduled-proposer and phase authority are checked before artifact work.
+    /// The exact complete state and producer-signing intent synchronize before
+    /// this method returns, but no key operation occurs here.
+    pub fn prepare_proposal(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        source: FixedValidatorProposalSourceV0,
+    ) -> Result<FixedValidatorProposalPrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.journal.core.ensure_operational()?;
+        self.ensure_no_pending_height_advance()?;
+        self.ensure_no_pending_higher_round_advance()?;
+        if let Some(pending) = self.journal.core.pending {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
+                position: pending.position,
+                role: pending.role,
+            });
+        }
+        let intent = self
+            .lock_state
+            .prepare_proposal_intent(round, source, self.journal.signer())
+            .map_err(FixedValidatorVoteSafetyJournalErrorV0::ProposalPreparation)?;
+        self.journal.prepare_proposal(intent)
+    }
+
+    /// Asserts that the exact prepared proposal state is externally durable.
+    pub fn acknowledge_prepared_proposal_is_externally_durable(
+        &self,
+        prepared: FixedValidatorPreparedProposalV0,
+        externally_durable_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<
+        FixedValidatorDurableProposalPrepareAcknowledgementV0,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        if externally_durable_state_id != prepared.state_id() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ExternalPrepareAnchorMismatch {
+                    prepared: prepared.state_id(),
+                    acknowledged: externally_durable_state_id,
+                },
+            );
+        }
+        self.journal
+            .core
+            .validate_live_prepared_proposal(prepared)?;
+        Ok(FixedValidatorDurableProposalPrepareAcknowledgementV0 {
+            prepared,
+            session_seal: Arc::clone(&self.journal.session_seal),
+        })
+    }
+
+    /// Uses the owned key only for an acknowledged proposal preparation.
+    ///
+    /// The completed producer authorization synchronizes before canonical
+    /// proposal-control bytes are returned.
+    pub fn sign_prepared_proposal(
+        &mut self,
+        acknowledgement: FixedValidatorDurableProposalPrepareAcknowledgementV0,
+    ) -> Result<FixedValidatorSignedProposalV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        if !Arc::ptr_eq(&self.journal.session_seal, &acknowledgement.session_seal) {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::ForeignPrepareAcknowledgement);
+        }
+        self.journal
+            .core
+            .validate_live_prepared_proposal(acknowledgement.prepared)?;
+        self.journal
+            .sign_prepared_proposal(acknowledgement.prepared)
     }
 
     /// Durably stops this already-live signer from anchored finality conflict.
@@ -1711,6 +2108,8 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
                 position: pending.position,
                 role: pending.role,
             })
+        } else if let Some(position) = self.journal.core.pending_proposal {
+            Err(FixedValidatorVoteSafetyJournalErrorV0::PendingProposalPreparation { position })
         } else {
             Ok(())
         }
@@ -1767,6 +2166,36 @@ impl<'journal> FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal> {
     /// deriving its effect and persisting its intent.
     pub fn ensure_current_vote_ready(&self) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
         self.session.ensure_mutable()
+    }
+
+    /// Validates, persists, and anchors one private-state-derived proposal intent.
+    pub fn prepare_proposal(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        source: FixedValidatorProposalSourceV0,
+    ) -> Result<FixedValidatorProposalPrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.session.prepare_proposal(round, source)
+    }
+
+    /// Converts the internally anchored preparation into key-use authority.
+    pub fn acknowledge_prepared_proposal(
+        &self,
+        prepared: FixedValidatorPreparedProposalV0,
+    ) -> Result<
+        FixedValidatorDurableProposalPrepareAcknowledgementV0,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.session
+            .acknowledge_prepared_proposal_is_externally_durable(prepared, prepared.state_id())
+    }
+
+    /// Signs and anchors proposal completion before releasing control bytes.
+    pub fn sign_prepared_proposal(
+        &mut self,
+        acknowledgement: FixedValidatorDurableProposalPrepareAcknowledgementV0,
+    ) -> Result<FixedValidatorSignedProposalV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session.sign_prepared_proposal(acknowledgement)
     }
 
     /// Appends and anchors a proof-backed terminal signer stop.
@@ -1965,14 +2394,21 @@ struct FixedValidatorVoteSafetyJournalCore<F> {
     fixed_set_id: FixedAgreementSetId,
     signer: ConsensusKey,
     replay_limit: FixedValidatorVoteSafetyReplayLimitV0,
+    proposal_replay_limit: Option<FixedValidatorProposalReplayLimitV0>,
     votes: HashMap<VoteSlot, RetainedVote>,
+    proposals: HashMap<ConsensusPosition, RetainedProposal>,
     pending: Option<VoteSlot>,
+    pending_proposal: Option<ConsensusPosition>,
     live_pending_intent: Option<FixedValidatorVoteIntentV0>,
+    live_pending_proposal_intent: Option<FixedValidatorProposalIntentV0>,
     latest_slot: Option<VoteSlot>,
+    latest_proposal_position: Option<ConsensusPosition>,
     lineage: Option<RetainedSigningLineageV0>,
     latest_current_lineage_state: Option<RetainedCurrentLineageStateV0>,
     prepared_count: u64,
+    prepared_proposal_count: u64,
     halt: Option<FixedValidatorVoteSafetyHaltV0>,
+    proposal_halt: Option<FixedValidatorProposalSafetyHaltV0>,
     finality_conflict_stop: Option<FixedValidatorFinalityConflictSignerStopV0>,
     state_id: FixedValidatorVoteSafetyJournalStateIdV0,
     record_sequence: u64,
@@ -1996,14 +2432,21 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             fixed_set_id,
             signer,
             replay_limit,
+            proposal_replay_limit: None,
             votes: HashMap::new(),
+            proposals: HashMap::new(),
             pending: None,
+            pending_proposal: None,
             live_pending_intent: None,
+            live_pending_proposal_intent: None,
             latest_slot: None,
+            latest_proposal_position: None,
             lineage: None,
             latest_current_lineage_state: None,
             prepared_count: 0,
+            prepared_proposal_count: 0,
             halt: None,
+            proposal_halt: None,
             finality_conflict_stop: None,
             state_id,
             record_sequence: 0,
@@ -2063,9 +2506,13 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 && body_length != SIGNED_VOTE_BODY_BYTES
                 && body_length != SIGNING_LINEAGE_BODY_BYTES
                 && body_length != FINALITY_CONFLICT_STOP_BODY_BYTES
+                && body_length != PROPOSAL_ACTIVATION_BODY_BYTES
                 && !(MIN_HIGHER_ROUND_CHECKPOINT_BODY_BYTES
                     ..=MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES)
                     .contains(&body_length)
+                && !(MIN_PROPOSAL_INTENT_BODY_BYTES..=MAX_PROPOSAL_INTENT_BODY_BYTES)
+                    .contains(&body_length)
+                && body_length != COMPLETED_PROPOSAL_BODY_BYTES
             {
                 return Err(
                     FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordLength {
@@ -2097,7 +2544,10 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 recovery_offset = Some(entry_start);
                 break;
             }
-            if core.halt.is_some() || core.finality_conflict_stop.is_some() {
+            if core.halt.is_some()
+                || core.proposal_halt.is_some()
+                || core.finality_conflict_stop.is_some()
+            {
                 return Err(FixedValidatorVoteSafetyJournalErrorV0::RecordAfterHalt {
                     offset: entry_start,
                 });
@@ -2205,6 +2655,14 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             HIGHER_ROUND_CHECKPOINT_RECORD => {
                 self.replay_higher_round_checkpoint(entry, offset, payload, state_id)
             }
+            PROPOSAL_ACTIVATION_RECORD => self.replay_proposal_activation(entry, payload),
+            PROPOSAL_PREPARE_RECORD => {
+                self.replay_proposal_prepare(entry, offset, payload, state_id)
+            }
+            PROPOSAL_COMPLETE_RECORD => self.replay_proposal_completion(entry, payload, state_id),
+            PROPOSAL_CONFLICT_HALT_RECORD => {
+                self.replay_proposal_halt(entry, offset, payload, state_id)
+            }
             actual => Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordTag {
                 entry,
                 offset,
@@ -2227,7 +2685,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 },
             );
         }
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.pending_proposal.is_some() {
             return Err(
                 FixedValidatorVoteSafetyJournalErrorV0::SigningLineageWhilePending { entry },
             );
@@ -2310,7 +2768,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         payload: &[u8],
         state_id: FixedValidatorVoteSafetyJournalStateIdV0,
     ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.pending_proposal.is_some() {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::PrepareWhilePending { entry });
         }
         if self.prepared_count >= self.replay_limit.max_prepared_votes() {
@@ -2347,6 +2805,15 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 previous_role: latest.role,
                 actual: slot.position,
                 actual_role: slot.role,
+            });
+        }
+        if let Some(latest_proposal) = self.latest_proposal_position
+            && slot.position < latest_proposal
+        {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::VoteBeforeProposal {
+                vote: slot.position,
+                vote_role: slot.role,
+                proposal: latest_proposal,
             });
         }
         self.votes.try_reserve(1).map_err(|_| {
@@ -2418,6 +2885,209 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         Ok(())
     }
 
+    fn replay_proposal_activation(
+        &mut self,
+        entry: u64,
+        payload: &[u8],
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        if payload.len() != PROPOSAL_ACTIVATION_PAYLOAD_BYTES {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::InvalidProposalActivationLength {
+                    entry,
+                    actual: payload.len(),
+                },
+            );
+        }
+        if self.proposal_replay_limit.is_some() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::DuplicateProposalActivation { entry },
+            );
+        }
+        if self.pending.is_some() || self.pending_proposal.is_some() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ProposalActivationWhilePending { entry },
+            );
+        }
+        let maximum = u64::from_be_bytes(
+            payload
+                .try_into()
+                .expect("the proposal-activation payload is eight bytes"),
+        );
+        self.proposal_replay_limit = Some(
+            FixedValidatorProposalReplayLimitV0::new(maximum).map_err(|_| {
+                FixedValidatorVoteSafetyJournalErrorV0::InvalidProposalActivation { entry }
+            })?,
+        );
+        Ok(())
+    }
+
+    fn replay_proposal_prepare(
+        &mut self,
+        entry: u64,
+        offset: u64,
+        payload: &[u8],
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        if self.pending.is_some() || self.pending_proposal.is_some() {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::PrepareWhilePending { entry });
+        }
+        let limit = self
+            .proposal_replay_limit
+            .ok_or(FixedValidatorVoteSafetyJournalErrorV0::ProposalAuthoringNotActivated)?;
+        if self.prepared_proposal_count >= limit.max_prepared_proposals() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ProposalReplayLimitExceeded {
+                    entry,
+                    maximum: limit.max_prepared_proposals(),
+                },
+            );
+        }
+        let intent = self.decode_observed_proposal_intent(payload, entry, offset)?;
+        let position = intent.position();
+        let lineage = self.lineage.ok_or(
+            FixedValidatorVoteSafetyJournalErrorV0::ProposalWithoutSigningLineage { entry },
+        )?;
+        if position.height() != lineage.height {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ProposalOutsideSigningLineage {
+                    entry,
+                    lineage_height: lineage.height,
+                    proposal_height: position.height(),
+                },
+            );
+        }
+        if self.proposals.contains_key(&position) {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::DuplicateProposalPrepare { entry });
+        }
+        if let Some(latest) = self.latest_proposal_position
+            && position <= latest
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::NonMonotonicProposalReplay {
+                    entry,
+                    previous: latest,
+                    actual: position,
+                },
+            );
+        }
+        if let Some(latest_vote) = self.latest_slot
+            && position <= latest_vote.position
+        {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::ProposalAfterVote {
+                proposal: position,
+                vote: latest_vote.position,
+                vote_role: latest_vote.role,
+            });
+        }
+        let (current_position, current_phase) =
+            self.current_lineage_state_coordinate(lineage.height);
+        if state_coordinate_cmp(
+            position,
+            FixedValidatorLockPhaseV0::Proposal,
+            current_position,
+            current_phase,
+        )
+        .is_lt()
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ProposalStateBehindCurrent {
+                    proposal: position,
+                    current_position,
+                    current_phase,
+                },
+            );
+        }
+        self.proposals.try_reserve(1).map_err(|_| {
+            FixedValidatorVoteSafetyJournalErrorV0::ProposalHistoryAllocation {
+                entry,
+                retained_proposals: self.proposals.len(),
+            }
+        })?;
+        self.proposals.insert(
+            position,
+            RetainedProposal {
+                observed_intent: intent,
+                prepared_state_id: state_id,
+                signed: None,
+            },
+        );
+        self.pending_proposal = Some(position);
+        self.latest_proposal_position = Some(position);
+        self.prepared_proposal_count += 1;
+        Ok(())
+    }
+
+    fn replay_proposal_completion(
+        &mut self,
+        entry: u64,
+        payload: &[u8],
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        let position = self.pending_proposal.ok_or(
+            FixedValidatorVoteSafetyJournalErrorV0::ProposalCompletionWithoutPrepare { entry },
+        )?;
+        let retained = self
+            .proposals
+            .get_mut(&position)
+            .expect("every pending proposal has one retained intent");
+        let completed = retained
+            .observed_intent
+            .verify_completed_producer_authorization(payload)
+            .map_err(
+                |source| FixedValidatorVoteSafetyJournalErrorV0::CompletedProposal {
+                    entry,
+                    source,
+                },
+            )?;
+        retained.signed = Some(signed_proposal_from_completed(completed, state_id));
+        self.pending_proposal = None;
+        self.latest_current_lineage_state =
+            Some(RetainedCurrentLineageStateV0::Proposal { position, state_id });
+        Ok(())
+    }
+
+    fn replay_proposal_halt(
+        &mut self,
+        entry: u64,
+        offset: u64,
+        payload: &[u8],
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        if self.pending.is_some() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::InvalidProposalConflictHalt { entry },
+            );
+        }
+        let intent = self.decode_observed_proposal_intent(payload, entry, offset)?;
+        let position = intent.position();
+        if self
+            .pending_proposal
+            .is_some_and(|pending| pending != position)
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::InvalidProposalConflictHalt { entry },
+            );
+        }
+        let retained = self
+            .proposals
+            .get(&position)
+            .ok_or(FixedValidatorVoteSafetyJournalErrorV0::InvalidProposalConflictHalt { entry })?;
+        if retained.observed_intent.canonical_intent_bytes() == payload {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::InvalidProposalConflictHalt { entry },
+            );
+        }
+        self.proposal_halt = Some(proposal_halt(
+            position,
+            &retained.observed_intent,
+            &intent,
+            state_id,
+        ));
+        self.pending_proposal = None;
+        self.live_pending_proposal_intent = None;
+        Ok(())
+    }
+
     fn replay_higher_round_checkpoint(
         &mut self,
         entry: u64,
@@ -2440,7 +3110,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         payload: &[u8],
     ) -> Result<ObservedFixedValidatorHigherRoundCheckpointV0, FixedValidatorVoteSafetyJournalErrorV0>
     {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.pending_proposal.is_some() {
             return Err(
                 FixedValidatorVoteSafetyJournalErrorV0::HigherRoundCheckpointWhilePending { entry },
             );
@@ -2499,8 +3169,14 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         payload: &[u8],
         state_id: FixedValidatorVoteSafetyJournalStateIdV0,
     ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        if self.pending_proposal.is_some() {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidConflictHalt { entry });
+        }
         let intent = self.decode_observed_intent(payload, entry, offset)?;
         let slot = observed_intent_slot(&intent);
+        if self.pending.is_some_and(|pending| pending != slot) {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidConflictHalt { entry });
+        }
         let retained = self
             .votes
             .get(&slot)
@@ -2581,6 +3257,8 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             conflicting_envelope_id,
             vote_state_id: state_id,
         });
+        self.pending = None;
+        self.pending_proposal = None;
         Ok(())
     }
 
@@ -2627,6 +3305,13 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 role: existing.role,
             });
         }
+        if let Some(existing) = self.proposal_halt {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::TerminalProposalHalt {
+                    position: existing.position,
+                },
+            );
+        }
         let body = finality_conflict_stop_record(proposed, self.prepared_count)?;
         let next_state_id = self.append_record(&body, self.prepared_count)?;
         let stopped = FixedValidatorFinalityConflictSignerStopV0 {
@@ -2634,7 +3319,10 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             ..proposed
         };
         self.finality_conflict_stop = Some(stopped);
+        self.pending = None;
+        self.pending_proposal = None;
         self.live_pending_intent = None;
+        self.live_pending_proposal_intent = None;
         self.state_id = next_state_id;
         Ok(FixedValidatorFinalityConflictSignerStopOutcomeV0::Stopped(
             stopped,
@@ -2733,6 +3421,21 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 .verify_for_round(round)
                 .map_err(FixedValidatorVoteSafetyJournalErrorV0::HigherRoundCheckpointReplay)
                 .map(VerifiedReplayFixedValidatorHigherRoundCheckpointV0::into_lock_state),
+            Some(RetainedCurrentLineageStateV0::Proposal { position, state_id }) => {
+                let retained = self
+                    .proposals
+                    .get(position)
+                    .expect("the latest completed proposal remains retained");
+                let signed = retained
+                    .signed
+                    .as_ref()
+                    .expect("a recoverable latest proposal is durably completed");
+                debug_assert_eq!(signed.state_id(), *state_id);
+                retained
+                    .observed_intent
+                    .restore_lock_state_for_round(round)
+                    .map_err(FixedValidatorVoteSafetyJournalErrorV0::ProposalRecovery)
+            }
         }
     }
 
@@ -2791,6 +3494,11 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 position: pending.position,
                 role: pending.role,
             });
+        }
+        if let Some(position) = self.pending_proposal {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::PendingProposalPreparation { position },
+            );
         }
         if let Some(previous) = self.lineage {
             let expected = previous
@@ -2857,11 +3565,265 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         Ok(next_state_id)
     }
 
+    fn activate_proposal_authoring(
+        &mut self,
+        limit: FixedValidatorProposalReplayLimitV0,
+    ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.ensure_not_halted()?;
+        if self.pending.is_some() || self.pending_proposal.is_some() {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::ProposalActivationWhileLivePending);
+        }
+        if let Some(existing) = self.proposal_replay_limit {
+            if existing == limit {
+                return Ok(self.state_id);
+            }
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ProposalReplayLimitMismatch {
+                    retained: existing.max_prepared_proposals(),
+                    supplied: limit.max_prepared_proposals(),
+                },
+            );
+        }
+        let body = tagged_record(
+            PROPOSAL_ACTIVATION_RECORD,
+            &limit.max_prepared_proposals().to_be_bytes(),
+            self.record_sequence,
+        )?;
+        let next_state_id = self.append_record(&body, self.record_sequence)?;
+        self.proposal_replay_limit = Some(limit);
+        self.state_id = next_state_id;
+        Ok(next_state_id)
+    }
+
+    fn prepare_proposal(
+        &mut self,
+        intent: FixedValidatorProposalIntentV0,
+    ) -> Result<FixedValidatorProposalPrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.ensure_operational()?;
+        let canonical_intent = intent.canonical_intent_bytes();
+        let observed =
+            self.decode_observed_proposal_intent(canonical_intent, self.record_sequence, 0)?;
+        let position = observed.position();
+        if let Some(pending) = self.pending {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
+                position: pending.position,
+                role: pending.role,
+            });
+        }
+        if let Some(pending) = self.pending_proposal
+            && pending != position
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::PendingProposalPreparation {
+                    position: pending,
+                },
+            );
+        }
+        if let Some(retained) = self.proposals.get(&position) {
+            if retained.observed_intent.canonical_intent_bytes() == canonical_intent {
+                if let Some(signed) = &retained.signed {
+                    return Ok(FixedValidatorProposalPrepareOutcomeV0::AlreadySigned(
+                        signed.clone(),
+                    ));
+                }
+                return Ok(FixedValidatorProposalPrepareOutcomeV0::AlreadyPrepared(
+                    prepared_proposal_capability(position, retained),
+                ));
+            }
+            let retained_intent = retained.observed_intent.clone();
+            let body = tagged_record(
+                PROPOSAL_CONFLICT_HALT_RECORD,
+                canonical_intent,
+                self.record_sequence,
+            )?;
+            let next_state_id = self.append_record(&body, self.record_sequence)?;
+            let halt = proposal_halt(position, &retained_intent, &observed, next_state_id);
+            self.proposal_halt = Some(halt);
+            self.pending = None;
+            self.pending_proposal = None;
+            self.live_pending_intent = None;
+            self.live_pending_proposal_intent = None;
+            self.state_id = next_state_id;
+            return Ok(FixedValidatorProposalPrepareOutcomeV0::Halted(halt));
+        }
+        if let Some(pending) = self.pending_proposal {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::PendingProposalPreparation {
+                    position: pending,
+                },
+            );
+        }
+        let limit = self
+            .proposal_replay_limit
+            .ok_or(FixedValidatorVoteSafetyJournalErrorV0::ProposalAuthoringNotActivated)?;
+        if self.prepared_proposal_count >= limit.max_prepared_proposals() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ProposalPrepareLimitExceeded {
+                    maximum: limit.max_prepared_proposals(),
+                },
+            );
+        }
+        let lineage = self
+            .lineage
+            .ok_or(FixedValidatorVoteSafetyJournalErrorV0::SigningLineageRequired)?;
+        if position.height() != lineage.height {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ProposalOutsideSigningLineage {
+                    entry: self.record_sequence,
+                    lineage_height: lineage.height,
+                    proposal_height: position.height(),
+                },
+            );
+        }
+        if let Some(latest) = self.latest_proposal_position
+            && position <= latest
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::NonMonotonicProposal {
+                    previous: latest,
+                    actual: position,
+                },
+            );
+        }
+        if let Some(latest_vote) = self.latest_slot
+            && position <= latest_vote.position
+        {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::ProposalAfterVote {
+                proposal: position,
+                vote: latest_vote.position,
+                vote_role: latest_vote.role,
+            });
+        }
+        let (current_position, current_phase) =
+            self.current_lineage_state_coordinate(lineage.height);
+        if state_coordinate_cmp(
+            position,
+            FixedValidatorLockPhaseV0::Proposal,
+            current_position,
+            current_phase,
+        )
+        .is_lt()
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ProposalStateBehindCurrent {
+                    proposal: position,
+                    current_position,
+                    current_phase,
+                },
+            );
+        }
+        self.proposals.try_reserve(1).map_err(|_| {
+            FixedValidatorVoteSafetyJournalErrorV0::ProposalHistoryAllocation {
+                entry: self.record_sequence,
+                retained_proposals: self.proposals.len(),
+            }
+        })?;
+        let body = tagged_record(
+            PROPOSAL_PREPARE_RECORD,
+            canonical_intent,
+            self.record_sequence,
+        )?;
+        let next_state_id = self.append_record(&body, self.record_sequence)?;
+        self.proposals.insert(
+            position,
+            RetainedProposal {
+                observed_intent: observed,
+                prepared_state_id: next_state_id,
+                signed: None,
+            },
+        );
+        self.pending_proposal = Some(position);
+        self.live_pending_proposal_intent = Some(intent);
+        self.latest_proposal_position = Some(position);
+        self.prepared_proposal_count += 1;
+        self.state_id = next_state_id;
+        Ok(FixedValidatorProposalPrepareOutcomeV0::Prepared(
+            self.pending_proposal_capability()
+                .expect("new proposal preparation is live"),
+        ))
+    }
+
+    fn sign_prepared_proposal(
+        &mut self,
+        signing_key: &SigningKey,
+        prepared: FixedValidatorPreparedProposalV0,
+    ) -> Result<FixedValidatorSignedProposalV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.validate_live_prepared_proposal(prepared)?;
+        let intent = self.live_pending_proposal_intent.as_ref().ok_or(
+            FixedValidatorVoteSafetyJournalErrorV0::RestartedPendingProposal {
+                position: prepared.position,
+            },
+        )?;
+        let dalek_signature = signing_key.sign(&intent.signing_transcript());
+        let signature = ConsensusSignature::from_bytes(dalek_signature.to_bytes());
+        let completed = intent
+            .complete_with_signature(signature)
+            .map_err(FixedValidatorVoteSafetyJournalErrorV0::ProposalSelfVerification)?;
+        let control = completed.canonical_proposal_control_bytes();
+        let authorization_start = naome_consensus::ConsensusValueV0::BYTE_LENGTH;
+        let authorization_end =
+            authorization_start + naome_consensus::VerifiedProducerAuthorizationV0::BYTE_LENGTH;
+        let body = tagged_record(
+            PROPOSAL_COMPLETE_RECORD,
+            &control[authorization_start..authorization_end],
+            self.record_sequence,
+        )?;
+        let next_state_id = self.append_record(&body, self.record_sequence)?;
+        let signed = signed_proposal_from_completed(completed, next_state_id);
+        self.proposals
+            .get_mut(&prepared.position)
+            .expect("prepared proposal remains retained through completion")
+            .signed = Some(signed.clone());
+        self.pending_proposal = None;
+        self.live_pending_proposal_intent = None;
+        self.latest_current_lineage_state = Some(RetainedCurrentLineageStateV0::Proposal {
+            position: prepared.position,
+            state_id: next_state_id,
+        });
+        self.state_id = next_state_id;
+        Ok(signed)
+    }
+
+    fn validate_live_prepared_proposal(
+        &self,
+        prepared: FixedValidatorPreparedProposalV0,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        self.ensure_operational()?;
+        let retained = self
+            .proposals
+            .get(&prepared.position)
+            .ok_or(FixedValidatorVoteSafetyJournalErrorV0::UnknownPreparedProposal)?;
+        if retained.prepared_state_id != prepared.prepared_state_id
+            || retained.observed_intent.proposal_signing_root() != prepared.proposal_signing_root
+            || retained.signed.is_some()
+            || self.pending_proposal != Some(prepared.position)
+            || self.state_id != prepared.prepared_state_id
+        {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::StalePreparedProposal);
+        }
+        let intent = self.live_pending_proposal_intent.as_ref().ok_or(
+            FixedValidatorVoteSafetyJournalErrorV0::RestartedPendingProposal {
+                position: prepared.position,
+            },
+        )?;
+        if intent.canonical_intent_bytes() != retained.observed_intent.canonical_intent_bytes() {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::StalePreparedProposal);
+        }
+        Ok(())
+    }
+
     fn prepare_vote(
         &mut self,
         intent: FixedValidatorVoteIntentV0,
     ) -> Result<FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0> {
         self.ensure_operational()?;
+        if let Some(position) = self.pending_proposal {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::PendingProposalPreparation { position },
+            );
+        }
         if intent.context() != self.context
             || intent.fixed_agreement_set_id() != self.fixed_set_id
             || intent.signer() != self.signer
@@ -2888,6 +3850,14 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             observed.phase(),
         )?;
         let target = observed.target();
+        if let Some(pending) = self.pending
+            && pending != slot
+        {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
+                position: pending.position,
+                role: pending.role,
+            });
+        }
         if let Some(retained) = self.votes.get(&slot) {
             if retained
                 .observed_intent
@@ -2940,6 +3910,15 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 previous_role: latest.role,
                 actual: slot.position,
                 actual_role: slot.role,
+            });
+        }
+        if let Some(proposal) = self.latest_proposal_position
+            && slot.position < proposal
+        {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::VoteBeforeProposal {
+                vote: slot.position,
+                vote_role: slot.role,
+                proposal,
             });
         }
         let entry = self.prepared_count;
@@ -3145,6 +4124,28 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         })
     }
 
+    fn decode_observed_proposal_intent(
+        &self,
+        bytes: &[u8],
+        entry: u64,
+        offset: u64,
+    ) -> Result<ObservedFixedValidatorProposalIntentV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        ObservedFixedValidatorProposalIntentV0::decode_and_verify(
+            bytes,
+            self.context,
+            self.fixed_set_id,
+            self.signer,
+        )
+        .map_err(
+            |source| FixedValidatorVoteSafetyJournalErrorV0::ProposalIntent {
+                entry,
+                offset,
+                source,
+            },
+        )
+    }
+
     fn pending_capability(&self) -> Option<FixedValidatorPreparedVoteV0> {
         self.live_pending_intent.as_ref()?;
         let slot = self.pending?;
@@ -3169,6 +4170,29 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         })
     }
 
+    fn pending_proposal_capability(&self) -> Option<FixedValidatorPreparedProposalV0> {
+        self.live_pending_proposal_intent.as_ref()?;
+        let position = self.pending_proposal?;
+        let retained = self
+            .proposals
+            .get(&position)
+            .expect("every pending proposal has a retained intent");
+        Some(prepared_proposal_capability(position, retained))
+    }
+
+    fn pending_proposal_summary(&self) -> Option<FixedValidatorPendingProposalV0> {
+        let position = self.pending_proposal?;
+        let retained = self
+            .proposals
+            .get(&position)
+            .expect("every pending proposal has a retained intent");
+        Some(FixedValidatorPendingProposalV0 {
+            position,
+            proposal_signing_root: retained.observed_intent.proposal_signing_root(),
+            prepared_state_id: retained.prepared_state_id,
+        })
+    }
+
     fn ensure_healthy(&self) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
         if self.poisoned {
             Err(FixedValidatorVoteSafetyJournalErrorV0::Poisoned)
@@ -3186,6 +4210,11 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 role: pending.role,
             });
         }
+        if let Some(position) = self.restarted_pending_proposal() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::RestartedPendingProposal { position },
+            );
+        }
         Ok(())
     }
 
@@ -3196,6 +4225,12 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 position: halt.position,
                 role: halt.role,
             })
+        } else if let Some(halt) = self.proposal_halt {
+            Err(
+                FixedValidatorVoteSafetyJournalErrorV0::TerminalProposalHalt {
+                    position: halt.position,
+                },
+            )
         } else if let Some(stop) = self.finality_conflict_stop {
             Err(
                 FixedValidatorVoteSafetyJournalErrorV0::TerminalFinalityConflictSignerStop {
@@ -3211,6 +4246,11 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         self.pending.filter(|_| self.live_pending_intent.is_none())
     }
 
+    fn restarted_pending_proposal(&self) -> Option<ConsensusPosition> {
+        self.pending_proposal
+            .filter(|_| self.live_pending_proposal_intent.is_none())
+    }
+
     fn ensure_recoverable(&self) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
         self.ensure_not_halted()?;
         if let Some(pending) = self.pending {
@@ -3220,9 +4260,19 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                     role: pending.role,
                 },
             )
+        } else if let Some(position) = self.pending_proposal {
+            Err(FixedValidatorVoteSafetyJournalErrorV0::PendingProposalRecoveryDenied { position })
         } else {
             Ok(())
         }
+    }
+
+    fn ensure_proposal_authoring_activated(
+        &self,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        self.proposal_replay_limit
+            .ok_or(FixedValidatorVoteSafetyJournalErrorV0::ProposalAuthoringNotActivated)
+            .map(|_| ())
     }
 }
 
@@ -3231,6 +4281,53 @@ fn prepared_capability(slot: VoteSlot, retained: &RetainedVote) -> FixedValidato
         slot,
         target: retained.observed_intent.target(),
         prepared_state_id: retained.prepared_state_id,
+    }
+}
+
+fn prepared_proposal_capability(
+    position: ConsensusPosition,
+    retained: &RetainedProposal,
+) -> FixedValidatorPreparedProposalV0 {
+    FixedValidatorPreparedProposalV0 {
+        position,
+        proposal_signing_root: retained.observed_intent.proposal_signing_root(),
+        prepared_state_id: retained.prepared_state_id,
+    }
+}
+
+fn signed_proposal_from_completed(
+    completed: CompletedFixedValidatorProposalV0,
+    state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+) -> FixedValidatorSignedProposalV0 {
+    FixedValidatorSignedProposalV0 {
+        position: completed.position(),
+        proposal_signing_root: completed.proposal_signing_root(),
+        canonical_proposal_control_bytes: completed.into_canonical_proposal_control_bytes(),
+        state_id,
+    }
+}
+
+fn proposal_intent_digest(intent: &ObservedFixedValidatorProposalIntentV0) -> [u8; 32] {
+    const DOMAIN: &[u8] = b"naome:fixed-validator-proposal-intent-digest:v0\0";
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN);
+    hasher.update(intent.canonical_intent_bytes());
+    hasher.finalize().into()
+}
+
+fn proposal_halt(
+    position: ConsensusPosition,
+    retained: &ObservedFixedValidatorProposalIntentV0,
+    conflicting: &ObservedFixedValidatorProposalIntentV0,
+    state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+) -> FixedValidatorProposalSafetyHaltV0 {
+    FixedValidatorProposalSafetyHaltV0 {
+        position,
+        retained_root: retained.proposal_signing_root(),
+        conflicting_root: conflicting.proposal_signing_root(),
+        retained_intent_digest: proposal_intent_digest(retained),
+        conflicting_intent_digest: proposal_intent_digest(conflicting),
+        state_id,
     }
 }
 
@@ -3596,6 +4693,10 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         entry: u64,
         retained_votes: usize,
     },
+    ProposalHistoryAllocation {
+        entry: u64,
+        retained_proposals: usize,
+    },
     InvalidRecordTag {
         entry: u64,
         offset: u64,
@@ -3636,6 +4737,11 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         entry: u64,
         offset: u64,
         source: FixedValidatorVoteIntentError,
+    },
+    ProposalIntent {
+        entry: u64,
+        offset: u64,
+        source: FixedValidatorProposalIntentErrorV0,
     },
     IntentHeaderMismatch,
     FinalityConflictContextMismatch,
@@ -3719,6 +4825,65 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
     CompletionWithoutPrepare {
         entry: u64,
     },
+    InvalidProposalActivationLength {
+        entry: u64,
+        actual: usize,
+    },
+    DuplicateProposalActivation {
+        entry: u64,
+    },
+    ProposalActivationWhilePending {
+        entry: u64,
+    },
+    InvalidProposalActivation {
+        entry: u64,
+    },
+    ProposalAuthoringNotActivated,
+    ProposalReplayLimitExceeded {
+        entry: u64,
+        maximum: u64,
+    },
+    ProposalWithoutSigningLineage {
+        entry: u64,
+    },
+    ProposalOutsideSigningLineage {
+        entry: u64,
+        lineage_height: ConsensusHeight,
+        proposal_height: ConsensusHeight,
+    },
+    DuplicateProposalPrepare {
+        entry: u64,
+    },
+    NonMonotonicProposalReplay {
+        entry: u64,
+        previous: ConsensusPosition,
+        actual: ConsensusPosition,
+    },
+    ProposalAfterVote {
+        proposal: ConsensusPosition,
+        vote: ConsensusPosition,
+        vote_role: ConsensusVoteRole,
+    },
+    VoteBeforeProposal {
+        vote: ConsensusPosition,
+        vote_role: ConsensusVoteRole,
+        proposal: ConsensusPosition,
+    },
+    ProposalStateBehindCurrent {
+        proposal: ConsensusPosition,
+        current_position: ConsensusPosition,
+        current_phase: FixedValidatorLockPhaseV0,
+    },
+    ProposalCompletionWithoutPrepare {
+        entry: u64,
+    },
+    CompletedProposal {
+        entry: u64,
+        source: FixedValidatorProposalIntentErrorV0,
+    },
+    InvalidProposalConflictHalt {
+        entry: u64,
+    },
     PrepareWhilePending {
         entry: u64,
     },
@@ -3780,6 +4945,9 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         position: ConsensusPosition,
         role: ConsensusVoteRole,
     },
+    PendingProposalPreparation {
+        position: ConsensusPosition,
+    },
     PendingHeightAdvance {
         state_id: FixedValidatorVoteSafetyJournalStateIdV0,
     },
@@ -3802,7 +4970,13 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         position: ConsensusPosition,
         role: ConsensusVoteRole,
     },
+    PendingProposalRecoveryDenied {
+        position: ConsensusPosition,
+    },
     PrepareLimitExceeded {
+        maximum: u64,
+    },
+    ProposalPrepareLimitExceeded {
         maximum: u64,
     },
     NonMonotonicSlot {
@@ -3813,15 +4987,35 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
     },
     UnknownPreparedVote,
     StalePreparedVote,
+    UnknownPreparedProposal,
+    StalePreparedProposal,
     RestartedPending {
         position: ConsensusPosition,
         role: ConsensusVoteRole,
     },
+    RestartedPendingProposal {
+        position: ConsensusPosition,
+    },
     SelfVerification(ConsensusVoteVerifyError),
     SelfVerificationMismatch(FixedValidatorVoteCompletionMismatchV0),
+    ProposalPreparation(FixedValidatorProposalIntentErrorV0),
+    ProposalSelfVerification(FixedValidatorProposalIntentErrorV0),
+    ProposalRecovery(FixedValidatorProposalIntentErrorV0),
+    ProposalActivationWhileLivePending,
+    ProposalReplayLimitMismatch {
+        retained: u64,
+        supplied: u64,
+    },
+    NonMonotonicProposal {
+        previous: ConsensusPosition,
+        actual: ConsensusPosition,
+    },
     TerminalHalt {
         position: ConsensusPosition,
         role: ConsensusVoteRole,
+    },
+    TerminalProposalHalt {
+        position: ConsensusPosition,
     },
     TerminalFinalityConflictSignerStop {
         height: ConsensusHeight,
@@ -3849,6 +5043,7 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::EntryOffsetOverflow { entry, offset } => write!(formatter, "vote-safety record {entry} at byte {offset} exceeds the offset range"),
             Self::Allocation { entry, bytes } => write!(formatter, "vote-safety record {entry} could not allocate {bytes} bytes"),
             Self::HistoryAllocation { entry, retained_votes } => write!(formatter, "vote-safety record {entry} could not grow history beyond {retained_votes} prepared votes"),
+            Self::ProposalHistoryAllocation { entry, retained_proposals } => write!(formatter, "vote-safety record {entry} could not grow history beyond {retained_proposals} prepared proposals"),
             Self::InvalidRecordTag { entry, offset, actual } => write!(formatter, "vote-safety record {entry} at byte {offset} has unsupported tag {actual}"),
             Self::InvalidSigningLineageLength { entry, actual } => write!(formatter, "signing-lineage record {entry} has {actual} payload bytes"),
             Self::InvalidSigningLineageHeight { entry, actual } => write!(formatter, "signing-lineage record {entry} has reserved height {}", actual.value()),
@@ -3858,6 +5053,7 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::VoteOutsideSigningLineage { entry, lineage_height, vote_height } => write!(formatter, "vote record {entry} has height {}, outside retained signing-lineage height {}", vote_height.value(), lineage_height.value()),
             Self::RecordStateIdMismatch { entry, offset, expected, actual } => write!(formatter, "vote-safety record {entry} at byte {offset} commits state {actual:?}, expected {expected:?}"),
             Self::Intent { entry, offset, source } => write!(formatter, "vote-safety intent record {entry} at byte {offset} failed strict replay: {source}"),
+            Self::ProposalIntent { entry, offset, source } => write!(formatter, "proposal-intent record {entry} at byte {offset} failed strict replay: {source}"),
             Self::IntentHeaderMismatch => formatter.write_str("sealed vote intent does not match this journal's exact context, fixed set, and signer"),
             Self::FinalityConflictContextMismatch => formatter.write_str("finality-conflict stop authority does not match this vote journal's exact consensus context"),
             Self::FinalityConflictFixedSetMismatch => formatter.write_str("finality-conflict stop authority does not match this vote journal's fixed validator set"),
@@ -3886,6 +5082,22 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::InvalidCompletionLength { entry, actual } => write!(formatter, "signed-vote record {entry} has {actual} payload bytes"),
             Self::CompletionMismatch { entry, reason } => write!(formatter, "signed-vote record {entry} does not complete its exact preparation: {reason:?}"),
             Self::CompletionWithoutPrepare { entry } => write!(formatter, "signed-vote record {entry} has no pending preparation"),
+            Self::InvalidProposalActivationLength { entry, actual } => write!(formatter, "proposal-authoring activation record {entry} has {actual} payload bytes"),
+            Self::DuplicateProposalActivation { entry } => write!(formatter, "proposal-authoring activation record {entry} repeats an existing activation"),
+            Self::ProposalActivationWhilePending { entry } => write!(formatter, "proposal-authoring activation record {entry} follows an uncompleted preparation"),
+            Self::InvalidProposalActivation { entry } => write!(formatter, "proposal-authoring activation record {entry} contains a zero replay limit"),
+            Self::ProposalAuthoringNotActivated => formatter.write_str("proposal authoring has not been activated for this vote-safety journal"),
+            Self::ProposalReplayLimitExceeded { entry, maximum } => write!(formatter, "proposal prepare record {entry} exceeds replay ceiling {maximum}"),
+            Self::ProposalWithoutSigningLineage { entry } => write!(formatter, "proposal prepare record {entry} has no retained signing lineage"),
+            Self::ProposalOutsideSigningLineage { entry, lineage_height, proposal_height } => write!(formatter, "proposal record {entry} has height {}, outside retained signing-lineage height {}", proposal_height.value(), lineage_height.value()),
+            Self::DuplicateProposalPrepare { entry } => write!(formatter, "proposal prepare record {entry} repeats an existing proposal slot"),
+            Self::NonMonotonicProposalReplay { entry, previous, actual } => write!(formatter, "proposal prepare record {entry} moves backward from {previous:?} to {actual:?}"),
+            Self::ProposalAfterVote { proposal, vote, vote_role } => write!(formatter, "proposal slot {proposal:?} does not precede retained vote {vote:?}/{vote_role:?}"),
+            Self::VoteBeforeProposal { vote, vote_role, proposal } => write!(formatter, "vote slot {vote:?}/{vote_role:?} precedes retained proposal {proposal:?}"),
+            Self::ProposalStateBehindCurrent { proposal, current_position, current_phase } => write!(formatter, "proposal state {proposal:?}/Proposal is behind durable state {current_position:?}/{current_phase:?}"),
+            Self::ProposalCompletionWithoutPrepare { entry } => write!(formatter, "completed-proposal record {entry} has no pending proposal preparation"),
+            Self::CompletedProposal { entry, source } => write!(formatter, "completed-proposal record {entry} failed strict verification: {source}"),
+            Self::InvalidProposalConflictHalt { entry } => write!(formatter, "proposal-conflict record {entry} is not a non-identical intent at an existing proposal slot"),
             Self::PrepareWhilePending { entry } => write!(formatter, "prepare record {entry} follows an uncompleted preparation"),
             Self::DuplicatePrepare { entry } => write!(formatter, "prepare record {entry} repeats an existing vote slot instead of using idempotent in-memory classification"),
             Self::InvalidConflictHalt { entry } => write!(formatter, "conflict record {entry} is not a non-identical intent at an existing vote slot"),
@@ -3903,6 +5115,7 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::Recovery { offset, source } => write!(formatter, "incomplete vote-safety tail at byte {offset} could not be recovered: {source}"),
             Self::Stabilize { source } => write!(formatter, "replayed vote-safety journal stabilization failed: {source}"),
             Self::PendingPreparation { position, role } => write!(formatter, "vote {position:?}/{role:?} must complete before another slot can prepare"),
+            Self::PendingProposalPreparation { position } => write!(formatter, "proposal {position:?} must complete before another slot can prepare"),
             Self::PendingHeightAdvance { state_id } => write!(formatter, "signer-height advance at vote-journal state {state_id:?} must be externally acknowledged before another transition"),
             Self::PendingHigherRoundAdvance { state_id } => write!(formatter, "higher-round checkpoint at vote-journal state {state_id:?} must be externally acknowledged before another transition"),
             Self::ExternalHeightAnchorMismatch { prepared, acknowledged } => write!(formatter, "external height-advance acknowledgement names state {acknowledged:?}, expected prepared state {prepared:?}"),
@@ -3912,14 +5125,26 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::ForeignHigherRoundAdvance => formatter.write_str("prepared higher-round advance belongs to another signing session"),
             Self::StaleHigherRoundAdvance => formatter.write_str("prepared higher-round advance does not match the current durable checkpoint"),
             Self::PendingRecoveryDenied { position, role } => write!(formatter, "completed lock-state recovery is denied behind pending vote {position:?}/{role:?}"),
+            Self::PendingProposalRecoveryDenied { position } => write!(formatter, "completed lock-state recovery is denied behind pending proposal {position:?}"),
             Self::PrepareLimitExceeded { maximum } => write!(formatter, "prepared-vote ceiling {maximum} is exhausted"),
+            Self::ProposalPrepareLimitExceeded { maximum } => write!(formatter, "prepared-proposal ceiling {maximum} is exhausted"),
             Self::NonMonotonicSlot { previous, previous_role, actual, actual_role } => write!(formatter, "vote slot {actual:?}/{actual_role:?} does not follow retained {previous:?}/{previous_role:?}"),
             Self::UnknownPreparedVote => formatter.write_str("prepared-vote capability does not name retained state"),
             Self::StalePreparedVote => formatter.write_str("prepared-vote capability does not match the current durable preparation"),
+            Self::UnknownPreparedProposal => formatter.write_str("prepared-proposal capability does not name retained state"),
+            Self::StalePreparedProposal => formatter.write_str("prepared-proposal capability does not match the current durable preparation"),
             Self::RestartedPending { position, role } => write!(formatter, "reopened vote-safety journal has a non-signable pending preparation at {position:?}/{role:?}"),
+            Self::RestartedPendingProposal { position } => write!(formatter, "reopened vote-safety journal has a non-signable pending proposal at {position:?}"),
             Self::SelfVerification(source) => write!(formatter, "new local signature failed strict consensus self-verification: {source}"),
             Self::SelfVerificationMismatch(reason) => write!(formatter, "new local signature verified as the wrong prepared vote field: {reason:?}"),
+            Self::ProposalPreparation(source) => write!(formatter, "proposal authoring input was rejected before durable preparation: {source}"),
+            Self::ProposalSelfVerification(source) => write!(formatter, "new local producer signature failed strict proposal self-verification: {source}"),
+            Self::ProposalRecovery(source) => write!(formatter, "completed proposal state failed strict signer recovery: {source}"),
+            Self::ProposalActivationWhileLivePending => formatter.write_str("proposal authoring cannot activate while a live preparation is pending"),
+            Self::ProposalReplayLimitMismatch { retained, supplied } => write!(formatter, "proposal replay limit {supplied} does not match retained activation {retained}"),
+            Self::NonMonotonicProposal { previous, actual } => write!(formatter, "proposal slot {actual:?} does not follow retained proposal {previous:?}"),
             Self::TerminalHalt { position, role } => write!(formatter, "vote-safety journal is terminally halted at {position:?}/{role:?}"),
+            Self::TerminalProposalHalt { position } => write!(formatter, "vote-safety journal is terminally halted at proposal {position:?}"),
             Self::TerminalFinalityConflictSignerStop { height } => write!(formatter, "vote-safety journal is terminally stopped by finality conflict at height {}", height.value()),
             Self::Commit { proposed_state_id, source } => write!(formatter, "vote-safety append proposing state {proposed_state_id:?} has unknown durability: {source}"),
             Self::Poisoned => formatter.write_str("vote-safety journal is poisoned after ambiguous I/O; drop it and reopen with a trusted state ID"),
@@ -3939,6 +5164,11 @@ impl Error for FixedValidatorVoteSafetyJournalErrorV0 {
             | Self::Stabilize { source }
             | Self::Commit { source, .. } => Some(source),
             Self::Intent { source, .. } => Some(source),
+            Self::ProposalIntent { source, .. }
+            | Self::CompletedProposal { source, .. }
+            | Self::ProposalPreparation(source)
+            | Self::ProposalSelfVerification(source)
+            | Self::ProposalRecovery(source) => Some(source),
             Self::SignerRecoveryRound(source) => Some(source),
             Self::LockState(source) => Some(source),
             Self::SigningSessionIntent(source) => Some(source),

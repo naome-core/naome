@@ -4,7 +4,8 @@ use std::error::Error;
 use std::fmt;
 
 use naome_chain::{
-    ArtifactBlock, ArtifactBlockId, ArtifactChainBranchSnapshot, ArtifactChainId, ArtifactSetRoot,
+    ArtifactBlock, ArtifactBlockApplyError, ArtifactBlockId, ArtifactChainBranchSnapshot,
+    ArtifactChainId, ArtifactSetRoot,
 };
 
 use super::consensus_value::{
@@ -468,6 +469,25 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
         .expect("a branch-derived round always has a positive child height")
     }
 
+    pub(crate) fn validate_authored_proposal_value(
+        &self,
+        value: ConsensusValueV0,
+        canonical_artifact_bytes: Vec<u8>,
+    ) -> Result<(), FixedConsensusProposalValueVerifyErrorV0> {
+        let expected = self.value_for_artifact_block(value.artifact_block());
+        if value != expected {
+            return Err(FixedConsensusProposalValueVerifyErrorV0::ValueMismatch {
+                expected: Box::new(expected),
+                actual: Box::new(value),
+            });
+        }
+        self.branch
+            .artifact_snapshot
+            .validate_child(&value.artifact_block(), canonical_artifact_bytes)
+            .map(|_| ())
+            .map_err(FixedConsensusProposalValueVerifyErrorV0::ArtifactValidation)
+    }
+
     /// Advances this cursor by exactly one round-local proposer step.
     pub fn advance_round(mut self) -> Result<Self, ProposerSelectionError> {
         let next_round = self
@@ -571,6 +591,41 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
             round: self,
             envelope,
         })
+    }
+}
+
+/// A branch-derived value or its complete artifact payload could not be used
+/// as one locally authored proposal candidate.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixedConsensusProposalValueVerifyErrorV0 {
+    /// The value differs from the exact value this branch and round derive for
+    /// the same artifact block.
+    ValueMismatch {
+        expected: Box<ConsensusValueV0>,
+        actual: Box<ConsensusValueV0>,
+    },
+    /// Complete immutable artifact-child validation failed.
+    ArtifactValidation(ArtifactBlockApplyError),
+}
+
+impl fmt::Display for FixedConsensusProposalValueVerifyErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ValueMismatch { .. } => formatter.write_str(
+                "proposal value differs from the exact branch-derived value for its artifact block",
+            ),
+            Self::ArtifactValidation(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl Error for FixedConsensusProposalValueVerifyErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ArtifactValidation(source) => Some(source),
+            Self::ValueMismatch { .. } => None,
+        }
     }
 }
 

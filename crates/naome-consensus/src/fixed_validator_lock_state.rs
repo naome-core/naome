@@ -253,6 +253,95 @@ struct FixedValidatorVoteStateSnapshotV0 {
     valid: Option<FixedValidatorValidValueV0>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FixedValidatorProposalStateSnapshotV0 {
+    snapshot: FixedValidatorVoteStateSnapshotV0,
+    canonical_bytes: Vec<u8>,
+}
+
+impl FixedValidatorProposalStateSnapshotV0 {
+    pub(crate) const MIN_BYTE_LENGTH: usize = STATE_SNAPSHOT_FIXED_BYTES;
+    pub(crate) const MAX_BYTE_LENGTH: usize = STATE_SNAPSHOT_FIXED_BYTES
+        + LOCK_SNAPSHOT_BYTES
+        + VALID_SNAPSHOT_FIXED_BYTES
+        + VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH;
+
+    pub(crate) fn from_lock_state(
+        state: &FixedValidatorLockStateV0,
+    ) -> Result<Self, FixedValidatorVoteIntentError> {
+        let snapshot = vote_snapshot_from_lock_state(state);
+        let length = state_snapshot_length(&snapshot)?;
+        let mut canonical_bytes = Vec::new();
+        canonical_bytes
+            .try_reserve_exact(length)
+            .map_err(|_| FixedValidatorVoteIntentError::AllocationFailed)?;
+        append_state_snapshot(&mut canonical_bytes, &snapshot);
+        debug_assert_eq!(canonical_bytes.len(), length);
+        Ok(Self {
+            snapshot,
+            canonical_bytes,
+        })
+    }
+
+    pub(crate) fn decode_and_verify(
+        bytes: &[u8],
+        expected_context: ConsensusContextV0,
+        expected_fixed_agreement_set_id: FixedAgreementSetId,
+    ) -> Result<Self, FixedValidatorVoteIntentError> {
+        let mut decoder = VoteIntentDecoder::new(bytes);
+        let snapshot = decode_state_snapshot(
+            &mut decoder,
+            expected_context,
+            expected_fixed_agreement_set_id,
+        )?;
+        decoder.finish()?;
+        let mut canonical_bytes = Vec::new();
+        canonical_bytes
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| FixedValidatorVoteIntentError::AllocationFailed)?;
+        canonical_bytes.extend_from_slice(bytes);
+        let mut expected = Vec::new();
+        expected
+            .try_reserve_exact(state_snapshot_length(&snapshot)?)
+            .map_err(|_| FixedValidatorVoteIntentError::AllocationFailed)?;
+        append_state_snapshot(&mut expected, &snapshot);
+        if expected != canonical_bytes {
+            return Err(FixedValidatorVoteIntentError::NonCanonicalEncoding);
+        }
+        Ok(Self {
+            snapshot,
+            canonical_bytes,
+        })
+    }
+
+    pub(crate) const fn position(&self) -> ConsensusPosition {
+        self.snapshot.position
+    }
+
+    pub(crate) const fn phase(&self) -> FixedValidatorLockPhaseV0 {
+        self.snapshot.phase
+    }
+
+    pub(crate) const fn context(&self) -> ConsensusContextV0 {
+        self.snapshot.context
+    }
+
+    pub(crate) const fn valid_value(&self) -> Option<&FixedValidatorValidValueV0> {
+        self.snapshot.valid.as_ref()
+    }
+
+    pub(crate) fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    pub(crate) fn restore_for_round(
+        &self,
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<FixedValidatorLockStateV0, FixedValidatorVoteIntentError> {
+        restore_snapshot_for_round(&self.snapshot, round)
+    }
+}
+
 /// One strictly decoded but non-authoritative vote-state record.
 ///
 /// Header-bound decoding proves canonical framing, bounded evidence, internal

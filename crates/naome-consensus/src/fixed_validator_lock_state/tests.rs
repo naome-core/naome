@@ -10,6 +10,8 @@ use super::*;
 use crate::{
     ActiveAgreementEntry, ActiveAgreementSnapshot, AgreementWeight, ConsensusGenesisId,
     ConsensusHeight, ConsensusKey, ConsensusProtocolVersion, FixedConsensusBranchV0,
+    FixedValidatorProposalIntentErrorV0, FixedValidatorProposalSourceV0,
+    ObservedFixedValidatorProposalIntentV0, VerifiedProducerAuthorizationV0,
 };
 
 const VOTE_BODY_BYTES: usize = 118;
@@ -216,6 +218,169 @@ fn artifact_id_for(payload: &[u8]) -> ArtifactId {
         .apply_canonical_artifact_bytes(payload.to_vec())
         .unwrap()
         .artifact_id()
+}
+
+fn proposal_candidate(chain_seed: u8) -> (ArtifactBlock, Vec<u8>) {
+    let payload = proof_payload();
+    let block = ArtifactChainState::new(ArtifactChainDefinition::new([chain_seed; 32]))
+        .prepare_block(artifact_id_for(&payload))
+        .unwrap();
+    (block, payload)
+}
+
+#[test]
+fn proposal_intent_authors_one_fully_validated_fresh_value() {
+    let chain_seed = 0x72;
+    let (branch, signing_key, context) = fixture(chain_seed);
+    let round = branch.begin_round_zero().unwrap();
+    let state = FixedValidatorLockStateV0::try_from_round_zero(&round).unwrap();
+    let (artifact_block, payload) = proposal_candidate(chain_seed);
+    let intent = state
+        .prepare_proposal_intent(
+            &round,
+            FixedValidatorProposalSourceV0::Fresh {
+                artifact_block,
+                canonical_artifact_bytes: payload.clone(),
+            },
+            consensus_key(&signing_key),
+        )
+        .unwrap();
+    let observed = ObservedFixedValidatorProposalIntentV0::decode_and_verify(
+        intent.canonical_intent_bytes(),
+        context,
+        branch.fixed_agreement_set_id(),
+        consensus_key(&signing_key),
+    )
+    .unwrap();
+    let signature =
+        ConsensusSignature::from_bytes(signing_key.sign(&intent.signing_transcript()).to_bytes());
+    let completed = intent.complete_with_signature(signature).unwrap();
+    let proposal_control = completed.canonical_proposal_control_bytes();
+    let authorization_start = ConsensusValueV0::BYTE_LENGTH;
+    let authorization_end = authorization_start + VerifiedProducerAuthorizationV0::BYTE_LENGTH;
+    let recovered = observed
+        .verify_completed_producer_authorization(
+            &proposal_control[authorization_start..authorization_end],
+        )
+        .unwrap();
+    let verified = round
+        .decode_and_verify_proposal_control(proposal_control, payload)
+        .unwrap();
+
+    let mut oversized_authorization =
+        proposal_control[authorization_start..authorization_end].to_vec();
+    oversized_authorization.push(0);
+    assert!(matches!(
+        observed.verify_completed_producer_authorization(&oversized_authorization),
+        Err(FixedValidatorProposalIntentErrorV0::InvalidProducerAuthorizationLength {
+            actual,
+            expected,
+        }) if actual == VerifiedProducerAuthorizationV0::BYTE_LENGTH + 1
+            && expected == VerifiedProducerAuthorizationV0::BYTE_LENGTH
+    ));
+    let minimum_control_length =
+        ConsensusValueV0::BYTE_LENGTH + VerifiedProducerAuthorizationV0::BYTE_LENGTH + 1;
+    assert!(matches!(
+        observed.verify_completed_proposal_control(&vec![0; minimum_control_length - 1]),
+        Err(FixedValidatorProposalIntentErrorV0::InvalidCompletionLength {
+            actual,
+            minimum,
+        }) if actual == minimum_control_length - 1 && minimum == minimum_control_length
+    ));
+
+    assert_eq!(observed.position(), round.position());
+    assert_eq!(
+        recovered.canonical_proposal_control_bytes(),
+        proposal_control
+    );
+    assert_eq!(observed.value(), verified.value());
+    assert_eq!(completed.proposer(), consensus_key(&signing_key));
+    assert_eq!(verified.valid_round(), None);
+}
+
+#[test]
+fn proposal_intent_rejects_unscheduled_signer_before_artifact_validation() {
+    let (branch, signing_keys, _) = three_validator_fixture(0x73);
+    let round = branch.begin_round_zero().unwrap();
+    let state = FixedValidatorLockStateV0::try_from_round_zero(&round).unwrap();
+    let unscheduled = signing_keys
+        .iter()
+        .find(|key| consensus_key(key) != round.proposer())
+        .unwrap();
+    let invalid_block = ArtifactBlock::new(
+        ArtifactBlockId::from_bytes([0x91; 32]),
+        ArtifactSetRoot::from_bytes([0x92; 32]),
+        ArtifactSetRoot::from_bytes([0x93; 32]),
+        ArtifactId::from_bytes([0x94; 32]),
+    );
+
+    assert!(matches!(
+        state.prepare_proposal_intent(
+            &round,
+            FixedValidatorProposalSourceV0::Fresh {
+                artifact_block: invalid_block,
+                canonical_artifact_bytes: Vec::new(),
+            },
+            consensus_key(unscheduled),
+        ),
+        Err(FixedValidatorProposalIntentErrorV0::NotScheduledProposer {
+            scheduled,
+            signer,
+        }) if scheduled == round.proposer() && signer == consensus_key(unscheduled)
+    ));
+}
+
+#[test]
+fn proposal_intent_reauthors_exact_retained_value_and_prevote_proof() {
+    let chain_seed = 0x74;
+    let (branch, signing_key, context) = fixture(chain_seed);
+    let round_zero = branch.begin_round_zero().unwrap();
+    let (artifact_block, payload) = proposal_candidate(chain_seed);
+    let value = round_zero.value_for_artifact_block(artifact_block);
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    lock_current_proposal(&mut state, value, context, &signing_key);
+    let retained_certificate = state
+        .valid_value()
+        .unwrap()
+        .canonical_prevote_certificate()
+        .to_vec();
+    let round_one = round_zero.advance_round().unwrap();
+    state.advance_round(&round_one).unwrap();
+
+    assert!(matches!(
+        state.prepare_proposal_intent(
+            &round_one,
+            FixedValidatorProposalSourceV0::Fresh {
+                artifact_block,
+                canonical_artifact_bytes: payload.clone(),
+            },
+            consensus_key(&signing_key),
+        ),
+        Err(FixedValidatorProposalIntentErrorV0::RetainedValidValueRequired)
+    ));
+
+    let intent = state
+        .prepare_proposal_intent(
+            &round_one,
+            FixedValidatorProposalSourceV0::RetainedValid {
+                canonical_artifact_bytes: payload.clone(),
+            },
+            consensus_key(&signing_key),
+        )
+        .unwrap();
+    let signature =
+        ConsensusSignature::from_bytes(signing_key.sign(&intent.signing_transcript()).to_bytes());
+    let completed = intent.complete_with_signature(signature).unwrap();
+    let verified = round_one
+        .decode_and_verify_proposal_control(completed.canonical_proposal_control_bytes(), payload)
+        .unwrap();
+
+    assert_eq!(verified.value(), value);
+    assert_eq!(verified.valid_round(), Some(ConsensusRound::new(0)));
+    assert_eq!(
+        verified.valid_round_certificate_bytes(),
+        Some(retained_certificate.as_slice())
+    );
 }
 
 fn owned_transition(chain_seed: u8) -> OwnedVerifiedFixedConsensusTransitionV0 {

@@ -38,6 +38,14 @@ accept a caller-created intent or mutable replacement kernel. That signer
 boundary does not make a separate volatile kernel or unsigned effect
 independently durable or signable.
 
+The same key-owning journal's separately specified
+`fixed-validator-node-proposal-authoring-v0.md` path may seal the complete
+Proposal-phase state plus either one fully validated fresh value or the exact
+retained valid value and proof, persist and anchor that intent before producer
+key use, and persist and anchor completion before releasing these existing
+proposal-control bytes. Proposal admission remains the independent verifier;
+locally authored bytes do not gain selection, finality, or peer authority.
+
 ## Canonical proposal-control bytes
 
 One fixed-validator proposal-control V0 value is exactly:

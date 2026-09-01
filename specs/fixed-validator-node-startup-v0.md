@@ -13,10 +13,11 @@ set.
 The caller supplies the exact artifact-chain definition, consensus context,
 preselected fixed agreement entries, one in-memory Ed25519 signing key, four
 journal or anchor directories, positive finality and vote-journal replay
-limits, an inclusive signer-recovery round ceiling that may be zero, and an
-inclusive signer catch-up height-handoff limit that may also be zero. These
-values are configuration authority. Startup proves only that the supplied
-local files and key are mutually consistent with those exact values.
+limits, a separate positive proposal replay limit, an inclusive signer-
+recovery round ceiling that may be zero, and an inclusive signer catch-up
+height-handoff limit that may also be zero. These values are configuration
+authority. Startup proves only that the supplied local files and key are
+mutually consistent with those exact values.
 
 ## Provisioning preflight
 
@@ -41,11 +42,13 @@ Fresh creation performs these ordered steps:
 1. Create the anchored finality journal at virtual genesis.
 2. Create the anchored per-key vote-safety journal for the preflighted fixed
    set and signer.
-3. Derive round zero from the created finality head.
-4. Bind that exact branch, height, and signer as the initial vote-journal
+3. Persist and anchor one-time proposal-authoring activation with the exact
+   caller-supplied proposal replay limit.
+4. Derive round zero from the created finality head.
+5. Bind that exact branch, height, and signer as the initial vote-journal
    lineage, including its anchor update.
 
-Only completion of all four steps returns a ready node owner. There is no
+Only completion of all five steps returns a ready node owner. There is no
 cross-journal or cross-anchor transaction. A later-step failure does not delete,
 replace, roll back, or reinterpret an earlier durable file; the caller must
 inspect the typed error and provision fresh caller-chosen paths rather than
@@ -66,13 +69,18 @@ After both pairs open, startup applies the following order:
    returned as a typed finality-stopped outcome. Any incompatible terminal
    signer state or stop-persistence failure returns an error and no session.
 2. Otherwise, return a typed signer-stopped outcome for an existing vote-safety
-   same-slot halt or finality-conflict stop.
+   same-slot halt, proposal-safety same-slot halt, or finality-conflict stop.
 3. Otherwise, return a typed pending-preparation outcome for the sole durable
-   incomplete vote. Startup never resumes, signs, drops, or replaces it.
-4. Otherwise, let the vote journal issue its opaque anchored recovery
+   incomplete vote or proposal. Startup never resumes, signs, drops, or
+   replaces it.
+4. Otherwise, activate and anchor the exact caller-supplied positive proposal
+   replay limit. Exact existing activation is no-write; a different retained
+   limit fails typed. This migrates a healthy older journal in place without
+   rewriting its header or issuing recovery authority first.
+5. Otherwise, let the vote journal issue its opaque anchored recovery
    capability and let the finality journal reconstruct only the exact retained
    branch named by that capability.
-5. If selected finality is ahead of that recovered signer lineage, consume each
+6. If selected finality is ahead of that recovered signer lineage, consume each
    exact retained selected transition in height order through the existing
    anchored finality-to-signer handoff until the signer reaches the finality
    head. Before the first handoff, compute the complete nonnegative height gap
@@ -126,7 +134,10 @@ journal. The scope also exposes no raw mutable finality handle or raw storage
 signing session. Its live-finality method is specified by
 `fixed-validator-node-finality-v0.md`: every new finality commit or conflict
 must reach the matching signer advance or stop before another signing scope can
-be returned.
+be returned. Current-round proposal authoring is available only through the
+consuming operation specified by
+`fixed-validator-node-proposal-authoring-v0.md`; raw proposal intent,
+preparation, acknowledgement, and key-use stages remain inaccessible.
 
 ## Failure and authority boundaries
 
