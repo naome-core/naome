@@ -26,10 +26,15 @@ use naome_storage::{
 };
 
 mod finality;
+mod voting;
 
 pub use finality::{
     FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
     FixedValidatorNodeFinalitySelectionV0,
+};
+pub use voting::{
+    FixedValidatorNodeVoteExecutionErrorV0, FixedValidatorNodeVoteExecutionOutcomeV0,
+    FixedValidatorNodeVoteRejectionV0,
 };
 
 /// Four exact caller-owned storage namespaces used by one local signer.
@@ -453,11 +458,11 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         self.finality
     }
 
-    /// Returns the sole node-scoped voting session.
+    /// Returns the sole node-scoped round-control session.
     ///
     /// Height advancement and finality-conflict stop authority are deliberately
-    /// absent; only this scope's consuming node-owned finality coordinators may
-    /// apply them.
+    /// absent, and current-round decision, preparation, acknowledgement, and
+    /// key-use primitives are private to this scope's consuming coordinators.
     pub fn signing_session(&mut self) -> &mut FixedValidatorNodeVotingSessionV0<'node> {
         &mut self.signing_session
     }
@@ -474,12 +479,52 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     }
 }
 
-/// Node-scoped ordinary voting access for one anchored signing lineage.
+/// Node-scoped diagnostics and bounded round control for one signing lineage.
 ///
-/// This facade owns the lower-level session but exposes only round, vote, and
-/// key-use operations. Finality height and conflict-stop capabilities remain
-/// private to the consuming node coordinator, so another matching finality
-/// journal cannot advance or stop this node signer through the public API.
+/// This facade owns the lower-level session. Finality height, conflict-stop,
+/// current-round decision, raw intent, acknowledgement, and key-use operations
+/// remain private to consuming node coordinators. External callers therefore
+/// cannot release a vote by manually splitting the required durable sequence:
+///
+/// ```compile_fail,E0624
+/// use naome_node::FixedValidatorNodeVotingSessionV0;
+///
+/// fn bypass(session: &mut FixedValidatorNodeVotingSessionV0<'_>) {
+///     let _ = session.decide_prevote_without_proposal();
+/// }
+/// ```
+///
+/// The raw durable stages are private as well:
+///
+/// ```compile_fail,E0624
+/// use naome_consensus::{FixedConsensusRoundV0, FixedValidatorUnsignedVoteEffectV0};
+/// use naome_node::FixedValidatorNodeVotingSessionV0;
+/// use naome_storage::{
+///     FixedValidatorDurablePrepareAcknowledgementV0, FixedValidatorPreparedVoteV0,
+/// };
+///
+/// fn prepare(
+///     session: &mut FixedValidatorNodeVotingSessionV0<'_>,
+///     round: &FixedConsensusRoundV0<'_>,
+///     effect: FixedValidatorUnsignedVoteEffectV0,
+/// ) {
+///     let _ = session.prepare_vote(round, effect);
+/// }
+///
+/// fn acknowledge(
+///     session: &FixedValidatorNodeVotingSessionV0<'_>,
+///     prepared: FixedValidatorPreparedVoteV0,
+/// ) {
+///     let _ = session.acknowledge_prepared_vote(prepared);
+/// }
+///
+/// fn sign(
+///     session: &mut FixedValidatorNodeVotingSessionV0<'_>,
+///     acknowledgement: FixedValidatorDurablePrepareAcknowledgementV0,
+/// ) {
+///     let _ = session.sign_prepared_vote(acknowledgement);
+/// }
+/// ```
 #[must_use]
 pub struct FixedValidatorNodeVotingSessionV0<'node> {
     signing_session: FixedValidatorAnchoredVoteSafetySigningSessionV0<'node>,
@@ -510,8 +555,15 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
         self.signing_session.valid_value()
     }
 
+    /// Rejects non-operational or pending session state before input admission.
+    pub(crate) fn ensure_current_vote_ready(
+        &self,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session.ensure_current_vote_ready()
+    }
+
     /// Decides the current proposal path's prevote without persistence.
-    pub fn decide_prevote_for_proposal(
+    pub(crate) fn decide_prevote_for_proposal(
         &mut self,
         proposal: &VerifiedFixedConsensusProposalV0<'_, '_>,
     ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
@@ -519,14 +571,14 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Decides the absent-or-rejected-proposal prevote path without persistence.
-    pub fn decide_prevote_without_proposal(
+    pub(crate) fn decide_prevote_without_proposal(
         &mut self,
     ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
         self.signing_session.decide_prevote_without_proposal()
     }
 
     /// Applies one proposal prevote quorum and decides precommit in memory.
-    pub fn decide_precommit_for_proposal_quorum(
+    pub(crate) fn decide_precommit_for_proposal_quorum(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
         proposal: &VerifiedFixedConsensusProposalV0<'_, '_>,
@@ -540,7 +592,7 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Applies one nil prevote quorum and decides nil precommit in memory.
-    pub fn decide_precommit_for_nil_quorum(
+    pub(crate) fn decide_precommit_for_nil_quorum(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
         canonical_certificate: &[u8],
@@ -550,7 +602,7 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Decides nil precommit without a current-round quorum in memory.
-    pub fn decide_precommit_without_quorum(
+    pub(crate) fn decide_precommit_without_quorum(
         &mut self,
     ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
         self.signing_session.decide_precommit_without_quorum()
@@ -601,7 +653,7 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Persists and anchors the exact session-derived vote preparation.
-    pub fn prepare_vote(
+    pub(crate) fn prepare_vote(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
         effect: FixedValidatorUnsignedVoteEffectV0,
@@ -610,7 +662,7 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Converts an already anchored live preparation into key-use authority.
-    pub fn acknowledge_prepared_vote(
+    pub(crate) fn acknowledge_prepared_vote(
         &self,
         prepared: FixedValidatorPreparedVoteV0,
     ) -> Result<FixedValidatorDurablePrepareAcknowledgementV0, FixedValidatorVoteSafetyJournalErrorV0>
@@ -619,7 +671,7 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Signs and anchors one acknowledged preparation before releasing bytes.
-    pub fn sign_prepared_vote(
+    pub(crate) fn sign_prepared_vote(
         &mut self,
         acknowledgement: FixedValidatorDurablePrepareAcknowledgementV0,
     ) -> Result<FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyJournalErrorV0> {

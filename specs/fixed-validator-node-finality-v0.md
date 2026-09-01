@@ -41,8 +41,10 @@ admits a fully verified selected-height sibling without selecting either value.
 The operation consumes `FixedValidatorNodeSigningScopeV0`. The scope retains a
 mutable finality borrow internally, but exposes only read-only finality
 diagnostics to callers. Its public `FixedValidatorNodeVotingSessionV0` facade
-exposes ordinary round, vote-preparation, and key-use operations but withholds
-the lower-level finality height-transition and conflict-stop methods. The
+exposes read-only diagnostics and explicit bounded round control, but withholds
+current-round decision, vote-preparation, acknowledgement, key-use, finality
+height-transition, and conflict-stop methods. The consuming node-voting
+coordinator owns the complete current-round durable sequence. The
 node-owned finality journal is therefore the exclusive source of height and
 stop authority for this scope. Only `commit_verified_finality` and
 `commit_candidate_backed_finality` may couple its height capability into the
