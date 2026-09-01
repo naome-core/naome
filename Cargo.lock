@@ -1808,6 +1808,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-node"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "naome-chain",
+ "naome-consensus",
+ "naome-foundation",
+ "naome-proof",
+ "naome-storage",
+]
+
+[[package]]
 name = "naome-proof"
 version = "0.1.0"
 dependencies = [

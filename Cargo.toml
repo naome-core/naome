@@ -17,6 +17,7 @@ members = [
     "crates/naome-foundation",
     "crates/naome-ledger",
     "crates/naome-network",
+    "crates/naome-node",
     "crates/naome-proof",
     "crates/naome-storage",
 ]
