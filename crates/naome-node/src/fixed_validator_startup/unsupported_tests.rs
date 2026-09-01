@@ -10,8 +10,8 @@ use naome_consensus::{
 };
 use naome_storage::{
     FixedValidatorAnchorErrorV0, FixedValidatorAnchoredFinalityJournalErrorV0,
-    FixedValidatorFinalityReplayLimitV0, FixedValidatorSignerRecoveryRoundLimitV0,
-    FixedValidatorVoteSafetyReplayLimitV0,
+    FixedValidatorFinalityReplayLimitV0, FixedValidatorProposalReplayLimitV0,
+    FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVoteSafetyReplayLimitV0,
 };
 
 use super::*;
@@ -62,6 +62,7 @@ fn non_unix_anchor_startup_is_typed_unsupported_and_never_ready() {
         ),
         FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
         FixedValidatorVoteSafetyReplayLimitV0::new(8).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(8).unwrap(),
         FixedValidatorSignerRecoveryRoundLimitV0::new(8),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     );
