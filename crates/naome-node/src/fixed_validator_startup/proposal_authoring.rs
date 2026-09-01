@@ -62,7 +62,7 @@ pub enum FixedValidatorNodeProposalAuthoringRejectionV0 {
     CandidateUnavailable { target: ArtifactBlockId },
     /// The exact caller-routed payload store could not serve the target.
     PayloadStore(Box<CanonicalArtifactPayloadStoreError>),
-    /// The selected candidate's canonical artifact payload is not locally available.
+    /// The exact proposal target's canonical artifact payload is not locally available.
     PayloadUnavailable { target: ArtifactBlockId },
     /// The current phase, proposer, source, artifact, or retained value was invalid.
     Proposal(Box<FixedValidatorProposalIntentErrorV0>),
@@ -99,7 +99,7 @@ impl fmt::Display for FixedValidatorNodeProposalAuthoringRejectionV0 {
             }
             Self::PayloadUnavailable { target } => write!(
                 formatter,
-                "canonical payload for proposal candidate {target:?} is not locally available"
+                "canonical payload for proposal target {target:?} is not locally available"
             ),
             Self::Proposal(source) => {
                 write!(
@@ -286,6 +286,44 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
 
             Ok(FixedValidatorProposalSourceV0::Fresh {
                 artifact_block,
+                canonical_artifact_bytes: payload.into_canonical_artifact_bytes().into_vec(),
+            })
+        })
+    }
+
+    /// Re-authors the exact retained valid value from one local payload store.
+    ///
+    /// The private retained value supplies the sole artifact address. Proposal
+    /// phase, scheduled-proposer authority, and retained-value presence are
+    /// established before the payload store is read. Store presence grants only
+    /// availability: the unchanged consensus path still re-verifies the retained
+    /// certificate, value, and payload before any durable signer effect.
+    pub fn author_payload_store_backed_retained_proposal(
+        self,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeProposalAuthoringOutcomeV0<'node>,
+        FixedValidatorNodeProposalAuthoringErrorV0,
+    > {
+        self.author_proposal_with_source(inclusive_maximum_round, |_, signing_session| {
+            let retained_value = signing_session.valid_value().ok_or_else(|| {
+                FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(Box::new(
+                    FixedValidatorProposalIntentErrorV0::FreshValueRequired,
+                ))
+            })?;
+            let artifact_block = retained_value.value().artifact_block();
+            let target = artifact_block.id();
+            let payload = payloads
+                .get(artifact_block.artifact_id())
+                .map_err(|source| {
+                    FixedValidatorNodeProposalAuthoringRejectionV0::PayloadStore(Box::new(source))
+                })?
+                .ok_or(
+                    FixedValidatorNodeProposalAuthoringRejectionV0::PayloadUnavailable { target },
+                )?;
+
+            Ok(FixedValidatorProposalSourceV0::RetainedValid {
                 canonical_artifact_bytes: payload.into_canonical_artifact_bytes().into_vec(),
             })
         })
