@@ -11,7 +11,10 @@ use naome_storage::{
     FixedValidatorVoteSafetyJournalErrorV0,
 };
 
-use super::{FixedValidatorNodeSigningScopeV0, FixedValidatorNodeVotingSessionV0};
+use super::{
+    FixedValidatorNodeCurrentRoundErrorV0, FixedValidatorNodeSigningScopeV0,
+    FixedValidatorNodeVotingSessionV0, fixed_validator_node_current_round,
+};
 
 /// Complete result of one node-owned current-round vote execution.
 ///
@@ -419,49 +422,42 @@ fn current_round<'branch>(
     inclusive_maximum_round: ConsensusRound,
     finality_maximum_round: u64,
 ) -> Result<FixedConsensusRoundV0<'branch>, CurrentRoundErrorV0> {
-    signing_session
-        .ensure_current_vote_ready()
-        .map_err(|source| {
-            CurrentRoundErrorV0::Fatal(FixedValidatorNodeVoteExecutionErrorV0::Session(Box::new(
-                source,
-            )))
-        })?;
-    let signer_position = signing_session.position();
-    let mut round = branch.begin_round_zero().map_err(|source| {
-        CurrentRoundErrorV0::Fatal(FixedValidatorNodeVoteExecutionErrorV0::Round(source))
-    })?;
-    if round.position().height() != signer_position.height() {
-        return Err(CurrentRoundErrorV0::Fatal(
+    fixed_validator_node_current_round(
+        branch,
+        signing_session,
+        inclusive_maximum_round,
+        finality_maximum_round,
+    )
+    .map_err(|error| match error {
+        FixedValidatorNodeCurrentRoundErrorV0::SignerBranchHeightMismatch {
+            signer,
+            branch_next_height,
+        } => CurrentRoundErrorV0::Fatal(
             FixedValidatorNodeVoteExecutionErrorV0::SignerBranchHeightMismatch {
-                signer: signer_position,
-                branch_next_height: round.position().height(),
+                signer,
+                branch_next_height,
             },
-        ));
-    }
-    let finality_maximum_round = ConsensusRound::new(finality_maximum_round);
-    if signer_position.round() > finality_maximum_round {
-        return Err(CurrentRoundErrorV0::Fatal(
-            FixedValidatorNodeVoteExecutionErrorV0::FinalityRoundLimitExceeded {
-                required: signer_position.round(),
-                maximum: finality_maximum_round,
-            },
-        ));
-    }
-    if signer_position.round() > inclusive_maximum_round {
-        return Err(CurrentRoundErrorV0::Rejected(
-            FixedValidatorNodeVoteRejectionV0::RoundWorkLimitExceeded {
-                required: signer_position.round(),
-                maximum: inclusive_maximum_round,
-            },
-        ));
-    }
-    for _ in 0..signer_position.round().value() {
-        round = round.advance_round().map_err(|source| {
+        ),
+        FixedValidatorNodeCurrentRoundErrorV0::Round(source) => {
             CurrentRoundErrorV0::Fatal(FixedValidatorNodeVoteExecutionErrorV0::Round(source))
-        })?;
-    }
-    debug_assert_eq!(round.position(), signer_position);
-    Ok(round)
+        }
+        FixedValidatorNodeCurrentRoundErrorV0::FinalityRoundLimitExceeded { required, maximum } => {
+            CurrentRoundErrorV0::Fatal(
+                FixedValidatorNodeVoteExecutionErrorV0::FinalityRoundLimitExceeded {
+                    required,
+                    maximum,
+                },
+            )
+        }
+        FixedValidatorNodeCurrentRoundErrorV0::CallerRoundLimitExceeded { required, maximum } => {
+            CurrentRoundErrorV0::Rejected(
+                FixedValidatorNodeVoteRejectionV0::RoundWorkLimitExceeded { required, maximum },
+            )
+        }
+        FixedValidatorNodeCurrentRoundErrorV0::Session(source) => {
+            CurrentRoundErrorV0::Fatal(FixedValidatorNodeVoteExecutionErrorV0::Session(source))
+        }
+    })
 }
 
 fn rejected<'node>(

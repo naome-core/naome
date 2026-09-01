@@ -26,11 +26,16 @@ use naome_storage::{
 };
 
 mod finality;
+mod round_progression;
 mod voting;
 
 pub use finality::{
     FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
     FixedValidatorNodeFinalitySelectionV0,
+};
+pub use round_progression::{
+    FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,
+    FixedValidatorNodeRoundAdvanceRejectionV0,
 };
 pub use voting::{
     FixedValidatorNodeVoteExecutionErrorV0, FixedValidatorNodeVoteExecutionOutcomeV0,
@@ -525,6 +530,38 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
 ///     let _ = session.sign_prepared_vote(acknowledgement);
 /// }
 /// ```
+///
+/// Quorum-driven progression is available only through the consuming node
+/// scope, not through separately callable cursor, prepare, or acknowledgement
+/// stages:
+///
+/// ```compile_fail,E0624
+/// use naome_consensus::{ConsensusRound, FixedConsensusRoundV0};
+/// use naome_node::FixedValidatorNodeVotingSessionV0;
+/// use naome_storage::FixedValidatorPreparedHigherRoundAdvanceV0;
+///
+/// fn bypass_nil<'branch>(
+///     session: &mut FixedValidatorNodeVotingSessionV0<'_>,
+///     round: &FixedConsensusRoundV0<'branch>,
+///     certificate: &[u8],
+/// ) {
+///     let _ = session.advance_round_for_nil_precommit_quorum(round, certificate);
+/// }
+///
+/// fn bypass_higher<'branch>(
+///     session: &mut FixedValidatorNodeVotingSessionV0<'_>,
+///     round: &FixedConsensusRoundV0<'branch>,
+///     certificate: &[u8],
+///     prepared: FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+/// ) {
+///     let _ = session.prepare_higher_round_quorum_advance(
+///         round,
+///         certificate,
+///         ConsensusRound::new(1),
+///     );
+///     let _ = session.acknowledge_prepared_higher_round(prepared);
+/// }
+/// ```
 #[must_use]
 pub struct FixedValidatorNodeVotingSessionV0<'node> {
     signing_session: FixedValidatorAnchoredVoteSafetySigningSessionV0<'node>,
@@ -617,7 +654,7 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Advances in memory after verifying one exact nil-precommit quorum.
-    pub fn advance_round_for_nil_precommit_quorum<'branch>(
+    pub(crate) fn advance_round_for_nil_precommit_quorum<'branch>(
         &mut self,
         current_round: &FixedConsensusRoundV0<'branch>,
         canonical_certificate: &[u8],
@@ -627,7 +664,7 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Persists and anchors one verified higher-round checkpoint before return.
-    pub fn prepare_higher_round_quorum_advance<'branch>(
+    pub(crate) fn prepare_higher_round_quorum_advance<'branch>(
         &mut self,
         current_round: &FixedConsensusRoundV0<'branch>,
         canonical_certificate: &[u8],
@@ -644,7 +681,7 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Publishes an already anchored higher-round checkpoint to live state.
-    pub fn acknowledge_prepared_higher_round<'branch>(
+    pub(crate) fn acknowledge_prepared_higher_round<'branch>(
         &mut self,
         prepared: FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
     ) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorVoteSafetyJournalErrorV0> {
@@ -677,6 +714,70 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     ) -> Result<FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyJournalErrorV0> {
         self.signing_session.sign_prepared_vote(acknowledgement)
     }
+}
+
+pub(super) enum FixedValidatorNodeCurrentRoundErrorV0 {
+    SignerBranchHeightMismatch {
+        signer: ConsensusPosition,
+        branch_next_height: ConsensusHeight,
+    },
+    Round(ProposerSelectionError),
+    FinalityRoundLimitExceeded {
+        required: ConsensusRound,
+        maximum: ConsensusRound,
+    },
+    CallerRoundLimitExceeded {
+        required: ConsensusRound,
+        maximum: ConsensusRound,
+    },
+    Session(Box<FixedValidatorVoteSafetyJournalErrorV0>),
+}
+
+pub(super) fn fixed_validator_node_current_round<'branch>(
+    branch: &'branch FixedConsensusBranchV0,
+    signing_session: &FixedValidatorNodeVotingSessionV0<'_>,
+    inclusive_maximum_round: ConsensusRound,
+    finality_maximum_round: u64,
+) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorNodeCurrentRoundErrorV0> {
+    signing_session
+        .ensure_current_vote_ready()
+        .map_err(|source| FixedValidatorNodeCurrentRoundErrorV0::Session(Box::new(source)))?;
+    let signer_position = signing_session.position();
+    let mut round = branch
+        .begin_round_zero()
+        .map_err(FixedValidatorNodeCurrentRoundErrorV0::Round)?;
+    if round.position().height() != signer_position.height() {
+        return Err(
+            FixedValidatorNodeCurrentRoundErrorV0::SignerBranchHeightMismatch {
+                signer: signer_position,
+                branch_next_height: round.position().height(),
+            },
+        );
+    }
+    let finality_maximum_round = ConsensusRound::new(finality_maximum_round);
+    if signer_position.round() > finality_maximum_round {
+        return Err(
+            FixedValidatorNodeCurrentRoundErrorV0::FinalityRoundLimitExceeded {
+                required: signer_position.round(),
+                maximum: finality_maximum_round,
+            },
+        );
+    }
+    if signer_position.round() > inclusive_maximum_round {
+        return Err(
+            FixedValidatorNodeCurrentRoundErrorV0::CallerRoundLimitExceeded {
+                required: signer_position.round(),
+                maximum: inclusive_maximum_round,
+            },
+        );
+    }
+    for _ in 0..signer_position.round().value() {
+        round = round
+            .advance_round()
+            .map_err(FixedValidatorNodeCurrentRoundErrorV0::Round)?;
+    }
+    debug_assert_eq!(round.position(), signer_position);
+    Ok(round)
 }
 
 /// A strict restart result that never hides stopped or pending signer state.

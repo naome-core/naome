@@ -877,4 +877,5 @@ fn public_scope_components_name_one_exact_recovered_branch() {
 }
 
 mod finality;
+mod round_progression;
 mod voting;
