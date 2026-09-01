@@ -30,8 +30,9 @@ mod round_progression;
 mod voting;
 
 pub use finality::{
-    FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
-    FixedValidatorNodeFinalitySelectionV0,
+    FixedValidatorNodeCurrentRoundFinalityErrorV0, FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
+    FixedValidatorNodeCurrentRoundFinalityRejectionV0, FixedValidatorNodeFinalityErrorV0,
+    FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalitySelectionV0,
 };
 pub use round_progression::{
     FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,

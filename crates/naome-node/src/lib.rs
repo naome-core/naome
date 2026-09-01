@@ -11,9 +11,11 @@
 mod fixed_validator_startup;
 
 pub use fixed_validator_startup::{
-    FixedValidatorNodeDirectoriesV0, FixedValidatorNodeFinalityErrorV0,
-    FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalitySelectionV0,
-    FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeProvisionV0, FixedValidatorNodeReadyV0,
+    FixedValidatorNodeCurrentRoundFinalityErrorV0, FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
+    FixedValidatorNodeCurrentRoundFinalityRejectionV0, FixedValidatorNodeDirectoriesV0,
+    FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
+    FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
+    FixedValidatorNodeProvisionV0, FixedValidatorNodeReadyV0,
     FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,
     FixedValidatorNodeRoundAdvanceRejectionV0, FixedValidatorNodeSignerStopV0,
     FixedValidatorNodeSigningScopeV0, FixedValidatorNodeStartupErrorV0,
