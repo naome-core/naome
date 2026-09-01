@@ -11,7 +11,8 @@ use naome_storage::{
     FixedValidatorAnchoredFinalityJournalV0, FixedValidatorFinalityCommitOutcomeV0,
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityHaltV0,
     FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
-    FixedValidatorVoteSafetyJournalErrorV0, commit_candidate_backed_anchored_finality_v0,
+    FixedValidatorVoteSafetyJournalErrorV0, commit_candidate_backed_anchored_finality_conflict_v0,
+    commit_candidate_backed_anchored_finality_v0,
 };
 
 use super::{FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeSigningScopeV0};
@@ -159,7 +160,7 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         let Self {
             finality,
             branch,
-            mut signing_session,
+            signing_session,
         } = self;
         let outcome = finality
             .commit_verified(transition)
@@ -198,29 +199,9 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
                 },
             }),
             FixedValidatorFinalityCommitOutcomeV0::Halted(halt) => {
-                let durable = finality.acknowledge_signer_stop().map_err(|source| {
-                    FixedValidatorNodeFinalityErrorV0::SignerStopAuthority {
-                        halt: Box::new(halt),
-                        source: Box::new(source),
-                    }
-                })?;
-                let signer_stop = match signing_session
-                    .signing_session
-                    .stop_after_durable_finality_conflict(durable)
-                    .map_err(|source| FixedValidatorNodeFinalityErrorV0::SignerStop {
-                        halt: Box::new(halt),
-                        source: Box::new(source),
-                    })? {
-                    FixedValidatorFinalityConflictSignerStopOutcomeV0::Stopped(stop)
-                    | FixedValidatorFinalityConflictSignerStopOutcomeV0::AlreadyStopped(stop) => {
-                        stop
-                    }
-                };
+                let stopped = stop_after_finality_halt(finality, signing_session, halt)?;
                 Ok(FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(
-                    Box::new(FixedValidatorNodeFinalityStoppedV0 {
-                        finality_halt: halt,
-                        signer_stop,
-                    }),
+                    Box::new(stopped),
                 ))
             }
         }
@@ -268,6 +249,71 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         };
         continue_after_finalized(finality, signing_session, commit.position(), selection)
     }
+
+    /// Consumes one exact retained candidate and stops on a finalized sibling.
+    ///
+    /// This deny-only path accepts only an already selected height and rejects the
+    /// evidence-free selected value before source reads. It fully verifies a
+    /// distinct candidate against the exact retained selected parent before the
+    /// anchored finality journal may record its terminal conflict. Success returns
+    /// only after the matching signer stop is independently anchored. Candidate
+    /// and payload entries and durable bytes remain unchanged; an integrity/read
+    /// failure may poison only the owning live source handle under its existing
+    /// reopen contract. Every outcome consumes the scope.
+    pub fn commit_candidate_backed_finality_conflict(
+        self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: ArtifactBlockId,
+        canonical_envelope_bytes: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeFinalityErrorV0> {
+        let Self {
+            finality,
+            branch: _,
+            signing_session,
+        } = self;
+        let conflict = commit_candidate_backed_anchored_finality_conflict_v0(
+            finality,
+            candidates,
+            payloads,
+            expected_target,
+            canonical_envelope_bytes,
+            inclusive_maximum_round,
+        )
+        .map_err(|source| {
+            FixedValidatorNodeFinalityErrorV0::CandidateBackedFinality(Box::new(source))
+        })?;
+        debug_assert_eq!(conflict.target(), expected_target);
+        stop_after_finality_halt(finality, signing_session, conflict.halt())
+    }
+}
+
+fn stop_after_finality_halt(
+    finality: &FixedValidatorAnchoredFinalityJournalV0,
+    mut signing_session: super::FixedValidatorNodeVotingSessionV0<'_>,
+    halt: FixedValidatorFinalityHaltV0,
+) -> Result<FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeFinalityErrorV0> {
+    let durable = finality.acknowledge_signer_stop().map_err(|source| {
+        FixedValidatorNodeFinalityErrorV0::SignerStopAuthority {
+            halt: Box::new(halt),
+            source: Box::new(source),
+        }
+    })?;
+    let signer_stop = match signing_session
+        .signing_session
+        .stop_after_durable_finality_conflict(durable)
+        .map_err(|source| FixedValidatorNodeFinalityErrorV0::SignerStop {
+            halt: Box::new(halt),
+            source: Box::new(source),
+        })? {
+        FixedValidatorFinalityConflictSignerStopOutcomeV0::Stopped(stop)
+        | FixedValidatorFinalityConflictSignerStopOutcomeV0::AlreadyStopped(stop) => stop,
+    };
+    Ok(FixedValidatorNodeFinalityStoppedV0 {
+        finality_halt: halt,
+        signer_stop,
+    })
 }
 
 fn continue_after_finalized<'node>(

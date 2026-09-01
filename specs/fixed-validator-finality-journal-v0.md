@@ -215,13 +215,65 @@ an already selected historical value, admit sibling-conflict evidence, choose
 a fork, roll back or reorganize history, prune source data, retain peer
 provenance, establish network or global availability, or define peer trust.
 Multiple staged heights require one independently certified successful call per
-height in selected order. The existing raw sealed-transition `commit_verified`
-path remains the separate boundary for authenticated sibling-conflict handling.
+height in selected order. Candidate-backed sibling conflict is admitted only
+through the separate deny-only boundary below.
 
 `commit_candidate_backed_anchored_finality_v0` applies the same verification,
 source-store, caller-selection, and one-height boundaries to
 `FixedValidatorAnchoredFinalityJournalV0`. Its successful finality frame also
 advances the paired anchor before the candidate-backed outcome is published.
+
+## Candidate-backed finalized-sibling conflict
+
+`commit_candidate_backed_finality_conflict_v0` is a separate deny-only
+composition boundary for one caller-selected locally retained candidate at an
+already selected positive height. It accepts the same caller-routed candidate
+and Foundation payload stores, exact expected target, complete canonical
+finality envelope, and inclusive caller-local round-work ceiling as the
+direct-child boundary. These routing and availability inputs grant no validity,
+selection, preference, finality, or conflict authority.
+
+The operation first requires a healthy operable journal and a work ceiling no
+greater than the persisted journal ceiling. It strictly bounds and decodes the
+evidence-free envelope value, requires the exact journal context and caller
+target, requires its height to be already selected, and obtains that height's
+exact replay-retained selected parent. An envelope value equal to the selected
+value is rejected as `SelectedValueNotDistinct` before either source is read.
+That rejection is an ineligible-path classification, not authentication or
+`AlreadyFinalized` replay authority. It returns no transition or conflict
+authority and leaves the borrowed storage journal unchanged and operable. The
+node composition boundary separately consumes its signing scope on this error
+and returns no continuation authority.
+
+Only a preliminarily distinct value reaches source access. The operation then
+requires the candidate store's exact chain, integrity-reads the exact candidate
+and payload without changing either source's durable entries or bytes, and
+completely verifies the envelope against the retained selected parent. A source
+integrity/read failure may poison only the owning live handle under that store's
+existing reopen contract. The envelope's canonically framed certificate position
+supplies only bounded proposer-work routing. Full verification still requires
+the exact parent and height, producer authorization, non-nil strict-supermajority
+precommit certificate, state commitment, artifact parent and roots, canonical
+payload, and caller target. Availability, peer identity, transport
+authentication, and the preliminary value are not accepted as conflict evidence.
+
+Only the resulting private-field `OwnedVerifiedFixedConsensusTransitionV0`
+reaches `commit_verified`. Because the height and distinctness were preflighted
+against unchanged retained history, the sole successful outcome is the existing
+terminal sibling-conflict halt. The selected value and every later selected
+record remain retained only as the journal's pre-halt history; no sibling is
+chosen, installed, ranked, or exposed as a winner. Success changes only the
+finality journal. Pre-append rejection changes no finality byte, while source
+integrity failure retains the owning store's existing poison-and-reopen contract
+and append ambiguity retains finality's exact-anchor restart classification.
+
+`commit_candidate_backed_anchored_finality_conflict_v0` applies the same
+deny-only verification and source-store boundaries through
+`FixedValidatorAnchoredFinalityJournalV0`. It advances the independent finality
+anchor before returning the exact candidate target and durable halt. Neither
+function selects a branch, returns an operable head, rolls back history, mutates
+or prunes source data, discovers a candidate, trusts provenance, or performs
+networking, automatic promotion, repair, retry, or multi-height work.
 
 ## Mandatory durable signer-height advancement
 

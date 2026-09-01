@@ -134,14 +134,16 @@ pub use candidate_branch_reconstruction::{
     reconstruct_candidate_branch, start_candidate_branch_reconstruction,
 };
 pub use fixed_validator_finality_journal::{
-    CandidateBackedFinalityCommitV0, CandidateBackedFinalityErrorV0,
-    FixedValidatorAnchoredFinalityJournalErrorV0, FixedValidatorAnchoredFinalityJournalV0,
-    FixedValidatorDurableFinalityConflictV0, FixedValidatorDurableFinalityTransitionV0,
-    FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityHaltV0,
-    FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
-    FixedValidatorFinalityJournalV0, FixedValidatorFinalityRecordV0,
-    FixedValidatorFinalityReplayLimitErrorV0, FixedValidatorFinalityReplayLimitV0,
-    commit_candidate_backed_anchored_finality_v0, commit_candidate_backed_finality_v0,
+    CandidateBackedFinalityCommitV0, CandidateBackedFinalityConflictV0,
+    CandidateBackedFinalityErrorV0, FixedValidatorAnchoredFinalityJournalErrorV0,
+    FixedValidatorAnchoredFinalityJournalV0, FixedValidatorDurableFinalityConflictV0,
+    FixedValidatorDurableFinalityTransitionV0, FixedValidatorFinalityCommitOutcomeV0,
+    FixedValidatorFinalityHaltV0, FixedValidatorFinalityJournalErrorV0,
+    FixedValidatorFinalityJournalStateIdV0, FixedValidatorFinalityJournalV0,
+    FixedValidatorFinalityRecordV0, FixedValidatorFinalityReplayLimitErrorV0,
+    FixedValidatorFinalityReplayLimitV0, commit_candidate_backed_anchored_finality_conflict_v0,
+    commit_candidate_backed_anchored_finality_v0, commit_candidate_backed_finality_conflict_v0,
+    commit_candidate_backed_finality_v0,
 };
 pub use fixed_validator_vote_safety_journal::{
     FixedValidatorAnchoredRecoveredSigningSessionV0, FixedValidatorAnchoredSignerRecoveryV0,
