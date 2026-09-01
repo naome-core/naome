@@ -1933,6 +1933,19 @@ impl<'journal> FixedValidatorAnchoredRecoveredSigningSessionV0<'journal> {
     ) -> &'session mut FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal> {
         &mut self.session
     }
+
+    /// Separates the exact recovered branch and its sole anchored session.
+    ///
+    /// The session continues to borrow the same per-key journal, so this does
+    /// not widen key, recovery, or second-session authority.
+    pub fn into_parts(
+        self,
+    ) -> (
+        FixedConsensusBranchV0,
+        FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal>,
+    ) {
+        (self.branch, self.session)
+    }
 }
 
 struct FixedValidatorVoteSafetyJournalCore<F> {
