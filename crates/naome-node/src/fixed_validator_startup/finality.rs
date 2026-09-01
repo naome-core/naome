@@ -3,8 +3,9 @@ use std::fmt;
 
 use naome_chain::ArtifactBlockId;
 use naome_consensus::{
-    ConsensusAncestryId, ConsensusEnvelopeId, ConsensusHeight, ConsensusPosition, ConsensusRound,
-    OwnedVerifiedFixedConsensusTransitionV0,
+    ConsensusAncestryId, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError, ConsensusHeight,
+    ConsensusPosition, ConsensusProposalVerifyError, ConsensusRound, FixedConsensusBranchV0,
+    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0, ProposerSelectionError,
 };
 use naome_storage::{
     ArtifactBlockCandidateStore, CandidateBackedFinalityErrorV0, CanonicalArtifactPayloadStore,
@@ -56,6 +57,135 @@ pub enum FixedValidatorNodeFinalityOutcomeV0<'node> {
     },
     /// A durable sibling conflict stopped both finality and the signer.
     FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+}
+
+/// Result of admitting exact-current-round evidence into node-owned finality.
+///
+/// A rejection returns the unchanged signing scope because no finality or signer
+/// effect occurred. Once the proposal and precommit certificate produce an
+/// owned sealed transition, the existing consuming finality outcome is retained
+/// without reinterpretation.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeCurrentRoundFinalityOutcomeV0<'node> {
+    /// The sealed transition reached the existing finality coordinator.
+    Finality(FixedValidatorNodeFinalityOutcomeV0<'node>),
+    /// Caller-supplied evidence was rejected before any state change.
+    Rejected {
+        scope: Box<FixedValidatorNodeSigningScopeV0<'node>>,
+        rejection: Box<FixedValidatorNodeCurrentRoundFinalityRejectionV0>,
+    },
+}
+
+/// A pre-effect exact-current-round finality rejection.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
+    /// Reconstructing the signer's exact round would exceed caller policy.
+    RoundWorkLimitExceeded {
+        required: ConsensusRound,
+        maximum: ConsensusRound,
+    },
+    /// Complete proposal-control or artifact-payload admission failed.
+    Proposal(Box<ConsensusProposalVerifyError>),
+    /// The supplied certificate could not seal the admitted proposal.
+    PrecommitCertificate(Box<ConsensusEnvelopeVerifyError>),
+}
+
+impl fmt::Display for FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RoundWorkLimitExceeded { required, maximum } => write!(
+                formatter,
+                "current-round finality requires {required:?}, above caller-local ceiling {maximum:?}"
+            ),
+            Self::Proposal(source) => {
+                write!(
+                    formatter,
+                    "current-round finality proposal was rejected: {source}"
+                )
+            }
+            Self::PrecommitCertificate(source) => write!(
+                formatter,
+                "current-round finality precommit certificate was rejected: {source}"
+            ),
+        }
+    }
+}
+
+impl Error for FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Proposal(source) => Some(source.as_ref()),
+            Self::PrecommitCertificate(source) => Some(source.as_ref()),
+            Self::RoundWorkLimitExceeded { .. } => None,
+        }
+    }
+}
+
+/// A fatal exact-current-round finality coordination failure.
+///
+/// Every variant consumes the signing scope. Pre-effect node coherence and the
+/// persisted finality work ceiling are fatal rather than caller rejections. A
+/// nested finality error preserves the existing commit and signer-handoff
+/// classification after an owned sealed transition has been created.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum FixedValidatorNodeCurrentRoundFinalityErrorV0 {
+    /// The node-owned signer and branch do not name the same next height.
+    SignerBranchHeightMismatch {
+        signer: ConsensusPosition,
+        branch_next_height: ConsensusHeight,
+    },
+    /// The signer's exact node-owned branch round could not be reconstructed.
+    Round(ProposerSelectionError),
+    /// The signer is above the node-owned finality journal's durable ceiling.
+    FinalityRoundLimitExceeded {
+        required: ConsensusRound,
+        maximum: ConsensusRound,
+    },
+    /// Sealed evidence reached the existing consuming finality coordinator.
+    Finality(Box<FixedValidatorNodeFinalityErrorV0>),
+}
+
+impl fmt::Display for FixedValidatorNodeCurrentRoundFinalityErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SignerBranchHeightMismatch {
+                signer,
+                branch_next_height,
+            } => write!(
+                formatter,
+                "signer position {signer:?} differs from node branch next height {branch_next_height:?}"
+            ),
+            Self::Round(source) => write!(
+                formatter,
+                "current node finality round could not be reconstructed: {source}"
+            ),
+            Self::FinalityRoundLimitExceeded { required, maximum } => write!(
+                formatter,
+                "current signer round {required:?} exceeds node finality ceiling {maximum:?}"
+            ),
+            Self::Finality(source) => {
+                write!(
+                    formatter,
+                    "current-round finality coordination failed: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for FixedValidatorNodeCurrentRoundFinalityErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Round(source) => Some(source),
+            Self::Finality(source) => Some(source.as_ref()),
+            Self::SignerBranchHeightMismatch { .. } | Self::FinalityRoundLimitExceeded { .. } => {
+                None
+            }
+        }
+    }
 }
 
 /// A fail-closed live finality-to-signer coordination failure.
@@ -146,6 +276,76 @@ impl Error for FixedValidatorNodeFinalityErrorV0 {
 }
 
 impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
+    /// Finalizes one exact-current-round proposal from its separate messages.
+    ///
+    /// The caller supplies complete proposal-control bytes, the owned canonical
+    /// artifact payload, one precommit certificate, and an inclusive local work
+    /// ceiling. The signer's position selects the sole branch round; no session
+    /// readiness or phase condition is inferred, so already pending signer work
+    /// cannot suppress otherwise valid finality. Caller-cap, proposal, payload,
+    /// certificate, and exact-round mismatch failures preserve the unchanged
+    /// scope. Node coherence and the persisted finality ceiling remain fatal.
+    /// Once sealing succeeds, the existing consuming finality and signer-handoff
+    /// contract applies unchanged.
+    pub fn commit_current_round_finality(
+        self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_precommit_certificate: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeCurrentRoundFinalityOutcomeV0<'node>,
+        FixedValidatorNodeCurrentRoundFinalityErrorV0,
+    > {
+        let finality_maximum_round = ConsensusRound::new(self.finality.replay_limit().max_round());
+        let signer_position = self.signing_session.position();
+        let round = match current_round_for_finality(
+            &self.branch,
+            signer_position,
+            inclusive_maximum_round,
+            finality_maximum_round,
+        ) {
+            Ok(round) => round,
+            Err(CurrentRoundFinalityRoundErrorV0::Rejected(rejection)) => {
+                return Ok(current_round_finality_rejected(self, rejection));
+            }
+            Err(CurrentRoundFinalityRoundErrorV0::Fatal(error)) => return Err(error),
+        };
+        let proposal = match round.decode_and_verify_proposal_control(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+        ) {
+            Ok(proposal) => proposal,
+            Err(source) => {
+                drop(round);
+                return Ok(current_round_finality_rejected(
+                    self,
+                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::Proposal(Box::new(source)),
+                ));
+            }
+        };
+        let transition =
+            match proposal.seal_with_precommit_certificate(canonical_precommit_certificate) {
+                Ok(transition) => transition.into_owned(),
+                Err(source) => {
+                    drop(round);
+                    return Ok(current_round_finality_rejected(
+                        self,
+                        FixedValidatorNodeCurrentRoundFinalityRejectionV0::PrecommitCertificate(
+                            Box::new(source),
+                        ),
+                    ));
+                }
+            };
+        drop(round);
+
+        self.commit_verified_finality(transition)
+            .map(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality)
+            .map_err(|source| {
+                FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(Box::new(source))
+            })
+    }
+
     /// Consumes one sealed transition and couples its finality result to the signer.
     ///
     /// A new child returns a replacement scope only after both anchored journals
@@ -286,6 +486,65 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         })?;
         debug_assert_eq!(conflict.target(), expected_target);
         stop_after_finality_halt(finality, signing_session, conflict.halt())
+    }
+}
+
+enum CurrentRoundFinalityRoundErrorV0 {
+    Rejected(FixedValidatorNodeCurrentRoundFinalityRejectionV0),
+    Fatal(FixedValidatorNodeCurrentRoundFinalityErrorV0),
+}
+
+fn current_round_for_finality<'branch>(
+    branch: &'branch FixedConsensusBranchV0,
+    signer_position: ConsensusPosition,
+    inclusive_maximum_round: ConsensusRound,
+    finality_maximum_round: ConsensusRound,
+) -> Result<FixedConsensusRoundV0<'branch>, CurrentRoundFinalityRoundErrorV0> {
+    let mut round = branch
+        .begin_round_zero()
+        .map_err(FixedValidatorNodeCurrentRoundFinalityErrorV0::Round)
+        .map_err(CurrentRoundFinalityRoundErrorV0::Fatal)?;
+    if round.position().height() != signer_position.height() {
+        return Err(CurrentRoundFinalityRoundErrorV0::Fatal(
+            FixedValidatorNodeCurrentRoundFinalityErrorV0::SignerBranchHeightMismatch {
+                signer: signer_position,
+                branch_next_height: round.position().height(),
+            },
+        ));
+    }
+    if signer_position.round() > finality_maximum_round {
+        return Err(CurrentRoundFinalityRoundErrorV0::Fatal(
+            FixedValidatorNodeCurrentRoundFinalityErrorV0::FinalityRoundLimitExceeded {
+                required: signer_position.round(),
+                maximum: finality_maximum_round,
+            },
+        ));
+    }
+    if signer_position.round() > inclusive_maximum_round {
+        return Err(CurrentRoundFinalityRoundErrorV0::Rejected(
+            FixedValidatorNodeCurrentRoundFinalityRejectionV0::RoundWorkLimitExceeded {
+                required: signer_position.round(),
+                maximum: inclusive_maximum_round,
+            },
+        ));
+    }
+    for _ in 0..signer_position.round().value() {
+        round = round
+            .advance_round()
+            .map_err(FixedValidatorNodeCurrentRoundFinalityErrorV0::Round)
+            .map_err(CurrentRoundFinalityRoundErrorV0::Fatal)?;
+    }
+    debug_assert_eq!(round.position(), signer_position);
+    Ok(round)
+}
+
+fn current_round_finality_rejected<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+    rejection: FixedValidatorNodeCurrentRoundFinalityRejectionV0,
+) -> FixedValidatorNodeCurrentRoundFinalityOutcomeV0<'node> {
+    FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Rejected {
+        scope: Box::new(scope),
+        rejection: Box::new(rejection),
     }
 }
 
