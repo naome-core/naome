@@ -32,8 +32,11 @@
 //! directory are synchronized.
 //!
 //! [`FixedValidatorVoteSafetyJournalV0`] separately owns one local consensus
-//! signing key and enforces a two-sync prepare-then-complete protocol for exact
-//! kernel-sealed vote intents. The key is reachable only through the journal's
+//! signing key and enforces prepare-before-key-use and complete-before-release
+//! for exact kernel-sealed vote and proposal intents. A one-time activation
+//! record commits an independent positive prepared-proposal replay ceiling
+//! before any signing or recovery session can issue; the V0 header-bound vote
+//! ceiling remains unchanged. The key is reachable only through the journal's
 //! sole lock-state session, and signing requires an explicit caller assertion
 //! that the exact prepared state ID is durable in a separate monotonic anchor.
 //! Before session issuance, that anchor must also cover one exact persisted
@@ -51,9 +54,12 @@
 //! each matching local signer journal without selecting or rolling back either
 //! sibling. Until that authority is routed, prior point-in-time signer handoffs
 //! remain unchanged.
-//! The per-key chained log prevents replacement and same-slot state divergence,
-//! while an anchored reopen with an unresolved vote preparation remains
-//! deliberately non-signable.
+//! The per-key chained log prevents replacement and same-slot vote or proposal
+//! state divergence, while an anchored reopen with either kind of unresolved
+//! preparation remains deliberately non-signable. A conflicting same-slot
+//! proposal intent terminally stops only this local signer; its summary is not
+//! objective equivocation proof, peer evidence, branch choice, or finality
+//! authority.
 //! [`FixedValidatorAnchoredVoteSafetyJournalV0`] pairs that journal with one
 //! independently locked per-key anchor. Its session APIs remove raw external
 //! state-ID acknowledgements: lineage, preparation, completion, checkpoint,
@@ -150,16 +156,20 @@ pub use fixed_validator_vote_safety_journal::{
     FixedValidatorAnchoredVoteSafetyJournalErrorV0, FixedValidatorAnchoredVoteSafetyJournalV0,
     FixedValidatorAnchoredVoteSafetySigningSessionV0,
     FixedValidatorDurablePrepareAcknowledgementV0,
+    FixedValidatorDurableProposalPrepareAcknowledgementV0,
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityConflictSignerStopV0,
-    FixedValidatorPendingVoteV0, FixedValidatorPreparedHeightAdvanceV0,
-    FixedValidatorPreparedHigherRoundAdvanceV0, FixedValidatorPreparedVoteV0,
+    FixedValidatorPendingProposalV0, FixedValidatorPendingVoteV0,
+    FixedValidatorPreparedHeightAdvanceV0, FixedValidatorPreparedHigherRoundAdvanceV0,
+    FixedValidatorPreparedProposalV0, FixedValidatorPreparedVoteV0,
+    FixedValidatorProposalPrepareOutcomeV0, FixedValidatorProposalReplayLimitErrorV0,
+    FixedValidatorProposalReplayLimitV0, FixedValidatorProposalSafetyHaltV0,
     FixedValidatorRecoveredSignerBranchV0, FixedValidatorRecoveredSigningSessionV0,
-    FixedValidatorSignedVoteV0, FixedValidatorSignerRecoveryRoundLimitV0,
-    FixedValidatorVoteCompletionMismatchV0, FixedValidatorVotePrepareOutcomeV0,
-    FixedValidatorVoteSafetyHaltV0, FixedValidatorVoteSafetyJournalErrorV0,
-    FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalV0,
-    FixedValidatorVoteSafetyReplayLimitErrorV0, FixedValidatorVoteSafetyReplayLimitV0,
-    FixedValidatorVoteSafetySigningSessionV0,
+    FixedValidatorSignedProposalV0, FixedValidatorSignedVoteV0,
+    FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVoteCompletionMismatchV0,
+    FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyHaltV0,
+    FixedValidatorVoteSafetyJournalErrorV0, FixedValidatorVoteSafetyJournalStateIdV0,
+    FixedValidatorVoteSafetyJournalV0, FixedValidatorVoteSafetyReplayLimitErrorV0,
+    FixedValidatorVoteSafetyReplayLimitV0, FixedValidatorVoteSafetySigningSessionV0,
 };
 
 pub use fixed_validator_anchor::FixedValidatorAnchorErrorV0;

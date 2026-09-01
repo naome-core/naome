@@ -29,6 +29,7 @@ mod agreement_evidence;
 mod consensus_value;
 mod fixed_consensus_branch;
 mod fixed_validator_lock_state;
+mod fixed_validator_proposal_authoring;
 mod producer_authorization;
 mod proposer_selection;
 
@@ -47,8 +48,9 @@ pub use consensus_value::{
 pub use fixed_consensus_branch::{
     FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBoundedSeparateFinalityVerifyError,
     FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusGenesisError,
-    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0,
-    VerifiedFixedConsensusProposalV0, VerifiedFixedConsensusTransitionV0,
+    FixedConsensusProposalValueVerifyErrorV0, FixedConsensusRoundV0,
+    OwnedVerifiedFixedConsensusTransitionV0, VerifiedFixedConsensusProposalV0,
+    VerifiedFixedConsensusTransitionV0,
 };
 pub use fixed_validator_lock_state::{
     FixedValidatorHigherRoundCheckpointErrorV0, FixedValidatorLockPhaseV0,
@@ -57,6 +59,11 @@ pub use fixed_validator_lock_state::{
     FixedValidatorVoteIntentV0, ObservedFixedValidatorHigherRoundCheckpointV0,
     ObservedFixedValidatorVoteIntentV0, VerifiedFixedValidatorHigherRoundAdvanceV0,
     VerifiedReplayFixedValidatorHigherRoundCheckpointV0, VerifiedReplayFixedValidatorVoteIntentV0,
+};
+pub use fixed_validator_proposal_authoring::{
+    CompletedFixedValidatorProposalV0, FixedValidatorProposalIntentErrorV0,
+    FixedValidatorProposalIntentV0, FixedValidatorProposalSourceV0,
+    ObservedFixedValidatorProposalIntentV0,
 };
 pub use producer_authorization::{
     ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,

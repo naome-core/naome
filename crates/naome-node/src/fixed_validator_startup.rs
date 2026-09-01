@@ -7,25 +7,31 @@ use naome_chain::{ArtifactChainDefinition, ArtifactChainState};
 use naome_consensus::{
     ActiveAgreementEntry, ConsensusContextV0, ConsensusHeight, ConsensusKey, ConsensusPosition,
     ConsensusRound, FixedConsensusBranchV0, FixedConsensusGenesisError, FixedConsensusRoundV0,
-    FixedValidatorLockPhaseV0, FixedValidatorLockedValueV0, FixedValidatorUnsignedVoteEffectV0,
-    FixedValidatorValidValueV0, ProposerSelectionError, VerifiedFixedConsensusProposalV0,
+    FixedValidatorLockPhaseV0, FixedValidatorLockedValueV0, FixedValidatorProposalSourceV0,
+    FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0, ProposerSelectionError,
+    VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::{
     FixedValidatorAnchoredFinalityJournalErrorV0, FixedValidatorAnchoredFinalityJournalV0,
     FixedValidatorAnchoredVoteSafetyJournalErrorV0, FixedValidatorAnchoredVoteSafetyJournalV0,
     FixedValidatorAnchoredVoteSafetySigningSessionV0,
     FixedValidatorDurablePrepareAcknowledgementV0,
+    FixedValidatorDurableProposalPrepareAcknowledgementV0,
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityConflictSignerStopV0,
     FixedValidatorFinalityHaltV0, FixedValidatorFinalityJournalErrorV0,
-    FixedValidatorFinalityReplayLimitV0, FixedValidatorPendingVoteV0,
-    FixedValidatorPreparedHigherRoundAdvanceV0, FixedValidatorPreparedVoteV0,
-    FixedValidatorRecoveredSignerBranchV0, FixedValidatorSignedVoteV0,
+    FixedValidatorFinalityReplayLimitV0, FixedValidatorPendingProposalV0,
+    FixedValidatorPendingVoteV0, FixedValidatorPreparedHigherRoundAdvanceV0,
+    FixedValidatorPreparedProposalV0, FixedValidatorPreparedVoteV0,
+    FixedValidatorProposalPrepareOutcomeV0, FixedValidatorProposalReplayLimitV0,
+    FixedValidatorProposalSafetyHaltV0, FixedValidatorRecoveredSignerBranchV0,
+    FixedValidatorSignedProposalV0, FixedValidatorSignedVoteV0,
     FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVotePrepareOutcomeV0,
     FixedValidatorVoteSafetyHaltV0, FixedValidatorVoteSafetyJournalErrorV0,
     FixedValidatorVoteSafetyReplayLimitV0,
 };
 
 mod finality;
+mod proposal_authoring;
 mod round_progression;
 mod voting;
 
@@ -35,6 +41,10 @@ pub use finality::{
     FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalitySelectionV0,
     FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
     FixedValidatorNodeLowerRoundFinalityRejectionV0,
+};
+pub use proposal_authoring::{
+    FixedValidatorNodeProposalAuthoringErrorV0, FixedValidatorNodeProposalAuthoringOutcomeV0,
+    FixedValidatorNodeProposalAuthoringRejectionV0,
 };
 pub use round_progression::{
     FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,
@@ -128,6 +138,7 @@ pub struct FixedValidatorNodeProvisionV0<'config> {
     directories: FixedValidatorNodeDirectoriesV0<'config>,
     finality_replay_limit: FixedValidatorFinalityReplayLimitV0,
     vote_replay_limit: FixedValidatorVoteSafetyReplayLimitV0,
+    proposal_replay_limit: FixedValidatorProposalReplayLimitV0,
     signer_recovery_round_limit: FixedValidatorSignerRecoveryRoundLimitV0,
     signer_catch_up_height_limit: FixedValidatorSignerCatchUpHeightLimitV0,
 }
@@ -142,6 +153,7 @@ impl<'config> FixedValidatorNodeProvisionV0<'config> {
         directories: FixedValidatorNodeDirectoriesV0<'config>,
         finality_replay_limit: FixedValidatorFinalityReplayLimitV0,
         vote_replay_limit: FixedValidatorVoteSafetyReplayLimitV0,
+        proposal_replay_limit: FixedValidatorProposalReplayLimitV0,
         signer_recovery_round_limit: FixedValidatorSignerRecoveryRoundLimitV0,
         signer_catch_up_height_limit: FixedValidatorSignerCatchUpHeightLimitV0,
     ) -> Self {
@@ -152,6 +164,7 @@ impl<'config> FixedValidatorNodeProvisionV0<'config> {
             directories,
             finality_replay_limit,
             vote_replay_limit,
+            proposal_replay_limit,
             signer_recovery_round_limit,
             signer_catch_up_height_limit,
         }
@@ -186,6 +199,9 @@ impl<'config> FixedValidatorNodeProvisionV0<'config> {
             self.vote_replay_limit,
         )
         .map_err(FixedValidatorNodeStartupErrorV0::vote_pair)?;
+        let _ = vote
+            .activate_proposal_authoring(self.proposal_replay_limit)
+            .map_err(FixedValidatorNodeStartupErrorV0::vote)?;
         let branch = finality
             .head()
             .map_err(FixedValidatorNodeStartupErrorV0::finality)?
@@ -266,6 +282,14 @@ impl<'config> FixedValidatorNodeProvisionV0<'config> {
                 FixedValidatorNodeSignerStopV0::VoteSafety(halt),
             ));
         }
+        if let Some(halt) = vote
+            .proposal_halt()
+            .map_err(FixedValidatorNodeStartupErrorV0::vote)?
+        {
+            return Ok(FixedValidatorNodeStartupV0::SignerStopped(
+                FixedValidatorNodeSignerStopV0::ProposalSafety(halt),
+            ));
+        }
         if let Some(stop) = vote
             .finality_conflict_stop()
             .map_err(FixedValidatorNodeStartupErrorV0::vote)?
@@ -280,6 +304,16 @@ impl<'config> FixedValidatorNodeProvisionV0<'config> {
         {
             return Ok(FixedValidatorNodeStartupV0::PendingPreparation(pending));
         }
+        if let Some(pending) = vote
+            .pending_proposal()
+            .map_err(FixedValidatorNodeStartupErrorV0::vote)?
+        {
+            return Ok(FixedValidatorNodeStartupV0::PendingProposal(pending));
+        }
+
+        let _ = vote
+            .activate_proposal_authoring(self.proposal_replay_limit)
+            .map_err(FixedValidatorNodeStartupErrorV0::vote)?;
 
         let recovery = vote
             .acknowledge_signer_recovery()
@@ -534,6 +568,40 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
 /// }
 /// ```
 ///
+/// Proposal preparation, acknowledgement, and producer key use are equally
+/// private to the consuming authoring coordinator:
+///
+/// ```compile_fail,E0624
+/// use naome_consensus::{FixedConsensusRoundV0, FixedValidatorProposalSourceV0};
+/// use naome_node::FixedValidatorNodeVotingSessionV0;
+/// use naome_storage::{
+///     FixedValidatorDurableProposalPrepareAcknowledgementV0,
+///     FixedValidatorPreparedProposalV0,
+/// };
+///
+/// fn prepare(
+///     session: &mut FixedValidatorNodeVotingSessionV0<'_>,
+///     round: &FixedConsensusRoundV0<'_>,
+///     source: FixedValidatorProposalSourceV0,
+/// ) {
+///     let _ = session.prepare_proposal(round, source);
+/// }
+///
+/// fn acknowledge(
+///     session: &FixedValidatorNodeVotingSessionV0<'_>,
+///     prepared: FixedValidatorPreparedProposalV0,
+/// ) {
+///     let _ = session.acknowledge_prepared_proposal(prepared);
+/// }
+///
+/// fn sign(
+///     session: &mut FixedValidatorNodeVotingSessionV0<'_>,
+///     acknowledgement: FixedValidatorDurableProposalPrepareAcknowledgementV0,
+/// ) {
+///     let _ = session.sign_prepared_proposal(acknowledgement);
+/// }
+/// ```
+///
 /// Quorum-driven progression is available only through the consuming node
 /// scope, not through separately callable cursor, prepare, or acknowledgement
 /// stages:
@@ -600,6 +668,35 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
         &self,
     ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
         self.signing_session.ensure_current_vote_ready()
+    }
+
+    /// Persists and anchors the exact private-state-derived proposal intent.
+    pub(crate) fn prepare_proposal(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        source: FixedValidatorProposalSourceV0,
+    ) -> Result<FixedValidatorProposalPrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.signing_session.prepare_proposal(round, source)
+    }
+
+    /// Converts an internally anchored proposal preparation into key-use authority.
+    pub(crate) fn acknowledge_prepared_proposal(
+        &self,
+        prepared: FixedValidatorPreparedProposalV0,
+    ) -> Result<
+        FixedValidatorDurableProposalPrepareAcknowledgementV0,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.signing_session.acknowledge_prepared_proposal(prepared)
+    }
+
+    /// Signs and anchors proposal completion before releasing control bytes.
+    pub(crate) fn sign_prepared_proposal(
+        &mut self,
+        acknowledgement: FixedValidatorDurableProposalPrepareAcknowledgementV0,
+    ) -> Result<FixedValidatorSignedProposalV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.signing_session.sign_prepared_proposal(acknowledgement)
     }
 
     /// Decides the current proposal path's prevote without persistence.
@@ -794,6 +891,8 @@ pub enum FixedValidatorNodeStartupV0 {
     SignerStopped(FixedValidatorNodeSignerStopV0),
     /// One durable vote preparation cannot be resumed or signed after restart.
     PendingPreparation(FixedValidatorPendingVoteV0),
+    /// One durable proposal preparation cannot be resumed or signed after restart.
+    PendingProposal(FixedValidatorPendingProposalV0),
 }
 
 fn catch_up_signer_to_finality(
@@ -868,6 +967,8 @@ impl FixedValidatorNodeFinalityStoppedV0 {
 pub enum FixedValidatorNodeSignerStopV0 {
     /// A non-identical same-slot vote intent halted the local signer.
     VoteSafety(FixedValidatorVoteSafetyHaltV0),
+    /// A non-identical same-slot proposal intent halted the local signer.
+    ProposalSafety(FixedValidatorProposalSafetyHaltV0),
     /// An earlier explicitly routed finality conflict stopped the signer.
     FinalityConflict(FixedValidatorFinalityConflictSignerStopV0),
 }

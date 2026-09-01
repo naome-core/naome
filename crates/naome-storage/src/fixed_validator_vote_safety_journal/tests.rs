@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::{Signer, SigningKey};
-use naome_chain::{ArtifactChainDefinition, ArtifactChainState, ArtifactDag};
+use naome_chain::{ArtifactBlock, ArtifactChainDefinition, ArtifactChainState, ArtifactDag};
 use naome_consensus::{
     ActiveAgreementEntry, AgreementWeight, ConsensusGenesisId, ConsensusHeight,
     ConsensusProtocolVersion, ConsensusSignature, ConsensusVoteRole, ConsensusVoteTarget,
@@ -214,6 +214,18 @@ impl Fixture {
             ArtifactChainState::new(self.definition).branch_snapshot(),
         )
         .unwrap()
+    }
+
+    fn proposal_candidate_for(&self, axiom: ZfcAxiom) -> (ArtifactBlock, Vec<u8>) {
+        let payload = proof_payload_for(axiom);
+        let artifact_id = ArtifactDag::new()
+            .apply_canonical_artifact_bytes(payload.clone())
+            .unwrap()
+            .artifact_id();
+        let block = ArtifactChainState::new(self.definition)
+            .prepare_block(artifact_id)
+            .unwrap();
+        (block, payload)
     }
 
     fn owned_transition(&self) -> OwnedVerifiedFixedConsensusTransitionV0 {
@@ -616,6 +628,16 @@ fn prepared(outcome: FixedValidatorVotePrepareOutcomeV0) -> FixedValidatorPrepar
     }
 }
 
+fn prepared_proposal(
+    outcome: FixedValidatorProposalPrepareOutcomeV0,
+) -> FixedValidatorPreparedProposalV0 {
+    match outcome {
+        FixedValidatorProposalPrepareOutcomeV0::Prepared(prepared)
+        | FixedValidatorProposalPrepareOutcomeV0::AlreadyPrepared(prepared) => prepared,
+        other => panic!("expected prepared proposal outcome, got {other:?}"),
+    }
+}
+
 fn signed(outcome: FixedValidatorVoteSignOutcomeV0) -> FixedValidatorSignedVoteV0 {
     match outcome {
         FixedValidatorVoteSignOutcomeV0::Signed(signed)
@@ -623,10 +645,28 @@ fn signed(outcome: FixedValidatorVoteSignOutcomeV0) -> FixedValidatorSignedVoteV
     }
 }
 
+fn activate_proposal_authoring(
+    journal: &mut FixedValidatorVoteSafetyJournalV0,
+) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+    journal
+        .activate_proposal_authoring(FixedValidatorProposalReplayLimitV0::new(64).unwrap())
+        .unwrap()
+}
+
+#[cfg(unix)]
+fn activate_anchored_proposal_authoring(
+    journal: &mut FixedValidatorAnchoredVoteSafetyJournalV0,
+) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+    journal
+        .activate_proposal_authoring(FixedValidatorProposalReplayLimitV0::new(64).unwrap())
+        .unwrap()
+}
+
 fn issue_session<'journal>(
     journal: &'journal mut FixedValidatorVoteSafetyJournalV0,
     round: &FixedConsensusRoundV0<'_>,
 ) -> FixedValidatorVoteSafetySigningSessionV0<'journal> {
+    let _ = activate_proposal_authoring(journal);
     let state = journal.bind_signing_lineage(round).unwrap();
     journal.issue_signing_session(round, state).unwrap()
 }
@@ -681,6 +721,36 @@ fn signing_session_is_issued_once_even_after_drop_or_forget() {
 }
 
 #[test]
+fn session_and_recovery_issuance_require_proposal_authoring_activation() {
+    let fixture = Fixture::new(2);
+    let directory = TestDirectory::new("session-requires-proposal-activation");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let mut journal = fixture.create(&directory);
+    let bound = journal.bind_signing_lineage(&round).unwrap();
+    let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    let unactivated_image = fs::read(&journal_path).unwrap();
+
+    assert!(matches!(
+        journal.issue_signing_session(&round, bound),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::ProposalAuthoringNotActivated)
+    ));
+    assert!(matches!(
+        journal.acknowledge_signer_recovery_is_externally_durable(bound),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::ProposalAuthoringNotActivated)
+    ));
+    assert_eq!(fs::read(&journal_path).unwrap(), unactivated_image);
+
+    let activated = activate_proposal_authoring(&mut journal);
+    let recovery = journal
+        .acknowledge_signer_recovery_is_externally_durable(activated)
+        .unwrap();
+    drop(recovery);
+    let session = journal.issue_signing_session(&round, activated).unwrap();
+    assert_eq!(session.position(), round.position());
+}
+
+#[test]
 fn initial_signing_lineage_requires_an_exact_external_anchor_and_reopens_exactly() {
     let fixture = Fixture::new(2);
     let directory = TestDirectory::new("initial-signing-lineage");
@@ -691,9 +761,10 @@ fn initial_signing_lineage_requires_an_exact_external_anchor_and_reopens_exactly
     let mut journal = fixture.create(&directory);
     let genesis = journal.state_id().unwrap();
     let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    let activated = activate_proposal_authoring(&mut journal);
 
     assert!(matches!(
-        journal.issue_signing_session(&round, genesis),
+        journal.issue_signing_session(&round, activated),
         Err(FixedValidatorVoteSafetyJournalErrorV0::SigningLineageRequired)
     ));
     let bound = journal.bind_signing_lineage(&round).unwrap();
@@ -798,14 +869,15 @@ fn anchored_vote_journal_persists_lineage_prepare_and_completion_before_release(
         journal.state_id().unwrap().as_bytes()
     );
 
+    let _ = activate_anchored_proposal_authoring(&mut journal);
     let lineage_state = journal.bind_signing_lineage(&round).unwrap();
-    assert_eq!(journal.journal.core.record_sequence, 1);
+    assert_eq!(journal.journal.core.record_sequence, 2);
     let lineage_anchor = fs::read(&anchor_path).unwrap();
-    assert_eq!(&lineage_anchor[184..192], &1_u64.to_be_bytes());
+    assert_eq!(&lineage_anchor[184..192], &2_u64.to_be_bytes());
     assert_eq!(&lineage_anchor[192..224], lineage_state.as_bytes());
     let lineage_journal = fs::read(&journal_path).unwrap();
     assert_eq!(journal.bind_signing_lineage(&round).unwrap(), lineage_state);
-    assert_eq!(journal.journal.core.record_sequence, 1);
+    assert_eq!(journal.journal.core.record_sequence, 2);
     assert_eq!(fs::read(&anchor_path).unwrap(), lineage_anchor);
     assert_eq!(fs::read(&journal_path).unwrap(), lineage_journal);
 
@@ -814,7 +886,7 @@ fn anchored_vote_journal_persists_lineage_prepare_and_completion_before_release(
     let prepared = prepared(session.prepare_vote(&round, effect).unwrap());
     assert_eq!(
         &fs::read(&anchor_path).unwrap()[184..192],
-        &2_u64.to_be_bytes()
+        &3_u64.to_be_bytes()
     );
     assert_eq!(
         &fs::read(&anchor_path).unwrap()[192..224],
@@ -824,20 +896,20 @@ fn anchored_vote_journal_persists_lineage_prepare_and_completion_before_release(
     let signed = session.sign_prepared_vote(acknowledgement).unwrap();
     assert_eq!(
         &fs::read(&anchor_path).unwrap()[184..192],
-        &3_u64.to_be_bytes()
+        &4_u64.to_be_bytes()
     );
     assert_eq!(
         &fs::read(&anchor_path).unwrap()[192..224],
         signed.state_id().as_bytes()
     );
     drop(session);
-    assert_eq!(journal.journal.core.record_sequence, 3);
+    assert_eq!(journal.journal.core.record_sequence, 4);
     drop(journal);
 
     let mut reopened = fixture
         .open_anchored(&journal_directory, &anchor_directory)
         .unwrap();
-    assert_eq!(reopened.journal.core.record_sequence, 3);
+    assert_eq!(reopened.journal.core.record_sequence, 4);
     assert_eq!(reopened.state_id().unwrap(), signed.state_id());
     assert_eq!(
         reopened
@@ -852,6 +924,225 @@ fn anchored_vote_journal_persists_lineage_prepare_and_completion_before_release(
 
 #[cfg(unix)]
 #[test]
+fn anchored_proposal_authoring_activates_signs_replays_and_recovers_exactly() {
+    let fixture = Fixture::new(4);
+    let journal_directory = TestDirectory::new("anchored-proposal-journal");
+    let anchor_directory = TestDirectory::new("anchored-proposal-anchor");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+    let proposal_limit = FixedValidatorProposalReplayLimitV0::new(2).unwrap();
+    let activation = journal.activate_proposal_authoring(proposal_limit).unwrap();
+    let activated_images = (
+        fs::read(
+            keyed_paths(&journal_directory.0, fixture.signer())
+                .unwrap()
+                .1,
+        )
+        .unwrap(),
+        fs::read(anchor_directory.vote_anchor(fixture.signer())).unwrap(),
+    );
+    assert_eq!(journal.proposal_replay_limit(), Some(proposal_limit));
+    assert_eq!(
+        journal.activate_proposal_authoring(proposal_limit).unwrap(),
+        activation
+    );
+    assert_eq!(
+        activated_images,
+        (
+            fs::read(
+                keyed_paths(&journal_directory.0, fixture.signer())
+                    .unwrap()
+                    .1
+            )
+            .unwrap(),
+            fs::read(anchor_directory.vote_anchor(fixture.signer())).unwrap(),
+        )
+    );
+    assert!(matches!(
+        journal.activate_proposal_authoring(FixedValidatorProposalReplayLimitV0::new(3).unwrap()),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::ProposalReplayLimitMismatch {
+                retained: 2,
+                supplied: 3,
+            }
+        )
+    ));
+
+    let _ = journal.bind_signing_lineage(&round).unwrap();
+    let mut session = journal.issue_signing_session(&round).unwrap();
+    let (artifact_block, payload) = fixture.proposal_candidate_for(ZfcAxiom::Pairing);
+    let prepared = prepared_proposal(
+        session
+            .prepare_proposal(
+                &round,
+                FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block,
+                    canonical_artifact_bytes: payload.clone(),
+                },
+            )
+            .unwrap(),
+    );
+    let acknowledgement = session.acknowledge_prepared_proposal(prepared).unwrap();
+    let signed = session.sign_prepared_proposal(acknowledgement).unwrap();
+    let verified = round
+        .decode_and_verify_proposal_control(
+            signed.canonical_proposal_control_bytes(),
+            payload.clone(),
+        )
+        .unwrap();
+    assert_eq!(
+        verified.proposal_signing_root(),
+        signed.proposal_signing_root()
+    );
+    let completed_images = (
+        fs::read(
+            keyed_paths(&journal_directory.0, fixture.signer())
+                .unwrap()
+                .1,
+        )
+        .unwrap(),
+        fs::read(anchor_directory.vote_anchor(fixture.signer())).unwrap(),
+    );
+    assert!(matches!(
+        session
+            .prepare_proposal(
+                &round,
+                FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block,
+                    canonical_artifact_bytes: payload,
+                },
+            )
+            .unwrap(),
+        FixedValidatorProposalPrepareOutcomeV0::AlreadySigned(ref replay)
+            if replay == &signed
+    ));
+    assert_eq!(
+        completed_images,
+        (
+            fs::read(
+                keyed_paths(&journal_directory.0, fixture.signer())
+                    .unwrap()
+                    .1
+            )
+            .unwrap(),
+            fs::read(anchor_directory.vote_anchor(fixture.signer())).unwrap(),
+        )
+    );
+    drop(session);
+    drop(journal);
+
+    let mut reopened = fixture
+        .open_anchored(&journal_directory, &anchor_directory)
+        .unwrap();
+    assert_eq!(reopened.proposal_replay_limit(), Some(proposal_limit));
+    assert_eq!(
+        reopened.retained_signed_proposal(round.position()).unwrap(),
+        Some(signed)
+    );
+    let resumed = reopened.issue_signing_session(&round).unwrap();
+    assert_eq!(resumed.position(), round.position());
+    assert_eq!(resumed.phase(), FixedValidatorLockPhaseV0::Proposal);
+}
+
+#[cfg(unix)]
+#[test]
+fn anchored_pending_proposal_is_diagnostic_only_after_restart() {
+    let fixture = Fixture::new(4);
+    let journal_directory = TestDirectory::new("pending-proposal-journal");
+    let anchor_directory = TestDirectory::new("pending-proposal-anchor");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+    let _ = journal
+        .activate_proposal_authoring(FixedValidatorProposalReplayLimitV0::new(2).unwrap())
+        .unwrap();
+    let _ = journal.bind_signing_lineage(&round).unwrap();
+    let mut session = journal.issue_signing_session(&round).unwrap();
+    let (artifact_block, payload) = fixture.proposal_candidate_for(ZfcAxiom::Pairing);
+    let prepared = prepared_proposal(
+        session
+            .prepare_proposal(
+                &round,
+                FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block,
+                    canonical_artifact_bytes: payload,
+                },
+            )
+            .unwrap(),
+    );
+    drop(session);
+    drop(journal);
+
+    let mut reopened = fixture
+        .open_anchored(&journal_directory, &anchor_directory)
+        .unwrap();
+    let pending = reopened.pending_proposal().unwrap().unwrap();
+    assert_eq!(pending.position(), prepared.position());
+    assert_eq!(pending.state_id(), prepared.state_id());
+    assert!(matches!(
+        reopened.issue_signing_session(&round),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::PendingProposalRecoveryDenied {
+            position,
+        }) if position == round.position()
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn conflicting_same_slot_proposal_intent_terminally_stops_only_the_signer() {
+    let fixture = Fixture::new(4);
+    let journal_directory = TestDirectory::new("proposal-conflict-journal");
+    let anchor_directory = TestDirectory::new("proposal-conflict-anchor");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+    let _ = journal
+        .activate_proposal_authoring(FixedValidatorProposalReplayLimitV0::new(1).unwrap())
+        .unwrap();
+    let _ = journal.bind_signing_lineage(&round).unwrap();
+    let mut session = journal.issue_signing_session(&round).unwrap();
+    let (first_block, first_payload) = fixture.proposal_candidate_for(ZfcAxiom::Pairing);
+    let first = prepared_proposal(
+        session
+            .prepare_proposal(
+                &round,
+                FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block: first_block,
+                    canonical_artifact_bytes: first_payload,
+                },
+            )
+            .unwrap(),
+    );
+    let acknowledgement = session.acknowledge_prepared_proposal(first).unwrap();
+    let _ = session.sign_prepared_proposal(acknowledgement).unwrap();
+
+    let (second_block, second_payload) = fixture.proposal_candidate_for(ZfcAxiom::Union);
+    let halt = match session
+        .prepare_proposal(
+            &round,
+            FixedValidatorProposalSourceV0::Fresh {
+                artifact_block: second_block,
+                canonical_artifact_bytes: second_payload,
+            },
+        )
+        .unwrap()
+    {
+        FixedValidatorProposalPrepareOutcomeV0::Halted(halt) => halt,
+        other => panic!("expected proposal halt, got {other:?}"),
+    };
+    assert_eq!(halt.position(), round.position());
+    assert_ne!(halt.retained_root(), halt.conflicting_root());
+    assert!(matches!(
+        session.decide_prevote_without_proposal(),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::TerminalProposalHalt {
+            position,
+        }) if position == round.position()
+    ));
+}
+
+#[cfg(unix)]
+#[test]
 fn anchor_update_failure_releases_no_signed_vote_and_strict_reopen_fails_behind() {
     let fixture = Fixture::new(2);
     let journal_directory = TestDirectory::new("anchor-failure-vote-journal");
@@ -859,14 +1150,15 @@ fn anchor_update_failure_releases_no_signed_vote_and_strict_reopen_fails_behind(
     let branch = fixture.branch();
     let round = branch.begin_round_zero().unwrap();
     let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+    let _ = activate_anchored_proposal_authoring(&mut journal);
     let _ = journal.bind_signing_lineage(&round).unwrap();
     let mut session = journal.issue_signing_session(&round).unwrap();
     let effect = session.decide_prevote_without_proposal().unwrap();
     let prepared = prepared(session.prepare_vote(&round, effect).unwrap());
-    assert_eq!(session.session.journal.core.record_sequence, 2);
+    assert_eq!(session.session.journal.core.record_sequence, 3);
     let anchor_before = fs::read(anchor_directory.vote_anchor(fixture.signer())).unwrap();
 
-    fs::create_dir(anchor_directory.vote_anchor_temporary(fixture.signer(), 3)).unwrap();
+    fs::create_dir(anchor_directory.vote_anchor_temporary(fixture.signer(), 4)).unwrap();
     let acknowledgement = session.acknowledge_prepared_vote(prepared).unwrap();
     assert!(matches!(
         session.sign_prepared_vote(acknowledgement),
@@ -889,8 +1181,8 @@ fn anchor_update_failure_releases_no_signed_vote_and_strict_reopen_fails_behind(
             if matches!(
                 source.as_ref(),
                 FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind {
-                anchored_sequence: 2,
-                journal_sequence: 3,
+                anchored_sequence: 3,
+                journal_sequence: 4,
                 }
             )
     ));
@@ -916,6 +1208,7 @@ fn anchored_height_handoff_and_finality_stop_advance_both_authority_files() {
     let mut vote = fixture.create_anchored(&vote_directory, &vote_anchor_directory);
     let parent = fixture.branch();
     let round = parent.begin_round_zero().unwrap();
+    let _ = activate_anchored_proposal_authoring(&mut vote);
     let _ = vote.bind_signing_lineage(&round).unwrap();
     let mut session = vote.issue_signing_session(&round).unwrap();
 
@@ -941,7 +1234,7 @@ fn anchored_height_handoff_and_finality_stop_advance_both_authority_files() {
         .unwrap();
     assert_eq!(
         &fs::read(vote_anchor_directory.vote_anchor(fixture.signer())).unwrap()[184..192],
-        &2_u64.to_be_bytes()
+        &3_u64.to_be_bytes()
     );
     let child = session
         .acknowledge_prepared_height(prepared_height)
@@ -966,10 +1259,10 @@ fn anchored_height_handoff_and_finality_stop_advance_both_authority_files() {
     let _ = session.stop_after_durable_finality_conflict(stop).unwrap();
     assert_eq!(
         &fs::read(vote_anchor_directory.vote_anchor(fixture.signer())).unwrap()[184..192],
-        &3_u64.to_be_bytes()
+        &4_u64.to_be_bytes()
     );
     drop(session);
-    assert_eq!(vote.journal.core.record_sequence, 3);
+    assert_eq!(vote.journal.core.record_sequence, 4);
     assert!(vote.finality_conflict_stop().unwrap().is_some());
 }
 
@@ -991,6 +1284,7 @@ fn anchored_higher_round_checkpoint_reopens_at_the_persisted_phase_floor() {
         &fixture.signing_key(),
     );
     let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+    let _ = activate_anchored_proposal_authoring(&mut journal);
     let _ = journal.bind_signing_lineage(&round_zero).unwrap();
     let mut session = journal.issue_signing_session(&round_zero).unwrap();
     let prepared = session
@@ -998,7 +1292,7 @@ fn anchored_higher_round_checkpoint_reopens_at_the_persisted_phase_floor() {
         .unwrap();
     assert_eq!(
         &fs::read(anchor_directory.vote_anchor(fixture.signer())).unwrap()[184..192],
-        &2_u64.to_be_bytes()
+        &3_u64.to_be_bytes()
     );
     let target_round = session.acknowledge_prepared_higher_round(prepared).unwrap();
     assert_eq!(target_round.position(), target_position);
@@ -1010,7 +1304,7 @@ fn anchored_higher_round_checkpoint_reopens_at_the_persisted_phase_floor() {
     let mut reopened = fixture
         .open_anchored(&journal_directory, &anchor_directory)
         .unwrap();
-    assert_eq!(reopened.journal.core.record_sequence, 2);
+    assert_eq!(reopened.journal.core.record_sequence, 3);
     let resumed = reopened.issue_signing_session(&target_round).unwrap();
     assert_eq!(resumed.position(), target_position);
     assert_eq!(resumed.phase(), FixedValidatorLockPhaseV0::Prevote);
@@ -1072,6 +1366,8 @@ fn anchored_vote_reopen_classifies_old_ahead_and_divergent_anchor_images() {
     let left_round = left_branch.begin_round_zero().unwrap();
     let right_branch = fixture.branch();
     let right_round = right_branch.begin_round_zero().unwrap();
+    let _ = activate_anchored_proposal_authoring(&mut left);
+    let _ = activate_anchored_proposal_authoring(&mut right);
     let _ = left.bind_signing_lineage(&left_round).unwrap();
     let _ = right.bind_signing_lineage(&right_round).unwrap();
     let mut left_session = left.issue_signing_session(&left_round).unwrap();
@@ -1118,7 +1414,7 @@ fn anchored_vote_reopen_classifies_old_ahead_and_divergent_anchor_images() {
         Err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::Journal(source))
             if matches!(
                 source.as_ref(),
-                FixedValidatorVoteSafetyJournalErrorV0::AnchorStateMismatch { sequence: 2 }
+                FixedValidatorVoteSafetyJournalErrorV0::AnchorStateMismatch { sequence: 3 }
             )
     ));
 }
@@ -1238,6 +1534,7 @@ fn nil_precommit_quorum_advances_session_and_next_vote_reopens_at_exact_anchor()
     let branch = fixture.branch();
     let round_zero = branch.begin_round_zero().unwrap();
     let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
     let bound = journal.bind_signing_lineage(&round_zero).unwrap();
     let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
     let bound_image = fs::read(&journal_path).unwrap();
@@ -1384,6 +1681,7 @@ fn higher_round_checkpoint_requires_exact_anchor_then_preserves_vote_capacity_an
         &fixture.signing_key(),
     );
     let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
     let bound = journal.bind_signing_lineage(&round_zero).unwrap();
     let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
     let bound_image = fs::read(&journal_path).unwrap();
@@ -1398,9 +1696,9 @@ fn higher_round_checkpoint_requires_exact_anchor_then_preserves_vote_capacity_an
     assert_eq!(
         checkpoint_state.as_bytes(),
         &[
-            0x4c, 0x47, 0xa2, 0xfe, 0x94, 0x16, 0x15, 0x2f, 0x60, 0x3e, 0x57, 0x82, 0x50, 0x9d,
-            0xb8, 0x11, 0x54, 0x8e, 0xb8, 0x78, 0xfc, 0xcb, 0x03, 0x3b, 0xca, 0xf7, 0xdd, 0x4e,
-            0xf2, 0xc9, 0x99, 0x60,
+            0x25, 0x93, 0x02, 0xfe, 0x57, 0x35, 0xc4, 0x3f, 0xf8, 0x05, 0xf5, 0x4c, 0x98, 0xc9,
+            0x03, 0x61, 0x7c, 0xe8, 0x17, 0x15, 0x84, 0x1d, 0x7d, 0xdf, 0x7b, 0x61, 0x39, 0xd9,
+            0x75, 0xd6, 0x71, 0x7a,
         ]
     );
     let checkpoint_image = fs::read(&journal_path).unwrap();
@@ -1514,6 +1812,7 @@ fn higher_round_checkpoint_durably_preserves_nonempty_lock_and_valid_proof() {
         .decode_and_verify_proposal_control(&proposal_bytes, payload)
         .unwrap();
     let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
     let bound = journal.bind_signing_lineage(&round_zero).unwrap();
     let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
     let mut session = journal.issue_signing_session(&round_zero, bound).unwrap();
@@ -1601,6 +1900,7 @@ fn wrong_higher_round_anchor_blocks_live_state_and_exact_reopen_rejects_lower_ro
         &fixture.signing_key(),
     );
     let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
     let bound = journal.bind_signing_lineage(&round_zero).unwrap();
     let mut session = journal.issue_signing_session(&round_zero, bound).unwrap();
     let checkpoint = session
@@ -1669,6 +1969,7 @@ fn successive_higher_round_checkpoints_replay_only_the_latest_exact_state() {
         &fixture.signing_key(),
     );
     let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
     let bound = journal.bind_signing_lineage(&round_zero).unwrap();
     let mut session = journal.issue_signing_session(&round_zero, bound).unwrap();
 
@@ -1827,6 +2128,7 @@ fn anchored_signer_recovery_derives_checkpoint_round_under_explicit_limit() {
         &fixture.signing_key(),
     );
     let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
     let bound = journal.bind_signing_lineage(&round_zero).unwrap();
     let mut session = journal.issue_signing_session(&round_zero, bound).unwrap();
     let prepared = session
@@ -1974,8 +2276,9 @@ fn session_advances_only_with_externally_anchored_durable_finality() {
     assert_eq!(fs::read(&finality_path).unwrap(), before_wrong_anchor);
     let mut vote_journal = fixture.create(&directory);
     let vote_genesis_state = vote_journal.state_id().unwrap();
+    let activated_vote_state = activate_proposal_authoring(&mut vote_journal);
     assert!(matches!(
-        vote_journal.issue_signing_session(&round, vote_genesis_state),
+        vote_journal.issue_signing_session(&round, activated_vote_state),
         Err(FixedValidatorVoteSafetyJournalErrorV0::SigningLineageRequired)
     ));
     let vote_state = vote_journal.bind_signing_lineage(&round).unwrap();
@@ -2266,6 +2569,7 @@ fn durable_finality_conflict_preempts_pending_higher_round_checkpoint() {
     };
 
     let mut vote_journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut vote_journal);
     let bound = vote_journal.bind_signing_lineage(&round_zero).unwrap();
     let (_, vote_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
     let mut session = vote_journal
@@ -3122,9 +3426,9 @@ fn signer_recovery_capability_requires_a_live_exact_anchored_lineage() {
     let branch = fixture.branch();
     let round = branch.begin_round_zero().unwrap();
     let mut unbound = fixture.create(&unbound_directory);
-    let genesis = unbound.state_id().unwrap();
     let (_, unbound_path) = keyed_paths(&unbound_directory.0, fixture.signer()).unwrap();
-    let genesis_image = fs::read(&unbound_path).unwrap();
+    let activated = activate_proposal_authoring(&mut unbound);
+    let activated_image = fs::read(&unbound_path).unwrap();
     assert!(matches!(
         unbound.acknowledge_signer_recovery_is_externally_durable(
             FixedValidatorVoteSafetyJournalStateIdV0::from_bytes([0xee; 32]),
@@ -3132,11 +3436,11 @@ fn signer_recovery_capability_requires_a_live_exact_anchored_lineage() {
         Err(FixedValidatorVoteSafetyJournalErrorV0::ExternalSessionAnchorMismatch { .. })
     ));
     assert!(matches!(
-        unbound.acknowledge_signer_recovery_is_externally_durable(genesis),
+        unbound.acknowledge_signer_recovery_is_externally_durable(activated),
         Err(FixedValidatorVoteSafetyJournalErrorV0::SigningLineageRequired)
     ));
-    assert_eq!(unbound.state_id().unwrap(), genesis);
-    assert_eq!(fs::read(&unbound_path).unwrap(), genesis_image);
+    assert_eq!(unbound.state_id().unwrap(), activated);
+    assert_eq!(fs::read(&unbound_path).unwrap(), activated_image);
     let bound = unbound.bind_signing_lineage(&round).unwrap();
     let session = unbound.issue_signing_session(&round, bound).unwrap();
     drop(session);
@@ -3214,6 +3518,7 @@ fn initial_lineage_recovery_reproduces_exact_configured_virtual_genesis() {
     let expected_coordinate = branch.coordinate();
     let round = branch.begin_round_zero().unwrap();
     let mut vote_journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut vote_journal);
     let vote_state = vote_journal.bind_signing_lineage(&round).unwrap();
     let finality_path = directory.0.join(crate::JOURNAL_FILE_NAME);
     let mismatched_path = mismatch_directory.0.join(crate::JOURNAL_FILE_NAME);
@@ -4165,6 +4470,306 @@ fn replay_rejects_duplicate_reordered_mismatched_and_post_halt_records() {
 }
 
 #[test]
+fn replay_rejects_proposal_conflict_while_vote_preparation_is_pending() {
+    let fixture = Fixture::new(4);
+    let directory = TestDirectory::new("proposal-conflict-during-pending-vote");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
+    let lineage = journal.bind_signing_lineage(&round).unwrap();
+    let mut session = journal.issue_signing_session(&round, lineage).unwrap();
+
+    let (retained_block, retained_payload) = fixture.proposal_candidate_for(ZfcAxiom::Pairing);
+    let retained = prepared_proposal(
+        session
+            .prepare_proposal(
+                &round,
+                FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block: retained_block,
+                    canonical_artifact_bytes: retained_payload,
+                },
+            )
+            .unwrap(),
+    );
+    let retained = session
+        .acknowledge_prepared_proposal_is_externally_durable(retained, retained.state_id())
+        .unwrap();
+    let _ = session.sign_prepared_proposal(retained).unwrap();
+
+    let vote_effect = session.decide_prevote_without_proposal().unwrap();
+    let pending_vote = prepared(session.prepare_vote(&round, vote_effect).unwrap());
+    let pending_state = pending_vote.state_id();
+    let entry = session.journal.core.record_sequence;
+
+    let (conflicting_block, conflicting_payload) = fixture.proposal_candidate_for(ZfcAxiom::Union);
+    let conflicting_state = FixedValidatorLockStateV0::try_from_round_zero(&round).unwrap();
+    let conflicting = conflicting_state
+        .prepare_proposal_intent(
+            &round,
+            FixedValidatorProposalSourceV0::Fresh {
+                artifact_block: conflicting_block,
+                canonical_artifact_bytes: conflicting_payload,
+            },
+            fixture.signer(),
+        )
+        .unwrap();
+    let live_state = session.journal.state_id().unwrap();
+    assert!(matches!(
+        session.journal.prepare_proposal(conflicting.clone()),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
+            position,
+            role: ConsensusVoteRole::Prevote,
+        }) if position == round.position()
+    ));
+    assert_eq!(session.journal.state_id().unwrap(), live_state);
+    let halt_record = tagged_record(
+        PROPOSAL_CONFLICT_HALT_RECORD,
+        conflicting.canonical_intent_bytes(),
+        entry,
+    )
+    .unwrap();
+    let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    drop(session);
+    drop(journal);
+
+    let mut image = fs::read(journal_path).unwrap();
+    let expected = append_test_record(&mut image, pending_state, &halt_record);
+    let io = ScriptedIo::from_images(image.clone(), image);
+    assert!(matches!(
+        fixture.replay_scripted(io, expected),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidProposalConflictHalt {
+            entry: actual,
+        }) if actual == entry
+    ));
+}
+
+#[test]
+fn replay_rejects_vote_conflict_while_proposal_preparation_is_pending() {
+    let fixture = Fixture::new(4);
+    let directory = TestDirectory::new("vote-conflict-during-pending-proposal");
+    let branch = fixture.branch();
+    let round_zero = branch.begin_round_zero().unwrap();
+    let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
+    let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
+    let lineage = journal.bind_signing_lineage(&round_zero).unwrap();
+    let mut session = journal.issue_signing_session(&round_zero, lineage).unwrap();
+
+    let prevote_effect = session.decide_prevote_without_proposal().unwrap();
+    let prevote = prepared(session.prepare_vote(&round_zero, prevote_effect).unwrap());
+    let prevote = session
+        .acknowledge_prepared_vote_is_externally_durable(prevote, prevote.state_id())
+        .unwrap();
+    let _ = session.sign_prepared_vote(prevote).unwrap();
+    let precommit_effect = session.decide_precommit_without_quorum().unwrap();
+    let precommit = prepared(session.prepare_vote(&round_zero, precommit_effect).unwrap());
+    let precommit = session
+        .acknowledge_prepared_vote_is_externally_durable(precommit, precommit.state_id())
+        .unwrap();
+    let _ = session.sign_prepared_vote(precommit).unwrap();
+    session.advance_round(&round_one).unwrap();
+
+    let (proposal_block, proposal_payload) = fixture.proposal_candidate_for(ZfcAxiom::Pairing);
+    let pending_proposal = prepared_proposal(
+        session
+            .prepare_proposal(
+                &round_one,
+                FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block: proposal_block,
+                    canonical_artifact_bytes: proposal_payload,
+                },
+            )
+            .unwrap(),
+    );
+    let pending_state = pending_proposal.state_id();
+    let entry = session.journal.core.record_sequence;
+    let conflicting_vote = fixture.proposal_prevote_intent();
+    let live_state = session.journal.state_id().unwrap();
+    assert!(matches!(
+        session.journal.prepare_vote(conflicting_vote.clone()),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::PendingProposalPreparation {
+                position,
+            }
+        ) if position == round_one.position()
+    ));
+    assert_eq!(session.journal.state_id().unwrap(), live_state);
+    let halt_record = tagged_record(
+        CONFLICT_HALT_RECORD,
+        conflicting_vote.canonical_state_and_vote_intent_bytes(),
+        entry,
+    )
+    .unwrap();
+    let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    drop(session);
+    drop(journal);
+
+    let mut image = fs::read(journal_path).unwrap();
+    let expected = append_test_record(&mut image, pending_state, &halt_record);
+    let io = ScriptedIo::from_images(image.clone(), image);
+    assert!(matches!(
+        fixture.replay_scripted(io, expected),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidConflictHalt {
+            entry: actual,
+        }) if actual == entry
+    ));
+}
+
+#[test]
+fn replay_rejects_proposal_conflict_for_older_slot_while_later_proposal_is_pending() {
+    let fixture = Fixture::new(6);
+    let directory = TestDirectory::new("older-proposal-conflict-during-later-proposal");
+    let branch = fixture.branch();
+    let round_zero = branch.begin_round_zero().unwrap();
+    let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
+    let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
+    let lineage = journal.bind_signing_lineage(&round_zero).unwrap();
+    let mut session = journal.issue_signing_session(&round_zero, lineage).unwrap();
+
+    let (retained_block, retained_payload) = fixture.proposal_candidate_for(ZfcAxiom::Pairing);
+    let retained = prepared_proposal(
+        session
+            .prepare_proposal(
+                &round_zero,
+                FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block: retained_block,
+                    canonical_artifact_bytes: retained_payload,
+                },
+            )
+            .unwrap(),
+    );
+    let retained = session
+        .acknowledge_prepared_proposal_is_externally_durable(retained, retained.state_id())
+        .unwrap();
+    let _ = session.sign_prepared_proposal(retained).unwrap();
+
+    let prevote_effect = session.decide_prevote_without_proposal().unwrap();
+    let prevote = prepared(session.prepare_vote(&round_zero, prevote_effect).unwrap());
+    let prevote = session
+        .acknowledge_prepared_vote_is_externally_durable(prevote, prevote.state_id())
+        .unwrap();
+    let _ = session.sign_prepared_vote(prevote).unwrap();
+    let precommit_effect = session.decide_precommit_without_quorum().unwrap();
+    let precommit = prepared(session.prepare_vote(&round_zero, precommit_effect).unwrap());
+    let precommit = session
+        .acknowledge_prepared_vote_is_externally_durable(precommit, precommit.state_id())
+        .unwrap();
+    let _ = session.sign_prepared_vote(precommit).unwrap();
+    session.advance_round(&round_one).unwrap();
+
+    let (later_block, later_payload) = fixture.proposal_candidate_for(ZfcAxiom::Union);
+    let pending = prepared_proposal(
+        session
+            .prepare_proposal(
+                &round_one,
+                FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block: later_block,
+                    canonical_artifact_bytes: later_payload.clone(),
+                },
+            )
+            .unwrap(),
+    );
+    let pending_state = pending.state_id();
+    let entry = session.journal.core.record_sequence;
+
+    let conflicting_state = FixedValidatorLockStateV0::try_from_round_zero(&round_zero).unwrap();
+    let conflicting = conflicting_state
+        .prepare_proposal_intent(
+            &round_zero,
+            FixedValidatorProposalSourceV0::Fresh {
+                artifact_block: later_block,
+                canonical_artifact_bytes: later_payload,
+            },
+            fixture.signer(),
+        )
+        .unwrap();
+    let live_state = session.journal.state_id().unwrap();
+    assert!(matches!(
+        session.journal.prepare_proposal(conflicting.clone()),
+        Err(
+            FixedValidatorVoteSafetyJournalErrorV0::PendingProposalPreparation {
+                position,
+            }
+        ) if position == round_one.position()
+    ));
+    assert_eq!(session.journal.state_id().unwrap(), live_state);
+    let halt_record = tagged_record(
+        PROPOSAL_CONFLICT_HALT_RECORD,
+        conflicting.canonical_intent_bytes(),
+        entry,
+    )
+    .unwrap();
+    let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    drop(session);
+    drop(journal);
+
+    let mut image = fs::read(journal_path).unwrap();
+    let expected = append_test_record(&mut image, pending_state, &halt_record);
+    let io = ScriptedIo::from_images(image.clone(), image);
+    assert!(matches!(
+        fixture.replay_scripted(io, expected),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidProposalConflictHalt {
+            entry: actual,
+        }) if actual == entry
+    ));
+}
+
+#[test]
+fn replay_rejects_vote_conflict_for_older_slot_while_later_vote_is_pending() {
+    let fixture = Fixture::new(4);
+    let directory = TestDirectory::new("older-vote-conflict-during-later-vote");
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let mut journal = fixture.create(&directory);
+    let _ = activate_proposal_authoring(&mut journal);
+    let lineage = journal.bind_signing_lineage(&round).unwrap();
+    let mut session = journal.issue_signing_session(&round, lineage).unwrap();
+
+    let prevote_effect = session.decide_prevote_without_proposal().unwrap();
+    let prevote = prepared(session.prepare_vote(&round, prevote_effect).unwrap());
+    let prevote = session
+        .acknowledge_prepared_vote_is_externally_durable(prevote, prevote.state_id())
+        .unwrap();
+    let _ = session.sign_prepared_vote(prevote).unwrap();
+
+    let precommit_effect = session.decide_precommit_without_quorum().unwrap();
+    let pending = prepared(session.prepare_vote(&round, precommit_effect).unwrap());
+    let pending_state = pending.state_id();
+    let entry = session.journal.core.record_sequence;
+    let conflicting_vote = fixture.proposal_prevote_intent();
+    let live_state = session.journal.state_id().unwrap();
+    assert!(matches!(
+        session.journal.prepare_vote(conflicting_vote.clone()),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
+            position,
+            role: ConsensusVoteRole::Precommit,
+        }) if position == round.position()
+    ));
+    assert_eq!(session.journal.state_id().unwrap(), live_state);
+    let halt_record = tagged_record(
+        CONFLICT_HALT_RECORD,
+        conflicting_vote.canonical_state_and_vote_intent_bytes(),
+        entry,
+    )
+    .unwrap();
+    let (_, journal_path) = keyed_paths(&directory.0, fixture.signer()).unwrap();
+    drop(session);
+    drop(journal);
+
+    let mut image = fs::read(journal_path).unwrap();
+    let expected = append_test_record(&mut image, pending_state, &halt_record);
+    let io = ScriptedIo::from_images(image.clone(), image);
+    assert!(matches!(
+        fixture.replay_scripted(io, expected),
+        Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidConflictHalt {
+            entry: actual,
+        }) if actual == entry
+    ));
+}
+
+#[test]
 fn replay_rejects_invalid_signing_lineage_order_and_votes_outside_it() {
     let fixture = Fixture::new(4);
     let prefix = fixture.prefix();
@@ -4289,6 +4894,7 @@ fn legacy_completed_history_can_add_one_exact_current_lineage_binding() {
     let prepared = prepared(journal.prepare_vote(fixture.nil_prevote_intent()).unwrap());
     let completed = signed(journal.sign_prepared_vote(prepared).unwrap());
     let legacy_state = completed.state_id();
+    let _ = activate_proposal_authoring(&mut journal);
     let bound_state = journal.bind_signing_lineage(&round).unwrap();
     assert_ne!(bound_state, legacy_state);
     drop(journal);

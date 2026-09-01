@@ -99,8 +99,10 @@ Sequence zero names the synchronized journal header and genesis journal-state
 identity. Every complete state-changing journal frame increments the sequence
 exactly once. Finality frames include finalized children and conflict halts.
 Vote-safety frames include lineage bindings, vote prepares, vote completions,
-same-slot conflict halts, higher-round checkpoints, and finality-conflict stops.
-No-write idempotence advances neither sequence nor state identity.
+same-slot conflict halts, proposal-authoring activation, proposal prepares,
+proposal completions, proposal same-slot conflict halts, higher-round
+checkpoints, and finality-conflict stops. No-write idempotence advances neither
+sequence nor state identity.
 
 The paired journal creates a private prior-to-next transition only after it has
 synchronized the complete frame body and chained state-ID footer. The transition
@@ -119,10 +121,11 @@ For every state-changing call, the order is:
 4. atomically rename the temporary file over the authoritative anchor and
    synchronize the anchor directory;
 5. only then update live journal state and publish the outcome, height or round
-   effect, stop, signing acknowledgement, or signed vote bytes.
+   effect, stop, signing acknowledgement, proposal-control bytes, or signed
+   vote bytes.
 
 Any error from steps 1 through 4 poisons the live paired journal. The operation
-returns no success value and no signed vote bytes. Because the journal footer
+returns no success value and no signed proposal or vote bytes. Because the journal footer
 may already be durable, the error does not claim that the prior pair remains
 operable. The handle must be dropped and both files strictly reopened.
 

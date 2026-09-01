@@ -129,6 +129,7 @@ fn provision_with_finality_round_limit<'layout>(
         layout.directories(),
         FixedValidatorFinalityReplayLimitV0::new(finality_maximum_round).unwrap(),
         FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
         FixedValidatorSignerRecoveryRoundLimitV0::new(recovery_maximum_round),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     )
@@ -499,7 +500,7 @@ fn higher_round_anchor_failure_consumes_scope_and_reopens_only_as_anchor_behind(
         .create(fixture.signing_key())
         .unwrap();
     let before = layout.images();
-    let collision = next_anchor_collision(&layout.vote_anchor, 2);
+    let collision = next_anchor_collision(&layout.vote_anchor, 3);
 
     let error = ready
         .run_with_signing_session(|scope| {

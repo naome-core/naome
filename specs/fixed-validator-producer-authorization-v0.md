@@ -25,6 +25,12 @@ proposal-control V0 wrapper reuses this complete authorization unchanged after
 typed value and branch admission. A libp2p `PeerId` authenticates transport
 only and is unrelated to a consensus key.
 
+The separately specified fixed-validator node proposal-authoring boundary may
+create this existing authorization only after a complete branch-derived
+Proposal-phase intent and its independent per-key anchor are durable. That
+key-owning path adds no signature role or reinterpretation to this stateless
+verification contract.
+
 ## Primitive values
 
 All integers are unsigned and big-endian. All byte strings have the exact fixed
@@ -127,8 +133,8 @@ This is a prerelease V0 format with no production-data compatibility promise.
 Any incompatible successor must use a new signing domain and a newly specified
 canonical decoder. The proposal-control wrapper specified in
 `fixed-validator-proposal-control-v0.md` adds no new producer signature or
-signing domain and does not reinterpret these bytes. Any successor
-proposal-root derivation or proposal codec, proposer-selection algorithm,
-canonical consensus-block envelope, snapshot derivation, signing subsystem,
-network protocol, or durable consensus or finalized-state transition must not
-reinterpret these bytes silently.
+signing domain and does not reinterpret these bytes. Any successor proposal-
+root derivation or proposal codec, proposer-selection algorithm, canonical
+consensus-block envelope, snapshot derivation, network protocol, or durable
+consensus or finalized-state transition must not reinterpret these bytes
+silently.
