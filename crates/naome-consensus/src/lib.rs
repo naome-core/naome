@@ -51,10 +51,12 @@ pub use fixed_consensus_branch::{
     VerifiedFixedConsensusTransitionV0,
 };
 pub use fixed_validator_lock_state::{
-    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, FixedValidatorLockStateV0,
-    FixedValidatorLockedValueV0, FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0,
-    FixedValidatorVoteIntentError, FixedValidatorVoteIntentV0, ObservedFixedValidatorVoteIntentV0,
-    VerifiedReplayFixedValidatorVoteIntentV0,
+    FixedValidatorHigherRoundCheckpointErrorV0, FixedValidatorLockPhaseV0,
+    FixedValidatorLockStateError, FixedValidatorLockStateV0, FixedValidatorLockedValueV0,
+    FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0, FixedValidatorVoteIntentError,
+    FixedValidatorVoteIntentV0, ObservedFixedValidatorHigherRoundCheckpointV0,
+    ObservedFixedValidatorVoteIntentV0, VerifiedFixedValidatorHigherRoundAdvanceV0,
+    VerifiedReplayFixedValidatorHigherRoundCheckpointV0, VerifiedReplayFixedValidatorVoteIntentV0,
 };
 pub use producer_authorization::{
     ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,

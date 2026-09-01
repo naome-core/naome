@@ -19,7 +19,9 @@ certificate authenticated the same root in one exact earlier round of the same
 context and height. Only the sealed `VerifiedFixedConsensusProposalV0` result
 may enter the lock kernel's proposal path.
 
-The lock kernel produces unsigned local vote effects and bounded memory state.
+The lock kernel produces unsigned local vote effects, bounded memory state, and
+one bounded certificate-authenticated phase-only transition to a strictly
+higher same-height round.
 It does not create, request, persist, or release a signature; prevent a caller
 from asking another signer to equivocate; provide anti-equivocation durability
 or rollback protection; survive restart; schedule a timeout; receive, buffer,
@@ -146,18 +148,24 @@ authorization is never reused.
 
 The empty state can be constructed only from the exact branch-derived round-zero
 cursor for one context and positive height. Its `FixedValidatorLockPhaseV0`
-ordinary sequential-round path advances only from exact round `R` to `R + 1`
-after a local precommit effect. Separately, one canonical current-round
-precommit/nil quorum strictly verified against that cursor's private positioned
-fixed-set snapshot may preempt the local Proposal, Prevote, or Precommit phase.
-That evidence-bound path derives the same-branch `R + 1` cursor internally,
-rather than accepting a caller-selected destination, and finalizes no value.
-Both paths fail closed on round overflow, preserve the exact lock and complete
-valid-value proof, reset only the consumed round-local phase, and make any
-previously issued unsigned effect stale. There is no random-access round
-constructor, attacker-sized fast-forward loop, or certificate-triggered jump to
-an arbitrary higher round. Timeout expiry and scheduling are separate authority
-and are not inferred from a nil certificate.
+records the next local decision point rather than proof that this validator
+emitted a vote. The ordinary sequential-round path advances only from exact
+round `R` to `R + 1` after a local precommit effect. Separately, one canonical
+current-round precommit/nil quorum strictly verified against that cursor's
+private positioned fixed-set snapshot may preempt the local Proposal, Prevote,
+or Precommit phase and derive the same-branch `R + 1` Proposal cursor internally.
+A third bounded path consumes an authenticated strictly higher-round prevote or
+precommit certificate and lands at the role-corresponding phase of its internally
+derived same-branch cursor.
+
+All three paths fail closed on round overflow, preserve the exact lock and
+complete valid-value proof unless an existing current-round lock rule explicitly
+changes it, and make any previously issued unsigned effect stale. Neither
+evidence-bound path accepts a caller-selected destination cursor. The
+higher-round path accepts only a positive caller-local inclusive work ceiling,
+not a destination or proposer state. There is no random-access round constructor
+or unbounded certificate-directed fast-forward loop. Timeout expiry and
+scheduling are separate authority and are not inferred from a nil certificate.
 
 Every reachable nonempty lock has a valid value and `V >= L`. Proposal-quorum
 effects create or replace both slots at the same current round, optional proof
@@ -228,6 +236,47 @@ valid value. Consuming a round-local phase prevents a second conflicting
 effect from being published by the same in-memory state object, but this
 process-local linearity is not durable signing safety.
 
+### Higher-round quorum phase catch-up
+
+From any Proposal, Prevote, or Precommit phase at exact current cursor `(H, R)`,
+the kernel may prepare one phase-only transition from canonical generic quorum-
+certificate bytes and a positive caller-local inclusive maximum round `M`. The
+verification and work order is normative:
+
+1. validate the supplied current cursor against the complete live branch and
+   lock-state binding;
+2. reject zero `M`;
+3. strictly inspect only the certificate's exactly framed embedded position;
+4. require the same height and `R < P <= M` before any sequential proposer work
+   or signature verification;
+5. derive every same-branch cursor from `R + 1` through `P` internally using the
+   exact proposer transition; and
+6. fully verify the same canonical certificate bytes against the private fixed-
+   set snapshot at the sole derived `(H, P)` cursor.
+
+Either prevote/nil or prevote/proposal evidence prepares only `P/Prevote`.
+Either precommit/nil or precommit/proposal evidence prepares only
+`P/Precommit`. The exact target is retained for evidence, but it grants no
+additional state transition:
+
+- prevote/proposal does not install or lock a proposal without the existing
+  sealed-proposal and current-round prevote-quorum path;
+- prevote/nil does not clear a lock;
+- precommit/nil does not itself execute the separate current-round nil path to
+  `P + 1/Proposal`; and
+- precommit/proposal does not finalize or select a value without the existing
+  complete proposal envelope and finality journal.
+
+Preparation copies the byte-identical certificate and complete target state but
+does not mutate the live kernel or emit an unsigned vote. Its non-cloneable
+result is bound to the pointer-identical live lineage and exact complete source
+state. Application rechecks both bindings, then changes only position and phase;
+lock and complete valid-value evidence remain byte-identical. A stale, foreign,
+wrong-context, wrong-height, non-higher, above-limit, wrong-set, malformed,
+insufficient-weight, or invalid-signature certificate changes no state. This is
+certificate verification and local phase catch-up, not certificate routing,
+buffering, peer trust, timeout scheduling, branch choice, or finality.
+
 ## Matching precommit and unchanged final envelope
 
 The sealed `VerifiedFixedConsensusProposalV0` may later accept one separately
@@ -269,16 +318,23 @@ current-round precommit signatures and retains the unchanged 25,176-byte final
 envelope cap. Artifact payload bytes remain governed by the existing artifact
 decoder and checker resource contract.
 
+One higher-round catch-up verifies exactly one bounded 216..=24,696-byte quorum
+certificate and derives at most `P - R` sequential same-branch cursors after
+requiring `R < P <= M`. The caller-local inclusive ceiling `M` bounds that
+single invocation; it does not accumulate, buffer, or select observed evidence.
+
 This prerelease V0 format has no production-data compatibility promise. An
 incompatible successor must use a newly specified canonical decoder and any
 new signature role must use a separately specified signing domain. Durable
 lock, valid-value, phase, and anti-equivocation state plus conditional rollback
 detection are supplied only when the separate vote-safety journal's single
-issued session synchronizes the complete sealed post-effect intent under its
-exact external-anchor contract. That session may move to a child height only by
-consuming a matching branch-relative verified transition; it neither selects a
-sibling nor durably installs finality. Timeout and arbitrary higher-round
-advancement, external-anchor storage and recovery, networking, availability,
+issued session synchronizes the complete sealed post-effect intent or exact
+higher-round checkpoint under its external-anchor contract. That session may
+move to a child height only by consuming a matching branch-relative verified
+transition; it neither selects a sibling nor durably installs finality. The
+implemented higher-round path is bounded, phase-only, and certificate-
+authenticated. Proposal or certificate buffering and routing, timeout
+scheduling, external-anchor storage and recovery, networking, availability,
 peer trust, global branch selection, dynamic-validator consensus, and durable
 global-finality recovery remain required components whose authority is not
 granted by this in-memory kernel or inferred from the signing journal.

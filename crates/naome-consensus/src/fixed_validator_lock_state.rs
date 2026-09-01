@@ -4,9 +4,10 @@
 //! through proposal, prevote, and precommit effects at one exact position. It
 //! retains exact locked and valid values, but creates no signatures and grants
 //! no persistence, timeout, networking, peer-trust, branch-selection, or
-//! finality authority. One strictly verified current-round precommit/nil quorum
-//! may advance to the next branch-derived sequential cursor, but direct jumps to
-//! arbitrary higher rounds are deliberately outside V0.
+//! finality authority. Strictly verified precommit/nil evidence may advance one
+//! sequential round, while a bounded strictly verified higher-round prevote or
+//! precommit quorum may prepare a phase-only jump to its internally derived
+//! cursor without emitting a vote or changing lock or valid-value state.
 
 use std::error::Error;
 use std::fmt;
@@ -32,8 +33,11 @@ use super::{
 };
 
 const VOTE_INTENT_HEADER: &[u8] = b"naome:fixed-validator-vote-intent:v0\0";
+const HIGHER_ROUND_CHECKPOINT_HEADER: &[u8] = b"naome:fixed-validator-higher-round-checkpoint:v0\0";
 const VOTE_EFFECT_STATE_BINDING_DOMAIN: &[u8] =
     b"naome:fixed-validator-vote-effect-state-binding:v0\0";
+const HIGHER_ROUND_SOURCE_STATE_BINDING_DOMAIN: &[u8] =
+    b"naome:fixed-validator-higher-round-source-state-binding:v0\0";
 const OPAQUE_ID_BYTES: usize = 32;
 const CONTEXT_BYTES: usize = ArtifactChainId::BYTE_LENGTH + 32 + 4;
 const VOTE_TARGET_BYTES: usize = 1 + ProposalSigningRoot::BYTE_LENGTH;
@@ -49,6 +53,10 @@ const VOTE_INTENT_FIXED_BYTES: usize = CONTEXT_BYTES
     + 1
     + VOTE_TARGET_BYTES
     + CONSENSUS_KEY_BYTES;
+const STATE_SNAPSHOT_FIXED_BYTES: usize =
+    VOTE_INTENT_FIXED_BYTES - 1 - VOTE_TARGET_BYTES - CONSENSUS_KEY_BYTES;
+const HIGHER_ROUND_SOURCE_BYTES: usize = 8 + 8 + 1 + OPAQUE_ID_BYTES;
+const CERTIFICATE_LENGTH_BYTES: usize = 4;
 const LOCK_SNAPSHOT_BYTES: usize = ConsensusValueV0::BYTE_LENGTH + 8;
 const VALID_SNAPSHOT_FIXED_BYTES: usize =
     ConsensusValueV0::BYTE_LENGTH + 8 + QuorumCertificateId::BYTE_LENGTH + 4;
@@ -63,19 +71,20 @@ const PRECOMMIT_ROLE_TAG: u8 = 2;
 const NIL_TARGET_TAG: u8 = 0;
 const PROPOSAL_TARGET_TAG: u8 = 1;
 
-/// The exact local effect phase for one fixed-validator consensus round.
+/// The exact local decision phase for one fixed-validator consensus round.
 ///
-/// The phase records only which unsigned effect this kernel may decide next.
-/// It is not a timer, network-delivery claim, or proof that any vote was signed
-/// or broadcast.
+/// The phase records only which local decision point the kernel may evaluate
+/// next. It can follow a locally returned unsigned effect or authenticated
+/// phase-only higher-round catch-up; it is not proof that this validator emitted,
+/// signed, or broadcast any vote and is not a timer or network-delivery claim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 pub enum FixedValidatorLockPhaseV0 {
     /// The kernel may evaluate one admitted proposal or the absent/invalid path.
     Proposal,
-    /// The kernel has returned a prevote effect and may evaluate prevote quorum.
+    /// The kernel may evaluate prevote quorum at this position.
     Prevote,
-    /// The kernel has returned a precommit effect and may advance sequentially.
+    /// The kernel may evaluate precommit evidence or advance sequentially.
     Precommit,
 }
 
@@ -286,6 +295,95 @@ pub struct VerifiedReplayFixedValidatorVoteIntentV0 {
     lock_state: FixedValidatorLockStateV0,
 }
 
+/// One verified phase-only higher-round transition prepared by a live lock state.
+///
+/// The target cursor is derived internally from the exact current cursor and the
+/// embedded quorum-certificate position. Private fields bind the transition to
+/// the originating live state, retain the exact canonical certificate and
+/// complete post-jump checkpoint bytes, and expose no unsigned vote, signing,
+/// proposal, selection, or finality authority.
+#[must_use]
+pub struct VerifiedFixedValidatorHigherRoundAdvanceV0<'branch> {
+    target_round: FixedConsensusRoundV0<'branch>,
+    source_state_binding: [u8; OPAQUE_ID_BYTES],
+    live_lineage_seal: Arc<()>,
+    target_phase: FixedValidatorLockPhaseV0,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    certificate_id: QuorumCertificateId,
+    canonical_certificate: Vec<u8>,
+    canonical_checkpoint: Vec<u8>,
+}
+
+impl VerifiedFixedValidatorHigherRoundAdvanceV0<'_> {
+    /// Returns the exact internally derived higher-round position.
+    pub const fn position(&self) -> ConsensusPosition {
+        self.target_round.position()
+    }
+
+    /// Returns the role-corresponding destination phase.
+    pub const fn phase(&self) -> FixedValidatorLockPhaseV0 {
+        self.target_phase
+    }
+
+    /// Returns the authenticated quorum role.
+    pub const fn role(&self) -> ConsensusVoteRole {
+        self.role
+    }
+
+    /// Returns the authenticated nil-or-proposal target.
+    pub const fn target(&self) -> ConsensusVoteTarget {
+        self.target
+    }
+
+    /// Returns the evidence-variant identity of the complete certificate.
+    pub const fn certificate_id(&self) -> QuorumCertificateId {
+        self.certificate_id
+    }
+
+    /// Returns the exact canonical triggering quorum certificate.
+    pub fn canonical_certificate(&self) -> &[u8] {
+        &self.canonical_certificate
+    }
+
+    /// Returns the exact canonical durable checkpoint representation.
+    pub fn canonical_checkpoint_bytes(&self) -> &[u8] {
+        &self.canonical_checkpoint
+    }
+}
+
+/// One inert structurally verified higher-round checkpoint record.
+///
+/// Header-bound decoding validates canonical framing, state invariants,
+/// source-to-target preservation, and the exact embedded certificate header.
+/// It cannot authenticate certificate signatures or membership without the
+/// private positioned fixed-set snapshot supplied later by an exact typed
+/// round.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct ObservedFixedValidatorHigherRoundCheckpointV0 {
+    source_position: ConsensusPosition,
+    source_phase: FixedValidatorLockPhaseV0,
+    source_state_binding: [u8; OPAQUE_ID_BYTES],
+    target_snapshot: FixedValidatorVoteStateSnapshotV0,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    certificate_id: QuorumCertificateId,
+    canonical_certificate: Vec<u8>,
+    canonical_checkpoint: Vec<u8>,
+}
+
+/// One exact higher-round checkpoint reconstructed against its typed target.
+///
+/// This value carries only a non-signing lock state. A key-owning journal may
+/// publish it as live state only after its own exact external-anchor and session
+/// issuance checks succeed.
+#[derive(Debug)]
+#[must_use]
+pub struct VerifiedReplayFixedValidatorHigherRoundCheckpointV0 {
+    lock_state: FixedValidatorLockStateV0,
+}
+
 impl ObservedFixedValidatorVoteIntentV0 {
     /// Smallest complete record: no lock and no retained valid value.
     pub const MIN_BYTE_LENGTH: usize = VOTE_INTENT_HEADER.len() + VOTE_INTENT_FIXED_BYTES;
@@ -328,6 +426,11 @@ impl ObservedFixedValidatorVoteIntentV0 {
     /// Returns the exact embedded height and round.
     pub const fn position(&self) -> ConsensusPosition {
         self.snapshot.position
+    }
+
+    /// Returns the inert decoded post-effect local phase.
+    pub const fn phase(&self) -> FixedValidatorLockPhaseV0 {
+        self.snapshot.phase
     }
 
     /// Returns the inert decoded vote role.
@@ -472,13 +575,125 @@ impl VerifiedReplayFixedValidatorVoteIntentV0 {
     }
 }
 
+impl ObservedFixedValidatorHigherRoundCheckpointV0 {
+    /// Smallest checkpoint: empty state plus a one-signer quorum certificate.
+    pub const MIN_BYTE_LENGTH: usize = HIGHER_ROUND_CHECKPOINT_HEADER.len()
+        + HIGHER_ROUND_SOURCE_BYTES
+        + STATE_SNAPSHOT_FIXED_BYTES
+        + CERTIFICATE_LENGTH_BYTES
+        + VerifiedQuorumCertificateV0::MIN_BYTE_LENGTH;
+
+    /// Largest checkpoint: lock, retained valid proof, and two 256-signer QCs.
+    pub const MAX_BYTE_LENGTH: usize = Self::MIN_BYTE_LENGTH
+        + LOCK_SNAPSHOT_BYTES
+        + VALID_SNAPSHOT_FIXED_BYTES
+        + 2 * VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH
+        - VerifiedQuorumCertificateV0::MIN_BYTE_LENGTH;
+
+    /// Strictly decodes one inert canonical checkpoint against journal headers.
+    pub fn decode_and_verify(
+        bytes: &[u8],
+        expected_context: ConsensusContextV0,
+        expected_fixed_agreement_set_id: FixedAgreementSetId,
+    ) -> Result<Self, FixedValidatorHigherRoundCheckpointErrorV0> {
+        decode_observed_higher_round_checkpoint(
+            bytes,
+            expected_context,
+            expected_fixed_agreement_set_id,
+        )
+    }
+
+    /// Returns the exact pre-jump position committed by the checkpoint.
+    pub const fn source_position(&self) -> ConsensusPosition {
+        self.source_position
+    }
+
+    /// Returns the exact pre-jump local phase.
+    pub const fn source_phase(&self) -> FixedValidatorLockPhaseV0 {
+        self.source_phase
+    }
+
+    /// Returns the exact post-jump position.
+    pub const fn position(&self) -> ConsensusPosition {
+        self.target_snapshot.position
+    }
+
+    /// Returns the role-corresponding post-jump phase.
+    pub const fn phase(&self) -> FixedValidatorLockPhaseV0 {
+        self.target_snapshot.phase
+    }
+
+    /// Returns the authenticated role recorded by the certificate header.
+    pub const fn role(&self) -> ConsensusVoteRole {
+        self.role
+    }
+
+    /// Returns the authenticated nil-or-proposal target.
+    pub const fn target(&self) -> ConsensusVoteTarget {
+        self.target
+    }
+
+    /// Returns the evidence identity of the retained exact certificate bytes.
+    pub const fn certificate_id(&self) -> QuorumCertificateId {
+        self.certificate_id
+    }
+
+    /// Returns the byte-identical retained canonical quorum certificate.
+    pub fn canonical_certificate(&self) -> &[u8] {
+        &self.canonical_certificate
+    }
+
+    /// Returns the complete canonical checkpoint bytes.
+    pub fn canonical_checkpoint_bytes(&self) -> &[u8] {
+        &self.canonical_checkpoint
+    }
+
+    /// Fully verifies and restores this checkpoint at its exact typed target.
+    pub fn verify_for_round(
+        self,
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<
+        VerifiedReplayFixedValidatorHigherRoundCheckpointV0,
+        FixedValidatorHigherRoundCheckpointErrorV0,
+    > {
+        let lock_state = restore_higher_round_checkpoint_for_round(&self, round)?;
+        Ok(VerifiedReplayFixedValidatorHigherRoundCheckpointV0 { lock_state })
+    }
+}
+
+impl VerifiedReplayFixedValidatorHigherRoundCheckpointV0 {
+    /// Strictly decodes and reconstructs a checkpoint at one exact typed round.
+    pub fn decode_and_verify_for_round(
+        bytes: &[u8],
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<Self, FixedValidatorHigherRoundCheckpointErrorV0> {
+        ObservedFixedValidatorHigherRoundCheckpointV0::decode_and_verify(
+            bytes,
+            round.context(),
+            round.parent_coordinate().fixed_agreement_set_id(),
+        )?
+        .verify_for_round(round)
+    }
+
+    /// Returns the reconstructed non-signing lock state.
+    pub const fn lock_state(&self) -> &FixedValidatorLockStateV0 {
+        &self.lock_state
+    }
+
+    /// Consumes the replay proof and returns its exact post-jump state.
+    pub fn into_lock_state(self) -> FixedValidatorLockStateV0 {
+        self.lock_state
+    }
+}
+
 /// One sealed, volatile fixed-validator lock state for a single height.
 ///
 /// Construction requires the exact branch-derived round-zero cursor. All state
-/// fields are private, and every fallible mutation validates and prepares its
-/// complete effect before changing the state. The state does not own a round
-/// cursor, so callers retain the authority and cost of deriving exactly one
-/// sequential successor through [`FixedConsensusRoundV0::advance_round`].
+/// fields are private, and every fallible mutation validates its complete inputs
+/// before changing the state. The state does not own a round cursor. Ordinary
+/// paths accept only exact current or sequential-successor cursors; the bounded
+/// higher-round path instead derives `R + 1` through its authenticated target
+/// internally from one exact current cursor.
 #[derive(Debug)]
 #[must_use]
 pub struct FixedValidatorLockStateV0 {
@@ -522,7 +737,7 @@ impl FixedValidatorLockStateV0 {
         self.position
     }
 
-    /// Returns the exact current local effect phase.
+    /// Returns the exact current local decision phase.
     pub const fn phase(&self) -> FixedValidatorLockPhaseV0 {
         self.phase
     }
@@ -732,6 +947,122 @@ impl FixedValidatorLockStateV0 {
 
         self.apply_round_advance(next_round.position());
         Ok(next_round)
+    }
+
+    /// Prepares a bounded phase-only jump to an authenticated higher round.
+    ///
+    /// The current cursor and positive caller-local inclusive maximum are
+    /// checked before the canonical certificate's strictly framed embedded
+    /// position is used. The position must name the same height and a round
+    /// `P` with `current < P <= maximum`; only then are sequential same-branch
+    /// cursors derived internally and the same bytes fully verified against
+    /// `P`'s private positioned fixed-set snapshot. Either prevote target lands
+    /// at `P/Prevote`; either precommit target lands at `P/Precommit`.
+    ///
+    /// Success does not mutate this state or emit a vote. The returned sealed
+    /// transition retains the exact QC and complete post-jump checkpoint while
+    /// binding application to this unchanged live state.
+    pub fn prepare_higher_round_quorum_advance<'branch>(
+        &self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<VerifiedFixedValidatorHigherRoundAdvanceV0<'branch>, FixedValidatorLockStateError>
+    {
+        self.validate_current_round(current_round)?;
+        if inclusive_maximum_round.value() == 0 {
+            return Err(FixedValidatorLockStateError::HigherRoundWorkLimitNotPositive);
+        }
+        let position = VerifiedQuorumCertificateV0::strictly_peek_position(canonical_certificate)
+            .map_err(FixedValidatorLockStateError::HigherRoundCertificatePosition)?;
+        if position.height() != self.position.height() {
+            return Err(FixedValidatorLockStateError::HigherRoundHeightMismatch {
+                expected: self.position.height(),
+                actual: position.height(),
+            });
+        }
+        if position.round() <= self.position.round() {
+            return Err(
+                FixedValidatorLockStateError::HigherRoundNotStrictlyGreater {
+                    current: self.position.round(),
+                    actual: position.round(),
+                },
+            );
+        }
+        if position.round() > inclusive_maximum_round {
+            return Err(FixedValidatorLockStateError::HigherRoundLimitExceeded {
+                round: position.round(),
+                maximum: inclusive_maximum_round,
+            });
+        }
+
+        let mut target_round = current_round
+            .derive_next_round()
+            .map_err(FixedValidatorLockStateError::HigherRoundDerivation)?;
+        while target_round.position().round() < position.round() {
+            target_round = target_round
+                .derive_next_round()
+                .map_err(FixedValidatorLockStateError::HigherRoundDerivation)?;
+        }
+        debug_assert_eq!(target_round.position(), position);
+        let certificate = target_round
+            .decode_and_verify_quorum_certificate(canonical_certificate)
+            .map_err(FixedValidatorLockStateError::QuorumVerification)?;
+        let role = certificate.role();
+        let target = certificate.target();
+        let certificate_id = certificate.id();
+        let target_phase = phase_for_role(role);
+        let canonical_certificate = try_copy_certificate(canonical_certificate)?;
+
+        let source_snapshot = vote_snapshot_from_lock_state(self);
+        let source_state_binding = higher_round_source_state_binding(&source_snapshot);
+        let mut target_snapshot = source_snapshot.clone();
+        target_snapshot.position = position;
+        target_snapshot.phase = target_phase;
+        let canonical_checkpoint = encode_higher_round_checkpoint(
+            self.position,
+            self.phase,
+            source_state_binding,
+            &target_snapshot,
+            &canonical_certificate,
+        )
+        .map_err(|_| FixedValidatorLockStateError::HigherRoundCheckpointAllocationFailed)?;
+
+        Ok(VerifiedFixedValidatorHigherRoundAdvanceV0 {
+            target_round,
+            source_state_binding,
+            live_lineage_seal: Arc::clone(&self.live_lineage_seal),
+            target_phase,
+            role,
+            target,
+            certificate_id,
+            canonical_certificate,
+            canonical_checkpoint,
+        })
+    }
+
+    /// Applies one still-current prepared higher-round transition.
+    ///
+    /// Pointer-identical live-lineage provenance and the complete source-state
+    /// binding are rechecked before only position and phase change. Lock and
+    /// complete valid-value evidence remain byte-identical. Consuming the token
+    /// returns the internally derived target cursor and publishes no vote or
+    /// finality authority.
+    pub fn apply_prepared_higher_round_quorum_advance<'branch>(
+        &mut self,
+        prepared: VerifiedFixedValidatorHigherRoundAdvanceV0<'branch>,
+    ) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorLockStateError> {
+        if !Arc::ptr_eq(&self.live_lineage_seal, &prepared.live_lineage_seal) {
+            return Err(FixedValidatorLockStateError::HigherRoundAdvanceLineageMismatch);
+        }
+        let source_snapshot = vote_snapshot_from_lock_state(self);
+        if higher_round_source_state_binding(&source_snapshot) != prepared.source_state_binding {
+            return Err(FixedValidatorLockStateError::HigherRoundAdvanceStateMismatch);
+        }
+
+        self.position = prepared.target_round.position();
+        self.phase = prepared.target_phase;
+        Ok(prepared.target_round)
     }
 
     fn validate_next_round(
@@ -1071,8 +1402,16 @@ fn vote_snapshot_from_lock_state(
 }
 
 fn vote_effect_state_binding(snapshot: &FixedValidatorVoteStateSnapshotV0) -> [u8; 32] {
+    lock_state_binding(VOTE_EFFECT_STATE_BINDING_DOMAIN, snapshot)
+}
+
+fn higher_round_source_state_binding(snapshot: &FixedValidatorVoteStateSnapshotV0) -> [u8; 32] {
+    lock_state_binding(HIGHER_ROUND_SOURCE_STATE_BINDING_DOMAIN, snapshot)
+}
+
+fn lock_state_binding(domain: &[u8], snapshot: &FixedValidatorVoteStateSnapshotV0) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(VOTE_EFFECT_STATE_BINDING_DOMAIN);
+    hasher.update(domain);
     hasher.update(snapshot.context.chain_id().as_bytes());
     hasher.update(snapshot.context.genesis_id().as_bytes());
     hasher.update(snapshot.context.protocol_version().value().to_be_bytes());
@@ -1255,16 +1594,11 @@ fn encode_state_and_vote_intent(
     effect: &FixedValidatorUnsignedVoteEffectV0,
     signer: ConsensusKey,
 ) -> Result<Vec<u8>, FixedValidatorVoteIntentError> {
-    let valid_certificate_len = snapshot
-        .valid
-        .as_ref()
-        .map_or(0, |valid| valid.canonical_prevote_certificate.len());
-    let length = ObservedFixedValidatorVoteIntentV0::MIN_BYTE_LENGTH
-        + snapshot.locked.map_or(0, |_| LOCK_SNAPSHOT_BYTES)
-        + snapshot
-            .valid
-            .as_ref()
-            .map_or(0, |_| VALID_SNAPSHOT_FIXED_BYTES + valid_certificate_len);
+    let length = VOTE_INTENT_HEADER.len()
+        + state_snapshot_length(snapshot)?
+        + 1
+        + VOTE_TARGET_BYTES
+        + CONSENSUS_KEY_BYTES;
     if length > ObservedFixedValidatorVoteIntentV0::MAX_BYTE_LENGTH {
         return Err(FixedValidatorVoteIntentError::InputTooLong {
             actual: length,
@@ -1277,6 +1611,37 @@ fn encode_state_and_vote_intent(
         .try_reserve_exact(length)
         .map_err(|_| FixedValidatorVoteIntentError::AllocationFailed)?;
     bytes.extend_from_slice(VOTE_INTENT_HEADER);
+    append_state_snapshot(&mut bytes, snapshot);
+    bytes.push(role_tag(effect.role));
+    append_target(&mut bytes, effect.target);
+    bytes.extend_from_slice(signer.as_bytes());
+    debug_assert_eq!(bytes.len(), length);
+    Ok(bytes)
+}
+
+fn state_snapshot_length(
+    snapshot: &FixedValidatorVoteStateSnapshotV0,
+) -> Result<usize, FixedValidatorVoteIntentError> {
+    let valid_certificate_len = snapshot
+        .valid
+        .as_ref()
+        .map_or(0, |valid| valid.canonical_prevote_certificate.len());
+    let length = STATE_SNAPSHOT_FIXED_BYTES
+        + snapshot.locked.map_or(0, |_| LOCK_SNAPSHOT_BYTES)
+        + snapshot
+            .valid
+            .as_ref()
+            .map_or(0, |_| VALID_SNAPSHOT_FIXED_BYTES + valid_certificate_len);
+    if valid_certificate_len > VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH {
+        return Err(FixedValidatorVoteIntentError::InputTooLong {
+            actual: valid_certificate_len,
+            maximum: VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH,
+        });
+    }
+    Ok(length)
+}
+
+fn append_state_snapshot(bytes: &mut Vec<u8>, snapshot: &FixedValidatorVoteStateSnapshotV0) {
     bytes.extend_from_slice(snapshot.context.chain_id().as_bytes());
     bytes.extend_from_slice(snapshot.context.genesis_id().as_bytes());
     bytes.extend_from_slice(&snapshot.context.protocol_version().value().to_be_bytes());
@@ -1322,35 +1687,13 @@ fn encode_state_and_vote_intent(
             bytes.extend_from_slice(&valid.canonical_prevote_certificate);
         }
     }
-    bytes.push(role_tag(effect.role));
-    append_target(&mut bytes, effect.target);
-    bytes.extend_from_slice(signer.as_bytes());
-    debug_assert_eq!(bytes.len(), length);
-    Ok(bytes)
 }
 
-fn decode_observed_vote_intent(
-    bytes: &[u8],
+fn decode_state_snapshot(
+    decoder: &mut VoteIntentDecoder<'_>,
     expected_context: ConsensusContextV0,
     expected_fixed_agreement_set_id: FixedAgreementSetId,
-    expected_signer: ConsensusKey,
-) -> Result<ObservedFixedValidatorVoteIntentV0, FixedValidatorVoteIntentError> {
-    if bytes.len() > ObservedFixedValidatorVoteIntentV0::MAX_BYTE_LENGTH {
-        return Err(FixedValidatorVoteIntentError::InputTooLong {
-            actual: bytes.len(),
-            maximum: ObservedFixedValidatorVoteIntentV0::MAX_BYTE_LENGTH,
-        });
-    }
-    if bytes.len() < ObservedFixedValidatorVoteIntentV0::MIN_BYTE_LENGTH {
-        return Err(FixedValidatorVoteIntentError::InputTooShort {
-            actual: bytes.len(),
-            minimum: ObservedFixedValidatorVoteIntentV0::MIN_BYTE_LENGTH,
-        });
-    }
-    let mut decoder = VoteIntentDecoder::new(bytes);
-    if decoder.take_slice(VOTE_INTENT_HEADER.len())? != VOTE_INTENT_HEADER {
-        return Err(FixedValidatorVoteIntentError::InvalidHeader);
-    }
+) -> Result<FixedValidatorVoteStateSnapshotV0, FixedValidatorVoteIntentError> {
     if decoder.take_array::<32>()? != *expected_context.chain_id().as_bytes()
         || decoder.take_array::<32>()? != *expected_context.genesis_id().as_bytes()
         || decoder.take_array::<4>()? != expected_context.protocol_version().value().to_be_bytes()
@@ -1434,14 +1777,6 @@ fn decode_observed_vote_intent(
         }
         actual => return Err(FixedValidatorVoteIntentError::UnknownPresenceTag { actual }),
     };
-    let role = decode_role(decoder.take_byte()?)?;
-    let target = decode_target(&mut decoder)?;
-    let signer_bytes = decoder.take_array::<CONSENSUS_KEY_BYTES>()?;
-    if signer_bytes != *expected_signer.as_bytes() {
-        return Err(FixedValidatorVoteIntentError::SignerMismatch);
-    }
-    decoder.finish()?;
-
     let snapshot = FixedValidatorVoteStateSnapshotV0 {
         context: expected_context,
         parent_verified_height,
@@ -1457,6 +1792,44 @@ fn decode_observed_vote_intent(
         valid,
     };
     validate_snapshot_invariants(&snapshot)?;
+    Ok(snapshot)
+}
+
+fn decode_observed_vote_intent(
+    bytes: &[u8],
+    expected_context: ConsensusContextV0,
+    expected_fixed_agreement_set_id: FixedAgreementSetId,
+    expected_signer: ConsensusKey,
+) -> Result<ObservedFixedValidatorVoteIntentV0, FixedValidatorVoteIntentError> {
+    if bytes.len() > ObservedFixedValidatorVoteIntentV0::MAX_BYTE_LENGTH {
+        return Err(FixedValidatorVoteIntentError::InputTooLong {
+            actual: bytes.len(),
+            maximum: ObservedFixedValidatorVoteIntentV0::MAX_BYTE_LENGTH,
+        });
+    }
+    if bytes.len() < ObservedFixedValidatorVoteIntentV0::MIN_BYTE_LENGTH {
+        return Err(FixedValidatorVoteIntentError::InputTooShort {
+            actual: bytes.len(),
+            minimum: ObservedFixedValidatorVoteIntentV0::MIN_BYTE_LENGTH,
+        });
+    }
+    let mut decoder = VoteIntentDecoder::new(bytes);
+    if decoder.take_slice(VOTE_INTENT_HEADER.len())? != VOTE_INTENT_HEADER {
+        return Err(FixedValidatorVoteIntentError::InvalidHeader);
+    }
+    let snapshot = decode_state_snapshot(
+        &mut decoder,
+        expected_context,
+        expected_fixed_agreement_set_id,
+    )?;
+    let role = decode_role(decoder.take_byte()?)?;
+    let target = decode_target(&mut decoder)?;
+    let signer_bytes = decoder.take_array::<CONSENSUS_KEY_BYTES>()?;
+    if signer_bytes != *expected_signer.as_bytes() {
+        return Err(FixedValidatorVoteIntentError::SignerMismatch);
+    }
+    decoder.finish()?;
+
     let effect = FixedValidatorUnsignedVoteEffectV0::from_snapshot(&snapshot, role, target);
     validate_effect_for_snapshot(&snapshot, &effect)?;
     let canonical_state_and_vote_intent_bytes =
@@ -1472,6 +1845,205 @@ fn decode_observed_vote_intent(
     })
 }
 
+fn encode_higher_round_checkpoint(
+    source_position: ConsensusPosition,
+    source_phase: FixedValidatorLockPhaseV0,
+    source_state_binding: [u8; OPAQUE_ID_BYTES],
+    target_snapshot: &FixedValidatorVoteStateSnapshotV0,
+    canonical_certificate: &[u8],
+) -> Result<Vec<u8>, FixedValidatorVoteIntentError> {
+    let length = HIGHER_ROUND_CHECKPOINT_HEADER.len()
+        + HIGHER_ROUND_SOURCE_BYTES
+        + state_snapshot_length(target_snapshot)?
+        + CERTIFICATE_LENGTH_BYTES
+        + canonical_certificate.len();
+    if length > ObservedFixedValidatorHigherRoundCheckpointV0::MAX_BYTE_LENGTH {
+        return Err(FixedValidatorVoteIntentError::InputTooLong {
+            actual: length,
+            maximum: ObservedFixedValidatorHigherRoundCheckpointV0::MAX_BYTE_LENGTH,
+        });
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| FixedValidatorVoteIntentError::AllocationFailed)?;
+    bytes.extend_from_slice(HIGHER_ROUND_CHECKPOINT_HEADER);
+    bytes.extend_from_slice(&source_position.height().value().to_be_bytes());
+    bytes.extend_from_slice(&source_position.round().value().to_be_bytes());
+    bytes.push(phase_tag(source_phase));
+    bytes.extend_from_slice(&source_state_binding);
+    append_state_snapshot(&mut bytes, target_snapshot);
+    bytes.extend_from_slice(
+        &u32::try_from(canonical_certificate.len())
+            .expect("bounded quorum certificates fit u32")
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(canonical_certificate);
+    debug_assert_eq!(bytes.len(), length);
+    Ok(bytes)
+}
+
+fn decode_observed_higher_round_checkpoint(
+    bytes: &[u8],
+    expected_context: ConsensusContextV0,
+    expected_fixed_agreement_set_id: FixedAgreementSetId,
+) -> Result<ObservedFixedValidatorHigherRoundCheckpointV0, FixedValidatorHigherRoundCheckpointErrorV0>
+{
+    if bytes.len() > ObservedFixedValidatorHigherRoundCheckpointV0::MAX_BYTE_LENGTH {
+        return Err(FixedValidatorHigherRoundCheckpointErrorV0::InputTooLong {
+            actual: bytes.len(),
+            maximum: ObservedFixedValidatorHigherRoundCheckpointV0::MAX_BYTE_LENGTH,
+        });
+    }
+    if bytes.len() < ObservedFixedValidatorHigherRoundCheckpointV0::MIN_BYTE_LENGTH {
+        return Err(FixedValidatorHigherRoundCheckpointErrorV0::InputTooShort {
+            actual: bytes.len(),
+            minimum: ObservedFixedValidatorHigherRoundCheckpointV0::MIN_BYTE_LENGTH,
+        });
+    }
+    let mut decoder = VoteIntentDecoder::new(bytes);
+    if decoder
+        .take_slice(HIGHER_ROUND_CHECKPOINT_HEADER.len())
+        .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?
+        != HIGHER_ROUND_CHECKPOINT_HEADER
+    {
+        return Err(FixedValidatorHigherRoundCheckpointErrorV0::InvalidHeader);
+    }
+    let source_position = ConsensusPosition::new(
+        ConsensusHeight::new(
+            decoder
+                .take_u64()
+                .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?,
+        ),
+        ConsensusRound::new(
+            decoder
+                .take_u64()
+                .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?,
+        ),
+    );
+    let source_phase = decode_phase(
+        decoder
+            .take_byte()
+            .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?,
+    )
+    .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?;
+    let source_state_binding = decoder
+        .take_array::<OPAQUE_ID_BYTES>()
+        .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?;
+    let target_snapshot = decode_state_snapshot(
+        &mut decoder,
+        expected_context,
+        expected_fixed_agreement_set_id,
+    )
+    .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?;
+    let certificate_length = usize::try_from(
+        decoder
+            .take_u32()
+            .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?,
+    )
+    .expect("u32 always fits usize on supported targets");
+    let certificate = decoder
+        .take_slice(certificate_length)
+        .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?;
+    decoder
+        .finish()
+        .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?;
+
+    if source_position.height() != target_snapshot.position.height() {
+        return Err(FixedValidatorHigherRoundCheckpointErrorV0::HeightMismatch {
+            source: source_position.height(),
+            target: target_snapshot.position.height(),
+        });
+    }
+    if target_snapshot.position.round() <= source_position.round() {
+        return Err(
+            FixedValidatorHigherRoundCheckpointErrorV0::NotStrictlyHigher {
+                source: source_position.round(),
+                target: target_snapshot.position.round(),
+            },
+        );
+    }
+    let mut source_snapshot = target_snapshot.clone();
+    source_snapshot.position = source_position;
+    source_snapshot.phase = source_phase;
+    validate_snapshot_invariants(&source_snapshot)
+        .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?;
+    if higher_round_source_state_binding(&source_snapshot) != source_state_binding {
+        return Err(FixedValidatorHigherRoundCheckpointErrorV0::SourceStateBindingMismatch);
+    }
+
+    let header = decode_canonical_quorum_certificate_header(certificate)
+        .map_err(FixedValidatorHigherRoundCheckpointErrorV0::Certificate)?;
+    if header.context != expected_context {
+        return Err(FixedValidatorHigherRoundCheckpointErrorV0::CertificateContextMismatch);
+    }
+    if header.position != target_snapshot.position {
+        return Err(
+            FixedValidatorHigherRoundCheckpointErrorV0::CertificatePositionMismatch {
+                expected: target_snapshot.position,
+                actual: header.position,
+            },
+        );
+    }
+    let expected_phase = phase_for_role(header.role);
+    if target_snapshot.phase != expected_phase {
+        return Err(
+            FixedValidatorHigherRoundCheckpointErrorV0::PhaseRoleMismatch {
+                phase: target_snapshot.phase,
+                role: header.role,
+            },
+        );
+    }
+
+    let canonical_checkpoint = encode_higher_round_checkpoint(
+        source_position,
+        source_phase,
+        source_state_binding,
+        &target_snapshot,
+        certificate,
+    )
+    .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?;
+    if canonical_checkpoint != bytes {
+        return Err(FixedValidatorHigherRoundCheckpointErrorV0::NonCanonicalEncoding);
+    }
+    let mut canonical_certificate = Vec::new();
+    canonical_certificate
+        .try_reserve_exact(certificate.len())
+        .map_err(|_| FixedValidatorHigherRoundCheckpointErrorV0::AllocationFailed)?;
+    canonical_certificate.extend_from_slice(certificate);
+
+    Ok(ObservedFixedValidatorHigherRoundCheckpointV0 {
+        source_position,
+        source_phase,
+        source_state_binding,
+        target_snapshot,
+        role: header.role,
+        target: header.target,
+        certificate_id: header.id,
+        canonical_certificate,
+        canonical_checkpoint,
+    })
+}
+
+fn restore_higher_round_checkpoint_for_round(
+    observed: &ObservedFixedValidatorHigherRoundCheckpointV0,
+    round: &FixedConsensusRoundV0<'_>,
+) -> Result<FixedValidatorLockStateV0, FixedValidatorHigherRoundCheckpointErrorV0> {
+    let lock_state = restore_snapshot_for_round(&observed.target_snapshot, round)
+        .map_err(FixedValidatorHigherRoundCheckpointErrorV0::State)?;
+    let certificate = round
+        .decode_and_verify_quorum_certificate(&observed.canonical_certificate)
+        .map_err(FixedValidatorHigherRoundCheckpointErrorV0::Certificate)?;
+    if certificate.position() != observed.target_snapshot.position
+        || certificate.role() != observed.role
+        || certificate.target() != observed.target
+        || certificate.id() != observed.certificate_id
+    {
+        return Err(FixedValidatorHigherRoundCheckpointErrorV0::CertificateStateMismatch);
+    }
+    Ok(lock_state)
+}
+
 fn restore_lock_state_for_round(
     observed: &ObservedFixedValidatorVoteIntentV0,
     round: &FixedConsensusRoundV0<'_>,
@@ -1481,7 +2053,13 @@ fn restore_lock_state_for_round(
             signer: observed.signer,
         });
     }
-    let snapshot = &observed.snapshot;
+    restore_snapshot_for_round(&observed.snapshot, round)
+}
+
+fn restore_snapshot_for_round(
+    snapshot: &FixedValidatorVoteStateSnapshotV0,
+    round: &FixedConsensusRoundV0<'_>,
+) -> Result<FixedValidatorLockStateV0, FixedValidatorVoteIntentError> {
     let parent = round.parent_coordinate();
     if snapshot.context != round.context()
         || snapshot.parent_verified_height != parent.verified_height()
@@ -1533,6 +2111,13 @@ fn phase_tag(phase: FixedValidatorLockPhaseV0) -> u8 {
         FixedValidatorLockPhaseV0::Proposal => PROPOSAL_PHASE_TAG,
         FixedValidatorLockPhaseV0::Prevote => PREVOTE_PHASE_TAG,
         FixedValidatorLockPhaseV0::Precommit => PRECOMMIT_PHASE_TAG,
+    }
+}
+
+const fn phase_for_role(role: ConsensusVoteRole) -> FixedValidatorLockPhaseV0 {
+    match role {
+        ConsensusVoteRole::Prevote => FixedValidatorLockPhaseV0::Prevote,
+        ConsensusVoteRole::Precommit => FixedValidatorLockPhaseV0::Precommit,
     }
 }
 
@@ -1699,6 +2284,106 @@ fn try_copy_certificate(bytes: &[u8]) -> Result<Vec<u8>, FixedValidatorLockState
         .map_err(|_| FixedValidatorLockStateError::CertificateAllocationFailed)?;
     copied.extend_from_slice(bytes);
     Ok(copied)
+}
+
+/// A rejected durable higher-round checkpoint decode or typed reconstruction.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixedValidatorHigherRoundCheckpointErrorV0 {
+    InputTooLong {
+        actual: usize,
+        maximum: usize,
+    },
+    InputTooShort {
+        actual: usize,
+        minimum: usize,
+    },
+    InvalidHeader,
+    State(FixedValidatorVoteIntentError),
+    HeightMismatch {
+        source: ConsensusHeight,
+        target: ConsensusHeight,
+    },
+    NotStrictlyHigher {
+        source: ConsensusRound,
+        target: ConsensusRound,
+    },
+    SourceStateBindingMismatch,
+    Certificate(QuorumCertificateVerifyError),
+    CertificateContextMismatch,
+    CertificatePositionMismatch {
+        expected: ConsensusPosition,
+        actual: ConsensusPosition,
+    },
+    PhaseRoleMismatch {
+        phase: FixedValidatorLockPhaseV0,
+        role: ConsensusVoteRole,
+    },
+    CertificateStateMismatch,
+    NonCanonicalEncoding,
+    AllocationFailed,
+}
+
+impl fmt::Display for FixedValidatorHigherRoundCheckpointErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InputTooLong { actual, maximum } => write!(
+                formatter,
+                "higher-round checkpoint length {actual} exceeds {maximum} bytes"
+            ),
+            Self::InputTooShort { actual, minimum } => write!(
+                formatter,
+                "higher-round checkpoint length {actual} is shorter than {minimum} bytes"
+            ),
+            Self::InvalidHeader => formatter.write_str("invalid higher-round checkpoint header"),
+            Self::State(source) => write!(formatter, "invalid checkpoint lock state: {source}"),
+            Self::HeightMismatch { source, target } => write!(
+                formatter,
+                "higher-round checkpoint moves from height {} to height {}",
+                source.value(),
+                target.value()
+            ),
+            Self::NotStrictlyHigher { source, target } => write!(
+                formatter,
+                "checkpoint target round {} is not higher than source round {}",
+                target.value(),
+                source.value()
+            ),
+            Self::SourceStateBindingMismatch => {
+                formatter.write_str("checkpoint source-state binding does not match its state")
+            }
+            Self::Certificate(source) => source.fmt(formatter),
+            Self::CertificateContextMismatch => {
+                formatter.write_str("checkpoint certificate belongs to another context")
+            }
+            Self::CertificatePositionMismatch { expected, actual } => write!(
+                formatter,
+                "checkpoint certificate position {actual:?} differs from target {expected:?}"
+            ),
+            Self::PhaseRoleMismatch { phase, role } => write!(
+                formatter,
+                "checkpoint phase {phase:?} does not correspond to certificate role {role:?}"
+            ),
+            Self::CertificateStateMismatch => formatter
+                .write_str("typed checkpoint certificate differs from retained checkpoint state"),
+            Self::NonCanonicalEncoding => {
+                formatter.write_str("higher-round checkpoint differs from canonical re-encoding")
+            }
+            Self::AllocationFailed => {
+                formatter.write_str("memory allocation failed for higher-round checkpoint")
+            }
+        }
+    }
+}
+
+impl Error for FixedValidatorHigherRoundCheckpointErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::State(source) => Some(source),
+            Self::Certificate(source) => Some(source),
+            _ => None,
+        }
+    }
 }
 
 /// A rejected vote-intent preparation, replay, or typed-round reconstruction.
@@ -1942,7 +2627,7 @@ impl Error for FixedValidatorVoteIntentError {
 pub enum FixedValidatorLockStateError {
     /// Empty lock state may start only at round zero.
     InitialRoundNotZero { actual: ConsensusRound },
-    /// The operation is not valid in the current local effect phase.
+    /// The operation is not valid in the current local decision phase.
     UnexpectedPhase {
         expected: FixedValidatorLockPhaseV0,
         actual: FixedValidatorLockPhaseV0,
@@ -2001,6 +2686,33 @@ pub enum FixedValidatorLockStateError {
         expected: ConsensusPosition,
         actual: ConsensusPosition,
     },
+    /// The caller-local higher-round work ceiling is reserved at zero.
+    HigherRoundWorkLimitNotPositive,
+    /// The unauthenticated certificate routing position failed strict framing.
+    HigherRoundCertificatePosition(QuorumCertificateVerifyError),
+    /// The embedded higher-round certificate names another height.
+    HigherRoundHeightMismatch {
+        expected: ConsensusHeight,
+        actual: ConsensusHeight,
+    },
+    /// The embedded certificate round is not strictly above current state.
+    HigherRoundNotStrictlyGreater {
+        current: ConsensusRound,
+        actual: ConsensusRound,
+    },
+    /// The embedded round exceeds caller-local sequential work policy.
+    HigherRoundLimitExceeded {
+        round: ConsensusRound,
+        maximum: ConsensusRound,
+    },
+    /// The exact internally selected higher-round cursor could not be derived.
+    HigherRoundDerivation(ProposerSelectionError),
+    /// The durable checkpoint bytes could not be allocated.
+    HigherRoundCheckpointAllocationFailed,
+    /// A prepared higher-round transition belongs to another live lineage.
+    HigherRoundAdvanceLineageMismatch,
+    /// State changed after a higher-round transition was prepared.
+    HigherRoundAdvanceStateMismatch,
     /// The current round cannot be incremented without overflow.
     RoundExhausted,
     /// The exact next branch-derived round could not be constructed.
@@ -2090,6 +2802,35 @@ impl fmt::Display for FixedValidatorLockStateError {
                 formatter,
                 "current round cursor position {actual:?} differs from lock-state position {expected:?}"
             ),
+            Self::HigherRoundWorkLimitNotPositive => {
+                formatter.write_str("higher-round caller-local inclusive maximum must be positive")
+            }
+            Self::HigherRoundCertificatePosition(error) => write!(
+                formatter,
+                "higher-round certificate position could not be strictly inspected: {error}"
+            ),
+            Self::HigherRoundHeightMismatch { expected, actual } => write!(
+                formatter,
+                "higher-round certificate height {actual:?} differs from current height {expected:?}"
+            ),
+            Self::HigherRoundNotStrictlyGreater { current, actual } => write!(
+                formatter,
+                "certificate round {actual:?} is not strictly higher than current round {current:?}"
+            ),
+            Self::HigherRoundLimitExceeded { round, maximum } => write!(
+                formatter,
+                "certificate round {round:?} exceeds caller-local inclusive maximum {maximum:?}"
+            ),
+            Self::HigherRoundDerivation(error) => write!(
+                formatter,
+                "higher-round fixed-validator cursor cannot be derived: {error}"
+            ),
+            Self::HigherRoundCheckpointAllocationFailed => formatter
+                .write_str("memory allocation failed while sealing higher-round checkpoint bytes"),
+            Self::HigherRoundAdvanceLineageMismatch => formatter
+                .write_str("prepared higher-round transition belongs to another live lock lineage"),
+            Self::HigherRoundAdvanceStateMismatch => formatter
+                .write_str("lock state changed after the higher-round transition was prepared"),
             Self::RoundExhausted => formatter
                 .write_str("fixed-validator lock state cannot advance beyond the terminal round"),
             Self::NextRoundDerivation(error) => {
@@ -2113,9 +2854,8 @@ impl fmt::Display for FixedValidatorLockStateError {
                 formatter,
                 "verified child cannot derive its next round-zero cursor: {error}"
             ),
-            Self::CertificateAllocationFailed => formatter.write_str(
-                "memory allocation failed while retaining canonical prevote quorum evidence",
-            ),
+            Self::CertificateAllocationFailed => formatter
+                .write_str("memory allocation failed while retaining canonical quorum evidence"),
         }
     }
 }
@@ -2123,8 +2863,10 @@ impl fmt::Display for FixedValidatorLockStateError {
 impl Error for FixedValidatorLockStateError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::QuorumVerification(error) => Some(error),
-            Self::NextRoundDerivation(error) => Some(error),
+            Self::QuorumVerification(error) | Self::HigherRoundCertificatePosition(error) => {
+                Some(error)
+            }
+            Self::NextRoundDerivation(error) | Self::HigherRoundDerivation(error) => Some(error),
             Self::HeightTransitionRoundZero(error) => Some(error),
             _ => None,
         }

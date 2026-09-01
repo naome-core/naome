@@ -39,8 +39,8 @@
 //! journal issues an opaque capability that lets finality history recover only
 //! the exact matching branch, including after a later finality halt when no
 //! explicit conflict stop has been applied; the vote journal then rechecks
-//! handle provenance and derives the latest completed round under a caller-local
-//! work ceiling before issuing its sole session. The
+//! handle provenance and derives the latest durable current-lineage state under
+//! a caller-local round-work ceiling before issuing its sole session. The
 //! finality journal can also issue opaque authority for an externally anchored
 //! durable conflict; explicit consumption appends a separate terminal stop to
 //! each matching local signer journal without selecting or rolling back either
@@ -132,13 +132,14 @@ pub use fixed_validator_vote_safety_journal::{
     FixedValidatorAnchoredSignerRecoveryV0, FixedValidatorDurablePrepareAcknowledgementV0,
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityConflictSignerStopV0,
     FixedValidatorPendingVoteV0, FixedValidatorPreparedHeightAdvanceV0,
-    FixedValidatorPreparedVoteV0, FixedValidatorRecoveredSignerBranchV0,
-    FixedValidatorRecoveredSigningSessionV0, FixedValidatorSignedVoteV0,
-    FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVoteCompletionMismatchV0,
-    FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyHaltV0,
-    FixedValidatorVoteSafetyJournalErrorV0, FixedValidatorVoteSafetyJournalStateIdV0,
-    FixedValidatorVoteSafetyJournalV0, FixedValidatorVoteSafetyReplayLimitErrorV0,
-    FixedValidatorVoteSafetyReplayLimitV0, FixedValidatorVoteSafetySigningSessionV0,
+    FixedValidatorPreparedHigherRoundAdvanceV0, FixedValidatorPreparedVoteV0,
+    FixedValidatorRecoveredSignerBranchV0, FixedValidatorRecoveredSigningSessionV0,
+    FixedValidatorSignedVoteV0, FixedValidatorSignerRecoveryRoundLimitV0,
+    FixedValidatorVoteCompletionMismatchV0, FixedValidatorVotePrepareOutcomeV0,
+    FixedValidatorVoteSafetyHaltV0, FixedValidatorVoteSafetyJournalErrorV0,
+    FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalV0,
+    FixedValidatorVoteSafetyReplayLimitErrorV0, FixedValidatorVoteSafetyReplayLimitV0,
+    FixedValidatorVoteSafetySigningSessionV0,
 };
 
 pub use payload_store::{

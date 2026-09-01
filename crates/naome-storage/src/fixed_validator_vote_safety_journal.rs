@@ -14,11 +14,13 @@ use naome_consensus::{
     ConsensusPosition, ConsensusRound, ConsensusSignature, ConsensusVoteId, ConsensusVoteRole,
     ConsensusVoteTarget, ConsensusVoteVerifyError, FixedAgreementSetId,
     FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusRoundV0,
-    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, FixedValidatorLockStateV0,
-    FixedValidatorLockedValueV0, FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0,
-    FixedValidatorVoteIntentError, FixedValidatorVoteIntentV0, ObservedFixedValidatorVoteIntentV0,
-    ProposerSelectionError, VerifiedConsensusVoteV0, VerifiedFixedConsensusProposalV0,
-    VerifiedReplayFixedValidatorVoteIntentV0,
+    FixedValidatorHigherRoundCheckpointErrorV0, FixedValidatorLockPhaseV0,
+    FixedValidatorLockStateError, FixedValidatorLockStateV0, FixedValidatorLockedValueV0,
+    FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0, FixedValidatorVoteIntentError,
+    FixedValidatorVoteIntentV0, ObservedFixedValidatorHigherRoundCheckpointV0,
+    ObservedFixedValidatorVoteIntentV0, ProposerSelectionError, VerifiedConsensusVoteV0,
+    VerifiedFixedConsensusProposalV0, VerifiedFixedValidatorHigherRoundAdvanceV0,
+    VerifiedReplayFixedValidatorHigherRoundCheckpointV0, VerifiedReplayFixedValidatorVoteIntentV0,
 };
 use sha2::{Digest, Sha256};
 
@@ -54,6 +56,7 @@ const COMPLETE_RECORD: u8 = 2;
 const CONFLICT_HALT_RECORD: u8 = 3;
 const SIGNING_LINEAGE_RECORD: u8 = 4;
 const FINALITY_CONFLICT_STOP_RECORD: u8 = 5;
+const HIGHER_ROUND_CHECKPOINT_RECORD: u8 = 6;
 const SIGNING_LINEAGE_DOMAIN: &[u8] = b"naome:fixed-validator-vote-safety-signing-lineage:v0\0";
 const SIGNING_LINEAGE_ID_BYTES: usize = 32;
 const SIGNING_LINEAGE_PAYLOAD_BYTES: usize = 8 + SIGNING_LINEAGE_ID_BYTES;
@@ -66,13 +69,25 @@ const ENTRY_FIXED_BYTES: u64 = RECORD_LENGTH_BYTES + STATE_ID_BYTES;
 const SIGNED_VOTE_BODY_BYTES: usize = 1 + VerifiedConsensusVoteV0::BYTE_LENGTH;
 const MIN_RECORD_BODY_BYTES: usize = 1 + FixedValidatorVoteIntentV0::MIN_BYTE_LENGTH;
 const MAX_RECORD_BODY_BYTES: usize = 1 + FixedValidatorVoteIntentV0::MAX_BYTE_LENGTH;
+const MIN_HIGHER_ROUND_CHECKPOINT_BODY_BYTES: usize =
+    1 + ObservedFixedValidatorHigherRoundCheckpointV0::MIN_BYTE_LENGTH;
+const MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES: usize =
+    1 + ObservedFixedValidatorHigherRoundCheckpointV0::MAX_BYTE_LENGTH;
+const MAX_BOUNDED_RECORD_BODY_BYTES: usize =
+    if MAX_RECORD_BODY_BYTES > MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES {
+        MAX_RECORD_BODY_BYTES
+    } else {
+        MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES
+    };
 
 /// Positive caller-provisioned maximum number of distinct prepared votes.
 ///
-/// The cap bounds local replay and retained-history work. Idempotent duplicate
-/// preparation does not consume another slot. Every accepted preparation
-/// reserves room for its matching completion, and one terminal conflict record
-/// remains admissible after the cap is reached.
+/// The cap bounds prepared-vote replay and the retained vote map. Idempotent
+/// duplicate preparation does not consume another slot. Every accepted
+/// preparation reserves room for its matching completion, and one terminal
+/// conflict record remains admissible after the cap is reached. Higher-round
+/// checkpoints are individually bounded but do not consume this vote-only cap,
+/// so it does not bound their cumulative count or the append-only file size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct FixedValidatorVoteSafetyReplayLimitV0(u64);
@@ -111,9 +126,9 @@ impl Error for FixedValidatorVoteSafetyReplayLimitErrorV0 {}
 ///
 /// The genesis identity commits the synchronized header. Every later identity
 /// commits the preceding identity and one exact prepare, completion, halt,
-/// signing-lineage, or finality-conflict stop record. This local persistence
-/// identity is not consensus ancestry, a vote identity, finality, or a globally
-/// trusted checkpoint.
+/// signing-lineage, finality-conflict stop, or higher-round checkpoint record.
+/// This local persistence identity is not consensus ancestry, a vote identity,
+/// finality, or a globally trusted checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[must_use]
 pub struct FixedValidatorVoteSafetyJournalStateIdV0([u8; Self::BYTE_LENGTH]);
@@ -450,6 +465,26 @@ impl FixedValidatorPreparedHeightAdvanceV0<'_> {
     }
 }
 
+/// One exact durable higher-round checkpoint awaiting external acknowledgement.
+///
+/// The private consensus transition keeps its internally derived target cursor,
+/// complete post-jump state, exact quorum evidence, and originating live-state
+/// provenance sealed until this same signing session consumes it. Dropping the
+/// value leaves the session blocked; an exact anchored reopen is then required.
+#[must_use]
+pub struct FixedValidatorPreparedHigherRoundAdvanceV0<'branch> {
+    transition: VerifiedFixedValidatorHigherRoundAdvanceV0<'branch>,
+    prepared_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    session_seal: Arc<()>,
+}
+
+impl FixedValidatorPreparedHigherRoundAdvanceV0<'_> {
+    /// Returns the checkpoint state identity that must be externally durable.
+    pub const fn state_id(&self) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+        self.prepared_state_id
+    }
+}
+
 /// Inclusive caller-local ceiling for sequential signer-round reconstruction.
 ///
 /// Recovery derives every round from the exact retained branch rather than
@@ -564,6 +599,7 @@ pub struct FixedValidatorVoteSafetySigningSessionV0<'journal> {
     journal: &'journal mut FixedValidatorVoteSafetyJournalV0,
     lock_state: FixedValidatorLockStateV0,
     pending_height_advance: Option<FixedValidatorVoteSafetyJournalStateIdV0>,
+    pending_higher_round_advance: Option<FixedValidatorVoteSafetyJournalStateIdV0>,
 }
 
 #[derive(Debug)]
@@ -571,6 +607,31 @@ struct RetainedVote {
     observed_intent: ObservedFixedValidatorVoteIntentV0,
     prepared_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
     signed: Option<FixedValidatorSignedVoteV0>,
+}
+
+#[derive(Clone, Debug)]
+enum RetainedCurrentLineageStateV0 {
+    Vote(VoteSlot),
+    HigherRound {
+        checkpoint: Box<ObservedFixedValidatorHigherRoundCheckpointV0>,
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    },
+}
+
+impl RetainedCurrentLineageStateV0 {
+    fn position(&self) -> ConsensusPosition {
+        match self {
+            Self::Vote(slot) => slot.position,
+            Self::HigherRound { checkpoint, .. } => checkpoint.position(),
+        }
+    }
+
+    fn phase(&self) -> FixedValidatorLockPhaseV0 {
+        match self {
+            Self::Vote(slot) => phase_for_vote_role(slot.role),
+            Self::HigherRound { checkpoint, .. } => checkpoint.phase(),
+        }
+    }
 }
 
 /// One exclusively opened, per-key fixed-validator vote-safety journal.
@@ -721,12 +782,12 @@ impl FixedValidatorVoteSafetyJournalV0 {
     ///
     /// The supplied typed round must match the retained signing-lineage record.
     /// An empty current lineage starts from exact branch-derived round zero; a
-    /// lineage with a latest durably completed vote reconstructs that exact
-    /// post-effect state. The caller must explicitly assert the exact current
-    /// journal state as externally durable. A pending preparation or terminal
-    /// halt cannot issue a session. The issuance latch is monotonic for this
-    /// handle: dropping or forgetting the returned value does not permit a
-    /// replacement session.
+    /// lineage with a latest durably completed vote or higher-round checkpoint
+    /// reconstructs only that exact post-effect state after full typed replay.
+    /// The caller must explicitly assert the exact current journal state as
+    /// externally durable. A pending preparation or terminal halt cannot issue a
+    /// session. The issuance latch is monotonic for this handle: dropping or
+    /// forgetting the returned value does not permit a replacement session.
     pub fn issue_signing_session(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
@@ -753,6 +814,7 @@ impl FixedValidatorVoteSafetyJournalV0 {
             journal: self,
             lock_state,
             pending_height_advance: None,
+            pending_higher_round_advance: None,
         })
     }
 
@@ -800,9 +862,9 @@ impl FixedValidatorVoteSafetyJournalV0 {
     ///
     /// The recovered value must descend from this handle's own anchored
     /// capability. The current external vote anchor, session provenance, exact
-    /// lineage, and latest completed round are rechecked before the monotonic
-    /// issuance latch changes. Sequential round reconstruction is bounded by the
-    /// caller-local inclusive work ceiling.
+    /// lineage, and latest durable current-lineage position are rechecked before
+    /// the monotonic issuance latch changes. Sequential round reconstruction is
+    /// bounded by the caller-local inclusive work ceiling.
     pub fn issue_recovered_signing_session(
         &mut self,
         recovered: FixedValidatorRecoveredSignerBranchV0,
@@ -872,6 +934,7 @@ impl FixedValidatorVoteSafetyJournalV0 {
                 journal: self,
                 lock_state,
                 pending_height_advance: None,
+                pending_higher_round_advance: None,
             },
         })
     }
@@ -984,11 +1047,11 @@ impl FixedValidatorVoteSafetyJournalV0 {
     ///
     /// A caller may pass these bytes to the consensus crate's non-signing,
     /// typed-round replay verifier to reconstruct lock, valid-value, and phase
-    /// state. Historical completed state is deliberately not selectable: only
-    /// the latest retained slot may resume the kernel. Pending records are
-    /// withheld because V0 never permits a restarted caller to advance from an
-    /// unresolved prepare boundary. Either durable terminal cause also denies
-    /// operational recovery.
+    /// state in completed-vote test fixtures. Production session recovery instead
+    /// selects the latest durable current-lineage vote or checkpoint. Pending
+    /// records are withheld because V0 never permits a restarted caller to advance
+    /// from an unresolved prepare boundary. Either durable terminal cause also
+    /// denies operational recovery.
     #[cfg(test)]
     fn latest_completed_state_and_vote_intent_bytes(
         &self,
@@ -1037,9 +1100,9 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
 
     /// Durably stops this already-live signer from anchored finality conflict.
     ///
-    /// Stop authority deliberately preempts pending vote or height work. Once
-    /// the terminal record synchronizes, every later session transition and
-    /// key-use path fails closed; bytes released before this call cannot be
+    /// Stop authority deliberately preempts pending vote, height, or higher-round
+    /// work. Once the terminal record synchronizes, every later session transition
+    /// and key-use path fails closed; bytes released before this call cannot be
     /// retracted.
     pub fn stop_after_durable_finality_conflict(
         &mut self,
@@ -1053,6 +1116,7 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
             .core
             .stop_after_durable_finality_conflict(conflict)?;
         self.pending_height_advance = None;
+        self.pending_higher_round_advance = None;
         Ok(outcome)
     }
 
@@ -1125,11 +1189,11 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
 
     /// Advances after one exact current-round precommit/nil quorum.
     ///
-    /// Journal health and pending vote or height work are checked before the
-    /// kernel verifies the canonical certificate and exact sequential cursors.
-    /// Success changes only this session's volatile lock state. Any later vote
-    /// at the advanced round still passes through the unchanged durable prepare,
-    /// external-anchor acknowledgement, completion, and release boundary.
+    /// Journal health and pending vote, height, or higher-round work are checked
+    /// before the kernel verifies the canonical certificate and exact sequential
+    /// cursors. Success changes only this session's volatile lock state. Any later
+    /// vote at the advanced round still passes through the unchanged durable
+    /// prepare, external-anchor acknowledgement, completion, and release boundary.
     ///
     /// This method does not persist the observed quorum, schedule or infer a
     /// timeout, finalize a value, select a branch, or grant networking or peer
@@ -1143,6 +1207,88 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
         self.lock_state
             .advance_round_for_nil_precommit_quorum(current_round, canonical_certificate)
             .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)
+    }
+
+    /// Verifies and durably checkpoints one phase-only higher-round catch-up.
+    ///
+    /// The live lock state remains unchanged while the consensus kernel derives
+    /// and fully verifies the target under the caller-local inclusive maximum.
+    /// The journal then synchronizes one exact chained checkpoint containing the
+    /// canonical QC and complete post-jump state. No vote, key use, or live
+    /// higher-round publication occurs in this stage. Every other mutable session
+    /// path remains blocked until exact external acknowledgement except the
+    /// explicit proof-backed finality-conflict stop, which may preempt it.
+    pub fn prepare_higher_round_quorum_advance<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.ensure_mutable()?;
+        let transition = self
+            .lock_state
+            .prepare_higher_round_quorum_advance(
+                current_round,
+                canonical_certificate,
+                inclusive_maximum_round,
+            )
+            .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)?;
+        let prepared_state_id = self
+            .journal
+            .core
+            .append_higher_round_checkpoint(transition.canonical_checkpoint_bytes())?;
+        self.pending_higher_round_advance = Some(prepared_state_id);
+        Ok(FixedValidatorPreparedHigherRoundAdvanceV0 {
+            transition,
+            prepared_state_id,
+            session_seal: Arc::clone(&self.journal.session_seal),
+        })
+    }
+
+    /// Acknowledges one exact durable checkpoint and publishes its live state.
+    ///
+    /// The external state identity, issuing session, current journal state, and
+    /// latest retained checkpoint are rechecked before the consensus transition
+    /// changes only position and phase. A wrong, stale, or foreign token changes
+    /// no live state and leaves the session blocked; an exact anchored reopen is
+    /// then the only recovery route.
+    pub fn acknowledge_prepared_higher_round_is_externally_durable<'branch>(
+        &mut self,
+        prepared: FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+        externally_durable_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorVoteSafetyJournalErrorV0> {
+        if externally_durable_state_id != prepared.prepared_state_id {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::ExternalHigherRoundAnchorMismatch {
+                    prepared: prepared.prepared_state_id,
+                    acknowledged: externally_durable_state_id,
+                },
+            );
+        }
+        if !Arc::ptr_eq(&self.journal.session_seal, &prepared.session_seal) {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::ForeignHigherRoundAdvance);
+        }
+        self.journal.core.ensure_operational()?;
+        let latest_matches = matches!(
+            self.journal.core.latest_current_lineage_state.as_ref(),
+            Some(RetainedCurrentLineageStateV0::HigherRound { state_id, .. })
+                if *state_id == prepared.prepared_state_id
+        );
+        if self.pending_higher_round_advance != Some(prepared.prepared_state_id)
+            || self.journal.core.state_id != prepared.prepared_state_id
+            || !latest_matches
+        {
+            return Err(FixedValidatorVoteSafetyJournalErrorV0::StaleHigherRoundAdvance);
+        }
+        let target_round = self
+            .lock_state
+            .apply_prepared_higher_round_quorum_advance(prepared.transition)
+            .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)?;
+        self.pending_higher_round_advance = None;
+        Ok(target_round)
     }
 
     /// Persists one exact finalized child before advancing signer memory.
@@ -1237,6 +1383,7 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
     ) -> Result<FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0> {
         self.journal.core.ensure_operational()?;
         self.ensure_no_pending_height_advance()?;
+        self.ensure_no_pending_higher_round_advance()?;
         let intent = self
             .lock_state
             .prepare_vote_intent(round, effect, self.journal.signer())
@@ -1296,6 +1443,7 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
     fn ensure_mutable(&self) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
         self.journal.core.ensure_operational()?;
         self.ensure_no_pending_height_advance()?;
+        self.ensure_no_pending_higher_round_advance()?;
         if let Some(pending) = self.journal.core.pending {
             Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
                 position: pending.position,
@@ -1314,6 +1462,17 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
         }
         Ok(())
     }
+
+    fn ensure_no_pending_higher_round_advance(
+        &self,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        if let Some(state_id) = self.pending_higher_round_advance {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::PendingHigherRoundAdvance { state_id },
+            );
+        }
+        Ok(())
+    }
 }
 
 struct FixedValidatorVoteSafetyJournalCore<F> {
@@ -1327,6 +1486,7 @@ struct FixedValidatorVoteSafetyJournalCore<F> {
     live_pending_intent: Option<FixedValidatorVoteIntentV0>,
     latest_slot: Option<VoteSlot>,
     lineage: Option<RetainedSigningLineageV0>,
+    latest_current_lineage_state: Option<RetainedCurrentLineageStateV0>,
     prepared_count: u64,
     halt: Option<FixedValidatorVoteSafetyHaltV0>,
     finality_conflict_stop: Option<FixedValidatorFinalityConflictSignerStopV0>,
@@ -1355,6 +1515,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             live_pending_intent: None,
             latest_slot: None,
             lineage: None,
+            latest_current_lineage_state: None,
             prepared_count: 0,
             halt: None,
             finality_conflict_stop: None,
@@ -1413,6 +1574,9 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 && body_length != SIGNED_VOTE_BODY_BYTES
                 && body_length != SIGNING_LINEAGE_BODY_BYTES
                 && body_length != FINALITY_CONFLICT_STOP_BODY_BYTES
+                && !(MIN_HIGHER_ROUND_CHECKPOINT_BODY_BYTES
+                    ..=MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES)
+                    .contains(&body_length)
             {
                 return Err(
                     FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordLength {
@@ -1421,7 +1585,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                         actual: body_length_u32,
                         minimum: u32::try_from(MIN_RECORD_BODY_BYTES)
                             .expect("minimum vote-safety record length fits u32"),
-                        maximum: u32::try_from(MAX_RECORD_BODY_BYTES)
+                        maximum: u32::try_from(MAX_BOUNDED_RECORD_BODY_BYTES)
                             .expect("maximum vote-safety record length fits u32"),
                     },
                 );
@@ -1512,7 +1676,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 offset,
                 actual: 0,
                 minimum: 1,
-                maximum: u32::try_from(MAX_RECORD_BODY_BYTES)
+                maximum: u32::try_from(MAX_BOUNDED_RECORD_BODY_BYTES)
                     .expect("maximum record length fits u32"),
             },
         )?;
@@ -1523,6 +1687,9 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             SIGNING_LINEAGE_RECORD => self.replay_signing_lineage(entry, payload, state_id),
             FINALITY_CONFLICT_STOP_RECORD => {
                 self.replay_finality_conflict_stop(entry, payload, state_id)
+            }
+            HIGHER_ROUND_CHECKPOINT_RECORD => {
+                self.replay_higher_round_checkpoint(entry, offset, payload, state_id)
             }
             actual => Err(FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordTag {
                 entry,
@@ -1551,6 +1718,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 FixedValidatorVoteSafetyJournalErrorV0::SigningLineageWhilePending { entry },
             );
         }
+        let had_lineage = self.lineage.is_some();
         let height = ConsensusHeight::new(u64::from_be_bytes(
             payload[..8]
                 .try_into()
@@ -1611,6 +1779,13 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             id,
             state_id,
         });
+        self.latest_current_lineage_state = if had_lineage {
+            None
+        } else {
+            self.latest_slot
+                .filter(|slot| slot.position.height() == height)
+                .map(RetainedCurrentLineageStateV0::Vote)
+        };
         Ok(())
     }
 
@@ -1645,6 +1820,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 },
             );
         }
+        self.require_vote_after_higher_round_checkpoint(entry, intent.position(), intent.phase())?;
         if self.votes.contains_key(&slot) {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::DuplicatePrepare { entry });
         }
@@ -1724,7 +1900,82 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             state_id,
         ));
         self.pending = None;
+        self.latest_current_lineage_state = Some(RetainedCurrentLineageStateV0::Vote(slot));
         Ok(())
+    }
+
+    fn replay_higher_round_checkpoint(
+        &mut self,
+        entry: u64,
+        offset: u64,
+        payload: &[u8],
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        let checkpoint = self.validate_higher_round_checkpoint(entry, offset, payload)?;
+        self.latest_current_lineage_state = Some(RetainedCurrentLineageStateV0::HigherRound {
+            checkpoint: Box::new(checkpoint),
+            state_id,
+        });
+        Ok(())
+    }
+
+    fn validate_higher_round_checkpoint(
+        &self,
+        entry: u64,
+        offset: u64,
+        payload: &[u8],
+    ) -> Result<ObservedFixedValidatorHigherRoundCheckpointV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        if self.pending.is_some() {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::HigherRoundCheckpointWhilePending { entry },
+            );
+        }
+        let lineage = self.lineage.ok_or(
+            FixedValidatorVoteSafetyJournalErrorV0::HigherRoundCheckpointWithoutLineage { entry },
+        )?;
+        let checkpoint = ObservedFixedValidatorHigherRoundCheckpointV0::decode_and_verify(
+            payload,
+            self.context,
+            self.fixed_set_id,
+        )
+        .map_err(|source| {
+            FixedValidatorVoteSafetyJournalErrorV0::HigherRoundCheckpoint {
+                entry,
+                offset,
+                source,
+            }
+        })?;
+        if checkpoint.position().height() != lineage.height {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::HigherRoundCheckpointOutsideLineage {
+                    entry,
+                    lineage_height: lineage.height,
+                    checkpoint_height: checkpoint.position().height(),
+                },
+            );
+        }
+        let (current_position, current_phase) =
+            self.current_lineage_state_coordinate(lineage.height);
+        if state_coordinate_cmp(
+            checkpoint.source_position(),
+            checkpoint.source_phase(),
+            current_position,
+            current_phase,
+        )
+        .is_lt()
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::HigherRoundCheckpointSourceBehindState {
+                    entry,
+                    current_position,
+                    current_phase,
+                    source_position: checkpoint.source_position(),
+                    source_phase: checkpoint.source_phase(),
+                },
+            );
+        }
+        Ok(checkpoint)
     }
 
     fn replay_halt(
@@ -1922,10 +2173,13 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
     }
 
     fn signer_recovery_position(&self, lineage: RetainedSigningLineageV0) -> ConsensusPosition {
-        match self.latest_slot {
-            Some(latest) if latest.position.height() == lineage.height => latest.position,
-            _ => ConsensusPosition::new(lineage.height, ConsensusRound::new(0)),
-        }
+        self.latest_current_lineage_state
+            .as_ref()
+            .filter(|state| state.position().height() == lineage.height)
+            .map_or(
+                ConsensusPosition::new(lineage.height, ConsensusRound::new(0)),
+                RetainedCurrentLineageStateV0::position,
+            )
     }
 
     fn restore_lock_state_for_round(
@@ -1937,35 +2191,77 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionRoundMismatch);
         }
-        let latest_at_current_lineage = match (self.latest_slot, self.lineage) {
-            (Some(latest), Some(lineage)) => latest.position.height() == lineage.height,
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
-        if !latest_at_current_lineage {
-            return FixedValidatorLockStateV0::try_from_round_zero(round)
-                .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState);
+        match self.latest_current_lineage_state.as_ref() {
+            None => FixedValidatorLockStateV0::try_from_round_zero(round)
+                .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState),
+            Some(RetainedCurrentLineageStateV0::Vote(latest)) => {
+                let retained = self
+                    .votes
+                    .get(latest)
+                    .expect("the latest completed vote remains retained");
+                retained
+                    .signed
+                    .as_ref()
+                    .expect("a recoverable latest vote is durably completed");
+                VerifiedReplayFixedValidatorVoteIntentV0::decode_and_verify_for_round(
+                    retained
+                        .observed_intent
+                        .canonical_state_and_vote_intent_bytes(),
+                    round,
+                    self.signer,
+                )
+                .map_err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionIntent)
+                .map(VerifiedReplayFixedValidatorVoteIntentV0::into_lock_state)
+            }
+            Some(RetainedCurrentLineageStateV0::HigherRound { checkpoint, .. }) => checkpoint
+                .as_ref()
+                .clone()
+                .verify_for_round(round)
+                .map_err(FixedValidatorVoteSafetyJournalErrorV0::HigherRoundCheckpointReplay)
+                .map(VerifiedReplayFixedValidatorHigherRoundCheckpointV0::into_lock_state),
         }
-        let latest = self
-            .latest_slot
-            .expect("a current-lineage completed vote was classified");
-        let retained = self
-            .votes
-            .get(&latest)
-            .expect("the latest completed vote remains retained");
-        retained
-            .signed
+    }
+
+    fn current_lineage_state_coordinate(
+        &self,
+        height: ConsensusHeight,
+    ) -> (ConsensusPosition, FixedValidatorLockPhaseV0) {
+        self.latest_current_lineage_state
             .as_ref()
-            .expect("a recoverable latest vote is durably completed");
-        VerifiedReplayFixedValidatorVoteIntentV0::decode_and_verify_for_round(
-            retained
-                .observed_intent
-                .canonical_state_and_vote_intent_bytes(),
-            round,
-            self.signer,
-        )
-        .map_err(FixedValidatorVoteSafetyJournalErrorV0::SigningSessionIntent)
-        .map(VerifiedReplayFixedValidatorVoteIntentV0::into_lock_state)
+            .filter(|state| state.position().height() == height)
+            .map_or(
+                (
+                    ConsensusPosition::new(height, ConsensusRound::new(0)),
+                    FixedValidatorLockPhaseV0::Proposal,
+                ),
+                |state| (state.position(), state.phase()),
+            )
+    }
+
+    fn require_vote_after_higher_round_checkpoint(
+        &self,
+        entry: u64,
+        position: ConsensusPosition,
+        phase: FixedValidatorLockPhaseV0,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        let Some(RetainedCurrentLineageStateV0::HigherRound { checkpoint, .. }) =
+            self.latest_current_lineage_state.as_ref()
+        else {
+            return Ok(());
+        };
+        if !state_coordinate_cmp(position, phase, checkpoint.position(), checkpoint.phase()).is_gt()
+        {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::VoteStateDoesNotFollowHigherRoundCheckpoint {
+                    entry,
+                    checkpoint_position: checkpoint.position(),
+                    checkpoint_phase: checkpoint.phase(),
+                    vote_position: position,
+                    vote_phase: phase,
+                },
+            );
+        }
+        Ok(())
     }
 
     fn append_signing_lineage(
@@ -1975,6 +2271,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
     ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
     {
         self.ensure_operational()?;
+        let had_lineage = self.lineage.is_some();
         if let Some(pending) = self.pending {
             return Err(FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation {
                 position: pending.position,
@@ -2010,6 +2307,38 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             id,
             state_id: next_state_id,
         });
+        self.latest_current_lineage_state = if had_lineage {
+            None
+        } else {
+            self.latest_slot
+                .filter(|slot| slot.position.height() == height)
+                .map(RetainedCurrentLineageStateV0::Vote)
+        };
+        self.state_id = next_state_id;
+        Ok(next_state_id)
+    }
+
+    fn append_higher_round_checkpoint(
+        &mut self,
+        canonical_checkpoint: &[u8],
+    ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.ensure_operational()?;
+        let checkpoint = self.validate_higher_round_checkpoint(
+            self.prepared_count,
+            self.committed_end,
+            canonical_checkpoint,
+        )?;
+        let body = tagged_record(
+            HIGHER_ROUND_CHECKPOINT_RECORD,
+            canonical_checkpoint,
+            self.prepared_count,
+        )?;
+        let next_state_id = self.append_record(&body, self.prepared_count)?;
+        self.latest_current_lineage_state = Some(RetainedCurrentLineageStateV0::HigherRound {
+            checkpoint: Box::new(checkpoint),
+            state_id: next_state_id,
+        });
         self.state_id = next_state_id;
         Ok(next_state_id)
     }
@@ -2039,6 +2368,11 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 },
             );
         }
+        self.require_vote_after_higher_round_checkpoint(
+            self.prepared_count,
+            observed.position(),
+            observed.phase(),
+        )?;
         let target = observed.target();
         if let Some(retained) = self.votes.get(&slot) {
             if retained
@@ -2175,6 +2509,8 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             .signed = Some(signed.clone());
         self.pending = None;
         self.live_pending_intent = None;
+        self.latest_current_lineage_state =
+            Some(RetainedCurrentLineageStateV0::Vote(prepared.slot));
         self.state_id = next_state_id;
         Ok(FixedValidatorVoteSignOutcomeV0::Signed(signed))
     }
@@ -2368,6 +2704,39 @@ fn prepared_capability(slot: VoteSlot, retained: &RetainedVote) -> FixedValidato
 
 fn observed_intent_slot(intent: &ObservedFixedValidatorVoteIntentV0) -> VoteSlot {
     VoteSlot::new(intent.position(), intent.role())
+}
+
+const fn phase_for_vote_role(role: ConsensusVoteRole) -> FixedValidatorLockPhaseV0 {
+    match role {
+        ConsensusVoteRole::Prevote => FixedValidatorLockPhaseV0::Prevote,
+        ConsensusVoteRole::Precommit => FixedValidatorLockPhaseV0::Precommit,
+    }
+}
+
+const fn phase_rank(phase: FixedValidatorLockPhaseV0) -> u8 {
+    match phase {
+        FixedValidatorLockPhaseV0::Proposal => 0,
+        FixedValidatorLockPhaseV0::Prevote => 1,
+        FixedValidatorLockPhaseV0::Precommit => 2,
+    }
+}
+
+fn state_coordinate_cmp(
+    left_position: ConsensusPosition,
+    left_phase: FixedValidatorLockPhaseV0,
+    right_position: ConsensusPosition,
+    right_phase: FixedValidatorLockPhaseV0,
+) -> std::cmp::Ordering {
+    (
+        left_position.height().value(),
+        left_position.round().value(),
+        phase_rank(left_phase),
+    )
+        .cmp(&(
+            right_position.height().value(),
+            right_position.round().value(),
+            phase_rank(right_phase),
+        ))
 }
 
 fn signed_vote_from_verified(
@@ -2732,6 +3101,37 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
     SignerRecoveryRound(ProposerSelectionError),
     LockState(FixedValidatorLockStateError),
     SigningSessionIntent(FixedValidatorVoteIntentError),
+    HigherRoundCheckpoint {
+        entry: u64,
+        offset: u64,
+        source: FixedValidatorHigherRoundCheckpointErrorV0,
+    },
+    HigherRoundCheckpointReplay(FixedValidatorHigherRoundCheckpointErrorV0),
+    HigherRoundCheckpointWithoutLineage {
+        entry: u64,
+    },
+    HigherRoundCheckpointWhilePending {
+        entry: u64,
+    },
+    HigherRoundCheckpointOutsideLineage {
+        entry: u64,
+        lineage_height: ConsensusHeight,
+        checkpoint_height: ConsensusHeight,
+    },
+    HigherRoundCheckpointSourceBehindState {
+        entry: u64,
+        current_position: ConsensusPosition,
+        current_phase: FixedValidatorLockPhaseV0,
+        source_position: ConsensusPosition,
+        source_phase: FixedValidatorLockPhaseV0,
+    },
+    VoteStateDoesNotFollowHigherRoundCheckpoint {
+        entry: u64,
+        checkpoint_position: ConsensusPosition,
+        checkpoint_phase: FixedValidatorLockPhaseV0,
+        vote_position: ConsensusPosition,
+        vote_phase: FixedValidatorLockPhaseV0,
+    },
     ExternalPrepareAnchorMismatch {
         prepared: FixedValidatorVoteSafetyJournalStateIdV0,
         acknowledged: FixedValidatorVoteSafetyJournalStateIdV0,
@@ -2805,12 +3205,21 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
     PendingHeightAdvance {
         state_id: FixedValidatorVoteSafetyJournalStateIdV0,
     },
+    PendingHigherRoundAdvance {
+        state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    },
     ExternalHeightAnchorMismatch {
         prepared: FixedValidatorVoteSafetyJournalStateIdV0,
         acknowledged: FixedValidatorVoteSafetyJournalStateIdV0,
     },
     ForeignHeightAdvance,
     StaleHeightAdvance,
+    ExternalHigherRoundAnchorMismatch {
+        prepared: FixedValidatorVoteSafetyJournalStateIdV0,
+        acknowledged: FixedValidatorVoteSafetyJournalStateIdV0,
+    },
+    ForeignHigherRoundAdvance,
+    StaleHigherRoundAdvance,
     PendingRecoveryDenied {
         position: ConsensusPosition,
         role: ConsensusVoteRole,
@@ -2858,7 +3267,7 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::Read { offset, source } => write!(formatter, "vote-safety journal read failed at byte {offset}: {source}"),
             Self::InvalidHeader => formatter.write_str("invalid fixed-validator vote-safety journal header"),
             Self::HeaderMismatch => formatter.write_str("vote-safety journal header does not match the expected context, fixed set, signer, and replay limit"),
-            Self::InvalidRecordLength { entry, offset, actual, minimum, maximum } => write!(formatter, "vote-safety record {entry} at byte {offset} has body length {actual}, expected {minimum}..={maximum}, the exact signed-vote width, signing-lineage width, or finality-stop width"),
+            Self::InvalidRecordLength { entry, offset, actual, minimum, maximum } => write!(formatter, "vote-safety record {entry} at byte {offset} has body length {actual}, expected {minimum}..={maximum}, the exact signed-vote width, signing-lineage width, finality-stop width, or bounded higher-round checkpoint width"),
             Self::EntryOffsetOverflow { entry, offset } => write!(formatter, "vote-safety record {entry} at byte {offset} exceeds the offset range"),
             Self::Allocation { entry, bytes } => write!(formatter, "vote-safety record {entry} could not allocate {bytes} bytes"),
             Self::HistoryAllocation { entry, retained_votes } => write!(formatter, "vote-safety record {entry} could not grow history beyond {retained_votes} prepared votes"),
@@ -2886,6 +3295,13 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::SignerRecoveryRound(source) => write!(formatter, "signer recovery could not derive its exact sequential round: {source}"),
             Self::LockState(source) => write!(formatter, "vote-safety signing-session lock-state transition failed: {source}"),
             Self::SigningSessionIntent(source) => write!(formatter, "vote-safety signing session could not seal or restore its exact intent state: {source}"),
+            Self::HigherRoundCheckpoint { entry, offset, source } => write!(formatter, "higher-round checkpoint record {entry} at byte {offset} failed structural replay: {source}"),
+            Self::HigherRoundCheckpointReplay(source) => write!(formatter, "higher-round checkpoint failed exact typed replay: {source}"),
+            Self::HigherRoundCheckpointWithoutLineage { entry } => write!(formatter, "higher-round checkpoint record {entry} has no retained signing lineage"),
+            Self::HigherRoundCheckpointWhilePending { entry } => write!(formatter, "higher-round checkpoint record {entry} follows an uncompleted vote preparation"),
+            Self::HigherRoundCheckpointOutsideLineage { entry, lineage_height, checkpoint_height } => write!(formatter, "higher-round checkpoint record {entry} has height {}, outside retained signing-lineage height {}", checkpoint_height.value(), lineage_height.value()),
+            Self::HigherRoundCheckpointSourceBehindState { entry, current_position, current_phase, source_position, source_phase } => write!(formatter, "higher-round checkpoint record {entry} starts at {source_position:?}/{source_phase:?}, behind durable state {current_position:?}/{current_phase:?}"),
+            Self::VoteStateDoesNotFollowHigherRoundCheckpoint { entry, checkpoint_position, checkpoint_phase, vote_position, vote_phase } => write!(formatter, "vote state in record {entry} at {vote_position:?}/{vote_phase:?} does not follow higher-round checkpoint {checkpoint_position:?}/{checkpoint_phase:?}"),
             Self::ExternalPrepareAnchorMismatch { prepared, acknowledged } => write!(formatter, "external durability acknowledgement names state {acknowledged:?}, expected prepared state {prepared:?}"),
             Self::ForeignPrepareAcknowledgement => formatter.write_str("external durability acknowledgement belongs to another signing session"),
             Self::SignedVote { entry, offset, source } => write!(formatter, "signed-vote record {entry} at byte {offset} failed strict verification: {source}"),
@@ -2906,9 +3322,13 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::Stabilize { source } => write!(formatter, "replayed vote-safety journal stabilization failed: {source}"),
             Self::PendingPreparation { position, role } => write!(formatter, "vote {position:?}/{role:?} must complete before another slot can prepare"),
             Self::PendingHeightAdvance { state_id } => write!(formatter, "signer-height advance at vote-journal state {state_id:?} must be externally acknowledged before another transition"),
+            Self::PendingHigherRoundAdvance { state_id } => write!(formatter, "higher-round checkpoint at vote-journal state {state_id:?} must be externally acknowledged before another transition"),
             Self::ExternalHeightAnchorMismatch { prepared, acknowledged } => write!(formatter, "external height-advance acknowledgement names state {acknowledged:?}, expected prepared state {prepared:?}"),
             Self::ForeignHeightAdvance => formatter.write_str("prepared signer-height advance belongs to another signing session"),
             Self::StaleHeightAdvance => formatter.write_str("prepared signer-height advance does not match the current durable lineage"),
+            Self::ExternalHigherRoundAnchorMismatch { prepared, acknowledged } => write!(formatter, "external higher-round acknowledgement names state {acknowledged:?}, expected checkpoint state {prepared:?}"),
+            Self::ForeignHigherRoundAdvance => formatter.write_str("prepared higher-round advance belongs to another signing session"),
+            Self::StaleHigherRoundAdvance => formatter.write_str("prepared higher-round advance does not match the current durable checkpoint"),
             Self::PendingRecoveryDenied { position, role } => write!(formatter, "completed lock-state recovery is denied behind pending vote {position:?}/{role:?}"),
             Self::PrepareLimitExceeded { maximum } => write!(formatter, "prepared-vote ceiling {maximum} is exhausted"),
             Self::NonMonotonicSlot { previous, previous_role, actual, actual_role } => write!(formatter, "vote slot {actual:?}/{actual_role:?} does not follow retained {previous:?}/{previous_role:?}"),
@@ -2940,6 +3360,8 @@ impl Error for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::SignerRecoveryRound(source) => Some(source),
             Self::LockState(source) => Some(source),
             Self::SigningSessionIntent(source) => Some(source),
+            Self::HigherRoundCheckpoint { source, .. }
+            | Self::HigherRoundCheckpointReplay(source) => Some(source),
             Self::SignedVote { source, .. } | Self::SelfVerification(source) => Some(source),
             _ => None,
         }
