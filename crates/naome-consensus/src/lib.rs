@@ -45,10 +45,10 @@ pub use consensus_value::{
     ConsensusProposalVerifyError, ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0,
 };
 pub use fixed_consensus_branch::{
-    FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBranchCoordinateV0,
-    FixedConsensusBranchV0, FixedConsensusGenesisError, FixedConsensusRoundV0,
-    OwnedVerifiedFixedConsensusTransitionV0, VerifiedFixedConsensusProposalV0,
-    VerifiedFixedConsensusTransitionV0,
+    FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBoundedSeparateFinalityVerifyError,
+    FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusGenesisError,
+    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0,
+    VerifiedFixedConsensusProposalV0, VerifiedFixedConsensusTransitionV0,
 };
 pub use fixed_validator_lock_state::{
     FixedValidatorHigherRoundCheckpointErrorV0, FixedValidatorLockPhaseV0,

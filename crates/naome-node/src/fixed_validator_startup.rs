@@ -33,6 +33,8 @@ pub use finality::{
     FixedValidatorNodeCurrentRoundFinalityErrorV0, FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
     FixedValidatorNodeCurrentRoundFinalityRejectionV0, FixedValidatorNodeFinalityErrorV0,
     FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalitySelectionV0,
+    FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
+    FixedValidatorNodeLowerRoundFinalityRejectionV0,
 };
 pub use round_progression::{
     FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,

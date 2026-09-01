@@ -4,10 +4,10 @@
 
 This document defines the synchronous live-finality coordination boundary for
 one closure-scoped fixed-validator V0 node signer. It composes the existing
-sealed consensus transition, exact-current-round proposal-sealing boundary, or
-candidate-backed verification boundary with the anchored finality journal and
-anchored per-key vote-safety session. It creates no way to select or rank a
-transition.
+sealed consensus transition, exact-current-round proposal-sealing boundary,
+strictly lower-round certificate-routed boundary, or candidate-backed
+verification boundary with the anchored finality journal and anchored per-key
+vote-safety session. It creates no way to select or rank a transition.
 
 The sealed-transition ingress accepts one
 `OwnedVerifiedFixedConsensusTransitionV0`. Its private fields prove that
@@ -24,11 +24,23 @@ round, seals it only with a matching certificate, and converts the result to the
 same private-field owned transition before finality begins. The caller supplies
 no round cursor, snapshot, parent, proposer, proposal root, or transition.
 
-This direct ingress is supplemental rather than the node's sole finality
-policy. It handles only evidence for the signer's exact current branch round.
-The existing sealed-transition and candidate-backed ingresses remain separate;
-this path does not define how late evidence for a lower round is routed, replay
-an already selected value, or admit a selected-height sibling conflict.
+The separate strictly lower-round ingress accepts the same complete input shape
+and caller-local work ceiling. It canonically frames the precommit certificate
+only to obtain an unauthenticated routing position, requires that position to
+name the node branch's next height and a round strictly earlier than the signer
+round, bounds sequential round derivation, and then completely verifies the
+proposal, payload, producer authorization, positioned fixed set, and certificate
+at that derived round. Only the complete verification result becomes the same
+private-field owned transition. Neither the peeked position nor the caller's
+submission establishes certificate validity or finality.
+
+These direct ingresses are supplemental rather than the node's sole finality
+policy. Exact-current and strictly lower evidence use distinct methods, while
+the existing sealed-transition and candidate-backed ingresses remain separate.
+Neither direct path discovers, chooses, buffers, or automatically routes an
+event, replays an already selected value, or admits a selected-height sibling
+conflict. Higher-round evidence continues through the existing bounded
+certificate-authenticated phase catch-up followed by exact-current admission.
 
 The candidate-backed direct-child ingress instead requires one exact
 caller-selected unselected direct-child `ArtifactBlockId`, caller-routed
@@ -64,13 +76,14 @@ height-transition, and conflict-stop methods. The consuming node-voting
 coordinator owns the complete current-round durable sequence. The
 node-owned finality journal is therefore the exclusive source of height and
 stop authority for this scope. Only `commit_verified_finality`,
-`commit_current_round_finality`, and `commit_candidate_backed_finality` may
-couple its height capability into the signer. `commit_verified_finality` and
-the separate `commit_candidate_backed_finality_conflict` may couple only an
-exact anchored sibling-conflict capability into the signer. There is no public
-mutable-journal or raw signing-session escape hatch. A continuation scope is
-returned only by a complete nonterminal outcome; the candidate conflict method
-has no continuation return type.
+`commit_current_round_finality`, `commit_lower_round_finality`, and
+`commit_candidate_backed_finality` may couple its height capability into the
+signer. `commit_verified_finality` and the separate
+`commit_candidate_backed_finality_conflict` may couple only an exact anchored
+sibling-conflict capability into the signer. There is no public mutable-journal
+or raw signing-session escape hatch. A continuation scope is returned only by a
+complete nonterminal outcome; the candidate conflict method has no continuation
+return type.
 
 ## Exact-current-round admission
 
@@ -109,6 +122,38 @@ signer state or either journal or anchor. Submission, successful framing, or
 caller classification alone grants no proposal, certificate, or finality
 authority.
 
+## Strictly lower-round admission
+
+The strictly lower-round ingress performs a separate bounded pre-effect stage:
+
+1. Read the persisted finality ceiling and signer position, derive the
+   node-owned branch's next height, require it to equal the signer height, and
+   require the signer round not to exceed that persisted ceiling.
+2. Canonically frame the supplied precommit certificate only far enough to
+   obtain its unauthenticated position. Reject malformed framing or a height
+   different from the exact branch next height before sequential round work.
+3. Require the routed certificate round to be strictly less than the signer
+   round and no greater than the caller's inclusive work ceiling. These are
+   specialized ingress conditions, not consensus-validity rules for equal or
+   higher-round certificates.
+4. Sequentially derive that exact branch round, then fully verify the separate
+   proposal-control and owned artifact payload against its context, height,
+   ancestry, fixed set, scheduled proposer, state commitment, artifact
+   transition, producer authorization, and any proof-derived valid round.
+5. Fully verify and seal the admitted proposal only with the complete matching
+   non-nil precommit certificate, then convert it to one
+   `OwnedVerifiedFixedConsensusTransitionV0` and enter the existing finality and
+   signer-height handoff.
+
+The signer's later phase, lock, valid value, or pending durable work does not
+veto a completely verified earlier-round finality proof. A pending signer
+operation may therefore allow finality to become durable before the height
+handoff fails, after which the scope is consumed and strict restart remains the
+only durable-prefix classifier. Malformed, wrong-height, equal-or-higher-round,
+caller-cap, proposal, payload, or certificate rejection before the owned
+transition exists returns the unchanged scope and changes neither volatile
+signer state nor any journal or anchor.
+
 ## Ordered transitions
 
 `commit_verified_finality` applies exactly one sealed transition in this order:
@@ -142,6 +187,15 @@ construction names one unselected direct child, so this ingress claims neither
 the sealed ingress's already-selected replay result nor either sibling-conflict
 path.
 
+`commit_lower_round_finality` first completes every strictly lower-round
+admission step above without changing node state. It delegates only the fully
+verified owned transition to `commit_verified_finality` and then uses the same
+five-step anchored handoff and consume-and-restart failure boundary. Its local
+`certificate round < signer round` condition grants no preference or invalidity
+claim over equal or higher-round evidence handled through the existing paths.
+Like the exact-current ingress, it names one unselected direct child and claims
+no selected-value replay or sibling-conflict result.
+
 `commit_candidate_backed_finality` first applies the complete read-only source
 and envelope verification described above. It then commits exactly one new
 direct child through the same anchored finality pair and enters steps 2 through
@@ -171,6 +225,12 @@ not a finality-commit error, and therefore carries no finality selection
 metadata. Exact-current success uses the ordinary `Finalized` result; it does
 not introduce another finality identity or authority source.
 
+A lower-round malformed-position, wrong-height, not-earlier, caller-cap,
+proposal, payload, or certificate rejection likewise returns a typed reason
+with the unchanged scope before a finality effect exists. Lower-round success
+uses the ordinary `Finalized` result and introduces no additional identity,
+selection rule, or authority source.
+
 A candidate-backed child returns `CandidateBackedFinalized` metadata naming
 the exact caller-selected target plus the same authenticated position,
 ancestry, complete-envelope, and finality-state identities. It returns beside
@@ -185,7 +245,8 @@ evidence variant: a later round may carry a different valid envelope for the
 unchanged value. The retained first envelope identity remains authoritative,
 neither journal or anchor writes, and the already aligned branch and signer are
 returned unchanged. The replay does not replace finality evidence or move the
-signer. The exact-current ingress does not claim this replay classification.
+signer. The exact-current and lower-round ingresses do not claim this replay
+classification.
 
 An unselected parent, unsupported future gap, excessive authenticated round,
 terminal journal, poisoned handle, or other finality rejection returns no
@@ -203,8 +264,9 @@ consumes it through the current signing session. The stop preempts pending vote,
 height, or higher-round work under the existing signer contract. The
 candidate-backed ingress cannot reach this step from store presence, peer
 provenance, a merely decoded value, or a selected-value replay; complete
-branch-relative verification is mandatory. The exact-current direct-child
-ingress is not a sibling-conflict path and makes no such outcome claim.
+branch-relative verification is mandatory. The exact-current and lower-round
+direct-child ingresses are not sibling-conflict paths and make no such outcome
+claim.
 
 Only after the signer-stop record and independent vote anchor synchronize does
 the coordinator return `FinalityStopped`, pairing the exact finality halt with
@@ -216,12 +278,12 @@ already received before the stop.
 ## Failure and restart
 
 Every error after an owned transition enters finality consumes the scope and
-returns no signing authority. Exact-current caller-ceiling, proposal, and
-certificate failures are earlier typed rejection outcomes that return the
-unchanged scope. Error stages distinguish:
+returns no signing authority. Exact-current and lower-round pre-effect input
+failures are earlier typed rejection outcomes that return the unchanged scope.
+Error stages distinguish:
 
 - finality commit rejection or ambiguous finality durability;
-- exact-current node-coherence failure before finality admission;
+- exact-current or lower-round node-coherence failure before finality admission;
 - candidate source or envelope rejection, or ambiguous candidate-backed
   finality durability;
 - failure to issue height authority after known finality success;
@@ -251,8 +313,10 @@ This coordinator does not define or perform:
   collection, construction, or preference;
 - network transport, peer discovery, provenance trust, or peer-selected
   admission;
-- late or lower-round finality-event routing, any claim that exact-current input
-  is the node's sole finality policy, or automatic finality retry;
+- automatic late or lower-round evidence observation, event selection or
+  routing, higher-round direct finality ingress beyond the existing
+  checkpoint-then-current path, any claim that either direct input is the node's
+  sole finality policy, or automatic finality retry;
 - candidate discovery, branch discovery, sibling ranking or winner selection,
   rollback, source mutation, or multi-height promotion;
 - cross-journal atomicity, automatic repair, or operator crash-gap recovery;
@@ -272,6 +336,6 @@ candidate-backed integration intentionally stops at the already decided
 caller-selected one-target direct-child or deny-only conflict boundary. Any
 automatic selection, peer-driven promotion, or conflict-triggering policy
 requires a separate explicit authority and policy decision. The exact-current
-integration intentionally stops at separate complete caller-supplied bytes for
-the signer's current branch round; it neither replaces the other finality
-ingresses nor infers that no other finality evidence exists.
+and lower-round integrations intentionally stop at separate complete
+caller-supplied bytes and do not observe or choose events. They neither replace
+the other finality ingresses nor infer that no other finality evidence exists.

@@ -270,6 +270,84 @@ impl FixedConsensusBranchV0 {
             .map(VerifiedFixedConsensusTransitionV0::into_owned)
             .map_err(FixedConsensusBoundedEnvelopeVerifyError::Envelope)
     }
+
+    /// Strictly verifies separate proposal and precommit inputs below one round.
+    ///
+    /// The certificate is first canonically framed only to obtain an
+    /// unauthenticated routing position. That position must name this branch's
+    /// exact next height, remain strictly below `exclusive_upper_round`, and fit
+    /// the caller-local inclusive work ceiling before any attacker-sized
+    /// sequential proposer derivation begins. The proposal, complete artifact
+    /// payload, producer authorization, branch state, and complete non-nil
+    /// precommit certificate are then verified together at the derived round.
+    ///
+    /// The exclusive upper bound and work ceiling are local admission policy,
+    /// not protocol-wide validity rules. Success returns only the existing
+    /// branch-relative proof object and grants no selection, persistence,
+    /// finality, signing, routing, or peer-trust authority.
+    pub fn decode_and_verify_separate_finality_below_round(
+        &self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_precommit_certificate: &[u8],
+        exclusive_upper_round: ConsensusRound,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        OwnedVerifiedFixedConsensusTransitionV0,
+        FixedConsensusBoundedSeparateFinalityVerifyError,
+    > {
+        let expected_height = self
+            .next_height()
+            .map_err(FixedConsensusBoundedSeparateFinalityVerifyError::Proposer)?;
+        let position =
+            VerifiedQuorumCertificateV0::strictly_peek_position(canonical_precommit_certificate)
+                .map_err(
+                    FixedConsensusBoundedSeparateFinalityVerifyError::EmbeddedCertificatePosition,
+                )?;
+        if position.height() != expected_height {
+            return Err(
+                FixedConsensusBoundedSeparateFinalityVerifyError::CertificateHeightMismatch {
+                    expected: expected_height,
+                    actual: position.height(),
+                },
+            );
+        }
+        if position.round() >= exclusive_upper_round {
+            return Err(
+                FixedConsensusBoundedSeparateFinalityVerifyError::RoundNotBelowUpperBound {
+                    round: position.round(),
+                    exclusive_upper: exclusive_upper_round,
+                },
+            );
+        }
+        if position.round() > inclusive_maximum_round {
+            return Err(
+                FixedConsensusBoundedSeparateFinalityVerifyError::RoundLimitExceeded {
+                    round: position.round(),
+                    maximum: inclusive_maximum_round,
+                },
+            );
+        }
+
+        let mut round = self
+            .begin_round_zero()
+            .map_err(FixedConsensusBoundedSeparateFinalityVerifyError::Proposer)?;
+        for _ in 0..position.round().value() {
+            round = round
+                .advance_round()
+                .map_err(FixedConsensusBoundedSeparateFinalityVerifyError::Proposer)?;
+        }
+        let proposal = round
+            .decode_and_verify_proposal_control(
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+            )
+            .map_err(FixedConsensusBoundedSeparateFinalityVerifyError::Proposal)?;
+        proposal
+            .seal_with_precommit_certificate(canonical_precommit_certificate)
+            .map(VerifiedFixedConsensusTransitionV0::into_owned)
+            .map_err(FixedConsensusBoundedSeparateFinalityVerifyError::PrecommitCertificate)
+    }
 }
 
 /// One exact sequential round cursor derived from a fixed consensus branch.
@@ -816,6 +894,40 @@ pub enum FixedConsensusBoundedEnvelopeVerifyError {
     Proposer(ProposerSelectionError),
 }
 
+/// A failure to verify separate finality inputs under bounded round routing.
+///
+/// Certificate framing exposes only an unauthenticated position used for
+/// canonical height and bounded-work checks. No finality claim exists unless
+/// the proposal, payload, producer authorization, and complete certificate all
+/// pass the final branch-relative verification step.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixedConsensusBoundedSeparateFinalityVerifyError {
+    /// The embedded certificate framing could not provide one canonical position.
+    EmbeddedCertificatePosition(QuorumCertificateVerifyError),
+    /// The certificate does not name this branch's exact next height.
+    CertificateHeightMismatch {
+        expected: ConsensusHeight,
+        actual: ConsensusHeight,
+    },
+    /// The embedded round is not strictly below the supplied exclusive bound.
+    RoundNotBelowUpperBound {
+        round: ConsensusRound,
+        exclusive_upper: ConsensusRound,
+    },
+    /// The embedded round exceeds the caller-local inclusive work ceiling.
+    RoundLimitExceeded {
+        round: ConsensusRound,
+        maximum: ConsensusRound,
+    },
+    /// Sequential proposer derivation could not reach the embedded position.
+    Proposer(ProposerSelectionError),
+    /// Complete proposal-control or artifact-payload admission failed.
+    Proposal(ConsensusProposalVerifyError),
+    /// The supplied certificate could not seal the admitted proposal.
+    PrecommitCertificate(ConsensusEnvelopeVerifyError),
+}
+
 impl fmt::Display for FixedConsensusBoundedEnvelopeVerifyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -853,6 +965,54 @@ impl Error for FixedConsensusBoundedEnvelopeVerifyError {
             Self::Proposer(error) => Some(error),
             Self::ValueHeightMismatch { .. }
             | Self::CertificateHeightMismatch { .. }
+            | Self::RoundLimitExceeded { .. } => None,
+        }
+    }
+}
+
+impl fmt::Display for FixedConsensusBoundedSeparateFinalityVerifyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmbeddedCertificatePosition(error) => write!(
+                formatter,
+                "embedded precommit certificate position is malformed: {error}"
+            ),
+            Self::CertificateHeightMismatch { expected, actual } => write!(
+                formatter,
+                "precommit certificate height {:?} does not equal next branch height {:?}",
+                actual, expected
+            ),
+            Self::RoundNotBelowUpperBound {
+                round,
+                exclusive_upper,
+            } => write!(
+                formatter,
+                "embedded consensus round {} is not below exclusive upper round {}",
+                round.value(),
+                exclusive_upper.value()
+            ),
+            Self::RoundLimitExceeded { round, maximum } => write!(
+                formatter,
+                "embedded consensus round {} exceeds caller-local work ceiling {}",
+                round.value(),
+                maximum.value()
+            ),
+            Self::Proposer(error) => error.fmt(formatter),
+            Self::Proposal(error) => error.fmt(formatter),
+            Self::PrecommitCertificate(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for FixedConsensusBoundedSeparateFinalityVerifyError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::EmbeddedCertificatePosition(error) => Some(error),
+            Self::Proposer(error) => Some(error),
+            Self::Proposal(error) => Some(error),
+            Self::PrecommitCertificate(error) => Some(error),
+            Self::CertificateHeightMismatch { .. }
+            | Self::RoundNotBelowUpperBound { .. }
             | Self::RoundLimitExceeded { .. } => None,
         }
     }
