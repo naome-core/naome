@@ -164,7 +164,7 @@ impl Fixture {
         layout: &'layout TestLayout,
         recovery_round_limit: u64,
     ) -> FixedValidatorNodeProvisionV0<'layout> {
-        self.provision_with_catch_up_limit(layout, recovery_round_limit, 8)
+        self.provision_with_limits(layout, recovery_round_limit, 8, 32)
     }
 
     fn provision_with_catch_up_limit<'layout>(
@@ -173,6 +173,25 @@ impl Fixture {
         recovery_round_limit: u64,
         catch_up_height_limit: u64,
     ) -> FixedValidatorNodeProvisionV0<'layout> {
+        self.provision_with_limits(layout, recovery_round_limit, catch_up_height_limit, 32)
+    }
+
+    fn provision_with_proposal_limit<'layout>(
+        &'layout self,
+        layout: &'layout TestLayout,
+        recovery_round_limit: u64,
+        proposal_limit: u64,
+    ) -> FixedValidatorNodeProvisionV0<'layout> {
+        self.provision_with_limits(layout, recovery_round_limit, 8, proposal_limit)
+    }
+
+    fn provision_with_limits<'layout>(
+        &'layout self,
+        layout: &'layout TestLayout,
+        recovery_round_limit: u64,
+        catch_up_height_limit: u64,
+        proposal_limit: u64,
+    ) -> FixedValidatorNodeProvisionV0<'layout> {
         FixedValidatorNodeProvisionV0::new(
             self.definition,
             self.context,
@@ -180,7 +199,7 @@ impl Fixture {
             layout.directories(),
             FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
             FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
-            FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
+            FixedValidatorProposalReplayLimitV0::new(proposal_limit).unwrap(),
             FixedValidatorSignerRecoveryRoundLimitV0::new(recovery_round_limit),
             FixedValidatorSignerCatchUpHeightLimitV0::new(catch_up_height_limit),
         )

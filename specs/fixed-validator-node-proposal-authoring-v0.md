@@ -24,6 +24,33 @@ candidate-store membership, arrival order, routing, network receipt, or peer
 provenance grants no proposal, signer, selection, or finality authority. The
 node owns neither event choice nor availability policy.
 
+### Fresh candidate-store adapter
+
+The separate `author_candidate_backed_fresh_proposal` facade accepts one exact
+caller-selected `ArtifactBlockId`, one caller-routed artifact-block candidate
+store, one caller-routed canonical artifact-payload store, and the same
+inclusive local round-work ceiling. It is only an availability adapter for the
+`Fresh` path. The direct `author_proposal` facade remains the sole path for a
+`RetainedValid` source, so local candidate-store membership cannot become a new
+liveness requirement for a privately retained valid value.
+
+Before either store is read, the adapter requires an operational session, an
+exact signer/branch height, both round ceilings, bounded reconstruction of the
+current round, Proposal phase, the scheduled local proposer, and no retained
+valid value. It then requires the candidate store's chain identity to equal the
+round context, reads exactly the caller-selected block address, and reads
+exactly that block's artifact address from the Foundation-scoped payload store.
+It performs no inventory, scan, fallback, ranking, or target substitution.
+
+The two owned records are converted only into the existing `Fresh` source. The
+unchanged consensus path then rechecks phase and proposer and completely
+validates the block and payload against the node-owned branch snapshot before
+any signer-journal effect. Missing records, a foreign candidate-store chain,
+store read or integrity errors, or complete proposal-validation rejection
+return the unchanged signing scope. Each source handle retains its existing
+error-specific poison-and-reopen boundary, but neither source failure poisons
+or mutates the signer, finality journal, branch, or other source store.
+
 ## Complete proposal intent
 
 The live lock kernel may seal one proposal intent only in Proposal phase, for
@@ -140,6 +167,11 @@ One new proposal follows this order:
 8. Only then release the canonical proposal-control bytes and replacement
    signing scope.
 
+For the candidate-store adapter, source resolution is inserted between steps 2
+and 3 in this exact order: reject a retained valid value, compare the candidate
+store chain, load the exact caller target, then load that block's exact payload.
+Those reads grant availability only; step 3 remains the sole validity gate.
+
 An exact live prepared repeat reuses only its matching preparation capability.
 An exact completed repeat returns byte-identical proposal-control bytes without
 another write or key operation. Any preparation, acknowledgement, key-use,
@@ -174,11 +206,12 @@ then classifies an incomplete proposal before issuing recovery authority. A
 healthy older journal is activated and anchored before recovery issuance. This
 ordered migration is not a header rewrite and is not cross-file atomic.
 
-The consuming `author_proposal` facade has three successful outcome classes:
+The consuming direct and candidate-backed authoring facades have three outcome
+classes:
 
 - `Authored` returns the exact durable proposal and replacement scope;
 - `Rejected` returns the unchanged scope only for a caller round ceiling or
-  pre-write proposal-input rejection; and
+  another pre-write source or proposal-input failure; and
 - `SignerStopped` returns terminal proposal-safety diagnostics and no scope.
 
 Node coherence, session health, persistence, acknowledgement, signing, or
@@ -195,8 +228,8 @@ This boundary does not perform or grant:
   buffering, quorum construction, or an asynchronous consensus loop;
 - network transport, gossip, peer discovery, provenance trust, or availability
   discovery;
-- candidate ranking or persistence, block ordering, branch selection, finality,
-  rollback, reorganization, or repair;
+- candidate ranking, discovery, ingestion, or persistence, block ordering,
+  branch selection, finality, rollback, reorganization, or repair;
 - dynamic validator sets, multi-key coordination, key loading, rotation,
   remote signing, hardware custody, or seed exclusivity;
 - cross-file atomicity, coordinated-rollback detection, or non-Unix file-anchor
