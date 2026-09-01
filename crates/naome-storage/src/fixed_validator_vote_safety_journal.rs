@@ -24,6 +24,10 @@ use naome_consensus::{
 };
 use sha2::{Digest, Sha256};
 
+use super::fixed_validator_anchor::{
+    AnchorPositionV0, FixedValidatorAnchorErrorV0, FixedValidatorAnchorFileV0,
+    JournalAnchorTransitionV0, sync_directory,
+};
 use super::fixed_validator_finality_journal::{
     FixedValidatorDurableFinalityConflictV0, FixedValidatorDurableFinalityTransitionV0,
     FixedValidatorFinalityJournalStateIdV0,
@@ -653,6 +657,30 @@ pub struct FixedValidatorVoteSafetyJournalV0 {
     session_seal: Arc<()>,
 }
 
+/// A per-key vote-safety journal paired with one independent crash-safe anchor.
+///
+/// Every state-changing frame advances the anchor before the journal publishes
+/// its outcome, signing capability, live height or round effect, terminal stop,
+/// or signed vote bytes. The two files remain separate commit units and no
+/// cross-file atomic transaction or automatic repair is claimed.
+#[must_use]
+pub struct FixedValidatorAnchoredVoteSafetyJournalV0 {
+    journal: FixedValidatorVoteSafetyJournalV0,
+}
+
+/// The sole signing session issued by an anchored per-key journal.
+#[must_use]
+pub struct FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal> {
+    session: FixedValidatorVoteSafetySigningSessionV0<'journal>,
+}
+
+/// One exactly recovered branch paired with an anchored signing session.
+#[must_use]
+pub struct FixedValidatorAnchoredRecoveredSigningSessionV0<'journal> {
+    branch: FixedConsensusBranchV0,
+    session: FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal>,
+}
+
 impl FixedValidatorVoteSafetyJournalV0 {
     /// Creates one empty per-key journal without replacing existing bytes.
     ///
@@ -729,6 +757,7 @@ impl FixedValidatorVoteSafetyJournalV0 {
             replay_limit,
             expected_prefix,
             expected_state_id,
+            None,
         )?;
         Ok(Self {
             _lock: lock,
@@ -1074,6 +1103,239 @@ impl FixedValidatorVoteSafetyJournalV0 {
                 .observed_intent
                 .canonical_state_and_vote_intent_bytes(),
         ))
+    }
+}
+
+impl FixedValidatorAnchoredVoteSafetyJournalV0 {
+    /// Creates one per-key journal and its independently synchronized genesis anchor.
+    pub fn create(
+        journal_directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        context: ConsensusContextV0,
+        fixed_set_id: FixedAgreementSetId,
+        signing_key: SigningKey,
+        replay_limit: FixedValidatorVoteSafetyReplayLimitV0,
+    ) -> Result<Self, FixedValidatorAnchoredVoteSafetyJournalErrorV0> {
+        let journal_directory = journal_directory.as_ref();
+        let mut journal = FixedValidatorVoteSafetyJournalV0::create(
+            journal_directory,
+            context,
+            fixed_set_id,
+            signing_key,
+            replay_limit,
+        )
+        .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::journal)?;
+        sync_directory(journal_directory)
+            .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::Anchor)?;
+        let state_id = journal
+            .state_id()
+            .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::journal)?;
+        let anchor = FixedValidatorAnchorFileV0::create_vote(
+            anchor_directory.as_ref(),
+            context,
+            fixed_set_id,
+            journal.signer(),
+            replay_limit.max_prepared_votes(),
+            *state_id.as_bytes(),
+        )
+        .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::Anchor)?;
+        journal.core.anchor = Some(anchor);
+        Ok(Self { journal })
+    }
+
+    /// Strictly opens one per-key journal only at its independent anchor position.
+    pub fn open(
+        journal_directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        context: ConsensusContextV0,
+        fixed_set_id: FixedAgreementSetId,
+        signing_key: SigningKey,
+        replay_limit: FixedValidatorVoteSafetyReplayLimitV0,
+    ) -> Result<Self, FixedValidatorAnchoredVoteSafetyJournalErrorV0> {
+        let signer = consensus_key(&signing_key);
+        let expected_prefix = canonical_prefix(context, fixed_set_id, signer, replay_limit)
+            .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::journal)?;
+        let journal_directory = journal_directory.as_ref();
+        let (lock_path, journal_path) = keyed_paths(journal_directory, signer)
+            .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::journal)?;
+        let lock = open_key_lock(&lock_path)
+            .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::journal)?;
+        let anchor = FixedValidatorAnchorFileV0::open_vote(
+            anchor_directory.as_ref(),
+            context,
+            fixed_set_id,
+            signer,
+            replay_limit.max_prepared_votes(),
+        )
+        .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::Anchor)?;
+        let anchored = anchor.position();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(journal_path)
+            .map_err(|source| {
+                FixedValidatorAnchoredVoteSafetyJournalErrorV0::journal(
+                    FixedValidatorVoteSafetyJournalErrorV0::Open { source },
+                )
+            })?;
+        let mut core = FixedValidatorVoteSafetyJournalCore::replay(
+            file,
+            context,
+            fixed_set_id,
+            signer,
+            replay_limit,
+            expected_prefix,
+            FixedValidatorVoteSafetyJournalStateIdV0::from_bytes(anchored.state_id),
+            Some(anchored.sequence),
+        )
+        .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::journal)?;
+        anchor
+            .stabilize()
+            .map_err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::Anchor)?;
+        core.anchor = Some(anchor);
+        Ok(Self {
+            journal: FixedValidatorVoteSafetyJournalV0 {
+                _lock: lock,
+                signing_key,
+                core,
+                session_issued: false,
+                session_seal: Arc::new(()),
+            },
+        })
+    }
+
+    /// Returns the exact context bound by both journal and anchor.
+    pub const fn context(&self) -> ConsensusContextV0 {
+        self.journal.context()
+    }
+
+    /// Returns the exact fixed agreement-set identity bound by both files.
+    pub const fn fixed_agreement_set_id(&self) -> FixedAgreementSetId {
+        self.journal.fixed_agreement_set_id()
+    }
+
+    /// Returns the public consensus key owned by this per-key pair.
+    pub const fn signer(&self) -> ConsensusKey {
+        self.journal.signer()
+    }
+
+    /// Returns the header- and anchor-bound preparation ceiling.
+    pub const fn replay_limit(&self) -> FixedValidatorVoteSafetyReplayLimitV0 {
+        self.journal.replay_limit()
+    }
+
+    /// Returns the current healthy journal-state identity for diagnostics.
+    pub fn state_id(
+        &self,
+    ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.journal.state_id()
+    }
+
+    /// Binds the initial lineage and advances the anchor before returning.
+    ///
+    /// Repeating the exact current binding is no-write idempotence.
+    pub fn bind_signing_lineage(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.journal.bind_signing_lineage(round)
+    }
+
+    /// Issues the sole session from the already internally anchored state.
+    ///
+    /// No caller state identity is accepted because this wrapper owns and
+    /// synchronizes the only anchor paired with the journal.
+    pub fn issue_signing_session(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<
+        FixedValidatorAnchoredVoteSafetySigningSessionV0<'_>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        let state_id = self.journal.state_id()?;
+        self.journal
+            .issue_signing_session(round, state_id)
+            .map(|session| FixedValidatorAnchoredVoteSafetySigningSessionV0 { session })
+    }
+
+    /// Issues restart authority from the exact internally anchored lineage.
+    pub fn acknowledge_signer_recovery(
+        &self,
+    ) -> Result<FixedValidatorAnchoredSignerRecoveryV0<'_>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        let state_id = self.journal.state_id()?;
+        self.journal
+            .acknowledge_signer_recovery_is_externally_durable(state_id)
+    }
+
+    /// Issues the sole session for one capability-recovered exact branch.
+    ///
+    /// The wrapper reuses its current internally anchored state and accepts only
+    /// the caller-local derivation-work ceiling.
+    pub fn issue_recovered_signing_session(
+        &mut self,
+        recovered: FixedValidatorRecoveredSignerBranchV0,
+        round_limit: FixedValidatorSignerRecoveryRoundLimitV0,
+    ) -> Result<
+        FixedValidatorAnchoredRecoveredSigningSessionV0<'_>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        let state_id = self.journal.state_id()?;
+        let recovered =
+            self.journal
+                .issue_recovered_signing_session(recovered, state_id, round_limit)?;
+        let FixedValidatorRecoveredSigningSessionV0 { branch, session } = recovered;
+        Ok(FixedValidatorAnchoredRecoveredSigningSessionV0 {
+            branch,
+            session: FixedValidatorAnchoredVoteSafetySigningSessionV0 { session },
+        })
+    }
+
+    /// Appends a proof-backed terminal stop and anchors it before publication.
+    pub fn stop_after_durable_finality_conflict(
+        &mut self,
+        conflict: FixedValidatorDurableFinalityConflictV0<'_>,
+    ) -> Result<
+        FixedValidatorFinalityConflictSignerStopOutcomeV0,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.journal.stop_after_durable_finality_conflict(conflict)
+    }
+
+    /// Returns the durable same-slot terminal halt, if present.
+    pub fn halt(
+        &self,
+    ) -> Result<Option<FixedValidatorVoteSafetyHaltV0>, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.journal.halt()
+    }
+
+    /// Returns the durable proof-backed finality-conflict stop, if present.
+    pub fn finality_conflict_stop(
+        &self,
+    ) -> Result<
+        Option<FixedValidatorFinalityConflictSignerStopV0>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.journal.finality_conflict_stop()
+    }
+
+    /// Returns read-only diagnostics for an uncompleted preparation.
+    pub fn pending_vote(
+        &self,
+    ) -> Result<Option<FixedValidatorPendingVoteV0>, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.journal.pending_vote()
+    }
+
+    /// Returns one retained completed vote unless either terminal cause denies it.
+    pub fn retained_signed_vote(
+        &self,
+        position: ConsensusPosition,
+        role: ConsensusVoteRole,
+    ) -> Result<Option<FixedValidatorSignedVoteV0>, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.journal.retained_signed_vote(position, role)
     }
 }
 
@@ -1475,6 +1737,204 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
     }
 }
 
+impl<'journal> FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal> {
+    /// Returns the exact current height and round of this sole live lineage.
+    pub const fn position(&self) -> ConsensusPosition {
+        self.session.position()
+    }
+
+    /// Returns the current fixed-validator kernel phase.
+    pub const fn phase(&self) -> FixedValidatorLockPhaseV0 {
+        self.session.phase()
+    }
+
+    /// Returns the current locked value, if any.
+    pub const fn locked_value(&self) -> Option<FixedValidatorLockedValueV0> {
+        self.session.locked_value()
+    }
+
+    /// Returns the current retained valid value and proof, if any.
+    pub const fn valid_value(&self) -> Option<&FixedValidatorValidValueV0> {
+        self.session.valid_value()
+    }
+
+    /// Appends and anchors a proof-backed terminal signer stop.
+    pub fn stop_after_durable_finality_conflict(
+        &mut self,
+        conflict: FixedValidatorDurableFinalityConflictV0<'_>,
+    ) -> Result<
+        FixedValidatorFinalityConflictSignerStopOutcomeV0,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.session.stop_after_durable_finality_conflict(conflict)
+    }
+
+    /// Decides the current proposal path's prevote without persistence.
+    pub fn decide_prevote_for_proposal(
+        &mut self,
+        proposal: &VerifiedFixedConsensusProposalV0<'_, '_>,
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session.decide_prevote_for_proposal(proposal)
+    }
+
+    /// Decides the absent-or-rejected-proposal prevote path without persistence.
+    pub fn decide_prevote_without_proposal(
+        &mut self,
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session.decide_prevote_without_proposal()
+    }
+
+    /// Applies one proposal prevote quorum and decides precommit in memory.
+    pub fn decide_precommit_for_proposal_quorum(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        proposal: &VerifiedFixedConsensusProposalV0<'_, '_>,
+        canonical_certificate: &[u8],
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session
+            .decide_precommit_for_proposal_quorum(round, proposal, canonical_certificate)
+    }
+
+    /// Applies one nil prevote quorum and decides nil precommit in memory.
+    pub fn decide_precommit_for_nil_quorum(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        canonical_certificate: &[u8],
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session
+            .decide_precommit_for_nil_quorum(round, canonical_certificate)
+    }
+
+    /// Decides nil precommit without a current-round quorum in memory.
+    pub fn decide_precommit_without_quorum(
+        &mut self,
+    ) -> Result<FixedValidatorUnsignedVoteEffectV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session.decide_precommit_without_quorum()
+    }
+
+    /// Advances through one exact sequential typed round in memory.
+    pub fn advance_round(
+        &mut self,
+        next_round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session.advance_round(next_round)
+    }
+
+    /// Advances in memory after verifying one exact nil-precommit quorum.
+    pub fn advance_round_for_nil_precommit_quorum<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+    ) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session
+            .advance_round_for_nil_precommit_quorum(current_round, canonical_certificate)
+    }
+
+    /// Persists and anchors one verified higher-round checkpoint before return.
+    pub fn prepare_higher_round_quorum_advance<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.session.prepare_higher_round_quorum_advance(
+            current_round,
+            canonical_certificate,
+            inclusive_maximum_round,
+        )
+    }
+
+    /// Publishes an already anchored higher-round checkpoint to live state.
+    ///
+    /// No caller state identity is accepted; the prepare call synchronized the
+    /// paired anchor before it returned this private-field capability.
+    pub fn acknowledge_prepared_higher_round<'branch>(
+        &mut self,
+        prepared: FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+    ) -> Result<FixedConsensusRoundV0<'branch>, FixedValidatorVoteSafetyJournalErrorV0> {
+        let state_id = prepared.state_id();
+        self.session
+            .acknowledge_prepared_higher_round_is_externally_durable(prepared, state_id)
+    }
+
+    /// Persists and anchors one exact finality-authorized child lineage.
+    pub fn prepare_height_with_durable_finality<'finality>(
+        &mut self,
+        transition: FixedValidatorDurableFinalityTransitionV0<'finality>,
+    ) -> Result<
+        FixedValidatorPreparedHeightAdvanceV0<'finality>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.session
+            .prepare_height_with_durable_finality(transition)
+    }
+
+    /// Advances live signer memory to an already anchored child lineage.
+    ///
+    /// No caller state identity is accepted; the prepared capability can only
+    /// name the transition already persisted by this paired wrapper.
+    pub fn acknowledge_prepared_height(
+        &mut self,
+        prepared: FixedValidatorPreparedHeightAdvanceV0<'_>,
+    ) -> Result<FixedConsensusBranchV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        let state_id = prepared.state_id();
+        self.session
+            .acknowledge_prepared_height_is_externally_durable(prepared, state_id)
+    }
+
+    /// Persists and anchors the exact session-derived vote preparation.
+    pub fn prepare_vote(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        effect: FixedValidatorUnsignedVoteEffectV0,
+    ) -> Result<FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session.prepare_vote(round, effect)
+    }
+
+    /// Converts an already anchored live preparation into key-use authority.
+    ///
+    /// The wrapper accepts no caller identity and rechecks the private prepared
+    /// capability against the exact live journal state.
+    pub fn acknowledge_prepared_vote(
+        &self,
+        prepared: FixedValidatorPreparedVoteV0,
+    ) -> Result<FixedValidatorDurablePrepareAcknowledgementV0, FixedValidatorVoteSafetyJournalErrorV0>
+    {
+        self.session
+            .acknowledge_prepared_vote_is_externally_durable(prepared, prepared.state_id())
+    }
+
+    /// Signs the acknowledged preparation and anchors completion before release.
+    pub fn sign_prepared_vote(
+        &mut self,
+        acknowledgement: FixedValidatorDurablePrepareAcknowledgementV0,
+    ) -> Result<FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session.sign_prepared_vote(acknowledgement)
+    }
+}
+
+impl<'journal> FixedValidatorAnchoredRecoveredSigningSessionV0<'journal> {
+    /// Returns the exact branch recovered for this sole signing session.
+    pub const fn branch(&self) -> &FixedConsensusBranchV0 {
+        &self.branch
+    }
+
+    /// Returns the recovered anchored signing session read-only.
+    pub const fn session(&self) -> &FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal> {
+        &self.session
+    }
+
+    /// Returns the recovered anchored signing session mutably.
+    pub fn session_mut<'session>(
+        &'session mut self,
+    ) -> &'session mut FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal> {
+        &mut self.session
+    }
+}
+
 struct FixedValidatorVoteSafetyJournalCore<F> {
     file: F,
     context: ConsensusContextV0,
@@ -1491,6 +1951,8 @@ struct FixedValidatorVoteSafetyJournalCore<F> {
     halt: Option<FixedValidatorVoteSafetyHaltV0>,
     finality_conflict_stop: Option<FixedValidatorFinalityConflictSignerStopV0>,
     state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+    record_sequence: u64,
+    anchor: Option<FixedValidatorAnchorFileV0>,
     committed_end: u64,
     poisoned: bool,
 }
@@ -1520,6 +1982,8 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             halt: None,
             finality_conflict_stop: None,
             state_id,
+            record_sequence: 0,
+            anchor: None,
             committed_end: JOURNAL_PREFIX_BYTES as u64,
             poisoned: false,
         }
@@ -1534,6 +1998,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         replay_limit: FixedValidatorVoteSafetyReplayLimitV0,
         expected_prefix: Vec<u8>,
         expected_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+        expected_anchor_sequence: Option<u64>,
     ) -> Result<Self, FixedValidatorVoteSafetyJournalErrorV0> {
         let file_len = file
             .seek(SeekFrom::End(0))
@@ -1634,11 +2099,36 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             }
             core.replay_record(entry, entry_start, body, actual_entry_state_id)?;
             core.state_id = actual_entry_state_id;
+            core.record_sequence = core
+                .record_sequence
+                .checked_add(1)
+                .ok_or(FixedValidatorVoteSafetyJournalErrorV0::RecordSequenceExhausted)?;
             core.committed_end = entry_end;
             entry_start = entry_end;
             entry += 1;
         }
 
+        if let Some(expected_sequence) = expected_anchor_sequence
+            && (core.record_sequence != expected_sequence || core.state_id != expected_state_id)
+        {
+            return Err(match core.record_sequence.cmp(&expected_sequence) {
+                std::cmp::Ordering::Greater => {
+                    FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind {
+                        anchored_sequence: expected_sequence,
+                        journal_sequence: core.record_sequence,
+                    }
+                }
+                std::cmp::Ordering::Less => FixedValidatorVoteSafetyJournalErrorV0::AnchorAhead {
+                    anchored_sequence: expected_sequence,
+                    journal_sequence: core.record_sequence,
+                },
+                std::cmp::Ordering::Equal => {
+                    FixedValidatorVoteSafetyJournalErrorV0::AnchorStateMismatch {
+                        sequence: expected_sequence,
+                    }
+                }
+            });
+        }
         if core.state_id != expected_state_id {
             return Err(
                 FixedValidatorVoteSafetyJournalErrorV0::ExpectedStateIdMismatch {
@@ -2558,6 +3048,10 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             u32::try_from(body.len()).expect("bounded vote-safety journal record length fits u32");
         let body_length_bytes = body_length.to_be_bytes();
         let next_state_id = step_state_id(self.state_id, body_length_bytes, body);
+        let next_sequence = self
+            .record_sequence
+            .checked_add(1)
+            .ok_or(FixedValidatorVoteSafetyJournalErrorV0::RecordSequenceExhausted)?;
         let entry_length = ENTRY_FIXED_BYTES
             .checked_add(u64::from(body_length))
             .ok_or(
@@ -2581,6 +3075,19 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             self.file
                 .append_write_all(AppendPhase::Commit, next_state_id.as_bytes())?;
             self.file.append_sync_all(AppendPhase::Commit)?;
+            if let Some(anchor) = self.anchor.as_mut() {
+                let transition = JournalAnchorTransitionV0::new(
+                    anchor.pairing_seal(),
+                    AnchorPositionV0 {
+                        sequence: self.record_sequence,
+                        state_id: *self.state_id.as_bytes(),
+                    },
+                    *next_state_id.as_bytes(),
+                )
+                .map_err(io::Error::other)?;
+                debug_assert_eq!(transition.next().sequence, next_sequence);
+                anchor.advance(transition).map_err(io::Error::other)?;
+            }
             Ok(())
         })();
         if let Err(source) = commit_result {
@@ -2591,6 +3098,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             });
         }
         self.committed_end = next_committed_end;
+        self.record_sequence = next_sequence;
         Ok(next_state_id)
     }
 
@@ -2987,6 +3495,40 @@ fn read_exact_at<F: StoreIo>(
         .map_err(|source| FixedValidatorVoteSafetyJournalErrorV0::Read { offset, source })
 }
 
+/// Failure to create or strictly open one paired per-key journal and anchor.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum FixedValidatorAnchoredVoteSafetyJournalErrorV0 {
+    Journal(Box<FixedValidatorVoteSafetyJournalErrorV0>),
+    Anchor(FixedValidatorAnchorErrorV0),
+}
+
+impl FixedValidatorAnchoredVoteSafetyJournalErrorV0 {
+    fn journal(source: FixedValidatorVoteSafetyJournalErrorV0) -> Self {
+        Self::Journal(Box::new(source))
+    }
+}
+
+impl fmt::Display for FixedValidatorAnchoredVoteSafetyJournalErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Journal(source) => {
+                write!(formatter, "anchored vote-safety journal failed: {source}")
+            }
+            Self::Anchor(source) => write!(formatter, "vote-safety anchor failed: {source}"),
+        }
+    }
+}
+
+impl Error for FixedValidatorAnchoredVoteSafetyJournalErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Journal(source) => Some(source.as_ref()),
+            Self::Anchor(source) => Some(source),
+        }
+    }
+}
+
 /// A fail-closed fixed-validator vote-safety journal error.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -3191,6 +3733,18 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         expected: FixedValidatorVoteSafetyJournalStateIdV0,
         actual: FixedValidatorVoteSafetyJournalStateIdV0,
     },
+    AnchorBehind {
+        anchored_sequence: u64,
+        journal_sequence: u64,
+    },
+    AnchorAhead {
+        anchored_sequence: u64,
+        journal_sequence: u64,
+    },
+    AnchorStateMismatch {
+        sequence: u64,
+    },
+    RecordSequenceExhausted,
     Recovery {
         offset: u64,
         source: io::Error,
@@ -3318,6 +3872,10 @@ impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
             Self::ReplayLimitExceeded { entry, maximum } => write!(formatter, "prepare record {entry} exceeds replay ceiling {maximum}"),
             Self::NonMonotonicReplay { entry, previous, previous_role, actual, actual_role } => write!(formatter, "prepare record {entry} moves backward from {previous:?}/{previous_role:?} to {actual:?}/{actual_role:?}"),
             Self::ExpectedStateIdMismatch { expected, actual } => write!(formatter, "vote-safety journal state mismatch: expected {expected:?}, replayed {actual:?}"),
+            Self::AnchorBehind { anchored_sequence, journal_sequence } => write!(formatter, "vote-safety anchor is behind at sequence {anchored_sequence}; the journal has {journal_sequence} complete frames"),
+            Self::AnchorAhead { anchored_sequence, journal_sequence } => write!(formatter, "vote-safety anchor is ahead at sequence {anchored_sequence}; the journal has {journal_sequence} complete frames"),
+            Self::AnchorStateMismatch { sequence } => write!(formatter, "vote-safety anchor and journal have different state identities at sequence {sequence}"),
+            Self::RecordSequenceExhausted => formatter.write_str("vote-safety journal frame sequence is exhausted"),
             Self::Recovery { offset, source } => write!(formatter, "incomplete vote-safety tail at byte {offset} could not be recovered: {source}"),
             Self::Stabilize { source } => write!(formatter, "replayed vote-safety journal stabilization failed: {source}"),
             Self::PendingPreparation { position, role } => write!(formatter, "vote {position:?}/{role:?} must complete before another slot can prepare"),

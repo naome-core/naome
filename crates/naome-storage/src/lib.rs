@@ -25,6 +25,11 @@
 //! handoff: the caller must explicitly acknowledge the journal's exact current
 //! state identity as externally durable before the key-owning vote session can
 //! consume that child.
+//! [`FixedValidatorAnchoredFinalityJournalV0`] is the stricter file-backed
+//! product path: it owns a separately locked canonical anchor, advances its
+//! exact frame sequence and state identity after every synchronized finality or
+//! halt footer, and publishes no outcome until that replacement and its parent
+//! directory are synchronized.
 //!
 //! [`FixedValidatorVoteSafetyJournalV0`] separately owns one local consensus
 //! signing key and enforces a two-sync prepare-then-complete protocol for exact
@@ -49,6 +54,14 @@
 //! The per-key chained log prevents replacement and same-slot state divergence,
 //! while an anchored reopen with an unresolved vote preparation remains
 //! deliberately non-signable.
+//! [`FixedValidatorAnchoredVoteSafetyJournalV0`] pairs that journal with one
+//! independently locked per-key anchor. Its session APIs remove raw external
+//! state-ID acknowledgements: lineage, preparation, completion, checkpoint,
+//! height, and stop records advance the paired anchor internally before any
+//! live effect, key-use authority, stop, or signed bytes are released.
+//! These file anchors fail closed on journal/anchor crash gaps; they do not
+//! detect coordinated rollback of both files, provide hardware monotonicity,
+//! or repair a mismatched pair.
 //!
 //! [`ArtifactBlockCandidateStore`] retains chain-scoped structural blocks,
 //! including siblings and blocks with unavailable parents, without validating
@@ -83,6 +96,7 @@ mod candidate_branch_recovery_bundle;
 mod candidate_branch_recovery_staging;
 #[cfg(test)]
 mod fault_io;
+mod fixed_validator_anchor;
 mod fixed_validator_finality_journal;
 mod fixed_validator_vote_safety_journal;
 mod payload_store;
@@ -121,15 +135,19 @@ pub use candidate_branch_reconstruction::{
 };
 pub use fixed_validator_finality_journal::{
     CandidateBackedFinalityCommitV0, CandidateBackedFinalityErrorV0,
+    FixedValidatorAnchoredFinalityJournalErrorV0, FixedValidatorAnchoredFinalityJournalV0,
     FixedValidatorDurableFinalityConflictV0, FixedValidatorDurableFinalityTransitionV0,
     FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityHaltV0,
     FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
     FixedValidatorFinalityJournalV0, FixedValidatorFinalityRecordV0,
     FixedValidatorFinalityReplayLimitErrorV0, FixedValidatorFinalityReplayLimitV0,
-    commit_candidate_backed_finality_v0,
+    commit_candidate_backed_anchored_finality_v0, commit_candidate_backed_finality_v0,
 };
 pub use fixed_validator_vote_safety_journal::{
-    FixedValidatorAnchoredSignerRecoveryV0, FixedValidatorDurablePrepareAcknowledgementV0,
+    FixedValidatorAnchoredRecoveredSigningSessionV0, FixedValidatorAnchoredSignerRecoveryV0,
+    FixedValidatorAnchoredVoteSafetyJournalErrorV0, FixedValidatorAnchoredVoteSafetyJournalV0,
+    FixedValidatorAnchoredVoteSafetySigningSessionV0,
+    FixedValidatorDurablePrepareAcknowledgementV0,
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityConflictSignerStopV0,
     FixedValidatorPendingVoteV0, FixedValidatorPreparedHeightAdvanceV0,
     FixedValidatorPreparedHigherRoundAdvanceV0, FixedValidatorPreparedVoteV0,
@@ -141,6 +159,8 @@ pub use fixed_validator_vote_safety_journal::{
     FixedValidatorVoteSafetyReplayLimitErrorV0, FixedValidatorVoteSafetyReplayLimitV0,
     FixedValidatorVoteSafetySigningSessionV0,
 };
+
+pub use fixed_validator_anchor::FixedValidatorAnchorErrorV0;
 
 pub use payload_store::{
     ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits, ArtifactPayloadStoreLimitsError,

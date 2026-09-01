@@ -22,6 +22,10 @@ use naome_consensus::{
 use naome_proof::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId};
 use sha2::{Digest, Sha256};
 
+use super::fixed_validator_anchor::{
+    AnchorPositionV0, FixedValidatorAnchorErrorV0, FixedValidatorAnchorFileV0,
+    JournalAnchorTransitionV0, sync_directory,
+};
 use super::fixed_validator_vote_safety_journal::{
     FixedValidatorAnchoredSignerRecoveryV0, FixedValidatorRecoveredSignerBranchV0,
     signing_lineage_id,
@@ -437,6 +441,17 @@ pub struct FixedValidatorFinalityJournalV0 {
     core: FixedValidatorFinalityJournalCore<File>,
 }
 
+/// A finality journal whose every state-changing frame is synchronously copied
+/// into one independent crash-safe anchor before its outcome is published.
+///
+/// The anchor is a separate file and commit unit. A crash between the journal
+/// footer sync and anchor replacement deliberately leaves strict reopen unable
+/// to choose or repair either side; it does not create cross-file atomicity.
+#[must_use]
+pub struct FixedValidatorAnchoredFinalityJournalV0 {
+    journal: FixedValidatorFinalityJournalV0,
+}
+
 impl FixedValidatorFinalityJournalV0 {
     /// Creates and exclusively opens one empty joint journal.
     ///
@@ -529,6 +544,7 @@ impl FixedValidatorFinalityJournalV0 {
             expected_prefix,
             branches,
             expected_state_id,
+            None,
         )?;
         Ok(Self { _lock: lock, core })
     }
@@ -541,6 +557,15 @@ impl FixedValidatorFinalityJournalV0 {
     /// Returns the header-bound local replay-round ceiling.
     pub const fn replay_limit(&self) -> FixedValidatorFinalityReplayLimitV0 {
         self.core.replay_limit
+    }
+
+    /// Returns the immutable agreement-set identity bound by the journal header.
+    pub fn fixed_agreement_set_id(&self) -> FixedAgreementSetId {
+        self.core
+            .branches
+            .first()
+            .expect("every finality journal retains virtual genesis")
+            .fixed_agreement_set_id()
     }
 
     /// Returns the current unambiguous journal-state identity.
@@ -755,6 +780,237 @@ impl FixedValidatorFinalityJournalV0 {
     }
 }
 
+impl FixedValidatorAnchoredFinalityJournalV0 {
+    /// Creates a new finality journal and its independent genesis anchor.
+    ///
+    /// The journal header and its parent-directory entry synchronize before the
+    /// anchor is installed. Failure after either write returns no operational
+    /// wrapper; callers must inspect and explicitly provision a fresh directory
+    /// rather than inferring or repairing authority from either file.
+    pub fn create(
+        journal_directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        definition: ArtifactChainDefinition,
+        context: ConsensusContextV0,
+        entries: &[ActiveAgreementEntry],
+        replay_limit: FixedValidatorFinalityReplayLimitV0,
+    ) -> Result<Self, FixedValidatorAnchoredFinalityJournalErrorV0> {
+        let journal_directory = journal_directory.as_ref();
+        let mut journal = FixedValidatorFinalityJournalV0::create(
+            journal_directory,
+            definition,
+            context,
+            entries,
+            replay_limit,
+        )
+        .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal)?;
+        sync_directory(journal_directory)
+            .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Anchor)?;
+        let state_id = journal
+            .state_id()
+            .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal)?;
+        let anchor = FixedValidatorAnchorFileV0::create_finality(
+            anchor_directory.as_ref(),
+            context,
+            journal.fixed_agreement_set_id(),
+            replay_limit.max_round(),
+            *state_id.as_bytes(),
+        )
+        .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Anchor)?;
+        journal.core.anchor = Some(anchor);
+        Ok(Self { journal })
+    }
+
+    /// Strictly opens a journal only from its independent typed anchor.
+    ///
+    /// Missing, corrupt, context-mismatched, behind, ahead, or divergent anchor
+    /// state returns no wrapper and changes neither complete file. One incomplete
+    /// final journal frame retains the existing exact-prefix recovery rule.
+    pub fn open(
+        journal_directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        definition: ArtifactChainDefinition,
+        context: ConsensusContextV0,
+        entries: &[ActiveAgreementEntry],
+        replay_limit: FixedValidatorFinalityReplayLimitV0,
+    ) -> Result<Self, FixedValidatorAnchoredFinalityJournalErrorV0> {
+        let branch = fixed_genesis(definition, context, entries)
+            .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal)?;
+        let fixed_set_id = branch.fixed_agreement_set_id();
+        let expected_prefix = canonical_prefix(context, fixed_set_id, replay_limit)
+            .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal)?;
+        let journal_directory = journal_directory.as_ref();
+        let lock = open_shared_lock(journal_directory)
+            .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal)?;
+        let anchor = FixedValidatorAnchorFileV0::open_finality(
+            anchor_directory.as_ref(),
+            context,
+            fixed_set_id,
+            replay_limit.max_round(),
+        )
+        .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Anchor)?;
+        let anchored = anchor.position();
+
+        let mut branches = Vec::new();
+        branches.try_reserve_exact(1).map_err(|_| {
+            FixedValidatorAnchoredFinalityJournalErrorV0::Journal(
+                FixedValidatorFinalityJournalErrorV0::Allocation {
+                    entry: 0,
+                    bytes: std::mem::size_of::<FixedConsensusBranchV0>(),
+                },
+            )
+        })?;
+        branches.push(branch);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(journal_directory.join(JOURNAL_FILE_NAME))
+            .map_err(|source| {
+                FixedValidatorAnchoredFinalityJournalErrorV0::Journal(
+                    FixedValidatorFinalityJournalErrorV0::Open { source },
+                )
+            })?;
+        let mut core = FixedValidatorFinalityJournalCore::replay(
+            file,
+            context,
+            replay_limit,
+            expected_prefix,
+            branches,
+            FixedValidatorFinalityJournalStateIdV0::from_bytes(anchored.state_id),
+            Some(anchored.sequence),
+        )
+        .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal)?;
+        anchor
+            .stabilize()
+            .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Anchor)?;
+        core.anchor = Some(anchor);
+        Ok(Self {
+            journal: FixedValidatorFinalityJournalV0 { _lock: lock, core },
+        })
+    }
+
+    /// Returns the exact caller-selected consensus context.
+    pub const fn context(&self) -> ConsensusContextV0 {
+        self.journal.context()
+    }
+
+    /// Returns the header-bound local replay-round ceiling.
+    pub const fn replay_limit(&self) -> FixedValidatorFinalityReplayLimitV0 {
+        self.journal.replay_limit()
+    }
+
+    /// Returns the immutable agreement-set identity bound by both files.
+    pub fn fixed_agreement_set_id(&self) -> FixedAgreementSetId {
+        self.journal.fixed_agreement_set_id()
+    }
+
+    /// Returns the current healthy journal-state identity.
+    pub fn state_id(
+        &self,
+    ) -> Result<FixedValidatorFinalityJournalStateIdV0, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.state_id()
+    }
+
+    /// Returns the durable terminal-halt summary, if present.
+    pub fn halt(
+        &self,
+    ) -> Result<Option<FixedValidatorFinalityHaltV0>, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.halt()
+    }
+
+    /// Returns the exact operable finalized head.
+    pub fn head(&self) -> Result<&FixedConsensusBranchV0, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.head()
+    }
+
+    /// Returns the exact selected artifact-chain identity while operable.
+    pub fn artifact_chain_id(
+        &self,
+    ) -> Result<ArtifactChainId, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.artifact_chain_id()
+    }
+
+    /// Returns the exact finalized artifact head while operable.
+    pub fn artifact_head_block_id(
+        &self,
+    ) -> Result<ArtifactBlockId, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.artifact_head_block_id()
+    }
+
+    /// Returns the authenticated finalized artifact-set root while operable.
+    pub fn artifact_set_root(
+        &self,
+    ) -> Result<ArtifactSetRoot, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.artifact_set_root()
+    }
+
+    /// Returns one retained selected snapshot by exact block identity.
+    pub fn artifact_branch_snapshot_at(
+        &self,
+        block_id: ArtifactBlockId,
+    ) -> Result<Option<ArtifactChainBranchSnapshot>, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.artifact_branch_snapshot_at(block_id)
+    }
+
+    /// Returns the retained selected parent required to verify one height.
+    pub fn parent_for_height(
+        &self,
+        height: ConsensusHeight,
+    ) -> Result<Option<&FixedConsensusBranchV0>, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.parent_for_height(height)
+    }
+
+    /// Returns one retained first finality proof by its positive height.
+    pub fn finality_record(
+        &self,
+        height: ConsensusHeight,
+    ) -> Result<Option<&FixedValidatorFinalityRecordV0>, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.finality_record(height)
+    }
+
+    /// Returns the number of durably finalized values before terminal halt.
+    pub fn finalized_len(&self) -> Result<usize, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.finalized_len()
+    }
+
+    /// Issues one signer-height transition from the internally anchored state.
+    pub fn acknowledge_signer_height_transition(
+        &self,
+        height: ConsensusHeight,
+    ) -> Result<FixedValidatorDurableFinalityTransitionV0<'_>, FixedValidatorFinalityJournalErrorV0>
+    {
+        let state_id = self.journal.state_id()?;
+        self.journal
+            .acknowledge_signer_height_transition_is_externally_durable(height, state_id)
+    }
+
+    /// Issues signer-stop authority from the internally anchored terminal state.
+    pub fn acknowledge_signer_stop(
+        &self,
+    ) -> Result<FixedValidatorDurableFinalityConflictV0<'_>, FixedValidatorFinalityJournalErrorV0>
+    {
+        let state_id = self.journal.state_id()?;
+        self.journal
+            .acknowledge_signer_stop_is_externally_durable(state_id)
+    }
+
+    /// Recovers only the retained branch named by an anchored signer capability.
+    pub fn recover_anchored_signer_branch(
+        &self,
+        recovery: FixedValidatorAnchoredSignerRecoveryV0<'_>,
+    ) -> Result<FixedValidatorRecoveredSignerBranchV0, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.recover_anchored_signer_branch(recovery)
+    }
+
+    /// Commits one sealed transition and advances the anchor before publication.
+    pub fn commit_verified(
+        &mut self,
+        transition: OwnedVerifiedFixedConsensusTransitionV0,
+    ) -> Result<FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityJournalErrorV0> {
+        self.journal.commit_verified(transition)
+    }
+}
+
 /// Strictly installs one exact retained candidate as the current head's next child.
 ///
 /// The caller selects `expected_target`; that choice grants no preference or
@@ -779,6 +1035,29 @@ pub fn commit_candidate_backed_finality_v0(
 ) -> Result<CandidateBackedFinalityCommitV0, CandidateBackedFinalityErrorV0> {
     commit_candidate_backed_finality_core_v0(
         &mut journal.core,
+        candidates,
+        payloads,
+        expected_target,
+        canonical_envelope_bytes,
+        inclusive_maximum_round,
+    )
+}
+
+/// Strictly installs one exact retained candidate through an anchored journal.
+///
+/// This has the same caller-selected verification and source-store boundaries as
+/// [`commit_candidate_backed_finality_v0`], but every resulting finality frame
+/// also advances the paired anchor before the commit outcome is published.
+pub fn commit_candidate_backed_anchored_finality_v0(
+    journal: &mut FixedValidatorAnchoredFinalityJournalV0,
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    expected_target: ArtifactBlockId,
+    canonical_envelope_bytes: &[u8],
+    inclusive_maximum_round: ConsensusRound,
+) -> Result<CandidateBackedFinalityCommitV0, CandidateBackedFinalityErrorV0> {
+    commit_candidate_backed_finality_core_v0(
+        &mut journal.journal.core,
         candidates,
         payloads,
         expected_target,
@@ -974,6 +1253,32 @@ impl SelectedArtifactHistory for FixedValidatorFinalityJournalV0 {
     }
 }
 
+impl selected_artifact_history_sealed::Sealed for FixedValidatorAnchoredFinalityJournalV0 {}
+
+impl SelectedArtifactHistory for FixedValidatorAnchoredFinalityJournalV0 {
+    fn selected_chain_id(&self) -> ArtifactChainId {
+        self.journal.core.context.chain_id()
+    }
+
+    fn selected_head_block_id(&self) -> Result<ArtifactBlockId, SelectedArtifactHistoryError> {
+        self.artifact_head_block_id()
+            .map_err(SelectedArtifactHistoryError::fixed_validator_finality)
+    }
+
+    fn selected_artifact_set_root(&self) -> Result<ArtifactSetRoot, SelectedArtifactHistoryError> {
+        self.artifact_set_root()
+            .map_err(SelectedArtifactHistoryError::fixed_validator_finality)
+    }
+
+    fn selected_branch_snapshot_at(
+        &self,
+        block_id: ArtifactBlockId,
+    ) -> Result<Option<ArtifactChainBranchSnapshot>, SelectedArtifactHistoryError> {
+        self.artifact_branch_snapshot_at(block_id)
+            .map_err(SelectedArtifactHistoryError::fixed_validator_finality)
+    }
+}
+
 struct FixedValidatorFinalityJournalCore<F> {
     file: F,
     context: ConsensusContextV0,
@@ -983,6 +1288,8 @@ struct FixedValidatorFinalityJournalCore<F> {
     records: Vec<FixedValidatorFinalityRecordV0>,
     halt: Option<FixedValidatorFinalityHaltV0>,
     state_id: FixedValidatorFinalityJournalStateIdV0,
+    record_sequence: u64,
+    anchor: Option<FixedValidatorAnchorFileV0>,
     committed_end: u64,
     poisoned: bool,
 }
@@ -1025,6 +1332,8 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
             records: Vec::new(),
             halt: None,
             state_id,
+            record_sequence: 0,
+            anchor: None,
             committed_end: JOURNAL_PREFIX_BYTES as u64,
             poisoned: false,
         }
@@ -1037,6 +1346,7 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
         expected_prefix: Vec<u8>,
         branches: Vec<FixedConsensusBranchV0>,
         expected_state_id: FixedValidatorFinalityJournalStateIdV0,
+        expected_anchor_sequence: Option<u64>,
     ) -> Result<Self, FixedValidatorFinalityJournalErrorV0> {
         let file_len = file
             .seek(SeekFrom::End(0))
@@ -1152,11 +1462,34 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
 
             core.replay_record(entry, entry_start, body, actual_entry_state_id)?;
             core.state_id = actual_entry_state_id;
+            core.record_sequence = core
+                .record_sequence
+                .checked_add(1)
+                .ok_or(FixedValidatorFinalityJournalErrorV0::RecordSequenceExhausted)?;
             core.committed_end = entry_end;
             entry_start = entry_end;
             entry += 1;
         }
 
+        if let Some(expected_sequence) = expected_anchor_sequence
+            && (core.record_sequence != expected_sequence || core.state_id != expected_state_id)
+        {
+            return Err(match core.record_sequence.cmp(&expected_sequence) {
+                std::cmp::Ordering::Greater => FixedValidatorFinalityJournalErrorV0::AnchorBehind {
+                    anchored_sequence: expected_sequence,
+                    journal_sequence: core.record_sequence,
+                },
+                std::cmp::Ordering::Less => FixedValidatorFinalityJournalErrorV0::AnchorAhead {
+                    anchored_sequence: expected_sequence,
+                    journal_sequence: core.record_sequence,
+                },
+                std::cmp::Ordering::Equal => {
+                    FixedValidatorFinalityJournalErrorV0::AnchorStateMismatch {
+                        sequence: expected_sequence,
+                    }
+                }
+            });
+        }
         if core.state_id != expected_state_id {
             return Err(
                 FixedValidatorFinalityJournalErrorV0::ExpectedStateIdMismatch {
@@ -1427,6 +1760,10 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
                 offset: self.committed_end,
             },
         )?;
+        let next_sequence = self
+            .record_sequence
+            .checked_add(1)
+            .ok_or(FixedValidatorFinalityJournalErrorV0::RecordSequenceExhausted)?;
         let commit_result = (|| -> io::Result<()> {
             self.file.seek(SeekFrom::Start(self.committed_end))?;
             self.file
@@ -1436,6 +1773,19 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
             self.file
                 .append_write_all(AppendPhase::Commit, next_state_id.as_bytes())?;
             self.file.append_sync_all(AppendPhase::Commit)?;
+            if let Some(anchor) = self.anchor.as_mut() {
+                let transition = JournalAnchorTransitionV0::new(
+                    anchor.pairing_seal(),
+                    AnchorPositionV0 {
+                        sequence: self.record_sequence,
+                        state_id: *self.state_id.as_bytes(),
+                    },
+                    *next_state_id.as_bytes(),
+                )
+                .map_err(io::Error::other)?;
+                debug_assert_eq!(transition.next().sequence, next_sequence);
+                anchor.advance(transition).map_err(io::Error::other)?;
+            }
             Ok(())
         })();
         if let Err(source) = commit_result {
@@ -1447,6 +1797,7 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
             });
         }
         self.committed_end = next_committed_end;
+        self.record_sequence = next_sequence;
         Ok(())
     }
 
@@ -1786,6 +2137,34 @@ fn read_exact_at<F: StoreIo>(
         .map_err(|source| FixedValidatorFinalityJournalErrorV0::Read { offset, source })
 }
 
+/// Failure to create or strictly open the paired finality journal and anchor.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum FixedValidatorAnchoredFinalityJournalErrorV0 {
+    Journal(FixedValidatorFinalityJournalErrorV0),
+    Anchor(FixedValidatorAnchorErrorV0),
+}
+
+impl fmt::Display for FixedValidatorAnchoredFinalityJournalErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Journal(source) => {
+                write!(formatter, "anchored finality journal failed: {source}")
+            }
+            Self::Anchor(source) => write!(formatter, "finality anchor failed: {source}"),
+        }
+    }
+}
+
+impl Error for FixedValidatorAnchoredFinalityJournalErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Journal(source) => Some(source),
+            Self::Anchor(source) => Some(source),
+        }
+    }
+}
+
 /// A fail-closed fixed-validator finality-journal error.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -1870,6 +2249,20 @@ pub enum FixedValidatorFinalityJournalErrorV0 {
         expected: FixedValidatorFinalityJournalStateIdV0,
         actual: FixedValidatorFinalityJournalStateIdV0,
     },
+    /// The journal contains more complete frames than its persisted anchor.
+    AnchorBehind {
+        anchored_sequence: u64,
+        journal_sequence: u64,
+    },
+    /// The persisted anchor names more frames than the journal contains.
+    AnchorAhead {
+        anchored_sequence: u64,
+        journal_sequence: u64,
+    },
+    /// Anchor and journal sequences agree but their chained identities differ.
+    AnchorStateMismatch { sequence: u64 },
+    /// The count of complete journal frames exhausted its fixed-width sequence.
+    RecordSequenceExhausted,
     /// An authenticated incomplete final entry could not be truncated and synced.
     Recovery { offset: u64, source: io::Error },
     /// A fully replayed unchanged journal image could not be synchronized.
@@ -2014,6 +2407,27 @@ impl fmt::Display for FixedValidatorFinalityJournalErrorV0 {
                 formatter,
                 "journal state mismatch: expected {expected:?}, replayed {actual:?}"
             ),
+            Self::AnchorBehind {
+                anchored_sequence,
+                journal_sequence,
+            } => write!(
+                formatter,
+                "finality anchor is behind at sequence {anchored_sequence}; the journal has {journal_sequence} complete frames"
+            ),
+            Self::AnchorAhead {
+                anchored_sequence,
+                journal_sequence,
+            } => write!(
+                formatter,
+                "finality anchor is ahead at sequence {anchored_sequence}; the journal has {journal_sequence} complete frames"
+            ),
+            Self::AnchorStateMismatch { sequence } => write!(
+                formatter,
+                "finality anchor and journal have different state identities at sequence {sequence}"
+            ),
+            Self::RecordSequenceExhausted => {
+                formatter.write_str("finality journal frame sequence is exhausted")
+            }
             Self::Recovery { offset, source } => write!(
                 formatter,
                 "incomplete finality tail at byte {offset} could not be recovered: {source}"
@@ -2125,6 +2539,10 @@ impl Error for FixedValidatorFinalityJournalErrorV0 {
             | Self::InvalidSelectedParent { .. }
             | Self::RecordAfterHalt { .. }
             | Self::ExpectedStateIdMismatch { .. }
+            | Self::AnchorBehind { .. }
+            | Self::AnchorAhead { .. }
+            | Self::AnchorStateMismatch { .. }
+            | Self::RecordSequenceExhausted
             | Self::RoundLimitExceeded { .. }
             | Self::UnselectedParent { .. }
             | Self::CommitHeightIndexOverflow { .. }
