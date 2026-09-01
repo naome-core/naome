@@ -2,9 +2,10 @@
 //!
 //! The fixed-validator V0 boundary composes exact caller configuration,
 //! anchored finality, and one anchored per-key vote-safety journal. It owns
-//! strict provisioning, restart ordering, and consume-on-finality signer
-//! coupling while deliberately leaving daemon, networking, timeout,
-//! key-loading, and branch-selection policy to later components.
+//! strict provisioning, restart ordering, and consuming sealed or
+//! candidate-backed finality-to-signer coupling while deliberately leaving
+//! daemon, networking, timeout, key-loading, and branch-selection policy to
+//! later components.
 
 mod fixed_validator_startup;
 

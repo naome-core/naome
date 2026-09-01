@@ -15,10 +15,12 @@ use naome_consensus::{
 use naome_foundation::ZfcAxiom;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 use naome_storage::{
-    FixedValidatorAnchoredFinalityJournalV0, FixedValidatorAnchoredVoteSafetyJournalV0,
-    FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityReplayLimitV0,
-    FixedValidatorPreparedVoteV0, FixedValidatorSignerRecoveryRoundLimitV0,
-    FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyReplayLimitV0,
+    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreLimits, ArtifactPayloadStoreLimits,
+    CanonicalArtifactPayloadStore, FixedValidatorAnchoredFinalityJournalV0,
+    FixedValidatorAnchoredVoteSafetyJournalV0, FixedValidatorFinalityCommitOutcomeV0,
+    FixedValidatorFinalityReplayLimitV0, FixedValidatorPreparedVoteV0,
+    FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVotePrepareOutcomeV0,
+    FixedValidatorVoteSafetyReplayLimitV0,
 };
 
 use super::*;
@@ -33,6 +35,8 @@ struct TestLayout {
     finality_anchor: PathBuf,
     vote_journal: PathBuf,
     vote_anchor: PathBuf,
+    candidate_store: PathBuf,
+    payload_store: PathBuf,
 }
 
 impl TestLayout {
@@ -49,11 +53,15 @@ impl TestLayout {
                     let finality_anchor = root.join("finality-anchor");
                     let vote_journal = root.join("vote-journal");
                     let vote_anchor = root.join("vote-anchor");
+                    let candidate_store = root.join("candidate-store");
+                    let payload_store = root.join("payload-store");
                     for directory in [
                         &finality_journal,
                         &finality_anchor,
                         &vote_journal,
                         &vote_anchor,
+                        &candidate_store,
+                        &payload_store,
                     ] {
                         fs::create_dir(directory).unwrap();
                     }
@@ -63,6 +71,8 @@ impl TestLayout {
                         finality_anchor,
                         vote_journal,
                         vote_anchor,
+                        candidate_store,
+                        payload_store,
                     };
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -86,6 +96,8 @@ impl TestLayout {
             &self.finality_anchor,
             &self.vote_journal,
             &self.vote_anchor,
+            &self.candidate_store,
+            &self.payload_store,
         ]
         .into_iter()
         .all(|directory| fs::read_dir(directory).unwrap().next().is_none())
@@ -97,6 +109,13 @@ impl TestLayout {
             directory_image(&self.finality_anchor),
             directory_image(&self.vote_journal),
             directory_image(&self.vote_anchor),
+        ]
+    }
+
+    fn source_images(&self) -> [Vec<(String, Vec<u8>)>; 2] {
+        [
+            directory_image(&self.candidate_store),
+            directory_image(&self.payload_store),
         ]
     }
 }
@@ -219,6 +238,43 @@ fn directory_image(directory: &PathBuf) -> Vec<(String, Vec<u8>)> {
         .collect::<Vec<_>>();
     image.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     image
+}
+
+fn create_candidate_store(
+    layout: &TestLayout,
+    definition: ArtifactChainDefinition,
+) -> ArtifactBlockCandidateStore {
+    ArtifactBlockCandidateStore::create(
+        &layout.candidate_store,
+        definition,
+        ArtifactBlockCandidateStoreLimits::new(16).unwrap(),
+    )
+    .unwrap()
+}
+
+fn create_payload_store(layout: &TestLayout) -> CanonicalArtifactPayloadStore {
+    CanonicalArtifactPayloadStore::create(
+        &layout.payload_store,
+        ArtifactPayloadStoreLimits::new(16, 1024 * 1024).unwrap(),
+    )
+    .unwrap()
+}
+
+fn retain_transition_inputs(
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    parent: &FixedConsensusBranchV0,
+    transition: &OwnedVerifiedFixedConsensusTransitionV0,
+) {
+    let block = transition.value().artifact_block();
+    let _ = candidates.insert(&block).unwrap();
+    let _ = payloads
+        .validate_and_insert_branch_payload(
+            parent.artifact_snapshot(),
+            &block,
+            transition.canonical_artifact_bytes().to_vec(),
+        )
+        .unwrap();
 }
 
 fn consensus_key(key: &SigningKey) -> ConsensusKey {

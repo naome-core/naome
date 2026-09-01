@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use naome_storage::{
-    FixedValidatorAnchoredFinalityJournalErrorV0, FixedValidatorAnchoredVoteSafetyJournalErrorV0,
-    FixedValidatorFinalityJournalErrorV0, FixedValidatorVoteSafetyJournalErrorV0,
+    CandidateBackedFinalityErrorV0, FixedValidatorAnchoredFinalityJournalErrorV0,
+    FixedValidatorAnchoredVoteSafetyJournalErrorV0, FixedValidatorFinalityJournalErrorV0,
+    FixedValidatorVoteSafetyJournalErrorV0,
 };
 
 use super::*;
@@ -166,6 +167,296 @@ fn one_child_continuation_strictly_reopens_without_signer_catch_up() {
             assert_eq!(scope.signing_session().position(), signer_position);
         })
         .unwrap();
+}
+
+#[test]
+fn candidate_backed_children_advance_the_node_without_mutating_sources() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("candidate-backed-live-finality");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut candidates = create_candidate_store(&layout, fixture.definition);
+    let mut payloads = create_payload_store(&layout);
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let (selected_coordinate, signer_position) = ready
+        .run_with_signing_session(|scope| {
+            let first = fixture.transition(scope.branch(), &selected, ZfcAxiom::Pairing, 0);
+            let first_block = first.value().artifact_block();
+            let first_payload = first.canonical_artifact_bytes().to_vec();
+            let first_target = first_block.id();
+            retain_transition_inputs(&mut candidates, &mut payloads, scope.branch(), &first);
+            let node_before_first = layout.images();
+            let sources_before_first = layout.source_images();
+            let (scope, selection) = expect_continuation(
+                scope
+                    .commit_candidate_backed_finality(
+                        &mut candidates,
+                        &mut payloads,
+                        first_target,
+                        first.canonical_envelope_bytes(),
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            let first_state_id = match selection {
+                FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                    target,
+                    position,
+                    ancestry_id,
+                    envelope_id,
+                    state_id,
+                } => {
+                    assert_eq!(target, first_target);
+                    assert_eq!(position, first.position());
+                    assert_eq!(ancestry_id, first.value().ancestry_id());
+                    assert_eq!(envelope_id, first.envelope_id());
+                    state_id
+                }
+                _ => panic!("the retained child must report candidate-backed finality"),
+            };
+            let node_after_first = layout.images();
+            for (index, (before, after)) in
+                node_before_first.iter().zip(&node_after_first).enumerate()
+            {
+                assert_ne!(before, after, "node durable image {index} did not advance");
+            }
+            assert_eq!(layout.source_images(), sources_before_first);
+            assert_eq!(scope.finality.state_id().unwrap(), first_state_id);
+            assert_eq!(
+                scope
+                    .finality
+                    .head()
+                    .unwrap()
+                    .artifact_snapshot()
+                    .head_block_id(),
+                first_target
+            );
+            assert_eq!(
+                scope.branch.artifact_snapshot().head_block_id(),
+                first_target
+            );
+            assert_eq!(scope.signing_session.position().height().value(), 2);
+            assert_eq!(scope.signing_session.position().round().value(), 0);
+            assert_eq!(
+                scope.finality.head().unwrap().coordinate(),
+                scope.branch.coordinate()
+            );
+
+            selected.apply_block(&first_block, first_payload).unwrap();
+            let second = fixture.transition(scope.branch(), &selected, ZfcAxiom::Union, 1);
+            let second_target = second.value().artifact_block().id();
+            retain_transition_inputs(&mut candidates, &mut payloads, scope.branch(), &second);
+            let sources_before_second = layout.source_images();
+            let (mut scope, selection) = expect_continuation(
+                scope
+                    .commit_candidate_backed_finality(
+                        &mut candidates,
+                        &mut payloads,
+                        second_target,
+                        second.canonical_envelope_bytes(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            let second_state_id = match selection {
+                FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                    target,
+                    position,
+                    ancestry_id,
+                    envelope_id,
+                    state_id,
+                } => {
+                    assert_eq!(target, second_target);
+                    assert_eq!(position, second.position());
+                    assert_eq!(ancestry_id, second.value().ancestry_id());
+                    assert_eq!(envelope_id, second.envelope_id());
+                    state_id
+                }
+                _ => panic!("the retained child must report candidate-backed finality"),
+            };
+            let node_after_second = layout.images();
+            for (index, (before, after)) in
+                node_after_first.iter().zip(&node_after_second).enumerate()
+            {
+                assert_ne!(before, after, "node durable image {index} did not advance");
+            }
+            assert_eq!(layout.source_images(), sources_before_second);
+            assert_eq!(scope.finality().state_id().unwrap(), second_state_id);
+            assert_eq!(
+                scope
+                    .finality()
+                    .head()
+                    .unwrap()
+                    .artifact_snapshot()
+                    .head_block_id(),
+                second_target
+            );
+            assert_eq!(
+                scope.branch().artifact_snapshot().head_block_id(),
+                second_target
+            );
+            assert_eq!(scope.signing_session().position().height().value(), 3);
+            assert_eq!(scope.signing_session().position().round().value(), 0);
+            assert_eq!(
+                scope.finality().head().unwrap().coordinate(),
+                scope.branch().coordinate()
+            );
+            (
+                scope.branch().coordinate(),
+                scope.signing_session().position(),
+            )
+        })
+        .unwrap();
+
+    drop(candidates);
+    drop(payloads);
+    let reopened = expect_ready(
+        fixture
+            .provision_with_catch_up_limit(&layout, 8, 0)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(scope.branch().coordinate(), selected_coordinate);
+            assert_eq!(scope.signing_session().position(), signer_position);
+        })
+        .unwrap();
+}
+
+#[test]
+fn missing_candidate_consumes_the_scope_without_mutating_any_store() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("candidate-backed-missing");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut candidates = create_candidate_store(&layout, fixture.definition);
+    let mut payloads = create_payload_store(&layout);
+    ready
+        .run_with_signing_session(|scope| {
+            let selected = ArtifactChainState::new(fixture.definition);
+            let transition = fixture.transition(scope.branch(), &selected, ZfcAxiom::Pairing, 0);
+            let target = transition.value().artifact_block().id();
+            let node_before = layout.images();
+            let sources_before = layout.source_images();
+            assert!(matches!(
+                scope.commit_candidate_backed_finality(
+                    &mut candidates,
+                    &mut payloads,
+                    target,
+                    transition.canonical_envelope_bytes(),
+                    ConsensusRound::new(0),
+                ),
+                Err(FixedValidatorNodeFinalityErrorV0::CandidateBackedFinality(source))
+                    if matches!(
+                        source.as_ref(),
+                        CandidateBackedFinalityErrorV0::CandidateUnavailable { target: actual }
+                            if *actual == target
+                    )
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), sources_before);
+        })
+        .unwrap();
+}
+
+#[test]
+fn pending_vote_after_candidate_finality_returns_the_known_selection_without_a_scope() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("candidate-backed-pending");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut candidates = create_candidate_store(&layout, fixture.definition);
+    let mut payloads = create_payload_store(&layout);
+    let (prepared_vote, finality_state_id) = ready
+        .run_with_signing_session(|mut scope| {
+            let selected = ArtifactChainState::new(fixture.definition);
+            let transition = fixture.transition(scope.branch(), &selected, ZfcAxiom::Pairing, 0);
+            let target = transition.value().artifact_block().id();
+            retain_transition_inputs(&mut candidates, &mut payloads, scope.branch(), &transition);
+            let branch = scope.branch().clone();
+            let round = branch.begin_round_zero().unwrap();
+            let effect = scope
+                .signing_session()
+                .decide_prevote_without_proposal()
+                .unwrap();
+            let prepared_vote = match scope
+                .signing_session()
+                .prepare_vote(&round, effect)
+                .unwrap()
+            {
+                FixedValidatorVotePrepareOutcomeV0::Prepared(prepared) => prepared,
+                _ => panic!("the first vote must leave one durable preparation"),
+            };
+            let node_before = layout.images();
+            let sources_before = layout.source_images();
+            let finality_state_id = match scope.commit_candidate_backed_finality(
+                &mut candidates,
+                &mut payloads,
+                target,
+                transition.canonical_envelope_bytes(),
+                ConsensusRound::new(0),
+            ) {
+                Err(FixedValidatorNodeFinalityErrorV0::SignerHeightPrepare {
+                    selection,
+                    source,
+                }) => {
+                    assert!(matches!(
+                        source.as_ref(),
+                        FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation { .. }
+                    ));
+                    match selection.as_ref() {
+                        FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                            target: actual,
+                            position,
+                            ancestry_id,
+                            envelope_id,
+                            state_id,
+                        } => {
+                            assert_eq!(*actual, target);
+                            assert_eq!(*position, transition.position());
+                            assert_eq!(*ancestry_id, transition.value().ancestry_id());
+                            assert_eq!(*envelope_id, transition.envelope_id());
+                            *state_id
+                        }
+                        _ => panic!("the failure must retain the candidate-backed selection"),
+                    }
+                }
+                _ => panic!("the pending vote must prevent signer height preparation"),
+            };
+            let node_after = layout.images();
+            assert_ne!(node_after[0], node_before[0]);
+            assert_ne!(node_after[1], node_before[1]);
+            assert_eq!(node_after[2], node_before[2]);
+            assert_eq!(node_after[3], node_before[3]);
+            assert_eq!(layout.source_images(), sources_before);
+            (prepared_vote, finality_state_id)
+        })
+        .unwrap();
+    drop(candidates);
+    drop(payloads);
+    let finality = fixture.open_finality(&layout);
+    assert_eq!(finality.state_id().unwrap(), finality_state_id);
+    drop(finality);
+    match fixture
+        .provision(&layout, 8)
+        .open(fixture.signing_key())
+        .unwrap()
+    {
+        FixedValidatorNodeStartupV0::PendingPreparation(pending) => {
+            assert_eq!(pending.position(), prepared_vote.position());
+            assert_eq!(pending.role(), prepared_vote.role());
+            assert_eq!(pending.target(), prepared_vote.target());
+            assert_eq!(pending.state_id(), prepared_vote.state_id());
+        }
+        _ => panic!("strict restart must expose the durable pending signer state"),
+    }
 }
 
 #[test]

@@ -456,7 +456,8 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     /// Returns the sole node-scoped voting session.
     ///
     /// Height advancement and finality-conflict stop authority are deliberately
-    /// absent; only [`Self::commit_verified_finality`] may apply them.
+    /// absent; only this scope's consuming node-owned finality coordinators may
+    /// apply them.
     pub fn signing_session(&mut self) -> &mut FixedValidatorNodeVotingSessionV0<'node> {
         &mut self.signing_session
     }
