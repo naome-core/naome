@@ -4,17 +4,32 @@
 
 This document defines the synchronous live-finality coordination boundary for
 one closure-scoped fixed-validator V0 node signer. It composes the existing
-sealed consensus transition, anchored finality journal, and anchored per-key
-vote-safety session. It does not create another way to verify, select, rank, or
-construct a transition.
+sealed consensus transition or candidate-backed verification boundary,
+anchored finality journal, and anchored per-key vote-safety session. It does
+not create another way to select, rank, or construct a transition.
 
-The sole ingress is one `OwnedVerifiedFixedConsensusTransitionV0`. Its private
-fields prove that complete typed branch verification already bound the exact
-parent coordinate, consensus position, value, canonical envelope, canonical
-artifact payload, and immutable child branch. The caller still chooses which
-already sealed transition to submit. That choice does not grant peer evidence,
-candidate availability, or this coordinator any truth, preference, fork-choice,
-or finality authority beyond the finality journal's existing rules.
+The sealed-transition ingress accepts one
+`OwnedVerifiedFixedConsensusTransitionV0`. Its private fields prove that
+complete typed branch verification already bound the exact parent coordinate,
+consensus position, value, canonical envelope, canonical artifact payload, and
+immutable child branch.
+
+The candidate-backed ingress instead requires one exact caller-selected
+unselected direct-child `ArtifactBlockId`, caller-routed matching-chain
+candidate and Foundation payload stores, one complete canonical finality
+envelope, and an inclusive caller-local round ceiling. The existing
+candidate-backed finality boundary integrity-reads the exact retained block and
+payload, fully verifies the envelope against the current selected head under
+both round ceilings, and only then commits the internally sealed transition.
+The stores supply availability bytes only and receive no durable mutation;
+source-integrity failures retain each store's existing poison-and-reopen
+boundary.
+
+In both forms the caller explicitly chooses the one transition or target to
+submit. That choice does not grant peer evidence, candidate availability, or
+this coordinator any truth, preference, fork-choice, or finality authority
+beyond the finality journal's existing rules. The candidate-backed form does
+not discover a target, promote a suffix, or admit a selected-height sibling.
 
 The operation consumes `FixedValidatorNodeSigningScopeV0`. The scope retains a
 mutable finality borrow internally, but exposes only read-only finality
@@ -22,12 +37,14 @@ diagnostics to callers. Its public `FixedValidatorNodeVotingSessionV0` facade
 exposes ordinary round, vote-preparation, and key-use operations but withholds
 the lower-level finality height-transition and conflict-stop methods. The
 node-owned finality journal is therefore the exclusive source of height and
-stop authority for this scope, and only `commit_verified_finality` may couple
-those capabilities into the signer. There is no public mutable-journal or raw
-signing-session escape hatch. A continuation scope is returned only by a
+stop authority for this scope. Only `commit_verified_finality` and
+`commit_candidate_backed_finality` may couple its height capability into the
+signer, while only the sealed-transition method admits the existing sibling
+conflict and couples its stop capability. There is no public mutable-journal or
+raw signing-session escape hatch. A continuation scope is returned only by a
 complete nonterminal outcome.
 
-## Ordered transition
+## Ordered transitions
 
 `commit_verified_finality` applies exactly one sealed transition in this order:
 
@@ -50,12 +67,27 @@ The transition is not a cross-file transaction. A later failure never removes,
 replaces, rolls back, or reinterprets an earlier durable journal or anchor
 step.
 
+`commit_candidate_backed_finality` first applies the complete read-only source
+and envelope verification described above. It then commits exactly one new
+direct child through the same anchored finality pair and enters steps 2 through
+5 of the shared signer handoff. One explicit call advances at most one height.
+The candidate and payload stores are not participants in either anchored pair
+and receive no durable insert, replacement, mark, refresh, or deletion from
+this call.
+
 ## Nonterminal outcomes
 
 A newly selected direct child returns `Finalized` metadata naming its exact
 authenticated position, ancestry identity, complete-envelope identity, and
 anchored finality state identity. Continued signing authority appears only
 beside this metadata after the ordered signer handoff completes.
+
+A candidate-backed child returns `CandidateBackedFinalized` metadata naming
+the exact caller-selected target plus the same authenticated position,
+ancestry, complete-envelope, and finality-state identities. It returns beside
+continued signing authority only after the same complete signer handoff. The
+candidate-backed direct-child boundary has no replay or conflict result; stale,
+deep, already-selected, or sibling input is rejected instead.
 
 If the transition's exact value is already selected at its retained height,
 the finality journal returns `AlreadyFinalized`. This classification is based
@@ -93,21 +125,23 @@ Every error consumes the scope and returns no signing authority. Error stages
 distinguish:
 
 - finality commit rejection or ambiguous finality durability;
+- candidate source or envelope rejection, or ambiguous candidate-backed
+  finality durability;
 - failure to issue height authority after known finality success;
 - signer child-lineage prepare or live acknowledgement failure after known
   finality success;
 - failure to issue stop authority after a known finality halt; and
 - signer-stop persistence failure after a known finality halt.
 
-Errors after a known finality result retain that `Finalized` metadata or exact
-halt. This is diagnostic evidence of ordering, not rollback or repair
-authority. A pending vote can therefore leave a newly finalized child durable
-while the signer remains pending at its prior lineage; the call returns no
-scope. Strict create-or-restart handling is the only classifier for the actual
-anchored prefixes. Exact matching pairs may resume through the existing
-recovery and selected-suffix catch-up rules. A complete journal suffix ahead of
-its independent anchor remains an explicit anchor-behind failure requiring
-separate operator recovery policy.
+Errors after a known finality result retain that `Finalized` or
+`CandidateBackedFinalized` metadata or exact halt. This is diagnostic evidence
+of ordering, not rollback or repair authority. A pending vote can therefore
+leave a newly finalized child durable while the signer remains pending at its
+prior lineage; the call returns no scope. Strict create-or-restart handling is
+the only classifier for the actual anchored prefixes. Exact matching pairs may
+resume through the existing recovery and selected-suffix catch-up rules. A
+complete journal suffix ahead of its independent anchor remains an explicit
+anchor-behind failure requiring separate operator recovery policy.
 
 ## Exclusions
 
@@ -119,8 +153,8 @@ This coordinator does not define or perform:
 - proposal, vote, quorum-certificate, or competing-evidence buffering;
 - network transport, peer discovery, provenance trust, or peer-selected
   admission;
-- candidate or payload lookup, branch discovery, sibling ranking, rollback, or
-  multi-height promotion;
+- candidate discovery, branch discovery, sibling admission or ranking,
+  rollback, source mutation, or multi-height promotion;
 - cross-journal atomicity, automatic repair, or operator crash-gap recovery;
 - dynamic validator sets, multi-key stop fanout, key loading, rotation, remote
   signing, or production custody; or
@@ -134,6 +168,6 @@ capabilities for storage-layer recovery tests. Those capabilities cannot enter
 this node's public voting facade.
 
 These are separate required product capabilities, not unnecessary work. The
-next candidate-backed integration may reuse this coordinator only after a
-caller explicitly chooses the target and the existing stores strictly verify
-its retained bytes into the same sealed-transition authority boundary.
+candidate-backed integration intentionally stops at the already decided
+caller-selected one-target boundary. Any automatic selection or peer-driven
+promotion requires a separate explicit authority and policy decision.
