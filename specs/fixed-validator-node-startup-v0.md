@@ -107,16 +107,19 @@ catch-up invoke one higher-ranked closure with:
 - the owned exact branch for the current signing lineage, already caught up to
   the selected finality head;
 - read-only caller access to the anchored finality journal; and
-- mutable access to a node-scoped voting facade over the anchored vote-safety
-  signing session.
+- mutable access to a node-scoped diagnostics and bounded round-control facade
+  over the anchored vote-safety signing session.
 
 The closure result cannot borrow the scope. The signing session therefore
 cannot outlive the owning vote journal or be retained for a second invocation.
 The supplied finality diagnostics and voting facade preserve all existing vote,
-anchor, ordering, and failure rules. The facade exposes no height-transition or
-finality-conflict stop method, so only the scope's consuming live-finality
-method may apply capabilities from its node-owned finality journal. The scope
-also exposes no raw mutable finality handle or raw storage signing session. Its
+anchor, ordering, and failure rules. The facade exposes no current-round
+decision, raw vote preparation, anchor-acknowledgement, key-use,
+height-transition, or finality-conflict stop method. Current-round votes are
+released only through the scope's consuming operations specified by
+`fixed-validator-node-voting-v0.md`; only its consuming live-finality methods
+may apply capabilities from the node-owned finality journal. The scope also
+exposes no raw mutable finality handle or raw storage signing session. Its
 live-finality method is specified by `fixed-validator-node-finality-v0.md`:
 every new finality commit or conflict must reach the matching signer advance or
 stop before another signing scope can be returned.

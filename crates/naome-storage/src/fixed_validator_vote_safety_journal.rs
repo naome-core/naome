@@ -1758,6 +1758,17 @@ impl<'journal> FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal> {
         self.session.valid_value()
     }
 
+    /// Verifies that current-round vote execution may begin without changing state.
+    ///
+    /// Journal health and pending vote, height, or higher-round work are checked
+    /// before a caller performs any separately fallible input admission. Success
+    /// grants no vote or transition authority and does not reserve the session;
+    /// the consuming vote path must still repeat the established checks while
+    /// deriving its effect and persisting its intent.
+    pub fn ensure_current_vote_ready(&self) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
+        self.session.ensure_mutable()
+    }
+
     /// Appends and anchors a proof-backed terminal signer stop.
     pub fn stop_after_durable_finality_conflict(
         &mut self,
