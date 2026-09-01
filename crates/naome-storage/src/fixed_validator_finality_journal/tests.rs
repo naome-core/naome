@@ -50,6 +50,7 @@ impl TestDirectory {
         self.0.join(JOURNAL_FILE_NAME)
     }
 
+    #[cfg(unix)]
     fn finality_anchor(&self) -> PathBuf {
         self.0.join("fixed-validator-finality.anchor")
     }

@@ -47,6 +47,7 @@ impl TestDirectory {
         }
     }
 
+    #[cfg(unix)]
     fn vote_anchor(&self, signer: ConsensusKey) -> PathBuf {
         let signer_hex: String = signer
             .as_bytes()
@@ -57,6 +58,7 @@ impl TestDirectory {
             .join(format!("fixed-validator-vote-safety-{signer_hex}.anchor"))
     }
 
+    #[cfg(unix)]
     fn vote_anchor_temporary(&self, signer: ConsensusKey, sequence: u64) -> PathBuf {
         let anchor = self.vote_anchor(signer);
         let file_name = anchor.file_name().unwrap().to_string_lossy();
