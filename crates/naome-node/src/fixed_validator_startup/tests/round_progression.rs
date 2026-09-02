@@ -269,7 +269,7 @@ fn explicit_precommit_close_is_volatile_and_preserves_lock_and_valid_evidence() 
             assert_eq!(layout.images(), before_close);
             let (scope, vote) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             assert_eq!(vote.position(), position);
@@ -354,12 +354,12 @@ fn explicit_precommit_close_rejects_wrong_identity_phase_and_stale_replay() {
 
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let (scope, _) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let before_close = layout.images();
@@ -414,12 +414,12 @@ fn explicit_precommit_close_rejects_wrong_identity_phase_and_stale_replay() {
             );
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             let (scope, _) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(1))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             let before_stale = layout.images();
@@ -470,12 +470,12 @@ fn explicit_precommit_close_enforces_destination_ceilings_without_writes() {
             let round_zero = branch.begin_round_zero().unwrap();
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let (scope, _) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let before_close = layout.images();
@@ -512,12 +512,12 @@ fn explicit_precommit_close_enforces_destination_ceilings_without_writes() {
             let round_one = round_at(&branch, 1);
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let (scope, _) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let (scope, _, _) = expect_advanced(
@@ -531,12 +531,12 @@ fn explicit_precommit_close_enforces_destination_ceilings_without_writes() {
             );
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             let (scope, _) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(1))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             let before_close = layout.images();
@@ -613,7 +613,7 @@ fn nil_precommit_quorum_is_no_write_until_a_later_vote_persists_the_advanced_rou
 
             let (scope, vote) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             assert_eq!(vote.position(), position);

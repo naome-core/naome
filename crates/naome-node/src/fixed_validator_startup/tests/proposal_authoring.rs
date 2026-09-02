@@ -1306,12 +1306,12 @@ fn retained_payload_preconditions_precede_a_corrupt_store_read() {
         .run_with_signing_session(|scope| {
             let scope = expect_signed_vote(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let mut scope = expect_signed_vote(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let branch = scope.branch().clone();

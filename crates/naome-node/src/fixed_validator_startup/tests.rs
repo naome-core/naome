@@ -395,6 +395,52 @@ fn expect_ready(startup: FixedValidatorNodeStartupV0) -> FixedValidatorNodeReady
     }
 }
 
+// Existing tests whose subject is not close-event routing use the exact live
+// identity; adversarial identity tests invoke the production methods directly.
+trait ExactCurrentPhaseCloseTestExt<'node> {
+    fn sign_prevote_after_current_proposal_close(
+        self,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
+        FixedValidatorNodeVoteExecutionErrorV0,
+    >;
+
+    fn sign_precommit_after_current_prevote_close(
+        self,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
+        FixedValidatorNodeVoteExecutionErrorV0,
+    >;
+}
+
+impl<'node> ExactCurrentPhaseCloseTestExt<'node> for FixedValidatorNodeSigningScopeV0<'node> {
+    fn sign_prevote_after_current_proposal_close(
+        mut self,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
+        FixedValidatorNodeVoteExecutionErrorV0,
+    > {
+        let context = self.branch().context();
+        let position = self.signing_session().position();
+        self.sign_prevote_after_proposal_close(context, position, inclusive_maximum_round)
+    }
+
+    fn sign_precommit_after_current_prevote_close(
+        mut self,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
+        FixedValidatorNodeVoteExecutionErrorV0,
+    > {
+        let context = self.branch().context();
+        let position = self.signing_session().position();
+        self.sign_precommit_after_prevote_close(context, position, inclusive_maximum_round)
+    }
+}
+
 fn prepare_and_sign(
     session: &mut FixedValidatorNodeVotingSessionV0<'_>,
     round: &naome_consensus::FixedConsensusRoundV0<'_>,
