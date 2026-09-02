@@ -1058,6 +1058,50 @@ impl FixedValidatorLockStateV0 {
         inclusive_maximum_round: ConsensusRound,
     ) -> Result<VerifiedFixedValidatorHigherRoundAdvanceV0<'branch>, FixedValidatorLockStateError>
     {
+        self.prepare_higher_round_quorum_advance_inner(
+            current_round,
+            canonical_certificate,
+            inclusive_maximum_round,
+            None,
+        )
+    }
+
+    /// Prepares one exact higher-round proposal-prevote transition.
+    ///
+    /// The quorum is fully authenticated by the general higher-round path
+    /// before its position, prevote role, and proposal target are compared with
+    /// the caller's exact expected values. A mismatch returns no transition and
+    /// changes no lock state. This is a pairing constraint only: success still
+    /// grants neither a precommit vote nor finality authority.
+    pub fn prepare_higher_round_proposal_prevote_advance<'branch>(
+        &self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+        expected_position: ConsensusPosition,
+        expected_proposal_root: ProposalSigningRoot,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<VerifiedFixedValidatorHigherRoundAdvanceV0<'branch>, FixedValidatorLockStateError>
+    {
+        self.prepare_higher_round_quorum_advance_inner(
+            current_round,
+            canonical_certificate,
+            inclusive_maximum_round,
+            Some((
+                expected_position,
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(expected_proposal_root),
+            )),
+        )
+    }
+
+    fn prepare_higher_round_quorum_advance_inner<'branch>(
+        &self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+        expected: Option<(ConsensusPosition, ConsensusVoteRole, ConsensusVoteTarget)>,
+    ) -> Result<VerifiedFixedValidatorHigherRoundAdvanceV0<'branch>, FixedValidatorLockStateError>
+    {
         self.validate_current_round(current_round)?;
         if inclusive_maximum_round.value() == 0 {
             return Err(FixedValidatorLockStateError::HigherRoundWorkLimitNotPositive);
@@ -1099,6 +1143,32 @@ impl FixedValidatorLockStateV0 {
             .map_err(FixedValidatorLockStateError::QuorumVerification)?;
         let role = certificate.role();
         let target = certificate.target();
+        if let Some((expected_position, expected_role, expected_target)) = expected {
+            if position != expected_position {
+                return Err(
+                    FixedValidatorLockStateError::HigherRoundQuorumPositionMismatch {
+                        expected: expected_position,
+                        actual: position,
+                    },
+                );
+            }
+            if role != expected_role {
+                return Err(
+                    FixedValidatorLockStateError::HigherRoundQuorumRoleMismatch {
+                        expected: expected_role,
+                        actual: role,
+                    },
+                );
+            }
+            if target != expected_target {
+                return Err(
+                    FixedValidatorLockStateError::HigherRoundQuorumTargetMismatch {
+                        expected: expected_target,
+                        actual: target,
+                    },
+                );
+            }
+        }
         let certificate_id = certificate.id();
         let target_phase = phase_for_role(role);
         let canonical_certificate = try_copy_certificate(canonical_certificate)?;
@@ -2794,6 +2864,21 @@ pub enum FixedValidatorLockStateError {
         round: ConsensusRound,
         maximum: ConsensusRound,
     },
+    /// The authenticated higher-round quorum names another expected position.
+    HigherRoundQuorumPositionMismatch {
+        expected: ConsensusPosition,
+        actual: ConsensusPosition,
+    },
+    /// The authenticated higher-round quorum has another expected role.
+    HigherRoundQuorumRoleMismatch {
+        expected: ConsensusVoteRole,
+        actual: ConsensusVoteRole,
+    },
+    /// The authenticated higher-round quorum has another expected target.
+    HigherRoundQuorumTargetMismatch {
+        expected: ConsensusVoteTarget,
+        actual: ConsensusVoteTarget,
+    },
     /// The exact internally selected higher-round cursor could not be derived.
     HigherRoundDerivation(ProposerSelectionError),
     /// The durable checkpoint bytes could not be allocated.
@@ -2909,6 +2994,18 @@ impl fmt::Display for FixedValidatorLockStateError {
             Self::HigherRoundLimitExceeded { round, maximum } => write!(
                 formatter,
                 "certificate round {round:?} exceeds caller-local inclusive maximum {maximum:?}"
+            ),
+            Self::HigherRoundQuorumPositionMismatch { expected, actual } => write!(
+                formatter,
+                "authenticated higher-round quorum position {actual:?} differs from expected position {expected:?}"
+            ),
+            Self::HigherRoundQuorumRoleMismatch { expected, actual } => write!(
+                formatter,
+                "authenticated higher-round quorum role {actual:?} differs from expected role {expected:?}"
+            ),
+            Self::HigherRoundQuorumTargetMismatch { expected, actual } => write!(
+                formatter,
+                "authenticated higher-round quorum target {actual:?} differs from expected target {expected:?}"
             ),
             Self::HigherRoundDerivation(error) => write!(
                 formatter,

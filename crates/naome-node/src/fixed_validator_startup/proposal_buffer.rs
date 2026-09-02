@@ -306,6 +306,50 @@ struct FixedValidatorNodeBufferedProposalV0 {
     proposal: Box<FixedValidatorNodeDeferredProposalV0>,
 }
 
+pub(super) struct FixedValidatorNodeProposalBufferLeaseV0<'buffer> {
+    buffer: &'buffer mut FixedValidatorNodeProposalBufferV0,
+    entry: Option<FixedValidatorNodeBufferedProposalV0>,
+    original_index: usize,
+}
+
+impl FixedValidatorNodeProposalBufferLeaseV0<'_> {
+    pub(super) fn proposal(&self) -> &FixedValidatorNodeDeferredProposalV0 {
+        self.entry
+            .as_ref()
+            .expect("proposal-buffer lease retains its entry until release")
+            .proposal
+            .as_ref()
+    }
+
+    pub(super) fn release(mut self) -> Box<FixedValidatorNodeDeferredProposalV0> {
+        self.entry
+            .take()
+            .expect("proposal-buffer lease releases its entry at most once")
+            .proposal
+    }
+}
+
+impl Drop for FixedValidatorNodeProposalBufferLeaseV0<'_> {
+    fn drop(&mut self) {
+        let Some(entry) = self.entry.take() else {
+            return;
+        };
+        self.buffer.total_canonical_input_bytes = self
+            .buffer
+            .total_canonical_input_bytes
+            .checked_add(entry.canonical_input_bytes)
+            .expect("leased proposal byte accounting restores exactly");
+        let restored_index = self.buffer.proposals.len();
+        debug_assert!(self.original_index <= restored_index);
+        self.buffer.proposals.push(entry);
+        if self.original_index < restored_index {
+            self.buffer
+                .proposals
+                .swap(self.original_index, restored_index);
+        }
+    }
+}
+
 /// A lossless owning iterator returned by explicit buffer drain-and-reset.
 ///
 /// Its order is local collection detail and grants no preference or selection
@@ -478,12 +522,28 @@ impl FixedValidatorNodeProposalBufferV0 {
         Option<Box<FixedValidatorNodeDeferredProposalV0>>,
         FixedValidatorNodeProposalBufferAccessErrorV0,
     > {
+        Ok(self
+            .take_exact_lease(canonical_proposal_control_bytes, canonical_artifact_bytes)?
+            .map(FixedValidatorNodeProposalBufferLeaseV0::release))
+    }
+
+    pub(super) fn take_exact_lease(
+        &mut self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: &[u8],
+    ) -> Result<
+        Option<FixedValidatorNodeProposalBufferLeaseV0<'_>>,
+        FixedValidatorNodeProposalBufferAccessErrorV0,
+    > {
         if let Some(saturation) = self.saturation {
             return Err(FixedValidatorNodeProposalBufferAccessErrorV0 { saturation });
         }
         let Some(index) = self.proposals.iter().position(|entry| {
-            entry.proposal.canonical_proposal_control_bytes() == canonical_proposal_control_bytes
-                && entry.proposal.canonical_artifact_bytes() == canonical_artifact_bytes
+            exact_inputs_match_bytes(
+                &entry.proposal,
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+            )
         }) else {
             return Ok(None);
         };
@@ -492,7 +552,11 @@ impl FixedValidatorNodeProposalBufferV0 {
             .total_canonical_input_bytes
             .checked_sub(entry.canonical_input_bytes)
             .expect("retained proposal byte accounting stays internally consistent");
-        Ok(Some(entry.proposal))
+        Ok(Some(FixedValidatorNodeProposalBufferLeaseV0 {
+            buffer: self,
+            entry: Some(entry),
+            original_index: index,
+        }))
     }
 
     /// Returns every retained token and restores the same buffer to healthy empty.
@@ -526,8 +590,20 @@ fn exact_inputs_match(
     left: &FixedValidatorNodeDeferredProposalV0,
     right: &FixedValidatorNodeDeferredProposalV0,
 ) -> bool {
-    left.canonical_proposal_control_bytes() == right.canonical_proposal_control_bytes()
-        && left.canonical_artifact_bytes() == right.canonical_artifact_bytes()
+    exact_inputs_match_bytes(
+        left,
+        right.canonical_proposal_control_bytes(),
+        right.canonical_artifact_bytes(),
+    )
+}
+
+fn exact_inputs_match_bytes(
+    retained: &FixedValidatorNodeDeferredProposalV0,
+    canonical_proposal_control_bytes: &[u8],
+    canonical_artifact_bytes: &[u8],
+) -> bool {
+    retained.canonical_proposal_control_bytes() == canonical_proposal_control_bytes
+        && retained.canonical_artifact_bytes() == canonical_artifact_bytes
 }
 
 fn canonical_input_bytes(proposal: &FixedValidatorNodeDeferredProposalV0) -> Option<u64> {

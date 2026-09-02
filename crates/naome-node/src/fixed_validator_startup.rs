@@ -32,6 +32,7 @@ use naome_storage::{
 
 mod candidate_backed_proposal;
 mod finality;
+mod higher_round_proposal_pairing;
 mod proposal_authoring;
 mod proposal_buffer;
 mod proposal_deferral;
@@ -47,6 +48,11 @@ pub use finality::{
     FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalityRoundRouteV0,
     FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeLowerRoundFinalityErrorV0,
     FixedValidatorNodeLowerRoundFinalityOutcomeV0, FixedValidatorNodeLowerRoundFinalityRejectionV0,
+};
+pub use higher_round_proposal_pairing::{
+    FixedValidatorNodeBufferedProposalPrecommitErrorV0,
+    FixedValidatorNodeBufferedProposalPrecommitOutcomeV0,
+    FixedValidatorNodeBufferedProposalPrecommitRejectionV0,
 };
 pub use proposal_authoring::{
     FixedValidatorNodeProposalAuthoringErrorV0, FixedValidatorNodeProposalAuthoringOutcomeV0,
@@ -905,6 +911,28 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
             canonical_certificate,
             inclusive_maximum_round,
         )
+    }
+
+    /// Persists and anchors one exact matching proposal-prevote checkpoint.
+    pub(crate) fn prepare_higher_round_proposal_prevote_advance<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+        expected_position: ConsensusPosition,
+        expected_proposal_root: naome_consensus::ProposalSigningRoot,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.signing_session
+            .prepare_higher_round_proposal_prevote_advance(
+                current_round,
+                canonical_certificate,
+                expected_position,
+                expected_proposal_root,
+                inclusive_maximum_round,
+            )
     }
 
     /// Publishes an already anchored higher-round checkpoint to live state.

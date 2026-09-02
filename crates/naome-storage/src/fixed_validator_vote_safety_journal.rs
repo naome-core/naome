@@ -1895,6 +1895,46 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
                 inclusive_maximum_round,
             )
             .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)?;
+        self.persist_higher_round_advance(transition)
+    }
+
+    /// Persists one exact matching higher-round proposal-prevote checkpoint.
+    ///
+    /// Position, role, and proposal root are fully authenticated and matched by
+    /// the lock kernel before any journal append. A mismatch therefore leaves
+    /// both live state and durable state unchanged.
+    pub fn prepare_higher_round_proposal_prevote_advance<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+        expected_position: ConsensusPosition,
+        expected_proposal_root: ProposalSigningRoot,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.ensure_mutable()?;
+        let transition = self
+            .lock_state
+            .prepare_higher_round_proposal_prevote_advance(
+                current_round,
+                canonical_certificate,
+                expected_position,
+                expected_proposal_root,
+                inclusive_maximum_round,
+            )
+            .map_err(FixedValidatorVoteSafetyJournalErrorV0::LockState)?;
+        self.persist_higher_round_advance(transition)
+    }
+
+    fn persist_higher_round_advance<'branch>(
+        &mut self,
+        transition: VerifiedFixedValidatorHigherRoundAdvanceV0<'branch>,
+    ) -> Result<
+        FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
         let prepared_state_id = self
             .journal
             .core
@@ -2283,6 +2323,27 @@ impl<'journal> FixedValidatorAnchoredVoteSafetySigningSessionV0<'journal> {
         self.session.prepare_higher_round_quorum_advance(
             current_round,
             canonical_certificate,
+            inclusive_maximum_round,
+        )
+    }
+
+    /// Persists and anchors one exact matching proposal-prevote checkpoint.
+    pub fn prepare_higher_round_proposal_prevote_advance<'branch>(
+        &mut self,
+        current_round: &FixedConsensusRoundV0<'branch>,
+        canonical_certificate: &[u8],
+        expected_position: ConsensusPosition,
+        expected_proposal_root: ProposalSigningRoot,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorPreparedHigherRoundAdvanceV0<'branch>,
+        FixedValidatorVoteSafetyJournalErrorV0,
+    > {
+        self.session.prepare_higher_round_proposal_prevote_advance(
+            current_round,
+            canonical_certificate,
+            expected_position,
+            expected_proposal_root,
             inclusive_maximum_round,
         )
     }
