@@ -1121,7 +1121,10 @@ fn payload_store_backed_retained_proposal_authors_after_restart_and_replays_at_c
             );
             let branch = scope.branch().clone();
             let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
             let before_authoring = layout.images();
 
             let (scope, authored) = expect_authored(
@@ -1221,7 +1224,10 @@ fn payload_store_backed_retained_missing_payload_preserves_scope_for_retry() {
                 establish_retained_valid_value(scope, &fixture, block, &payload);
             let branch = scope.branch().clone();
             let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
             let node_before = layout.images();
             let sources_before = layout.source_images();
 
@@ -1310,7 +1316,10 @@ fn retained_payload_preconditions_precede_a_corrupt_store_read() {
             );
             let branch = scope.branch().clone();
             let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
             let node_before = layout.images();
 
             let (scope, rejection) = expect_rejected(
@@ -1382,7 +1391,10 @@ fn retained_payload_corruption_preserves_signer_for_direct_fallback() {
                 establish_retained_valid_value(scope, &fixture, block, &payload);
             let branch = scope.branch().clone();
             let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
             let node_before = layout.images();
             let sources_before = layout.source_images();
 
@@ -1513,7 +1525,10 @@ fn retained_valid_value_is_reauthored_with_its_exact_earlier_prevote_proof() {
                     .unwrap(),
             );
             let round_one = round_zero.advance_round().unwrap();
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
 
             let before_wrong_source = layout.images();
             let sources_before = layout.source_images();

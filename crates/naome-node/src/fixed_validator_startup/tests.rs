@@ -544,7 +544,7 @@ fn incomplete_preparation_reopens_as_diagnostic_only() {
         .run_with_signing_session(|mut scope| {
             let branch = scope.branch().clone();
             let round = branch.begin_round_zero().unwrap();
-            let session = scope.signing_session();
+            let session = scope.signing_session_mut();
             let effect = session.decide_prevote_without_proposal().unwrap();
             match session.prepare_vote(&round, effect).unwrap() {
                 FixedValidatorVotePrepareOutcomeV0::Prepared(prepared) => prepared,
@@ -710,7 +710,7 @@ fn recovery_round_ceiling_rejects_before_issuing_the_session_latch() {
         .run_with_signing_session(|mut scope| {
             let branch = scope.branch().clone();
             let round_zero = branch.begin_round_zero().unwrap();
-            let session = scope.signing_session();
+            let session = scope.signing_session_mut();
 
             let prevote = session.decide_prevote_without_proposal().unwrap();
             let prepared = match session.prepare_vote(&round_zero, prevote).unwrap() {

@@ -125,16 +125,17 @@ outside the anchored session.
 ## Public API boundary
 
 The node voting facade retains read-only position, phase, lock, and valid-value
-diagnostics plus the existing explicitly bounded round-advance interfaces.
-Current-round decision effects, raw vote preparation, anchor acknowledgement,
-and key use are crate-private. External callers therefore cannot split the
-ordered current-round sequence or insert a caller-constructed unsigned effect
-between its steps.
+diagnostics. Current-round decision effects, raw cursor-supplied round
+advancement, vote preparation, anchor acknowledgement, and key use are
+crate-private. External callers therefore cannot split the ordered
+current-round sequence or insert a caller-constructed unsigned effect between
+its steps.
 
 Height advancement and finality-conflict stop remain available only through the
 separate consuming node-finality coordinator. Higher-round quorum catch-up and
-sequential round advancement retain their existing contracts and are not
-reclassified as current-round vote execution.
+exact-event-bound sequential round advancement remain separate consuming
+round-progression operations and are not reclassified as current-round vote
+execution.
 
 ## Exclusions
 

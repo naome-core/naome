@@ -202,14 +202,17 @@ fn advance_signer_round_without_writing(
     next_round: &FixedConsensusRoundV0<'_>,
 ) {
     let _ = scope
-        .signing_session()
+        .signing_session_mut()
         .decide_prevote_without_proposal()
         .unwrap();
     let _ = scope
-        .signing_session()
+        .signing_session_mut()
         .decide_precommit_without_quorum()
         .unwrap();
-    scope.signing_session().advance_round(next_round).unwrap();
+    scope
+        .signing_session_mut()
+        .advance_round(next_round)
+        .unwrap();
 }
 
 fn current_round_finality_inputs(
@@ -330,7 +333,7 @@ fn new_finality_advances_both_anchors_before_returning_the_next_signer() {
             let stale_round = original_branch.begin_round_zero().unwrap();
             let current_branch = scope.branch().clone();
             let current_round = current_branch.begin_round_zero().unwrap();
-            let session = scope.signing_session();
+            let session = scope.signing_session_mut();
             let stale_effect = session.decide_prevote_without_proposal().unwrap();
             assert!(session.prepare_vote(&stale_round, stale_effect).is_err());
             let current_effect = session.decide_precommit_without_quorum().unwrap();
@@ -503,7 +506,7 @@ fn nonzero_lower_round_finality_ignores_later_local_phase_and_strictly_reopens()
             let round_two = round_at(&branch, 2);
             advance_signer_round_without_writing(&mut scope, &round_two);
             let _ = scope
-                .signing_session()
+                .signing_session_mut()
                 .decide_prevote_without_proposal()
                 .unwrap();
             assert_eq!(
@@ -592,18 +595,18 @@ fn current_round_finality_from_healthy_prevote_phase_returns_child_continuation(
             let branch = scope.branch().clone();
             let round = branch.begin_round_zero().unwrap();
             let effect = scope
-                .signing_session()
+                .signing_session_mut()
                 .decide_prevote_without_proposal()
                 .unwrap();
             let prepared = match scope
-                .signing_session()
+                .signing_session_mut()
                 .prepare_vote(&round, effect)
                 .unwrap()
             {
                 FixedValidatorVotePrepareOutcomeV0::Prepared(prepared) => prepared,
                 _ => panic!("the first prevote must prepare"),
             };
-            prepare_and_sign(scope.signing_session(), &round, prepared);
+            prepare_and_sign(scope.signing_session_mut(), &round, prepared);
             assert_eq!(
                 scope.signing_session().phase(),
                 FixedValidatorLockPhaseV0::Prevote
@@ -689,11 +692,11 @@ fn current_round_finality_commits_before_a_pending_signer_handoff_fails() {
                 &[&proposer],
             );
             let effect = scope
-                .signing_session()
+                .signing_session_mut()
                 .decide_prevote_without_proposal()
                 .unwrap();
             let prepared_vote = match scope
-                .signing_session()
+                .signing_session_mut()
                 .prepare_vote(&round, effect)
                 .unwrap()
             {
@@ -791,11 +794,11 @@ fn lower_round_finality_commits_before_a_pending_signer_handoff_fails() {
                 &[&proposer],
             );
             let effect = scope
-                .signing_session()
+                .signing_session_mut()
                 .decide_prevote_without_proposal()
                 .unwrap();
             let prepared_vote = match scope
-                .signing_session()
+                .signing_session_mut()
                 .prepare_vote(&round_one, effect)
                 .unwrap()
             {
@@ -2124,11 +2127,11 @@ fn pending_vote_after_candidate_finality_returns_the_known_selection_without_a_s
             let branch = scope.branch().clone();
             let round = branch.begin_round_zero().unwrap();
             let effect = scope
-                .signing_session()
+                .signing_session_mut()
                 .decide_prevote_without_proposal()
                 .unwrap();
             let prepared_vote = match scope
-                .signing_session()
+                .signing_session_mut()
                 .prepare_vote(&round, effect)
                 .unwrap()
             {
@@ -2253,12 +2256,12 @@ fn verified_sibling_conflict_returns_only_terminal_signer_stop_evidence() {
             let branch = scope.branch().clone();
             let round = branch.begin_round_zero().unwrap();
             let effect = scope
-                .signing_session()
+                .signing_session_mut()
                 .decide_prevote_without_proposal()
                 .unwrap();
             assert!(matches!(
                 scope
-                    .signing_session()
+                    .signing_session_mut()
                     .prepare_vote(&round, effect)
                     .unwrap(),
                 FixedValidatorVotePrepareOutcomeV0::Prepared(_)
@@ -2325,12 +2328,12 @@ fn candidate_backed_historical_sibling_stops_finality_and_signer_without_mutatin
             let branch = scope.branch().clone();
             let round = branch.begin_round_zero().unwrap();
             let effect = scope
-                .signing_session()
+                .signing_session_mut()
                 .decide_prevote_without_proposal()
                 .unwrap();
             assert!(matches!(
                 scope
-                    .signing_session()
+                    .signing_session_mut()
                     .prepare_vote(&round, effect)
                     .unwrap(),
                 FixedValidatorVotePrepareOutcomeV0::Prepared(_)
@@ -2479,11 +2482,11 @@ fn durable_pending_vote_makes_post_finality_handoff_fail_closed() {
             let branch = scope.branch().clone();
             let round = branch.begin_round_zero().unwrap();
             let effect = scope
-                .signing_session()
+                .signing_session_mut()
                 .decide_prevote_without_proposal()
                 .unwrap();
             let prepared_vote = match scope
-                .signing_session()
+                .signing_session_mut()
                 .prepare_vote(&round, effect)
                 .unwrap()
             {

@@ -7,9 +7,9 @@
 //! strictly lower-round finality admission, direct and exact-target fresh-only
 //! candidate-store-backed plus exact retained-value payload-store-backed
 //! current-round proposal authoring, current-round vote execution, and
-//! quorum-driven round progression while deliberately leaving daemon,
-//! networking, timeout, key-loading, event selection, and branch-selection
-//! policy to later components.
+//! exact-event-bound sequential and quorum-driven round progression while
+//! deliberately leaving daemon, networking, timeout measurement and expiry,
+//! key-loading, event selection, and branch-selection policy to later components.
 
 mod fixed_validator_startup;
 

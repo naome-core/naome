@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
     ConsensusVoteRole, ConsensusVoteTarget, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, ProposalSigningRoot,
+    FixedValidatorLockStateError, ProposalSigningRoot, VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::{
     FixedValidatorAnchoredVoteSafetyJournalErrorV0, FixedValidatorSignedVoteV0,
@@ -26,7 +26,7 @@ fn expect_advanced<'node>(
             phase,
         } => (*scope, position, phase),
         FixedValidatorNodeRoundAdvanceOutcomeV0::Rejected { .. } => {
-            panic!("expected authenticated round progression")
+            panic!("expected admitted round progression")
         }
     }
 }
@@ -141,6 +141,426 @@ fn round_at(branch: &FixedConsensusBranchV0, round: u64) -> FixedConsensusRoundV
         cursor = cursor.advance_round().unwrap();
     }
     cursor
+}
+
+fn proposal_control_bytes(
+    value: ConsensusValueV0,
+    position: ConsensusPosition,
+    proposer: &SigningKey,
+) -> Vec<u8> {
+    let mut bytes = value.to_canonical_bytes().to_vec();
+    bytes.extend_from_slice(&authorization_bytes(
+        value.context(),
+        position,
+        value.proposal_signing_root(),
+        proposer,
+    ));
+    bytes.push(VerifiedFixedConsensusProposalV0::NO_VALID_ROUND_PROOF_TAG);
+    bytes
+}
+
+#[test]
+fn explicit_precommit_close_is_volatile_and_preserves_lock_and_valid_evidence() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-round-explicit-close-retention");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let block = ArtifactChainState::new(fixture.definition)
+        .prepare_block(artifact_id(&payload))
+        .unwrap();
+
+    let (root, certificate) = ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let value = round_zero.value_for_artifact_block(block);
+            let root = value.proposal_signing_root();
+            let control =
+                proposal_control_bytes(value, round_zero.position(), &fixture.signing_key());
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_prevote_for_proposal(&control, payload.clone(), ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let certificate = quorum_certificate_bytes(
+                fixture.context,
+                round_zero.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(root),
+                &fixture.signing_key(),
+            );
+            let (mut scope, _) = expect_signed(
+                scope
+                    .sign_precommit_for_proposal_quorum(
+                        &control,
+                        payload,
+                        &certificate,
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            let locked = scope.signing_session().locked_value();
+            let valid = scope.signing_session().valid_value().cloned();
+            let before_close = layout.images();
+            let (mut scope, position, phase) = expect_advanced(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(position, round_at(&branch, 1).position());
+            assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+            assert_eq!(scope.signing_session().locked_value(), locked);
+            assert_eq!(scope.signing_session().valid_value(), valid.as_ref());
+            assert_eq!(layout.images(), before_close);
+            drop(scope);
+            (root, certificate)
+        })
+        .unwrap();
+
+    let reopened = expect_ready(
+        fixture
+            .provision(&layout, 1)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            assert_eq!(scope.signing_session().position(), round_zero.position());
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+            let before_close = layout.images();
+            let (scope, position, phase) = expect_advanced(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+            assert_eq!(layout.images(), before_close);
+            let (scope, vote) = expect_signed(
+                scope
+                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .unwrap(),
+            );
+            assert_eq!(vote.position(), position);
+            assert_eq!(vote.target(), ConsensusVoteTarget::Proposal(root));
+            let after_vote = layout.images();
+            assert_eq!(after_vote[0], before_close[0]);
+            assert_eq!(after_vote[1], before_close[1]);
+            assert_ne!(after_vote[2], before_close[2]);
+            assert_ne!(after_vote[3], before_close[3]);
+            drop(scope);
+        })
+        .unwrap();
+
+    let reopened = expect_ready(
+        fixture
+            .provision(&layout, 1)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(
+                scope.signing_session().position().round(),
+                ConsensusRound::new(1)
+            );
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Prevote
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+        })
+        .unwrap();
+}
+
+#[test]
+fn explicit_precommit_close_rejects_wrong_identity_phase_and_stale_replay() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-round-explicit-close-identity");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let initial = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let round_one = round_at(&branch, 1);
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::PrecommitClosePhaseMismatch {
+                    required: FixedValidatorLockPhaseV0::Precommit,
+                    actual: FixedValidatorLockPhaseV0::Proposal,
+                }
+            ));
+            assert_eq!(layout.images(), initial);
+
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let before_close = layout.images();
+            let wrong_context = ConsensusContextV0::new(
+                fixture.definition.id(),
+                ConsensusGenesisId::from_bytes([0x99; 32]),
+                fixture.context.protocol_version(),
+            );
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_after_precommit_close(
+                        wrong_context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::PrecommitCloseContextMismatch {
+                    current,
+                    event,
+                } if *current == fixture.context && *event == wrong_context
+            ));
+            assert_eq!(layout.images(), before_close);
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_one.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::PrecommitClosePositionMismatch {
+                    current,
+                    event,
+                } if current == round_zero.position() && event == round_one.position()
+            ));
+            assert_eq!(layout.images(), before_close);
+
+            let (scope, _, _) = expect_advanced(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .unwrap(),
+            );
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_precommit_without_quorum(ConsensusRound::new(1))
+                    .unwrap(),
+            );
+            let before_stale = layout.images();
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::PrecommitClosePositionMismatch {
+                    current,
+                    event,
+                } if current == round_one.position() && event == round_zero.position()
+            ));
+            assert_eq!(layout.images(), before_stale);
+            let (scope, position, phase) = expect_advanced(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_one.position(),
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(position, round_at(&branch, 2).position());
+            assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+            assert_eq!(layout.images(), before_stale);
+            drop(scope);
+        })
+        .unwrap();
+}
+
+#[test]
+fn explicit_precommit_close_enforces_destination_ceilings_without_writes() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-round-close-caller-limit");
+    let ready = provision_with_finality_round_limit(&fixture, &layout, 1, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let before_close = layout.images();
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::RoundWorkLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(1)
+                    && maximum == ConsensusRound::new(0)
+            ));
+            assert_eq!(layout.images(), before_close);
+            drop(scope);
+        })
+        .unwrap();
+
+    let layout = TestLayout::new("node-round-close-finality-limit");
+    let ready = provision_with_finality_round_limit(&fixture, &layout, 1, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let round_one = round_at(&branch, 1);
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let (scope, _, _) = expect_advanced(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .unwrap(),
+            );
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_precommit_without_quorum(ConsensusRound::new(1))
+                    .unwrap(),
+            );
+            let before_close = layout.images();
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_one.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::FinalityRoundLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(2)
+                    && maximum == ConsensusRound::new(1)
+            ));
+            assert_eq!(layout.images(), before_close);
+            drop(scope);
+        })
+        .unwrap();
 }
 
 #[test]
@@ -451,7 +871,7 @@ fn pending_higher_round_checkpoint_precedes_malformed_input() {
                 &fixture.signing_key(),
             );
             let prepared = scope
-                .signing_session()
+                .signing_session_mut()
                 .prepare_higher_round_quorum_advance(&round_zero, &quorum, ConsensusRound::new(1))
                 .unwrap();
             drop(prepared);
