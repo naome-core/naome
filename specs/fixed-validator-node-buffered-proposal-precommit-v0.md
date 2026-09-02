@@ -163,3 +163,11 @@ daemon work may invoke this operation only after independently deciding which
 exact already-retained token and complete certificate or exact signed-prevote
 batch to supply; it must not turn buffer presence, batch order, arrival order,
 or peer provenance into consensus truth or selection authority.
+
+The separately specified process-local higher-round inbox reuses the prebuilt
+certificate sibling only after an explicit caller-positioned operation selects
+exactly one proposal-bearing supermajority from its complete unsaturated local
+snapshot. It constructs that certificate from typed-round-admitted prevotes and
+addresses the lexicographically smallest matching proposal input pair. This
+wrapper does not change the coordinator's full live reverification, anchored
+precommit, success-only token release, fatal restart, or no-finality contract.

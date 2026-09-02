@@ -149,3 +149,9 @@ buffer for one certificate-coupled use and success-only release without adding
 authority to the buffer itself. Automatic observation and pairing, durable
 recovery, routing, daemon orchestration, and networking remain separate backlog
 work.
+
+The separately specified higher-round inbox may privately compose this buffer
+with individually admitted proposal prevotes under one stricter combined local
+budget. That wrapper does not expose this buffer, cannot bypass its exact-token
+lease and success-only removal semantics, and must deny pairing whenever its
+combined retained set is saturated.

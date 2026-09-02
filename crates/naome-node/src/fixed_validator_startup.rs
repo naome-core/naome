@@ -32,6 +32,7 @@ use naome_storage::{
 
 mod candidate_backed_proposal;
 mod finality;
+mod higher_round_inbox;
 mod higher_round_proposal_pairing;
 mod proposal_authoring;
 mod proposal_buffer;
@@ -48,6 +49,16 @@ pub use finality::{
     FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalityRoundRouteV0,
     FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeLowerRoundFinalityErrorV0,
     FixedValidatorNodeLowerRoundFinalityOutcomeV0, FixedValidatorNodeLowerRoundFinalityRejectionV0,
+};
+pub use higher_round_inbox::{
+    FixedValidatorNodeHigherRoundInboxAccessErrorV0, FixedValidatorNodeHigherRoundInboxDrainItemV0,
+    FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodeHigherRoundInboxLimitsErrorV0,
+    FixedValidatorNodeHigherRoundInboxLimitsV0,
+    FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0,
+    FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0,
+    FixedValidatorNodeHigherRoundInboxProposalInsertErrorV0,
+    FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0,
+    FixedValidatorNodeHigherRoundInboxSaturationV0, FixedValidatorNodeHigherRoundInboxV0,
 };
 pub use higher_round_proposal_pairing::{
     FixedValidatorNodeBufferedProposalPrecommitErrorV0,

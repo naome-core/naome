@@ -17,7 +17,11 @@
 //! a separately composed bounded volatile proposal buffer with mandatory later
 //! full branch-relative re-verification plus exact caller-addressed
 //! proposal/prevote-quorum catch-up from either a prebuilt certificate or an
-//! exact signed-prevote batch and anchored precommit completion, while
+//! exact signed-prevote batch and anchored precommit completion. A combined
+//! bounded process-local higher-round inbox additionally retains typed-round-
+//! admitted proposal prevotes and explicitly pairs one uniquely actionable
+//! proposal-bearing quorum using local lexicographic evidence normalization,
+//! while
 //! deliberately leaving daemon, networking, timeout measurement and expiry,
 //! key-loading, event selection, and branch-selection policy to later
 //! components.
@@ -36,6 +40,14 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeDirectoriesV0, FixedValidatorNodeFinalityErrorV0,
     FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalityRoundRouteV0,
     FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
+    FixedValidatorNodeHigherRoundInboxAccessErrorV0, FixedValidatorNodeHigherRoundInboxDrainItemV0,
+    FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodeHigherRoundInboxLimitsErrorV0,
+    FixedValidatorNodeHigherRoundInboxLimitsV0,
+    FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0,
+    FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0,
+    FixedValidatorNodeHigherRoundInboxProposalInsertErrorV0,
+    FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0,
+    FixedValidatorNodeHigherRoundInboxSaturationV0, FixedValidatorNodeHigherRoundInboxV0,
     FixedValidatorNodeHigherRoundProposalRouteV0, FixedValidatorNodeHigherRoundVoteBatchRouteV0,
     FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
     FixedValidatorNodeLowerRoundFinalityRejectionV0, FixedValidatorNodeProposalAuthoringErrorV0,

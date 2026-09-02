@@ -1,10 +1,13 @@
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{
+    Digest, Sha512, Signer, SigningKey,
+    hazmat::{ExpandedSecretKey, raw_sign},
+};
 use naome_consensus::{
     ConsensusProposalVerifyError, ConsensusVoteDecodeError, ConsensusVoteRole, ConsensusVoteTarget,
-    ConsensusVoteVerifyError, FixedConsensusBranchV0, FixedConsensusRoundV0,
-    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, MAX_ACTIVE_VALIDATORS,
-    ProducerAuthorizationVerifyError, QuorumCertificateBuildError, QuorumCertificateVerifyError,
-    VerifiedFixedConsensusProposalV0,
+    ConsensusVoteVerifyError, FixedConsensusBranchV0, FixedConsensusProposalPrevoteVerifyErrorV0,
+    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorLockStateError,
+    MAX_ACTIVE_VALIDATORS, ProducerAuthorizationVerifyError, QuorumCertificateBuildError,
+    QuorumCertificateVerifyError, VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::FixedValidatorSignedVoteV0;
 
@@ -297,6 +300,42 @@ fn signed_vote_bytes(
     let mut bytes = body.to_vec();
     bytes.extend_from_slice(signer_key.as_bytes());
     bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
+    bytes
+}
+
+fn signed_vote_bytes_with_test_only_nonce_prefix(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signer: &SigningKey,
+    prefix_tweak: u8,
+) -> Vec<u8> {
+    assert_ne!(prefix_tweak, 0);
+    let body = vote_body_bytes(context, position, role, target);
+    let signer_key = consensus_key(signer);
+    let domain: &[u8] = match role {
+        ConsensusVoteRole::Prevote => b"naome:consensus-prevote-signing:v0\0",
+        ConsensusVoteRole::Precommit => b"naome:consensus-precommit-signing:v0\0",
+    };
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(domain);
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(signer_key.as_bytes());
+
+    // Test-only nonstandard nonce derivation produces another mathematically
+    // valid Ed25519 signature for the same key and message. It exercises the
+    // evidence-variant policy without changing production signing behavior.
+    let digest = Sha512::digest(signer.to_bytes());
+    let mut expanded_bytes = [0_u8; 64];
+    expanded_bytes.copy_from_slice(&digest);
+    let mut expanded = ExpandedSecretKey::from_bytes(&expanded_bytes);
+    expanded.hash_prefix[0] ^= prefix_tweak;
+    let signature = raw_sign::<Sha512>(&expanded, &transcript, &signer.verifying_key());
+
+    let mut bytes = body.to_vec();
+    bytes.extend_from_slice(signer_key.as_bytes());
+    bytes.extend_from_slice(&signature.to_bytes());
     bytes
 }
 
@@ -2258,4 +2297,714 @@ fn buffered_pairing_durable_failures_retain_token_and_require_strict_restart() {
                 )
         ));
     }
+}
+
+#[test]
+fn higher_round_inbox_validates_votes_combines_capacity_and_denies_pairing_when_saturated() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("higher-round-inbox-capacity");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut inbox = FixedValidatorNodeHigherRoundInboxV0::new(
+        FixedValidatorNodeHigherRoundInboxLimitsV0::new(2, u64::MAX).unwrap(),
+    );
+    let before = layout.images();
+
+    let (retained_control, retained_payload, retained_prevote) = ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_two = round_at(&branch, 2);
+            let (value, control, payload) =
+                proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+            let (competing, _, _) = proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
+            let valid = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let competing_vote = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(competing.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let wrong_role = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let nil = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                &fixture.signing_key(),
+            );
+            let wrong_position = signed_vote_bytes(
+                fixture.context,
+                ConsensusPosition::new(round_two.position().height(), ConsensusRound::new(3)),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let outsider = SigningKey::from_bytes(&signing_seed(99));
+            let inactive = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &outsider,
+            );
+
+            assert!(matches!(
+                inbox.try_insert_proposal_prevote(&round_two, &wrong_role),
+                Err(
+                    FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0::Admission(
+                        FixedConsensusProposalPrevoteVerifyErrorV0::RoleMismatch { .. }
+                    )
+                )
+            ));
+            assert!(matches!(
+                inbox.try_insert_proposal_prevote(&round_two, &nil),
+                Err(
+                    FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0::Admission(
+                        FixedConsensusProposalPrevoteVerifyErrorV0::NilTarget
+                    )
+                )
+            ));
+            assert!(matches!(
+                inbox.try_insert_proposal_prevote(&round_two, &wrong_position),
+                Err(
+                    FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0::Admission(
+                        FixedConsensusProposalPrevoteVerifyErrorV0::PositionMismatch { .. }
+                    )
+                )
+            ));
+            assert!(matches!(
+                inbox.try_insert_proposal_prevote(&round_two, &inactive),
+                Err(
+                    FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0::Admission(
+                        FixedConsensusProposalPrevoteVerifyErrorV0::InactiveSigner { .. }
+                    )
+                )
+            ));
+            assert!(inbox.is_empty());
+
+            let (scope, proposal) = defer(scope, &control, payload.clone(), 2);
+            let (scope, duplicate) = defer(scope, &control, payload.clone(), 2);
+            assert!(matches!(
+                inbox.try_insert_proposal(proposal),
+                Ok(FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0::Inserted)
+            ));
+            match inbox.try_insert_proposal(duplicate).unwrap() {
+                FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0::AlreadyRetained {
+                    proposal,
+                } => assert_eq!(proposal.canonical_proposal_control_bytes(), control),
+                FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0::Inserted => {
+                    panic!("exact proposal duplicate must not grow the inbox")
+                }
+            }
+            assert_eq!(inbox.len(), 1);
+            assert_eq!(
+                inbox
+                    .try_insert_proposal_prevote(&round_two, &valid)
+                    .unwrap(),
+                FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0::Inserted
+            );
+            assert_eq!(
+                inbox
+                    .try_insert_proposal_prevote(&round_two, &valid)
+                    .unwrap(),
+                FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0::AlreadyRetained
+            );
+            assert_eq!(inbox.len(), 2);
+            assert_eq!(inbox.proposal_len(), 1);
+            assert_eq!(inbox.prevote_len(), 1);
+
+            let error = inbox
+                .try_insert_proposal_prevote(&round_two, &competing_vote)
+                .unwrap_err();
+            assert!(error.newly_saturated());
+            assert!(matches!(
+                error.saturation(),
+                Some(FixedValidatorNodeHigherRoundInboxSaturationV0::Capacity {
+                    attempted_entries: 3,
+                    maximum_entries: 2,
+                    ..
+                })
+            ));
+
+            let (mut scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .try_pair_higher_round_inbox_at(
+                        &mut inbox,
+                        round_two.position(),
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::Inbox(_)
+            ));
+            assert_eq!(scope.signing_session().position().round().value(), 0);
+            assert_eq!(inbox.len(), 2);
+            assert_eq!(layout.images(), before);
+            (control, payload, valid)
+        })
+        .unwrap();
+
+    let drained = inbox.drain_and_reset().collect::<Vec<_>>();
+    assert_eq!(drained.len(), 2);
+    assert!(matches!(
+        &drained[0],
+        FixedValidatorNodeHigherRoundInboxDrainItemV0::Proposal(proposal)
+            if proposal.canonical_proposal_control_bytes() == retained_control
+                && proposal.canonical_artifact_bytes() == retained_payload
+    ));
+    assert!(matches!(
+        &drained[1],
+        FixedValidatorNodeHigherRoundInboxDrainItemV0::ProposalPrevote(bytes)
+            if bytes.as_slice() == retained_prevote
+    ));
+    assert!(inbox.is_empty());
+    assert_eq!(inbox.total_canonical_input_bytes(), 0);
+    assert_eq!(inbox.saturation(), None);
+}
+
+#[test]
+fn higher_round_inbox_pairing_is_permutation_invariant_and_selects_smallest_proposal_variant() {
+    let fixture = Fixture::new();
+    let layouts = [
+        TestLayout::new("higher-round-inbox-forward"),
+        TestLayout::new("higher-round-inbox-reverse"),
+    ];
+    let mut completed = Vec::new();
+
+    for (index, layout) in layouts.iter().enumerate() {
+        let ready = fixture
+            .provision(layout, 8)
+            .create(fixture.signing_key())
+            .unwrap();
+        let mut inbox = FixedValidatorNodeHigherRoundInboxV0::new(
+            FixedValidatorNodeHigherRoundInboxLimitsV0::new(8, u64::MAX).unwrap(),
+        );
+        let before = layout.images();
+
+        let (
+            root,
+            expected_certificate,
+            signed_vote,
+            chosen_control,
+            retained_control,
+            payload,
+            retained_prevotes,
+        ) = ready
+            .run_with_signing_session(|scope| {
+                let branch = scope.branch().clone();
+                let round_one = round_at(&branch, 1);
+                let round_two = round_at(&branch, 2);
+                let (value, plain_control, payload) =
+                    proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+                let valid_round_certificate = quorum_certificate_bytes(
+                    fixture.context,
+                    round_one.position(),
+                    ConsensusVoteRole::Prevote,
+                    ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                    &fixture.signing_key(),
+                );
+                let proof_control = proposal_control_bytes_with_valid_round(
+                    value,
+                    round_two.position(),
+                    &fixture.signing_key(),
+                    &valid_round_certificate,
+                );
+                let (chosen_control, retained_control) = if plain_control < proof_control {
+                    (plain_control.clone(), proof_control.clone())
+                } else {
+                    (proof_control.clone(), plain_control.clone())
+                };
+                let prevote = signed_vote_bytes(
+                    fixture.context,
+                    round_two.position(),
+                    ConsensusVoteRole::Prevote,
+                    ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                    &fixture.signing_key(),
+                );
+                let alternative_prevote = signed_vote_bytes_with_test_only_nonce_prefix(
+                    fixture.context,
+                    round_two.position(),
+                    ConsensusVoteRole::Prevote,
+                    ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                    &fixture.signing_key(),
+                    1,
+                );
+                assert_ne!(prevote, alternative_prevote);
+                let preferred_prevote = if prevote < alternative_prevote {
+                    prevote.as_slice()
+                } else {
+                    alternative_prevote.as_slice()
+                };
+                let expected_certificate = round_two
+                    .build_quorum_certificate_from_signed_votes(
+                        &[preferred_prevote],
+                        ConsensusVoteRole::Prevote,
+                        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                    )
+                    .unwrap()
+                    .to_canonical_bytes();
+                let (scope, plain) = defer(scope, &plain_control, payload.clone(), 2);
+                let (scope, proof) = defer(scope, &proof_control, payload.clone(), 2);
+                for proposal in if index == 0 {
+                    [plain, proof]
+                } else {
+                    [proof, plain]
+                } {
+                    assert!(matches!(
+                        inbox.try_insert_proposal(proposal),
+                        Ok(FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0::Inserted)
+                    ));
+                }
+                let votes = if index == 0 {
+                    [&prevote, &alternative_prevote]
+                } else {
+                    [&alternative_prevote, &prevote]
+                };
+                for vote in votes {
+                    assert_eq!(
+                        inbox.try_insert_proposal_prevote(&round_two, vote).unwrap(),
+                        FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0::Inserted
+                    );
+                }
+
+                let (mut scope, vote, released) = expect_buffered_precommit_signed(
+                    scope
+                        .try_pair_higher_round_inbox_at(
+                            &mut inbox,
+                            round_two.position(),
+                            ConsensusRound::new(2),
+                        )
+                        .unwrap(),
+                );
+                assert_eq!(released.canonical_proposal_control_bytes(), chosen_control);
+                assert_eq!(released.canonical_artifact_bytes(), payload);
+                assert_eq!(inbox.proposal_len(), 1);
+                assert_eq!(inbox.prevote_len(), 2);
+                assert_eq!(inbox.len(), 3);
+                assert_eq!(layout.images()[0], before[0]);
+                assert_eq!(layout.images()[1], before[1]);
+                assert_eq!(scope.signing_session().position(), round_two.position());
+                assert_eq!(
+                    scope.signing_session().phase(),
+                    FixedValidatorLockPhaseV0::Precommit
+                );
+                assert_eq!(
+                    scope
+                        .signing_session()
+                        .valid_value()
+                        .unwrap()
+                        .canonical_prevote_certificate(),
+                    expected_certificate
+                );
+                (
+                    value.proposal_signing_root(),
+                    expected_certificate,
+                    vote.canonical_bytes().to_vec(),
+                    chosen_control,
+                    retained_control,
+                    payload,
+                    [prevote, alternative_prevote],
+                )
+            })
+            .unwrap();
+
+        let after = layout.images();
+        let drained = inbox.drain_and_reset().collect::<Vec<_>>();
+        assert_eq!(drained.len(), 3);
+        assert!(drained.iter().any(|item| matches!(
+            item,
+            FixedValidatorNodeHigherRoundInboxDrainItemV0::Proposal(proposal)
+                if proposal.canonical_proposal_control_bytes() == retained_control
+                    && proposal.canonical_artifact_bytes() == payload
+        )));
+        let drained_prevotes = drained
+            .iter()
+            .filter_map(|item| match item {
+                FixedValidatorNodeHigherRoundInboxDrainItemV0::ProposalPrevote(bytes) => {
+                    Some(bytes.as_slice())
+                }
+                FixedValidatorNodeHigherRoundInboxDrainItemV0::Proposal(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(drained_prevotes.len(), 2);
+        for expected in &retained_prevotes {
+            assert!(drained_prevotes.contains(&expected.as_slice()));
+        }
+
+        let reopened = expect_ready(
+            fixture
+                .provision(layout, 2)
+                .open(fixture.signing_key())
+                .unwrap(),
+        );
+        reopened
+            .run_with_signing_session(|mut scope| {
+                assert_eq!(scope.signing_session().position().round().value(), 2);
+                assert_eq!(
+                    scope.signing_session().phase(),
+                    FixedValidatorLockPhaseV0::Precommit
+                );
+                assert_eq!(
+                    scope
+                        .signing_session()
+                        .locked_value()
+                        .unwrap()
+                        .proposal_signing_root(),
+                    root
+                );
+                assert_eq!(
+                    scope
+                        .signing_session()
+                        .valid_value()
+                        .unwrap()
+                        .canonical_prevote_certificate(),
+                    expected_certificate
+                );
+                assert_eq!(layout.images(), after);
+            })
+            .unwrap();
+        completed.push((signed_vote, after, chosen_control));
+    }
+
+    assert_eq!(completed[0], completed[1]);
+}
+
+#[test]
+fn higher_round_inbox_precommit_completion_failure_restores_all_inputs_and_requires_strict_restart()
+{
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("higher-round-inbox-checkpoint-failure");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut inbox = FixedValidatorNodeHigherRoundInboxV0::new(
+        FixedValidatorNodeHigherRoundInboxLimitsV0::new(2, u64::MAX).unwrap(),
+    );
+    let before = layout.images();
+
+    let (control, payload, prevote, retained_bytes) = ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_two = round_at(&branch, 2);
+            let (value, control, payload) =
+                proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+            let prevote = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let retained_bytes = canonical_input_len(&control, &payload)
+                .checked_add(u64::try_from(prevote.len()).unwrap())
+                .unwrap();
+            let (scope, proposal) = defer(scope, &control, payload.clone(), 2);
+            assert!(matches!(
+                inbox.try_insert_proposal(proposal),
+                Ok(FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0::Inserted)
+            ));
+            assert_eq!(
+                inbox
+                    .try_insert_proposal_prevote(&round_two, &prevote)
+                    .unwrap(),
+                FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0::Inserted
+            );
+            assert_eq!(inbox.total_canonical_input_bytes(), retained_bytes);
+
+            let collision = next_anchor_collision(&layout.vote_anchor, 5);
+            assert!(matches!(
+                scope.try_pair_higher_round_inbox_at(
+                    &mut inbox,
+                    round_two.position(),
+                    ConsensusRound::new(2),
+                ),
+                Err(FixedValidatorNodeBufferedProposalPrecommitErrorV0::Vote(source))
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorNodeVoteExecutionErrorV0::Sign(inner)
+                            if matches!(
+                                inner.as_ref(),
+                                FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }
+                            )
+                    )
+            ));
+            fs::remove_file(collision).unwrap();
+            assert_eq!(inbox.len(), 2);
+            assert_eq!(inbox.proposal_len(), 1);
+            assert_eq!(inbox.prevote_len(), 1);
+            assert_eq!(inbox.total_canonical_input_bytes(), retained_bytes);
+            assert_eq!(inbox.saturation(), None);
+            (control, payload, prevote, retained_bytes)
+        })
+        .unwrap();
+
+    let after = layout.images();
+    assert_eq!(after[0], before[0]);
+    assert_eq!(after[1], before[1]);
+    assert_ne!(after[2], before[2]);
+    assert_ne!(after[3], before[3]);
+    let drained = inbox.drain_and_reset().collect::<Vec<_>>();
+    assert_eq!(drained.len(), 2);
+    assert!(drained.iter().any(|item| matches!(
+        item,
+        FixedValidatorNodeHigherRoundInboxDrainItemV0::Proposal(proposal)
+            if proposal.canonical_proposal_control_bytes() == control
+                && proposal.canonical_artifact_bytes() == payload
+    )));
+    assert!(drained.iter().any(|item| matches!(
+        item,
+        FixedValidatorNodeHigherRoundInboxDrainItemV0::ProposalPrevote(bytes)
+            if bytes.as_ref() == prevote.as_slice()
+    )));
+    assert_eq!(
+        retained_bytes,
+        canonical_input_len(&control, &payload) + u64::try_from(prevote.len()).unwrap()
+    );
+    assert!(inbox.is_empty());
+    assert_eq!(inbox.total_canonical_input_bytes(), 0);
+    assert_eq!(inbox.saturation(), None);
+    assert!(matches!(
+        fixture.provision(&layout, 8).open(fixture.signing_key()),
+        Err(FixedValidatorNodeStartupErrorV0::VotePair(source))
+            if matches!(
+                source.as_ref(),
+                FixedValidatorAnchoredVoteSafetyJournalErrorV0::Journal(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind { .. }
+                    )
+            )
+    ));
+}
+
+#[test]
+fn higher_round_inbox_zero_or_multiple_actionable_roots_fail_closed() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("higher-round-inbox-ambiguity");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut inbox = FixedValidatorNodeHigherRoundInboxV0::new(
+        FixedValidatorNodeHigherRoundInboxLimitsV0::new(8, u64::MAX).unwrap(),
+    );
+    let before = layout.images();
+
+    let (
+        first_control,
+        first_payload,
+        second_control,
+        second_payload,
+        first_vote,
+        second_vote,
+    ) = ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let round_two = round_at(&branch, 2);
+            let (first_value, first_control, first_payload) =
+                proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+            let (second_value, second_control, second_payload) =
+                proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
+            let first_vote = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(first_value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let second_vote = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(second_value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let (scope, first_proposal) =
+                defer(scope, &first_control, first_payload.clone(), 2);
+            let (scope, second_proposal) =
+                defer(scope, &second_control, second_payload.clone(), 2);
+            for proposal in [first_proposal, second_proposal] {
+                assert!(matches!(
+                    inbox.try_insert_proposal(proposal),
+                    Ok(FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0::Inserted)
+                ));
+            }
+
+            let (mut scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .try_pair_higher_round_inbox_at(
+                        &mut inbox,
+                        round_two.position(),
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::NoActionableProposalQuorum {
+                    position
+                } if position == round_two.position()
+            ));
+            assert_empty_proposal_phase(&mut scope, round_zero.position());
+            assert_eq!(inbox.len(), 2);
+            assert_eq!(layout.images(), before);
+
+            assert_eq!(
+                inbox
+                    .try_insert_proposal_prevote(&round_two, &second_vote)
+                    .unwrap(),
+                FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0::Inserted
+            );
+            assert_eq!(
+                inbox
+                    .try_insert_proposal_prevote(&round_two, &first_vote)
+                    .unwrap(),
+                FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0::Inserted
+            );
+            let (mut scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .try_pair_higher_round_inbox_at(
+                        &mut inbox,
+                        round_two.position(),
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::AmbiguousActionableProposalQuorums {
+                    position,
+                    first,
+                    second,
+                } if position == round_two.position()
+                    && first < second
+                    && [first, second].contains(&first_value.proposal_signing_root())
+                    && [first, second].contains(&second_value.proposal_signing_root())
+            ));
+            assert_empty_proposal_phase(&mut scope, round_zero.position());
+            assert_eq!(inbox.len(), 4);
+            assert_eq!(inbox.proposal_len(), 2);
+            assert_eq!(inbox.prevote_len(), 2);
+            assert_eq!(layout.images(), before);
+            (
+                first_control,
+                first_payload,
+                second_control,
+                second_payload,
+                first_vote,
+                second_vote,
+            )
+        })
+        .unwrap();
+
+    let drained = inbox.drain_and_reset().collect::<Vec<_>>();
+    assert_eq!(drained.len(), 4);
+    for (expected_control, expected_payload) in [
+        (first_control.as_slice(), first_payload.as_slice()),
+        (second_control.as_slice(), second_payload.as_slice()),
+    ] {
+        assert!(drained.iter().any(|item| matches!(
+            item,
+            FixedValidatorNodeHigherRoundInboxDrainItemV0::Proposal(proposal)
+                if proposal.canonical_proposal_control_bytes() == expected_control
+                    && proposal.canonical_artifact_bytes() == expected_payload
+        )));
+    }
+    for expected_vote in [&first_vote, &second_vote] {
+        assert!(drained.iter().any(|item| matches!(
+            item,
+            FixedValidatorNodeHigherRoundInboxDrainItemV0::ProposalPrevote(bytes)
+                if bytes.as_slice() == expected_vote.as_slice()
+        )));
+    }
+    assert!(inbox.is_empty());
+}
+
+#[test]
+fn higher_round_inbox_enforces_exact_combined_proposal_and_vote_byte_boundary() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("higher-round-inbox-byte-boundary");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_two = round_at(&branch, 2);
+            let (value, control, payload) =
+                proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+            let vote = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let exact_bytes = canonical_input_len(&control, &payload)
+                .checked_add(u64::try_from(vote.len()).unwrap())
+                .unwrap();
+            let (scope, exact_proposal) = defer(scope, &control, payload.clone(), 2);
+            let (_scope, short_proposal) = defer(scope, &control, payload, 2);
+
+            let mut exact = FixedValidatorNodeHigherRoundInboxV0::new(
+                FixedValidatorNodeHigherRoundInboxLimitsV0::new(2, exact_bytes).unwrap(),
+            );
+            assert!(matches!(
+                exact.try_insert_proposal(exact_proposal),
+                Ok(FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0::Inserted)
+            ));
+            assert_eq!(
+                exact
+                    .try_insert_proposal_prevote(&round_two, &vote)
+                    .unwrap(),
+                FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0::Inserted
+            );
+            assert_eq!(exact.total_canonical_input_bytes(), exact_bytes);
+            assert_eq!(exact.drain_and_reset().len(), 2);
+
+            let mut short = FixedValidatorNodeHigherRoundInboxV0::new(
+                FixedValidatorNodeHigherRoundInboxLimitsV0::new(2, exact_bytes - 1).unwrap(),
+            );
+            assert!(matches!(
+                short.try_insert_proposal(short_proposal),
+                Ok(FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0::Inserted)
+            ));
+            let error = short
+                .try_insert_proposal_prevote(&round_two, &vote)
+                .unwrap_err();
+            assert!(matches!(
+                error.saturation(),
+                Some(FixedValidatorNodeHigherRoundInboxSaturationV0::Capacity {
+                    attempted_entries: 2,
+                    attempted_canonical_input_bytes,
+                    maximum_canonical_input_bytes,
+                    ..
+                }) if attempted_canonical_input_bytes == exact_bytes
+                    && maximum_canonical_input_bytes == exact_bytes - 1
+            ));
+            assert_eq!(short.proposal_len(), 1);
+            assert_eq!(short.prevote_len(), 0);
+        })
+        .unwrap();
 }
