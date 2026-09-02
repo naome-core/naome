@@ -17,10 +17,12 @@ help the proposal pass complete admission, but it is not a separately supplied
 higher-round catch-up certificate and never advances the node.
 
 This boundary creates one token per successful invocation. The token is not a
-node-owned singleton, collection, queue, or pool. Callers may hold multiple
-independent tokens, so this contract makes no uniqueness, deduplication,
-replacement, eviction, arrival-order, evidence-preference, or aggregate
-resource-policy claim.
+singleton, collection, queue, or pool. Callers may hold multiple independent
+tokens or move them into the separately specified
+`FixedValidatorNodeProposalBufferV0`. This deferral contract does not own or
+consult that buffer, choose its caller-local limits, or itself make uniqueness,
+deduplication, replacement, eviction, arrival-order, evidence-preference, or
+aggregate resource-policy claims.
 
 ## Inputs and ordered admission
 
@@ -145,9 +147,9 @@ operation, so it creates no ambiguous commit or repair case.
 
 This component does not define or perform:
 
-- node-owned proposal storage, aggregate item or byte bounds, deduplication,
-  conflict handling, evidence-variant preference, replacement, eviction,
-  expiry, retry, or restart reconstruction;
+- ownership or implicit consultation of the separately composed volatile
+  proposal buffer, protocol-wide proposal storage or limits, evidence-variant
+  preference, replacement, eviction, expiry, retry, or restart reconstruction;
 - proposal discovery, event observation, arrival-order policy, automatic
   certificate pairing or release, timeout measurement or scheduling, daemon
   ownership, network transport, peer discovery, provenance trust, or
@@ -160,5 +162,6 @@ This component does not define or perform:
 
 These exclusions are authority boundaries for this deferral component, not a
 claim that the broader product does not require the corresponding capabilities.
-The consensus ledger continues to track general node-owned proposal buffering,
-certificate-coupled release, routing, orchestration, and networking separately.
+The separately specified buffer supplies only bounded volatile token ownership.
+The consensus ledger continues to track certificate-coupled release, durable
+recovery, routing, orchestration, and networking separately.
