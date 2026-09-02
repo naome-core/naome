@@ -13,8 +13,9 @@
 //! nil precommit execution;
 //! exact-event-bound current-round phase-close voting, exact-event-bound
 //! sequential, quorum-driven, and caller-routed exact signed-vote-batch round
-//! progression, and caller-owned fully verified higher-round proposal deferral
-//! with mandatory later full branch-relative re-verification, while
+//! progression, caller-owned fully verified higher-round proposal deferral, and
+//! a separately composed bounded volatile proposal buffer with mandatory later
+//! full branch-relative re-verification, while
 //! deliberately leaving daemon, networking, timeout measurement and expiry,
 //! key-loading, event selection, and branch-selection policy to later components.
 
@@ -33,6 +34,10 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
     FixedValidatorNodeLowerRoundFinalityRejectionV0, FixedValidatorNodeProposalAuthoringErrorV0,
     FixedValidatorNodeProposalAuthoringOutcomeV0, FixedValidatorNodeProposalAuthoringRejectionV0,
+    FixedValidatorNodeProposalBufferAccessErrorV0, FixedValidatorNodeProposalBufferDrainV0,
+    FixedValidatorNodeProposalBufferInsertErrorV0, FixedValidatorNodeProposalBufferInsertOutcomeV0,
+    FixedValidatorNodeProposalBufferLimitsErrorV0, FixedValidatorNodeProposalBufferLimitsV0,
+    FixedValidatorNodeProposalBufferSaturationV0, FixedValidatorNodeProposalBufferV0,
     FixedValidatorNodeProposalDeferralErrorV0, FixedValidatorNodeProposalDeferralOutcomeV0,
     FixedValidatorNodeProposalDeferralRejectionV0, FixedValidatorNodeProvisionV0,
     FixedValidatorNodeReadyV0, FixedValidatorNodeRoundAdvanceErrorV0,

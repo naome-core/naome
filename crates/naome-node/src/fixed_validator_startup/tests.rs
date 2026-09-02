@@ -951,6 +951,7 @@ fn public_scope_components_name_one_exact_recovered_branch() {
 
 mod finality;
 mod proposal_authoring;
+mod proposal_buffer;
 mod proposal_deferral;
 mod round_progression;
 mod voting;

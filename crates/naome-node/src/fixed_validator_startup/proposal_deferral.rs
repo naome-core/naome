@@ -84,8 +84,8 @@ pub struct FixedValidatorNodeDeferredProposalV0 {
     parent_coordinate: FixedConsensusBranchCoordinateV0,
     position: ConsensusPosition,
     value: ConsensusValueV0,
-    canonical_proposal_control_bytes: Vec<u8>,
-    canonical_artifact_bytes: Vec<u8>,
+    canonical_proposal_control_bytes: Box<[u8]>,
+    canonical_artifact_bytes: Box<[u8]>,
 }
 
 impl FixedValidatorNodeDeferredProposalV0 {
@@ -125,8 +125,8 @@ impl FixedValidatorNodeDeferredProposalV0 {
     /// live typed round and repeat complete proposal and payload verification.
     pub fn into_unverified_canonical_inputs(self) -> (Vec<u8>, Vec<u8>) {
         (
-            self.canonical_proposal_control_bytes,
-            self.canonical_artifact_bytes,
+            self.canonical_proposal_control_bytes.into_vec(),
+            self.canonical_artifact_bytes.into_vec(),
         )
     }
 }
@@ -397,8 +397,8 @@ fn defer_higher_round_proposal<'node>(
             parent_coordinate,
             position,
             value,
-            canonical_proposal_control_bytes,
-            canonical_artifact_bytes,
+            canonical_proposal_control_bytes: canonical_proposal_control_bytes.into_boxed_slice(),
+            canonical_artifact_bytes: canonical_artifact_bytes.into_boxed_slice(),
         }),
     })
 }

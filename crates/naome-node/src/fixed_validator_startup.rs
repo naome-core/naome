@@ -33,6 +33,7 @@ use naome_storage::{
 mod candidate_backed_proposal;
 mod finality;
 mod proposal_authoring;
+mod proposal_buffer;
 mod proposal_deferral;
 mod round_progression;
 mod voting;
@@ -50,6 +51,12 @@ pub use finality::{
 pub use proposal_authoring::{
     FixedValidatorNodeProposalAuthoringErrorV0, FixedValidatorNodeProposalAuthoringOutcomeV0,
     FixedValidatorNodeProposalAuthoringRejectionV0,
+};
+pub use proposal_buffer::{
+    FixedValidatorNodeProposalBufferAccessErrorV0, FixedValidatorNodeProposalBufferDrainV0,
+    FixedValidatorNodeProposalBufferInsertErrorV0, FixedValidatorNodeProposalBufferInsertOutcomeV0,
+    FixedValidatorNodeProposalBufferLimitsErrorV0, FixedValidatorNodeProposalBufferLimitsV0,
+    FixedValidatorNodeProposalBufferSaturationV0, FixedValidatorNodeProposalBufferV0,
 };
 pub use proposal_deferral::{
     FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeHigherRoundProposalRouteV0,
