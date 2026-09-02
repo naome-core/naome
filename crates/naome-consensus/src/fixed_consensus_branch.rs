@@ -778,6 +778,40 @@ impl<'round, 'branch> VerifiedFixedConsensusProposalV0<'round, 'branch> {
             .seal_with_precommit_certificate(certificate_bytes, &round.snapshot)?;
         Ok(VerifiedFixedConsensusTransitionV0 { round, envelope })
     }
+
+    /// Constructs and seals one exact caller-routed signed-precommit batch.
+    ///
+    /// Every supplied vote must authenticate this proposal's exact typed round,
+    /// precommit role, and proposal signing root under the immutable positioned
+    /// fixed set. The complete batch is passed through the unchanged exact-batch
+    /// quorum constructor before the resulting canonical certificate enters the
+    /// existing proposal-sealing boundary.
+    ///
+    /// This operation does not observe, accumulate, filter, select, persist, or
+    /// finalize votes or proposals. The caller remains responsible for routing
+    /// one exact batch to this already derived round.
+    pub fn seal_with_precommit_vote_batch(
+        self,
+        canonical_signed_precommits: &[&[u8]],
+    ) -> Result<
+        VerifiedFixedConsensusTransitionV0<'round, 'branch>,
+        FixedConsensusPrecommitBatchSealErrorV0,
+    >
+    where
+        'branch: 'round,
+    {
+        let certificate = self
+            .round
+            .build_quorum_certificate_from_signed_votes(
+                canonical_signed_precommits,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(self.proposal_signing_root()),
+            )
+            .map_err(FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction)?;
+        let canonical_certificate = certificate.to_canonical_bytes();
+        self.seal_with_precommit_certificate(&canonical_certificate)
+            .map_err(FixedConsensusPrecommitBatchSealErrorV0::PrecommitCertificate)
+    }
 }
 
 /// One owned, sealed transition produced by complete typed branch verification.
@@ -927,6 +961,39 @@ impl VerifiedFixedConsensusTransitionV0<'_, '_> {
     /// unchanged value.
     pub fn into_branch(self) -> FixedConsensusBranchV0 {
         self.into_owned().into_branch()
+    }
+}
+
+/// A failure to construct and seal one exact signed-precommit batch.
+///
+/// Neither variant establishes a transition or changes consensus state. The
+/// certificate-sealing variant is retained as an explicit fail-closed boundary
+/// even though a certificate produced from the same typed round and proposal
+/// target is expected to satisfy the existing envelope verifier.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixedConsensusPrecommitBatchSealErrorV0 {
+    /// The complete caller-routed batch did not form one exact proposal quorum.
+    QuorumConstruction(QuorumCertificateBuildError),
+    /// The constructed canonical certificate did not seal the admitted proposal.
+    PrecommitCertificate(ConsensusEnvelopeVerifyError),
+}
+
+impl fmt::Display for FixedConsensusPrecommitBatchSealErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::QuorumConstruction(source) => source.fmt(formatter),
+            Self::PrecommitCertificate(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl Error for FixedConsensusPrecommitBatchSealErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::QuorumConstruction(source) => Some(source),
+            Self::PrecommitCertificate(source) => Some(source),
+        }
     }
 }
 

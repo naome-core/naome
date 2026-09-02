@@ -51,21 +51,21 @@ fn expect_rejected<'node>(
     }
 }
 
-fn expect_current_round_finality<'node>(
-    outcome: FixedValidatorNodeCurrentRoundFinalityOutcomeV0<'node>,
+fn expect_candidate_backed_finality<'node>(
+    outcome: FixedValidatorNodeCandidateBackedFinalityOutcomeV0<'node>,
 ) -> (
     FixedValidatorNodeSigningScopeV0<'node>,
     FixedValidatorNodeFinalitySelectionV0,
 ) {
     match outcome {
-        FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality(
+        FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Finality(
             FixedValidatorNodeFinalityOutcomeV0::Continues { scope, selection },
         ) => (*scope, selection),
-        FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality(
+        FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Finality(
             FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(_),
-        ) => panic!("expected continued signing authority after first finality"),
-        FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Rejected { .. } => {
-            panic!("expected exact-current-round finality")
+        ) => panic!("expected continued signing authority after first candidate finality"),
+        FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Rejected { .. } => {
+            panic!("expected candidate-backed exact-batch finality")
         }
     }
 }
@@ -790,14 +790,6 @@ fn three_nodes_build_exact_quorums_from_anchored_votes_then_finalize_and_restart
         .iter()
         .map(|vote| vote.canonical_bytes())
         .collect::<Vec<_>>();
-    let precommit_certificate = round
-        .build_quorum_certificate_from_signed_votes(
-            &precommit_refs,
-            ConsensusVoteRole::Precommit,
-            ConsensusVoteTarget::Proposal(proposal_root),
-        )
-        .unwrap()
-        .to_canonical_bytes();
     let before_finality = layouts[0].images();
 
     let ready = expect_ready(
@@ -807,23 +799,31 @@ fn three_nodes_build_exact_quorums_from_anchored_votes_then_finalize_and_restart
     );
     let (selected_coordinate, signer_position) = ready
         .run_with_signing_session(|scope| {
-            let (mut scope, selection) = expect_current_round_finality(
+            let (mut scope, selection) = expect_candidate_backed_finality(
                 scope
-                    .commit_current_round_finality(
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        block.id(),
                         &control,
-                        payload.clone(),
-                        &precommit_certificate,
-                        ConsensusRound::new(0),
+                        &precommit_refs,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            round.position().round(),
+                            ConsensusRound::new(0),
+                        ),
                     )
                     .unwrap(),
             );
             assert!(matches!(
                 selection,
-                FixedValidatorNodeFinalitySelectionV0::Finalized {
+                FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                    target,
                     position,
                     ancestry_id,
                     ..
-                } if position == round.position() && ancestry_id == value.ancestry_id()
+                } if target == block.id()
+                    && position == round.position()
+                    && ancestry_id == value.ancestry_id()
             ));
             assert_eq!(scope.signing_session().position().height().value(), 2);
             assert_eq!(scope.signing_session().position().round().value(), 0);

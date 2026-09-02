@@ -30,17 +30,21 @@ use naome_storage::{
     FixedValidatorVoteSafetyReplayLimitV0,
 };
 
+mod candidate_backed_proposal;
 mod finality;
 mod proposal_authoring;
 mod round_progression;
 mod voting;
 
 pub use finality::{
+    FixedValidatorNodeCandidateBackedFinalityErrorV0,
+    FixedValidatorNodeCandidateBackedFinalityOutcomeV0,
+    FixedValidatorNodeCandidateBackedFinalityRejectionV0,
     FixedValidatorNodeCurrentRoundFinalityErrorV0, FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
     FixedValidatorNodeCurrentRoundFinalityRejectionV0, FixedValidatorNodeFinalityErrorV0,
-    FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalitySelectionV0,
-    FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
-    FixedValidatorNodeLowerRoundFinalityRejectionV0,
+    FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalityRoundRouteV0,
+    FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeLowerRoundFinalityErrorV0,
+    FixedValidatorNodeLowerRoundFinalityOutcomeV0, FixedValidatorNodeLowerRoundFinalityRejectionV0,
 };
 pub use proposal_authoring::{
     FixedValidatorNodeProposalAuthoringErrorV0, FixedValidatorNodeProposalAuthoringOutcomeV0,
