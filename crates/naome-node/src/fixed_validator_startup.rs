@@ -489,6 +489,28 @@ enum FixedValidatorNodeSessionPlanV0 {
 ///     let _ = session.stop_after_durable_finality_conflict(foreign);
 /// }
 /// ```
+///
+/// Identity-free Proposal and Prevote close shortcuts are absent. A routed
+/// close must enter through the consuming coordinator with its exact context
+/// and source position:
+///
+/// ```compile_fail,E0599
+/// use naome_consensus::ConsensusRound;
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+///
+/// fn unbound_proposal_close(scope: FixedValidatorNodeSigningScopeV0<'_>) {
+///     let _ = scope.sign_prevote_without_proposal(ConsensusRound::new(0));
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use naome_consensus::ConsensusRound;
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+///
+/// fn unbound_prevote_close(scope: FixedValidatorNodeSigningScopeV0<'_>) {
+///     let _ = scope.sign_precommit_without_quorum(ConsensusRound::new(0));
+/// }
+/// ```
 #[must_use]
 pub struct FixedValidatorNodeSigningScopeV0<'node> {
     finality: &'node mut FixedValidatorAnchoredFinalityJournalV0,
@@ -511,8 +533,8 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     ///
     /// Height advancement, round advancement, and finality-conflict stop
     /// authority are deliberately absent, and current-round decision,
-    /// preparation, acknowledgement, and key-use primitives are private to
-    /// this scope's consuming coordinators.
+    /// identity-free phase-close, preparation, acknowledgement, and key-use
+    /// primitives are private to this scope's consuming coordinators.
     pub fn signing_session(&mut self) -> &FixedValidatorNodeVotingSessionV0<'node> {
         &self.signing_session
     }

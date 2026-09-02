@@ -2,9 +2,9 @@ use std::error::Error;
 use std::fmt;
 
 use naome_consensus::{
-    ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError, ConsensusRound,
-    FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockStateError,
-    FixedValidatorUnsignedVoteEffectV0, ProposerSelectionError,
+    ConsensusContextV0, ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError,
+    ConsensusRound, FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
+    FixedValidatorLockStateError, FixedValidatorUnsignedVoteEffectV0, ProposerSelectionError,
 };
 use naome_storage::{
     FixedValidatorSignedVoteV0, FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyHaltV0,
@@ -48,6 +48,18 @@ pub enum FixedValidatorNodeVoteRejectionV0 {
         required: ConsensusRound,
         maximum: ConsensusRound,
     },
+    /// The caller-routed phase-close event belongs to another consensus context.
+    PhaseCloseContextMismatch {
+        required_phase: FixedValidatorLockPhaseV0,
+        current: Box<ConsensusContextV0>,
+        event: Box<ConsensusContextV0>,
+    },
+    /// The caller-routed phase-close event belongs to another height or round.
+    PhaseClosePositionMismatch {
+        required_phase: FixedValidatorLockPhaseV0,
+        current: ConsensusPosition,
+        event: ConsensusPosition,
+    },
     /// Complete proposal-control and artifact admission failed.
     Proposal(Box<ConsensusProposalVerifyError>),
     /// The current lock kernel rejected the exact event before mutation.
@@ -60,6 +72,22 @@ impl fmt::Display for FixedValidatorNodeVoteRejectionV0 {
             Self::RoundWorkLimitExceeded { required, maximum } => write!(
                 formatter,
                 "current signer round {required:?} exceeds local vote-execution ceiling {maximum:?}"
+            ),
+            Self::PhaseCloseContextMismatch {
+                required_phase,
+                current,
+                event,
+            } => write!(
+                formatter,
+                "{required_phase:?} close context {event:?} differs from current node context {current:?}"
+            ),
+            Self::PhaseClosePositionMismatch {
+                required_phase,
+                current,
+                event,
+            } => write!(
+                formatter,
+                "{required_phase:?} close position {event:?} differs from current signer position {current:?}"
             ),
             Self::Proposal(source) => {
                 write!(formatter, "current node proposal was rejected: {source}")
@@ -76,7 +104,9 @@ impl Error for FixedValidatorNodeVoteRejectionV0 {
         match self {
             Self::Proposal(source) => Some(source.as_ref()),
             Self::Decision(source) => Some(source.as_ref()),
-            Self::RoundWorkLimitExceeded { .. } => None,
+            Self::RoundWorkLimitExceeded { .. }
+            | Self::PhaseCloseContextMismatch { .. }
+            | Self::PhaseClosePositionMismatch { .. } => None,
         }
     }
 }
@@ -228,12 +258,17 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         Ok(finished_outcome(self, finished))
     }
 
-    /// Explicitly closes Proposal and durably signs the locked-value or nil prevote.
+    /// Explicitly closes one exact Proposal phase and durably signs its prevote.
     ///
-    /// This is an explicit caller event. It does not infer that a timeout elapsed
-    /// or that no proposal exists elsewhere.
-    pub fn sign_prevote_without_proposal(
+    /// The caller supplies the consensus context and source position attached to
+    /// its close event. Both must match the exact node-derived current round
+    /// before the unchanged lock rule may create a locked-value or nil prevote.
+    /// This does not infer that a timeout elapsed or that no proposal exists
+    /// elsewhere.
+    pub fn sign_prevote_after_proposal_close(
         mut self,
+        event_context: ConsensusContextV0,
+        event_position: ConsensusPosition,
         inclusive_maximum_round: ConsensusRound,
     ) -> Result<
         FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
@@ -252,6 +287,15 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
             }
             Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
         };
+        if let Err(rejection) = admit_phase_close_identity(
+            &round,
+            FixedValidatorLockPhaseV0::Proposal,
+            event_context,
+            event_position,
+        ) {
+            drop(round);
+            return Ok(rejected(self, rejection));
+        }
         let effect = match self.signing_session.decide_prevote_without_proposal() {
             Ok(effect) => effect,
             Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
@@ -373,12 +417,16 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         Ok(finished_outcome(self, finished))
     }
 
-    /// Explicitly closes Prevote without a quorum and durably signs nil precommit.
+    /// Explicitly closes one exact Prevote phase and durably signs nil precommit.
     ///
-    /// This preserves lock and valid-value state and infers no timeout or network
-    /// condition from the caller's explicit close event.
-    pub fn sign_precommit_without_quorum(
+    /// The caller supplies the consensus context and source position attached to
+    /// its close event. Both must match the exact node-derived current round
+    /// before the unchanged lock rule preserves lock and valid-value state and
+    /// emits nil. This infers no timeout or network condition.
+    pub fn sign_precommit_after_prevote_close(
         mut self,
+        event_context: ConsensusContextV0,
+        event_position: ConsensusPosition,
         inclusive_maximum_round: ConsensusRound,
     ) -> Result<
         FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
@@ -397,6 +445,15 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
             }
             Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
         };
+        if let Err(rejection) = admit_phase_close_identity(
+            &round,
+            FixedValidatorLockPhaseV0::Prevote,
+            event_context,
+            event_position,
+        ) {
+            drop(round);
+            return Ok(rejected(self, rejection));
+        }
         let effect = match self.signing_session.decide_precommit_without_quorum() {
             Ok(effect) => effect,
             Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
@@ -414,6 +471,35 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         let finished = finish_vote(&mut self.signing_session, &round, effect)?;
         Ok(finished_outcome(self, finished))
     }
+}
+
+fn admit_phase_close_identity(
+    round: &FixedConsensusRoundV0<'_>,
+    required_phase: FixedValidatorLockPhaseV0,
+    event_context: ConsensusContextV0,
+    event_position: ConsensusPosition,
+) -> Result<(), FixedValidatorNodeVoteRejectionV0> {
+    let current_context = round.context();
+    if event_context != current_context {
+        return Err(
+            FixedValidatorNodeVoteRejectionV0::PhaseCloseContextMismatch {
+                required_phase,
+                current: Box::new(current_context),
+                event: Box::new(event_context),
+            },
+        );
+    }
+    let current_position = round.position();
+    if event_position != current_position {
+        return Err(
+            FixedValidatorNodeVoteRejectionV0::PhaseClosePositionMismatch {
+                required_phase,
+                current: current_position,
+                event: event_position,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn current_round<'branch>(

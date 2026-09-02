@@ -48,6 +48,36 @@ fn expect_rejected<'node>(
     }
 }
 
+fn expect_advanced<'node>(
+    outcome: FixedValidatorNodeRoundAdvanceOutcomeV0<'node>,
+) -> (
+    FixedValidatorNodeSigningScopeV0<'node>,
+    ConsensusPosition,
+    FixedValidatorLockPhaseV0,
+) {
+    match outcome {
+        FixedValidatorNodeRoundAdvanceOutcomeV0::Advanced {
+            scope,
+            position,
+            phase,
+        } => (*scope, position, phase),
+        FixedValidatorNodeRoundAdvanceOutcomeV0::Rejected { .. } => {
+            panic!("expected admitted round progression")
+        }
+    }
+}
+
+fn assert_empty_session_state(
+    scope: &mut FixedValidatorNodeSigningScopeV0<'_>,
+    position: ConsensusPosition,
+    phase: FixedValidatorLockPhaseV0,
+) {
+    assert_eq!(scope.signing_session().position(), position);
+    assert_eq!(scope.signing_session().phase(), phase);
+    assert!(scope.signing_session().locked_value().is_none());
+    assert!(scope.signing_session().valid_value().is_none());
+}
+
 fn proposal_control_bytes(
     value: ConsensusValueV0,
     position: ConsensusPosition,
@@ -257,7 +287,7 @@ fn explicit_phase_closes_sign_nil_without_inferring_timeouts() {
         .run_with_signing_session(|scope| {
             let (scope, prevote) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
@@ -265,7 +295,7 @@ fn explicit_phase_closes_sign_nil_without_inferring_timeouts() {
 
             let (mut scope, precommit) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
@@ -278,6 +308,533 @@ fn explicit_phase_closes_sign_nil_without_inferring_timeouts() {
             assert!(scope.signing_session().valid_value().is_none());
         })
         .unwrap();
+}
+
+#[test]
+fn exact_phase_close_identity_rejections_preserve_scope_and_authority_images() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-voting-bound-phase-closes");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let initial = layout.images();
+    let wrong_context = ConsensusContextV0::new(
+        fixture.definition.id(),
+        ConsensusGenesisId::from_bytes([0x99; 32]),
+        fixture.context.protocol_version(),
+    );
+
+    ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .sign_prevote_after_proposal_close(
+                        wrong_context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::PhaseCloseContextMismatch {
+                    required_phase: FixedValidatorLockPhaseV0::Proposal,
+                    current,
+                    event,
+                } if *current == fixture.context && *event == wrong_context
+            ));
+            assert_empty_session_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), initial);
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .sign_prevote_after_proposal_close(
+                        fixture.context,
+                        round_one.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::PhaseClosePositionMismatch {
+                    required_phase: FixedValidatorLockPhaseV0::Proposal,
+                    current,
+                    event,
+                } if current == round_zero.position() && event == round_one.position()
+            ));
+            assert_empty_session_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), initial);
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .sign_precommit_after_prevote_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::Decision(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorLockStateError::UnexpectedPhase {
+                            expected: FixedValidatorLockPhaseV0::Prevote,
+                            actual: FixedValidatorLockPhaseV0::Proposal,
+                        }
+                    )
+            ));
+            assert_empty_session_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), initial);
+
+            let (scope, prevote) = expect_signed(
+                scope
+                    .sign_prevote_after_proposal_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(prevote.position(), round_zero.position());
+            assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
+            assert_eq!(prevote.target(), ConsensusVoteTarget::Nil);
+            let after_round_zero_prevote = layout.images();
+            assert_eq!(after_round_zero_prevote[0], initial[0]);
+            assert_eq!(after_round_zero_prevote[1], initial[1]);
+            assert_ne!(after_round_zero_prevote[2], initial[2]);
+            assert_ne!(after_round_zero_prevote[3], initial[3]);
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .sign_prevote_after_proposal_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::Decision(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorLockStateError::UnexpectedPhase {
+                            expected: FixedValidatorLockPhaseV0::Proposal,
+                            actual: FixedValidatorLockPhaseV0::Prevote,
+                        }
+                    )
+            ));
+            assert_empty_session_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Prevote,
+            );
+            assert_eq!(layout.images(), after_round_zero_prevote);
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .sign_precommit_after_prevote_close(
+                        wrong_context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::PhaseCloseContextMismatch {
+                    required_phase: FixedValidatorLockPhaseV0::Prevote,
+                    current,
+                    event,
+                } if *current == fixture.context && *event == wrong_context
+            ));
+            assert_empty_session_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Prevote,
+            );
+            assert_eq!(layout.images(), after_round_zero_prevote);
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .sign_precommit_after_prevote_close(
+                        fixture.context,
+                        round_one.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::PhaseClosePositionMismatch {
+                    required_phase: FixedValidatorLockPhaseV0::Prevote,
+                    current,
+                    event,
+                } if current == round_zero.position() && event == round_one.position()
+            ));
+            assert_empty_session_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Prevote,
+            );
+            assert_eq!(layout.images(), after_round_zero_prevote);
+
+            let (scope, precommit) = expect_signed(
+                scope
+                    .sign_precommit_after_prevote_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(precommit.position(), round_zero.position());
+            assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(precommit.target(), ConsensusVoteTarget::Nil);
+            let after_round_zero_precommit = layout.images();
+            assert_eq!(after_round_zero_precommit[0], initial[0]);
+            assert_eq!(after_round_zero_precommit[1], initial[1]);
+            assert_ne!(after_round_zero_precommit[2], after_round_zero_prevote[2]);
+            assert_ne!(after_round_zero_precommit[3], after_round_zero_prevote[3]);
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .sign_precommit_after_prevote_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::Decision(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorLockStateError::UnexpectedPhase {
+                            expected: FixedValidatorLockPhaseV0::Prevote,
+                            actual: FixedValidatorLockPhaseV0::Precommit,
+                        }
+                    )
+            ));
+            assert_eq!(layout.images(), after_round_zero_precommit);
+            assert_empty_session_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Precommit,
+            );
+        })
+        .unwrap();
+
+    let reopened = expect_ready(
+        fixture
+            .provision(&layout, 0)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(
+                scope.signing_session().position().round(),
+                ConsensusRound::new(0)
+            );
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert!(scope.signing_session().locked_value().is_none());
+            assert!(scope.signing_session().valid_value().is_none());
+        })
+        .unwrap();
+}
+
+#[test]
+fn stale_phase_closes_cannot_retarget_a_later_round_or_change_retained_evidence() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-voting-stale-phase-closes");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let initial = layout.images();
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let block = ArtifactChainState::new(fixture.definition)
+        .prepare_block(artifact_id(&payload))
+        .unwrap();
+
+    let (root, certificate) = ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
+            let value = round_zero.value_for_artifact_block(block);
+            let root = value.proposal_signing_root();
+            let control =
+                proposal_control_bytes(value, round_zero.position(), &fixture.signing_key());
+
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_prevote_for_proposal(&control, payload.clone(), ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            let certificate = prevote_certificate_bytes(
+                fixture.context,
+                round_zero.position(),
+                ConsensusVoteTarget::Proposal(root),
+                &fixture.signing_key(),
+            );
+            let (scope, _) = expect_signed(
+                scope
+                    .sign_precommit_for_proposal_quorum(
+                        &control,
+                        payload,
+                        &certificate,
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            let before_round_one = layout.images();
+            let (mut scope, position, phase) = expect_advanced(
+                scope
+                    .advance_round_after_precommit_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(position, round_one.position());
+            assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+            assert_eq!(layout.images(), before_round_one);
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .sign_prevote_after_proposal_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::PhaseClosePositionMismatch {
+                    required_phase: FixedValidatorLockPhaseV0::Proposal,
+                    current,
+                    event,
+                } if current == round_one.position() && event == round_zero.position()
+            ));
+            assert_eq!(layout.images(), before_round_one);
+            assert_eq!(scope.signing_session().position(), round_one.position());
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Proposal
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+
+            let (mut scope, prevote) = expect_signed(
+                scope
+                    .sign_prevote_after_proposal_close(
+                        fixture.context,
+                        round_one.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(prevote.position(), round_one.position());
+            assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
+            assert_eq!(prevote.target(), ConsensusVoteTarget::Proposal(root));
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+            let after_round_one_prevote = layout.images();
+            assert_eq!(after_round_one_prevote[0], initial[0]);
+            assert_eq!(after_round_one_prevote[1], initial[1]);
+            assert_ne!(after_round_one_prevote[2], before_round_one[2]);
+            assert_ne!(after_round_one_prevote[3], before_round_one[3]);
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .sign_precommit_after_prevote_close(
+                        fixture.context,
+                        round_zero.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::PhaseClosePositionMismatch {
+                    required_phase: FixedValidatorLockPhaseV0::Prevote,
+                    current,
+                    event,
+                } if current == round_one.position() && event == round_zero.position()
+            ));
+            assert_eq!(layout.images(), after_round_one_prevote);
+            assert_eq!(scope.signing_session().position(), round_one.position());
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Prevote
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+
+            let (mut scope, precommit) = expect_signed(
+                scope
+                    .sign_precommit_after_prevote_close(
+                        fixture.context,
+                        round_one.position(),
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(precommit.position(), round_one.position());
+            assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(precommit.target(), ConsensusVoteTarget::Nil);
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+            let after_round_one_precommit = layout.images();
+            assert_eq!(after_round_one_precommit[0], initial[0]);
+            assert_eq!(after_round_one_precommit[1], initial[1]);
+            assert_ne!(after_round_one_precommit[2], after_round_one_prevote[2]);
+            assert_ne!(after_round_one_precommit[3], after_round_one_prevote[3]);
+            (root, certificate)
+        })
+        .unwrap();
+
+    let completed = layout.images();
+    let reopened = expect_ready(
+        fixture
+            .provision(&layout, 1)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    assert_eq!(layout.images(), completed);
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(
+                scope.signing_session().position().round(),
+                ConsensusRound::new(1)
+            );
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+        })
+        .unwrap();
+    assert_eq!(layout.images(), completed);
 }
 
 #[test]
@@ -330,7 +887,7 @@ fn exact_nil_prevote_quorum_signs_nil_precommit() {
                 .unwrap();
             let (scope, prevote) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             assert_eq!(prevote.target(), ConsensusVoteTarget::Proposal(root));
@@ -399,7 +956,7 @@ fn invalid_quorum_is_a_no_write_rejection_and_preserves_the_scope() {
         .run_with_signing_session(|scope| {
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let before = layout.images();
@@ -417,7 +974,7 @@ fn invalid_quorum_is_a_no_write_rejection_and_preserves_the_scope() {
 
             let (_, vote) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             assert_eq!(vote.role(), ConsensusVoteRole::Precommit);
@@ -448,12 +1005,12 @@ fn pending_higher_round_work_precedes_caller_round_rejection() {
                 .unwrap();
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let (mut scope, _) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             scope
@@ -483,7 +1040,7 @@ fn pending_higher_round_work_precedes_caller_round_rejection() {
                 .unwrap();
             drop(prepared);
 
-            match scope.sign_prevote_without_proposal(ConsensusRound::new(0)) {
+            match scope.sign_prevote_after_current_proposal_close(ConsensusRound::new(0)) {
                 Err(error) => error,
                 Ok(_) => panic!("pending session work must consume the scope"),
             }
@@ -628,7 +1185,7 @@ fn rejected_proposal_preserves_the_scope_for_an_explicit_close() {
 
             let (_, vote) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             assert_eq!(vote.target(), ConsensusVoteTarget::Nil);
@@ -649,12 +1206,12 @@ fn round_work_ceiling_rejection_preserves_scope_and_durable_state() {
         .run_with_signing_session(|scope| {
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let (mut scope, _) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let branch = scope.branch().clone();
@@ -667,7 +1224,7 @@ fn round_work_ceiling_rejection_preserves_scope_and_durable_state() {
 
             let (scope, rejection) = expect_rejected(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             assert!(matches!(
@@ -681,7 +1238,7 @@ fn round_work_ceiling_rejection_preserves_scope_and_durable_state() {
 
             let (_, vote) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             assert_eq!(vote.position(), round_one.position());
@@ -702,12 +1259,12 @@ fn signer_above_the_node_finality_round_ceiling_returns_no_scope_or_vote() {
         .run_with_signing_session(|scope| {
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(0))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let (mut scope, _) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(0))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(0))
                     .unwrap(),
             );
             let branch = scope.branch().clone();
@@ -718,12 +1275,12 @@ fn signer_above_the_node_finality_round_ceiling_returns_no_scope_or_vote() {
                 .unwrap();
             let (scope, _) = expect_signed(
                 scope
-                    .sign_prevote_without_proposal(ConsensusRound::new(1))
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             let (mut scope, _) = expect_signed(
                 scope
-                    .sign_precommit_without_quorum(ConsensusRound::new(1))
+                    .sign_precommit_after_current_prevote_close(ConsensusRound::new(1))
                     .unwrap(),
             );
             let round_two = round_one.advance_round().unwrap();
@@ -732,7 +1289,9 @@ fn signer_above_the_node_finality_round_ceiling_returns_no_scope_or_vote() {
                 .advance_round(&round_two)
                 .unwrap();
             let before = layout.images();
-            let error = match scope.sign_prevote_without_proposal(ConsensusRound::new(2)) {
+            let error = match scope
+                .sign_prevote_after_current_proposal_close(ConsensusRound::new(2))
+            {
                 Err(error) => error,
                 Ok(_) => panic!("a signer above finality capacity must return no scope or vote"),
             };
@@ -889,7 +1448,7 @@ fn vote_anchor_failure_returns_no_scope_and_reopens_only_as_anchor_behind() {
 
     let error = ready
         .run_with_signing_session(|scope| {
-            match scope.sign_prevote_without_proposal(ConsensusRound::new(0)) {
+            match scope.sign_prevote_after_current_proposal_close(ConsensusRound::new(0)) {
                 Err(error) => error,
                 Ok(_) => panic!("the vote anchor collision must return no scope or vote"),
             }
@@ -927,7 +1486,7 @@ fn vote_completion_anchor_failure_returns_no_scope_vote_or_false_reopen() {
 
     let error = ready
         .run_with_signing_session(|scope| {
-            match scope.sign_prevote_without_proposal(ConsensusRound::new(0)) {
+            match scope.sign_prevote_after_current_proposal_close(ConsensusRound::new(0)) {
                 Err(error) => error,
                 Ok(_) => panic!("the completion-anchor collision must return no scope or vote"),
             }

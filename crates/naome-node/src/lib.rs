@@ -6,7 +6,8 @@
 //! candidate-backed finality-to-signer coupling plus bounded exact-current and
 //! strictly lower-round finality admission, direct and exact-target fresh-only
 //! candidate-store-backed plus exact retained-value payload-store-backed
-//! current-round proposal authoring, current-round vote execution, and
+//! current-round proposal authoring, exact-event-bound current-round phase-close
+//! vote execution, and
 //! exact-event-bound sequential and quorum-driven round progression while
 //! deliberately leaving daemon, networking, timeout measurement and expiry,
 //! key-loading, event selection, and branch-selection policy to later components.

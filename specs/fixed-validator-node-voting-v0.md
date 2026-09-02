@@ -13,11 +13,13 @@ The caller explicitly submits exactly one of five events:
 
 - complete canonical proposal-control bytes plus the complete canonical
   artifact payload for Proposal-to-Prevote;
-- an explicit Proposal-phase close;
+- an explicit Proposal-phase close carrying its exact consensus context and
+  source position;
 - complete canonical proposal-control and artifact bytes plus one canonical
   current-round prevote/proposal certificate for Prevote-to-Precommit;
 - one canonical current-round prevote/nil certificate; or
-- an explicit Prevote-phase close.
+- an explicit Prevote-phase close carrying its exact consensus context and
+  source position.
 
 The caller also supplies an inclusive local round-work ceiling. Mere submission,
 presence, routing, or caller classification of a proposal, certificate,
@@ -43,6 +45,17 @@ consumes the scope. Session readiness therefore precedes caller-ceiling,
 proposal, and certificate rejection. The caller ceiling limits local derivation
 work; it is not a consensus rule and does not change the signer's current round.
 
+For either phase-close path, the coordinator next requires the event context to
+equal the node-derived round context and the event position to equal that exact
+height and round. A foreign, future, or stale event returns the unchanged scope
+before the lock kernel or any signer write. The kernel then requires the exact
+Proposal or Prevote phase before deriving an effect; wrong phase remains its
+typed, mutation-free `UnexpectedPhase` rejection. Context is checked before
+position, and both checks remain after session readiness and bounded exact-round
+reconstruction so stale input cannot mask ambiguous or terminal signer state.
+The supplied identity is descriptive only: it is not a caller cursor and cannot
+retarget the node's signer to another round.
+
 Proposal paths decode and fully verify the supplied proposal-control bytes and
 owned artifact bytes against that exact branch-derived round. This verification
 retains the existing context, height, proposer, fixed-set, ancestry, artifact,
@@ -66,7 +79,9 @@ operation is not a cross-file atomic transaction:
    higher-round work.
 2. Derive the exact current typed round under the persisted finality and
    caller-local ceilings.
-3. Fully verify every supplied proposal and quorum byte required by that path.
+3. For a phase close, match its exact context and source position; for a
+   proposal or quorum path, fully verify every supplied byte required by that
+   path.
 4. Let the private lock kernel derive the sole unsigned vote effect and its
    exact post-effect phase, lock, and valid-value state.
 5. Persist and anchor the complete post-effect state plus exact vote intent.
@@ -86,27 +101,32 @@ The five event paths preserve the existing kernel rules:
 
 - an admitted Proposal-phase proposal prevotes that proposal when unlocked or
   permitted by the valid-round rule, and otherwise prevotes the retained lock;
-- an explicit Proposal-phase close prevotes the retained lock or nil;
+- an exact current Proposal-phase close prevotes the retained lock or nil;
 - a matching current-round prevote/proposal quorum locks or relocks the admitted
   proposal, retains it as the latest valid value and proof, and precommits it;
 - a current-round prevote/nil quorum clears the lock, preserves the latest valid
   value and proof, and precommits nil; and
-- an explicit Prevote-phase close preserves lock and valid-value state and
+- an exact current Prevote-phase close preserves lock and valid-value state and
   precommits nil.
 
-The two close methods classify only an explicit caller event. Their names do
-not prove that a timeout elapsed, that a proposal or quorum is unavailable
-elsewhere, or that network collection is complete.
+The two close methods classify only one exact explicit caller event. Exact
+context and position prevent a delayed close for round `R` from being
+reinterpreted when the same phase is live at round `R + 1`. They do not prove
+that a timeout elapsed, that a proposal or quorum is unavailable elsewhere, or
+that network collection is complete. Nor do they establish same-position event
+freshness, timer generation, cancellation, race ordering, or exactly-once
+delivery.
 
 ## Outcomes, failures, and restart
 
 A pre-effect rejection returns the unchanged signing scope with a typed reason.
-Rejections include a caller-local round-work ceiling violation, complete
-proposal rejection, or a mutation-free lock-kernel input rejection. Existing
-lock-kernel validation ordering ensures a rejected event changes no volatile
-lock state, and the coordinator performs no signer write before admission
-succeeds. A poisoned, terminal, or pending signing session is not an input
-rejection: it consumes the scope through a fatal session error.
+Rejections include a caller-local round-work ceiling violation, phase-close
+context or position mismatch, complete proposal rejection, or a mutation-free
+lock-kernel input rejection. Existing identity and lock-kernel validation
+ordering ensures a rejected event changes no volatile lock state, and the
+coordinator performs no signer write before admission succeeds. A poisoned,
+terminal, or pending signing session is not an input rejection: it consumes the
+scope through a fatal session error.
 
 Once the lock kernel has emitted an effect, any preparation,
 preparation-acknowledgement, signing, completion, or anchor error consumes the
@@ -125,11 +145,11 @@ outside the anchored session.
 ## Public API boundary
 
 The node voting facade retains read-only position, phase, lock, and valid-value
-diagnostics. Current-round decision effects, raw cursor-supplied round
-advancement, vote preparation, anchor acknowledgement, and key use are
-crate-private. External callers therefore cannot split the ordered
-current-round sequence or insert a caller-constructed unsigned effect between
-its steps.
+diagnostics. Identity-free phase closes, current-round decision effects, raw
+cursor-supplied round advancement, vote preparation, anchor acknowledgement,
+and key use are absent or crate-private. External callers therefore cannot
+split the ordered current-round sequence, retarget a delayed close to the live
+round, or insert a caller-constructed unsigned effect between its steps.
 
 Height advancement and finality-conflict stop remain available only through the
 separate consuming node-finality coordinator. Higher-round quorum catch-up and
@@ -144,7 +164,9 @@ This coordinator does not define or perform:
 - proposal authoring, producer signing, proposal or certificate selection, or
   competing-evidence ranking;
 - asynchronous event routing, proposal or vote buffering, phase scheduling,
-  timeout measurement, timeout expiry, retry, or daemon ownership;
+  timer generation or cancellation, timeout measurement, timeout expiry,
+  same-position event freshness, retry ordering, exactly-once delivery, or
+  daemon ownership;
 - network transport, peer discovery, provenance trust, or peer-selected
   admission;
 - finality, height advancement, branch selection, sibling winner selection,
