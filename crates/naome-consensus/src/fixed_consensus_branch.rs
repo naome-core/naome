@@ -753,6 +753,15 @@ impl<'round, 'branch> VerifiedFixedConsensusProposalV0<'round, 'branch> {
         self.proposal.canonical_artifact_bytes()
     }
 
+    /// Discards this branch-relative admission token and returns its raw inputs.
+    ///
+    /// The returned bytes retain no verified status or branch authority. Any
+    /// later use must derive a live typed round and repeat complete proposal and
+    /// payload verification.
+    pub fn into_unverified_canonical_inputs(self) -> (Vec<u8>, Vec<u8>) {
+        self.proposal.into_unverified_canonical_inputs()
+    }
+
     /// Returns the immutable artifact state after the admitted candidate.
     pub const fn artifact_successor(&self) -> &ArtifactChainBranchSnapshot {
         self.proposal.artifact_successor()

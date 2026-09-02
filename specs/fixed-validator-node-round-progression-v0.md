@@ -134,8 +134,8 @@ performs repair, rollback, or automatic retry.
 This coordinator does not define or perform:
 
 - timeout measurement, timeout expiry, timer generation or cancellation, phase
-  scheduling, backoff, event-loop ordering, buffering, retry, or daemon
-  ownership;
+  scheduling, backoff, event-loop ordering, node-owned or shared buffering,
+  retry, or daemon ownership;
 - vote observation, collection, accumulation, delivery-completeness inference,
   filtering, grouping, competing-evidence choice, proposal selection, or
   proposal authoring beyond all-or-nothing construction from one exact
@@ -153,3 +153,5 @@ These remain required product capabilities where the consensus ledger says so;
 this boundary only applies an exact caller-classified Precommit close or fully
 verified certificate derived from one prebuilt certificate or one complete
 caller-supplied batch to the already-decided local round and phase progression.
+A separately retained proposal token cannot invoke or replace this progression
+authority.
