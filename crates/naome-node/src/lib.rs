@@ -15,13 +15,17 @@
 //! sequential, quorum-driven, and caller-routed exact signed-vote-batch round
 //! progression, caller-owned fully verified higher-round proposal deferral, and
 //! a separately composed bounded volatile proposal buffer with mandatory later
-//! full branch-relative re-verification, while
+//! full branch-relative re-verification plus exact caller-addressed
+//! proposal/prevote-quorum catch-up and anchored precommit completion, while
 //! deliberately leaving daemon, networking, timeout measurement and expiry,
 //! key-loading, event selection, and branch-selection policy to later components.
 
 mod fixed_validator_startup;
 
 pub use fixed_validator_startup::{
+    FixedValidatorNodeBufferedProposalPrecommitErrorV0,
+    FixedValidatorNodeBufferedProposalPrecommitOutcomeV0,
+    FixedValidatorNodeBufferedProposalPrecommitRejectionV0,
     FixedValidatorNodeCandidateBackedFinalityErrorV0,
     FixedValidatorNodeCandidateBackedFinalityOutcomeV0,
     FixedValidatorNodeCandidateBackedFinalityRejectionV0,

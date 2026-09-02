@@ -144,5 +144,8 @@ This component does not define or perform:
 
 These exclusions are authority boundaries for this volatile buffer, not claims
 that the broader product does not require those capabilities. In particular,
-certificate-coupled use and release of buffered proposals, durable recovery,
-routing, daemon orchestration, and networking remain separate backlog work.
+the separately specified exact caller-addressed coordinator may borrow this
+buffer for one certificate-coupled use and success-only release without adding
+authority to the buffer itself. Automatic observation and pairing, durable
+recovery, routing, daemon orchestration, and networking remain separate backlog
+work.

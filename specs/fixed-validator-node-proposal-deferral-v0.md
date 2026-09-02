@@ -163,5 +163,7 @@ This component does not define or perform:
 These exclusions are authority boundaries for this deferral component, not a
 claim that the broader product does not require the corresponding capabilities.
 The separately specified buffer supplies only bounded volatile token ownership.
-The consensus ledger continues to track certificate-coupled release, durable
-recovery, routing, orchestration, and networking separately.
+The separately specified exact caller-addressed pairing coordinator supplies
+one certificate-coupled release path. The consensus ledger continues to track
+automatic observation and pairing, durable recovery, routing, orchestration,
+and networking separately.

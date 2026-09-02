@@ -153,5 +153,7 @@ These remain required product capabilities where the consensus ledger says so;
 this boundary only applies an exact caller-classified Precommit close or fully
 verified certificate derived from one prebuilt certificate or one complete
 caller-supplied batch to the already-decided local round and phase progression.
-A separately retained proposal token cannot invoke or replace this progression
-authority.
+A separately retained proposal token cannot by itself invoke or replace this
+progression authority. The separate exact pairing coordinator must independently
+verify both the proposal and matching certificate before it can reuse the
+specialized durable higher-round transition.

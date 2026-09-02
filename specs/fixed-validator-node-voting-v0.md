@@ -222,7 +222,7 @@ exact-event-bound sequential round advancement remain separate consuming
 round-progression operations and are not reclassified as current-round vote
 execution.
 
-The separate higher-round proposal-deferral boundary may later yield its exact
+The separate higher-round proposal-deferral boundary can yield its exact
 retained control and payload as raw byte vectors. Supplying those vectors to a
 proposal-bearing method here receives the same complete current-round
 verification as every other direct-byte call; the earlier deferral and its

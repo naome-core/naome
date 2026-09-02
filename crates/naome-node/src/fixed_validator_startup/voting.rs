@@ -262,7 +262,7 @@ enum CurrentRoundErrorV0 {
     Fatal(FixedValidatorNodeVoteExecutionErrorV0),
 }
 
-enum FinishedVoteV0 {
+pub(super) enum FinishedVoteV0 {
     Signed(FixedValidatorSignedVoteV0),
     SignerStopped(FixedValidatorVoteSafetyHaltV0),
 }
@@ -1055,7 +1055,7 @@ fn rejected<'node>(
     }
 }
 
-fn finish_vote(
+pub(super) fn finish_vote(
     signing_session: &mut FixedValidatorNodeVotingSessionV0<'_>,
     round: &FixedConsensusRoundV0<'_>,
     effect: FixedValidatorUnsignedVoteEffectV0,

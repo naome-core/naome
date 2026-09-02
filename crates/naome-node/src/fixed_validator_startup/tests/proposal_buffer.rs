@@ -1,8 +1,9 @@
 use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
     ConsensusProposalVerifyError, ConsensusVoteRole, ConsensusVoteTarget, FixedConsensusBranchV0,
-    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, ProducerAuthorizationVerifyError,
-    QuorumCertificateVerifyError, VerifiedFixedConsensusProposalV0,
+    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorLockStateError,
+    ProducerAuthorizationVerifyError, QuorumCertificateVerifyError,
+    VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::FixedValidatorSignedVoteV0;
 
@@ -67,6 +68,47 @@ fn expect_signed<'node>(
         }
         FixedValidatorNodeVoteExecutionOutcomeV0::SignerStopped(_) => {
             panic!("expected continued signing authority")
+        }
+    }
+}
+
+fn expect_buffered_precommit_signed<'node>(
+    outcome: FixedValidatorNodeBufferedProposalPrecommitOutcomeV0<'node>,
+) -> (
+    FixedValidatorNodeSigningScopeV0<'node>,
+    FixedValidatorSignedVoteV0,
+    Box<FixedValidatorNodeDeferredProposalV0>,
+) {
+    match outcome {
+        FixedValidatorNodeBufferedProposalPrecommitOutcomeV0::Signed {
+            scope,
+            vote,
+            proposal,
+        } => (*scope, vote, proposal),
+        FixedValidatorNodeBufferedProposalPrecommitOutcomeV0::Rejected { .. } => {
+            panic!("expected exact pairing to complete one signed precommit")
+        }
+        FixedValidatorNodeBufferedProposalPrecommitOutcomeV0::SignerStopped(_) => {
+            panic!("expected continued signing authority")
+        }
+    }
+}
+
+fn expect_buffered_precommit_rejected<'node>(
+    outcome: FixedValidatorNodeBufferedProposalPrecommitOutcomeV0<'node>,
+) -> (
+    FixedValidatorNodeSigningScopeV0<'node>,
+    FixedValidatorNodeBufferedProposalPrecommitRejectionV0,
+) {
+    match outcome {
+        FixedValidatorNodeBufferedProposalPrecommitOutcomeV0::Rejected { scope, rejection } => {
+            (*scope, *rejection)
+        }
+        FixedValidatorNodeBufferedProposalPrecommitOutcomeV0::Signed { .. } => {
+            panic!("expected exact pairing to reject without signing")
+        }
+        FixedValidatorNodeBufferedProposalPrecommitOutcomeV0::SignerStopped(_) => {
+            panic!("input rejection must not stop the signer")
         }
     }
 }
@@ -249,6 +291,17 @@ fn canonical_input_len(control: &[u8], payload: &[u8]) -> u64 {
         .unwrap()
         .checked_add(u64::try_from(payload.len()).unwrap())
         .unwrap()
+}
+
+fn next_anchor_collision(directory: &std::path::Path, sequence: u64) -> PathBuf {
+    let anchor_name = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .find(|name| name.ends_with(".anchor"))
+        .expect("one typed anchor file must exist");
+    let collision = directory.join(format!("{anchor_name}.tmp-{sequence:016x}"));
+    fs::write(&collision, b"deterministic anchor collision").unwrap();
+    collision
 }
 
 fn assert_empty_proposal_phase(
@@ -784,4 +837,652 @@ fn retrieved_variants_require_full_live_reverification_after_strict_reopen() {
             assert_eq!(layout.images(), after_vote);
         })
         .unwrap();
+}
+
+#[test]
+fn exact_buffered_proposal_and_prevote_quorum_sign_precommit_and_preserve_siblings() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("proposal-buffer-paired-precommit");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut buffer = FixedValidatorNodeProposalBufferV0::new(
+        FixedValidatorNodeProposalBufferLimitsV0::new(3, u64::MAX).unwrap(),
+    );
+    let before = layout.images();
+
+    let (root, certificate, control, proof_control, payload, competing_control, competing_payload) =
+        ready
+            .run_with_signing_session(|scope| {
+                let branch = scope.branch().clone();
+                let round_one = round_at(&branch, 1);
+                let round_two = round_at(&branch, 2);
+                let (value, control, payload) =
+                    proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+                let (_competing_value, competing_control, competing_payload) =
+                    proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
+                let valid_round_certificate = quorum_certificate_bytes(
+                    fixture.context,
+                    round_one.position(),
+                    ConsensusVoteRole::Prevote,
+                    ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                    &fixture.signing_key(),
+                );
+                let proof_control = proposal_control_bytes_with_valid_round(
+                    value,
+                    round_two.position(),
+                    &fixture.signing_key(),
+                    &valid_round_certificate,
+                );
+                let certificate = quorum_certificate_bytes(
+                    fixture.context,
+                    round_two.position(),
+                    ConsensusVoteRole::Prevote,
+                    ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                    &fixture.signing_key(),
+                );
+                let (scope, proposal) = defer(scope, &control, payload.clone(), 2);
+                let (scope, proof_variant) = defer(scope, &proof_control, payload.clone(), 2);
+                let (scope, competing) =
+                    defer(scope, &competing_control, competing_payload.clone(), 2);
+                expect_inserted(&mut buffer, proposal);
+                expect_inserted(&mut buffer, proof_variant);
+                expect_inserted(&mut buffer, competing);
+
+                let (mut scope, vote, released) = expect_buffered_precommit_signed(
+                    scope
+                        .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                            &mut buffer,
+                            &control,
+                            &payload,
+                            &certificate,
+                            ConsensusRound::new(2),
+                        )
+                        .unwrap(),
+                );
+                assert_eq!(vote.position(), round_two.position());
+                assert_eq!(vote.role(), ConsensusVoteRole::Precommit);
+                assert_eq!(
+                    vote.target(),
+                    ConsensusVoteTarget::Proposal(value.proposal_signing_root())
+                );
+                assert_eq!(released.canonical_proposal_control_bytes(), control);
+                assert_eq!(released.canonical_artifact_bytes(), payload);
+                assert_eq!(scope.signing_session().position(), round_two.position());
+                assert_eq!(
+                    scope.signing_session().phase(),
+                    FixedValidatorLockPhaseV0::Precommit
+                );
+                assert_eq!(
+                    scope
+                        .signing_session()
+                        .locked_value()
+                        .unwrap()
+                        .proposal_signing_root(),
+                    value.proposal_signing_root()
+                );
+                assert_eq!(
+                    scope
+                        .signing_session()
+                        .valid_value()
+                        .unwrap()
+                        .canonical_prevote_certificate(),
+                    certificate
+                );
+                assert_eq!(buffer.len(), 2);
+                assert_eq!(layout.images()[0], before[0]);
+                assert_eq!(layout.images()[1], before[1]);
+                assert_ne!(layout.images()[2], before[2]);
+                assert_ne!(layout.images()[3], before[3]);
+
+                (
+                    value.proposal_signing_root(),
+                    certificate,
+                    control,
+                    proof_control,
+                    payload,
+                    competing_control,
+                    competing_payload,
+                )
+            })
+            .unwrap();
+
+    assert!(buffer.take_exact(&control, &payload).unwrap().is_none());
+    let proof_variant = buffer
+        .take_exact(&proof_control, &payload)
+        .unwrap()
+        .unwrap();
+    assert_eq!(proof_variant.proposal_signing_root(), root);
+    let competing = buffer
+        .take_exact(&competing_control, &competing_payload)
+        .unwrap()
+        .unwrap();
+    assert_ne!(competing.proposal_signing_root(), root);
+    assert!(buffer.is_empty());
+
+    let reopened = expect_ready(
+        fixture
+            .provision(&layout, 2)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(
+                scope.signing_session().position().round(),
+                ConsensusRound::new(2)
+            );
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+            assert_eq!(layout.images()[0], before[0]);
+            assert_eq!(layout.images()[1], before[1]);
+        })
+        .unwrap();
+}
+
+#[test]
+fn buffered_pairing_rejects_missing_mismatched_and_malformed_inputs_without_effect() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("proposal-buffer-pairing-rejections");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut buffer = FixedValidatorNodeProposalBufferV0::new(
+        FixedValidatorNodeProposalBufferLimitsV0::new(3, u64::MAX).unwrap(),
+    );
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let round_one = round_at(&branch, 1);
+            let round_two = round_at(&branch, 2);
+            let (value, control, payload) =
+                proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+            let (competing_value, competing_control, competing_payload) =
+                proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
+            let valid_round_certificate = quorum_certificate_bytes(
+                fixture.context,
+                round_one.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let proof_control = proposal_control_bytes_with_valid_round(
+                value,
+                round_two.position(),
+                &fixture.signing_key(),
+                &valid_round_certificate,
+            );
+            let valid = quorum_certificate_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let wrong_round = quorum_certificate_bytes(
+                fixture.context,
+                round_one.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let wrong_role = quorum_certificate_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let nil = quorum_certificate_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                &fixture.signing_key(),
+            );
+            let wrong_root = quorum_certificate_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(competing_value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let (scope, proof_variant) = defer(scope, &proof_control, payload.clone(), 2);
+            let (scope, proposal) = defer(scope, &control, payload.clone(), 2);
+            let (scope, competing) = defer(scope, &competing_control, competing_payload.clone(), 2);
+            expect_inserted(&mut buffer, proof_variant);
+            expect_inserted(&mut buffer, proposal);
+            expect_inserted(&mut buffer, competing);
+            assert_eq!(layout.images(), before);
+
+            let mut missing_control = control.clone();
+            missing_control[0] ^= 0x01;
+            let (mut scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &missing_control,
+                        &payload,
+                        &valid,
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::ProposalUnavailable
+            ));
+            assert_eq!(buffer.len(), 3);
+            assert_eq!(layout.images(), before);
+            assert_empty_proposal_phase(&mut scope, round_zero.position());
+
+            let (scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &control,
+                        &payload,
+                        &wrong_round,
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::Quorum(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorLockStateError::HigherRoundQuorumPositionMismatch { .. }
+                    )
+            ));
+            assert_eq!(buffer.len(), 3);
+            assert_eq!(layout.images(), before);
+            let retained = buffer.drain_and_reset().collect::<Vec<_>>();
+            assert_eq!(retained.len(), 3);
+            assert_eq!(
+                retained[0].canonical_proposal_control_bytes(),
+                proof_control
+            );
+            assert_eq!(retained[0].canonical_artifact_bytes(), payload);
+            assert_eq!(retained[1].canonical_proposal_control_bytes(), control);
+            assert_eq!(retained[1].canonical_artifact_bytes(), payload);
+            assert_eq!(
+                retained[2].canonical_proposal_control_bytes(),
+                competing_control
+            );
+            assert_eq!(retained[2].canonical_artifact_bytes(), competing_payload);
+            for proposal in retained {
+                expect_inserted(&mut buffer, proposal);
+            }
+
+            let (scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &control,
+                        &payload,
+                        &wrong_role,
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::Quorum(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorLockStateError::HigherRoundQuorumRoleMismatch { .. }
+                    )
+            ));
+            assert_eq!(buffer.len(), 3);
+            assert_eq!(layout.images(), before);
+
+            let (scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &control,
+                        &payload,
+                        &nil,
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::Quorum(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorLockStateError::HigherRoundQuorumTargetMismatch { .. }
+                    )
+            ));
+            assert_eq!(buffer.len(), 3);
+            assert_eq!(layout.images(), before);
+
+            let (scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &control,
+                        &payload,
+                        &wrong_root,
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::Quorum(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorLockStateError::HigherRoundQuorumTargetMismatch { .. }
+                    )
+            ));
+            assert_eq!(buffer.len(), 3);
+            assert_eq!(layout.images(), before);
+
+            let (scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &control,
+                        &payload,
+                        &[0_u8],
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::Quorum(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorLockStateError::HigherRoundCertificatePosition(_)
+                    )
+            ));
+            assert_eq!(buffer.len(), 3);
+            assert_eq!(layout.images(), before);
+
+            let (scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &control,
+                        &payload,
+                        &valid,
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::RoundWorkLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(2) && maximum == ConsensusRound::new(1)
+            ));
+            assert_eq!(buffer.len(), 3);
+            assert_eq!(layout.images(), before);
+
+            let (mut scope, vote, released) = expect_buffered_precommit_signed(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &control,
+                        &payload,
+                        &valid,
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(released.canonical_proposal_control_bytes(), control);
+            assert_eq!(released.canonical_artifact_bytes(), payload);
+            assert_eq!(vote.position(), round_two.position());
+            assert_eq!(vote.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(
+                vote.target(),
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root())
+            );
+            assert_eq!(buffer.len(), 2);
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert_ne!(layout.images(), before);
+
+            let retained = buffer.drain_and_reset().collect::<Vec<_>>();
+            assert_eq!(retained.len(), 2);
+            assert_eq!(
+                retained[0].canonical_proposal_control_bytes(),
+                proof_control
+            );
+            assert_eq!(retained[0].canonical_artifact_bytes(), payload);
+            assert_eq!(
+                retained[1].canonical_proposal_control_bytes(),
+                competing_control
+            );
+            assert_eq!(retained[1].canonical_artifact_bytes(), competing_payload);
+        })
+        .unwrap();
+}
+
+#[test]
+fn saturated_buffer_denies_pairing_until_explicit_lossless_reset() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("proposal-buffer-pairing-saturation");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut buffer = FixedValidatorNodeProposalBufferV0::new(
+        FixedValidatorNodeProposalBufferLimitsV0::new(1, u64::MAX).unwrap(),
+    );
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_two = round_at(&branch, 2);
+            let (value, control, payload) =
+                proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+            let (_, second_control, second_payload) =
+                proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
+            let certificate = quorum_certificate_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let (scope, proposal) = defer(scope, &control, payload.clone(), 2);
+            let (scope, second) = defer(scope, &second_control, second_payload.clone(), 2);
+            expect_inserted(&mut buffer, proposal);
+            let saturation = expect_insert_error(buffer.try_insert(second));
+            assert!(saturation.newly_saturated());
+            let second = saturation.into_attempted_proposal();
+            assert_eq!(second.canonical_proposal_control_bytes(), second_control);
+            assert_eq!(second.canonical_artifact_bytes(), second_payload);
+            assert_eq!(layout.images(), before);
+
+            let (scope, rejection) = expect_buffered_precommit_rejected(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &control,
+                        &payload,
+                        &certificate,
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::Buffer(source)
+                    if source.saturation() == buffer.saturation().unwrap()
+            ));
+            assert_eq!(buffer.len(), 1);
+            assert_eq!(layout.images(), before);
+
+            let retained = buffer.drain_and_reset().collect::<Vec<_>>();
+            assert_eq!(retained.len(), 1);
+            let retained = retained.into_iter().next().unwrap();
+            assert_eq!(retained.canonical_proposal_control_bytes(), control);
+            assert_eq!(retained.canonical_artifact_bytes(), payload);
+            assert_eq!(buffer.saturation(), None);
+            expect_inserted(&mut buffer, retained);
+
+            let (mut scope, vote, released) = expect_buffered_precommit_signed(
+                scope
+                    .sign_precommit_for_buffered_higher_round_proposal_quorum(
+                        &mut buffer,
+                        &control,
+                        &payload,
+                        &certificate,
+                        ConsensusRound::new(2),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(released.canonical_proposal_control_bytes(), control);
+            assert_eq!(released.canonical_artifact_bytes(), payload);
+            assert_eq!(vote.position(), round_two.position());
+            assert_eq!(vote.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(
+                vote.target(),
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root())
+            );
+            assert!(buffer.is_empty());
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+        })
+        .unwrap();
+}
+
+#[test]
+fn buffered_pairing_durable_failures_retain_token_and_require_strict_restart() {
+    for (label, sequence) in [
+        ("checkpoint", 3_u64),
+        ("precommit-prepare", 4_u64),
+        ("precommit-complete", 5_u64),
+    ] {
+        let fixture = Fixture::new();
+        let layout = TestLayout::new(&format!("proposal-buffer-pairing-{label}"));
+        let ready = fixture
+            .provision(&layout, 8)
+            .create(fixture.signing_key())
+            .unwrap();
+        let mut buffer = FixedValidatorNodeProposalBufferV0::new(
+            FixedValidatorNodeProposalBufferLimitsV0::new(1, u64::MAX).unwrap(),
+        );
+        let before = layout.images();
+
+        let (error, control, payload) = ready
+            .run_with_signing_session(|scope| {
+                let branch = scope.branch().clone();
+                let round_two = round_at(&branch, 2);
+                let (value, control, payload) =
+                    proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+                let certificate = quorum_certificate_bytes(
+                    fixture.context,
+                    round_two.position(),
+                    ConsensusVoteRole::Prevote,
+                    ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                    &fixture.signing_key(),
+                );
+                let (scope, proposal) = defer(scope, &control, payload.clone(), 2);
+                expect_inserted(&mut buffer, proposal);
+                let collision = next_anchor_collision(&layout.vote_anchor, sequence);
+                let error = match scope.sign_precommit_for_buffered_higher_round_proposal_quorum(
+                    &mut buffer,
+                    &control,
+                    &payload,
+                    &certificate,
+                    ConsensusRound::new(2),
+                ) {
+                    Err(error) => error,
+                    Ok(_) => panic!("anchor collision must consume scope without a vote"),
+                };
+                assert_eq!(buffer.len(), 1);
+                fs::remove_file(collision).unwrap();
+                (error, control, payload)
+            })
+            .unwrap();
+
+        match sequence {
+            3 => assert!(matches!(
+                error,
+                FixedValidatorNodeBufferedProposalPrecommitErrorV0::Prepare(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }
+                    )
+            )),
+            4 => assert!(matches!(
+                error,
+                FixedValidatorNodeBufferedProposalPrecommitErrorV0::Vote(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorNodeVoteExecutionErrorV0::Prepare(inner)
+                            if matches!(
+                                inner.as_ref(),
+                                FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }
+                            )
+                    )
+            )),
+            5 => assert!(matches!(
+                error,
+                FixedValidatorNodeBufferedProposalPrecommitErrorV0::Vote(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorNodeVoteExecutionErrorV0::Sign(inner)
+                            if matches!(
+                                inner.as_ref(),
+                                FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }
+                            )
+                    )
+            )),
+            _ => unreachable!(),
+        }
+        let retained = buffer.take_exact(&control, &payload).unwrap().unwrap();
+        assert_eq!(retained.canonical_proposal_control_bytes(), control);
+        assert_eq!(retained.canonical_artifact_bytes(), payload);
+        assert_eq!(layout.images()[0], before[0]);
+        assert_eq!(layout.images()[1], before[1]);
+        assert!(matches!(
+            fixture.provision(&layout, 8).open(fixture.signing_key()),
+            Err(FixedValidatorNodeStartupErrorV0::VotePair(source))
+                if matches!(
+                    source.as_ref(),
+                    FixedValidatorAnchoredVoteSafetyJournalErrorV0::Journal(inner)
+                        if matches!(
+                            inner.as_ref(),
+                            FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind { .. }
+                        )
+                )
+        ));
+    }
 }
