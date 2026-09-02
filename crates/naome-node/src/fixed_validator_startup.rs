@@ -517,7 +517,7 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         &self.signing_session
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn signing_session_mut(&mut self) -> &mut FixedValidatorNodeVotingSessionV0<'node> {
         &mut self.signing_session
     }
