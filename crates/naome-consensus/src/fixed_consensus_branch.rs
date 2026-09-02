@@ -17,10 +17,11 @@ use super::{
     ActiveAgreementEntry, ActiveAgreementSnapshot, ActiveAgreementSnapshotError,
     ConsensusAncestryId, ConsensusContextV0, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,
     ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusRound, ConsensusValueV0,
-    ConsensusVoteRole, ConsensusVoteTarget, FixedAgreementSetId, ProposalSigningRoot,
-    ProposerPriorityStateId, ProposerSelectionError, QuorumCertificateBuildError,
-    QuorumCertificateId, QuorumCertificateVerifyError, VerifiedPrecommitCertificateV0,
-    VerifiedProducerAuthorizationV0, VerifiedQuorumCertificateV0,
+    ConsensusVoteRole, ConsensusVoteTarget, ConsensusVoteVerifyError, FixedAgreementSetId,
+    ProposalSigningRoot, ProposerPriorityStateId, ProposerSelectionError,
+    QuorumCertificateBuildError, QuorumCertificateId, QuorumCertificateVerifyError,
+    VerifiedConsensusVoteV0, VerifiedPrecommitCertificateV0, VerifiedProducerAuthorizationV0,
+    VerifiedQuorumCertificateV0,
 };
 
 /// One immutable in-memory fixed-validator consensus branch.
@@ -378,6 +379,49 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
         self.position
     }
 
+    /// Strictly admits one active fixed-set proposal prevote at this exact round.
+    ///
+    /// The complete canonical vote must authenticate this branch context and
+    /// exact position, carry the `Prevote` role and a non-nil proposal target,
+    /// and name one member of this round's immutable active snapshot. Success
+    /// does not establish that the opaque target proposal exists or is valid,
+    /// form a quorum, retain the vote, select evidence, or mutate consensus.
+    pub fn decode_and_verify_active_proposal_prevote(
+        &self,
+        canonical_signed_vote: &[u8],
+    ) -> Result<VerifiedConsensusVoteV0, FixedConsensusProposalPrevoteVerifyErrorV0> {
+        let vote =
+            VerifiedConsensusVoteV0::decode_and_verify(canonical_signed_vote, self.branch.context)
+                .map_err(FixedConsensusProposalPrevoteVerifyErrorV0::Vote)?;
+        if vote.position() != self.position {
+            return Err(
+                FixedConsensusProposalPrevoteVerifyErrorV0::PositionMismatch {
+                    expected: self.position,
+                    actual: vote.position(),
+                },
+            );
+        }
+        if vote.role() != ConsensusVoteRole::Prevote {
+            return Err(FixedConsensusProposalPrevoteVerifyErrorV0::RoleMismatch {
+                actual: vote.role(),
+            });
+        }
+        if vote.target() == ConsensusVoteTarget::Nil {
+            return Err(FixedConsensusProposalPrevoteVerifyErrorV0::NilTarget);
+        }
+        if self
+            .snapshot
+            .entries()
+            .binary_search_by_key(&vote.signer(), |entry| entry.consensus_key())
+            .is_err()
+        {
+            return Err(FixedConsensusProposalPrevoteVerifyErrorV0::InactiveSigner {
+                signer: vote.signer(),
+            });
+        }
+        Ok(vote)
+    }
+
     /// Returns the exact derived proposer.
     pub const fn proposer(&self) -> ConsensusKey {
         self.proposer
@@ -619,6 +663,57 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
             round: self,
             envelope,
         })
+    }
+}
+
+/// Rejection while admitting one signed proposal prevote to an exact fixed round.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixedConsensusProposalPrevoteVerifyErrorV0 {
+    /// Canonical framing, context, public key, or signature verification failed.
+    Vote(ConsensusVoteVerifyError),
+    /// The authenticated vote names another height or round.
+    PositionMismatch {
+        expected: ConsensusPosition,
+        actual: ConsensusPosition,
+    },
+    /// The authenticated vote is a precommit rather than a prevote.
+    RoleMismatch { actual: ConsensusVoteRole },
+    /// Nil prevotes do not address a proposal and cannot enter this boundary.
+    NilTarget,
+    /// The verified signer is absent from this round's immutable active set.
+    InactiveSigner { signer: ConsensusKey },
+}
+
+impl fmt::Display for FixedConsensusProposalPrevoteVerifyErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Vote(source) => write!(formatter, "proposal prevote is invalid: {source}"),
+            Self::PositionMismatch { expected, actual } => write!(
+                formatter,
+                "proposal prevote position {actual:?} does not equal exact round {expected:?}"
+            ),
+            Self::RoleMismatch { actual } => {
+                write!(formatter, "proposal prevote role {actual:?} is not Prevote")
+            }
+            Self::NilTarget => formatter.write_str("proposal prevote target must be non-nil"),
+            Self::InactiveSigner { signer } => write!(
+                formatter,
+                "proposal prevote signer {signer:?} is not active at this round"
+            ),
+        }
+    }
+}
+
+impl Error for FixedConsensusProposalPrevoteVerifyErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Vote(source) => Some(source),
+            Self::PositionMismatch { .. }
+            | Self::RoleMismatch { .. }
+            | Self::NilTarget
+            | Self::InactiveSigner { .. } => None,
+        }
     }
 }
 

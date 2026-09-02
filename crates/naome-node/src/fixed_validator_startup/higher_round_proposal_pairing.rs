@@ -5,8 +5,9 @@ use std::fmt;
 
 use naome_consensus::{
     ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError, ConsensusRound,
-    ConsensusVoteRole, ConsensusVoteTarget, FixedConsensusBranchV0, FixedConsensusRoundV0,
-    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, ProposerSelectionError,
+    ConsensusVoteRole, ConsensusVoteTarget, FixedConsensusBranchCoordinateV0,
+    FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
+    FixedValidatorLockStateError, ProposalSigningRoot, ProposerSelectionError,
     QuorumCertificateBuildError,
 };
 use naome_storage::{
@@ -14,9 +15,11 @@ use naome_storage::{
     FixedValidatorVoteSafetyJournalErrorV0,
 };
 
+use super::higher_round_inbox::FixedValidatorNodeRetainedProposalPrevoteV0;
 use super::voting::{FinishedVoteV0, FixedValidatorNodeVoteExecutionErrorV0, finish_vote};
 use super::{
     FixedValidatorNodeCurrentRoundErrorV0, FixedValidatorNodeDeferredProposalV0,
+    FixedValidatorNodeHigherRoundInboxAccessErrorV0, FixedValidatorNodeHigherRoundInboxV0,
     FixedValidatorNodeProposalBufferAccessErrorV0, FixedValidatorNodeProposalBufferV0,
     FixedValidatorNodeSigningScopeV0, FixedValidatorNodeVotingSessionV0,
     fixed_validator_node_current_round,
@@ -53,8 +56,27 @@ pub enum FixedValidatorNodeBufferedProposalPrecommitOutcomeV0<'node> {
 pub enum FixedValidatorNodeBufferedProposalPrecommitRejectionV0 {
     /// Saturation denied ordinary access to the proposal buffer.
     Buffer(FixedValidatorNodeProposalBufferAccessErrorV0),
+    /// Saturation denied all ordinary access to a combined higher-round inbox.
+    Inbox(FixedValidatorNodeHigherRoundInboxAccessErrorV0),
     /// No retained token matches both caller-supplied canonical byte strings.
     ProposalUnavailable,
+    /// The caller-selected pairing height differs from the live signer height.
+    PairingHeightMismatch {
+        signer: ConsensusHeight,
+        requested: ConsensusHeight,
+    },
+    /// No proposal-bearing root has strict greater-than-two-thirds prevote weight.
+    NoActionableProposalQuorum { position: ConsensusPosition },
+    /// More than one proposal-bearing root has an actionable prevote quorum.
+    AmbiguousActionableProposalQuorums {
+        position: ConsensusPosition,
+        first: ProposalSigningRoot,
+        second: ProposalSigningRoot,
+    },
+    /// Temporary deterministic-selection storage could not be reserved.
+    SelectionReservation(TryReserveError),
+    /// Previously admitted retained prevotes failed exact quorum reconstruction.
+    RetainedPrevoteInvariant(Box<QuorumCertificateBuildError>),
     /// The first possible or paired round exceeds persisted finality policy.
     FinalityRoundLimitExceeded {
         required: ConsensusRound,
@@ -84,8 +106,33 @@ impl fmt::Display for FixedValidatorNodeBufferedProposalPrecommitRejectionV0 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Buffer(source) => source.fmt(formatter),
+            Self::Inbox(source) => source.fmt(formatter),
             Self::ProposalUnavailable => formatter
                 .write_str("no buffered proposal matches both exact canonical input strings"),
+            Self::PairingHeightMismatch { signer, requested } => write!(
+                formatter,
+                "caller-selected pairing height {requested:?} differs from signer height {signer:?}"
+            ),
+            Self::NoActionableProposalQuorum { position } => write!(
+                formatter,
+                "no uniquely pairable proposal prevote quorum is retained at {position:?}"
+            ),
+            Self::AmbiguousActionableProposalQuorums {
+                position,
+                first,
+                second,
+            } => write!(
+                formatter,
+                "multiple proposal prevote quorums are pairable at {position:?}: {first:?} and {second:?}"
+            ),
+            Self::SelectionReservation(source) => write!(
+                formatter,
+                "higher-round inbox selection reservation failed without mutation: {source}"
+            ),
+            Self::RetainedPrevoteInvariant(source) => write!(
+                formatter,
+                "retained proposal prevotes failed exact quorum reconstruction: {source}"
+            ),
             Self::FinalityRoundLimitExceeded { required, maximum } => write!(
                 formatter,
                 "buffered proposal pairing requires {required:?}, above node finality ceiling {maximum:?}"
@@ -120,11 +167,17 @@ impl Error for FixedValidatorNodeBufferedProposalPrecommitRejectionV0 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Buffer(source) => Some(source),
+            Self::Inbox(source) => Some(source),
+            Self::SelectionReservation(source) => Some(source),
+            Self::RetainedPrevoteInvariant(source) => Some(source.as_ref()),
             Self::PayloadCopy(source) => Some(source),
             Self::Proposal(source) => Some(source.as_ref()),
             Self::QuorumConstruction(source) => Some(source.as_ref()),
             Self::Quorum(source) => Some(source.as_ref()),
             Self::ProposalUnavailable
+            | Self::PairingHeightMismatch { .. }
+            | Self::NoActionableProposalQuorum { .. }
+            | Self::AmbiguousActionableProposalQuorums { .. }
             | Self::FinalityRoundLimitExceeded { .. }
             | Self::RoundWorkLimitExceeded { .. }
             | Self::NotHigherThanSigner { .. } => None,
@@ -324,6 +377,282 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
             inclusive_maximum_round,
         )
     }
+
+    /// Explicitly pairs one uniquely actionable proposal/prevote inbox root.
+    ///
+    /// The caller selects the exact position and work ceiling. This operation
+    /// inspects only the complete currently retained, unsaturated inbox subset
+    /// admitted against this branch and position. It selects the
+    /// lexicographically smallest complete canonical vote per signer and target,
+    /// counts each active signer once for that target, and proceeds only when
+    /// exactly one proposal-bearing target forms a strict supermajority. It then
+    /// selects the lexicographically smallest `(proposal control, artifact)`
+    /// variant for that root and reuses the existing fully verifying anchored
+    /// precommit path.
+    ///
+    /// Zero or multiple actionable roots leave the scope and inbox unchanged.
+    /// Success removes only the selected proposal token after the signed
+    /// precommit completes; all retained votes and every sibling proposal remain.
+    /// This explicit local choice is not automatic event routing, globally
+    /// canonical evidence selection, finality, fork choice, or peer authority.
+    pub fn try_pair_higher_round_inbox_at(
+        self,
+        inbox: &mut FixedValidatorNodeHigherRoundInboxV0,
+        position: ConsensusPosition,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeBufferedProposalPrecommitOutcomeV0<'node>,
+        FixedValidatorNodeBufferedProposalPrecommitErrorV0,
+    > {
+        let finality_maximum_round = ConsensusRound::new(self.finality.replay_limit().max_round());
+        let current_round = match current_round(
+            &self.branch,
+            &self.signing_session,
+            inclusive_maximum_round,
+            finality_maximum_round.value(),
+        ) {
+            Ok(round) => round,
+            Err(CurrentRoundErrorV0::Rejected(rejection)) => {
+                return Ok(rejected(self, rejection));
+            }
+            Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+        };
+        let current_position = current_round.position();
+        if let Err(error) = successor_capacity(
+            current_position.round(),
+            inclusive_maximum_round,
+            finality_maximum_round,
+        ) {
+            drop(current_round);
+            return match error {
+                CurrentRoundErrorV0::Rejected(rejection) => Ok(rejected(self, rejection)),
+                CurrentRoundErrorV0::Fatal(error) => Err(error),
+            };
+        }
+        if position.height() != current_position.height() {
+            drop(current_round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::PairingHeightMismatch {
+                    signer: current_position.height(),
+                    requested: position.height(),
+                },
+            ));
+        }
+        if position.round() <= current_position.round() {
+            drop(current_round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::NotHigherThanSigner {
+                    signer: current_position.round(),
+                    proposal: position.round(),
+                },
+            ));
+        }
+        if position.round() > finality_maximum_round {
+            drop(current_round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::FinalityRoundLimitExceeded {
+                    required: position.round(),
+                    maximum: finality_maximum_round,
+                },
+            ));
+        }
+        if position.round() > inclusive_maximum_round {
+            drop(current_round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::RoundWorkLimitExceeded {
+                    required: position.round(),
+                    maximum: inclusive_maximum_round,
+                },
+            ));
+        }
+        if let Err(source) = inbox.ensure_access() {
+            drop(current_round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::Inbox(source),
+            ));
+        }
+
+        let parent_coordinate = self.branch.coordinate();
+        let target_round = derive_round(&self.branch, position.round())
+            .map_err(FixedValidatorNodeBufferedProposalPrecommitErrorV0::Round)?;
+        let selection =
+            match select_actionable_inbox_root(inbox, &target_round, parent_coordinate, position) {
+                Ok(selection) => selection,
+                Err(rejection) => {
+                    drop(target_round);
+                    drop(current_round);
+                    return Ok(rejected(self, rejection));
+                }
+            };
+        drop(target_round);
+        drop(current_round);
+
+        let (proposal_signing_root, canonical_prevote_certificate) = match selection {
+            ActionableInboxSelectionV0::None => {
+                return Ok(rejected(
+                    self,
+                    FixedValidatorNodeBufferedProposalPrecommitRejectionV0::NoActionableProposalQuorum {
+                        position,
+                    },
+                ));
+            }
+            ActionableInboxSelectionV0::Ambiguous { first, second } => {
+                return Ok(rejected(
+                    self,
+                    FixedValidatorNodeBufferedProposalPrecommitRejectionV0::AmbiguousActionableProposalQuorums {
+                        position,
+                        first,
+                        second,
+                    },
+                ));
+            }
+            ActionableInboxSelectionV0::One {
+                proposal_signing_root,
+                canonical_prevote_certificate,
+            } => (proposal_signing_root, canonical_prevote_certificate),
+        };
+
+        let (control, artifact, selected_proposal_bytes) = inbox
+            .proposals
+            .preferred_proposal_inputs(parent_coordinate, position, proposal_signing_root)
+            .expect("one actionable inbox root retains a matching proposal");
+        let canonical_proposal_control_bytes = match try_copy_bytes(control) {
+            Ok(bytes) => bytes,
+            Err(source) => {
+                return Ok(rejected(
+                    self,
+                    FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation(
+                        source,
+                    ),
+                ));
+            }
+        };
+        let canonical_artifact_bytes = match try_copy_bytes(artifact) {
+            Ok(bytes) => bytes,
+            Err(source) => {
+                return Ok(rejected(
+                    self,
+                    FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation(
+                        source,
+                    ),
+                ));
+            }
+        };
+
+        let outcome = self.sign_precommit_for_buffered_higher_round_proposal_quorum(
+            &mut inbox.proposals,
+            &canonical_proposal_control_bytes,
+            &canonical_artifact_bytes,
+            &canonical_prevote_certificate,
+            inclusive_maximum_round,
+        );
+        if matches!(
+            &outcome,
+            Ok(FixedValidatorNodeBufferedProposalPrecommitOutcomeV0::Signed { .. })
+        ) {
+            inbox.note_selected_proposal_removed(selected_proposal_bytes);
+        }
+        outcome
+    }
+}
+
+enum ActionableInboxSelectionV0 {
+    None,
+    One {
+        proposal_signing_root: ProposalSigningRoot,
+        canonical_prevote_certificate: Vec<u8>,
+    },
+    Ambiguous {
+        first: ProposalSigningRoot,
+        second: ProposalSigningRoot,
+    },
+}
+
+fn select_actionable_inbox_root(
+    inbox: &FixedValidatorNodeHigherRoundInboxV0,
+    target_round: &FixedConsensusRoundV0<'_>,
+    parent_coordinate: FixedConsensusBranchCoordinateV0,
+    position: ConsensusPosition,
+) -> Result<ActionableInboxSelectionV0, FixedValidatorNodeBufferedProposalPrecommitRejectionV0> {
+    let mut candidates: Vec<&FixedValidatorNodeRetainedProposalPrevoteV0> = Vec::new();
+    candidates
+        .try_reserve_exact(inbox.prevotes.len())
+        .map_err(FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation)?;
+    candidates.extend(inbox.prevotes.iter().filter(|vote| {
+        vote.parent_coordinate() == parent_coordinate && vote.position() == position
+    }));
+    candidates.sort_unstable_by(|left, right| {
+        left.proposal_signing_root()
+            .cmp(&right.proposal_signing_root())
+            .then_with(|| left.signer().cmp(&right.signer()))
+            .then_with(|| left.canonical_bytes().cmp(right.canonical_bytes()))
+    });
+
+    let mut actionable: Option<(ProposalSigningRoot, Vec<u8>)> = None;
+    let mut start = 0;
+    while start < candidates.len() {
+        let root = candidates[start].proposal_signing_root();
+        let mut end = start + 1;
+        while end < candidates.len() && candidates[end].proposal_signing_root() == root {
+            end += 1;
+        }
+        if inbox
+            .proposals
+            .has_proposal_identity(parent_coordinate, position, root)
+        {
+            let mut preferred_votes: Vec<&[u8]> = Vec::new();
+            preferred_votes.try_reserve_exact(end - start).map_err(
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation,
+            )?;
+            let mut previous_signer = None;
+            for vote in &candidates[start..end] {
+                if previous_signer == Some(vote.signer()) {
+                    continue;
+                }
+                previous_signer = Some(vote.signer());
+                preferred_votes.push(vote.canonical_bytes());
+            }
+            match target_round.build_quorum_certificate_from_signed_votes(
+                &preferred_votes,
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(root),
+            ) {
+                Ok(certificate) => {
+                    if let Some((first, _)) = actionable {
+                        return Ok(ActionableInboxSelectionV0::Ambiguous {
+                            first,
+                            second: root,
+                        });
+                    }
+                    actionable = Some((root, certificate.to_canonical_bytes()));
+                }
+                Err(QuorumCertificateBuildError::InsufficientAgreementWeight { .. }) => {}
+                Err(source) => {
+                    return Err(
+                        FixedValidatorNodeBufferedProposalPrecommitRejectionV0::RetainedPrevoteInvariant(
+                            Box::new(source),
+                        ),
+                    );
+                }
+            }
+        }
+        start = end;
+    }
+
+    Ok(match actionable {
+        Some((proposal_signing_root, canonical_prevote_certificate)) => {
+            ActionableInboxSelectionV0::One {
+                proposal_signing_root,
+                canonical_prevote_certificate,
+            }
+        }
+        None => ActionableInboxSelectionV0::None,
+    })
 }
 
 fn sign_precommit_for_buffered_higher_round_proposal_input<'node>(
@@ -418,7 +747,7 @@ fn sign_precommit_for_buffered_higher_round_proposal_input<'node>(
         ));
     }
 
-    let copied_payload = match try_copy_payload(lease.proposal().canonical_artifact_bytes()) {
+    let copied_payload = match try_copy_bytes(lease.proposal().canonical_artifact_bytes()) {
         Ok(bytes) => bytes,
         Err(source) => {
             drop(current_round);
@@ -579,7 +908,7 @@ fn sign_precommit_for_buffered_higher_round_proposal_input<'node>(
     }
 }
 
-fn try_copy_payload(bytes: &[u8]) -> Result<Vec<u8>, TryReserveError> {
+fn try_copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, TryReserveError> {
     let mut copied = Vec::new();
     copied.try_reserve_exact(bytes.len())?;
     copied.extend_from_slice(bytes);

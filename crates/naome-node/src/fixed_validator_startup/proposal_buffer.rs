@@ -4,6 +4,8 @@ use std::fmt;
 use std::iter::FusedIterator;
 use std::mem;
 
+use naome_consensus::{ConsensusPosition, FixedConsensusBranchCoordinateV0, ProposalSigningRoot};
+
 use super::FixedValidatorNodeDeferredProposalV0;
 
 /// Positive caller-local limits for one volatile deferred-proposal buffer.
@@ -510,6 +512,66 @@ impl FixedValidatorNodeProposalBufferV0 {
         Ok(FixedValidatorNodeProposalBufferInsertOutcomeV0::Inserted)
     }
 
+    pub(super) fn contains_exact_proposal(
+        &self,
+        proposal: &FixedValidatorNodeDeferredProposalV0,
+    ) -> bool {
+        self.proposals
+            .iter()
+            .any(|entry| exact_inputs_match(&entry.proposal, proposal))
+    }
+
+    pub(super) fn has_proposal_identity(
+        &self,
+        parent_coordinate: FixedConsensusBranchCoordinateV0,
+        position: ConsensusPosition,
+        proposal_signing_root: ProposalSigningRoot,
+    ) -> bool {
+        self.proposals.iter().any(|entry| {
+            proposal_identity_matches(
+                &entry.proposal,
+                parent_coordinate,
+                position,
+                proposal_signing_root,
+            )
+        })
+    }
+
+    pub(super) fn preferred_proposal_inputs(
+        &self,
+        parent_coordinate: FixedConsensusBranchCoordinateV0,
+        position: ConsensusPosition,
+        proposal_signing_root: ProposalSigningRoot,
+    ) -> Option<(&[u8], &[u8], u64)> {
+        self.proposals
+            .iter()
+            .filter(|entry| {
+                proposal_identity_matches(
+                    &entry.proposal,
+                    parent_coordinate,
+                    position,
+                    proposal_signing_root,
+                )
+            })
+            .min_by(|left, right| {
+                left.proposal
+                    .canonical_proposal_control_bytes()
+                    .cmp(right.proposal.canonical_proposal_control_bytes())
+                    .then_with(|| {
+                        left.proposal
+                            .canonical_artifact_bytes()
+                            .cmp(right.proposal.canonical_artifact_bytes())
+                    })
+            })
+            .map(|entry| {
+                (
+                    entry.proposal.canonical_proposal_control_bytes(),
+                    entry.proposal.canonical_artifact_bytes(),
+                    entry.canonical_input_bytes,
+                )
+            })
+    }
+
     /// Removes only one healthy-buffer token matching both complete byte strings.
     ///
     /// No position, proposal root, insertion order, or evidence preference is
@@ -547,16 +609,20 @@ impl FixedValidatorNodeProposalBufferV0 {
         }) else {
             return Ok(None);
         };
+        Ok(Some(self.take_lease_at(index)))
+    }
+
+    fn take_lease_at(&mut self, index: usize) -> FixedValidatorNodeProposalBufferLeaseV0<'_> {
         let entry = self.proposals.swap_remove(index);
         self.total_canonical_input_bytes = self
             .total_canonical_input_bytes
             .checked_sub(entry.canonical_input_bytes)
             .expect("retained proposal byte accounting stays internally consistent");
-        Ok(Some(FixedValidatorNodeProposalBufferLeaseV0 {
+        FixedValidatorNodeProposalBufferLeaseV0 {
             buffer: self,
             entry: Some(entry),
             original_index: index,
-        }))
+        }
     }
 
     /// Returns every retained token and restores the same buffer to healthy empty.
@@ -604,6 +670,17 @@ fn exact_inputs_match_bytes(
 ) -> bool {
     retained.canonical_proposal_control_bytes() == canonical_proposal_control_bytes
         && retained.canonical_artifact_bytes() == canonical_artifact_bytes
+}
+
+fn proposal_identity_matches(
+    proposal: &FixedValidatorNodeDeferredProposalV0,
+    parent_coordinate: FixedConsensusBranchCoordinateV0,
+    position: ConsensusPosition,
+    proposal_signing_root: ProposalSigningRoot,
+) -> bool {
+    proposal.parent_coordinate() == parent_coordinate
+        && proposal.position() == position
+        && proposal.proposal_signing_root() == proposal_signing_root
 }
 
 fn canonical_input_bytes(proposal: &FixedValidatorNodeDeferredProposalV0) -> Option<u64> {
