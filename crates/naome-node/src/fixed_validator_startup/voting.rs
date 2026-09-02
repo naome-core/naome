@@ -5,10 +5,10 @@ use std::fmt;
 use naome_chain::{ArtifactBlockId, ArtifactChainId};
 use naome_consensus::{
     ConsensusContextV0, ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError,
-    ConsensusRound, ConsensusValueV0, ConsensusVoteRole, ConsensusVoteTarget,
-    FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, FixedValidatorUnsignedVoteEffectV0, ProposerSelectionError,
-    QuorumCertificateBuildError, VerifiedFixedConsensusProposalV0,
+    ConsensusRound, ConsensusVoteRole, ConsensusVoteTarget, FixedConsensusBranchV0,
+    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorLockStateError,
+    FixedValidatorUnsignedVoteEffectV0, ProposerSelectionError, QuorumCertificateBuildError,
+    VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::{
     ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, CanonicalArtifactPayloadStore,
@@ -17,6 +17,10 @@ use naome_storage::{
     FixedValidatorVoteSafetyJournalErrorV0,
 };
 
+use super::candidate_backed_proposal::{
+    CandidateBackedProposalSourceErrorV0,
+    load_candidate_backed_proposal_payload as load_candidate_backed_proposal_payload_source,
+};
 use super::{
     FixedValidatorNodeCurrentRoundErrorV0, FixedValidatorNodeSigningScopeV0,
     FixedValidatorNodeVotingSessionV0, fixed_validator_node_current_round,
@@ -871,107 +875,45 @@ fn load_candidate_backed_proposal_payload(
     expected_target: ArtifactBlockId,
     canonical_proposal_control_bytes: &[u8],
 ) -> Result<Vec<u8>, FixedValidatorNodeVoteRejectionV0> {
-    let value = decode_candidate_backed_proposal_value(
+    load_candidate_backed_proposal_payload_source(
         round,
+        candidates,
+        payloads,
         expected_target,
         canonical_proposal_control_bytes,
-    )?;
-    let expected_chain = round.context().chain_id();
-    if candidates.chain_id() != expected_chain {
-        return Err(FixedValidatorNodeVoteRejectionV0::CandidateChainMismatch {
-            expected: expected_chain,
-            actual: candidates.chain_id(),
-        });
-    }
-    let candidate = candidates
-        .get(expected_target)
-        .map_err(|source| FixedValidatorNodeVoteRejectionV0::CandidateStore(Box::new(source)))?
-        .ok_or(FixedValidatorNodeVoteRejectionV0::CandidateUnavailable {
-            target: expected_target,
-        })?;
-    if candidate != value.artifact_block() {
-        return Err(FixedValidatorNodeVoteRejectionV0::CandidateBlockMismatch {
-            target: expected_target,
-        });
-    }
-    let artifact_id = candidate.artifact_id();
-    let payload = payloads
-        .get(artifact_id)
-        .map_err(|source| FixedValidatorNodeVoteRejectionV0::PayloadStore(Box::new(source)))?
-        .ok_or(FixedValidatorNodeVoteRejectionV0::PayloadUnavailable {
-            target: expected_target,
-        })?;
-    debug_assert_eq!(payload.artifact_id(), artifact_id);
-    Ok(payload.into_canonical_artifact_bytes().into_vec())
+    )
+    .map_err(candidate_backed_proposal_rejection)
 }
 
-fn decode_candidate_backed_proposal_value(
-    round: &FixedConsensusRoundV0<'_>,
-    expected_target: ArtifactBlockId,
-    canonical_proposal_control_bytes: &[u8],
-) -> Result<ConsensusValueV0, FixedValidatorNodeVoteRejectionV0> {
-    let proposal_error = |source| FixedValidatorNodeVoteRejectionV0::Proposal(Box::new(source));
-    if canonical_proposal_control_bytes.len() > VerifiedFixedConsensusProposalV0::MAX_BYTE_LENGTH {
-        return Err(proposal_error(ConsensusProposalVerifyError::InputTooLong {
-            actual: canonical_proposal_control_bytes.len(),
-            maximum: VerifiedFixedConsensusProposalV0::MAX_BYTE_LENGTH,
-        }));
+fn candidate_backed_proposal_rejection(
+    source: CandidateBackedProposalSourceErrorV0,
+) -> FixedValidatorNodeVoteRejectionV0 {
+    match source {
+        CandidateBackedProposalSourceErrorV0::Proposal(source) => {
+            FixedValidatorNodeVoteRejectionV0::Proposal(source)
+        }
+        CandidateBackedProposalSourceErrorV0::CandidateChainMismatch { expected, actual } => {
+            FixedValidatorNodeVoteRejectionV0::CandidateChainMismatch { expected, actual }
+        }
+        CandidateBackedProposalSourceErrorV0::CandidateStore(source) => {
+            FixedValidatorNodeVoteRejectionV0::CandidateStore(source)
+        }
+        CandidateBackedProposalSourceErrorV0::CandidateUnavailable { target } => {
+            FixedValidatorNodeVoteRejectionV0::CandidateUnavailable { target }
+        }
+        CandidateBackedProposalSourceErrorV0::ProposalTargetMismatch { expected, actual } => {
+            FixedValidatorNodeVoteRejectionV0::ProposalTargetMismatch { expected, actual }
+        }
+        CandidateBackedProposalSourceErrorV0::CandidateBlockMismatch { target } => {
+            FixedValidatorNodeVoteRejectionV0::CandidateBlockMismatch { target }
+        }
+        CandidateBackedProposalSourceErrorV0::PayloadStore(source) => {
+            FixedValidatorNodeVoteRejectionV0::PayloadStore(source)
+        }
+        CandidateBackedProposalSourceErrorV0::PayloadUnavailable { target } => {
+            FixedValidatorNodeVoteRejectionV0::PayloadUnavailable { target }
+        }
     }
-    if canonical_proposal_control_bytes.len() < VerifiedFixedConsensusProposalV0::MIN_BYTE_LENGTH {
-        return Err(proposal_error(
-            ConsensusProposalVerifyError::InvalidLength {
-                actual: canonical_proposal_control_bytes.len(),
-                minimum: VerifiedFixedConsensusProposalV0::MIN_BYTE_LENGTH,
-            },
-        ));
-    }
-    let value = ConsensusValueV0::from_canonical_bytes(
-        &canonical_proposal_control_bytes[..ConsensusValueV0::BYTE_LENGTH],
-    )
-    .map_err(|source| proposal_error(ConsensusProposalVerifyError::Value(source)))?;
-    let expected_context = round.context();
-    let actual_context = value.context();
-    if actual_context.chain_id() != expected_context.chain_id() {
-        return Err(proposal_error(
-            ConsensusProposalVerifyError::ChainIdMismatch {
-                expected: expected_context.chain_id(),
-                actual: actual_context.chain_id(),
-            },
-        ));
-    }
-    if actual_context.genesis_id() != expected_context.genesis_id() {
-        return Err(proposal_error(
-            ConsensusProposalVerifyError::GenesisIdMismatch {
-                expected: expected_context.genesis_id(),
-                actual: actual_context.genesis_id(),
-            },
-        ));
-    }
-    if actual_context.protocol_version() != expected_context.protocol_version() {
-        return Err(proposal_error(
-            ConsensusProposalVerifyError::ProtocolVersionMismatch {
-                expected: expected_context.protocol_version(),
-                actual: actual_context.protocol_version(),
-            },
-        ));
-    }
-    let snapshot = round.position();
-    if value.height() != snapshot.height() {
-        return Err(proposal_error(
-            ConsensusProposalVerifyError::SnapshotHeightMismatch {
-                value: value.height(),
-                snapshot,
-            },
-        ));
-    }
-    let actual_target = value.artifact_block().id();
-    if actual_target != expected_target {
-        return Err(FixedValidatorNodeVoteRejectionV0::ProposalTargetMismatch {
-            expected: expected_target,
-            actual: actual_target,
-        });
-    }
-    Ok(value)
 }
 
 fn decide_and_finish_proposal_vote(

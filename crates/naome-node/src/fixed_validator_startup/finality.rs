@@ -1,15 +1,17 @@
 use std::error::Error;
 use std::fmt;
 
-use naome_chain::ArtifactBlockId;
+use naome_chain::{ArtifactBlockId, ArtifactChainId};
 use naome_consensus::{
     ConsensusAncestryId, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError, ConsensusHeight,
     ConsensusPosition, ConsensusProposalVerifyError, ConsensusRound,
     FixedConsensusBoundedSeparateFinalityVerifyError, FixedConsensusBranchV0,
-    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0, ProposerSelectionError,
+    FixedConsensusPrecommitBatchSealErrorV0, FixedConsensusRoundV0,
+    OwnedVerifiedFixedConsensusTransitionV0, ProposerSelectionError,
 };
 use naome_storage::{
-    ArtifactBlockCandidateStore, CandidateBackedFinalityErrorV0, CanonicalArtifactPayloadStore,
+    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, CandidateBackedFinalityErrorV0,
+    CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError,
     FixedValidatorAnchoredFinalityJournalV0, FixedValidatorFinalityCommitOutcomeV0,
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityHaltV0,
     FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
@@ -17,6 +19,9 @@ use naome_storage::{
     commit_candidate_backed_anchored_finality_v0,
 };
 
+use super::candidate_backed_proposal::{
+    CandidateBackedProposalSourceErrorV0, load_candidate_backed_proposal_payload,
+};
 use super::{FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeSigningScopeV0};
 
 /// Nonterminal selected-finality result paired with continued signing authority.
@@ -60,12 +65,48 @@ pub enum FixedValidatorNodeFinalityOutcomeV0<'node> {
     FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
 }
 
+/// Explicit round-routing metadata for one exact finality vote batch.
+///
+/// This value keeps the caller-selected evidence round distinct from the
+/// inclusive local work ceiling. Construction performs no validation and
+/// grants no evidence or finality authority; each consuming ingress enforces
+/// its own signer-relative and persisted-ceiling policy before input work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FixedValidatorNodeFinalityRoundRouteV0 {
+    evidence_round: ConsensusRound,
+    inclusive_maximum_round: ConsensusRound,
+}
+
+impl FixedValidatorNodeFinalityRoundRouteV0 {
+    /// Names the exact caller-routed evidence round and inclusive work ceiling.
+    pub const fn new(
+        evidence_round: ConsensusRound,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Self {
+        Self {
+            evidence_round,
+            inclusive_maximum_round,
+        }
+    }
+
+    /// Returns the caller-routed round every proposal and vote must authenticate.
+    pub const fn evidence_round(self) -> ConsensusRound {
+        self.evidence_round
+    }
+
+    /// Returns the inclusive caller-local sequential work ceiling.
+    pub const fn inclusive_maximum_round(self) -> ConsensusRound {
+        self.inclusive_maximum_round
+    }
+}
+
 /// Result of admitting exact-current-round evidence into node-owned finality.
 ///
 /// A rejection returns the unchanged signing scope because no finality or signer
-/// effect occurred. Once the proposal and precommit certificate produce an
-/// owned sealed transition, the existing consuming finality outcome is retained
-/// without reinterpretation.
+/// effect occurred. Once the proposal and supplied or batch-constructed
+/// precommit certificate produce an owned sealed transition, the existing
+/// consuming finality outcome is retained without reinterpretation.
 #[must_use]
 #[non_exhaustive]
 pub enum FixedValidatorNodeCurrentRoundFinalityOutcomeV0<'node> {
@@ -91,6 +132,8 @@ pub enum FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
     Proposal(Box<ConsensusProposalVerifyError>),
     /// The supplied certificate could not seal the admitted proposal.
     PrecommitCertificate(Box<ConsensusEnvelopeVerifyError>),
+    /// The exact caller-routed signed-precommit batch could not seal the proposal.
+    PrecommitBatch(Box<FixedConsensusPrecommitBatchSealErrorV0>),
 }
 
 impl fmt::Display for FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
@@ -110,6 +153,10 @@ impl fmt::Display for FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
                 formatter,
                 "current-round finality precommit certificate was rejected: {source}"
             ),
+            Self::PrecommitBatch(source) => write!(
+                formatter,
+                "current-round finality precommit batch was rejected: {source}"
+            ),
         }
     }
 }
@@ -119,6 +166,7 @@ impl Error for FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
         match self {
             Self::Proposal(source) => Some(source.as_ref()),
             Self::PrecommitCertificate(source) => Some(source.as_ref()),
+            Self::PrecommitBatch(source) => Some(source.as_ref()),
             Self::RoundWorkLimitExceeded { .. } => None,
         }
     }
@@ -224,6 +272,8 @@ pub enum FixedValidatorNodeLowerRoundFinalityRejectionV0 {
     },
     /// Certificate routing or complete branch-relative verification failed.
     Evidence(Box<FixedConsensusBoundedSeparateFinalityVerifyError>),
+    /// The exact caller-routed signed-precommit batch could not seal the proposal.
+    PrecommitBatch(Box<FixedConsensusPrecommitBatchSealErrorV0>),
 }
 
 impl fmt::Display for FixedValidatorNodeLowerRoundFinalityRejectionV0 {
@@ -243,6 +293,10 @@ impl fmt::Display for FixedValidatorNodeLowerRoundFinalityRejectionV0 {
                     "lower-round finality evidence was rejected: {source}"
                 )
             }
+            Self::PrecommitBatch(source) => write!(
+                formatter,
+                "lower-round finality precommit batch was rejected: {source}"
+            ),
         }
     }
 }
@@ -251,7 +305,167 @@ impl Error for FixedValidatorNodeLowerRoundFinalityRejectionV0 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Evidence(source) => Some(source.as_ref()),
+            Self::PrecommitBatch(source) => Some(source.as_ref()),
             Self::NotEarlierThanSigner { .. } | Self::RoundWorkLimitExceeded { .. } => None,
+        }
+    }
+}
+
+/// Result of candidate-backed exact signed-precommit-batch finality admission.
+///
+/// Every rejection returns the unchanged node signing scope because no sealed
+/// transition reached finality. Once complete source, proposal, and batch
+/// verification produces that transition, the existing consuming finality and
+/// signer-height handoff contract applies unchanged.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeCandidateBackedFinalityOutcomeV0<'node> {
+    /// The sealed candidate-backed transition reached the existing coordinator.
+    Finality(FixedValidatorNodeFinalityOutcomeV0<'node>),
+    /// Caller-routed input or source state was rejected before any node effect.
+    Rejected {
+        scope: Box<FixedValidatorNodeSigningScopeV0<'node>>,
+        rejection: Box<FixedValidatorNodeCandidateBackedFinalityRejectionV0>,
+    },
+}
+
+/// A pre-effect candidate-backed exact-precommit-batch rejection.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum FixedValidatorNodeCandidateBackedFinalityRejectionV0 {
+    /// The caller requested a work ceiling above the persisted finality ceiling.
+    RoundWorkLimitExceedsFinality {
+        requested: ConsensusRound,
+        finality: ConsensusRound,
+    },
+    /// The explicit evidence round exceeds the caller-local work ceiling.
+    EvidenceRoundWorkLimitExceeded {
+        required: ConsensusRound,
+        maximum: ConsensusRound,
+    },
+    /// The candidate store belongs to another artifact chain.
+    CandidateChainMismatch {
+        expected: ArtifactChainId,
+        actual: ArtifactChainId,
+    },
+    /// Exact candidate lookup or integrity verification failed.
+    CandidateStore(Box<ArtifactBlockCandidateStoreError>),
+    /// The exact caller-selected candidate is not retained.
+    CandidateUnavailable { target: ArtifactBlockId },
+    /// The proposal embeds another block than the caller-selected target.
+    ProposalTargetMismatch {
+        expected: ArtifactBlockId,
+        actual: ArtifactBlockId,
+    },
+    /// The retained candidate bytes differ from the proposal's exact block.
+    CandidateBlockMismatch { target: ArtifactBlockId },
+    /// Exact payload lookup or integrity verification failed.
+    PayloadStore(Box<CanonicalArtifactPayloadStoreError>),
+    /// The retained candidate's exact committed payload is unavailable.
+    PayloadUnavailable { target: ArtifactBlockId },
+    /// Complete proposal-control or artifact-payload admission failed.
+    Proposal(Box<ConsensusProposalVerifyError>),
+    /// The exact signed-precommit batch could not seal the admitted proposal.
+    PrecommitBatch(Box<FixedConsensusPrecommitBatchSealErrorV0>),
+}
+
+impl fmt::Display for FixedValidatorNodeCandidateBackedFinalityRejectionV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RoundWorkLimitExceedsFinality {
+                requested,
+                finality,
+            } => write!(
+                formatter,
+                "candidate-backed finality work ceiling {requested:?} exceeds persisted finality ceiling {finality:?}"
+            ),
+            Self::EvidenceRoundWorkLimitExceeded { required, maximum } => write!(
+                formatter,
+                "candidate-backed finality evidence round {required:?} exceeds caller-local ceiling {maximum:?}"
+            ),
+            Self::CandidateChainMismatch { expected, actual } => write!(
+                formatter,
+                "candidate store chain mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::CandidateStore(source) => source.fmt(formatter),
+            Self::CandidateUnavailable { target } => {
+                write!(formatter, "candidate {target:?} is not retained")
+            }
+            Self::ProposalTargetMismatch { expected, actual } => write!(
+                formatter,
+                "proposal target mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::CandidateBlockMismatch { target } => write!(
+                formatter,
+                "retained candidate {target:?} differs from the proposal block"
+            ),
+            Self::PayloadStore(source) => source.fmt(formatter),
+            Self::PayloadUnavailable { target } => {
+                write!(
+                    formatter,
+                    "payload for candidate {target:?} is not retained"
+                )
+            }
+            Self::Proposal(source) => write!(
+                formatter,
+                "candidate-backed finality proposal was rejected: {source}"
+            ),
+            Self::PrecommitBatch(source) => write!(
+                formatter,
+                "candidate-backed finality precommit batch was rejected: {source}"
+            ),
+        }
+    }
+}
+
+impl Error for FixedValidatorNodeCandidateBackedFinalityRejectionV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::CandidateStore(source) => Some(source.as_ref()),
+            Self::PayloadStore(source) => Some(source.as_ref()),
+            Self::Proposal(source) => Some(source.as_ref()),
+            Self::PrecommitBatch(source) => Some(source.as_ref()),
+            Self::RoundWorkLimitExceedsFinality { .. }
+            | Self::EvidenceRoundWorkLimitExceeded { .. }
+            | Self::CandidateChainMismatch { .. }
+            | Self::CandidateUnavailable { .. }
+            | Self::ProposalTargetMismatch { .. }
+            | Self::CandidateBlockMismatch { .. }
+            | Self::PayloadUnavailable { .. } => None,
+        }
+    }
+}
+
+/// A consuming candidate-backed exact-precommit-batch finality failure.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum FixedValidatorNodeCandidateBackedFinalityErrorV0 {
+    /// The exact caller-routed evidence round could not be reconstructed.
+    Round(ProposerSelectionError),
+    /// Sealed evidence reached the existing consuming finality coordinator.
+    Finality(Box<FixedValidatorNodeFinalityErrorV0>),
+}
+
+impl fmt::Display for FixedValidatorNodeCandidateBackedFinalityErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Round(source) => write!(
+                formatter,
+                "candidate-backed finality round could not be reconstructed: {source}"
+            ),
+            Self::Finality(source) => write!(
+                formatter,
+                "candidate-backed batch finality coordination failed: {source}"
+            ),
+        }
+    }
+}
+
+impl Error for FixedValidatorNodeCandidateBackedFinalityErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Round(source) => Some(source),
+            Self::Finality(source) => Some(source.as_ref()),
         }
     }
 }
@@ -430,53 +644,39 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeCurrentRoundFinalityOutcomeV0<'node>,
         FixedValidatorNodeCurrentRoundFinalityErrorV0,
     > {
-        let finality_maximum_round = ConsensusRound::new(self.finality.replay_limit().max_round());
-        let signer_position = self.signing_session.position();
-        let round = match current_round_for_finality(
-            &self.branch,
-            signer_position,
-            inclusive_maximum_round,
-            finality_maximum_round,
-        ) {
-            Ok(round) => round,
-            Err(CurrentRoundFinalityRoundErrorV0::Rejected(rejection)) => {
-                return Ok(current_round_finality_rejected(self, rejection));
-            }
-            Err(CurrentRoundFinalityRoundErrorV0::Fatal(error)) => return Err(error),
-        };
-        let proposal = match round.decode_and_verify_proposal_control(
+        commit_current_round_finality_with_precommits(
+            self,
             canonical_proposal_control_bytes,
             canonical_artifact_bytes,
-        ) {
-            Ok(proposal) => proposal,
-            Err(source) => {
-                drop(round);
-                return Ok(current_round_finality_rejected(
-                    self,
-                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::Proposal(Box::new(source)),
-                ));
-            }
-        };
-        let transition =
-            match proposal.seal_with_precommit_certificate(canonical_precommit_certificate) {
-                Ok(transition) => transition.into_owned(),
-                Err(source) => {
-                    drop(round);
-                    return Ok(current_round_finality_rejected(
-                        self,
-                        FixedValidatorNodeCurrentRoundFinalityRejectionV0::PrecommitCertificate(
-                            Box::new(source),
-                        ),
-                    ));
-                }
-            };
-        drop(round);
+            CurrentRoundPrecommitInputV0::CanonicalCertificate(canonical_precommit_certificate),
+            inclusive_maximum_round,
+        )
+    }
 
-        self.commit_verified_finality(transition)
-            .map(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality)
-            .map_err(|source| {
-                FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(Box::new(source))
-            })
+    /// Finalizes one exact-current-round proposal from an exact precommit batch.
+    ///
+    /// Proposal admission precedes all-or-nothing quorum construction. Every
+    /// supplied vote must authenticate the node-derived current round,
+    /// precommit role, and admitted proposal root. The batch is not observed,
+    /// filtered, retained, grouped, or selected, and all pre-sealing rejection
+    /// returns the unchanged signing scope.
+    pub fn commit_current_round_finality_vote_batch(
+        self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_signed_precommits: &[&[u8]],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeCurrentRoundFinalityOutcomeV0<'node>,
+        FixedValidatorNodeCurrentRoundFinalityErrorV0,
+    > {
+        commit_current_round_finality_with_precommits(
+            self,
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+            CurrentRoundPrecommitInputV0::ExactSignedVotes(canonical_signed_precommits),
+            inclusive_maximum_round,
+        )
     }
 
     /// Finalizes one strictly earlier-round proposal from its separate messages.
@@ -555,6 +755,87 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
             })
     }
 
+    /// Finalizes one explicitly routed strictly earlier-round proposal from an
+    /// exact signed-precommit batch.
+    ///
+    /// The route's evidence round is bounded metadata only. It must be below
+    /// the signer round and within the route's caller-local work ceiling before
+    /// sequential derivation begins; the admitted proposal and every signed
+    /// precommit must then independently authenticate that exact derived
+    /// position. The batch is never filtered, retained, grouped, or selected.
+    /// Every pre-sealing rejection returns the unchanged scope.
+    pub fn commit_lower_round_finality_vote_batch(
+        self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_signed_precommits: &[&[u8]],
+        route: FixedValidatorNodeFinalityRoundRouteV0,
+    ) -> Result<
+        FixedValidatorNodeLowerRoundFinalityOutcomeV0<'node>,
+        FixedValidatorNodeLowerRoundFinalityErrorV0,
+    > {
+        let evidence_round = route.evidence_round();
+        let inclusive_maximum_round = route.inclusive_maximum_round();
+        let finality_maximum_round = ConsensusRound::new(self.finality.replay_limit().max_round());
+        let signer_position = self.signing_session.position();
+        lower_round_finality_preflight(&self.branch, signer_position, finality_maximum_round)?;
+        if evidence_round >= signer_position.round() {
+            return Ok(lower_round_finality_rejected(
+                self,
+                FixedValidatorNodeLowerRoundFinalityRejectionV0::NotEarlierThanSigner {
+                    evidence: evidence_round,
+                    signer: signer_position.round(),
+                },
+            ));
+        }
+        if evidence_round > inclusive_maximum_round {
+            return Ok(lower_round_finality_rejected(
+                self,
+                FixedValidatorNodeLowerRoundFinalityRejectionV0::RoundWorkLimitExceeded {
+                    required: evidence_round,
+                    maximum: inclusive_maximum_round,
+                },
+            ));
+        }
+        let round = derive_finality_round(&self.branch, evidence_round)
+            .map_err(FixedValidatorNodeLowerRoundFinalityErrorV0::Round)?;
+        let proposal = match round.decode_and_verify_proposal_control(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+        ) {
+            Ok(proposal) => proposal,
+            Err(source) => {
+                drop(round);
+                return Ok(lower_round_finality_rejected(
+                    self,
+                    FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(Box::new(
+                        FixedConsensusBoundedSeparateFinalityVerifyError::Proposal(source),
+                    )),
+                ));
+            }
+        };
+        let transition = match proposal.seal_with_precommit_vote_batch(canonical_signed_precommits)
+        {
+            Ok(transition) => transition.into_owned(),
+            Err(source) => {
+                drop(round);
+                return Ok(lower_round_finality_rejected(
+                    self,
+                    FixedValidatorNodeLowerRoundFinalityRejectionV0::PrecommitBatch(Box::new(
+                        source,
+                    )),
+                ));
+            }
+        };
+        drop(round);
+
+        self.commit_verified_finality(transition)
+            .map(FixedValidatorNodeLowerRoundFinalityOutcomeV0::Finality)
+            .map_err(|source| {
+                FixedValidatorNodeLowerRoundFinalityErrorV0::Finality(Box::new(source))
+            })
+    }
+
     /// Consumes one sealed transition and couples its finality result to the signer.
     ///
     /// A new child returns a replacement scope only after both anchored journals
@@ -565,6 +846,14 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     pub fn commit_verified_finality(
         self,
         transition: OwnedVerifiedFixedConsensusTransitionV0,
+    ) -> Result<FixedValidatorNodeFinalityOutcomeV0<'node>, FixedValidatorNodeFinalityErrorV0> {
+        self.commit_verified_finality_with_origin(transition, FinalityTransitionOriginV0::Direct)
+    }
+
+    fn commit_verified_finality_with_origin(
+        self,
+        transition: OwnedVerifiedFixedConsensusTransitionV0,
+        origin: FinalityTransitionOriginV0,
     ) -> Result<FixedValidatorNodeFinalityOutcomeV0<'node>, FixedValidatorNodeFinalityErrorV0> {
         let Self {
             finality,
@@ -581,11 +870,24 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
                 envelope_id,
                 state_id,
             } => {
-                let selection = FixedValidatorNodeFinalitySelectionV0::Finalized {
-                    position,
-                    ancestry_id,
-                    envelope_id,
-                    state_id,
+                let selection = match origin {
+                    FinalityTransitionOriginV0::Direct => {
+                        FixedValidatorNodeFinalitySelectionV0::Finalized {
+                            position,
+                            ancestry_id,
+                            envelope_id,
+                            state_id,
+                        }
+                    }
+                    FinalityTransitionOriginV0::CandidateBacked(target) => {
+                        FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                            target,
+                            position,
+                            ancestry_id,
+                            envelope_id,
+                            state_id,
+                        }
+                    }
                 };
                 continue_after_finalized(finality, signing_session, position, selection)
             }
@@ -614,6 +916,109 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
                 ))
             }
         }
+    }
+
+    /// Finalizes one exact caller-selected retained candidate from an exact
+    /// signed-precommit batch at an explicitly routed round.
+    ///
+    /// The route's evidence round is bounded metadata only. Unlike the
+    /// specialized direct lower-round method, this compatibility sibling
+    /// preserves the existing candidate-backed envelope path's acceptance of
+    /// any round within both caller and persisted finality ceilings, including
+    /// a round above the signer. The proposal and every vote must independently
+    /// authenticate the derived round before the sealed transition reaches
+    /// finality. Candidate and payload stores remain availability sources; no
+    /// durable source entry or byte is mutated, while an integrity failure may
+    /// poison only its owning live source handle under the reopen contract.
+    pub fn commit_candidate_backed_finality_vote_batch(
+        self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: ArtifactBlockId,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_signed_precommits: &[&[u8]],
+        route: FixedValidatorNodeFinalityRoundRouteV0,
+    ) -> Result<
+        FixedValidatorNodeCandidateBackedFinalityOutcomeV0<'node>,
+        FixedValidatorNodeCandidateBackedFinalityErrorV0,
+    > {
+        let evidence_round = route.evidence_round();
+        let inclusive_maximum_round = route.inclusive_maximum_round();
+        let finality_maximum_round = ConsensusRound::new(self.finality.replay_limit().max_round());
+        if inclusive_maximum_round > finality_maximum_round {
+            return Ok(candidate_backed_finality_rejected(
+                self,
+                FixedValidatorNodeCandidateBackedFinalityRejectionV0::RoundWorkLimitExceedsFinality {
+                    requested: inclusive_maximum_round,
+                    finality: finality_maximum_round,
+                },
+            ));
+        }
+        if evidence_round > inclusive_maximum_round {
+            return Ok(candidate_backed_finality_rejected(
+                self,
+                FixedValidatorNodeCandidateBackedFinalityRejectionV0::EvidenceRoundWorkLimitExceeded {
+                    required: evidence_round,
+                    maximum: inclusive_maximum_round,
+                },
+            ));
+        }
+        let round = derive_finality_round(&self.branch, evidence_round)
+            .map_err(FixedValidatorNodeCandidateBackedFinalityErrorV0::Round)?;
+        let canonical_artifact_bytes = match load_candidate_backed_proposal_payload(
+            &round,
+            candidates,
+            payloads,
+            expected_target,
+            canonical_proposal_control_bytes,
+        ) {
+            Ok(bytes) => bytes,
+            Err(source) => {
+                drop(round);
+                return Ok(candidate_backed_finality_rejected(
+                    self,
+                    candidate_backed_finality_source_rejection(source),
+                ));
+            }
+        };
+        let proposal = match round.decode_and_verify_proposal_control(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+        ) {
+            Ok(proposal) => proposal,
+            Err(source) => {
+                drop(round);
+                return Ok(candidate_backed_finality_rejected(
+                    self,
+                    FixedValidatorNodeCandidateBackedFinalityRejectionV0::Proposal(Box::new(
+                        source,
+                    )),
+                ));
+            }
+        };
+        let transition = match proposal.seal_with_precommit_vote_batch(canonical_signed_precommits)
+        {
+            Ok(transition) => transition.into_owned(),
+            Err(source) => {
+                drop(round);
+                return Ok(candidate_backed_finality_rejected(
+                    self,
+                    FixedValidatorNodeCandidateBackedFinalityRejectionV0::PrecommitBatch(Box::new(
+                        source,
+                    )),
+                ));
+            }
+        };
+        drop(round);
+
+        self.commit_verified_finality_with_origin(
+            transition,
+            FinalityTransitionOriginV0::CandidateBacked(expected_target),
+        )
+        .map(FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Finality)
+        .map_err(|source| {
+            FixedValidatorNodeCandidateBackedFinalityErrorV0::Finality(Box::new(source))
+        })
     }
 
     /// Consumes one exact retained candidate and couples its finality to the signer.
@@ -698,9 +1103,154 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum FinalityTransitionOriginV0 {
+    Direct,
+    CandidateBacked(ArtifactBlockId),
+}
+
+enum CurrentRoundPrecommitInputV0<'input> {
+    CanonicalCertificate(&'input [u8]),
+    ExactSignedVotes(&'input [&'input [u8]]),
+}
+
 enum CurrentRoundFinalityRoundErrorV0 {
     Rejected(FixedValidatorNodeCurrentRoundFinalityRejectionV0),
     Fatal(FixedValidatorNodeCurrentRoundFinalityErrorV0),
+}
+
+fn commit_current_round_finality_with_precommits<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+    canonical_proposal_control_bytes: &[u8],
+    canonical_artifact_bytes: Vec<u8>,
+    precommits: CurrentRoundPrecommitInputV0<'_>,
+    inclusive_maximum_round: ConsensusRound,
+) -> Result<
+    FixedValidatorNodeCurrentRoundFinalityOutcomeV0<'node>,
+    FixedValidatorNodeCurrentRoundFinalityErrorV0,
+> {
+    let finality_maximum_round = ConsensusRound::new(scope.finality.replay_limit().max_round());
+    let signer_position = scope.signing_session.position();
+    let round = match current_round_for_finality(
+        &scope.branch,
+        signer_position,
+        inclusive_maximum_round,
+        finality_maximum_round,
+    ) {
+        Ok(round) => round,
+        Err(CurrentRoundFinalityRoundErrorV0::Rejected(rejection)) => {
+            return Ok(current_round_finality_rejected(scope, rejection));
+        }
+        Err(CurrentRoundFinalityRoundErrorV0::Fatal(error)) => return Err(error),
+    };
+    let proposal = match round.decode_and_verify_proposal_control(
+        canonical_proposal_control_bytes,
+        canonical_artifact_bytes,
+    ) {
+        Ok(proposal) => proposal,
+        Err(source) => {
+            drop(round);
+            return Ok(current_round_finality_rejected(
+                scope,
+                FixedValidatorNodeCurrentRoundFinalityRejectionV0::Proposal(Box::new(source)),
+            ));
+        }
+    };
+    let transition = match precommits {
+        CurrentRoundPrecommitInputV0::CanonicalCertificate(canonical_certificate) => {
+            match proposal.seal_with_precommit_certificate(canonical_certificate) {
+                Ok(transition) => transition.into_owned(),
+                Err(source) => {
+                    drop(round);
+                    return Ok(current_round_finality_rejected(
+                        scope,
+                        FixedValidatorNodeCurrentRoundFinalityRejectionV0::PrecommitCertificate(
+                            Box::new(source),
+                        ),
+                    ));
+                }
+            }
+        }
+        CurrentRoundPrecommitInputV0::ExactSignedVotes(canonical_signed_precommits) => {
+            match proposal.seal_with_precommit_vote_batch(canonical_signed_precommits) {
+                Ok(transition) => transition.into_owned(),
+                Err(source) => {
+                    drop(round);
+                    return Ok(current_round_finality_rejected(
+                        scope,
+                        FixedValidatorNodeCurrentRoundFinalityRejectionV0::PrecommitBatch(
+                            Box::new(source),
+                        ),
+                    ));
+                }
+            }
+        }
+    };
+    drop(round);
+
+    scope
+        .commit_verified_finality(transition)
+        .map(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality)
+        .map_err(|source| FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(Box::new(source)))
+}
+
+fn derive_finality_round(
+    branch: &FixedConsensusBranchV0,
+    required_round: ConsensusRound,
+) -> Result<FixedConsensusRoundV0<'_>, ProposerSelectionError> {
+    let mut round = branch.begin_round_zero()?;
+    for _ in 0..required_round.value() {
+        round = round.advance_round()?;
+    }
+    debug_assert_eq!(round.position().round(), required_round);
+    Ok(round)
+}
+
+fn candidate_backed_finality_source_rejection(
+    source: CandidateBackedProposalSourceErrorV0,
+) -> FixedValidatorNodeCandidateBackedFinalityRejectionV0 {
+    match source {
+        CandidateBackedProposalSourceErrorV0::Proposal(source) => {
+            FixedValidatorNodeCandidateBackedFinalityRejectionV0::Proposal(source)
+        }
+        CandidateBackedProposalSourceErrorV0::CandidateChainMismatch { expected, actual } => {
+            FixedValidatorNodeCandidateBackedFinalityRejectionV0::CandidateChainMismatch {
+                expected,
+                actual,
+            }
+        }
+        CandidateBackedProposalSourceErrorV0::CandidateStore(source) => {
+            FixedValidatorNodeCandidateBackedFinalityRejectionV0::CandidateStore(source)
+        }
+        CandidateBackedProposalSourceErrorV0::CandidateUnavailable { target } => {
+            FixedValidatorNodeCandidateBackedFinalityRejectionV0::CandidateUnavailable { target }
+        }
+        CandidateBackedProposalSourceErrorV0::ProposalTargetMismatch { expected, actual } => {
+            FixedValidatorNodeCandidateBackedFinalityRejectionV0::ProposalTargetMismatch {
+                expected,
+                actual,
+            }
+        }
+        CandidateBackedProposalSourceErrorV0::CandidateBlockMismatch { target } => {
+            FixedValidatorNodeCandidateBackedFinalityRejectionV0::CandidateBlockMismatch { target }
+        }
+        CandidateBackedProposalSourceErrorV0::PayloadStore(source) => {
+            FixedValidatorNodeCandidateBackedFinalityRejectionV0::PayloadStore(source)
+        }
+        CandidateBackedProposalSourceErrorV0::PayloadUnavailable { target } => {
+            FixedValidatorNodeCandidateBackedFinalityRejectionV0::PayloadUnavailable { target }
+        }
+    }
+}
+
+fn candidate_backed_finality_rejected<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+    rejection: FixedValidatorNodeCandidateBackedFinalityRejectionV0,
+) -> FixedValidatorNodeCandidateBackedFinalityOutcomeV0<'node> {
+    FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Rejected {
+        scope: Box::new(scope),
+        rejection: Box::new(rejection),
+    }
 }
 
 fn current_round_for_finality<'branch>(

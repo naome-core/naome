@@ -4,7 +4,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
     ConsensusEnvelopeVerifyError, ConsensusProposalVerifyError, ConsensusVoteRole,
     ConsensusVoteTarget, FixedConsensusBoundedSeparateFinalityVerifyError,
-    PrecommitCertificateVerifyError, VerifiedFixedConsensusProposalV0,
+    FixedConsensusPrecommitBatchSealErrorV0, PrecommitCertificateVerifyError,
+    ProducerAuthorizationVerifyError, QuorumCertificateBuildError,
+    VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::{
     CandidateBackedFinalityErrorV0, FixedValidatorAnchoredFinalityJournalErrorV0,
@@ -97,6 +99,38 @@ fn expect_lower_round_finality_rejection(
     }
 }
 
+fn expect_candidate_backed_finality(
+    outcome: FixedValidatorNodeCandidateBackedFinalityOutcomeV0<'_>,
+) -> (
+    FixedValidatorNodeSigningScopeV0<'_>,
+    FixedValidatorNodeFinalitySelectionV0,
+) {
+    match outcome {
+        FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Finality(outcome) => {
+            expect_continuation(outcome)
+        }
+        FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Rejected { .. } => {
+            panic!("expected candidate-backed exact-batch finality")
+        }
+    }
+}
+
+fn expect_candidate_backed_finality_rejection(
+    outcome: FixedValidatorNodeCandidateBackedFinalityOutcomeV0<'_>,
+) -> (
+    FixedValidatorNodeSigningScopeV0<'_>,
+    FixedValidatorNodeCandidateBackedFinalityRejectionV0,
+) {
+    match outcome {
+        FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Rejected { scope, rejection } => {
+            (*scope, *rejection)
+        }
+        FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Finality(_) => {
+            panic!("expected a no-effect candidate-backed finality rejection")
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SigningScopeDiagnosticsV0 {
     position: ConsensusPosition,
@@ -133,13 +167,12 @@ fn proposal_control_bytes(
     bytes
 }
 
-fn quorum_certificate_bytes(
+fn vote_body_bytes(
     context: ConsensusContextV0,
     position: ConsensusPosition,
     role: ConsensusVoteRole,
     target: ConsensusVoteTarget,
-    signers: &[&SigningKey],
-) -> Vec<u8> {
+) -> [u8; VOTE_BODY_BYTES] {
     let mut body = [0_u8; VOTE_BODY_BYTES];
     body[0] = match role {
         ConsensusVoteRole::Prevote => 1,
@@ -157,6 +190,41 @@ fn quorum_certificate_bytes(
             body[86..].copy_from_slice(root.as_bytes());
         }
     }
+    body
+}
+
+fn signed_vote_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signer: &SigningKey,
+) -> Vec<u8> {
+    let body = vote_body_bytes(context, position, role, target);
+    let domain: &[u8] = match role {
+        ConsensusVoteRole::Prevote => b"naome:consensus-prevote-signing:v0\0",
+        ConsensusVoteRole::Precommit => b"naome:consensus-precommit-signing:v0\0",
+    };
+    let key = consensus_key(signer);
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(domain);
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(key.as_bytes());
+
+    let mut bytes = body.to_vec();
+    bytes.extend_from_slice(key.as_bytes());
+    bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
+    bytes
+}
+
+fn quorum_certificate_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signers: &[&SigningKey],
+) -> Vec<u8> {
+    let body = vote_body_bytes(context, position, role, target);
 
     let domain: &[u8] = match role {
         ConsensusVoteRole::Prevote => b"naome:consensus-prevote-signing:v0\0",
@@ -244,6 +312,32 @@ fn current_round_finality_inputs(
         certificate_signers,
     );
     (control, payload, certificate, position, value)
+}
+
+fn candidate_backed_batch_finality_inputs(
+    fixture: &Fixture,
+    branch: &FixedConsensusBranchV0,
+    selected: &ArtifactChainState,
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    axiom: ZfcAxiom,
+    round: u64,
+) -> (OwnedVerifiedFixedConsensusTransitionV0, Vec<u8>, Vec<u8>) {
+    let transition = fixture.transition(branch, selected, axiom, round);
+    retain_transition_inputs(candidates, payloads, branch, &transition);
+    let control = proposal_control_bytes(
+        transition.value(),
+        transition.position(),
+        &fixture.signing_key(),
+    );
+    let precommit = signed_vote_bytes(
+        fixture.context,
+        transition.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(transition.value().proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    (transition, control, precommit)
 }
 
 fn provision_with_finality_round_limit<'layout>(
@@ -438,12 +532,26 @@ fn current_round_finality_at_nonzero_round_advances_all_four_files_and_strictly_
                 &proposer,
                 &[&proposer],
             );
+            let expected_envelope_id = round_one
+                .decode_and_verify_proposal_control(&control, payload.clone())
+                .unwrap()
+                .seal_with_precommit_certificate(&certificate)
+                .unwrap()
+                .envelope_id();
+            let precommit = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &proposer,
+            );
+            let precommits = [precommit.as_slice()];
             let (mut scope, selection) = expect_current_round_finality(
                 scope
-                    .commit_current_round_finality(
+                    .commit_current_round_finality_vote_batch(
                         &control,
                         payload,
-                        &certificate,
+                        &precommits,
                         ConsensusRound::new(1),
                     )
                     .unwrap(),
@@ -453,8 +561,11 @@ fn current_round_finality_at_nonzero_round_advances_all_four_files_and_strictly_
                 FixedValidatorNodeFinalitySelectionV0::Finalized {
                     position: actual_position,
                     ancestry_id,
+                    envelope_id,
                     ..
-                } if actual_position == position && ancestry_id == value.ancestry_id()
+                } if actual_position == position
+                    && ancestry_id == value.ancestry_id()
+                    && envelope_id == expected_envelope_id
             ));
             assert_eq!(scope.signing_session().position().height().value(), 2);
             assert_eq!(scope.signing_session().position().round().value(), 0);
@@ -523,13 +634,30 @@ fn nonzero_lower_round_finality_ignores_later_local_phase_and_strictly_reopens()
                 &proposer,
                 &[&proposer],
             );
+            let expected_envelope_id = round_one
+                .decode_and_verify_proposal_control(&control, payload.clone())
+                .unwrap()
+                .seal_with_precommit_certificate(&certificate)
+                .unwrap()
+                .envelope_id();
+            let precommit = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &proposer,
+            );
+            let precommits = [precommit.as_slice()];
             let (mut scope, selection) = expect_lower_round_finality(
                 scope
-                    .commit_lower_round_finality(
+                    .commit_lower_round_finality_vote_batch(
                         &control,
                         payload,
-                        &certificate,
-                        ConsensusRound::new(1),
+                        &precommits,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(1),
+                            ConsensusRound::new(1),
+                        ),
                     )
                     .unwrap(),
             );
@@ -538,8 +666,11 @@ fn nonzero_lower_round_finality_ignores_later_local_phase_and_strictly_reopens()
                 FixedValidatorNodeFinalitySelectionV0::Finalized {
                     position: actual_position,
                     ancestry_id,
+                    envelope_id,
                     ..
-                } if actual_position == position && ancestry_id == value.ancestry_id()
+                } if actual_position == position
+                    && ancestry_id == value.ancestry_id()
+                    && envelope_id == expected_envelope_id
             ));
             assert_eq!(scope.signing_session().position().height().value(), 2);
             assert_eq!(scope.signing_session().position().round().value(), 0);
@@ -576,6 +707,189 @@ fn nonzero_lower_round_finality_ignores_later_local_phase_and_strictly_reopens()
                 scope.signing_session().phase(),
                 FixedValidatorLockPhaseV0::Proposal
             );
+        })
+        .unwrap();
+}
+
+#[test]
+fn lower_round_batch_routing_precedes_input_work_and_must_match_proposal_and_every_vote() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("lower-round-finality-batch-routing");
+    let proposer = fixture.signing_key();
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let selected = ArtifactChainState::new(fixture.definition);
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|mut scope| {
+            let branch = scope.branch().clone();
+            let round_one = round_at(&branch, 1);
+            let round_two = round_at(&branch, 2);
+            advance_signer_round_without_writing(&mut scope, &round_one);
+            advance_signer_round_without_writing(&mut scope, &round_two);
+            let expected_diagnostics = signing_scope_diagnostics(&mut scope);
+
+            let (next, rejection) = expect_lower_round_finality_rejection(
+                scope
+                    .commit_lower_round_finality_vote_batch(
+                        &[0_u8],
+                        Vec::new(),
+                        &[],
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(2),
+                            ConsensusRound::new(0),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeLowerRoundFinalityRejectionV0::NotEarlierThanSigner {
+                    evidence,
+                    signer,
+                } if evidence == ConsensusRound::new(2) && signer == ConsensusRound::new(2)
+            ));
+            assert_eq!(layout.images(), before);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let (next, rejection) = expect_lower_round_finality_rejection(
+                scope
+                    .commit_lower_round_finality_vote_batch(
+                        &[0_u8],
+                        Vec::new(),
+                        &[],
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(1),
+                            ConsensusRound::new(0),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeLowerRoundFinalityRejectionV0::RoundWorkLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(1)
+                    && maximum == ConsensusRound::new(0)
+            ));
+            assert_eq!(layout.images(), before);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let (control, payload, _certificate, position, value) = current_round_finality_inputs(
+                &branch,
+                &selected,
+                ZfcAxiom::Pairing,
+                1,
+                &proposer,
+                &[&proposer],
+            );
+            let wrong_position = ConsensusPosition::new(position.height(), ConsensusRound::new(0));
+            let routed_precommit = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &proposer,
+            );
+            let routed_batch = [routed_precommit.as_slice()];
+            let wrong_round_control = proposal_control_bytes(value, wrong_position, &proposer);
+            let (next, rejection) = expect_lower_round_finality_rejection(
+                scope
+                    .commit_lower_round_finality_vote_batch(
+                        &wrong_round_control,
+                        payload.clone(),
+                        &routed_batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(1),
+                            ConsensusRound::new(1),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedConsensusBoundedSeparateFinalityVerifyError::Proposal(
+                            ConsensusProposalVerifyError::ProducerAuthorization(
+                                ProducerAuthorizationVerifyError::SnapshotPositionMismatch {
+                                    authorization,
+                                    snapshot,
+                                }
+                            )
+                        ) if *authorization == wrong_position && *snapshot == position
+                    )
+            ));
+            assert_eq!(layout.images(), before);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let wrong_round_vote = signed_vote_bytes(
+                fixture.context,
+                wrong_position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &proposer,
+            );
+            let wrong_round_batch = [wrong_round_vote.as_slice()];
+            let (next, rejection) = expect_lower_round_finality_rejection(
+                scope
+                    .commit_lower_round_finality_vote_batch(
+                        &control,
+                        payload.clone(),
+                        &wrong_round_batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(1),
+                            ConsensusRound::new(1),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeLowerRoundFinalityRejectionV0::PrecommitBatch(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                            QuorumCertificateBuildError::PositionMismatch {
+                                index: 0,
+                                expected,
+                                actual,
+                            }
+                        ) if *expected == position && *actual == wrong_position
+                    )
+            ));
+            assert_eq!(layout.images(), before);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let (_scope, selection) = expect_lower_round_finality(
+                scope
+                    .commit_lower_round_finality_vote_batch(
+                        &control,
+                        payload,
+                        &routed_batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(1),
+                            ConsensusRound::new(1),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                selection,
+                FixedValidatorNodeFinalitySelectionV0::Finalized {
+                    position: actual,
+                    ..
+                } if actual == position
+            ));
         })
         .unwrap();
 }
@@ -1634,7 +1948,7 @@ fn insufficient_current_round_precommits_preserve_scope_before_a_quorum_retry() 
                 assert_eq!(round.proposer(), consensus_key(&other));
                 &other
             };
-            let (control, payload, insufficient, position, value) = current_round_finality_inputs(
+            let (control, payload, _certificate, position, value) = current_round_finality_inputs(
                 &branch,
                 &selected,
                 ZfcAxiom::Pairing,
@@ -1642,24 +1956,32 @@ fn insufficient_current_round_precommits_preserve_scope_before_a_quorum_retry() 
                 proposer,
                 &[&local],
             );
+            let insufficient = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &local,
+            );
+            let insufficient_batch = [insufficient.as_slice()];
             let expected_diagnostics = signing_scope_diagnostics(&mut scope);
             let (mut scope, rejection) = expect_current_round_finality_rejection(
                 scope
-                    .commit_current_round_finality(
+                    .commit_current_round_finality_vote_batch(
                         &control,
                         payload.clone(),
-                        &insufficient,
+                        &insufficient_batch,
                         ConsensusRound::new(0),
                     )
                     .unwrap(),
             );
             assert!(matches!(
                 rejection,
-                FixedValidatorNodeCurrentRoundFinalityRejectionV0::PrecommitCertificate(source)
+                FixedValidatorNodeCurrentRoundFinalityRejectionV0::PrecommitBatch(source)
                     if matches!(
                         source.as_ref(),
-                        ConsensusEnvelopeVerifyError::PrecommitCertificate(
-                            PrecommitCertificateVerifyError::InsufficientAgreementWeight {
+                        FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                            QuorumCertificateBuildError::InsufficientAgreementWeight {
                                 signed,
                                 total,
                             }
@@ -1670,16 +1992,24 @@ fn insufficient_current_round_precommits_preserve_scope_before_a_quorum_retry() 
             assert_eq!(layout.images(), before);
             assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
 
-            let sufficient = quorum_certificate_bytes(
+            let local_vote = signed_vote_bytes(
                 fixture.context,
                 position,
                 ConsensusVoteRole::Precommit,
                 ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
-                &[&local, &other],
+                &local,
             );
+            let other_vote = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &other,
+            );
+            let sufficient = [other_vote.as_slice(), local_vote.as_slice()];
             let (_scope, selection) = expect_current_round_finality(
                 scope
-                    .commit_current_round_finality(
+                    .commit_current_round_finality_vote_batch(
                         &control,
                         payload,
                         &sufficient,
@@ -1744,7 +2074,7 @@ fn insufficient_lower_round_precommits_preserve_scope_before_a_quorum_retry() {
             };
             let round_one = round_at(&branch, 1);
             advance_signer_round_without_writing(&mut scope, &round_one);
-            let (control, payload, insufficient, position, value) = current_round_finality_inputs(
+            let (control, payload, _certificate, position, value) = current_round_finality_inputs(
                 &branch,
                 &selected,
                 ZfcAxiom::Pairing,
@@ -1752,29 +2082,38 @@ fn insufficient_lower_round_precommits_preserve_scope_before_a_quorum_retry() {
                 proposer,
                 &[&local],
             );
+            let insufficient = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &local,
+            );
+            let insufficient_batch = [insufficient.as_slice()];
             let expected_diagnostics = signing_scope_diagnostics(&mut scope);
             let (mut scope, rejection) = expect_lower_round_finality_rejection(
                 scope
-                    .commit_lower_round_finality(
+                    .commit_lower_round_finality_vote_batch(
                         &control,
                         payload.clone(),
-                        &insufficient,
-                        ConsensusRound::new(0),
+                        &insufficient_batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(0),
+                            ConsensusRound::new(0),
+                        ),
                     )
                     .unwrap(),
             );
             assert!(matches!(
                 rejection,
-                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(source)
+                FixedValidatorNodeLowerRoundFinalityRejectionV0::PrecommitBatch(source)
                     if matches!(
                         source.as_ref(),
-                        FixedConsensusBoundedSeparateFinalityVerifyError::PrecommitCertificate(
-                            ConsensusEnvelopeVerifyError::PrecommitCertificate(
-                                PrecommitCertificateVerifyError::InsufficientAgreementWeight {
-                                    signed,
-                                    total,
-                                }
-                            )
+                        FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                            QuorumCertificateBuildError::InsufficientAgreementWeight {
+                                signed,
+                                total,
+                            }
                         ) if *signed == AgreementWeight::new(1)
                             && *total == AgreementWeight::new(3)
                     )
@@ -1782,20 +2121,31 @@ fn insufficient_lower_round_precommits_preserve_scope_before_a_quorum_retry() {
             assert_eq!(layout.images(), before);
             assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
 
-            let sufficient = quorum_certificate_bytes(
+            let local_vote = signed_vote_bytes(
                 fixture.context,
                 position,
                 ConsensusVoteRole::Precommit,
                 ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
-                &[&local, &other],
+                &local,
             );
+            let other_vote = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &other,
+            );
+            let sufficient = [other_vote.as_slice(), local_vote.as_slice()];
             let (_scope, selection) = expect_lower_round_finality(
                 scope
-                    .commit_lower_round_finality(
+                    .commit_lower_round_finality_vote_batch(
                         &control,
                         payload,
                         &sufficient,
-                        ConsensusRound::new(0),
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(0),
+                            ConsensusRound::new(0),
+                        ),
                     )
                     .unwrap(),
             );
@@ -2071,6 +2421,471 @@ fn candidate_backed_children_advance_the_node_without_mutating_sources() {
 }
 
 #[test]
+fn candidate_backed_batches_accept_current_lower_and_higher_bounded_rounds() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("candidate-backed-batch-rounds");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut candidates = create_candidate_store(&layout, fixture.definition);
+    let mut payloads = create_payload_store(&layout);
+    let mut selected = ArtifactChainState::new(fixture.definition);
+
+    let (selected_coordinate, signer_position) = ready
+        .run_with_signing_session(|scope| {
+            let (first, first_control, first_precommit) = candidate_backed_batch_finality_inputs(
+                &fixture,
+                scope.branch(),
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                ZfcAxiom::Pairing,
+                0,
+            );
+            let first_block = first.value().artifact_block();
+            let first_payload = first.canonical_artifact_bytes().to_vec();
+            let first_target = first_block.id();
+            let first_batch = [first_precommit.as_slice()];
+            let node_before_first = layout.images();
+            let sources_before_first = layout.source_images();
+            let (mut scope, selection) = expect_candidate_backed_finality(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        first_target,
+                        &first_control,
+                        &first_batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(0),
+                            ConsensusRound::new(0),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                selection,
+                FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                    target,
+                    position,
+                    ancestry_id,
+                    envelope_id,
+                    ..
+                } if target == first_target
+                    && position == first.position()
+                    && ancestry_id == first.value().ancestry_id()
+                    && envelope_id == first.envelope_id()
+            ));
+            for (index, (before, after)) in
+                node_before_first.iter().zip(layout.images()).enumerate()
+            {
+                assert_ne!(
+                    before, &after,
+                    "current-round node image {index} did not advance"
+                );
+            }
+            assert_eq!(layout.source_images(), sources_before_first);
+
+            selected.apply_block(&first_block, first_payload).unwrap();
+            let second_branch = scope.branch().clone();
+            let (second, second_control, second_precommit) = candidate_backed_batch_finality_inputs(
+                &fixture,
+                &second_branch,
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                ZfcAxiom::Union,
+                1,
+            );
+            let second_block = second.value().artifact_block();
+            let second_payload = second.canonical_artifact_bytes().to_vec();
+            let second_target = second_block.id();
+            let signer_round_one = round_at(&second_branch, 1);
+            advance_signer_round_without_writing(&mut scope, &signer_round_one);
+            let signer_round_two = round_at(&second_branch, 2);
+            advance_signer_round_without_writing(&mut scope, &signer_round_two);
+            let second_batch = [second_precommit.as_slice()];
+            let node_before_second = layout.images();
+            let sources_before_second = layout.source_images();
+            let (scope, selection) = expect_candidate_backed_finality(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        second_target,
+                        &second_control,
+                        &second_batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(1),
+                            ConsensusRound::new(2),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                selection,
+                FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                    target,
+                    position,
+                    ancestry_id,
+                    envelope_id,
+                    ..
+                } if target == second_target
+                    && position == second.position()
+                    && ancestry_id == second.value().ancestry_id()
+                    && envelope_id == second.envelope_id()
+            ));
+            for (index, (before, after)) in
+                node_before_second.iter().zip(layout.images()).enumerate()
+            {
+                assert_ne!(
+                    before, &after,
+                    "lower-round node image {index} did not advance"
+                );
+            }
+            assert_eq!(layout.source_images(), sources_before_second);
+
+            selected.apply_block(&second_block, second_payload).unwrap();
+            let (third, third_control, third_precommit) = candidate_backed_batch_finality_inputs(
+                &fixture,
+                scope.branch(),
+                &selected,
+                &mut candidates,
+                &mut payloads,
+                ZfcAxiom::PowerSet,
+                2,
+            );
+            let third_target = third.value().artifact_block().id();
+            assert_eq!(
+                scope.signing_session.position().round(),
+                ConsensusRound::new(0)
+            );
+            let third_batch = [third_precommit.as_slice()];
+            let node_before_third = layout.images();
+            let sources_before_third = layout.source_images();
+            let (mut scope, selection) = expect_candidate_backed_finality(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        third_target,
+                        &third_control,
+                        &third_batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(2),
+                            ConsensusRound::new(2),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                selection,
+                FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                    target,
+                    position,
+                    ancestry_id,
+                    envelope_id,
+                    ..
+                } if target == third_target
+                    && position == third.position()
+                    && ancestry_id == third.value().ancestry_id()
+                    && envelope_id == third.envelope_id()
+            ));
+            for (index, (before, after)) in
+                node_before_third.iter().zip(layout.images()).enumerate()
+            {
+                assert_ne!(
+                    before, &after,
+                    "higher-round node image {index} did not advance"
+                );
+            }
+            assert_eq!(layout.source_images(), sources_before_third);
+            (
+                scope.branch().coordinate(),
+                scope.signing_session().position(),
+            )
+        })
+        .unwrap();
+
+    drop(candidates);
+    drop(payloads);
+    let reopened = expect_ready(
+        fixture
+            .provision_with_catch_up_limit(&layout, 8, 0)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(scope.branch().coordinate(), selected_coordinate);
+            assert_eq!(scope.signing_session().position(), signer_position);
+        })
+        .unwrap();
+}
+
+#[test]
+fn candidate_backed_batch_rejections_preserve_scope_for_incremental_retry() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("candidate-backed-batch-retry");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut candidates = create_candidate_store(&layout, fixture.definition);
+    let mut payloads = create_payload_store(&layout);
+    let selected = ArtifactChainState::new(fixture.definition);
+    let node_before = layout.images();
+
+    ready
+        .run_with_signing_session(|mut scope| {
+            let transition = fixture.transition(scope.branch(), &selected, ZfcAxiom::Pairing, 0);
+            let block = transition.value().artifact_block();
+            let target = block.id();
+            let payload = transition.canonical_artifact_bytes().to_vec();
+            let control = proposal_control_bytes(
+                transition.value(),
+                transition.position(),
+                &fixture.signing_key(),
+            );
+            let precommit = signed_vote_bytes(
+                fixture.context,
+                transition.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(transition.value().proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let batch = [precommit.as_slice()];
+            let expected_diagnostics = signing_scope_diagnostics(&mut scope);
+            let empty_sources = layout.source_images();
+
+            let (next, rejection) = expect_candidate_backed_finality_rejection(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        target,
+                        &[0_u8],
+                        &[],
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(0),
+                            ConsensusRound::new(9),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCandidateBackedFinalityRejectionV0::RoundWorkLimitExceedsFinality {
+                    requested,
+                    finality,
+                } if requested == ConsensusRound::new(9)
+                    && finality == ConsensusRound::new(8)
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), empty_sources);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let (next, rejection) = expect_candidate_backed_finality_rejection(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        target,
+                        &[0_u8],
+                        &[],
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(1),
+                            ConsensusRound::new(0),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCandidateBackedFinalityRejectionV0::EvidenceRoundWorkLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(1)
+                    && maximum == ConsensusRound::new(0)
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), empty_sources);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let (next, rejection) = expect_candidate_backed_finality_rejection(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        target,
+                        &control,
+                        &batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(0),
+                            ConsensusRound::new(0),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCandidateBackedFinalityRejectionV0::CandidateUnavailable {
+                    target: actual,
+                } if actual == target
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), empty_sources);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let _ = candidates.insert(&block).unwrap();
+            let candidate_only_sources = layout.source_images();
+            let (next, rejection) = expect_candidate_backed_finality_rejection(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        target,
+                        &control,
+                        &batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(0),
+                            ConsensusRound::new(0),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCandidateBackedFinalityRejectionV0::PayloadUnavailable {
+                    target: actual,
+                } if actual == target
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), candidate_only_sources);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let _ = payloads
+                .validate_and_insert_branch_payload(
+                    scope.branch().artifact_snapshot(),
+                    &block,
+                    payload,
+                )
+                .unwrap();
+            let complete_sources = layout.source_images();
+            let routed_position = ConsensusPosition::new(
+                transition.position().height(),
+                ConsensusRound::new(1),
+            );
+            let routed_precommit = signed_vote_bytes(
+                fixture.context,
+                routed_position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(transition.value().proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let routed_batch = [routed_precommit.as_slice()];
+            let (next, rejection) = expect_candidate_backed_finality_rejection(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        target,
+                        &control,
+                        &routed_batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(1),
+                            ConsensusRound::new(1),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCandidateBackedFinalityRejectionV0::Proposal(source)
+                    if matches!(
+                        source.as_ref(),
+                        ConsensusProposalVerifyError::ProducerAuthorization(
+                            ProducerAuthorizationVerifyError::SnapshotPositionMismatch {
+                                authorization,
+                                snapshot,
+                            }
+                        ) if *authorization == transition.position()
+                            && *snapshot == routed_position
+                    )
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), complete_sources);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let duplicate_batch = [precommit.as_slice(), precommit.as_slice()];
+            let (next, rejection) = expect_candidate_backed_finality_rejection(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        target,
+                        &control,
+                        &duplicate_batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(0),
+                            ConsensusRound::new(0),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCandidateBackedFinalityRejectionV0::PrecommitBatch(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                            QuorumCertificateBuildError::DuplicateSigner { signer }
+                        ) if *signer == consensus_key(&fixture.signing_key())
+                    )
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), complete_sources);
+            scope = next;
+            assert_eq!(signing_scope_diagnostics(&mut scope), expected_diagnostics);
+
+            let (_scope, selection) = expect_candidate_backed_finality(
+                scope
+                    .commit_candidate_backed_finality_vote_batch(
+                        &mut candidates,
+                        &mut payloads,
+                        target,
+                        &control,
+                        &batch,
+                        FixedValidatorNodeFinalityRoundRouteV0::new(
+                            ConsensusRound::new(0),
+                            ConsensusRound::new(0),
+                        ),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                selection,
+                FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                    target: actual_target,
+                    position,
+                    envelope_id,
+                    ..
+                } if actual_target == target
+                    && position == transition.position()
+                    && envelope_id == transition.envelope_id()
+            ));
+            assert_eq!(layout.source_images(), complete_sources);
+        })
+        .unwrap();
+}
+
+#[test]
 fn missing_candidate_consumes_the_scope_without_mutating_any_store() {
     let fixture = Fixture::new();
     let layout = TestLayout::new("candidate-backed-missing");
@@ -2124,6 +2939,19 @@ fn pending_vote_after_candidate_finality_returns_the_known_selection_without_a_s
             let transition = fixture.transition(scope.branch(), &selected, ZfcAxiom::Pairing, 0);
             let target = transition.value().artifact_block().id();
             retain_transition_inputs(&mut candidates, &mut payloads, scope.branch(), &transition);
+            let control = proposal_control_bytes(
+                transition.value(),
+                transition.position(),
+                &fixture.signing_key(),
+            );
+            let precommit = signed_vote_bytes(
+                fixture.context,
+                transition.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(transition.value().proposal_signing_root()),
+                &fixture.signing_key(),
+            );
+            let batch = [precommit.as_slice()];
             let branch = scope.branch().clone();
             let round = branch.begin_round_zero().unwrap();
             let effect = scope
@@ -2140,36 +2968,47 @@ fn pending_vote_after_candidate_finality_returns_the_known_selection_without_a_s
             };
             let node_before = layout.images();
             let sources_before = layout.source_images();
-            let finality_state_id = match scope.commit_candidate_backed_finality(
+            let finality_state_id = match scope.commit_candidate_backed_finality_vote_batch(
                 &mut candidates,
                 &mut payloads,
                 target,
-                transition.canonical_envelope_bytes(),
-                ConsensusRound::new(0),
+                &control,
+                &batch,
+                FixedValidatorNodeFinalityRoundRouteV0::new(
+                    ConsensusRound::new(0),
+                    ConsensusRound::new(0),
+                ),
             ) {
-                Err(FixedValidatorNodeFinalityErrorV0::SignerHeightPrepare {
-                    selection,
-                    source,
-                }) => {
-                    assert!(matches!(
-                        source.as_ref(),
-                        FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation { .. }
-                    ));
-                    match selection.as_ref() {
-                        FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
-                            target: actual,
-                            position,
-                            ancestry_id,
-                            envelope_id,
-                            state_id,
+                Err(FixedValidatorNodeCandidateBackedFinalityErrorV0::Finality(source)) => {
+                    match source.as_ref() {
+                        FixedValidatorNodeFinalityErrorV0::SignerHeightPrepare {
+                            selection,
+                            source,
                         } => {
-                            assert_eq!(*actual, target);
-                            assert_eq!(*position, transition.position());
-                            assert_eq!(*ancestry_id, transition.value().ancestry_id());
-                            assert_eq!(*envelope_id, transition.envelope_id());
-                            *state_id
+                            assert!(matches!(
+                                source.as_ref(),
+                                FixedValidatorVoteSafetyJournalErrorV0::PendingPreparation { .. }
+                            ));
+                            match selection.as_ref() {
+                                FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                                    target: actual,
+                                    position,
+                                    ancestry_id,
+                                    envelope_id,
+                                    state_id,
+                                } => {
+                                    assert_eq!(*actual, target);
+                                    assert_eq!(*position, transition.position());
+                                    assert_eq!(*ancestry_id, transition.value().ancestry_id());
+                                    assert_eq!(*envelope_id, transition.envelope_id());
+                                    *state_id
+                                }
+                                _ => {
+                                    panic!("the failure must retain the candidate-backed selection")
+                                }
+                            }
                         }
-                        _ => panic!("the failure must retain the candidate-backed selection"),
+                        _ => panic!("the pending vote must prevent signer height preparation"),
                     }
                 }
                 _ => panic!("the pending vote must prevent signer height preparation"),
