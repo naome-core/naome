@@ -324,7 +324,10 @@ fn exact_nil_prevote_quorum_signs_nil_precommit() {
             );
 
             let round_one = round_zero.advance_round().unwrap();
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
             let (scope, prevote) = expect_signed(
                 scope
                     .sign_prevote_without_proposal(ConsensusRound::new(1))
@@ -453,7 +456,10 @@ fn pending_higher_round_work_precedes_caller_round_rejection() {
                     .sign_precommit_without_quorum(ConsensusRound::new(0))
                     .unwrap(),
             );
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
             let payload = proof_payload(ZfcAxiom::Pairing);
             let block = ArtifactChainState::new(fixture.definition)
                 .prepare_block(artifact_id(&payload))
@@ -468,7 +474,7 @@ fn pending_higher_round_work_precedes_caller_round_rejection() {
                 &fixture.signing_key(),
             );
             let prepared = scope
-                .signing_session()
+                .signing_session_mut()
                 .prepare_higher_round_quorum_advance(
                     &round_one,
                     &certificate,
@@ -540,7 +546,7 @@ fn pending_higher_round_work_precedes_malformed_proposal_rejection() {
                 &fixture.signing_key(),
             );
             let prepared = scope
-                .signing_session()
+                .signing_session_mut()
                 .prepare_higher_round_quorum_advance(
                     &round_zero,
                     &certificate,
@@ -653,7 +659,10 @@ fn round_work_ceiling_rejection_preserves_scope_and_durable_state() {
             );
             let branch = scope.branch().clone();
             let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
             let before = layout.images();
 
             let (scope, rejection) = expect_rejected(
@@ -703,7 +712,10 @@ fn signer_above_the_node_finality_round_ceiling_returns_no_scope_or_vote() {
             );
             let branch = scope.branch().clone();
             let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
             let (scope, _) = expect_signed(
                 scope
                     .sign_prevote_without_proposal(ConsensusRound::new(1))
@@ -715,7 +727,10 @@ fn signer_above_the_node_finality_round_ceiling_returns_no_scope_or_vote() {
                     .unwrap(),
             );
             let round_two = round_one.advance_round().unwrap();
-            scope.signing_session().advance_round(&round_two).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_two)
+                .unwrap();
             let before = layout.images();
             let error = match scope.sign_prevote_without_proposal(ConsensusRound::new(2)) {
                 Err(error) => error,
@@ -803,7 +818,10 @@ fn later_proposal_cannot_override_an_older_lock_without_valid_round_proof() {
             );
 
             let round_one = branch.begin_round_zero().unwrap().advance_round().unwrap();
-            scope.signing_session().advance_round(&round_one).unwrap();
+            scope
+                .signing_session_mut()
+                .advance_round(&round_one)
+                .unwrap();
             let second_value = round_one.value_for_artifact_block(second_block);
             let second_root = second_value.proposal_signing_root();
             assert_ne!(first_root, second_root);

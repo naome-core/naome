@@ -115,19 +115,19 @@ catch-up invoke one higher-ranked closure with:
 - the owned exact branch for the current signing lineage, already caught up to
   the selected finality head;
 - read-only caller access to the anchored finality journal; and
-- mutable access to a node-scoped diagnostics and bounded round-control facade
-  over the anchored vote-safety signing session.
+- access to a node-scoped diagnostics facade over the anchored vote-safety
+  signing session.
 
 The closure result cannot borrow the scope. The signing session therefore
 cannot outlive the owning vote journal or be retained for a second invocation.
 The supplied finality diagnostics and voting facade preserve all existing vote,
 anchor, ordering, and failure rules. The facade exposes no current-round
 decision, raw vote preparation, anchor-acknowledgement, key-use,
-quorum-specific round cursor, split higher-round checkpoint stage,
-height-transition, or finality-conflict stop method. Current-round votes are
-released only through the scope's consuming operations specified by
-`fixed-validator-node-voting-v0.md`; quorum-driven round progression is
-available only through the consuming operations specified by
+caller-cursor or quorum-specific round advance, split higher-round checkpoint
+stage, height-transition, or finality-conflict stop method. Current-round votes
+are released only through the scope's consuming operations specified by
+`fixed-validator-node-voting-v0.md`; exact-event and quorum-driven round
+progression is available only through the consuming operations specified by
 `fixed-validator-node-round-progression-v0.md`; and only the consuming
 live-finality methods may apply capabilities from the node-owned finality
 journal. The scope also exposes no raw mutable finality handle or raw storage

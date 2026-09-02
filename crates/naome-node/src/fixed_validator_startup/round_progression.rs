@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use naome_consensus::{
-    ConsensusHeight, ConsensusPosition, ConsensusRound, FixedConsensusBranchV0,
+    ConsensusContextV0, ConsensusHeight, ConsensusPosition, ConsensusRound, FixedConsensusBranchV0,
     FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorLockStateError,
     ProposerSelectionError,
 };
@@ -13,18 +13,18 @@ use super::{
     FixedValidatorNodeVotingSessionV0, fixed_validator_node_current_round,
 };
 
-/// Complete result of one node-owned quorum-driven round progression.
+/// Complete result of one node-owned explicit-event or quorum-driven progression.
 ///
 /// A successful result returns continued node authority only after the exact
-/// destination is established. Current-round nil-precommit progression remains
-/// volatile; higher-round progression returns only after its checkpoint and
-/// independent anchor are durable and the same live session acknowledges it.
-/// A rejection returns the unchanged scope because no volatile or durable state
-/// changed.
+/// destination is established. Explicit-close and current-round nil-precommit
+/// progression remain volatile; higher-round progression returns only after its
+/// checkpoint and independent anchor are durable and the same live session
+/// acknowledges it. A rejection returns the unchanged scope because no volatile
+/// or durable state changed.
 #[must_use]
 #[non_exhaustive]
 pub enum FixedValidatorNodeRoundAdvanceOutcomeV0<'node> {
-    /// The signer reached the exact authenticated destination.
+    /// The signer reached the exact admitted destination.
     Advanced {
         scope: Box<FixedValidatorNodeSigningScopeV0<'node>>,
         position: ConsensusPosition,
@@ -41,6 +41,21 @@ pub enum FixedValidatorNodeRoundAdvanceOutcomeV0<'node> {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FixedValidatorNodeRoundAdvanceRejectionV0 {
+    /// The caller-routed close event belongs to another consensus context.
+    PrecommitCloseContextMismatch {
+        current: Box<ConsensusContextV0>,
+        event: Box<ConsensusContextV0>,
+    },
+    /// The caller-routed close event belongs to another height or round.
+    PrecommitClosePositionMismatch {
+        current: ConsensusPosition,
+        event: ConsensusPosition,
+    },
+    /// The caller-routed close event does not match the current local phase.
+    PrecommitClosePhaseMismatch {
+        required: FixedValidatorLockPhaseV0,
+        actual: FixedValidatorLockPhaseV0,
+    },
     /// The required destination exceeds the persisted node finality ceiling.
     FinalityRoundLimitExceeded {
         required: ConsensusRound,
@@ -58,6 +73,18 @@ pub enum FixedValidatorNodeRoundAdvanceRejectionV0 {
 impl fmt::Display for FixedValidatorNodeRoundAdvanceRejectionV0 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PrecommitCloseContextMismatch { current, event } => write!(
+                formatter,
+                "precommit close context {event:?} differs from current node context {current:?}"
+            ),
+            Self::PrecommitClosePositionMismatch { current, event } => write!(
+                formatter,
+                "precommit close position {event:?} differs from current signer position {current:?}"
+            ),
+            Self::PrecommitClosePhaseMismatch { required, actual } => write!(
+                formatter,
+                "precommit close requires phase {required:?}, current phase is {actual:?}"
+            ),
             Self::FinalityRoundLimitExceeded { required, maximum } => write!(
                 formatter,
                 "round progression requires {required:?}, above node finality ceiling {maximum:?}"
@@ -77,12 +104,16 @@ impl Error for FixedValidatorNodeRoundAdvanceRejectionV0 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Quorum(source) => Some(source.as_ref()),
-            Self::FinalityRoundLimitExceeded { .. } | Self::RoundWorkLimitExceeded { .. } => None,
+            Self::PrecommitCloseContextMismatch { .. }
+            | Self::PrecommitClosePositionMismatch { .. }
+            | Self::PrecommitClosePhaseMismatch { .. }
+            | Self::FinalityRoundLimitExceeded { .. }
+            | Self::RoundWorkLimitExceeded { .. } => None,
         }
     }
 }
 
-/// A fatal node or signer error during quorum-driven round progression.
+/// A fatal node or signer error during node-owned round progression.
 ///
 /// Every variant consumes the signing scope. Strict restart is the only
 /// classifier after a checkpoint, journal, anchor, or acknowledgement failure.
@@ -181,6 +212,107 @@ enum CurrentRoundErrorV0 {
 }
 
 impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
+    /// Explicitly closes one exact Precommit phase and advances to `R + 1`.
+    ///
+    /// The caller supplies the consensus context and source position attached to
+    /// its close event. After session-readiness and bounded current-round
+    /// reconstruction, both must match the node-derived round exactly and the
+    /// live phase must be Precommit. The destination must fit the persisted node
+    /// finality and caller-local ceilings. Success derives the sole sequential
+    /// cursor internally, preserves lock and complete valid-value evidence, and
+    /// writes no journal or anchor bytes. This operation neither proves nor
+    /// infers that a timeout elapsed.
+    pub fn advance_round_after_precommit_close(
+        mut self,
+        event_context: ConsensusContextV0,
+        event_position: ConsensusPosition,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<FixedValidatorNodeRoundAdvanceOutcomeV0<'node>, FixedValidatorNodeRoundAdvanceErrorV0>
+    {
+        let finality_maximum_round = self.finality.replay_limit().max_round();
+        let current_round = match current_round(
+            &self.branch,
+            &self.signing_session,
+            inclusive_maximum_round,
+            finality_maximum_round,
+        ) {
+            Ok(round) => round,
+            Err(CurrentRoundErrorV0::Rejected(rejection)) => {
+                return Ok(rejected(self, rejection));
+            }
+            Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+        };
+        let current_context = current_round.context();
+        if event_context != current_context {
+            drop(current_round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeRoundAdvanceRejectionV0::PrecommitCloseContextMismatch {
+                    current: Box::new(current_context),
+                    event: Box::new(event_context),
+                },
+            ));
+        }
+        let current_position = current_round.position();
+        if event_position != current_position {
+            drop(current_round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeRoundAdvanceRejectionV0::PrecommitClosePositionMismatch {
+                    current: current_position,
+                    event: event_position,
+                },
+            ));
+        }
+        let phase = self.signing_session.phase();
+        if phase != FixedValidatorLockPhaseV0::Precommit {
+            drop(current_round);
+            return Ok(rejected(
+                self,
+                FixedValidatorNodeRoundAdvanceRejectionV0::PrecommitClosePhaseMismatch {
+                    required: FixedValidatorLockPhaseV0::Precommit,
+                    actual: phase,
+                },
+            ));
+        }
+        let required = match successor_capacity(
+            current_position.round(),
+            inclusive_maximum_round,
+            ConsensusRound::new(finality_maximum_round),
+        ) {
+            Ok(required) => required,
+            Err(CurrentRoundErrorV0::Rejected(rejection)) => {
+                drop(current_round);
+                return Ok(rejected(self, rejection));
+            }
+            Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+        };
+        let next_round = current_round.advance_round().map_err(|source| {
+            FixedValidatorNodeRoundAdvanceErrorV0::Transition(Box::new(
+                FixedValidatorLockStateError::NextRoundDerivation(source),
+            ))
+        })?;
+        match self.signing_session.advance_round(&next_round) {
+            Ok(()) => {}
+            Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
+                return Err(FixedValidatorNodeRoundAdvanceErrorV0::Transition(Box::new(
+                    source,
+                )));
+            }
+            Err(source) => {
+                return Err(FixedValidatorNodeRoundAdvanceErrorV0::Session(Box::new(
+                    source,
+                )));
+            }
+        }
+        let position = next_round.position();
+        let phase = self.signing_session.phase();
+        debug_assert_eq!(position.round(), required);
+        debug_assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+        drop(next_round);
+        Ok(advanced_outcome(self, position, phase))
+    }
+
     /// Advances to `R + 1` after one exact current-round precommit/nil quorum.
     ///
     /// Session readiness, exact current-round reconstruction, and destination

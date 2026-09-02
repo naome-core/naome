@@ -507,12 +507,18 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         self.finality
     }
 
-    /// Returns the sole node-scoped round-control session.
+    /// Returns the sole node-scoped voting diagnostics session.
     ///
-    /// Height advancement and finality-conflict stop authority are deliberately
-    /// absent, and current-round decision, preparation, acknowledgement, and
-    /// key-use primitives are private to this scope's consuming coordinators.
-    pub fn signing_session(&mut self) -> &mut FixedValidatorNodeVotingSessionV0<'node> {
+    /// Height advancement, round advancement, and finality-conflict stop
+    /// authority are deliberately absent, and current-round decision,
+    /// preparation, acknowledgement, and key-use primitives are private to
+    /// this scope's consuming coordinators.
+    pub fn signing_session(&mut self) -> &FixedValidatorNodeVotingSessionV0<'node> {
+        &self.signing_session
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn signing_session_mut(&mut self) -> &mut FixedValidatorNodeVotingSessionV0<'node> {
         &mut self.signing_session
     }
 
@@ -522,13 +528,42 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     ) -> (
         &FixedValidatorAnchoredFinalityJournalV0,
         &FixedConsensusBranchV0,
-        &mut FixedValidatorNodeVotingSessionV0<'node>,
+        &FixedValidatorNodeVotingSessionV0<'node>,
     ) {
-        (self.finality, &self.branch, &mut self.signing_session)
+        (self.finality, &self.branch, &self.signing_session)
     }
 }
 
-/// Node-scoped diagnostics and bounded round control for one signing lineage.
+/// Public diagnostics access cannot move or exchange the owned voting session
+/// between signing scopes:
+///
+/// ```compile_fail
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+///
+/// fn swap_sessions<'node>(
+///     left: &mut FixedValidatorNodeSigningScopeV0<'node>,
+///     right: &mut FixedValidatorNodeSigningScopeV0<'node>,
+/// ) {
+///     std::mem::swap(left.signing_session(), right.signing_session());
+/// }
+/// ```
+///
+/// The combined diagnostics accessor preserves the same ownership boundary:
+///
+/// ```compile_fail
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+///
+/// fn swap_parts<'node>(
+///     left: &mut FixedValidatorNodeSigningScopeV0<'node>,
+///     right: &mut FixedValidatorNodeSigningScopeV0<'node>,
+/// ) {
+///     let (_, _, left_session) = left.parts();
+///     let (_, _, right_session) = right.parts();
+///     std::mem::swap(left_session, right_session);
+/// }
+/// ```
+///
+/// Node-scoped diagnostics for one signing lineage.
 ///
 /// This facade owns the lower-level session. Finality height, conflict-stop,
 /// current-round decision, raw intent, acknowledgement, and key-use operations
@@ -638,6 +673,46 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
 ///         ConsensusRound::new(1),
 ///     );
 ///     let _ = session.acknowledge_prepared_higher_round(prepared);
+/// }
+/// ```
+///
+/// Ordinary sequential progression is also available only through the
+/// consuming, exact-event-bound node coordinator:
+///
+/// ```compile_fail,E0624
+/// use naome_consensus::FixedConsensusRoundV0;
+/// use naome_node::FixedValidatorNodeVotingSessionV0;
+///
+/// fn bypass(
+///     session: &mut FixedValidatorNodeVotingSessionV0<'_>,
+///     caller_cursor: &FixedConsensusRoundV0<'_>,
+/// ) {
+///     let _ = session.advance_round(caller_cursor);
+/// }
+/// ```
+///
+/// ```compile_fail,E0624
+/// use naome_consensus::FixedConsensusRoundV0;
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+///
+/// fn bypass_scope(
+///     scope: &mut FixedValidatorNodeSigningScopeV0<'_>,
+///     caller_cursor: &FixedConsensusRoundV0<'_>,
+/// ) {
+///     let _ = scope.signing_session().advance_round(caller_cursor);
+/// }
+/// ```
+///
+/// ```compile_fail,E0624
+/// use naome_consensus::FixedConsensusRoundV0;
+/// use naome_node::FixedValidatorNodeSigningScopeV0;
+///
+/// fn bypass_parts(
+///     scope: &mut FixedValidatorNodeSigningScopeV0<'_>,
+///     caller_cursor: &FixedConsensusRoundV0<'_>,
+/// ) {
+///     let (_, _, session) = scope.parts();
+///     let _ = session.advance_round(caller_cursor);
 /// }
 /// ```
 #[must_use]
@@ -759,7 +834,7 @@ impl FixedValidatorNodeVotingSessionV0<'_> {
     }
 
     /// Advances through one exact sequential typed round in memory.
-    pub fn advance_round(
+    pub(crate) fn advance_round(
         &mut self,
         next_round: &FixedConsensusRoundV0<'_>,
     ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {

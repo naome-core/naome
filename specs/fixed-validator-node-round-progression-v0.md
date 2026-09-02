@@ -2,21 +2,25 @@
 
 ## Authority and scope
 
-This document defines the synchronous quorum-driven round-progression boundary
-for one closure-scoped fixed-validator V0 node signer. It composes the exact
-branch and anchored signer already owned by `FixedValidatorNodeSigningScopeV0`
-with two existing lock-state transitions:
+This document defines the synchronous explicit-event and quorum-driven
+round-progression boundary for one closure-scoped fixed-validator V0 node
+signer. It composes the exact branch and anchored signer already owned by
+`FixedValidatorNodeSigningScopeV0` with three existing lock-state transitions:
 
+- one caller-routed Precommit close, bound to the exact context and source
+  position, advances only to the same-height sequential `R + 1` Proposal phase;
 - one exact current-round precommit/nil quorum advances only to the same-height
   sequential `R + 1` Proposal phase; and
 - one exact higher-round prevote or precommit quorum advances only to its
   authenticated round and role-corresponding Prevote or Precommit phase.
 
-Both are consuming node-scope operations. Mere submission, routing, storage,
+All are consuming node-scope operations. Mere submission, routing, storage,
 network receipt, or peer provenance grants no certificate validity or
-progression authority. Only complete verification against the branch-derived
-fixed-set snapshot authorizes the corresponding local transition. Neither path
-creates a vote, finalizes a value, selects a branch, or advances height.
+progression authority. The explicit close requires exact event identity and
+Precommit phase but does not prove why the caller classified the phase as
+closed. Only complete verification against the branch-derived fixed-set
+snapshot authorizes a quorum transition. No path creates a vote, finalizes a
+value, selects a branch, or advances height.
 
 ## Exact round and bounded admission
 
@@ -41,8 +45,17 @@ first. Every destination-ceiling failure is a no-effect rejection that returns
 the same scope. A signer already above the persisted finality ceiling is instead
 a node-coherence failure and returns no scope.
 
-The current-round path verifies the exact canonical certificate at `R` and
-requires precommit role with nil target. The higher-round path uses strict
+For an explicit Precommit close, the caller supplies the event's consensus
+context and source position. After readiness, coherence, current-round ceiling,
+and exact-round reconstruction, both must equal the node-derived round and the
+live phase must be Precommit. Context, position, or phase mismatch returns the
+unchanged scope. Only then does the coordinator require `R + 1` to fit the
+persisted finality ceiling and caller-local ceiling, derive that sole successor
+internally, and apply it. No caller cursor is accepted, so a delayed close for
+round `R` cannot close a later Precommit phase.
+
+The current-round quorum path verifies the exact canonical certificate at `R`
+and requires precommit role with nil target. The higher-round path uses strict
 framing only to bound routing work, requires the same height and a strictly
 higher round within both ceilings, derives every intervening branch round, and
 then fully verifies the same canonical bytes at the target snapshot. An
@@ -51,11 +64,14 @@ change.
 
 ## Ordered progression and durability
 
-Current-round nil-quorum success changes only the live signer state to `R + 1`
-Proposal. It preserves the exact lock and complete valid-value proof and writes
-neither journal nor anchor. A later vote at that round must still pass through
-the existing durable vote-execution boundary. A crash before such a vote
-therefore restores the last durable signer state, not this volatile observation.
+Explicit-close and current-round nil-quorum success change only the live signer
+state to `R + 1` Proposal. They preserve the exact lock and complete valid-value
+proof and write neither journal nor anchor. A later proposal or vote at that
+round must still pass through its existing durable signer boundary. Absent a
+later durable node or signer action, a crash therefore restores the prior
+durable signer state, not this volatile observation. Otherwise strict restart
+follows that later durable ready, pending, or terminal state; incomplete
+preparation remains fail-closed.
 
 Higher-round success is durable before continuation returns:
 
@@ -68,18 +84,21 @@ Higher-round success is durable before continuation returns:
 6. Drop every branch-borrowed cursor and capability before returning the
    replacement node scope plus copied position and phase diagnostics.
 
-External callers cannot access the quorum-specific raw nil transition or split
-higher-round prepare and acknowledgement stages. The ordinary one-step
-`advance_round` facade remains separate for later timeout-driven coordination;
-this component grants it no timeout-expiry or scheduling authority.
+External callers cannot access the raw cursor-supplied sequential transition,
+the quorum-specific raw nil transition, or split higher-round prepare and
+acknowledgement stages. The exact-event-bound consuming coordinator is the sole
+public ordinary sequential path. It accepts no timestamp, deadline, timer
+generation, or proof of expiry and grants no timeout-expiry or scheduling
+authority.
 
 ## Outcomes, failures, and restart
 
-A malformed, context-invalid, wrong-role, wrong-target, wrong-height,
-non-higher, or otherwise mutation-free quorum rejection returns the unchanged
-scope. Caller or persisted destination-capacity rejection also returns the
-unchanged scope, with finality precedence when both limits reject the same
-target. No signer or finality bytes change on those paths.
+A stale or foreign close identity, wrong close phase, malformed,
+context-invalid, wrong-role, wrong-target, wrong-height, non-higher, or otherwise
+mutation-free quorum rejection returns the unchanged scope. Caller or persisted
+destination-capacity rejection also returns the unchanged scope, with finality
+precedence when both limits reject the same target. No signer or finality bytes
+change on those paths.
 
 A branch/signer mismatch, current-round derivation failure, current signer
 above the persisted finality ceiling, non-operational session, internal
@@ -93,8 +112,9 @@ performs repair, rollback, or automatic retry.
 
 This coordinator does not define or perform:
 
-- timeout measurement, timeout expiry, phase scheduling, backoff, event-loop
-  ordering, buffering, retry, or daemon ownership;
+- timeout measurement, timeout expiry, timer generation or cancellation, phase
+  scheduling, backoff, event-loop ordering, buffering, retry, or daemon
+  ownership;
 - quorum construction, vote collection, competing-evidence choice, proposal
   selection, or proposal authoring;
 - network transport, peer discovery, provenance trust, or peer-selected
@@ -107,5 +127,5 @@ This coordinator does not define or perform:
   non-Unix file-anchor runtime guarantees.
 
 These remain required product capabilities where the consensus ledger says so;
-this boundary only assigns the already-decided quorum evidence its exact local
-round and phase authority.
+this boundary only applies an exact caller-classified Precommit close or fully
+verified quorum to the already-decided local round and phase progression.

@@ -793,22 +793,26 @@ derives the exact cursor under the caller-local round-work ceiling. Neither path
 grants global branch authority or permits historical state choice.
 
 While such a session is healthy and has no pending proposal or vote
-preparation, height transition, or higher-round checkpoint, it may apply one
-canonical current-round precommit/nil quorum through the kernel's evidence-
-bound sequential-round path.
-The kernel verifies the certificate against the exact current cursor, derives
-the same-branch `R + 1` cursor internally, may preempt any local round phase, and
-preserves the exact lock and complete valid-value proof. This volatile
-advancement appends no journal record, changes no journal state identity, and
-releases no signature. Any later vote at `R + 1` must still pass through the
-ordinary prepare, external-anchor acknowledgement, private-key use, completion,
-and release sequence above. If the process restarts before any later vote is
-prepared, strict reopen reconstructs only the latest durable current-lineage state;
-the caller must re-observe and re-supply the quorum to apply the volatile
-advance again. A crash after a later preparation begins remains governed by the
-existing non-signable pending-preparation rule and cannot resume by reapplying
-the quorum. The journal neither retains that quorum nor infers timeout expiry,
-scheduling, finality, networking, peer trust, or branch selection from it.
+preparation, height transition, or higher-round checkpoint, the node may apply
+either one exact context-and-position-bound Precommit close or one canonical
+current-round precommit/nil quorum through the kernel's sequential-round path.
+The explicit close additionally requires the current phase to be Precommit and
+accepts no caller cursor. The evidence-bound path verifies the certificate
+against the exact current cursor, derives the same-branch `R + 1` cursor
+internally, and may preempt any local round phase. Both paths preserve the exact
+lock and complete valid-value proof. This volatile advancement appends no
+journal record, changes no journal state identity, and releases no signature.
+Any later proposal or vote at `R + 1` must still pass through its ordinary
+prepare, external-anchor acknowledgement, private-key use, completion, and
+release sequence above. The volatile advance itself is never recovered. If the
+process restarts without a later durable node or signer action, strict reopen
+reconstructs only the prior durable current-lineage state; the caller must
+resupply the exact close identity or re-observe and resupply the quorum to apply
+the volatile advance again. Otherwise restart follows that later durable ready,
+pending, or terminal state, including the existing non-signable
+pending-preparation rule. The journal retains neither the close event nor
+current-round quorum and infers no timeout expiry, scheduling, finality,
+networking, peer trust, or branch selection from either.
 
 While the same session also has no pending higher-round checkpoint, it may use
 the separate bounded higher-round path. Unlike the current-round nil transition,
