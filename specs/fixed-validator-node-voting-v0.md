@@ -9,7 +9,8 @@ input verification, the private lock kernel, and the anchored per-key
 vote-safety session. One successful call returns one completed signed prevote or
 precommit together with the replacement signing scope.
 
-The caller explicitly submits exactly one of five events:
+The caller explicitly submits exactly one of five events through the direct
+input boundary:
 
 - complete canonical proposal-control bytes plus the complete canonical
   artifact payload for Proposal-to-Prevote;
@@ -20,6 +21,16 @@ The caller explicitly submits exactly one of five events:
 - one canonical current-round prevote/nil certificate; or
 - an explicit Prevote-phase close carrying its exact consensus context and
   source position.
+
+Each of the two proposal-bearing events also has a separate opt-in local-store
+adapter. The caller still supplies the complete canonical proposal-control
+bytes and explicitly selects one exact `ArtifactBlockId`, but routes the
+proposal's block and payload through one matching-chain
+`ArtifactBlockCandidateStore` and one Foundation-scoped
+`CanonicalArtifactPayloadStore`. The proposal-quorum adapter additionally
+supplies the same canonical current-round prevote certificate as the direct
+path. The adapters do not replace or weaken the direct input methods, and no
+adapter discovers a target from store inventory.
 
 The caller also supplies an inclusive local round-work ceiling. Mere submission,
 presence, routing, or caller classification of a proposal, certificate,
@@ -56,12 +67,36 @@ reconstruction so stale input cannot mask ambiguous or terminal signer state.
 The supplied identity is descriptive only: it is not a caller cursor and cannot
 retarget the node's signer to another round.
 
-Proposal paths decode and fully verify the supplied proposal-control bytes and
-owned artifact bytes against that exact branch-derived round. This verification
-retains the existing context, height, proposer, fixed-set, ancestry, artifact,
-payload, state-commitment, producer-authorization, and optional valid-round-proof
-rules. The bytes are accepted directly for this boundary; the operation does
-not require, read, or mutate a candidate or payload store.
+Direct proposal paths decode and fully verify the supplied proposal-control
+bytes and owned artifact bytes against that exact branch-derived round. This
+verification retains the existing context, height, proposer, fixed-set,
+ancestry, artifact, payload, state-commitment, producer-authorization, and
+optional valid-round-proof rules. The direct methods do not require, read, or
+mutate a candidate or payload store.
+
+The optional store-backed proposal paths retain the same session and exact-round
+preflight and require the path's exact Proposal or Prevote phase before reading
+either source. They then bound and structurally decode the supplied proposal
+control far enough to require its embedded consensus context and height to equal
+the exact branch-derived round and its embedded artifact block to name the
+caller-selected target. They require the candidate store's chain to equal that
+context's artifact chain before reading an entry, integrity-read only that exact
+candidate, require its complete canonical block bytes to equal the block
+embedded in the proposal, and integrity-read only that block's exact canonical
+artifact payload. Missing entries, source read or
+integrity failures, a foreign candidate-store chain, an early proposal mismatch,
+or unequal candidate bytes reject before a lock effect or signer write. Each
+source handle retains its existing error-specific poison-and-reopen behavior;
+corruption of one source cannot poison the other source or the signing scope.
+
+The loaded bytes are only availability input and pass through the unchanged
+complete proposal verification described above. Candidate or payload
+membership, successful source reads, structural decoding, caller target choice,
+and byte equality grant no proposal validity, vote-target, selection, finality,
+provenance, networking, or peer-trust authority. In particular, the existing
+lock rule may make a successful proposal prevote target the retained lock rather
+than the caller-selected proposal; the adapter must not reinterpret the
+candidate target as vote-target authority.
 
 Proposal-quorum and nil-quorum paths additionally pass the exact canonical
 certificate to the private lock kernel. That kernel verifies the certificate
@@ -79,9 +114,12 @@ operation is not a cross-file atomic transaction:
    higher-round work.
 2. Derive the exact current typed round under the persisted finality and
    caller-local ceilings.
-3. For a phase close, match its exact context and source position; for a
+3. For a phase close, match its exact context and source position. For a direct
    proposal or quorum path, fully verify every supplied byte required by that
-   path.
+   path. For an opt-in store-backed proposal path, first require its exact live
+   phase, admit the exact proposal identity, integrity-read the caller-selected
+   candidate and payload as above, and then perform the same complete
+   verification.
 4. Let the private lock kernel derive the sole unsigned vote effect and its
    exact post-effect phase, lock, and valid-value state.
 5. Persist and anchor the complete post-effect state plus exact vote intent.
@@ -121,12 +159,16 @@ delivery.
 
 A pre-effect rejection returns the unchanged signing scope with a typed reason.
 Rejections include a caller-local round-work ceiling violation, phase-close
-context or position mismatch, complete proposal rejection, or a mutation-free
-lock-kernel input rejection. Existing identity and lock-kernel validation
-ordering ensures a rejected event changes no volatile lock state, and the
-coordinator performs no signer write before admission succeeds. A poisoned,
-terminal, or pending signing session is not an input rejection: it consumes the
-scope through a fatal session error.
+context or position mismatch, complete proposal rejection, a mutation-free
+lock-kernel input rejection, or an optional adapter's proposal-identity,
+candidate-chain, candidate-availability, candidate-integrity, candidate-byte,
+payload-availability, or payload-integrity rejection. Existing identity,
+source, and lock-kernel validation ordering ensures a rejected event changes no
+volatile lock state, candidate or payload entry, or durable signer state. A
+source-integrity failure may poison only that borrowed source handle under its
+existing contract while the unchanged signing scope remains available for an
+explicit direct-input retry. A poisoned, terminal, or pending signing session
+is not an input rejection: it consumes the scope through a fatal session error.
 
 Once the lock kernel has emitted an effect, any preparation,
 preparation-acknowledgement, signing, completion, or anchor error consumes the
@@ -145,11 +187,14 @@ outside the anchored session.
 ## Public API boundary
 
 The node voting facade retains read-only position, phase, lock, and valid-value
-diagnostics. Identity-free phase closes, current-round decision effects, raw
-cursor-supplied round advancement, vote preparation, anchor acknowledgement,
-and key use are absent or crate-private. External callers therefore cannot
-split the ordered current-round sequence, retarget a delayed close to the live
-round, or insert a caller-constructed unsigned effect between its steps.
+diagnostics plus the direct proposal-byte methods and the two separate opt-in
+store-backed adapters. Identity-free phase closes, current-round decision
+effects, raw cursor-supplied round advancement, vote preparation, anchor
+acknowledgement, and key use are absent or crate-private. External callers
+therefore cannot split the ordered current-round sequence, retarget a delayed
+close to the live round, or insert a caller-constructed unsigned effect between
+its steps. Store-backed availability is optional and cannot become a liveness or
+validity requirement for the direct methods.
 
 Height advancement and finality-conflict stop remain available only through the
 separate consuming node-finality coordinator. Higher-round quorum catch-up and
@@ -170,7 +215,8 @@ This coordinator does not define or perform:
 - network transport, peer discovery, provenance trust, or peer-selected
   admission;
 - finality, height advancement, branch selection, sibling winner selection,
-  rollback, reorganization, candidate promotion, or store mutation;
+  rollback, reorganization, candidate promotion, or durable source-entry
+  mutation;
 - dynamic validator sets, multi-key coordination, key loading, rotation, remote
   signing, or production custody;
 - cross-file atomicity, automatic repair, or coordinated rollback detection; or

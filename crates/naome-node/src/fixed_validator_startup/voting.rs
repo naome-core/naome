@@ -1,13 +1,17 @@
 use std::error::Error;
 use std::fmt;
 
+use naome_chain::{ArtifactBlockId, ArtifactChainId};
 use naome_consensus::{
     ConsensusContextV0, ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError,
-    ConsensusRound, FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, FixedValidatorUnsignedVoteEffectV0, ProposerSelectionError,
+    ConsensusRound, ConsensusValueV0, FixedConsensusBranchV0, FixedConsensusRoundV0,
+    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, FixedValidatorUnsignedVoteEffectV0,
+    ProposerSelectionError, VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::{
-    FixedValidatorSignedVoteV0, FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyHaltV0,
+    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, CanonicalArtifactPayloadStore,
+    CanonicalArtifactPayloadStoreError, FixedValidatorSignedVoteV0,
+    FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyHaltV0,
     FixedValidatorVoteSafetyJournalErrorV0,
 };
 
@@ -30,7 +34,7 @@ pub enum FixedValidatorNodeVoteExecutionOutcomeV0<'node> {
         scope: Box<FixedValidatorNodeSigningScopeV0<'node>>,
         vote: FixedValidatorSignedVoteV0,
     },
-    /// Explicit input was rejected before any volatile or durable signer effect.
+    /// A source or explicit input failed before any volatile or durable signer effect.
     Rejected {
         scope: Box<FixedValidatorNodeSigningScopeV0<'node>>,
         rejection: Box<FixedValidatorNodeVoteRejectionV0>,
@@ -39,7 +43,7 @@ pub enum FixedValidatorNodeVoteExecutionOutcomeV0<'node> {
     SignerStopped(FixedValidatorVoteSafetyHaltV0),
 }
 
-/// A pre-effect current-round input rejection that preserves the signing scope.
+/// A pre-effect current-round source or input failure that preserves the signing scope.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FixedValidatorNodeVoteRejectionV0 {
@@ -60,6 +64,26 @@ pub enum FixedValidatorNodeVoteRejectionV0 {
         current: ConsensusPosition,
         event: ConsensusPosition,
     },
+    /// The candidate store belongs to another artifact chain.
+    CandidateChainMismatch {
+        expected: ArtifactChainId,
+        actual: ArtifactChainId,
+    },
+    /// Exact candidate lookup or integrity verification failed.
+    CandidateStore(Box<ArtifactBlockCandidateStoreError>),
+    /// The exact caller-selected candidate is not retained.
+    CandidateUnavailable { target: ArtifactBlockId },
+    /// The proposal embeds another block than the caller-selected target.
+    ProposalTargetMismatch {
+        expected: ArtifactBlockId,
+        actual: ArtifactBlockId,
+    },
+    /// The retained candidate bytes differ from the proposal's exact block.
+    CandidateBlockMismatch { target: ArtifactBlockId },
+    /// Exact payload lookup or integrity verification failed.
+    PayloadStore(Box<CanonicalArtifactPayloadStoreError>),
+    /// The retained candidate's exact committed payload is unavailable.
+    PayloadUnavailable { target: ArtifactBlockId },
     /// Complete proposal-control and artifact admission failed.
     Proposal(Box<ConsensusProposalVerifyError>),
     /// The current lock kernel rejected the exact event before mutation.
@@ -89,6 +113,29 @@ impl fmt::Display for FixedValidatorNodeVoteRejectionV0 {
                 formatter,
                 "{required_phase:?} close position {event:?} differs from current signer position {current:?}"
             ),
+            Self::CandidateChainMismatch { expected, actual } => write!(
+                formatter,
+                "candidate store chain mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::CandidateStore(source) => source.fmt(formatter),
+            Self::CandidateUnavailable { target } => {
+                write!(formatter, "candidate {target:?} is not retained")
+            }
+            Self::ProposalTargetMismatch { expected, actual } => write!(
+                formatter,
+                "proposal target mismatch: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::CandidateBlockMismatch { target } => write!(
+                formatter,
+                "retained candidate {target:?} differs from the proposal block"
+            ),
+            Self::PayloadStore(source) => source.fmt(formatter),
+            Self::PayloadUnavailable { target } => {
+                write!(
+                    formatter,
+                    "payload for candidate {target:?} is not retained"
+                )
+            }
             Self::Proposal(source) => {
                 write!(formatter, "current node proposal was rejected: {source}")
             }
@@ -102,11 +149,18 @@ impl fmt::Display for FixedValidatorNodeVoteRejectionV0 {
 impl Error for FixedValidatorNodeVoteRejectionV0 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::CandidateStore(source) => Some(source.as_ref()),
+            Self::PayloadStore(source) => Some(source.as_ref()),
             Self::Proposal(source) => Some(source.as_ref()),
             Self::Decision(source) => Some(source.as_ref()),
             Self::RoundWorkLimitExceeded { .. }
             | Self::PhaseCloseContextMismatch { .. }
-            | Self::PhaseClosePositionMismatch { .. } => None,
+            | Self::PhaseClosePositionMismatch { .. }
+            | Self::CandidateChainMismatch { .. }
+            | Self::CandidateUnavailable { .. }
+            | Self::ProposalTargetMismatch { .. }
+            | Self::CandidateBlockMismatch { .. }
+            | Self::PayloadUnavailable { .. } => None,
         }
     }
 }
@@ -198,6 +252,18 @@ enum FinishedVoteV0 {
     SignerStopped(FixedValidatorVoteSafetyHaltV0),
 }
 
+enum ProposalVoteKindV0<'input> {
+    Prevote,
+    Precommit {
+        canonical_prevote_certificate: &'input [u8],
+    },
+}
+
+enum ProposalVoteErrorV0 {
+    Rejected(FixedValidatorNodeVoteRejectionV0),
+    Fatal(FixedValidatorNodeVoteExecutionErrorV0),
+}
+
 impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     /// Fully admits one exact proposal and durably signs its derived prevote.
     ///
@@ -240,21 +306,90 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
                 ));
             }
         };
-        let effect = match self.signing_session.decide_prevote_for_proposal(&proposal) {
-            Ok(effect) => effect,
-            Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
-                return Ok(rejected(
-                    self,
-                    FixedValidatorNodeVoteRejectionV0::Decision(Box::new(source)),
-                ));
+        let finished = match decide_and_finish_proposal_vote(
+            &mut self.signing_session,
+            &round,
+            &proposal,
+            ProposalVoteKindV0::Prevote,
+        ) {
+            Ok(finished) => finished,
+            Err(ProposalVoteErrorV0::Rejected(rejection)) => {
+                return Ok(rejected(self, rejection));
             }
-            Err(source) => {
-                return Err(FixedValidatorNodeVoteExecutionErrorV0::Session(Box::new(
-                    source,
-                )));
+            Err(ProposalVoteErrorV0::Fatal(error)) => return Err(error),
+        };
+        Ok(finished_outcome(self, finished))
+    }
+
+    /// Loads one exact caller-selected candidate and payload, fully admits the
+    /// proposal, and durably signs the unchanged lock-derived prevote.
+    pub fn sign_candidate_backed_prevote_for_proposal(
+        mut self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: ArtifactBlockId,
+        canonical_proposal_control_bytes: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
+        FixedValidatorNodeVoteExecutionErrorV0,
+    > {
+        let finality_maximum_round = self.finality.replay_limit().max_round();
+        let round = match current_round(
+            &self.branch,
+            &self.signing_session,
+            inclusive_maximum_round,
+            finality_maximum_round,
+        ) {
+            Ok(round) => round,
+            Err(CurrentRoundErrorV0::Rejected(rejection)) => {
+                return Ok(rejected(self, rejection));
+            }
+            Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+        };
+        if let Err(rejection) =
+            require_phase(&self.signing_session, FixedValidatorLockPhaseV0::Proposal)
+        {
+            drop(round);
+            return Ok(rejected(self, rejection));
+        }
+        let canonical_artifact_bytes = match load_candidate_backed_proposal_payload(
+            &round,
+            candidates,
+            payloads,
+            expected_target,
+            canonical_proposal_control_bytes,
+        ) {
+            Ok(bytes) => bytes,
+            Err(rejection) => {
+                drop(round);
+                return Ok(rejected(self, rejection));
             }
         };
-        let finished = finish_vote(&mut self.signing_session, &round, effect)?;
+        let proposal = match round.decode_and_verify_proposal_control(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+        ) {
+            Ok(proposal) => proposal,
+            Err(source) => {
+                return Ok(rejected(
+                    self,
+                    FixedValidatorNodeVoteRejectionV0::Proposal(Box::new(source)),
+                ));
+            }
+        };
+        let finished = match decide_and_finish_proposal_vote(
+            &mut self.signing_session,
+            &round,
+            &proposal,
+            ProposalVoteKindV0::Prevote,
+        ) {
+            Ok(finished) => finished,
+            Err(ProposalVoteErrorV0::Rejected(rejection)) => {
+                return Ok(rejected(self, rejection));
+            }
+            Err(ProposalVoteErrorV0::Fatal(error)) => return Err(error),
+        };
         Ok(finished_outcome(self, finished))
     }
 
@@ -351,25 +486,95 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
                 ));
             }
         };
-        let effect = match self.signing_session.decide_precommit_for_proposal_quorum(
+        let finished = match decide_and_finish_proposal_vote(
+            &mut self.signing_session,
             &round,
             &proposal,
-            canonical_prevote_certificate,
+            ProposalVoteKindV0::Precommit {
+                canonical_prevote_certificate,
+            },
         ) {
-            Ok(effect) => effect,
-            Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
-                return Ok(rejected(
-                    self,
-                    FixedValidatorNodeVoteRejectionV0::Decision(Box::new(source)),
-                ));
+            Ok(finished) => finished,
+            Err(ProposalVoteErrorV0::Rejected(rejection)) => {
+                return Ok(rejected(self, rejection));
             }
-            Err(source) => {
-                return Err(FixedValidatorNodeVoteExecutionErrorV0::Session(Box::new(
-                    source,
-                )));
+            Err(ProposalVoteErrorV0::Fatal(error)) => return Err(error),
+        };
+        Ok(finished_outcome(self, finished))
+    }
+
+    /// Loads one exact caller-selected candidate and payload, fully admits its
+    /// proposal and current-round prevote quorum, and durably signs precommit.
+    pub fn sign_candidate_backed_precommit_for_proposal_quorum(
+        mut self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: ArtifactBlockId,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_prevote_certificate: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
+        FixedValidatorNodeVoteExecutionErrorV0,
+    > {
+        let finality_maximum_round = self.finality.replay_limit().max_round();
+        let round = match current_round(
+            &self.branch,
+            &self.signing_session,
+            inclusive_maximum_round,
+            finality_maximum_round,
+        ) {
+            Ok(round) => round,
+            Err(CurrentRoundErrorV0::Rejected(rejection)) => {
+                return Ok(rejected(self, rejection));
+            }
+            Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+        };
+        if let Err(rejection) =
+            require_phase(&self.signing_session, FixedValidatorLockPhaseV0::Prevote)
+        {
+            drop(round);
+            return Ok(rejected(self, rejection));
+        }
+        let canonical_artifact_bytes = match load_candidate_backed_proposal_payload(
+            &round,
+            candidates,
+            payloads,
+            expected_target,
+            canonical_proposal_control_bytes,
+        ) {
+            Ok(bytes) => bytes,
+            Err(rejection) => {
+                drop(round);
+                return Ok(rejected(self, rejection));
             }
         };
-        let finished = finish_vote(&mut self.signing_session, &round, effect)?;
+        let proposal = match round.decode_and_verify_proposal_control(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+        ) {
+            Ok(proposal) => proposal,
+            Err(source) => {
+                return Ok(rejected(
+                    self,
+                    FixedValidatorNodeVoteRejectionV0::Proposal(Box::new(source)),
+                ));
+            }
+        };
+        let finished = match decide_and_finish_proposal_vote(
+            &mut self.signing_session,
+            &round,
+            &proposal,
+            ProposalVoteKindV0::Precommit {
+                canonical_prevote_certificate,
+            },
+        ) {
+            Ok(finished) => finished,
+            Err(ProposalVoteErrorV0::Rejected(rejection)) => {
+                return Ok(rejected(self, rejection));
+            }
+            Err(ProposalVoteErrorV0::Fatal(error)) => return Err(error),
+        };
         Ok(finished_outcome(self, finished))
     }
 
@@ -471,6 +676,161 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         let finished = finish_vote(&mut self.signing_session, &round, effect)?;
         Ok(finished_outcome(self, finished))
     }
+}
+
+fn require_phase(
+    signing_session: &FixedValidatorNodeVotingSessionV0<'_>,
+    expected: FixedValidatorLockPhaseV0,
+) -> Result<(), FixedValidatorNodeVoteRejectionV0> {
+    let actual = signing_session.phase();
+    if actual != expected {
+        return Err(FixedValidatorNodeVoteRejectionV0::Decision(Box::new(
+            FixedValidatorLockStateError::UnexpectedPhase { expected, actual },
+        )));
+    }
+    Ok(())
+}
+
+fn load_candidate_backed_proposal_payload(
+    round: &FixedConsensusRoundV0<'_>,
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    expected_target: ArtifactBlockId,
+    canonical_proposal_control_bytes: &[u8],
+) -> Result<Vec<u8>, FixedValidatorNodeVoteRejectionV0> {
+    let value = decode_candidate_backed_proposal_value(
+        round,
+        expected_target,
+        canonical_proposal_control_bytes,
+    )?;
+    let expected_chain = round.context().chain_id();
+    if candidates.chain_id() != expected_chain {
+        return Err(FixedValidatorNodeVoteRejectionV0::CandidateChainMismatch {
+            expected: expected_chain,
+            actual: candidates.chain_id(),
+        });
+    }
+    let candidate = candidates
+        .get(expected_target)
+        .map_err(|source| FixedValidatorNodeVoteRejectionV0::CandidateStore(Box::new(source)))?
+        .ok_or(FixedValidatorNodeVoteRejectionV0::CandidateUnavailable {
+            target: expected_target,
+        })?;
+    if candidate != value.artifact_block() {
+        return Err(FixedValidatorNodeVoteRejectionV0::CandidateBlockMismatch {
+            target: expected_target,
+        });
+    }
+    let artifact_id = candidate.artifact_id();
+    let payload = payloads
+        .get(artifact_id)
+        .map_err(|source| FixedValidatorNodeVoteRejectionV0::PayloadStore(Box::new(source)))?
+        .ok_or(FixedValidatorNodeVoteRejectionV0::PayloadUnavailable {
+            target: expected_target,
+        })?;
+    debug_assert_eq!(payload.artifact_id(), artifact_id);
+    Ok(payload.into_canonical_artifact_bytes().into_vec())
+}
+
+fn decode_candidate_backed_proposal_value(
+    round: &FixedConsensusRoundV0<'_>,
+    expected_target: ArtifactBlockId,
+    canonical_proposal_control_bytes: &[u8],
+) -> Result<ConsensusValueV0, FixedValidatorNodeVoteRejectionV0> {
+    let proposal_error = |source| FixedValidatorNodeVoteRejectionV0::Proposal(Box::new(source));
+    if canonical_proposal_control_bytes.len() > VerifiedFixedConsensusProposalV0::MAX_BYTE_LENGTH {
+        return Err(proposal_error(ConsensusProposalVerifyError::InputTooLong {
+            actual: canonical_proposal_control_bytes.len(),
+            maximum: VerifiedFixedConsensusProposalV0::MAX_BYTE_LENGTH,
+        }));
+    }
+    if canonical_proposal_control_bytes.len() < VerifiedFixedConsensusProposalV0::MIN_BYTE_LENGTH {
+        return Err(proposal_error(
+            ConsensusProposalVerifyError::InvalidLength {
+                actual: canonical_proposal_control_bytes.len(),
+                minimum: VerifiedFixedConsensusProposalV0::MIN_BYTE_LENGTH,
+            },
+        ));
+    }
+    let value = ConsensusValueV0::from_canonical_bytes(
+        &canonical_proposal_control_bytes[..ConsensusValueV0::BYTE_LENGTH],
+    )
+    .map_err(|source| proposal_error(ConsensusProposalVerifyError::Value(source)))?;
+    let expected_context = round.context();
+    let actual_context = value.context();
+    if actual_context.chain_id() != expected_context.chain_id() {
+        return Err(proposal_error(
+            ConsensusProposalVerifyError::ChainIdMismatch {
+                expected: expected_context.chain_id(),
+                actual: actual_context.chain_id(),
+            },
+        ));
+    }
+    if actual_context.genesis_id() != expected_context.genesis_id() {
+        return Err(proposal_error(
+            ConsensusProposalVerifyError::GenesisIdMismatch {
+                expected: expected_context.genesis_id(),
+                actual: actual_context.genesis_id(),
+            },
+        ));
+    }
+    if actual_context.protocol_version() != expected_context.protocol_version() {
+        return Err(proposal_error(
+            ConsensusProposalVerifyError::ProtocolVersionMismatch {
+                expected: expected_context.protocol_version(),
+                actual: actual_context.protocol_version(),
+            },
+        ));
+    }
+    let snapshot = round.position();
+    if value.height() != snapshot.height() {
+        return Err(proposal_error(
+            ConsensusProposalVerifyError::SnapshotHeightMismatch {
+                value: value.height(),
+                snapshot,
+            },
+        ));
+    }
+    let actual_target = value.artifact_block().id();
+    if actual_target != expected_target {
+        return Err(FixedValidatorNodeVoteRejectionV0::ProposalTargetMismatch {
+            expected: expected_target,
+            actual: actual_target,
+        });
+    }
+    Ok(value)
+}
+
+fn decide_and_finish_proposal_vote(
+    signing_session: &mut FixedValidatorNodeVotingSessionV0<'_>,
+    round: &FixedConsensusRoundV0<'_>,
+    proposal: &VerifiedFixedConsensusProposalV0<'_, '_>,
+    kind: ProposalVoteKindV0<'_>,
+) -> Result<FinishedVoteV0, ProposalVoteErrorV0> {
+    let decision = match kind {
+        ProposalVoteKindV0::Prevote => signing_session.decide_prevote_for_proposal(proposal),
+        ProposalVoteKindV0::Precommit {
+            canonical_prevote_certificate,
+        } => signing_session.decide_precommit_for_proposal_quorum(
+            round,
+            proposal,
+            canonical_prevote_certificate,
+        ),
+    };
+    let effect = match decision {
+        Ok(effect) => effect,
+        Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
+            return Err(ProposalVoteErrorV0::Rejected(
+                FixedValidatorNodeVoteRejectionV0::Decision(Box::new(source)),
+            ));
+        }
+        Err(source) => {
+            return Err(ProposalVoteErrorV0::Fatal(
+                FixedValidatorNodeVoteExecutionErrorV0::Session(Box::new(source)),
+            ));
+        }
+    };
+    finish_vote(signing_session, round, effect).map_err(ProposalVoteErrorV0::Fatal)
 }
 
 fn admit_phase_close_identity(
