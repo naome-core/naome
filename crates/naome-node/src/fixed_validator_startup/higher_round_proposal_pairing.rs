@@ -1,11 +1,13 @@
+use std::borrow::Cow;
 use std::collections::TryReserveError;
 use std::error::Error;
 use std::fmt;
 
 use naome_consensus::{
     ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError, ConsensusRound,
-    FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, ProposerSelectionError,
+    ConsensusVoteRole, ConsensusVoteTarget, FixedConsensusBranchV0, FixedConsensusRoundV0,
+    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, ProposerSelectionError,
+    QuorumCertificateBuildError,
 };
 use naome_storage::{
     FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyHaltV0,
@@ -72,6 +74,8 @@ pub enum FixedValidatorNodeBufferedProposalPrecommitRejectionV0 {
     PayloadCopy(TryReserveError),
     /// Complete branch-relative proposal and artifact admission failed.
     Proposal(Box<ConsensusProposalVerifyError>),
+    /// The complete exact signed-prevote batch did not form the proposal quorum.
+    QuorumConstruction(Box<QuorumCertificateBuildError>),
     /// The exact higher-round prevote/proposal quorum did not match or verify.
     Quorum(Box<FixedValidatorLockStateError>),
 }
@@ -101,6 +105,10 @@ impl fmt::Display for FixedValidatorNodeBufferedProposalPrecommitRejectionV0 {
             Self::Proposal(source) => {
                 write!(formatter, "buffered proposal was rejected: {source}")
             }
+            Self::QuorumConstruction(source) => write!(
+                formatter,
+                "buffered proposal prevote batch was rejected: {source}"
+            ),
             Self::Quorum(source) => {
                 write!(formatter, "buffered proposal quorum was rejected: {source}")
             }
@@ -114,6 +122,7 @@ impl Error for FixedValidatorNodeBufferedProposalPrecommitRejectionV0 {
             Self::Buffer(source) => Some(source),
             Self::PayloadCopy(source) => Some(source),
             Self::Proposal(source) => Some(source.as_ref()),
+            Self::QuorumConstruction(source) => Some(source.as_ref()),
             Self::Quorum(source) => Some(source.as_ref()),
             Self::ProposalUnavailable
             | Self::FinalityRoundLimitExceeded { .. }
@@ -243,6 +252,11 @@ enum CurrentRoundErrorV0 {
     Fatal(FixedValidatorNodeBufferedProposalPrecommitErrorV0),
 }
 
+enum BufferedProposalPrevoteQuorumInputV0<'input> {
+    CanonicalCertificate(&'input [u8]),
+    ExactSignedVotes(&'input [&'input [u8]]),
+}
+
 impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     /// Pairs one exact buffered higher-round proposal with its prevote quorum.
     ///
@@ -268,23 +282,56 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeBufferedProposalPrecommitOutcomeV0<'node>,
         FixedValidatorNodeBufferedProposalPrecommitErrorV0,
     > {
-        sign_precommit_for_buffered_higher_round_proposal_quorum(
+        sign_precommit_for_buffered_higher_round_proposal_input(
             self,
             proposals,
             canonical_proposal_control_bytes,
             canonical_artifact_bytes,
-            canonical_prevote_certificate,
+            BufferedProposalPrevoteQuorumInputV0::CanonicalCertificate(
+                canonical_prevote_certificate,
+            ),
+            inclusive_maximum_round,
+        )
+    }
+
+    /// Pairs one exact buffered proposal with a complete signed-prevote batch.
+    ///
+    /// After the same node and buffer preflight plus complete proposal
+    /// re-admission as the prebuilt-certificate sibling, every supplied vote is
+    /// authenticated all-or-nothing against the proposal's derived exact round,
+    /// `Prevote` role, and `Proposal(root)` target. Only the resulting canonical
+    /// certificate enters the unchanged anchored catch-up and precommit path.
+    /// Rejection restores the exact leased token; success returns one completed
+    /// signed precommit without finalizing it. The batch is never observed,
+    /// filtered, retained, grouped, or selected.
+    pub fn sign_precommit_for_buffered_higher_round_proposal_vote_batch(
+        self,
+        proposals: &mut FixedValidatorNodeProposalBufferV0,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: &[u8],
+        canonical_signed_prevotes: &[&[u8]],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeBufferedProposalPrecommitOutcomeV0<'node>,
+        FixedValidatorNodeBufferedProposalPrecommitErrorV0,
+    > {
+        sign_precommit_for_buffered_higher_round_proposal_input(
+            self,
+            proposals,
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+            BufferedProposalPrevoteQuorumInputV0::ExactSignedVotes(canonical_signed_prevotes),
             inclusive_maximum_round,
         )
     }
 }
 
-fn sign_precommit_for_buffered_higher_round_proposal_quorum<'node>(
+fn sign_precommit_for_buffered_higher_round_proposal_input<'node>(
     mut scope: FixedValidatorNodeSigningScopeV0<'node>,
     proposals: &mut FixedValidatorNodeProposalBufferV0,
     canonical_proposal_control_bytes: &[u8],
     canonical_artifact_bytes: &[u8],
-    canonical_prevote_certificate: &[u8],
+    quorum: BufferedProposalPrevoteQuorumInputV0<'_>,
     inclusive_maximum_round: ConsensusRound,
 ) -> Result<
     FixedValidatorNodeBufferedProposalPrecommitOutcomeV0<'node>,
@@ -406,6 +453,30 @@ fn sign_precommit_for_buffered_higher_round_proposal_quorum<'node>(
     );
     let proposal_root = admitted.proposal_signing_root();
     let (reverified_control, reverified_payload) = admitted.into_unverified_canonical_inputs();
+    let canonical_prevote_certificate: Cow<'_, [u8]> = match quorum {
+        BufferedProposalPrevoteQuorumInputV0::CanonicalCertificate(bytes) => Cow::Borrowed(bytes),
+        BufferedProposalPrevoteQuorumInputV0::ExactSignedVotes(canonical_signed_prevotes) => {
+            let certificate = match target_round.build_quorum_certificate_from_signed_votes(
+                canonical_signed_prevotes,
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(proposal_root),
+            ) {
+                Ok(certificate) => certificate,
+                Err(source) => {
+                    drop(target_round);
+                    drop(current_round);
+                    drop(lease);
+                    return Ok(rejected(
+                        scope,
+                        FixedValidatorNodeBufferedProposalPrecommitRejectionV0::QuorumConstruction(
+                            Box::new(source),
+                        ),
+                    ));
+                }
+            };
+            Cow::Owned(certificate.to_canonical_bytes())
+        }
+    };
 
     let effective_maximum = ConsensusRound::new(
         inclusive_maximum_round
@@ -416,7 +487,7 @@ fn sign_precommit_for_buffered_higher_round_proposal_quorum<'node>(
         .signing_session
         .prepare_higher_round_proposal_prevote_advance(
             &current_round,
-            canonical_prevote_certificate,
+            canonical_prevote_certificate.as_ref(),
             proposal_position,
             proposal_root,
             effective_maximum,
@@ -464,7 +535,7 @@ fn sign_precommit_for_buffered_higher_round_proposal_quorum<'node>(
     let effect = match scope.signing_session.decide_precommit_for_proposal_quorum(
         &target_round,
         &admitted,
-        canonical_prevote_certificate,
+        canonical_prevote_certificate.as_ref(),
     ) {
         Ok(effect) => effect,
         Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {

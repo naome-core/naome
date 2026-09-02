@@ -207,24 +207,6 @@ fn provision_with_finality_round_limit<'layout>(
     )
 }
 
-fn provision_with_fixed_entries<'layout>(
-    fixture: &'layout Fixture,
-    layout: &'layout TestLayout,
-    entries: &'layout [ActiveAgreementEntry],
-) -> FixedValidatorNodeProvisionV0<'layout> {
-    FixedValidatorNodeProvisionV0::new(
-        fixture.definition,
-        fixture.context,
-        entries,
-        layout.directories(),
-        FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
-        FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
-        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
-        FixedValidatorSignerRecoveryRoundLimitV0::new(8),
-        FixedValidatorSignerCatchUpHeightLimitV0::new(0),
-    )
-}
-
 #[test]
 fn proposal_and_matching_prevote_quorum_release_only_anchored_votes() {
     let fixture = Fixture::new();

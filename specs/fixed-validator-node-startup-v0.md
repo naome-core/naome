@@ -13,8 +13,9 @@ higher-round proposal token, and a separately constructed process-local buffer
 may own such tokens across callback boundaries, without startup constructing,
 containing, recovering, clearing, or implicitly consulting that buffer. One
 separately specified consuming signing-scope operation may accept that exact
-caller-owned buffer explicitly and pair one exact entry with one exact
-prebuilt certificate; this does not make the buffer part of startup state.
+caller-owned buffer explicitly and pair one exact entry with either one exact
+prebuilt certificate or one complete exact signed-prevote batch; this does not
+make the buffer part of startup state.
 
 The caller supplies the exact artifact-chain definition, consensus context,
 preselected fixed agreement entries, one in-memory Ed25519 signing key, four
@@ -144,8 +145,9 @@ be returned. Current-round proposal authoring is available only through the
 consuming operation specified by
 `fixed-validator-node-proposal-authoring-v0.md`; raw proposal intent,
 preparation, acknowledgement, and key-use stages remain inaccessible.
-Exact buffered-proposal and prebuilt-certificate pairing is available only
-through the consuming operation specified by
+Exact buffered-proposal pairing with either a prebuilt certificate or a
+complete exact signed-prevote batch is available only through the consuming
+operation specified by
 `fixed-validator-node-buffered-proposal-precommit-v0.md`; its exact lease,
 checkpoint, lock-effect, and vote stages likewise remain inaccessible.
 

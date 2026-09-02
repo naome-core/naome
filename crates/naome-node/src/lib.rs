@@ -16,9 +16,11 @@
 //! progression, caller-owned fully verified higher-round proposal deferral, and
 //! a separately composed bounded volatile proposal buffer with mandatory later
 //! full branch-relative re-verification plus exact caller-addressed
-//! proposal/prevote-quorum catch-up and anchored precommit completion, while
+//! proposal/prevote-quorum catch-up from either a prebuilt certificate or an
+//! exact signed-prevote batch and anchored precommit completion, while
 //! deliberately leaving daemon, networking, timeout measurement and expiry,
-//! key-loading, event selection, and branch-selection policy to later components.
+//! key-loading, event selection, and branch-selection policy to later
+//! components.
 
 mod fixed_validator_startup;
 

@@ -4,24 +4,30 @@
 
 This document defines one synchronous, exact-addressed composition for a live
 fixed-validator V0 signer. It pairs one caller-owned volatile proposal-buffer
-entry with one caller-supplied canonical higher-round quorum certificate. A
-successful call catches the signer up to the proposal's exact round, locks and
-retains that proposal, durably signs its matching precommit, and only then
-removes and losslessly returns the exact buffered token.
+entry with either one caller-supplied canonical higher-round quorum certificate
+or one complete caller-supplied exact signed-prevote batch. A successful call
+catches the signer up to the proposal's exact round, locks and retains that
+proposal, durably signs its matching precommit, and only then removes and
+losslessly returns the exact buffered token. It does not finalize the proposal.
 
 The consuming operation is exposed on `FixedValidatorNodeSigningScopeV0`. The
 caller separately owns and mutably supplies one
 `FixedValidatorNodeProposalBufferV0`, both complete canonical byte strings that
-address one exact retained token, one complete canonical quorum certificate,
-and one inclusive caller-local round-work ceiling. Neither the buffer nor the
-coordinator searches by round or proposal root, observes events, constructs a
-certificate, or chooses among retained tokens or competing evidence.
+address one exact retained token, either one complete canonical quorum
+certificate or one complete borrowed batch of canonical signed prevotes, and
+one inclusive caller-local round-work ceiling. The batch sibling constructs at
+most one canonical certificate from that exact complete batch. Neither sibling
+searches by round or proposal root, observes or accumulates votes, or chooses
+among retained tokens, signer subsets, or competing evidence.
 
 The sole actionable certificate is an authenticated quorum at the token's
 exact `(height, round)`, with `Prevote` role and
 `Proposal(token.proposal_signing_root())` target. A prevote/nil certificate
 does not release a proposal. A precommit certificate remains evidence for the
-separate finality boundary and does not enter this operation.
+separate finality boundary and does not enter this operation. The batch sibling
+accepts no separate route, role, or target: it derives all three from the exact
+fully admitted buffered proposal before applying the existing all-or-nothing
+signed-vote-batch construction contract.
 
 ## Ordered preflight and exact admission
 
@@ -52,13 +58,18 @@ derives the node-owned branch round `P` and completely repeats proposal-control,
 producer, optional-valid-round-proof, artifact, payload, and state-transition
 verification. The token's copied descriptors grant no cached validity.
 
-The lock kernel then strictly frames and fully verifies the supplied quorum
-against that exact branch-derived fixed-set snapshot. After verification, but
-before certificate copying, checkpoint encoding, or storage append, it requires
-the quorum's authenticated position, role, and target to equal respectively
-the proposal position, `Prevote`, and `Proposal(proposal_root)`. Wrong-round,
-wrong-role, nil, competing-root, malformed, foreign, duplicate, inactive,
-invalid-signature, or insufficient evidence is a mutation-free rejection.
+For prebuilt-certificate input, the lock kernel strictly frames and fully
+verifies the supplied quorum against that exact branch-derived fixed-set
+snapshot. For exact-batch input, the target round instead strictly verifies
+every supplied vote and requires the proposal position, `Prevote` role, and
+`Proposal(proposal_root)` target all-or-nothing before producing one canonical
+key-sorted certificate. Empty, over-256, malformed, foreign, wrong-position,
+wrong-role, nil, competing-root, duplicate, inactive, invalid-signature, or
+insufficient batch input is a mutation-free rejection. In either case, only the
+resulting fully verified exact certificate may proceed. Prebuilt input is
+authenticated before it is copied; exact-batch construction is itself the sole
+bounded certificate allocation. Both paths establish the complete actionable
+identity before checkpoint encoding or storage append.
 
 ## Durable catch-up and signing sequence
 
@@ -90,10 +101,11 @@ written by this composition.
 
 A missing token, saturated buffer, token round at or below the signer, caller
 or persisted destination-capacity failure, payload-copy reservation failure,
-complete proposal rejection, or exact-quorum rejection occurs before durable
-mutation. It returns the unchanged signing scope, restores the leased token if
-one was taken, preserves every sibling token and counter, and changes neither
-signer nor finality authority files.
+complete proposal rejection, exact-batch construction rejection, or
+exact-quorum rejection occurs before durable mutation. It returns the unchanged
+signing scope, restores the leased token if one was taken, preserves every
+sibling token and counter, and changes neither signer nor finality authority
+files.
 
 A branch/signer mismatch, impossible current- or target-round derivation,
 exhausted round space, signer already above persisted policy, non-operational
@@ -131,8 +143,10 @@ available; this operation does not weaken or reinterpret them.
 This component does not define or perform:
 
 - proposal or certificate discovery, vote observation, accumulation,
-  delivery-completeness inference, construction, filtering, grouping,
-  competing-evidence choice, arrival-order preference, or automatic pairing;
+  delivery-completeness inference, filtering, grouping, competing-evidence
+  choice, arrival-order preference, or automatic pairing; the exact-batch
+  sibling's sole all-or-nothing certificate construction grants none of those
+  authorities;
 - event routing, timeout measurement or expiry, scheduling, retry ordering,
   daemon ownership, network transport, peer discovery, provenance trust, or
   peer-selected admission;
@@ -146,6 +160,6 @@ This component does not define or perform:
 These are authority boundaries for this exact synchronous composition, not
 claims that the broader product can omit those capabilities. Later routing and
 daemon work may invoke this operation only after independently deciding which
-exact already-retained token and complete certificate to supply; it must not
-turn buffer presence, arrival order, or peer provenance into consensus truth or
-selection authority.
+exact already-retained token and complete certificate or exact signed-prevote
+batch to supply; it must not turn buffer presence, batch order, arrival order,
+or peer provenance into consensus truth or selection authority.
