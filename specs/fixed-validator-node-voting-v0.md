@@ -5,9 +5,10 @@
 This document defines the synchronous current-round vote-execution boundary for
 one closure-scoped fixed-validator V0 node signer. It composes the exact branch
 already owned by `FixedValidatorNodeSigningScopeV0`, complete proposal or quorum
-input verification, the private lock kernel, and the anchored per-key
-vote-safety session. One successful call returns one completed signed prevote or
-precommit together with the replacement signing scope.
+input verification, optional exact signed-vote-batch quorum construction, the
+private lock kernel, and the anchored per-key vote-safety session. One
+successful call returns one completed signed prevote or precommit together with
+the replacement signing scope.
 
 The caller explicitly submits exactly one of five events through the direct
 input boundary:
@@ -22,14 +23,25 @@ input boundary:
 - an explicit Prevote-phase close carrying its exact consensus context and
   source position.
 
+Each quorum-bearing path has a sibling adapter that accepts one complete
+caller-routed batch of canonical signed prevotes in place of the already-built
+certificate. The exact typed round requires every vote to strictly verify,
+match its position and the path's exact prevote role and proposal-or-nil target,
+name one distinct active signer, and collectively exceed two thirds of the
+unchanged fixed-snapshot weight. It then includes every supplied vote in one
+canonical key-sorted certificate and passes those exact bytes to the unchanged
+lock-kernel path. It never filters, deduplicates, groups, accumulates, or chooses
+a signer subset or competing target.
+
 Each of the two proposal-bearing events also has a separate opt-in local-store
 adapter. The caller still supplies the complete canonical proposal-control
 bytes and explicitly selects one exact `ArtifactBlockId`, but routes the
 proposal's block and payload through one matching-chain
 `ArtifactBlockCandidateStore` and one Foundation-scoped
 `CanonicalArtifactPayloadStore`. The proposal-quorum adapter additionally
-supplies the same canonical current-round prevote certificate as the direct
-path. The adapters do not replace or weaken the direct input methods, and no
+supplies either the same canonical current-round prevote certificate as the
+direct path or one exact signed-prevote batch under the construction contract
+above. The adapters do not replace or weaken the direct input methods, and no
 adapter discovers a target from store inventory.
 
 The caller also supplies an inclusive local round-work ceiling. Mere submission,
@@ -99,11 +111,15 @@ than the caller-selected proposal; the adapter must not reinterpret the
 candidate target as vote-target authority.
 
 Proposal-quorum and nil-quorum paths additionally pass the exact canonical
-certificate to the private lock kernel. That kernel verifies the certificate
-against the current round's immutable fixed-set snapshot and enforces its exact
-role and target. Store presence, decoding alone, or caller classification cannot
-substitute for either complete proposal verification or certificate
-verification.
+certificate to the private lock kernel. A signed-vote-batch adapter first
+constructs those bytes through the exact typed-round contract above; any empty,
+over-bound, malformed, foreign-context, wrong-position, wrong-role,
+wrong-target, duplicate, inactive, invalid-signature, or insufficient-weight
+batch is rejected in full before a lock effect or signer write. The lock kernel
+then verifies the certificate against the same current round's immutable
+fixed-set snapshot and enforces its exact role and target. Store presence,
+decoding alone, caller classification, or one partial valid subset cannot
+substitute for complete proposal, batch, or certificate verification.
 
 ## Ordered vote execution
 
@@ -116,7 +132,8 @@ operation is not a cross-file atomic transaction:
    caller-local ceilings.
 3. For a phase close, match its exact context and source position. For a direct
    proposal or quorum path, fully verify every supplied byte required by that
-   path. For an opt-in store-backed proposal path, first require its exact live
+   path, including every signed vote when the exact-batch adapter is used. For
+   an opt-in store-backed proposal path, first require its exact live
    phase, admit the exact proposal identity, integrity-read the caller-selected
    candidate and payload as above, and then perform the same complete
    verification.
@@ -159,12 +176,14 @@ delivery.
 
 A pre-effect rejection returns the unchanged signing scope with a typed reason.
 Rejections include a caller-local round-work ceiling violation, phase-close
-context or position mismatch, complete proposal rejection, a mutation-free
-lock-kernel input rejection, or an optional adapter's proposal-identity,
-candidate-chain, candidate-availability, candidate-integrity, candidate-byte,
+context or position mismatch, complete proposal rejection, exact vote-batch
+construction rejection, a mutation-free lock-kernel input rejection, or an
+optional store adapter's proposal-identity, candidate-chain,
+candidate-availability, candidate-integrity, candidate-byte,
 payload-availability, or payload-integrity rejection. Existing identity,
-source, and lock-kernel validation ordering ensures a rejected event changes no
-volatile lock state, candidate or payload entry, or durable signer state. A
+source, batch, and lock-kernel validation ordering ensures a rejected event
+changes no volatile lock state, candidate or payload entry, or durable signer
+state. A
 source-integrity failure may poison only that borrowed source handle under its
 existing contract while the unchanged signing scope remains available for an
 explicit direct-input retry. A poisoned, terminal, or pending signing session
@@ -187,8 +206,9 @@ outside the anchored session.
 ## Public API boundary
 
 The node voting facade retains read-only position, phase, lock, and valid-value
-diagnostics plus the direct proposal-byte methods and the two separate opt-in
-store-backed adapters. Identity-free phase closes, current-round decision
+diagnostics plus the direct proposal-byte methods, their exact-batch quorum
+siblings, and the separate opt-in store-backed adapters for both certificate
+and exact-batch input. Identity-free phase closes, current-round decision
 effects, raw cursor-supplied round advancement, vote preparation, anchor
 acknowledgement, and key use are absent or crate-private. External callers
 therefore cannot split the ordered current-round sequence, retarget a delayed
@@ -208,6 +228,9 @@ This coordinator does not define or perform:
 
 - proposal authoring, producer signing, proposal or certificate selection, or
   competing-evidence ranking;
+- stateful vote collection, duplicate-delivery policy, conflicting-vote or
+  equivocation retention, signature-variant preference, certificate freezing
+  or renewal, or competing-target grouping;
 - asynchronous event routing, proposal or vote buffering, phase scheduling,
   timer generation or cancellation, timeout measurement, timeout expiry,
   same-position event freshness, retry ordering, exactly-once delivery, or

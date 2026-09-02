@@ -4,7 +4,8 @@ use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::ArtifactBlock;
 use naome_consensus::{
     ConsensusProposalVerifyError, ConsensusVoteRole, ConsensusVoteTarget,
-    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, VerifiedFixedConsensusProposalV0,
+    FixedValidatorLockPhaseV0, FixedValidatorLockStateError, QuorumCertificateBuildError,
+    VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::{
     ArtifactBlockCandidateStoreError, CanonicalArtifactPayloadStoreError,
@@ -46,6 +47,25 @@ fn expect_rejected<'node>(
         }
         FixedValidatorNodeVoteExecutionOutcomeV0::SignerStopped(_) => {
             panic!("an input rejection must not stop the signer")
+        }
+    }
+}
+
+fn expect_current_round_finality<'node>(
+    outcome: FixedValidatorNodeCurrentRoundFinalityOutcomeV0<'node>,
+) -> (
+    FixedValidatorNodeSigningScopeV0<'node>,
+    FixedValidatorNodeFinalitySelectionV0,
+) {
+    match outcome {
+        FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality(
+            FixedValidatorNodeFinalityOutcomeV0::Continues { scope, selection },
+        ) => (*scope, selection),
+        FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality(
+            FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(_),
+        ) => panic!("expected continued signing authority after first finality"),
+        FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Rejected { .. } => {
+            panic!("expected exact-current-round finality")
         }
     }
 }
@@ -187,6 +207,24 @@ fn provision_with_finality_round_limit<'layout>(
     )
 }
 
+fn provision_with_fixed_entries<'layout>(
+    fixture: &'layout Fixture,
+    layout: &'layout TestLayout,
+    entries: &'layout [ActiveAgreementEntry],
+) -> FixedValidatorNodeProvisionV0<'layout> {
+    FixedValidatorNodeProvisionV0::new(
+        fixture.definition,
+        fixture.context,
+        entries,
+        layout.directories(),
+        FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
+        FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+        FixedValidatorProposalReplayLimitV0::new(32).unwrap(),
+        FixedValidatorSignerRecoveryRoundLimitV0::new(8),
+        FixedValidatorSignerCatchUpHeightLimitV0::new(0),
+    )
+}
+
 #[test]
 fn proposal_and_matching_prevote_quorum_release_only_anchored_votes() {
     let fixture = Fixture::new();
@@ -299,6 +337,155 @@ fn proposal_and_matching_prevote_quorum_release_only_anchored_votes() {
                     .canonical_prevote_certificate(),
                 certificate
             );
+        })
+        .unwrap();
+}
+
+#[test]
+fn proposal_vote_batch_wrong_phase_precedes_proposal_and_vote_reads() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-voting-proposal-batch-wrong-phase");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let malformed_vote = [0_u8];
+            let (_, rejection) = expect_rejected(
+                scope
+                    .sign_precommit_for_proposal_vote_batch(
+                        &[0_u8],
+                        vec![0_u8],
+                        &[malformed_vote.as_slice()],
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::Decision(source)
+                    if matches!(
+                        source.as_ref(),
+                        FixedValidatorLockStateError::UnexpectedPhase {
+                            expected: FixedValidatorLockPhaseV0::Prevote,
+                            actual: FixedValidatorLockPhaseV0::Proposal,
+                        }
+                    )
+            ));
+            assert_eq!(layout.images(), before);
+        })
+        .unwrap();
+}
+
+#[test]
+fn exact_signed_vote_batches_drive_proposal_and_nil_precommits_all_or_nothing() {
+    let fixture = Fixture::new();
+    let proposal_layout = TestLayout::new("node-voting-proposal-vote-batch");
+    let ready = fixture
+        .provision(&proposal_layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round = branch.begin_round_zero().unwrap();
+            let payload = proof_payload(ZfcAxiom::Pairing);
+            let block = ArtifactChainState::new(fixture.definition)
+                .prepare_block(artifact_id(&payload))
+                .unwrap();
+            let value = round.value_for_artifact_block(block);
+            let root = value.proposal_signing_root();
+            let control = proposal_control_bytes(value, round.position(), &fixture.signing_key());
+            let (scope, prevote) = expect_signed(
+                scope
+                    .sign_prevote_for_proposal(
+                        &control,
+                        payload.clone(),
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            let prevote_bytes = prevote.canonical_bytes().to_vec();
+            let before_rejection = proposal_layout.images();
+            let duplicate_batch = [prevote_bytes.as_slice(), prevote_bytes.as_slice()];
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .sign_precommit_for_proposal_vote_batch(
+                        &control,
+                        payload.clone(),
+                        &duplicate_batch,
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::QuorumConstruction(source)
+                    if matches!(source.as_ref(), QuorumCertificateBuildError::DuplicateSigner { .. })
+            ));
+            assert_eq!(proposal_layout.images(), before_rejection);
+
+            let (mut scope, precommit) = expect_signed(
+                scope
+                    .sign_precommit_for_proposal_vote_batch(
+                        &control,
+                        payload,
+                        &[prevote_bytes.as_slice()],
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(precommit.position(), round.position());
+            assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(precommit.target(), ConsensusVoteTarget::Proposal(root));
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+        })
+        .unwrap();
+
+    let nil_layout = TestLayout::new("node-voting-nil-vote-batch");
+    let ready = fixture
+        .provision(&nil_layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    ready
+        .run_with_signing_session(|scope| {
+            let (scope, prevote) = expect_signed(
+                scope
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            assert_eq!(prevote.target(), ConsensusVoteTarget::Nil);
+            let prevote_bytes = prevote.canonical_bytes().to_vec();
+            let (mut scope, precommit) = expect_signed(
+                scope
+                    .sign_precommit_for_nil_vote_batch(
+                        &[prevote_bytes.as_slice()],
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(precommit.target(), ConsensusVoteTarget::Nil);
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert!(scope.signing_session().locked_value().is_none());
+            assert!(scope.signing_session().valid_value().is_none());
         })
         .unwrap();
 }
@@ -461,6 +648,214 @@ fn candidate_backed_proposal_votes_preserve_sources_and_restart_exactly() {
                     .canonical_prevote_certificate(),
                 certificate
             );
+        })
+        .unwrap();
+}
+
+#[test]
+fn three_nodes_build_exact_quorums_from_anchored_votes_then_finalize_and_restart() {
+    let fixture = Fixture::new();
+    let layouts = [
+        TestLayout::new("node-vote-batch-e2e-a"),
+        TestLayout::new("node-vote-batch-e2e-b"),
+        TestLayout::new("node-vote-batch-e2e-c"),
+    ];
+    let signing_keys = [
+        SigningKey::from_bytes(&signing_seed(21)),
+        SigningKey::from_bytes(&signing_seed(22)),
+        SigningKey::from_bytes(&signing_seed(23)),
+    ];
+    let entries = signing_keys
+        .iter()
+        .map(|key| ActiveAgreementEntry::new(consensus_key(key), AgreementWeight::new(1)))
+        .collect::<Vec<_>>();
+
+    let selected = ArtifactChainState::new(fixture.definition);
+    let payload = proof_payload(ZfcAxiom::Pairing);
+    let block = selected.prepare_block(artifact_id(&payload)).unwrap();
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        fixture.context,
+        &entries,
+        selected.branch_snapshot(),
+    )
+    .unwrap();
+    let round = branch.begin_round_zero().unwrap();
+    let proposer = signing_keys
+        .iter()
+        .find(|key| consensus_key(key) == round.proposer())
+        .expect("the scheduled proposer belongs to the fixed set");
+    let value = round.value_for_artifact_block(block);
+    let proposal_root = value.proposal_signing_root();
+    let control = proposal_control_bytes(value, round.position(), proposer);
+
+    let mut candidates = create_candidate_store(&layouts[0], fixture.definition);
+    let mut payloads = create_payload_store(&layouts[0]);
+    retain_candidate_inputs(
+        &mut candidates,
+        &mut payloads,
+        &selected.branch_snapshot(),
+        &block,
+        &payload,
+    );
+    let source_images = layouts[0].source_images();
+
+    let mut prevotes = Vec::new();
+    for (layout, signing_key) in layouts.iter().zip(&signing_keys) {
+        let ready = provision_with_fixed_entries(&fixture, layout, &entries)
+            .create(signing_key.clone())
+            .unwrap();
+        let prevote = ready
+            .run_with_signing_session(|scope| {
+                let (_scope, vote) = expect_signed(
+                    scope
+                        .sign_candidate_backed_prevote_for_proposal(
+                            &mut candidates,
+                            &mut payloads,
+                            block.id(),
+                            &control,
+                            ConsensusRound::new(0),
+                        )
+                        .unwrap(),
+                );
+                vote
+            })
+            .unwrap();
+        assert_eq!(prevote.position(), round.position());
+        assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
+        assert_eq!(
+            prevote.target(),
+            ConsensusVoteTarget::Proposal(proposal_root)
+        );
+        prevotes.push(prevote);
+    }
+    assert_eq!(layouts[0].source_images(), source_images);
+
+    let prevote_refs = prevotes
+        .iter()
+        .rev()
+        .map(|vote| vote.canonical_bytes())
+        .collect::<Vec<_>>();
+    let expected_prevote_certificate = round
+        .build_quorum_certificate_from_signed_votes(
+            &prevote_refs,
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Proposal(proposal_root),
+        )
+        .unwrap()
+        .to_canonical_bytes();
+
+    let mut precommits = Vec::new();
+    for (layout, signing_key) in layouts.iter().zip(&signing_keys) {
+        let ready = expect_ready(
+            provision_with_fixed_entries(&fixture, layout, &entries)
+                .open(signing_key.clone())
+                .unwrap(),
+        );
+        let precommit = ready
+            .run_with_signing_session(|scope| {
+                let (mut scope, vote) = expect_signed(
+                    scope
+                        .sign_candidate_backed_precommit_for_proposal_vote_batch(
+                            &mut candidates,
+                            &mut payloads,
+                            block.id(),
+                            &control,
+                            &prevote_refs,
+                            ConsensusRound::new(0),
+                        )
+                        .unwrap(),
+                );
+                assert_eq!(
+                    scope
+                        .signing_session()
+                        .valid_value()
+                        .unwrap()
+                        .canonical_prevote_certificate(),
+                    expected_prevote_certificate
+                );
+                vote
+            })
+            .unwrap();
+        assert_eq!(precommit.position(), round.position());
+        assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+        assert_eq!(
+            precommit.target(),
+            ConsensusVoteTarget::Proposal(proposal_root)
+        );
+        precommits.push(precommit);
+    }
+    assert_eq!(layouts[0].source_images(), source_images);
+
+    let precommit_refs = precommits
+        .iter()
+        .map(|vote| vote.canonical_bytes())
+        .collect::<Vec<_>>();
+    let precommit_certificate = round
+        .build_quorum_certificate_from_signed_votes(
+            &precommit_refs,
+            ConsensusVoteRole::Precommit,
+            ConsensusVoteTarget::Proposal(proposal_root),
+        )
+        .unwrap()
+        .to_canonical_bytes();
+    let before_finality = layouts[0].images();
+
+    let ready = expect_ready(
+        provision_with_fixed_entries(&fixture, &layouts[0], &entries)
+            .open(signing_keys[0].clone())
+            .unwrap(),
+    );
+    let (selected_coordinate, signer_position) = ready
+        .run_with_signing_session(|scope| {
+            let (mut scope, selection) = expect_current_round_finality(
+                scope
+                    .commit_current_round_finality(
+                        &control,
+                        payload.clone(),
+                        &precommit_certificate,
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                selection,
+                FixedValidatorNodeFinalitySelectionV0::Finalized {
+                    position,
+                    ancestry_id,
+                    ..
+                } if position == round.position() && ancestry_id == value.ancestry_id()
+            ));
+            assert_eq!(scope.signing_session().position().height().value(), 2);
+            assert_eq!(scope.signing_session().position().round().value(), 0);
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Proposal
+            );
+            (
+                scope.branch().coordinate(),
+                scope.signing_session().position(),
+            )
+        })
+        .unwrap();
+    for (index, (before, after)) in before_finality.iter().zip(layouts[0].images()).enumerate() {
+        assert_ne!(before, &after, "durable node image {index} did not advance");
+    }
+    assert_eq!(layouts[0].source_images(), source_images);
+
+    let reopened = expect_ready(
+        provision_with_fixed_entries(&fixture, &layouts[0], &entries)
+            .open(signing_keys[0].clone())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(scope.branch().coordinate(), selected_coordinate);
+            assert_eq!(scope.signing_session().position(), signer_position);
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Proposal
+            );
+            assert_eq!(layouts[0].source_images(), source_images);
         })
         .unwrap();
 }

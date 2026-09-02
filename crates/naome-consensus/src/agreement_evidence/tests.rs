@@ -149,6 +149,20 @@ fn role_target_cases() -> [(ConsensusVoteRole, ConsensusVoteTarget); 4] {
     ]
 }
 
+fn signed_vote_batch(
+    body: [u8; VOTE_BODY_BYTES],
+    signing_keys: &[&SigningKey],
+) -> Vec<[u8; SIGNED_VOTE_BYTES]> {
+    signing_keys
+        .iter()
+        .map(|key| signed_vote_bytes(key, body))
+        .collect()
+}
+
+fn vote_batch_refs(votes: &[[u8; SIGNED_VOTE_BYTES]]) -> Vec<&[u8]> {
+    votes.iter().map(|vote| vote.as_slice()).collect()
+}
+
 #[test]
 fn context_and_evidence_value_types_preserve_exact_values() {
     let context = context(0x11, 0x22, u32::MAX);
@@ -1042,6 +1056,385 @@ fn quorum_certificate_accepts_all_four_role_target_forms() {
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), cases.len());
+}
+
+#[test]
+fn exact_vote_batch_builds_all_forms_and_is_permutation_invariant() {
+    let expected_context = context(0x71, 0x72, 73);
+    let expected_position = position(74, 75);
+    let keys = [signing_key(71), signing_key(72), signing_key(73)];
+    let snapshot = snapshot(
+        expected_position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+
+    for (role, target) in role_target_cases() {
+        let body = manual_vote_body(expected_context, expected_position, role, target);
+        let votes = signed_vote_batch(body, &[&keys[2], &keys[0], &keys[1]]);
+        let vote_refs = vote_batch_refs(&votes);
+        let built = VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &vote_refs,
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        )
+        .unwrap();
+        let expected = certificate_bytes(body, &[&keys[0], &keys[1], &keys[2]]);
+
+        assert_eq!(built.to_canonical_bytes(), expected);
+        assert_eq!(built.signer_count(), 3);
+        assert_eq!(built.signed_weight(), AgreementWeight::new(3));
+        assert_eq!(built.total_weight(), AgreementWeight::new(3));
+        assert_eq!(built.role(), role);
+        assert_eq!(built.target(), target);
+        assert_eq!(
+            built.id().as_bytes(),
+            &<[u8; 32]>::from(Sha256::digest(&expected))
+        );
+        assert_eq!(
+            VerifiedQuorumCertificateV0::decode_and_verify(
+                &built.to_canonical_bytes(),
+                expected_context,
+                &snapshot,
+            )
+            .unwrap()
+            .to_canonical_bytes(),
+            expected,
+        );
+
+        let reversed = vote_refs.iter().rev().copied().collect::<Vec<_>>();
+        let rebuilt = VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &reversed,
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        )
+        .unwrap();
+        assert_eq!(rebuilt.to_canonical_bytes(), expected);
+        assert_eq!(rebuilt.id(), built.id());
+    }
+}
+
+#[test]
+fn exact_vote_batch_enforces_bounds_membership_and_strict_weight() {
+    let expected_context = context(0x81, 0x82, 83);
+    let expected_position = position(84, 85);
+    let keys = [signing_key(81), signing_key(82), signing_key(83)];
+    let outsider = signing_key(84);
+    let snapshot = snapshot(
+        expected_position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+    let role = ConsensusVoteRole::Prevote;
+    let target = ConsensusVoteTarget::Proposal(root(0x86));
+    let body = manual_vote_body(expected_context, expected_position, role, target);
+
+    assert_eq!(
+        VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &[],
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        ),
+        Err(QuorumCertificateBuildError::EmptyVoteBatch),
+    );
+
+    let malformed = [0_u8; 1];
+    let over_bound = vec![malformed.as_slice(); MAX_ACTIVE_VALIDATORS + 1];
+    assert_eq!(
+        VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &over_bound,
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        ),
+        Err(QuorumCertificateBuildError::TooManyVotes {
+            actual: MAX_ACTIVE_VALIDATORS + 1,
+            maximum: MAX_ACTIVE_VALIDATORS,
+        }),
+    );
+
+    let exact_two_thirds = signed_vote_batch(body, &[&keys[0], &keys[1]]);
+    assert_eq!(
+        VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &vote_batch_refs(&exact_two_thirds),
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        ),
+        Err(QuorumCertificateBuildError::InsufficientAgreementWeight {
+            signed: AgreementWeight::new(2),
+            total: AgreementWeight::new(3),
+        }),
+    );
+
+    let with_outsider = signed_vote_batch(body, &[&keys[0], &keys[1], &outsider]);
+    assert_eq!(
+        VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &vote_batch_refs(&with_outsider),
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        ),
+        Err(QuorumCertificateBuildError::UnknownSigner {
+            signer: consensus_key(&outsider),
+        }),
+    );
+
+    let complete = signed_vote_batch(body, &[&keys[0], &keys[1], &keys[2]]);
+    let built = VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+        &vote_batch_refs(&complete),
+        expected_context,
+        &snapshot,
+        role,
+        target,
+    )
+    .unwrap();
+    assert_eq!(built.signed_weight(), AgreementWeight::new(3));
+    assert_eq!(built.total_weight(), AgreementWeight::new(3));
+}
+
+#[test]
+fn exact_vote_batch_accepts_the_full_fixed_validator_bound() {
+    let expected_context = context(0xa1, 0xa2, 163);
+    let expected_position = position(164, 165);
+    let role = ConsensusVoteRole::Precommit;
+    let target = ConsensusVoteTarget::Proposal(root(0xa6));
+    let body = manual_vote_body(expected_context, expected_position, role, target);
+    let keys = (0..MAX_ACTIVE_VALIDATORS)
+        .map(|index| signing_key(u16::try_from(index).unwrap()))
+        .collect::<Vec<_>>();
+    let snapshot = snapshot(
+        expected_position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+    let votes = signed_vote_batch(body, &keys.iter().collect::<Vec<_>>());
+    let built = VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+        &vote_batch_refs(&votes),
+        expected_context,
+        &snapshot,
+        role,
+        target,
+    )
+    .unwrap();
+    let bytes = built.to_canonical_bytes();
+
+    assert_eq!(built.signer_count(), MAX_ACTIVE_VALIDATORS);
+    assert_eq!(built.signed_weight(), AgreementWeight::new(256));
+    assert_eq!(built.total_weight(), AgreementWeight::new(256));
+    assert_eq!(bytes.len(), MAX_CERTIFICATE_BYTES);
+    assert_eq!(bytes.len(), 24_696);
+    assert_eq!(
+        built.id().as_bytes(),
+        &<[u8; 32]>::from(Sha256::digest(&bytes))
+    );
+    assert_eq!(
+        VerifiedQuorumCertificateV0::decode_and_verify(&bytes, expected_context, &snapshot)
+            .unwrap()
+            .to_canonical_bytes(),
+        bytes,
+    );
+}
+
+#[test]
+fn exact_vote_batch_rejects_every_mixed_or_invalid_entry_without_filtering() {
+    let expected_context = context(0x91, 0x92, 93);
+    let expected_position = position(94, 95);
+    let keys = [signing_key(91), signing_key(92), signing_key(93)];
+    let snapshot = snapshot(
+        expected_position,
+        &keys.iter().map(|key| (key, 1)).collect::<Vec<_>>(),
+    );
+    let role = ConsensusVoteRole::Precommit;
+    let target = ConsensusVoteTarget::Proposal(root(0x96));
+    let body = manual_vote_body(expected_context, expected_position, role, target);
+    let valid = signed_vote_batch(body, &[&keys[0], &keys[1], &keys[2]]);
+
+    let duplicate = [
+        valid[0].as_slice(),
+        valid[1].as_slice(),
+        valid[0].as_slice(),
+    ];
+    assert_eq!(
+        VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &duplicate,
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        ),
+        Err(QuorumCertificateBuildError::DuplicateSigner {
+            signer: consensus_key(&keys[0]),
+        }),
+    );
+
+    let cases = [
+        (
+            signed_vote_bytes(
+                &keys[2],
+                manual_vote_body(expected_context, position(94, 96), role, target),
+            ),
+            "position",
+        ),
+        (
+            signed_vote_bytes(
+                &keys[2],
+                manual_vote_body(
+                    expected_context,
+                    expected_position,
+                    ConsensusVoteRole::Prevote,
+                    target,
+                ),
+            ),
+            "role",
+        ),
+        (
+            signed_vote_bytes(
+                &keys[2],
+                manual_vote_body(
+                    expected_context,
+                    expected_position,
+                    role,
+                    ConsensusVoteTarget::Nil,
+                ),
+            ),
+            "target",
+        ),
+    ];
+    for (mixed, expected_kind) in cases {
+        let batch = [valid[0].as_slice(), valid[1].as_slice(), mixed.as_slice()];
+        let error = VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &batch,
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                (expected_kind, error),
+                (
+                    "position",
+                    QuorumCertificateBuildError::PositionMismatch { index: 2, .. }
+                ) | (
+                    "role",
+                    QuorumCertificateBuildError::RoleMismatch { index: 2, .. }
+                ) | (
+                    "target",
+                    QuorumCertificateBuildError::TargetMismatch { index: 2, .. }
+                )
+            ),
+            "unexpected {expected_kind} rejection: {error:?}"
+        );
+    }
+
+    let mut invalid_signature = valid[2];
+    invalid_signature[SIGNED_VOTE_BYTES - 1] ^= 1;
+    let invalid_batch = [
+        valid[0].as_slice(),
+        valid[1].as_slice(),
+        invalid_signature.as_slice(),
+    ];
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &invalid_batch,
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        ),
+        Err(QuorumCertificateBuildError::Vote {
+            index: 2,
+            source: ConsensusVoteVerifyError::InvalidSignature { .. },
+        })
+    ));
+
+    let foreign_context = context(0x97, 0x92, 93);
+    let foreign = signed_vote_bytes(
+        &keys[2],
+        manual_vote_body(foreign_context, expected_position, role, target),
+    );
+    let foreign_batch = [valid[0].as_slice(), valid[1].as_slice(), foreign.as_slice()];
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &foreign_batch,
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        ),
+        Err(QuorumCertificateBuildError::Vote {
+            index: 2,
+            source: ConsensusVoteVerifyError::ChainIdMismatch { .. },
+        })
+    ));
+
+    let malformed = [0_u8];
+    let malformed_batch = [
+        valid[0].as_slice(),
+        valid[1].as_slice(),
+        malformed.as_slice(),
+    ];
+    assert!(matches!(
+        VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &malformed_batch,
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        ),
+        Err(QuorumCertificateBuildError::Vote {
+            index: 2,
+            source: ConsensusVoteVerifyError::Decode(
+                ConsensusVoteDecodeError::InvalidLength { .. }
+            ),
+        })
+    ));
+
+    for (foreign_context, mismatch) in [
+        (context(0x91, 0x98, 93), "genesis"),
+        (context(0x91, 0x92, 94), "version"),
+    ] {
+        let foreign = signed_vote_bytes(
+            &keys[2],
+            manual_vote_body(foreign_context, expected_position, role, target),
+        );
+        let batch = [valid[0].as_slice(), valid[1].as_slice(), foreign.as_slice()];
+        let error = VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            &batch,
+            expected_context,
+            &snapshot,
+            role,
+            target,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                (mismatch, error),
+                (
+                    "genesis",
+                    QuorumCertificateBuildError::Vote {
+                        index: 2,
+                        source: ConsensusVoteVerifyError::GenesisIdMismatch { .. },
+                    }
+                ) | (
+                    "version",
+                    QuorumCertificateBuildError::Vote {
+                        index: 2,
+                        source: ConsensusVoteVerifyError::ProtocolVersionMismatch { .. },
+                    }
+                )
+            ),
+            "unexpected {mismatch} rejection: {error:?}"
+        );
+    }
 }
 
 #[test]

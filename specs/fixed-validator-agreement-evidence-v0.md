@@ -221,6 +221,40 @@ accepts only an already fully verified certificate whose role is precommit and
 whose target is one proposal signing root. The other three valid generic forms
 cannot produce that subtype.
 
+## Exact signed-vote batch construction
+
+One typed `FixedConsensusRoundV0` may construct a canonical generic quorum
+certificate from one caller-routed exact batch of complete signed-vote byte
+strings plus one caller-required role and target. This is a stateless assembly
+boundary, not a message collector. It applies the following all-or-nothing
+contract:
+
+1. Reject zero votes or more than 256 votes before decoding an entry.
+2. Strictly decode and verify every complete signed vote against the typed
+   round's exact branch context.
+3. Require every vote to name the typed round's exact position and the same
+   caller-required role and nil-or-proposal target.
+4. Sort the complete supplied entries by raw consensus-key bytes solely for
+   canonical certificate encoding, then reject any repeated signer. A repeated
+   signer is rejected even when the two inputs are byte-identical or are valid
+   signature variants for one semantic vote.
+5. Require every signer to be active in the typed round's immutable fixed
+   snapshot, sum every supplied distinct signer's exact weight, retain all
+   unlisted active weight in the denominator, and require strict greater than
+   two thirds.
+6. Publish the existing `VerifiedQuorumCertificateV0` containing every
+   supplied entry in ascending signer order. Its bytes, evidence identity,
+   role, target, signer set, signed weight, and total weight are exactly those
+   accepted by the unchanged canonical certificate verifier.
+
+The constructor never drops an input, silently deduplicates, groups competing
+roles or targets, chooses a threshold prefix or preferred signer subset,
+accumulates across calls, freezes an arrival-time certificate, or classifies
+same-signer inputs as equivocation. Caller choice of the complete batch remains
+explicit and grants no evidence-retention or consensus-selection authority.
+Any stateful collection, competing-target handling, signature-variant policy,
+or certificate preference requires a separate bounded specification.
+
 ## Resource and compatibility boundary
 
 One signed vote performs one strict Ed25519 verification. One quorum
@@ -228,6 +262,13 @@ certificate in any of the four supported role-target forms contains at most
 256 keys and signatures, performs at most 256 active-set lookups and 256 strict
 Ed25519 verifications, and allocates only after its count and exact byte length
 pass the fixed bounds.
+
+One exact-batch construction receives at most 256 complete 214-byte vote
+inputs, performs one strict signed-vote verification and one active-set lookup
+per supplied vote, and produces at most the existing 24,696-byte certificate.
+It checks the batch count before entry decoding and does not borrow or retain
+caller input buffers
+after returning.
 
 This is a prerelease V0 format with no production-data compatibility promise.
 Any incompatible successor must use new role signing domains and a newly
