@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
     ConsensusVoteRole, ConsensusVoteTarget, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, ProposalSigningRoot, VerifiedFixedConsensusProposalV0,
+    FixedValidatorLockStateError, ProposalSigningRoot, QuorumCertificateBuildError,
+    VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::{
     FixedValidatorAnchoredVoteSafetyJournalErrorV0, FixedValidatorSignedVoteV0,
@@ -64,13 +65,23 @@ fn expect_signed<'node>(
     }
 }
 
-fn quorum_certificate_bytes(
+fn assert_empty_signing_state(
+    scope: &mut FixedValidatorNodeSigningScopeV0<'_>,
+    position: ConsensusPosition,
+    phase: FixedValidatorLockPhaseV0,
+) {
+    assert_eq!(scope.signing_session().position(), position);
+    assert_eq!(scope.signing_session().phase(), phase);
+    assert_eq!(scope.signing_session().locked_value(), None);
+    assert_eq!(scope.signing_session().valid_value(), None);
+}
+
+fn vote_body_bytes(
     context: ConsensusContextV0,
     position: ConsensusPosition,
     role: ConsensusVoteRole,
     target: ConsensusVoteTarget,
-    signer: &SigningKey,
-) -> Vec<u8> {
+) -> [u8; VOTE_BODY_BYTES] {
     let mut body = [0_u8; VOTE_BODY_BYTES];
     body[0] = match role {
         ConsensusVoteRole::Prevote => 1,
@@ -88,6 +99,17 @@ fn quorum_certificate_bytes(
             body[86..].copy_from_slice(root.as_bytes());
         }
     }
+    body
+}
+
+fn quorum_certificate_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signer: &SigningKey,
+) -> Vec<u8> {
+    let body = vote_body_bytes(context, position, role, target);
     let signer_key = consensus_key(signer);
     let domain: &[u8] = match role {
         ConsensusVoteRole::Prevote => b"naome:consensus-prevote-signing:v0\0",
@@ -100,6 +122,29 @@ fn quorum_certificate_bytes(
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&body);
     bytes.extend_from_slice(&1_u16.to_be_bytes());
+    bytes.extend_from_slice(signer_key.as_bytes());
+    bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
+    bytes
+}
+
+fn signed_vote_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signer: &SigningKey,
+) -> Vec<u8> {
+    let body = vote_body_bytes(context, position, role, target);
+    let signer_key = consensus_key(signer);
+    let domain: &[u8] = match role {
+        ConsensusVoteRole::Prevote => b"naome:consensus-prevote-signing:v0\0",
+        ConsensusVoteRole::Precommit => b"naome:consensus-precommit-signing:v0\0",
+    };
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(domain);
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(signer_key.as_bytes());
+    let mut bytes = body.to_vec();
     bytes.extend_from_slice(signer_key.as_bytes());
     bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
     bytes
@@ -650,6 +695,123 @@ fn nil_precommit_quorum_is_no_write_until_a_later_vote_persists_the_advanced_rou
 }
 
 #[test]
+fn current_nil_precommit_batch_matches_certificate_path_through_restart() {
+    let fixture = Fixture::new();
+    let certificate_layout = TestLayout::new("node-round-current-nil-certificate-parity");
+    let batch_layout = TestLayout::new("node-round-current-nil-batch-parity");
+    let certificate_ready = fixture
+        .provision(&certificate_layout, 1)
+        .create(fixture.signing_key())
+        .unwrap();
+    let batch_ready = fixture
+        .provision(&batch_layout, 1)
+        .create(fixture.signing_key())
+        .unwrap();
+    let certificate_before = certificate_layout.images();
+    let batch_before = batch_layout.images();
+    assert_eq!(certificate_before, batch_before);
+
+    let certificate_vote = certificate_ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let certificate = quorum_certificate_bytes(
+                fixture.context,
+                round_zero.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+                &fixture.signing_key(),
+            );
+            let (mut scope, position, phase) = expect_advanced(
+                scope
+                    .advance_round_for_nil_precommit_quorum(&certificate, ConsensusRound::new(1))
+                    .unwrap(),
+            );
+            assert_eq!(position, round_at(&branch, 1).position());
+            assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+            assert_eq!(scope.signing_session().locked_value(), None);
+            assert_eq!(scope.signing_session().valid_value(), None);
+            assert_eq!(certificate_layout.images(), certificate_before);
+            let (scope, vote) = expect_signed(
+                scope
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(1))
+                    .unwrap(),
+            );
+            let canonical_vote = vote.canonical_bytes().to_vec();
+            drop(scope);
+            canonical_vote
+        })
+        .unwrap();
+
+    let batch_vote = batch_ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let signed_precommit = signed_vote_bytes(
+                fixture.context,
+                round_zero.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+                &fixture.signing_key(),
+            );
+            let (mut scope, position, phase) = expect_advanced(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(
+                        &[signed_precommit.as_slice()],
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(position, round_at(&branch, 1).position());
+            assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+            assert_eq!(scope.signing_session().locked_value(), None);
+            assert_eq!(scope.signing_session().valid_value(), None);
+            assert_eq!(batch_layout.images(), batch_before);
+            let (scope, vote) = expect_signed(
+                scope
+                    .sign_prevote_after_current_proposal_close(ConsensusRound::new(1))
+                    .unwrap(),
+            );
+            let canonical_vote = vote.canonical_bytes().to_vec();
+            drop(scope);
+            canonical_vote
+        })
+        .unwrap();
+
+    assert_eq!(batch_vote, certificate_vote);
+    let certificate_after = certificate_layout.images();
+    let batch_after = batch_layout.images();
+    assert_eq!(certificate_after, batch_after);
+    assert_eq!(certificate_after[0], certificate_before[0]);
+    assert_eq!(certificate_after[1], certificate_before[1]);
+    assert_ne!(certificate_after[2], certificate_before[2]);
+    assert_ne!(certificate_after[3], certificate_before[3]);
+
+    for layout in [&certificate_layout, &batch_layout] {
+        let reopened = expect_ready(
+            fixture
+                .provision(layout, 1)
+                .open(fixture.signing_key())
+                .unwrap(),
+        );
+        reopened
+            .run_with_signing_session(|mut scope| {
+                assert_eq!(
+                    scope.signing_session().position().round(),
+                    ConsensusRound::new(1)
+                );
+                assert_eq!(
+                    scope.signing_session().phase(),
+                    FixedValidatorLockPhaseV0::Prevote
+                );
+                assert_eq!(scope.signing_session().locked_value(), None);
+                assert_eq!(scope.signing_session().valid_value(), None);
+            })
+            .unwrap();
+    }
+}
+
+#[test]
 fn higher_round_prevote_and_precommit_destinations_are_anchored_and_restart_exactly() {
     for (label, role, target, round_value, expected_phase) in [
         (
@@ -721,6 +883,624 @@ fn higher_round_prevote_and_precommit_destinations_are_anchored_and_restart_exac
             })
             .unwrap();
     }
+}
+
+#[test]
+fn higher_round_vote_batches_match_certificate_path_for_every_role_and_target() {
+    for (label, role, target, expected_phase) in [
+        (
+            "prevote-nil",
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Nil,
+            FixedValidatorLockPhaseV0::Prevote,
+        ),
+        (
+            "prevote-proposal",
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Proposal(ProposalSigningRoot::from_bytes([0xa1; 32])),
+            FixedValidatorLockPhaseV0::Prevote,
+        ),
+        (
+            "precommit-nil",
+            ConsensusVoteRole::Precommit,
+            ConsensusVoteTarget::Nil,
+            FixedValidatorLockPhaseV0::Precommit,
+        ),
+        (
+            "precommit-proposal",
+            ConsensusVoteRole::Precommit,
+            ConsensusVoteTarget::Proposal(ProposalSigningRoot::from_bytes([0xa2; 32])),
+            FixedValidatorLockPhaseV0::Precommit,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let certificate_layout =
+            TestLayout::new(&format!("node-round-higher-{label}-certificate-parity"));
+        let batch_layout = TestLayout::new(&format!("node-round-higher-{label}-batch-parity"));
+        let certificate_ready = fixture
+            .provision(&certificate_layout, 2)
+            .create(fixture.signing_key())
+            .unwrap();
+        let batch_ready = fixture
+            .provision(&batch_layout, 2)
+            .create(fixture.signing_key())
+            .unwrap();
+        let certificate_before = certificate_layout.images();
+        let batch_before = batch_layout.images();
+        assert_eq!(certificate_before, batch_before);
+
+        certificate_ready
+            .run_with_signing_session(|scope| {
+                let branch = scope.branch().clone();
+                let target_round = round_at(&branch, 2);
+                let certificate = quorum_certificate_bytes(
+                    fixture.context,
+                    target_round.position(),
+                    role,
+                    target,
+                    &fixture.signing_key(),
+                );
+                let (mut scope, position, phase) = expect_advanced(
+                    scope
+                        .advance_to_higher_round_quorum(&certificate, ConsensusRound::new(2))
+                        .unwrap(),
+                );
+                assert_eq!(position, target_round.position());
+                assert_eq!(phase, expected_phase);
+                assert_eq!(scope.signing_session().locked_value(), None);
+                assert_eq!(scope.signing_session().valid_value(), None);
+            })
+            .unwrap();
+
+        batch_ready
+            .run_with_signing_session(|scope| {
+                let branch = scope.branch().clone();
+                let target_round = round_at(&branch, 2);
+                let signed_vote = signed_vote_bytes(
+                    fixture.context,
+                    target_round.position(),
+                    role,
+                    target,
+                    &fixture.signing_key(),
+                );
+                let route = FixedValidatorNodeHigherRoundVoteBatchRouteV0::new(
+                    ConsensusRound::new(2),
+                    role,
+                    target,
+                    ConsensusRound::new(2),
+                );
+                assert_eq!(route.evidence_round(), ConsensusRound::new(2));
+                assert_eq!(route.expected_role(), role);
+                assert_eq!(route.expected_target(), target);
+                assert_eq!(route.inclusive_maximum_round(), ConsensusRound::new(2));
+                let (mut scope, position, phase) = expect_advanced(
+                    scope
+                        .advance_to_higher_round_vote_batch(&[signed_vote.as_slice()], route)
+                        .unwrap(),
+                );
+                assert_eq!(position, target_round.position());
+                assert_eq!(phase, expected_phase);
+                assert_eq!(scope.signing_session().locked_value(), None);
+                assert_eq!(scope.signing_session().valid_value(), None);
+            })
+            .unwrap();
+
+        let certificate_after = certificate_layout.images();
+        let batch_after = batch_layout.images();
+        assert_eq!(certificate_after, batch_after);
+        assert_eq!(certificate_after[0], certificate_before[0]);
+        assert_eq!(certificate_after[1], certificate_before[1]);
+        assert_ne!(certificate_after[2], certificate_before[2]);
+        assert_ne!(certificate_after[3], certificate_before[3]);
+
+        for layout in [&certificate_layout, &batch_layout] {
+            let reopened = expect_ready(
+                fixture
+                    .provision(layout, 2)
+                    .open(fixture.signing_key())
+                    .unwrap(),
+            );
+            reopened
+                .run_with_signing_session(|mut scope| {
+                    assert_eq!(
+                        scope.signing_session().position().round(),
+                        ConsensusRound::new(2)
+                    );
+                    assert_eq!(scope.signing_session().phase(), expected_phase);
+                    assert_eq!(scope.signing_session().locked_value(), None);
+                    assert_eq!(scope.signing_session().valid_value(), None);
+                })
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn vote_batch_routes_reject_before_effect_and_preserve_exact_retry() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-round-vote-batch-rejections");
+    let ready = provision_with_finality_round_limit(&fixture, &layout, 3, 3)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let round_one = round_at(&branch, 1);
+            let round_two = round_at(&branch, 2);
+            let signer = fixture.signing_key();
+            let valid_current = signed_vote_bytes(
+                fixture.context,
+                round_zero.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+                &signer,
+            );
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(&[], ConsensusRound::new(1))
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(source)
+                    if matches!(source.as_ref(), QuorumCertificateBuildError::EmptyVoteBatch)
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let wrong_role = signed_vote_bytes(
+                fixture.context,
+                round_zero.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                &signer,
+            );
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(
+                        &[wrong_role.as_slice()],
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(source)
+                    if matches!(
+                        source.as_ref(),
+                        QuorumCertificateBuildError::RoleMismatch { index: 0, .. }
+                    )
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let wrong_target = signed_vote_bytes(
+                fixture.context,
+                round_zero.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(ProposalSigningRoot::from_bytes([0xb1; 32])),
+                &signer,
+            );
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(
+                        &[wrong_target.as_slice()],
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(source)
+                    if matches!(
+                        source.as_ref(),
+                        QuorumCertificateBuildError::TargetMismatch { index: 0, .. }
+                    )
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let wrong_position = signed_vote_bytes(
+                fixture.context,
+                round_one.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+                &signer,
+            );
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(
+                        &[wrong_position.as_slice()],
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(source)
+                    if matches!(
+                        source.as_ref(),
+                        QuorumCertificateBuildError::PositionMismatch { index: 0, .. }
+                    )
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(
+                        &[valid_current.as_slice(), valid_current.as_slice()],
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(source)
+                    if matches!(source.as_ref(), QuorumCertificateBuildError::DuplicateSigner { .. })
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let (mut scope, position, phase) = expect_advanced(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(
+                        &[valid_current.as_slice()],
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(position, round_one.position());
+            assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+            assert_empty_signing_state(
+                &mut scope,
+                round_one.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let equal_route = FixedValidatorNodeHigherRoundVoteBatchRouteV0::new(
+                ConsensusRound::new(1),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                ConsensusRound::new(2),
+            );
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_to_higher_round_vote_batch(&[], equal_route)
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::NotHigherThanSigner {
+                    evidence,
+                    signer,
+                } if evidence == ConsensusRound::new(1) && signer == ConsensusRound::new(1)
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_one.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let above_caller_route = FixedValidatorNodeHigherRoundVoteBatchRouteV0::new(
+                ConsensusRound::new(3),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                ConsensusRound::new(2),
+            );
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_to_higher_round_vote_batch(&[], above_caller_route)
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::RoundWorkLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(3) && maximum == ConsensusRound::new(2)
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_one.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let higher_route = FixedValidatorNodeHigherRoundVoteBatchRouteV0::new(
+                ConsensusRound::new(2),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+                ConsensusRound::new(2),
+            );
+            let higher_wrong_role = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                &signer,
+            );
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_to_higher_round_vote_batch(
+                        &[higher_wrong_role.as_slice()],
+                        higher_route,
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(source)
+                    if matches!(
+                        source.as_ref(),
+                        QuorumCertificateBuildError::RoleMismatch { index: 0, .. }
+                    )
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_one.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let higher_wrong_position = signed_vote_bytes(
+                fixture.context,
+                round_one.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+                &signer,
+            );
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_to_higher_round_vote_batch(
+                        &[higher_wrong_position.as_slice()],
+                        higher_route,
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(source)
+                    if matches!(
+                        source.as_ref(),
+                        QuorumCertificateBuildError::PositionMismatch { index: 0, .. }
+                    )
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_one.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let higher_wrong_target = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(ProposalSigningRoot::from_bytes([0xb2; 32])),
+                &signer,
+            );
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_to_higher_round_vote_batch(
+                        &[higher_wrong_target.as_slice()],
+                        higher_route,
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(source)
+                    if matches!(
+                        source.as_ref(),
+                        QuorumCertificateBuildError::TargetMismatch { index: 0, .. }
+                    )
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_one.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(layout.images(), before);
+
+            let valid_higher = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+                &signer,
+            );
+            let (mut scope, position, phase) = expect_advanced(
+                scope
+                    .advance_to_higher_round_vote_batch(
+                        &[valid_higher.as_slice()],
+                        higher_route,
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(position, round_two.position());
+            assert_eq!(phase, FixedValidatorLockPhaseV0::Precommit);
+            assert_eq!(scope.signing_session().locked_value(), None);
+            assert_eq!(scope.signing_session().valid_value(), None);
+        })
+        .unwrap();
+
+    let after = layout.images();
+    assert_eq!(after[0], before[0]);
+    assert_eq!(after[1], before[1]);
+    assert_ne!(after[2], before[2]);
+    assert_ne!(after[3], before[3]);
+    let reopened = expect_ready(
+        provision_with_finality_round_limit(&fixture, &layout, 3, 3)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(
+                scope.signing_session().position().round(),
+                ConsensusRound::new(2)
+            );
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+        })
+        .unwrap();
+}
+
+#[test]
+fn vote_batch_preflight_ceilings_precede_batch_parsing() {
+    let fixture = Fixture::new();
+
+    let caller_layout = TestLayout::new("node-round-batch-caller-preflight");
+    let caller_ready = fixture
+        .provision(&caller_layout, 1)
+        .create(fixture.signing_key())
+        .unwrap();
+    let caller_before = caller_layout.images();
+    caller_ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(&[], ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::RoundWorkLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(1) && maximum == ConsensusRound::new(0)
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(caller_layout.images(), caller_before);
+            drop(scope);
+        })
+        .unwrap();
+
+    let finality_layout = TestLayout::new("node-round-batch-finality-preflight");
+    let finality_ready = provision_with_finality_round_limit(&fixture, &finality_layout, 1, 2)
+        .create(fixture.signing_key())
+        .unwrap();
+    let finality_before = finality_layout.images();
+    finality_ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let valid_current = signed_vote_bytes(
+                fixture.context,
+                round_zero.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+                &fixture.signing_key(),
+            );
+            let (mut scope, position, phase) = expect_advanced(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(
+                        &[valid_current.as_slice()],
+                        ConsensusRound::new(1),
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(position, round_at(&branch, 1).position());
+            assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+            assert_empty_signing_state(
+                &mut scope,
+                round_at(&branch, 1).position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(finality_layout.images(), finality_before);
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_round_for_nil_precommit_vote_batch(&[], ConsensusRound::new(2))
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::FinalityRoundLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(2) && maximum == ConsensusRound::new(1)
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_at(&branch, 1).position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(finality_layout.images(), finality_before);
+            drop(scope);
+        })
+        .unwrap();
+
+    let routed_layout = TestLayout::new("node-round-batch-routed-finality-precedence");
+    let routed_ready = provision_with_finality_round_limit(&fixture, &routed_layout, 1, 2)
+        .create(fixture.signing_key())
+        .unwrap();
+    let routed_before = routed_layout.images();
+    routed_ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let route = FixedValidatorNodeHigherRoundVoteBatchRouteV0::new(
+                ConsensusRound::new(2),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                ConsensusRound::new(1),
+            );
+            let (mut scope, rejection) = expect_rejected(
+                scope
+                    .advance_to_higher_round_vote_batch(&[], route)
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeRoundAdvanceRejectionV0::FinalityRoundLimitExceeded {
+                    required,
+                    maximum,
+                } if required == ConsensusRound::new(2) && maximum == ConsensusRound::new(1)
+            ));
+            assert_empty_signing_state(
+                &mut scope,
+                round_zero.position(),
+                FixedValidatorLockPhaseV0::Proposal,
+            );
+            assert_eq!(routed_layout.images(), routed_before);
+            drop(scope);
+        })
+        .unwrap();
 }
 
 #[test]
@@ -912,6 +1692,78 @@ fn pending_higher_round_checkpoint_precedes_malformed_input() {
 }
 
 #[test]
+fn pending_higher_round_checkpoint_precedes_vote_batch_identity_and_parsing() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-round-pending-batch-precedence");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    let error = ready
+        .run_with_signing_session(|mut scope| {
+            let branch = scope.branch().clone();
+            let round_zero = branch.begin_round_zero().unwrap();
+            let round_one = round_at(&branch, 1);
+            let quorum = quorum_certificate_bytes(
+                fixture.context,
+                round_one.position(),
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+                &fixture.signing_key(),
+            );
+            let prepared = scope
+                .signing_session_mut()
+                .prepare_higher_round_quorum_advance(&round_zero, &quorum, ConsensusRound::new(1))
+                .unwrap();
+            drop(prepared);
+            let stale_route = FixedValidatorNodeHigherRoundVoteBatchRouteV0::new(
+                ConsensusRound::new(0),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                ConsensusRound::new(1),
+            );
+
+            match scope.advance_to_higher_round_vote_batch(&[], stale_route) {
+                Err(error) => error,
+                Ok(_) => {
+                    panic!(
+                        "pending session work must consume the scope before route identity or batch parsing"
+                    )
+                }
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        error,
+        FixedValidatorNodeRoundAdvanceErrorV0::Session(source)
+            if matches!(
+                source.as_ref(),
+                FixedValidatorVoteSafetyJournalErrorV0::PendingHigherRoundAdvance { .. }
+            )
+    ));
+
+    let reopened = expect_ready(
+        fixture
+            .provision(&layout, 1)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(
+                scope.signing_session().position().round(),
+                ConsensusRound::new(1)
+            );
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+        })
+        .unwrap();
+}
+
+#[test]
 fn higher_round_anchor_failure_consumes_scope_and_reopens_only_as_anchor_behind() {
     let fixture = Fixture::new();
     let layout = TestLayout::new("node-round-anchor-failure");
@@ -936,6 +1788,69 @@ fn higher_round_anchor_failure_consumes_scope_and_reopens_only_as_anchor_behind(
             match scope.advance_to_higher_round_quorum(&quorum, ConsensusRound::new(2)) {
                 Err(error) => error,
                 Ok(_) => panic!("the checkpoint anchor collision must return no scope"),
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        error,
+        FixedValidatorNodeRoundAdvanceErrorV0::Prepare(source)
+            if matches!(
+                source.as_ref(),
+                FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }
+            )
+    ));
+    fs::remove_file(collision).unwrap();
+
+    let after = layout.images();
+    assert_eq!(after[0], before[0]);
+    assert_eq!(after[1], before[1]);
+    assert_ne!(after[2], before[2]);
+    assert_eq!(after[3], before[3]);
+    assert!(matches!(
+        fixture.provision(&layout, 8).open(fixture.signing_key()),
+        Err(FixedValidatorNodeStartupErrorV0::VotePair(source))
+            if matches!(
+                source.as_ref(),
+                FixedValidatorAnchoredVoteSafetyJournalErrorV0::Journal(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind { .. }
+                    )
+            )
+    ));
+}
+
+#[test]
+fn higher_round_vote_batch_anchor_failure_consumes_scope_and_requires_restart() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-round-batch-anchor-failure");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+    let collision = next_anchor_collision(&layout.vote_anchor, 3);
+
+    let error = ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let round_two = round_at(&branch, 2);
+            let signed_vote = signed_vote_bytes(
+                fixture.context,
+                round_two.position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                &fixture.signing_key(),
+            );
+            let route = FixedValidatorNodeHigherRoundVoteBatchRouteV0::new(
+                ConsensusRound::new(2),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Nil,
+                ConsensusRound::new(2),
+            );
+            match scope.advance_to_higher_round_vote_batch(&[signed_vote.as_slice()], route) {
+                Err(error) => error,
+                Ok(_) => panic!("the batch checkpoint anchor collision must return no scope"),
             }
         })
         .unwrap();

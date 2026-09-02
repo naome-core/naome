@@ -5,32 +5,39 @@
 This document defines the synchronous explicit-event and quorum-driven
 round-progression boundary for one closure-scoped fixed-validator V0 node
 signer. It composes the exact branch and anchored signer already owned by
-`FixedValidatorNodeSigningScopeV0` with three existing lock-state transitions:
+`FixedValidatorNodeSigningScopeV0` with three existing lock-state transitions
+and two exact signed-vote-batch adapters:
 
 - one caller-routed Precommit close, bound to the exact context and source
   position, advances only to the same-height sequential `R + 1` Proposal phase;
-- one exact current-round precommit/nil quorum advances only to the same-height
-  sequential `R + 1` Proposal phase; and
-- one exact higher-round prevote or precommit quorum advances only to its
-  authenticated round and role-corresponding Prevote or Precommit phase.
+- one exact current-round precommit/nil quorum, supplied either as a canonical
+  certificate or a complete signed-precommit batch, advances only to the
+  same-height sequential `R + 1` Proposal phase; and
+- one exact higher-round prevote or precommit quorum, supplied either as a
+  canonical certificate or as a complete vote batch with an explicit route,
+  advances only to its authenticated round and role-corresponding Prevote or
+  Precommit phase.
 
 All are consuming node-scope operations. Mere submission, routing, storage,
 network receipt, or peer provenance grants no certificate validity or
 progression authority. The explicit close requires exact event identity and
 Precommit phase but does not prove why the caller classified the phase as
-closed. Only complete verification against the branch-derived fixed-set
-snapshot authorizes a quorum transition. No path creates a vote, finalizes a
-value, selects a branch, or advances height.
+closed. A batch route names only an expected round, role, target, and local work
+ceiling; it is unauthenticated metadata and grants no authority independently
+of its votes. Only complete verification against the branch-derived fixed-set
+snapshot authorizes a quorum transition. No path observes or accumulates votes,
+creates a vote, finalizes a value, selects a branch, or advances height.
 
 ## Exact round and bounded admission
 
-Before inspecting certificate bytes or reporting a work-limit rejection, the
-coordinator requires the signer session to be operational and free of pending
-vote, height, or higher-round work. It derives round zero from the node-owned
-branch, requires the branch next height to equal the signer height, enforces the
-persisted node-finality ceiling and caller-local inclusive ceiling on the
-current signer round, and reconstructs that exact round sequentially. The
-caller supplies no cursor and the coordinator does not clone the branch.
+Except for reading the caller ceiling required to bound preflight, before
+inspecting certificate bytes, a batch route's evidence identity, or batch
+bytes, the coordinator requires the signer session to be operational and free
+of pending vote, height, or higher-round work. It derives round zero from the
+node-owned branch, requires the branch next height to equal the signer height,
+enforces the persisted node-finality ceiling and caller-local inclusive ceiling
+on the current signer round, and reconstructs that exact round sequentially.
+The caller supplies no cursor and the coordinator does not clone the branch.
 
 The destination, not only the current round, must also fit both ceilings. For a
 current-round nil quorum the coordinator preflights `R + 1`. For higher-round
@@ -55,23 +62,34 @@ internally, and apply it. No caller cursor is accepted, so a delayed close for
 round `R` cannot close a later Precommit phase.
 
 The current-round quorum path verifies the exact canonical certificate at `R`
-and requires precommit role with nil target. The higher-round path uses strict
-framing only to bound routing work, requires the same height and a strictly
-higher round within both ceilings, derives every intervening branch round, and
-then fully verifies the same canonical bytes at the target snapshot. An
-unauthenticated embedded position therefore grants neither validity nor state
-change.
+and requires precommit role with nil target. Its batch sibling applies the
+unchanged all-or-nothing exact-batch constructor at that same derived round,
+requires every supplied vote to authenticate precommit/nil, and passes only the
+resulting canonical certificate into the same transition.
+
+The higher-round certificate path uses strict framing only to bound routing
+work, requires the same height and a strictly higher round within both ceilings,
+derives every intervening branch round, and then fully verifies the same
+canonical bytes at the target snapshot. Its batch sibling checks the routed
+round is strictly higher, reports the persisted finality ceiling before the
+caller ceiling when both reject that round, derives the exact bounded branch
+round, and applies the unchanged exact-batch constructor with the route's
+required role and target. Only its canonical certificate enters the existing
+checkpoint path, where it is independently framed and fully reverified. An
+unauthenticated embedded position or caller route therefore grants neither
+validity nor state change.
 
 ## Ordered progression and durability
 
-Explicit-close and current-round nil-quorum success change only the live signer
-state to `R + 1` Proposal. They preserve the exact lock and complete valid-value
-proof and write neither journal nor anchor. A later proposal or vote at that
-round must still pass through its existing durable signer boundary. Absent a
-later durable node or signer action, a crash therefore restores the prior
-durable signer state, not this volatile observation. Otherwise strict restart
-follows that later durable ready, pending, or terminal state; incomplete
-preparation remains fail-closed.
+Explicit-close and current-round nil-quorum success, whether the quorum arrived
+as a certificate or exact batch, change only the live signer state to `R + 1`
+Proposal. They preserve the exact lock and complete valid-value proof and write
+neither journal nor anchor. A later proposal or vote at that round must still
+pass through its existing durable signer boundary. Absent a later durable node
+or signer action, a crash therefore restores the prior durable signer state,
+not this volatile observation. Otherwise strict restart follows that later
+durable ready, pending, or terminal state; incomplete preparation remains
+fail-closed.
 
 Higher-round success is durable before continuation returns:
 
@@ -94,11 +112,14 @@ authority.
 ## Outcomes, failures, and restart
 
 A stale or foreign close identity, wrong close phase, malformed,
-context-invalid, wrong-role, wrong-target, wrong-height, non-higher, or otherwise
-mutation-free quorum rejection returns the unchanged scope. Caller or persisted
-destination-capacity rejection also returns the unchanged scope, with finality
-precedence when both limits reject the same target. No signer or finality bytes
-change on those paths.
+context-invalid, wrong-position, wrong-role, wrong-target, duplicate, inactive,
+invalid-signature, insufficient, wrong-height, non-higher, or otherwise
+mutation-free quorum or batch rejection returns the unchanged scope. Caller or
+persisted destination-capacity rejection also returns the unchanged scope, with
+finality precedence when both limits reject the same target. Session and
+first-successor preflight precede certificate framing, batch bytes, and every
+route field except the caller ceiling used by that preflight. No signer or
+finality bytes change on those paths.
 
 A branch/signer mismatch, current-round derivation failure, current signer
 above the persisted finality ceiling, non-operational session, internal
@@ -115,8 +136,10 @@ This coordinator does not define or perform:
 - timeout measurement, timeout expiry, timer generation or cancellation, phase
   scheduling, backoff, event-loop ordering, buffering, retry, or daemon
   ownership;
-- quorum construction, vote collection, competing-evidence choice, proposal
-  selection, or proposal authoring;
+- vote observation, collection, accumulation, delivery-completeness inference,
+  filtering, grouping, competing-evidence choice, proposal selection, or
+  proposal authoring beyond all-or-nothing construction from one exact
+  caller-supplied batch;
 - network transport, peer discovery, provenance trust, or peer-selected
   admission;
 - finality, height advancement, branch or sibling selection, rollback,
@@ -128,4 +151,5 @@ This coordinator does not define or perform:
 
 These remain required product capabilities where the consensus ledger says so;
 this boundary only applies an exact caller-classified Precommit close or fully
-verified quorum to the already-decided local round and phase progression.
+verified certificate derived from one prebuilt certificate or one complete
+caller-supplied batch to the already-decided local round and phase progression.

@@ -1,10 +1,11 @@
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
 
 use naome_consensus::{
-    ConsensusContextV0, ConsensusHeight, ConsensusPosition, ConsensusRound, FixedConsensusBranchV0,
-    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorLockStateError,
-    ProposerSelectionError,
+    ConsensusContextV0, ConsensusHeight, ConsensusPosition, ConsensusRound, ConsensusVoteRole,
+    ConsensusVoteTarget, FixedConsensusBranchV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
+    FixedValidatorLockStateError, ProposerSelectionError, QuorumCertificateBuildError,
 };
 use naome_storage::FixedValidatorVoteSafetyJournalErrorV0;
 
@@ -37,6 +38,58 @@ pub enum FixedValidatorNodeRoundAdvanceOutcomeV0<'node> {
     },
 }
 
+/// Explicit routing metadata for one exact higher-round signed-vote batch.
+///
+/// Construction performs no validation and grants no quorum or progression
+/// authority. The consuming adapter bounds and derives `evidence_round`, then
+/// requires every vote to authenticate that exact round, role, target, context,
+/// signer membership, and signature before the existing checkpoint path begins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FixedValidatorNodeHigherRoundVoteBatchRouteV0 {
+    evidence_round: ConsensusRound,
+    expected_role: ConsensusVoteRole,
+    expected_target: ConsensusVoteTarget,
+    inclusive_maximum_round: ConsensusRound,
+}
+
+impl FixedValidatorNodeHigherRoundVoteBatchRouteV0 {
+    /// Binds the complete caller-routed batch identity and work ceiling.
+    pub const fn new(
+        evidence_round: ConsensusRound,
+        expected_role: ConsensusVoteRole,
+        expected_target: ConsensusVoteTarget,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Self {
+        Self {
+            evidence_round,
+            expected_role,
+            expected_target,
+            inclusive_maximum_round,
+        }
+    }
+
+    /// Returns the exact round every supplied vote must authenticate.
+    pub const fn evidence_round(self) -> ConsensusRound {
+        self.evidence_round
+    }
+
+    /// Returns the exact role every supplied vote must authenticate.
+    pub const fn expected_role(self) -> ConsensusVoteRole {
+        self.expected_role
+    }
+
+    /// Returns the exact target every supplied vote must authenticate.
+    pub const fn expected_target(self) -> ConsensusVoteTarget {
+        self.expected_target
+    }
+
+    /// Returns the inclusive caller-local sequential work ceiling.
+    pub const fn inclusive_maximum_round(self) -> ConsensusRound {
+        self.inclusive_maximum_round
+    }
+}
+
 /// A pre-effect round-progression rejection that preserves the signing scope.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -66,6 +119,13 @@ pub enum FixedValidatorNodeRoundAdvanceRejectionV0 {
         required: ConsensusRound,
         maximum: ConsensusRound,
     },
+    /// The explicitly routed batch round is not higher than the signer round.
+    NotHigherThanSigner {
+        signer: ConsensusRound,
+        evidence: ConsensusRound,
+    },
+    /// The complete exact signed-vote batch did not form the routed quorum.
+    QuorumConstruction(Box<QuorumCertificateBuildError>),
     /// The exact quorum evidence was not admissible for this transition.
     Quorum(Box<FixedValidatorLockStateError>),
 }
@@ -93,6 +153,16 @@ impl fmt::Display for FixedValidatorNodeRoundAdvanceRejectionV0 {
                 formatter,
                 "round progression requires {required:?}, above caller-local ceiling {maximum:?}"
             ),
+            Self::NotHigherThanSigner { signer, evidence } => write!(
+                formatter,
+                "routed evidence round {evidence:?} is not higher than signer round {signer:?}"
+            ),
+            Self::QuorumConstruction(source) => {
+                write!(
+                    formatter,
+                    "round-progression vote batch was rejected: {source}"
+                )
+            }
             Self::Quorum(source) => {
                 write!(formatter, "round-progression quorum was rejected: {source}")
             }
@@ -103,12 +173,14 @@ impl fmt::Display for FixedValidatorNodeRoundAdvanceRejectionV0 {
 impl Error for FixedValidatorNodeRoundAdvanceRejectionV0 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::QuorumConstruction(source) => Some(source.as_ref()),
             Self::Quorum(source) => Some(source.as_ref()),
             Self::PrecommitCloseContextMismatch { .. }
             | Self::PrecommitClosePositionMismatch { .. }
             | Self::PrecommitClosePhaseMismatch { .. }
             | Self::FinalityRoundLimitExceeded { .. }
-            | Self::RoundWorkLimitExceeded { .. } => None,
+            | Self::RoundWorkLimitExceeded { .. }
+            | Self::NotHigherThanSigner { .. } => None,
         }
     }
 }
@@ -209,6 +281,24 @@ impl Error for FixedValidatorNodeRoundAdvanceErrorV0 {
 enum CurrentRoundErrorV0 {
     Rejected(FixedValidatorNodeRoundAdvanceRejectionV0),
     Fatal(FixedValidatorNodeRoundAdvanceErrorV0),
+}
+
+#[derive(Clone, Copy)]
+enum NilPrecommitQuorumInputV0<'input> {
+    CanonicalCertificate(&'input [u8]),
+    ExactSignedVotes(&'input [&'input [u8]]),
+}
+
+#[derive(Clone, Copy)]
+enum HigherRoundQuorumInputV0<'input> {
+    CanonicalCertificate {
+        canonical_certificate: &'input [u8],
+        inclusive_maximum_round: ConsensusRound,
+    },
+    ExactSignedVotes {
+        canonical_signed_votes: &'input [&'input [u8]],
+        route: FixedValidatorNodeHigherRoundVoteBatchRouteV0,
+    },
 }
 
 impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
@@ -321,61 +411,37 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     /// enters Proposal at the exact sequential round, and writes no journal or
     /// anchor bytes. It does not infer a timeout or finalize a value.
     pub fn advance_round_for_nil_precommit_quorum(
-        mut self,
+        self,
         canonical_certificate: &[u8],
         inclusive_maximum_round: ConsensusRound,
     ) -> Result<FixedValidatorNodeRoundAdvanceOutcomeV0<'node>, FixedValidatorNodeRoundAdvanceErrorV0>
     {
-        let finality_maximum_round = self.finality.replay_limit().max_round();
-        let current_round = match current_round(
-            &self.branch,
-            &self.signing_session,
+        advance_round_for_nil_precommit_input(
+            self,
+            NilPrecommitQuorumInputV0::CanonicalCertificate(canonical_certificate),
             inclusive_maximum_round,
-            finality_maximum_round,
-        ) {
-            Ok(round) => round,
-            Err(CurrentRoundErrorV0::Rejected(rejection)) => {
-                return Ok(rejected(self, rejection));
-            }
-            Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
-        };
-        let required = match successor_capacity(
-            current_round.position().round(),
+        )
+    }
+
+    /// Advances to `R + 1` from one exact current-round precommit/nil batch.
+    ///
+    /// The complete caller-routed batch is authenticated all-or-nothing against
+    /// the node-derived current round only after session, branch, and successor
+    /// capacity preflight. It is not observed, filtered, retained, grouped, or
+    /// selected. Batch rejection returns the unchanged scope; success enters
+    /// the same volatile transition as the prebuilt-certificate method and
+    /// grants no finality, timeout, networking, or peer-trust authority.
+    pub fn advance_round_for_nil_precommit_vote_batch(
+        self,
+        canonical_signed_precommits: &[&[u8]],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<FixedValidatorNodeRoundAdvanceOutcomeV0<'node>, FixedValidatorNodeRoundAdvanceErrorV0>
+    {
+        advance_round_for_nil_precommit_input(
+            self,
+            NilPrecommitQuorumInputV0::ExactSignedVotes(canonical_signed_precommits),
             inclusive_maximum_round,
-            ConsensusRound::new(finality_maximum_round),
-        ) {
-            Ok(required) => required,
-            Err(CurrentRoundErrorV0::Rejected(rejection)) => {
-                drop(current_round);
-                return Ok(rejected(self, rejection));
-            }
-            Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
-        };
-        let advanced = match self
-            .signing_session
-            .advance_round_for_nil_precommit_quorum(&current_round, canonical_certificate)
-        {
-            Ok(advanced) => advanced,
-            Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
-                drop(current_round);
-                return match classify_nil_lock_error(source) {
-                    Ok(rejection) => Ok(rejected(self, rejection)),
-                    Err(error) => Err(error),
-                };
-            }
-            Err(source) => {
-                return Err(FixedValidatorNodeRoundAdvanceErrorV0::Session(Box::new(
-                    source,
-                )));
-            }
-        };
-        let position = advanced.position();
-        let phase = self.signing_session.phase();
-        debug_assert_eq!(position.round(), required);
-        debug_assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
-        drop(advanced);
-        drop(current_round);
-        Ok(advanced_outcome(self, position, phase))
+        )
     }
 
     /// Advances to the exact authenticated higher-round quorum phase.
@@ -386,76 +452,281 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     /// scope only after the checkpoint journal and independent anchor are
     /// durable and the same live session has acknowledged the sealed transition.
     pub fn advance_to_higher_round_quorum(
-        mut self,
+        self,
         canonical_certificate: &[u8],
         inclusive_maximum_round: ConsensusRound,
     ) -> Result<FixedValidatorNodeRoundAdvanceOutcomeV0<'node>, FixedValidatorNodeRoundAdvanceErrorV0>
     {
-        let finality_maximum_round = ConsensusRound::new(self.finality.replay_limit().max_round());
-        let current_round = match current_round(
-            &self.branch,
-            &self.signing_session,
-            inclusive_maximum_round,
-            finality_maximum_round.value(),
-        ) {
-            Ok(round) => round,
-            Err(CurrentRoundErrorV0::Rejected(rejection)) => {
-                return Ok(rejected(self, rejection));
-            }
-            Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
-        };
-        match successor_capacity(
-            current_round.position().round(),
-            inclusive_maximum_round,
-            finality_maximum_round,
-        ) {
-            Ok(_) => {}
-            Err(CurrentRoundErrorV0::Rejected(rejection)) => {
-                drop(current_round);
-                return Ok(rejected(self, rejection));
-            }
-            Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
-        }
-        let effective_maximum = ConsensusRound::new(
-            inclusive_maximum_round
-                .value()
-                .min(finality_maximum_round.value()),
-        );
-        let prepared = match self.signing_session.prepare_higher_round_quorum_advance(
-            &current_round,
-            canonical_certificate,
-            effective_maximum,
-        ) {
-            Ok(prepared) => prepared,
-            Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
-                drop(current_round);
-                return match classify_higher_lock_error(
-                    source,
-                    inclusive_maximum_round,
-                    finality_maximum_round,
-                ) {
-                    Ok(rejection) => Ok(rejected(self, rejection)),
-                    Err(error) => Err(error),
-                };
-            }
-            Err(source) => {
-                return Err(FixedValidatorNodeRoundAdvanceErrorV0::Prepare(Box::new(
-                    source,
-                )));
-            }
-        };
-        let advanced = self
-            .signing_session
-            .acknowledge_prepared_higher_round(prepared)
-            .map_err(|source| {
-                FixedValidatorNodeRoundAdvanceErrorV0::Acknowledge(Box::new(source))
-            })?;
-        let position = advanced.position();
-        let phase = self.signing_session.phase();
-        drop(advanced);
-        drop(current_round);
-        Ok(advanced_outcome(self, position, phase))
+        advance_to_higher_round_input(
+            self,
+            HigherRoundQuorumInputV0::CanonicalCertificate {
+                canonical_certificate,
+                inclusive_maximum_round,
+            },
+        )
     }
+
+    /// Advances to one explicitly routed higher-round exact vote batch.
+    ///
+    /// Routing fields are bounded metadata, not authenticated evidence. The
+    /// adapter first validates the live node and first-successor capacity, then
+    /// requires a strictly higher routed round within persisted and caller
+    /// ceilings, derives that exact branch round, and authenticates every vote's
+    /// context, position, role, target, signer, and signature all-or-nothing.
+    /// Only the resulting canonical certificate enters the unchanged anchored
+    /// higher-round transition. The route grants no collection, preference,
+    /// branch-selection, finality, networking, timeout, or peer-trust authority.
+    pub fn advance_to_higher_round_vote_batch(
+        self,
+        canonical_signed_votes: &[&[u8]],
+        route: FixedValidatorNodeHigherRoundVoteBatchRouteV0,
+    ) -> Result<FixedValidatorNodeRoundAdvanceOutcomeV0<'node>, FixedValidatorNodeRoundAdvanceErrorV0>
+    {
+        advance_to_higher_round_input(
+            self,
+            HigherRoundQuorumInputV0::ExactSignedVotes {
+                canonical_signed_votes,
+                route,
+            },
+        )
+    }
+}
+
+fn advance_round_for_nil_precommit_input<'node>(
+    mut scope: FixedValidatorNodeSigningScopeV0<'node>,
+    input: NilPrecommitQuorumInputV0<'_>,
+    inclusive_maximum_round: ConsensusRound,
+) -> Result<FixedValidatorNodeRoundAdvanceOutcomeV0<'node>, FixedValidatorNodeRoundAdvanceErrorV0> {
+    let finality_maximum_round = scope.finality.replay_limit().max_round();
+    let current_round = match current_round(
+        &scope.branch,
+        &scope.signing_session,
+        inclusive_maximum_round,
+        finality_maximum_round,
+    ) {
+        Ok(round) => round,
+        Err(CurrentRoundErrorV0::Rejected(rejection)) => {
+            return Ok(rejected(scope, rejection));
+        }
+        Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+    };
+    let required = match successor_capacity(
+        current_round.position().round(),
+        inclusive_maximum_round,
+        ConsensusRound::new(finality_maximum_round),
+    ) {
+        Ok(required) => required,
+        Err(CurrentRoundErrorV0::Rejected(rejection)) => {
+            drop(current_round);
+            return Ok(rejected(scope, rejection));
+        }
+        Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+    };
+    let canonical_certificate = match input {
+        NilPrecommitQuorumInputV0::CanonicalCertificate(canonical_certificate) => {
+            Cow::Borrowed(canonical_certificate)
+        }
+        NilPrecommitQuorumInputV0::ExactSignedVotes(canonical_signed_votes) => {
+            let certificate = match current_round.build_quorum_certificate_from_signed_votes(
+                canonical_signed_votes,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Nil,
+            ) {
+                Ok(certificate) => certificate,
+                Err(source) => {
+                    drop(current_round);
+                    return Ok(rejected(
+                        scope,
+                        FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(Box::new(
+                            source,
+                        )),
+                    ));
+                }
+            };
+            Cow::Owned(certificate.to_canonical_bytes())
+        }
+    };
+    let advanced = match scope
+        .signing_session
+        .advance_round_for_nil_precommit_quorum(&current_round, canonical_certificate.as_ref())
+    {
+        Ok(advanced) => advanced,
+        Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
+            drop(current_round);
+            return match classify_nil_lock_error(source) {
+                Ok(rejection) => Ok(rejected(scope, rejection)),
+                Err(error) => Err(error),
+            };
+        }
+        Err(source) => {
+            return Err(FixedValidatorNodeRoundAdvanceErrorV0::Session(Box::new(
+                source,
+            )));
+        }
+    };
+    let position = advanced.position();
+    let phase = scope.signing_session.phase();
+    debug_assert_eq!(position.round(), required);
+    debug_assert_eq!(phase, FixedValidatorLockPhaseV0::Proposal);
+    drop(advanced);
+    drop(current_round);
+    Ok(advanced_outcome(scope, position, phase))
+}
+
+fn advance_to_higher_round_input<'node>(
+    mut scope: FixedValidatorNodeSigningScopeV0<'node>,
+    input: HigherRoundQuorumInputV0<'_>,
+) -> Result<FixedValidatorNodeRoundAdvanceOutcomeV0<'node>, FixedValidatorNodeRoundAdvanceErrorV0> {
+    let inclusive_maximum_round = match input {
+        HigherRoundQuorumInputV0::CanonicalCertificate {
+            inclusive_maximum_round,
+            ..
+        } => inclusive_maximum_round,
+        HigherRoundQuorumInputV0::ExactSignedVotes { route, .. } => route.inclusive_maximum_round(),
+    };
+    let finality_maximum_round = ConsensusRound::new(scope.finality.replay_limit().max_round());
+    let current_round = match current_round(
+        &scope.branch,
+        &scope.signing_session,
+        inclusive_maximum_round,
+        finality_maximum_round.value(),
+    ) {
+        Ok(round) => round,
+        Err(CurrentRoundErrorV0::Rejected(rejection)) => {
+            return Ok(rejected(scope, rejection));
+        }
+        Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+    };
+    match successor_capacity(
+        current_round.position().round(),
+        inclusive_maximum_round,
+        finality_maximum_round,
+    ) {
+        Ok(_) => {}
+        Err(CurrentRoundErrorV0::Rejected(rejection)) => {
+            drop(current_round);
+            return Ok(rejected(scope, rejection));
+        }
+        Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
+    }
+    let canonical_certificate = match input {
+        HigherRoundQuorumInputV0::CanonicalCertificate {
+            canonical_certificate,
+            ..
+        } => Cow::Borrowed(canonical_certificate),
+        HigherRoundQuorumInputV0::ExactSignedVotes {
+            canonical_signed_votes,
+            route,
+        } => {
+            let evidence_round = route.evidence_round();
+            let signer_round = current_round.position().round();
+            if evidence_round <= signer_round {
+                drop(current_round);
+                return Ok(rejected(
+                    scope,
+                    FixedValidatorNodeRoundAdvanceRejectionV0::NotHigherThanSigner {
+                        evidence: evidence_round,
+                        signer: signer_round,
+                    },
+                ));
+            }
+            if evidence_round > finality_maximum_round {
+                drop(current_round);
+                return Ok(rejected(
+                    scope,
+                    FixedValidatorNodeRoundAdvanceRejectionV0::FinalityRoundLimitExceeded {
+                        required: evidence_round,
+                        maximum: finality_maximum_round,
+                    },
+                ));
+            }
+            if evidence_round > inclusive_maximum_round {
+                drop(current_round);
+                return Ok(rejected(
+                    scope,
+                    FixedValidatorNodeRoundAdvanceRejectionV0::RoundWorkLimitExceeded {
+                        required: evidence_round,
+                        maximum: inclusive_maximum_round,
+                    },
+                ));
+            }
+            let target_round = derive_round(&scope.branch, evidence_round).map_err(|source| {
+                FixedValidatorNodeRoundAdvanceErrorV0::Transition(Box::new(
+                    FixedValidatorLockStateError::HigherRoundDerivation(source),
+                ))
+            })?;
+            let certificate = match target_round.build_quorum_certificate_from_signed_votes(
+                canonical_signed_votes,
+                route.expected_role(),
+                route.expected_target(),
+            ) {
+                Ok(certificate) => certificate,
+                Err(source) => {
+                    drop(target_round);
+                    drop(current_round);
+                    return Ok(rejected(
+                        scope,
+                        FixedValidatorNodeRoundAdvanceRejectionV0::QuorumConstruction(Box::new(
+                            source,
+                        )),
+                    ));
+                }
+            };
+            let canonical_certificate = certificate.to_canonical_bytes();
+            drop(certificate);
+            drop(target_round);
+            Cow::Owned(canonical_certificate)
+        }
+    };
+    let effective_maximum = ConsensusRound::new(
+        inclusive_maximum_round
+            .value()
+            .min(finality_maximum_round.value()),
+    );
+    let prepared = match scope.signing_session.prepare_higher_round_quorum_advance(
+        &current_round,
+        canonical_certificate.as_ref(),
+        effective_maximum,
+    ) {
+        Ok(prepared) => prepared,
+        Err(FixedValidatorVoteSafetyJournalErrorV0::LockState(source)) => {
+            drop(current_round);
+            return match classify_higher_lock_error(
+                source,
+                inclusive_maximum_round,
+                finality_maximum_round,
+            ) {
+                Ok(rejection) => Ok(rejected(scope, rejection)),
+                Err(error) => Err(error),
+            };
+        }
+        Err(source) => {
+            return Err(FixedValidatorNodeRoundAdvanceErrorV0::Prepare(Box::new(
+                source,
+            )));
+        }
+    };
+    let advanced = scope
+        .signing_session
+        .acknowledge_prepared_higher_round(prepared)
+        .map_err(|source| FixedValidatorNodeRoundAdvanceErrorV0::Acknowledge(Box::new(source)))?;
+    let position = advanced.position();
+    let phase = scope.signing_session.phase();
+    drop(advanced);
+    drop(current_round);
+    Ok(advanced_outcome(scope, position, phase))
+}
+
+fn derive_round(
+    branch: &FixedConsensusBranchV0,
+    required_round: ConsensusRound,
+) -> Result<FixedConsensusRoundV0<'_>, ProposerSelectionError> {
+    let mut round = branch.begin_round_zero()?;
+    for _ in 0..required_round.value() {
+        round = round.advance_round()?;
+    }
+    debug_assert_eq!(round.position().round(), required_round);
+    Ok(round)
 }
 
 fn current_round<'branch>(

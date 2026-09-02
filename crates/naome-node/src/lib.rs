@@ -12,7 +12,8 @@
 //! execution; exact signed-prevote-batch quorum construction for proposal and
 //! nil precommit execution;
 //! exact-event-bound current-round phase-close voting, and exact-event-bound
-//! sequential and quorum-driven round progression while
+//! sequential, quorum-driven, and caller-routed exact signed-vote-batch round
+//! progression while
 //! deliberately leaving daemon, networking, timeout measurement and expiry,
 //! key-loading, event selection, and branch-selection policy to later components.
 
@@ -26,15 +27,15 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeCurrentRoundFinalityRejectionV0, FixedValidatorNodeDirectoriesV0,
     FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
     FixedValidatorNodeFinalityRoundRouteV0, FixedValidatorNodeFinalitySelectionV0,
-    FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeLowerRoundFinalityErrorV0,
-    FixedValidatorNodeLowerRoundFinalityOutcomeV0, FixedValidatorNodeLowerRoundFinalityRejectionV0,
-    FixedValidatorNodeProposalAuthoringErrorV0, FixedValidatorNodeProposalAuthoringOutcomeV0,
-    FixedValidatorNodeProposalAuthoringRejectionV0, FixedValidatorNodeProvisionV0,
-    FixedValidatorNodeReadyV0, FixedValidatorNodeRoundAdvanceErrorV0,
-    FixedValidatorNodeRoundAdvanceOutcomeV0, FixedValidatorNodeRoundAdvanceRejectionV0,
-    FixedValidatorNodeSignerStopV0, FixedValidatorNodeSigningScopeV0,
-    FixedValidatorNodeStartupErrorV0, FixedValidatorNodeStartupV0,
-    FixedValidatorNodeVoteExecutionErrorV0, FixedValidatorNodeVoteExecutionOutcomeV0,
-    FixedValidatorNodeVoteRejectionV0, FixedValidatorNodeVotingSessionV0,
-    FixedValidatorSignerCatchUpHeightLimitV0,
+    FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeHigherRoundVoteBatchRouteV0,
+    FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
+    FixedValidatorNodeLowerRoundFinalityRejectionV0, FixedValidatorNodeProposalAuthoringErrorV0,
+    FixedValidatorNodeProposalAuthoringOutcomeV0, FixedValidatorNodeProposalAuthoringRejectionV0,
+    FixedValidatorNodeProvisionV0, FixedValidatorNodeReadyV0,
+    FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,
+    FixedValidatorNodeRoundAdvanceRejectionV0, FixedValidatorNodeSignerStopV0,
+    FixedValidatorNodeSigningScopeV0, FixedValidatorNodeStartupErrorV0,
+    FixedValidatorNodeStartupV0, FixedValidatorNodeVoteExecutionErrorV0,
+    FixedValidatorNodeVoteExecutionOutcomeV0, FixedValidatorNodeVoteRejectionV0,
+    FixedValidatorNodeVotingSessionV0, FixedValidatorSignerCatchUpHeightLimitV0,
 };

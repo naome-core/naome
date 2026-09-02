@@ -51,8 +51,8 @@ pub use proposal_authoring::{
     FixedValidatorNodeProposalAuthoringRejectionV0,
 };
 pub use round_progression::{
-    FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,
-    FixedValidatorNodeRoundAdvanceRejectionV0,
+    FixedValidatorNodeHigherRoundVoteBatchRouteV0, FixedValidatorNodeRoundAdvanceErrorV0,
+    FixedValidatorNodeRoundAdvanceOutcomeV0, FixedValidatorNodeRoundAdvanceRejectionV0,
 };
 pub use voting::{
     FixedValidatorNodeVoteExecutionErrorV0, FixedValidatorNodeVoteExecutionOutcomeV0,
