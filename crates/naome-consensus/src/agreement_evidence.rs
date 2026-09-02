@@ -590,6 +590,121 @@ impl<'snapshot> VerifiedQuorumCertificateV0<'snapshot> {
         .map_err(QuorumCertificateVerifyError::from_shared)
     }
 
+    pub(crate) fn build_from_exact_signed_vote_batch(
+        canonical_signed_votes: &[&[u8]],
+        expected_context: ConsensusContextV0,
+        snapshot: &'snapshot ActiveAgreementSnapshot,
+        expected_role: ConsensusVoteRole,
+        expected_target: ConsensusVoteTarget,
+    ) -> Result<Self, QuorumCertificateBuildError> {
+        if canonical_signed_votes.is_empty() {
+            return Err(QuorumCertificateBuildError::EmptyVoteBatch);
+        }
+        if canonical_signed_votes.len() > MAX_ACTIVE_VALIDATORS {
+            return Err(QuorumCertificateBuildError::TooManyVotes {
+                actual: canonical_signed_votes.len(),
+                maximum: MAX_ACTIVE_VALIDATORS,
+            });
+        }
+
+        let expected_position = snapshot.position();
+        let mut entries = Vec::with_capacity(canonical_signed_votes.len());
+        for (index, canonical_signed_vote) in canonical_signed_votes.iter().enumerate() {
+            let vote =
+                VerifiedConsensusVoteV0::decode_and_verify(canonical_signed_vote, expected_context)
+                    .map_err(|source| QuorumCertificateBuildError::Vote { index, source })?;
+            if vote.position() != expected_position {
+                return Err(QuorumCertificateBuildError::PositionMismatch {
+                    index,
+                    expected: expected_position,
+                    actual: vote.position(),
+                });
+            }
+            if vote.role() != expected_role {
+                return Err(QuorumCertificateBuildError::RoleMismatch {
+                    index,
+                    expected: expected_role,
+                    actual: vote.role(),
+                });
+            }
+            if vote.target() != expected_target {
+                return Err(QuorumCertificateBuildError::TargetMismatch {
+                    index,
+                    expected: expected_target,
+                    actual: vote.target(),
+                });
+            }
+            entries.push(CertificateEntry {
+                signer: vote.signer(),
+                signature: vote.signature(),
+            });
+        }
+
+        entries.sort_unstable_by_key(|entry| entry.signer);
+        for pair in entries.windows(2) {
+            if pair[0].signer == pair[1].signer {
+                return Err(QuorumCertificateBuildError::DuplicateSigner {
+                    signer: pair[0].signer,
+                });
+            }
+        }
+
+        let signer_keys = entries.iter().map(|entry| entry.signer).collect::<Vec<_>>();
+        let signed_weight =
+            snapshot
+                .signed_weight(&signer_keys)
+                .map_err(|source| match source {
+                    AgreementSignerError::UnknownSigner { consensus_key } => {
+                        QuorumCertificateBuildError::UnknownSigner {
+                            signer: consensus_key,
+                        }
+                    }
+                    AgreementSignerError::DuplicateSigner { consensus_key } => {
+                        QuorumCertificateBuildError::DuplicateSigner {
+                            signer: consensus_key,
+                        }
+                    }
+                    AgreementSignerError::TooManySigners { actual, maximum } => {
+                        QuorumCertificateBuildError::TooManyVotes { actual, maximum }
+                    }
+                })?;
+        let total_weight = snapshot.total_weight();
+        if !has_strict_supermajority(signed_weight.units(), total_weight.units()) {
+            return Err(QuorumCertificateBuildError::InsufficientAgreementWeight {
+                signed: signed_weight,
+                total: total_weight,
+            });
+        }
+
+        let body = VoteBody {
+            context: expected_context,
+            position: expected_position,
+            role: expected_role,
+            target: expected_target,
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(body.to_canonical_bytes());
+        hasher.update(
+            u16::try_from(entries.len())
+                .expect("a bounded vote batch count is representable as u16")
+                .to_be_bytes(),
+        );
+        for entry in &entries {
+            hasher.update(entry.signer.as_bytes());
+            hasher.update(entry.signature.as_bytes());
+        }
+
+        Ok(Self {
+            core: VerifiedCertificateCore {
+                body,
+                entries: entries.into_boxed_slice(),
+                id: hasher.finalize().into(),
+                signed_weight,
+                snapshot,
+            },
+        })
+    }
+
     /// Strictly decodes the canonical certificate framing needed to locate its
     /// embedded position before an exact positioned snapshot can be derived.
     ///
@@ -1240,6 +1355,120 @@ impl Error for ConsensusVoteVerifyError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Decode(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// A failure to construct one canonical quorum certificate from an exact vote batch.
+///
+/// Construction is all-or-nothing: every supplied vote must strictly verify,
+/// name the caller-required position, role, and target, and come from one
+/// distinct active signer. The constructor never filters, groups, deduplicates,
+/// or selects a threshold subset from the caller's batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum QuorumCertificateBuildError {
+    /// The caller supplied no signed votes.
+    EmptyVoteBatch,
+    /// The caller supplied more votes than the fixed active-set bound.
+    TooManyVotes { actual: usize, maximum: usize },
+    /// One complete signed vote failed strict decoding or signature verification.
+    Vote {
+        index: usize,
+        source: ConsensusVoteVerifyError,
+    },
+    /// One vote names another height or round than the immutable snapshot.
+    PositionMismatch {
+        index: usize,
+        expected: ConsensusPosition,
+        actual: ConsensusPosition,
+    },
+    /// One vote has another signed agreement-message role.
+    RoleMismatch {
+        index: usize,
+        expected: ConsensusVoteRole,
+        actual: ConsensusVoteRole,
+    },
+    /// One vote has another signed nil-or-proposal target.
+    TargetMismatch {
+        index: usize,
+        expected: ConsensusVoteTarget,
+        actual: ConsensusVoteTarget,
+    },
+    /// One signer occurs more than once in the exact batch.
+    DuplicateSigner { signer: ConsensusKey },
+    /// One verified signer is not active in the immutable snapshot.
+    UnknownSigner { signer: ConsensusKey },
+    /// The complete batch does not exceed two thirds of unchanged active weight.
+    InsufficientAgreementWeight {
+        signed: AgreementWeight,
+        total: AgreementWeight,
+    },
+}
+
+impl fmt::Display for QuorumCertificateBuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyVoteBatch => formatter.write_str("quorum vote batch is empty"),
+            Self::TooManyVotes { actual, maximum } => write!(
+                formatter,
+                "quorum vote batch has {actual} votes; the limit is {maximum}"
+            ),
+            Self::Vote { index, source } => {
+                write!(
+                    formatter,
+                    "quorum vote batch entry {index} is invalid: {source}"
+                )
+            }
+            Self::PositionMismatch {
+                index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "quorum vote batch entry {index} position {actual:?} differs from required position {expected:?}"
+            ),
+            Self::RoleMismatch {
+                index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "quorum vote batch entry {index} role {actual:?} differs from required role {expected:?}"
+            ),
+            Self::TargetMismatch {
+                index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "quorum vote batch entry {index} target {actual:?} differs from required target {expected:?}"
+            ),
+            Self::DuplicateSigner { signer } => {
+                write!(
+                    formatter,
+                    "quorum vote batch repeats consensus key {signer:?}"
+                )
+            }
+            Self::UnknownSigner { signer } => write!(
+                formatter,
+                "quorum vote batch signer is not active in the supplied snapshot: {signer:?}"
+            ),
+            Self::InsufficientAgreementWeight { signed, total } => write!(
+                formatter,
+                "quorum vote batch weight {} is not greater than two thirds of total {}",
+                signed.units(),
+                total.units()
+            ),
+        }
+    }
+}
+
+impl Error for QuorumCertificateBuildError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Vote { source, .. } => Some(source),
             _ => None,
         }
     }

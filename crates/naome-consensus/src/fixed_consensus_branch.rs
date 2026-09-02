@@ -17,7 +17,8 @@ use super::{
     ActiveAgreementEntry, ActiveAgreementSnapshot, ActiveAgreementSnapshotError,
     ConsensusAncestryId, ConsensusContextV0, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,
     ConsensusHeight, ConsensusKey, ConsensusPosition, ConsensusRound, ConsensusValueV0,
-    FixedAgreementSetId, ProposalSigningRoot, ProposerPriorityStateId, ProposerSelectionError,
+    ConsensusVoteRole, ConsensusVoteTarget, FixedAgreementSetId, ProposalSigningRoot,
+    ProposerPriorityStateId, ProposerSelectionError, QuorumCertificateBuildError,
     QuorumCertificateId, QuorumCertificateVerifyError, VerifiedPrecommitCertificateV0,
     VerifiedProducerAuthorizationV0, VerifiedQuorumCertificateV0,
 };
@@ -380,6 +381,33 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
     /// Returns the exact derived proposer.
     pub const fn proposer(&self) -> ConsensusKey {
         self.proposer
+    }
+
+    /// Constructs one canonical quorum certificate from an exact signed-vote batch.
+    ///
+    /// Every caller-supplied vote must strictly verify against this round's
+    /// branch context, exact position, immutable fixed agreement snapshot, and
+    /// caller-required role and target. The complete distinct signer set must
+    /// exceed two thirds of the unchanged active weight. Input order is ignored
+    /// only to encode the same complete batch in canonical key order; no vote is
+    /// filtered, deduplicated, grouped, retained, or selected.
+    ///
+    /// Success authenticates the resulting evidence only. It does not observe
+    /// network traffic, classify equivocation, choose a proposal or certificate,
+    /// mutate consensus state, sign, persist, or finalize anything.
+    pub fn build_quorum_certificate_from_signed_votes<'round>(
+        &'round self,
+        canonical_signed_votes: &[&[u8]],
+        expected_role: ConsensusVoteRole,
+        expected_target: ConsensusVoteTarget,
+    ) -> Result<VerifiedQuorumCertificateV0<'round>, QuorumCertificateBuildError> {
+        VerifiedQuorumCertificateV0::build_from_exact_signed_vote_batch(
+            canonical_signed_votes,
+            self.branch.context,
+            &self.snapshot,
+            expected_role,
+            expected_target,
+        )
     }
 
     /// Returns the complete semantic parent coordinate behind this round.

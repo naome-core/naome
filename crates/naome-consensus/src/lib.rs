@@ -7,8 +7,9 @@
 //! operator-minimum epochs through a numeric freshness window, and checks a
 //! caller-supplied upgrade activation epoch against a numeric minimum delay. It
 //! also freezes already selected agreement snapshots for standalone threshold
-//! and evidence verification. Its typed V0 branch constructs one caller-selected
-//! fixed set only at a matching artifact virtual genesis; derives exact
+//! and evidence verification and canonically assembles one exact caller-routed
+//! signed-vote batch against a typed round. Its typed V0 branch constructs one
+//! caller-selected fixed set only at a matching artifact virtual genesis; derives exact
 //! height-anchored weighted-round-robin proposers, sequential round snapshots,
 //! and complete fixed-validator artifact-only V0 branch-state projections;
 //! admits proof-derived proposal controls before voting; applies volatile,
@@ -37,9 +38,9 @@ pub use agreement_evidence::{
     CONSENSUS_SIGNATURE_BYTES, ConsensusContextV0, ConsensusGenesisId, ConsensusProtocolVersion,
     ConsensusSignature, ConsensusVoteDecodeError, ConsensusVoteId, ConsensusVoteRole,
     ConsensusVoteTarget, ConsensusVoteVerifyError, PrecommitCertificateId,
-    PrecommitCertificateVerifyError, ProposalSigningRoot, QuorumCertificateId,
-    QuorumCertificateVerifyError, VerifiedConsensusVoteV0, VerifiedPrecommitCertificateV0,
-    VerifiedQuorumCertificateV0,
+    PrecommitCertificateVerifyError, ProposalSigningRoot, QuorumCertificateBuildError,
+    QuorumCertificateId, QuorumCertificateVerifyError, VerifiedConsensusVoteV0,
+    VerifiedPrecommitCertificateV0, VerifiedQuorumCertificateV0,
 };
 pub use consensus_value::{
     ConsensusAncestryId, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,

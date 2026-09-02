@@ -7,9 +7,10 @@
 //! strictly lower-round finality admission, direct and exact-target fresh-only
 //! candidate-store-backed plus exact retained-value payload-store-backed
 //! current-round proposal authoring, direct plus exact-target candidate- and
-//! payload-store-backed proposal vote execution, exact-event-bound current-round
-//! phase-close voting, and exact-event-bound sequential and quorum-driven round
-//! progression while
+//! payload-store-backed proposal vote execution, exact signed-prevote-batch
+//! quorum construction for proposal and nil precommit execution,
+//! exact-event-bound current-round phase-close voting, and exact-event-bound
+//! sequential and quorum-driven round progression while
 //! deliberately leaving daemon, networking, timeout measurement and expiry,
 //! key-loading, event selection, and branch-selection policy to later components.
 
