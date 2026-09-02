@@ -547,6 +547,13 @@ impl<'snapshot> VerifiedConsensusProposalV0<'snapshot> {
         &self.canonical_artifact_bytes
     }
 
+    pub(crate) fn into_unverified_canonical_inputs(self) -> (Vec<u8>, Vec<u8>) {
+        (
+            self.canonical_proposal_control_bytes,
+            self.canonical_artifact_bytes,
+        )
+    }
+
     pub(crate) fn seal_with_precommit_certificate(
         self,
         certificate_bytes: &[u8],

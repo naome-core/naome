@@ -7,8 +7,10 @@ local fixed-validator V0 signer. It composes the existing anchored finality and
 per-key vote-safety journals into an explicit create-or-restart workflow. It
 does not define an executable daemon, operator configuration format, genesis
 ceremony, key loader or custodian, scheduler, timeout policy, consensus-message
-transport, peer policy, proposal buffer, branch choice, or dynamic validator
-set.
+transport, peer policy, node-owned proposal buffer, branch choice, or dynamic
+validator set. A separately specified signing-scope operation may return one
+fully admitted caller-owned higher-round proposal token without changing this
+startup or recovery contract.
 
 The caller supplies the exact artifact-chain definition, consensus context,
 preselected fixed agreement entries, one in-memory Ed25519 signing key, four
@@ -152,8 +154,8 @@ retained finality suffix. It cannot:
   across independent files;
 - load, generate, rotate, export, or remotely operate a signing key, or define
   production key-custody policy;
-- discover peers, route network events, buffer proposals or votes, schedule
-  timeouts, or run a consensus event loop;
+- discover peers, route network events, own or operate a shared proposal or vote
+  buffer, schedule timeouts, or run a consensus event loop;
 - make multiple journals or anchors one atomic commit; or
 - claim coordinated-rollback detection, hardware monotonicity, production key
   custody, dynamic-validator operation, or a runnable node process.

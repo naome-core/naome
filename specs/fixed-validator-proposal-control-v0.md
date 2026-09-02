@@ -24,10 +24,10 @@ one bounded certificate-authenticated phase-only transition to a strictly
 higher same-height round.
 It does not create, request, persist, or release a signature; prevent a caller
 from asking another signer to equivocate; provide anti-equivocation durability
-or rollback protection; survive restart; schedule a timeout; receive, buffer,
-gossip, or fetch a proposal or vote; authenticate or trust a peer; select a
-global branch; or finalize or persist a block. A libp2p `PeerId` remains only a
-transport identity and cannot supply validator or consensus authority.
+or rollback protection; survive restart; schedule a timeout; receive, retain,
+route, gossip, or fetch a proposal or vote; authenticate or trust a peer; select
+a global branch; or finalize or persist a block. A libp2p `PeerId` remains only
+a transport identity and cannot supply validator or consensus authority.
 
 The separately specified `fixed-validator-vote-safety-journal-v0.md` may issue
 one signing session that privately owns this kernel, derives its canonical
@@ -341,8 +341,12 @@ higher-round checkpoint under its external-anchor contract. That session may
 move to a child height only by consuming a matching branch-relative verified
 transition; it neither selects a sibling nor durably installs finality. The
 implemented higher-round path is bounded, phase-only, and certificate-
-authenticated. Proposal or certificate buffering and routing, timeout
-scheduling, external-anchor storage and recovery, networking, availability,
-peer trust, global branch selection, dynamic-validator consensus, and durable
-global-finality recovery remain required components whose authority is not
-granted by this in-memory kernel or inferred from the signing journal.
+authenticated. This verifier and lock kernel do not retain or route proposals.
+The separate fixed-validator node deferral boundary may move one fully admitted
+proposal's exact inputs into caller-owned memory, but every later
+authority-bearing use must repeat this complete verification. Node-owned
+aggregate proposal or certificate buffering and routing, timeout scheduling,
+external-anchor storage and recovery, networking, availability, peer trust,
+global branch selection, dynamic-validator consensus, and durable global-
+finality recovery remain required components whose authority is not granted by
+this in-memory kernel or inferred from the signing journal.

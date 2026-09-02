@@ -222,6 +222,12 @@ exact-event-bound sequential round advancement remain separate consuming
 round-progression operations and are not reclassified as current-round vote
 execution.
 
+The separate higher-round proposal-deferral boundary may later yield its exact
+retained control and payload as raw byte vectors. Supplying those vectors to a
+proposal-bearing method here receives the same complete current-round
+verification as every other direct-byte call; the earlier deferral and its
+descriptive metadata grant no cached validity, vote, or progression authority.
+
 ## Exclusions
 
 This coordinator does not define or perform:
@@ -231,10 +237,10 @@ This coordinator does not define or perform:
 - stateful vote collection, duplicate-delivery policy, conflicting-vote or
   equivocation retention, signature-variant preference, certificate freezing
   or renewal, or competing-target grouping;
-- asynchronous event routing, proposal or vote buffering, phase scheduling,
-  timer generation or cancellation, timeout measurement, timeout expiry,
-  same-position event freshness, retry ordering, exactly-once delivery, or
-  daemon ownership;
+- asynchronous event routing, node-owned or shared proposal or vote buffering,
+  phase scheduling, timer generation or cancellation, timeout measurement,
+  timeout expiry, same-position event freshness, retry ordering, exactly-once
+  delivery, or daemon ownership;
 - network transport, peer discovery, provenance trust, or peer-selected
   admission;
 - finality, height advancement, branch selection, sibling winner selection,
