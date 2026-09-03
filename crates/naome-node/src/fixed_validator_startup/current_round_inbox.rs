@@ -6,14 +6,14 @@ use std::mem;
 
 use naome_consensus::{
     ConsensusKey, ConsensusPosition, ConsensusVoteRole, ConsensusVoteTarget,
-    FixedConsensusBranchCoordinateV0, FixedConsensusProposalPrevoteVerifyErrorV0,
-    FixedConsensusRoundV0, ProposalSigningRoot, QuorumCertificateBuildError,
-    VerifiedConsensusVoteV0,
+    FixedConsensusBranchCoordinateV0, FixedConsensusNilPrevoteVerifyErrorV0,
+    FixedConsensusProposalPrevoteVerifyErrorV0, FixedConsensusRoundV0, ProposalSigningRoot,
+    QuorumCertificateBuildError, VerifiedConsensusVoteV0,
 };
 
 use super::FixedValidatorNodeDeferredProposalV0;
 
-/// Positive caller-local limits for current-round proposal and prevote custody.
+/// Positive caller-local limits for current proposal and proposal-or-nil prevote custody.
 ///
 /// These limits are separate from the higher-round recovery inbox so current-
 /// round equivocation cannot consume the capacity reserved for catch-up. They
@@ -45,7 +45,7 @@ impl FixedValidatorNodeCurrentRoundInboxLimitsV0 {
         })
     }
 
-    /// Returns the maximum combined proposal and prevote count.
+    /// Returns the maximum combined proposal and proposal-or-nil prevote count.
     pub const fn max_entries(self) -> usize {
         self.max_entries
     }
@@ -150,6 +150,16 @@ pub(super) enum CurrentRoundPrevoteInsertErrorV0 {
     Reservation(TryReserveError),
 }
 
+pub(super) enum CurrentRoundNilPrevoteInsertErrorV0 {
+    Saturated {
+        position: ConsensusPosition,
+        saturation: FixedValidatorNodeCurrentRoundInboxSaturationV0,
+        newly_saturated: bool,
+    },
+    Admission(FixedConsensusNilPrevoteVerifyErrorV0),
+    Reservation(TryReserveError),
+}
+
 pub(super) enum CurrentRoundProposalSelectionV0<'inbox> {
     None,
     One {
@@ -175,7 +185,7 @@ struct RetainedCurrentProposalV0 {
 struct RetainedCurrentPrevoteV0 {
     parent_coordinate: FixedConsensusBranchCoordinateV0,
     position: ConsensusPosition,
-    proposal_signing_root: ProposalSigningRoot,
+    target: ConsensusVoteTarget,
     signer: ConsensusKey,
     canonical_bytes: [u8; VerifiedConsensusVoteV0::BYTE_LENGTH],
 }
@@ -192,6 +202,8 @@ pub enum FixedValidatorNodeCurrentRoundInboxDrainItemV0 {
     },
     /// One exact canonical active proposal prevote.
     ProposalPrevote([u8; VerifiedConsensusVoteV0::BYTE_LENGTH]),
+    /// One exact canonical active nil prevote.
+    NilPrevote([u8; VerifiedConsensusVoteV0::BYTE_LENGTH]),
 }
 
 /// Lossless iterator returned by a current-only inbox drain-and-reset.
@@ -216,10 +228,17 @@ impl Iterator for FixedValidatorNodeCurrentRoundInboxDrainV0 {
                 }
             })
             .or_else(|| {
-                self.prevotes.next().map(|vote| {
-                    FixedValidatorNodeCurrentRoundInboxDrainItemV0::ProposalPrevote(
-                        vote.canonical_bytes,
-                    )
+                self.prevotes.next().map(|vote| match vote.target {
+                    ConsensusVoteTarget::Proposal(_) => {
+                        FixedValidatorNodeCurrentRoundInboxDrainItemV0::ProposalPrevote(
+                            vote.canonical_bytes,
+                        )
+                    }
+                    ConsensusVoteTarget::Nil => {
+                        FixedValidatorNodeCurrentRoundInboxDrainItemV0::NilPrevote(
+                            vote.canonical_bytes,
+                        )
+                    }
                 })
             })
     }
@@ -384,8 +403,8 @@ impl CurrentRoundInboxV0 {
         self.prevotes
             .try_reserve(1)
             .map_err(CurrentRoundPrevoteInsertErrorV0::Reservation)?;
-        let proposal_signing_root = match vote.target() {
-            ConsensusVoteTarget::Proposal(root) => root,
+        let target = match vote.target() {
+            ConsensusVoteTarget::Proposal(root) => ConsensusVoteTarget::Proposal(root),
             ConsensusVoteTarget::Nil => {
                 unreachable!("active proposal-prevote admission excludes nil")
             }
@@ -393,7 +412,63 @@ impl CurrentRoundInboxV0 {
         self.prevotes.push(RetainedCurrentPrevoteV0 {
             parent_coordinate,
             position,
-            proposal_signing_root,
+            target,
+            signer: vote.signer(),
+            canonical_bytes,
+        });
+        self.total_canonical_input_bytes = prospective_total;
+        Ok(CurrentRoundInboxInsertOutcomeV0::Inserted)
+    }
+
+    pub(super) fn try_insert_nil_prevote(
+        &mut self,
+        round: &FixedConsensusRoundV0<'_>,
+        canonical_signed_prevote: &[u8],
+    ) -> Result<CurrentRoundInboxInsertOutcomeV0, CurrentRoundNilPrevoteInsertErrorV0> {
+        if let Some((position, saturation)) = self.saturation {
+            return Err(CurrentRoundNilPrevoteInsertErrorV0::Saturated {
+                position,
+                saturation,
+                newly_saturated: false,
+            });
+        }
+        let vote = round
+            .decode_and_verify_active_nil_prevote(canonical_signed_prevote)
+            .map_err(CurrentRoundNilPrevoteInsertErrorV0::Admission)?;
+        let parent_coordinate = round.parent_coordinate();
+        let position = vote.position();
+        let canonical_bytes = vote.to_canonical_bytes();
+        if self.prevotes.iter().any(|retained| {
+            retained.parent_coordinate == parent_coordinate
+                && retained.canonical_bytes == canonical_bytes
+        }) {
+            return Ok(CurrentRoundInboxInsertOutcomeV0::AlreadyRetained);
+        }
+        let canonical_input_bytes = u64::try_from(VerifiedConsensusVoteV0::BYTE_LENGTH)
+            .expect("canonical signed-vote length fits u64");
+        let prospective_total = match checked_prospective_totals(
+            self.len(),
+            self.total_canonical_input_bytes,
+            canonical_input_bytes,
+            self.limits,
+        ) {
+            Ok((_, total)) => total,
+            Err(saturation) => {
+                self.saturation = Some((position, saturation));
+                return Err(CurrentRoundNilPrevoteInsertErrorV0::Saturated {
+                    position,
+                    saturation,
+                    newly_saturated: true,
+                });
+            }
+        };
+        self.prevotes
+            .try_reserve(1)
+            .map_err(CurrentRoundNilPrevoteInsertErrorV0::Reservation)?;
+        self.prevotes.push(RetainedCurrentPrevoteV0 {
+            parent_coordinate,
+            position,
+            target: ConsensusVoteTarget::Nil,
             signer: vote.signer(),
             canonical_bytes,
         });
@@ -440,6 +515,21 @@ impl CurrentRoundInboxV0 {
         round: &FixedConsensusRoundV0<'_>,
         proposal_signing_root: ProposalSigningRoot,
     ) -> Result<CurrentRoundQuorumSelectionV0, CurrentRoundQuorumSelectionErrorV0> {
+        self.select_quorum(round, ConsensusVoteTarget::Proposal(proposal_signing_root))
+    }
+
+    pub(super) fn select_nil_quorum(
+        &self,
+        round: &FixedConsensusRoundV0<'_>,
+    ) -> Result<CurrentRoundQuorumSelectionV0, CurrentRoundQuorumSelectionErrorV0> {
+        self.select_quorum(round, ConsensusVoteTarget::Nil)
+    }
+
+    fn select_quorum(
+        &self,
+        round: &FixedConsensusRoundV0<'_>,
+        target: ConsensusVoteTarget,
+    ) -> Result<CurrentRoundQuorumSelectionV0, CurrentRoundQuorumSelectionErrorV0> {
         let parent_coordinate = round.parent_coordinate();
         let position = round.position();
         let mut candidates: Vec<&RetainedCurrentPrevoteV0> = Vec::new();
@@ -449,7 +539,7 @@ impl CurrentRoundInboxV0 {
         candidates.extend(self.prevotes.iter().filter(|vote| {
             vote.parent_coordinate == parent_coordinate
                 && vote.position == position
-                && vote.proposal_signing_root == proposal_signing_root
+                && vote.target == target
         }));
         candidates.sort_unstable_by(|left, right| {
             left.signer
@@ -471,7 +561,7 @@ impl CurrentRoundInboxV0 {
         match round.build_quorum_certificate_from_signed_votes(
             &preferred_votes,
             ConsensusVoteRole::Prevote,
-            ConsensusVoteTarget::Proposal(proposal_signing_root),
+            target,
         ) {
             Ok(certificate) => Ok(CurrentRoundQuorumSelectionV0::One {
                 canonical_certificate: certificate.to_canonical_bytes(),

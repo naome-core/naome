@@ -422,6 +422,46 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
         Ok(vote)
     }
 
+    /// Strictly admits one active fixed-set nil prevote at this exact round.
+    ///
+    /// The complete canonical vote must authenticate this branch context and
+    /// exact position, carry the `Prevote` role and nil target, and name one
+    /// member of this round's immutable active snapshot. Success does not form
+    /// a quorum, retain the vote, select evidence, or mutate consensus.
+    pub fn decode_and_verify_active_nil_prevote(
+        &self,
+        canonical_signed_vote: &[u8],
+    ) -> Result<VerifiedConsensusVoteV0, FixedConsensusNilPrevoteVerifyErrorV0> {
+        let vote =
+            VerifiedConsensusVoteV0::decode_and_verify(canonical_signed_vote, self.branch.context)
+                .map_err(FixedConsensusNilPrevoteVerifyErrorV0::Vote)?;
+        if vote.position() != self.position {
+            return Err(FixedConsensusNilPrevoteVerifyErrorV0::PositionMismatch {
+                expected: self.position,
+                actual: vote.position(),
+            });
+        }
+        if vote.role() != ConsensusVoteRole::Prevote {
+            return Err(FixedConsensusNilPrevoteVerifyErrorV0::RoleMismatch {
+                actual: vote.role(),
+            });
+        }
+        if let ConsensusVoteTarget::Proposal(actual) = vote.target() {
+            return Err(FixedConsensusNilPrevoteVerifyErrorV0::ProposalTarget { actual });
+        }
+        if self
+            .snapshot
+            .entries()
+            .binary_search_by_key(&vote.signer(), |entry| entry.consensus_key())
+            .is_err()
+        {
+            return Err(FixedConsensusNilPrevoteVerifyErrorV0::InactiveSigner {
+                signer: vote.signer(),
+            });
+        }
+        Ok(vote)
+    }
+
     /// Returns the exact derived proposer.
     pub const fn proposer(&self) -> ConsensusKey {
         self.proposer
@@ -663,6 +703,60 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
             round: self,
             envelope,
         })
+    }
+}
+
+/// Rejection while admitting one signed nil prevote to an exact fixed round.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixedConsensusNilPrevoteVerifyErrorV0 {
+    /// Canonical framing, context, public key, or signature verification failed.
+    Vote(ConsensusVoteVerifyError),
+    /// The authenticated vote names another height or round.
+    PositionMismatch {
+        expected: ConsensusPosition,
+        actual: ConsensusPosition,
+    },
+    /// The authenticated vote is a precommit rather than a prevote.
+    RoleMismatch { actual: ConsensusVoteRole },
+    /// A proposal prevote cannot enter the nil-only boundary.
+    ProposalTarget { actual: ProposalSigningRoot },
+    /// The verified signer is absent from this round's immutable active set.
+    InactiveSigner { signer: ConsensusKey },
+}
+
+impl fmt::Display for FixedConsensusNilPrevoteVerifyErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Vote(source) => write!(formatter, "nil prevote is invalid: {source}"),
+            Self::PositionMismatch { expected, actual } => write!(
+                formatter,
+                "nil prevote position {actual:?} does not equal exact round {expected:?}"
+            ),
+            Self::RoleMismatch { actual } => {
+                write!(formatter, "nil prevote role {actual:?} is not Prevote")
+            }
+            Self::ProposalTarget { actual } => write!(
+                formatter,
+                "nil prevote target is proposal {actual:?} rather than nil"
+            ),
+            Self::InactiveSigner { signer } => write!(
+                formatter,
+                "nil prevote signer {signer:?} is not active at this round"
+            ),
+        }
+    }
+}
+
+impl Error for FixedConsensusNilPrevoteVerifyErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Vote(source) => Some(source),
+            Self::PositionMismatch { .. }
+            | Self::RoleMismatch { .. }
+            | Self::ProposalTarget { .. }
+            | Self::InactiveSigner { .. } => None,
+        }
     }
 }
 
