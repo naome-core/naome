@@ -257,7 +257,7 @@ impl Error for FixedValidatorNodeVoteExecutionErrorV0 {
     }
 }
 
-enum CurrentRoundErrorV0 {
+pub(super) enum CurrentRoundErrorV0 {
     Rejected(FixedValidatorNodeVoteRejectionV0),
     Fatal(FixedValidatorNodeVoteExecutionErrorV0),
 }
@@ -1001,7 +1001,7 @@ fn admit_phase_close_identity(
     Ok(())
 }
 
-fn current_round<'branch>(
+pub(super) fn current_round<'branch>(
     branch: &'branch FixedConsensusBranchV0,
     signing_session: &FixedValidatorNodeVotingSessionV0<'_>,
     inclusive_maximum_round: ConsensusRound,
