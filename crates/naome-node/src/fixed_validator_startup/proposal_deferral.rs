@@ -5,6 +5,7 @@ use naome_consensus::{
     ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError, ConsensusRound,
     ConsensusValueV0, FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0,
     FixedConsensusRoundV0, ProposalSigningRoot, ProposerSelectionError,
+    VerifiedFixedConsensusProposalV0,
 };
 use naome_storage::FixedValidatorVoteSafetyJournalErrorV0;
 
@@ -274,7 +275,7 @@ impl Error for FixedValidatorNodeProposalDeferralErrorV0 {
     }
 }
 
-enum CurrentRoundErrorV0 {
+pub(super) enum CurrentRoundErrorV0 {
     Rejected(FixedValidatorNodeProposalDeferralRejectionV0),
     Fatal(FixedValidatorNodeProposalDeferralErrorV0),
 }
@@ -314,64 +315,15 @@ fn defer_higher_round_proposal<'node>(
     FixedValidatorNodeProposalDeferralOutcomeV0<'node>,
     FixedValidatorNodeProposalDeferralErrorV0,
 > {
-    let finality_maximum_round = ConsensusRound::new(scope.finality.replay_limit().max_round());
-    let current_round = match current_round(
-        &scope.branch,
-        &scope.signing_session,
-        route.inclusive_maximum_round(),
-        finality_maximum_round.value(),
-    ) {
+    let proposal_round = match preflight_higher_round_proposal_route(&scope, route) {
         Ok(round) => round,
         Err(CurrentRoundErrorV0::Rejected(rejection)) => {
             return Ok(rejected(scope, rejection));
         }
         Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
     };
-    let current_position = current_round.position();
-    if let Err(error) = successor_capacity(
-        current_position.round(),
-        route.inclusive_maximum_round(),
-        finality_maximum_round,
-    ) {
-        drop(current_round);
-        return match error {
-            CurrentRoundErrorV0::Rejected(rejection) => Ok(rejected(scope, rejection)),
-            CurrentRoundErrorV0::Fatal(error) => Err(error),
-        };
-    }
-    if route.proposal_round() <= current_position.round() {
-        let rejection = FixedValidatorNodeProposalDeferralRejectionV0::NotHigherThanSigner {
-            signer: current_position.round(),
-            proposal: route.proposal_round(),
-        };
-        drop(current_round);
-        return Ok(rejected(scope, rejection));
-    }
-    if route.proposal_round() > finality_maximum_round {
-        let rejection = FixedValidatorNodeProposalDeferralRejectionV0::FinalityRoundLimitExceeded {
-            required: route.proposal_round(),
-            maximum: finality_maximum_round,
-        };
-        drop(current_round);
-        return Ok(rejected(scope, rejection));
-    }
-    if route.proposal_round() > route.inclusive_maximum_round() {
-        let rejection = FixedValidatorNodeProposalDeferralRejectionV0::RoundWorkLimitExceeded {
-            required: route.proposal_round(),
-            maximum: route.inclusive_maximum_round(),
-        };
-        drop(current_round);
-        return Ok(rejected(scope, rejection));
-    }
-
-    let mut proposal_round = current_round;
-    for _ in current_position.round().value()..route.proposal_round().value() {
-        proposal_round = proposal_round
-            .advance_round()
-            .map_err(FixedValidatorNodeProposalDeferralErrorV0::Round)?;
-    }
-    debug_assert_eq!(proposal_round.position().round(), route.proposal_round());
-    let proposal = match proposal_round.decode_and_verify_proposal_control(
+    let proposal = match verify_deferred_proposal_at_round(
+        &proposal_round,
         canonical_proposal_control_bytes,
         canonical_artifact_bytes,
     ) {
@@ -384,23 +336,121 @@ fn defer_higher_round_proposal<'node>(
             ));
         }
     };
+    drop(proposal_round);
+
+    Ok(FixedValidatorNodeProposalDeferralOutcomeV0::Deferred {
+        scope: Box::new(scope),
+        proposal,
+    })
+}
+
+pub(super) fn preflight_deferred_proposal_control_framing(
+    bytes: &[u8],
+) -> Result<(), ConsensusProposalVerifyError> {
+    if bytes.len() > VerifiedFixedConsensusProposalV0::MAX_BYTE_LENGTH {
+        return Err(ConsensusProposalVerifyError::InputTooLong {
+            actual: bytes.len(),
+            maximum: VerifiedFixedConsensusProposalV0::MAX_BYTE_LENGTH,
+        });
+    }
+    if bytes.len() < VerifiedFixedConsensusProposalV0::MIN_BYTE_LENGTH {
+        return Err(ConsensusProposalVerifyError::InvalidLength {
+            actual: bytes.len(),
+            minimum: VerifiedFixedConsensusProposalV0::MIN_BYTE_LENGTH,
+        });
+    }
+
+    let proof_tag = bytes[VerifiedFixedConsensusProposalV0::NO_VALID_ROUND_BYTE_LENGTH - 1];
+    match proof_tag {
+        VerifiedFixedConsensusProposalV0::NO_VALID_ROUND_PROOF_TAG
+            if bytes.len() != VerifiedFixedConsensusProposalV0::NO_VALID_ROUND_BYTE_LENGTH =>
+        {
+            Err(
+                ConsensusProposalVerifyError::TrailingBytesWithoutValidRoundProof {
+                    actual: bytes.len(),
+                    expected: VerifiedFixedConsensusProposalV0::NO_VALID_ROUND_BYTE_LENGTH,
+                },
+            )
+        }
+        VerifiedFixedConsensusProposalV0::NO_VALID_ROUND_PROOF_TAG
+        | VerifiedFixedConsensusProposalV0::VALID_ROUND_PROOF_TAG => Ok(()),
+        actual => Err(ConsensusProposalVerifyError::UnknownValidRoundProofTag { actual }),
+    }
+}
+
+pub(super) fn verify_deferred_proposal_at_round(
+    proposal_round: &FixedConsensusRoundV0<'_>,
+    canonical_proposal_control_bytes: &[u8],
+    canonical_artifact_bytes: Vec<u8>,
+) -> Result<Box<FixedValidatorNodeDeferredProposalV0>, ConsensusProposalVerifyError> {
+    let proposal = proposal_round.decode_and_verify_proposal_control(
+        canonical_proposal_control_bytes,
+        canonical_artifact_bytes,
+    )?;
     let parent_coordinate = proposal.parent_coordinate();
     let position = proposal.position();
     let value = proposal.value();
     let (canonical_proposal_control_bytes, canonical_artifact_bytes) =
         proposal.into_unverified_canonical_inputs();
-    drop(proposal_round);
+    Ok(Box::new(FixedValidatorNodeDeferredProposalV0 {
+        parent_coordinate,
+        position,
+        value,
+        canonical_proposal_control_bytes: canonical_proposal_control_bytes.into_boxed_slice(),
+        canonical_artifact_bytes: canonical_artifact_bytes.into_boxed_slice(),
+    }))
+}
 
-    Ok(FixedValidatorNodeProposalDeferralOutcomeV0::Deferred {
-        scope: Box::new(scope),
-        proposal: Box::new(FixedValidatorNodeDeferredProposalV0 {
-            parent_coordinate,
-            position,
-            value,
-            canonical_proposal_control_bytes: canonical_proposal_control_bytes.into_boxed_slice(),
-            canonical_artifact_bytes: canonical_artifact_bytes.into_boxed_slice(),
-        }),
-    })
+pub(super) fn preflight_higher_round_proposal_route<'scope, 'node>(
+    scope: &'scope FixedValidatorNodeSigningScopeV0<'node>,
+    route: FixedValidatorNodeHigherRoundProposalRouteV0,
+) -> Result<FixedConsensusRoundV0<'scope>, CurrentRoundErrorV0> {
+    let finality_maximum_round = ConsensusRound::new(scope.finality.replay_limit().max_round());
+    let current_round = current_round(
+        &scope.branch,
+        &scope.signing_session,
+        route.inclusive_maximum_round(),
+        finality_maximum_round.value(),
+    )?;
+    let current_position = current_round.position();
+    let _ = successor_capacity(
+        current_position.round(),
+        route.inclusive_maximum_round(),
+        finality_maximum_round,
+    )?;
+    if route.proposal_round() <= current_position.round() {
+        return Err(CurrentRoundErrorV0::Rejected(
+            FixedValidatorNodeProposalDeferralRejectionV0::NotHigherThanSigner {
+                signer: current_position.round(),
+                proposal: route.proposal_round(),
+            },
+        ));
+    }
+    if route.proposal_round() > finality_maximum_round {
+        return Err(CurrentRoundErrorV0::Rejected(
+            FixedValidatorNodeProposalDeferralRejectionV0::FinalityRoundLimitExceeded {
+                required: route.proposal_round(),
+                maximum: finality_maximum_round,
+            },
+        ));
+    }
+    if route.proposal_round() > route.inclusive_maximum_round() {
+        return Err(CurrentRoundErrorV0::Rejected(
+            FixedValidatorNodeProposalDeferralRejectionV0::RoundWorkLimitExceeded {
+                required: route.proposal_round(),
+                maximum: route.inclusive_maximum_round(),
+            },
+        ));
+    }
+
+    let mut proposal_round = current_round;
+    for _ in current_position.round().value()..route.proposal_round().value() {
+        proposal_round = proposal_round.advance_round().map_err(|source| {
+            CurrentRoundErrorV0::Fatal(FixedValidatorNodeProposalDeferralErrorV0::Round(source))
+        })?;
+    }
+    debug_assert_eq!(proposal_round.position().round(), route.proposal_round());
+    Ok(proposal_round)
 }
 
 fn current_round<'branch>(

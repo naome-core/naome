@@ -21,10 +21,12 @@
 //! bounded process-local higher-round inbox additionally retains typed-round-
 //! admitted proposal prevotes and explicitly pairs one uniquely actionable
 //! proposal-bearing quorum using local lexicographic evidence normalization,
-//! while
-//! deliberately leaving daemon, networking, timeout measurement and expiry,
-//! key-loading, event selection, and branch-selection policy to later
-//! components.
+//! while a closure-scoped driver owns that inbox and the sole signing scope,
+//! prioritizes one unique actionable higher-round pair over an exact opaque
+//! generation-bound phase-timer return, and serializes anchored vote publication
+//! and timer-arm commands. It deliberately leaves daemon scheduling, networking,
+//! timeout measurement and duration, key loading, finality event routing, and
+//! branch-selection policy to later components.
 
 mod fixed_validator_startup;
 
@@ -37,7 +39,14 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeCandidateBackedFinalityRejectionV0,
     FixedValidatorNodeCurrentRoundFinalityErrorV0, FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
     FixedValidatorNodeCurrentRoundFinalityRejectionV0, FixedValidatorNodeDeferredProposalV0,
-    FixedValidatorNodeDirectoriesV0, FixedValidatorNodeFinalityErrorV0,
+    FixedValidatorNodeDirectoriesV0, FixedValidatorNodeDriverActionV0,
+    FixedValidatorNodeDriverAdmissionDispositionV0, FixedValidatorNodeDriverAdmissionErrorV0,
+    FixedValidatorNodeDriverAdmissionOutcomeV0, FixedValidatorNodeDriverAdmissionRejectionV0,
+    FixedValidatorNodeDriverBlockReasonV0, FixedValidatorNodeDriverCommandV0,
+    FixedValidatorNodeDriverCreateErrorV0, FixedValidatorNodeDriverDrainV0,
+    FixedValidatorNodeDriverEventV0, FixedValidatorNodeDriverStepErrorV0,
+    FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverStepRejectionV0,
+    FixedValidatorNodeDriverV0, FixedValidatorNodeFinalityErrorV0,
     FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalityRoundRouteV0,
     FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
     FixedValidatorNodeHigherRoundInboxAccessErrorV0, FixedValidatorNodeHigherRoundInboxDrainItemV0,
@@ -50,19 +59,19 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeHigherRoundInboxSaturationV0, FixedValidatorNodeHigherRoundInboxV0,
     FixedValidatorNodeHigherRoundProposalRouteV0, FixedValidatorNodeHigherRoundVoteBatchRouteV0,
     FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
-    FixedValidatorNodeLowerRoundFinalityRejectionV0, FixedValidatorNodeProposalAuthoringErrorV0,
-    FixedValidatorNodeProposalAuthoringOutcomeV0, FixedValidatorNodeProposalAuthoringRejectionV0,
-    FixedValidatorNodeProposalBufferAccessErrorV0, FixedValidatorNodeProposalBufferDrainV0,
-    FixedValidatorNodeProposalBufferInsertErrorV0, FixedValidatorNodeProposalBufferInsertOutcomeV0,
-    FixedValidatorNodeProposalBufferLimitsErrorV0, FixedValidatorNodeProposalBufferLimitsV0,
-    FixedValidatorNodeProposalBufferSaturationV0, FixedValidatorNodeProposalBufferV0,
-    FixedValidatorNodeProposalDeferralErrorV0, FixedValidatorNodeProposalDeferralOutcomeV0,
-    FixedValidatorNodeProposalDeferralRejectionV0, FixedValidatorNodeProvisionV0,
-    FixedValidatorNodeReadyV0, FixedValidatorNodeRoundAdvanceErrorV0,
-    FixedValidatorNodeRoundAdvanceOutcomeV0, FixedValidatorNodeRoundAdvanceRejectionV0,
-    FixedValidatorNodeSignerStopV0, FixedValidatorNodeSigningScopeV0,
-    FixedValidatorNodeStartupErrorV0, FixedValidatorNodeStartupV0,
-    FixedValidatorNodeVoteExecutionErrorV0, FixedValidatorNodeVoteExecutionOutcomeV0,
-    FixedValidatorNodeVoteRejectionV0, FixedValidatorNodeVotingSessionV0,
-    FixedValidatorSignerCatchUpHeightLimitV0,
+    FixedValidatorNodeLowerRoundFinalityRejectionV0, FixedValidatorNodePhaseTimeoutV0,
+    FixedValidatorNodeProposalAuthoringErrorV0, FixedValidatorNodeProposalAuthoringOutcomeV0,
+    FixedValidatorNodeProposalAuthoringRejectionV0, FixedValidatorNodeProposalBufferAccessErrorV0,
+    FixedValidatorNodeProposalBufferDrainV0, FixedValidatorNodeProposalBufferInsertErrorV0,
+    FixedValidatorNodeProposalBufferInsertOutcomeV0, FixedValidatorNodeProposalBufferLimitsErrorV0,
+    FixedValidatorNodeProposalBufferLimitsV0, FixedValidatorNodeProposalBufferSaturationV0,
+    FixedValidatorNodeProposalBufferV0, FixedValidatorNodeProposalDeferralErrorV0,
+    FixedValidatorNodeProposalDeferralOutcomeV0, FixedValidatorNodeProposalDeferralRejectionV0,
+    FixedValidatorNodeProvisionV0, FixedValidatorNodeReadyV0,
+    FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,
+    FixedValidatorNodeRoundAdvanceRejectionV0, FixedValidatorNodeSignerStopV0,
+    FixedValidatorNodeSigningScopeV0, FixedValidatorNodeStartupErrorV0,
+    FixedValidatorNodeStartupV0, FixedValidatorNodeVoteExecutionErrorV0,
+    FixedValidatorNodeVoteExecutionOutcomeV0, FixedValidatorNodeVoteRejectionV0,
+    FixedValidatorNodeVotingSessionV0, FixedValidatorSignerCatchUpHeightLimitV0,
 };

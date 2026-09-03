@@ -561,7 +561,7 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     }
 }
 
-enum ActionableInboxSelectionV0 {
+pub(super) enum ActionableInboxSelectionV0 {
     None,
     One {
         proposal_signing_root: ProposalSigningRoot,
@@ -573,7 +573,78 @@ enum ActionableInboxSelectionV0 {
     },
 }
 
-fn select_actionable_inbox_root(
+pub(super) struct ActionableInboxSnapshotV0<'inbox> {
+    votes: Vec<&'inbox FixedValidatorNodeRetainedProposalPrevoteV0>,
+    proposal_identities: Vec<(ConsensusPosition, ProposalSigningRoot)>,
+}
+
+impl<'inbox> ActionableInboxSnapshotV0<'inbox> {
+    pub(super) fn try_new(
+        inbox: &'inbox FixedValidatorNodeHigherRoundInboxV0,
+        parent_coordinate: FixedConsensusBranchCoordinateV0,
+    ) -> Result<Self, FixedValidatorNodeBufferedProposalPrecommitRejectionV0> {
+        let mut votes = Vec::new();
+        votes.try_reserve_exact(inbox.prevote_len()).map_err(
+            FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation,
+        )?;
+        votes.extend(
+            inbox
+                .prevotes
+                .iter()
+                .filter(|vote| vote.parent_coordinate() == parent_coordinate),
+        );
+        votes.sort_unstable_by(|left, right| {
+            left.position()
+                .cmp(&right.position())
+                .then_with(|| {
+                    left.proposal_signing_root()
+                        .cmp(&right.proposal_signing_root())
+                })
+                .then_with(|| left.signer().cmp(&right.signer()))
+                .then_with(|| left.canonical_bytes().cmp(right.canonical_bytes()))
+        });
+
+        let mut proposal_identities = Vec::new();
+        proposal_identities
+            .try_reserve_exact(inbox.proposal_len())
+            .map_err(
+                FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation,
+            )?;
+        proposal_identities.extend(inbox.proposals.retained_identities().filter_map(
+            |(retained_parent, position, root)| {
+                (retained_parent == parent_coordinate).then_some((position, root))
+            },
+        ));
+        proposal_identities.sort_unstable();
+        proposal_identities.dedup();
+
+        Ok(Self {
+            votes,
+            proposal_identities,
+        })
+    }
+
+    pub(super) fn select_position(
+        &self,
+        target_round: &FixedConsensusRoundV0<'_>,
+        position: ConsensusPosition,
+    ) -> Result<ActionableInboxSelectionV0, FixedValidatorNodeBufferedProposalPrecommitRejectionV0>
+    {
+        let start = self
+            .votes
+            .partition_point(|vote| vote.position() < position);
+        let end = self
+            .votes
+            .partition_point(|vote| vote.position() <= position);
+        select_actionable_sorted_inbox_root(&self.votes[start..end], target_round, |root| {
+            self.proposal_identities
+                .binary_search(&(position, root))
+                .is_ok()
+        })
+    }
+}
+
+pub(super) fn select_actionable_inbox_root(
     inbox: &FixedValidatorNodeHigherRoundInboxV0,
     target_round: &FixedConsensusRoundV0<'_>,
     parent_coordinate: FixedConsensusBranchCoordinateV0,
@@ -593,6 +664,28 @@ fn select_actionable_inbox_root(
             .then_with(|| left.canonical_bytes().cmp(right.canonical_bytes()))
     });
 
+    let mut proposal_roots = Vec::new();
+    proposal_roots
+        .try_reserve_exact(inbox.proposal_len())
+        .map_err(FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation)?;
+    proposal_roots.extend(inbox.proposals.retained_identities().filter_map(
+        |(retained_parent, retained_position, root)| {
+            (retained_parent == parent_coordinate && retained_position == position).then_some(root)
+        },
+    ));
+    proposal_roots.sort_unstable();
+    proposal_roots.dedup();
+
+    select_actionable_sorted_inbox_root(&candidates, target_round, |root| {
+        proposal_roots.binary_search(&root).is_ok()
+    })
+}
+
+fn select_actionable_sorted_inbox_root(
+    candidates: &[&FixedValidatorNodeRetainedProposalPrevoteV0],
+    target_round: &FixedConsensusRoundV0<'_>,
+    mut has_matching_proposal: impl FnMut(ProposalSigningRoot) -> bool,
+) -> Result<ActionableInboxSelectionV0, FixedValidatorNodeBufferedProposalPrecommitRejectionV0> {
     let mut actionable: Option<(ProposalSigningRoot, Vec<u8>)> = None;
     let mut start = 0;
     while start < candidates.len() {
@@ -601,10 +694,7 @@ fn select_actionable_inbox_root(
         while end < candidates.len() && candidates[end].proposal_signing_root() == root {
             end += 1;
         }
-        if inbox
-            .proposals
-            .has_proposal_identity(parent_coordinate, position, root)
-        {
+        if has_matching_proposal(root) {
             let mut preferred_votes: Vec<&[u8]> = Vec::new();
             preferred_votes.try_reserve_exact(end - start).map_err(
                 FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation,

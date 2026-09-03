@@ -521,18 +521,24 @@ impl FixedValidatorNodeProposalBufferV0 {
             .any(|entry| exact_inputs_match(&entry.proposal, proposal))
     }
 
-    pub(super) fn has_proposal_identity(
+    pub(super) fn retained_positions(&self) -> impl Iterator<Item = ConsensusPosition> + '_ {
+        self.proposals.iter().map(|entry| entry.proposal.position())
+    }
+
+    pub(super) fn retained_identities(
         &self,
-        parent_coordinate: FixedConsensusBranchCoordinateV0,
-        position: ConsensusPosition,
-        proposal_signing_root: ProposalSigningRoot,
-    ) -> bool {
-        self.proposals.iter().any(|entry| {
-            proposal_identity_matches(
-                &entry.proposal,
-                parent_coordinate,
-                position,
-                proposal_signing_root,
+    ) -> impl Iterator<
+        Item = (
+            FixedConsensusBranchCoordinateV0,
+            ConsensusPosition,
+            ProposalSigningRoot,
+        ),
+    > + '_ {
+        self.proposals.iter().map(|entry| {
+            (
+                entry.proposal.parent_coordinate(),
+                entry.proposal.position(),
+                entry.proposal.proposal_signing_root(),
             )
         })
     }

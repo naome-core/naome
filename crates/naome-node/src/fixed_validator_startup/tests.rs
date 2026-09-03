@@ -967,6 +967,7 @@ fn public_scope_components_name_one_exact_recovered_branch() {
     assert_eq!(observed.0.context(), fixture.context);
 }
 
+mod driver;
 mod finality;
 mod proposal_authoring;
 mod proposal_buffer;
