@@ -149,10 +149,6 @@ pub(super) enum CurrentRoundFinalityPrecommitInsertErrorV0 {
     Reservation(TryReserveError),
 }
 
-#[allow(
-    dead_code,
-    reason = "the private non-executing classifier is staged for the durable finality integration"
-)]
 pub(super) enum CurrentRoundFinalityClassificationV0<'inbox> {
     Saturated {
         position: ConsensusPosition,
@@ -175,10 +171,16 @@ pub(super) enum CurrentRoundFinalityClassificationV0<'inbox> {
     },
 }
 
-#[allow(
-    dead_code,
-    reason = "the private non-executing classifier is staged for the durable finality integration"
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CurrentRoundFinalityPreclassificationV0 {
+    Saturated {
+        position: ConsensusPosition,
+        saturation: FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
+    },
+    NoMatchingPrecommit,
+    NeedsRound,
+}
+
 pub(super) enum CurrentRoundFinalityClassificationErrorV0 {
     Reservation(TryReserveError),
     Invariant(QuorumCertificateBuildError),
@@ -297,6 +299,26 @@ impl CurrentRoundFinalityInboxV0 {
         FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
     )> {
         self.saturation
+    }
+
+    pub(super) fn preclassify(
+        &self,
+        parent_coordinate: FixedConsensusBranchCoordinateV0,
+        position: ConsensusPosition,
+    ) -> CurrentRoundFinalityPreclassificationV0 {
+        if let Some((position, saturation)) = self.saturation {
+            return CurrentRoundFinalityPreclassificationV0::Saturated {
+                position,
+                saturation,
+            };
+        }
+        if self.precommits.iter().any(|retained| {
+            retained.parent_coordinate == parent_coordinate && retained.position == position
+        }) {
+            CurrentRoundFinalityPreclassificationV0::NeedsRound
+        } else {
+            CurrentRoundFinalityPreclassificationV0::NoMatchingPrecommit
+        }
     }
 
     pub(super) fn try_insert_proposal(
@@ -419,10 +441,6 @@ impl CurrentRoundFinalityInboxV0 {
         Ok(CurrentRoundFinalityInboxInsertOutcomeV0::Inserted)
     }
 
-    #[allow(
-        dead_code,
-        reason = "the private non-executing classifier is staged for the durable finality integration"
-    )]
     pub(super) fn classify(
         &self,
         round: &FixedConsensusRoundV0<'_>,
