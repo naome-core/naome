@@ -51,9 +51,10 @@ pub use fixed_consensus_branch::{
     FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBoundedSeparateFinalityVerifyError,
     FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusGenesisError,
     FixedConsensusNilPrevoteVerifyErrorV0, FixedConsensusPrecommitBatchSealErrorV0,
-    FixedConsensusProposalPrevoteVerifyErrorV0, FixedConsensusProposalValueVerifyErrorV0,
-    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0,
-    VerifiedFixedConsensusProposalV0, VerifiedFixedConsensusTransitionV0,
+    FixedConsensusProposalPrecommitVerifyErrorV0, FixedConsensusProposalPrevoteVerifyErrorV0,
+    FixedConsensusProposalValueVerifyErrorV0, FixedConsensusRoundV0,
+    OwnedVerifiedFixedConsensusTransitionV0, VerifiedFixedConsensusProposalV0,
+    VerifiedFixedConsensusTransitionV0,
 };
 pub use fixed_validator_lock_state::{
     FixedValidatorHigherRoundCheckpointErrorV0, FixedValidatorLockPhaseV0,

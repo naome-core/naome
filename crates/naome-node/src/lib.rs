@@ -22,16 +22,20 @@
 //! admitted proposal prevotes and explicitly pairs one uniquely actionable
 //! proposal-bearing quorum using local lexicographic evidence normalization,
 //! while a closure-scoped driver owns that inbox, a separately bounded current-
-//! round proposal/proposal-or-nil-prevote inbox, and the sole signing scope. It
-//! prioritizes one unique actionable higher-round pair, then drives one unambiguous current
+//! round proposal/proposal-or-nil-prevote inbox, a third independently bounded
+//! exact-current proposal-finality inbox, and the sole signing scope. The
+//! proposal-finality inbox admits and retains proposals and proposal precommits
+//! for private non-executing classification only. The driver prioritizes one
+//! unique actionable higher-round pair, then drives one unambiguous current
 //! proposal through anchored prevote or one sole matching proposal or nil
 //! current quorum through anchored precommit, ahead of the exact phase-local
 //! opaque generation-bound due return. Simultaneously actionable proposal and
 //! nil quorums fail closed until current-only drain; current proposal ambiguity
 //! remains round-local, current saturation requires the same drain, and the
 //! driver serializes every anchored vote-publication and timer-arm command. It
-//! deliberately leaves daemon scheduling, networking, timeout measurement and duration, key loading,
-//! finality event routing, and branch-selection policy to later components.
+//! deliberately leaves daemon scheduling, networking, timeout measurement and
+//! duration, key loading, automatic finality execution, network acquisition and
+//! broader finality routing, and branch-selection policy to later components.
 
 mod fixed_validator_startup;
 
@@ -42,7 +46,13 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeCandidateBackedFinalityErrorV0,
     FixedValidatorNodeCandidateBackedFinalityOutcomeV0,
     FixedValidatorNodeCandidateBackedFinalityRejectionV0,
-    FixedValidatorNodeCurrentRoundFinalityErrorV0, FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
+    FixedValidatorNodeCurrentRoundFinalityErrorV0,
+    FixedValidatorNodeCurrentRoundFinalityInboxDrainItemV0,
+    FixedValidatorNodeCurrentRoundFinalityInboxDrainV0,
+    FixedValidatorNodeCurrentRoundFinalityInboxLimitsErrorV0,
+    FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
+    FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
+    FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
     FixedValidatorNodeCurrentRoundFinalityRejectionV0,
     FixedValidatorNodeCurrentRoundInboxDrainItemV0, FixedValidatorNodeCurrentRoundInboxDrainV0,
     FixedValidatorNodeCurrentRoundInboxLimitsErrorV0, FixedValidatorNodeCurrentRoundInboxLimitsV0,
@@ -51,15 +61,16 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeDriverAdmissionDispositionV0, FixedValidatorNodeDriverAdmissionErrorV0,
     FixedValidatorNodeDriverAdmissionOutcomeV0, FixedValidatorNodeDriverAdmissionRejectionV0,
     FixedValidatorNodeDriverBlockReasonV0, FixedValidatorNodeDriverCommandV0,
-    FixedValidatorNodeDriverCreateErrorV0, FixedValidatorNodeDriverCurrentRoundDrainV0,
-    FixedValidatorNodeDriverDrainV0, FixedValidatorNodeDriverEventV0,
-    FixedValidatorNodeDriverStepErrorV0, FixedValidatorNodeDriverStepOutcomeV0,
-    FixedValidatorNodeDriverStepRejectionV0, FixedValidatorNodeDriverV0,
-    FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
-    FixedValidatorNodeFinalityRoundRouteV0, FixedValidatorNodeFinalitySelectionV0,
-    FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeHigherRoundInboxAccessErrorV0,
-    FixedValidatorNodeHigherRoundInboxDrainItemV0, FixedValidatorNodeHigherRoundInboxDrainV0,
-    FixedValidatorNodeHigherRoundInboxLimitsErrorV0, FixedValidatorNodeHigherRoundInboxLimitsV0,
+    FixedValidatorNodeDriverCreateErrorV0, FixedValidatorNodeDriverCurrentFinalityDrainV0,
+    FixedValidatorNodeDriverCurrentRoundDrainV0, FixedValidatorNodeDriverDrainV0,
+    FixedValidatorNodeDriverEventV0, FixedValidatorNodeDriverStepErrorV0,
+    FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverStepRejectionV0,
+    FixedValidatorNodeDriverV0, FixedValidatorNodeFinalityErrorV0,
+    FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalityRoundRouteV0,
+    FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
+    FixedValidatorNodeHigherRoundInboxAccessErrorV0, FixedValidatorNodeHigherRoundInboxDrainItemV0,
+    FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodeHigherRoundInboxLimitsErrorV0,
+    FixedValidatorNodeHigherRoundInboxLimitsV0,
     FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0,
     FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0,
     FixedValidatorNodeHigherRoundInboxProposalInsertErrorV0,

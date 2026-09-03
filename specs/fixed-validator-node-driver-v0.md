@@ -10,6 +10,8 @@ existing exact-event coordinators. For its lifetime it privately owns:
 - one existing bounded process-local higher-round proposal/prevote inbox;
 - one separately bounded process-local current-round proposal/proposal-or-nil-
   prevote inbox;
+- one independently bounded process-local current-round proposal-finality
+  proposal/precommit inbox;
 - one current phase-timer lineage and its checked generation;
 - at most one timeout-due observation for that exact lineage; and
 - at most one next outward command.
@@ -17,20 +19,25 @@ existing exact-event coordinators. For its lifetime it privately owns:
 The driver accepts complete current- or higher-round proposals that it fully
 admits into the existing private token boundary, complete canonical current-
 round proposal or nil prevotes and higher-round proposal prevotes that it
-independently admits against the exact node-derived fixed-set round, and opaque
-timeout tickets that the same driver issued. One explicit step derives the live
-node identity, classifies the complete healthy inbox state, and invokes at most
-one existing consuming node coordinator. It emits at most one timeout-arm or
+independently admits against the exact node-derived fixed-set round, distinct
+complete finality-proposal inputs and individual current-round proposal
+precommits for its dedicated finality foundation, and opaque timeout tickets
+that the same driver issued. One explicit step derives the live node identity,
+classifies the complete healthy voting-inbox state, and invokes at most one
+existing consuming node coordinator. It emits at most one timeout-arm or
 signed-vote command. It does not expose the owned signing scope as an
 alternative caller-controlled path.
 
 This remains a partial driver boundary. Its input surface now covers current-
-and higher-round proposal/prevote evidence, current-round nil prevotes, and
-exact driver-issued timeout-due tickets. It drives a current proposal through
-an anchored prevote and one sole matching current proposal or nil prevote
-quorum through an anchored precommit. Current-, lower-, or candidate-backed
-finality routing, proposal authoring, height transition, networking, and
-artifact-payload persistence remain outside this driver.
+and higher-round proposal/prevote evidence, current-round nil prevotes,
+current-round finality proposals and proposal precommits, and exact
+driver-issued timeout-due tickets. It drives a current proposal through an
+anchored prevote and one sole matching current proposal or nil prevote quorum
+through an anchored precommit. The separately retained proposal-finality class
+only classifies a healthy exact-current snapshot; it has no step effect and
+performs no finality or height transition. Current-round finality execution,
+lower- or candidate-backed finality routing, proposal authoring, networking,
+and artifact-payload persistence remain outside this driver.
 
 This ownership moves event choice out of a caller that could otherwise select
 an inbox position or invoke a phase close directly. It does not make retained
@@ -40,29 +47,31 @@ fully verifying, journal- and anchor-gated node operation.
 
 ## Construction and process-local lifecycle
 
-Construction takes one live signing scope, separate positive current- and
-higher-round inbox limits, and the existing inclusive caller-local round-work
-ceiling. The driver owns every
+Construction takes one live signing scope, separate positive current-voting,
+higher-round, and current-finality inbox limits, and the existing inclusive
+caller-local round-work ceiling. The driver owns every
 subsequent replacement scope returned by a successful consuming operation. It
 is not cloneable and provides no accessor that returns or borrows the raw scope
 for mutation. Read-only diagnostics may expose the live context, position,
-phase, inbox accounting, timer identity, and pending-command state without
-granting transition authority.
+phase, separate inbox accounting, timer identity, and pending-command state
+without granting transition authority. Finality-foundation classification
+remains crate-private and produces no runtime-facing diagnostic.
 
 Construction is consuming. If construction fails, it returns neither a driver
 nor the supplied signing scope. The caller must strictly reopen the anchored
 signer state before retrying; no construction error grants a reusable scope.
 
-The driver, its inbox, timer lineage, due observation, and pending command have
+The driver, its inboxes, timer lineage, due observation, and pending command have
 no canonical or durable encoding. Process or runtime-owner loss, including a
 fatal coordinator outcome that returns no driver or scope, drops all of them.
 Strict restart independently reconstructs only the journal-anchored node and
 signer state under their existing contracts; this applies equally when a fatal
 error consumes the driver before a coordinator begins. A fresh driver then
-starts with both inboxes empty, no inherited due observation, no inherited
+starts with all three inboxes empty, no inherited due observation, no inherited
 pending command, and a new process-local timer lineage. A ticket issued by the
-lost driver cannot authorize the fresh driver. Current proposal and vote inputs
-may be explicitly re-admitted against that recovered state; they are never
+lost driver cannot authorize the fresh driver. Current proposal, prevote, and
+proposal-precommit inputs may be explicitly re-admitted against that recovered
+state; they are never
 reconstructed as cached validity.
 
 Dropping a driver neither rolls back a completed journal prefix nor proves that
@@ -104,6 +113,27 @@ prevote: counting that returned instance requires the runtime to take the
 publication command and explicitly loop its canonical vote back through
 ordinary admission. Independently obtained strict-valid bytes signed by the
 local key remain ordinary evidence because the driver infers no provenance.
+
+`CurrentRoundFinalityProposal` is a distinct event carrying complete canonical
+proposal-control bytes and the owned complete canonical artifact payload for
+the dedicated proposal-finality resource class. It does not reuse
+`CurrentRoundProposal`, so insertion into either inbox cannot partially charge
+or implicitly validate the other. After the pending-command gate, the driver
+derives the exact live branch round, applies the bounded proposal and payload
+preflights, and fully verifies both inputs before retaining a private proposal
+token under the finality limits.
+
+`CurrentRoundProposalPrecommit` likewise carries one complete canonical signed
+vote and no caller position, role, target, root, or signer. The driver derives
+the exact live round and requires complete context, position, signature,
+active-fixed-set membership, `Precommit` role, and a non-nil proposal target
+before retention. `Precommit/Nil` is rejected because nil-precommit round
+progression is a later scope. Both finality-foundation event forms are admitted
+in Proposal, Prevote, or Precommit phase and do not consult the phase-local due
+fence. Current- or higher-inbox saturation and ambiguity do not block them;
+finality saturation blocks only later finality-foundation admission and
+classification. A stale or future vote or proposal still returns losslessly,
+and no retained former-position evidence is relabeled after a transition.
 
 Its `FixedValidatorNodeDriverEventV0::HigherRoundProposal` variant carries one
 descriptive `proposal_round`, complete canonical proposal-control bytes, and
@@ -167,6 +197,40 @@ changes neither the higher-round inbox nor the signing state, active due
 observation, timer, or pending command, and grants no reinsertion or selection
 policy.
 
+The third inbox follows
+`fixed-validator-node-current-round-finality-inbox-v0.md`. It has a separate
+positive combined entry and logical canonical-input-byte budget for fully
+admitted finality proposals and proposal precommits. Exact duplicates are
+no-growth; every other same-root or competing-root proposal representation and
+signature variant remains retained while healthy. The first nonduplicate
+declared-capacity or checked-accounting failure preserves the complete retained
+prefix and exact rejected event and latches finality-class saturation;
+collection reservation failure is no-state and does not latch saturation.
+
+One crate-private finality-foundation classifier considers only the healthy
+complete exact-live-position snapshot. For each evaluated proposal root it
+uses the lexicographically smallest complete canonical precommit per active
+signer, counts that signer once without renormalizing offline weight, and
+applies the existing exact-batch constructor. A quorate root with one or more
+matching fully admitted proposals uses the lexicographically smallest complete
+proposal tuple solely as its stable local representative while preserving
+every variant. The inbox-internal result may contain that proposal tuple and
+the constructed certificate, but the driver-level classification deliberately
+maps it to a crate-private descriptor containing only the position and proposal
+root. It distinguishes no quorum, one quorum without a proposal, one
+proposal-backed quorum, and multiple quorate roots. It chooses no winner
+between roots and grants no finality or conflict-halt authority. Neither raw
+proposal nor certificate bytes, a public command, nor a runtime-facing
+observation is exposed by the driver classifier.
+
+Neither that classification nor finality saturation changes `step`; the
+existing pending-command, higher-round, current-round, and due ordering remains
+unchanged. `drain_current_finality_inbox_and_reset` losslessly returns
+every exact finality proposal and proposal precommit and resets only finality
+entries, accounting, and saturation. It changes neither voting inbox, signing
+state, due observation, timer, pending command, nor any durable authority file,
+and grants no reinsertion or evidence-routing policy.
+
 While the driver survives, the higher-round combined inbox retains distinct same-root
 proposal variants, distinct canonical signature variants, and competing targets
 without eviction or preference while healthy. Exact duplicates are no-growth.
@@ -227,11 +291,18 @@ cannot overtake its transfer. With no pending command, higher-inbox saturation
 globally blocks driver work, while current-inbox saturation blocks current
 action and the due transition but still permits independently budgeted higher-round escape. A
 fatal coordinator failure consumes the driver and its sole signing scope and
-returns no driver on which another step could act; it also drops both
+returns no driver on which another step could act; it also drops all three
 process-local inboxes and their retained evidence with that volatile owner.
 Otherwise, the step derives the exact current branch position and phase from the
-privately owned scope and evaluates the two complete retained sets in the order
-defined below.
+privately owned scope and evaluates the two complete voting-inbox retained sets
+in the order defined below.
+
+The current-round finality inbox is deliberately absent from this ordering.
+Its healthy readiness, missing-proposal, and multiple-quorum classifications,
+and its saturated state are crate-private diagnostics with no step effect. They
+cannot suppress a pending command, higher-round escape, current vote, or due
+transition and cannot produce a command, signature, finality call, or height
+change in this foundation slice.
 
 For that snapshot, the driver applies the existing higher-round inbox rules at
 every retained position still strictly above the live signer round and within
@@ -341,12 +412,15 @@ scheduling, or finality.
 ## Determinism boundary
 
 For the same live scope state, limits, work ceiling, exact due state, and the
-same complete healthy retained set, every permutation of insertion order yields
-the same step classification and selected canonical representatives. This is a
-frozen-snapshot permutation claim only. It does not claim a complete network
-view, simultaneous observation, deterministic results across unequal retained
-sets, fairness across repeated drains and reinsertion, operating-system event
-ordering, or independence from when an external runtime invokes `step`.
+same complete healthy retained voting sets, every permutation of insertion
+order yields the same step classification and selected canonical
+representatives. Separately, the same exact live position and complete healthy
+finality set yields the same crate-private finality classification and local
+representatives. These are frozen-snapshot permutation claims only. They do not
+claim a complete network view, simultaneous observation, deterministic results
+across unequal retained sets, fairness across repeated drains and reinsertion,
+operating-system event ordering, or independence from when an external runtime
+invokes `step` or classification.
 
 Peer identity and arrival order are absent from representative and quorum
 classification within one fully admitted pre-due retained set. They cannot
@@ -371,11 +445,20 @@ is never resolved by choosing a variant. Pending
 commands deny every event admission until they transfer; no rejection creates a
 signed command.
 
+Finality-class saturation preserves the rejected finality event and retained
+finality prefix, blocks only later finality admission and classification until
+finality-only drain, and leaves `step` and both voting classes unchanged.
+Finality-class multiple-quorum classification likewise has no step effect or
+durable conflict meaning. An explicit classifier scratch-reservation failure or
+typed certificate-construction rejection changes no retained bytes, saturation,
+signing state, or durable state; this is not exhaustive process-allocation-
+failure recovery.
+
 Fatal errors are outside that surviving-owner contract even when they occur
 before a consuming coordinator begins. Authenticated prevote-round derivation,
 frozen-selection round derivation, checked timer-generation exhaustion, and any
 later fatal coordinator path return neither driver nor signing scope and drop
-the process-local inbox. The durable stores remain bounded by their last
+the process-local inboxes. The durable stores remain bounded by their last
 completed anchored prefix, and continuation requires strict anchored reopen into
 a fresh driver.
 
@@ -388,7 +471,7 @@ find a complete durable prefix. The driver neither reconstructs a missing
 command from journal bytes nor retries an ambiguous effect. Strict anchored
 restart remains the sole durable-prefix classifier. Because a fatal outcome has
 no surviving signing scope or driver, destruction of that process-local owner
-also drops its inbox and retained evidence; the lower coordinator may have
+also drops its inboxes and retained evidence; the lower coordinator may have
 restored a leased token internally, but this driver exposes no reusable
 evidence from a fatal authority state.
 
@@ -420,8 +503,9 @@ This driver does not define or perform:
 - a complete or protocol-wide evidence view, durable inbox or timer encoding,
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
-- proposal authoring, higher-round nil-quorum collection, current-, lower-, or
-  candidate-backed finality routing, finality or height transition, candidate
+- proposal authoring, higher-round nil-quorum collection, current-round
+  finality execution, lower- or candidate-backed finality routing, finality or
+  height transition, candidate
   discovery or ranking, branch or sibling choice, rollback, reorganization,
   candidate promotion, checkpoint synchronization, or store repair;
 - artifact-payload persistence or candidate- or payload-store mutation;
