@@ -112,16 +112,18 @@ Ed25519 key and applies strict Ed25519 verification to the exact transcript.
 Success authenticates the embedded position, role, signer, and target but does
 not establish active-set membership or agreement.
 
-One `FixedConsensusRoundV0` additionally exposes a narrow proposal-prevote
-admission boundary for process-local node composition. It first performs that
-same complete signed-vote verification against the round's branch context,
-then requires the round's exact position, `Prevote` role, a non-nil proposal
-target, and membership of the authenticated signer in the round's immutable
-active fixed-validator snapshot. Success still treats the target root as opaque
-and establishes neither proposal existence nor validity, quorum, evidence
-retention or preference, round progression, locking, voting, or finality. The
-separately specified current- and higher-round node inboxes own any later
-retention under independent local bounds and action policies.
+One `FixedConsensusRoundV0` additionally exposes narrow proposal- and
+nil-prevote admission boundaries for process-local node composition. Each first
+performs that same complete signed-vote verification against the round's branch
+context, then requires the round's exact position, `Prevote` role, the
+boundary's exact proposal or nil target class, and membership of the
+authenticated signer in the round's immutable active fixed-validator snapshot,
+in that observable rejection order. Proposal admission still treats the target
+root as opaque. Either success establishes
+neither proposal existence or validity, quorum, evidence retention or
+preference, round progression, locking, voting, or finality. The separately
+specified current- and higher-round node inboxes own any later retention under
+independent local bounds and action policies.
 
 ## Canonical quorum certificate
 

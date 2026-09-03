@@ -22,14 +22,15 @@
 //! admitted proposal prevotes and explicitly pairs one uniquely actionable
 //! proposal-bearing quorum using local lexicographic evidence normalization,
 //! while a closure-scoped driver owns that inbox, a separately bounded current-
-//! round proposal/prevote inbox, and the sole signing scope. It prioritizes one
-//! unique actionable higher-round pair, then drives one unambiguous current
-//! proposal through anchored prevote or one matching current quorum through
-//! anchored precommit, ahead of the exact phase-local opaque generation-bound
-//! due return. Current proposal ambiguity remains round-local, current
-//! saturation requires current-only lossless drain, and the driver serializes
-//! every anchored vote-publication and timer-arm command. It deliberately leaves
-//! daemon scheduling, networking, timeout measurement and duration, key loading,
+//! round proposal/proposal-or-nil-prevote inbox, and the sole signing scope. It
+//! prioritizes one unique actionable higher-round pair, then drives one unambiguous current
+//! proposal through anchored prevote or one sole matching proposal or nil
+//! current quorum through anchored precommit, ahead of the exact phase-local
+//! opaque generation-bound due return. Simultaneously actionable proposal and
+//! nil quorums fail closed until current-only drain; current proposal ambiguity
+//! remains round-local, current saturation requires the same drain, and the
+//! driver serializes every anchored vote-publication and timer-arm command. It
+//! deliberately leaves daemon scheduling, networking, timeout measurement and duration, key loading,
 //! finality event routing, and branch-selection policy to later components.
 
 mod fixed_validator_startup;

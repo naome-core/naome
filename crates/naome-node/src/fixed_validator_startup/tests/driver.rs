@@ -11,10 +11,13 @@ use naome_storage::{
 };
 use std::path::Path;
 
+use super::super::current_round_inbox::{
+    CurrentRoundInboxInsertOutcomeV0, CurrentRoundInboxV0, CurrentRoundQuorumSelectionV0,
+};
 use super::*;
 
 type DrainedEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
-type DrainedCurrentEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
+type DrainedCurrentEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>, Vec<Vec<u8>>);
 type DriverPermutationResult = (
     naome_storage::FixedValidatorSignedVoteV0,
     [Vec<(String, Vec<u8>)>; 4],
@@ -196,6 +199,35 @@ fn reject_current_prevote<'node>(
     }
 }
 
+fn reject_current_nil_prevote<'node>(
+    driver: FixedValidatorNodeDriverV0<'node>,
+    canonical_signed_prevote: &[u8],
+    assert_rejection: impl FnOnce(&FixedValidatorNodeDriverAdmissionRejectionV0),
+) -> FixedValidatorNodeDriverV0<'node> {
+    match driver
+        .admit_event(current_nil_prevote_event(canonical_signed_prevote))
+        .unwrap()
+    {
+        FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+            driver,
+            event,
+            rejection,
+        } => {
+            match *event {
+                FixedValidatorNodeDriverEventV0::CurrentRoundNilPrevote {
+                    canonical_signed_prevote: returned,
+                } => assert_eq!(returned.as_ref(), canonical_signed_prevote),
+                _ => panic!("rejected current nil prevote must return its exact event"),
+            }
+            assert_rejection(rejection.as_ref());
+            *driver
+        }
+        FixedValidatorNodeDriverAdmissionOutcomeV0::Admitted { .. } => {
+            panic!("invalid current nil prevote must be rejected")
+        }
+    }
+}
+
 fn drained_contents(drained: FixedValidatorNodeHigherRoundInboxDrainV0) -> DrainedEvidence {
     let mut proposals = Vec::new();
     let mut prevotes = Vec::new();
@@ -219,7 +251,8 @@ fn drained_current_contents(
     drained: FixedValidatorNodeCurrentRoundInboxDrainV0,
 ) -> DrainedCurrentEvidence {
     let mut proposals = Vec::new();
-    let mut prevotes = Vec::new();
+    let mut proposal_prevotes = Vec::new();
+    let mut nil_prevotes = Vec::new();
     for item in drained {
         match item {
             FixedValidatorNodeCurrentRoundInboxDrainItemV0::Proposal {
@@ -230,13 +263,17 @@ fn drained_current_contents(
                 canonical_artifact_bytes.into_vec(),
             )),
             FixedValidatorNodeCurrentRoundInboxDrainItemV0::ProposalPrevote(prevote) => {
-                prevotes.push(prevote.to_vec());
+                proposal_prevotes.push(prevote.to_vec());
+            }
+            FixedValidatorNodeCurrentRoundInboxDrainItemV0::NilPrevote(prevote) => {
+                nil_prevotes.push(prevote.to_vec());
             }
         }
     }
     proposals.sort_unstable();
-    prevotes.sort_unstable();
-    (proposals, prevotes)
+    proposal_prevotes.sort_unstable();
+    nil_prevotes.sort_unstable();
+    (proposals, proposal_prevotes, nil_prevotes)
 }
 
 fn close_empty_round<'node>(
@@ -447,6 +484,12 @@ fn current_proposal_event(control: &[u8], payload: &[u8]) -> FixedValidatorNodeD
 
 fn current_prevote_event(bytes: &[u8]) -> FixedValidatorNodeDriverEventV0 {
     FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrevote {
+        canonical_signed_prevote: bytes.into(),
+    }
+}
+
+fn current_nil_prevote_event(bytes: &[u8]) -> FixedValidatorNodeDriverEventV0 {
+    FixedValidatorNodeDriverEventV0::CurrentRoundNilPrevote {
         canonical_signed_prevote: bytes.into(),
     }
 }
@@ -1896,9 +1939,249 @@ fn fatal_vote_anchor_failure_returns_no_driver_command_and_reopens_strictly() {
 }
 
 #[test]
+fn current_nil_prevote_variants_share_capacity_and_select_canonically() {
+    let fixture = Fixture::new();
+    let branch = fixed_branch(&fixture);
+    let round = round_at(&branch, 0);
+    let standard = signed_vote_bytes(
+        fixture.context,
+        round.position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let alternate = signed_vote_bytes_with_test_only_nonce_prefix(
+        fixture.context,
+        round.position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+        0x01,
+    );
+    assert_ne!(standard, alternate);
+    let preferred = if standard < alternate {
+        standard.as_slice()
+    } else {
+        alternate.as_slice()
+    };
+    let expected_certificate = round
+        .build_quorum_certificate_from_signed_votes(
+            &[preferred],
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Nil,
+        )
+        .unwrap()
+        .to_canonical_bytes();
+
+    for (first, second) in [
+        (standard.as_slice(), alternate.as_slice()),
+        (alternate.as_slice(), standard.as_slice()),
+    ] {
+        let limits = FixedValidatorNodeCurrentRoundInboxLimitsV0::new(
+            2,
+            u64::try_from(first.len() + second.len()).unwrap(),
+        )
+        .unwrap();
+        let mut inbox = CurrentRoundInboxV0::new(limits);
+        assert!(matches!(
+            inbox.try_insert_nil_prevote(&round, first),
+            Ok(CurrentRoundInboxInsertOutcomeV0::Inserted)
+        ));
+        assert!(matches!(
+            inbox.try_insert_nil_prevote(&round, first),
+            Ok(CurrentRoundInboxInsertOutcomeV0::AlreadyRetained)
+        ));
+        assert!(matches!(
+            inbox.try_insert_nil_prevote(&round, second),
+            Ok(CurrentRoundInboxInsertOutcomeV0::Inserted)
+        ));
+        assert_eq!(inbox.len(), 2);
+        assert_eq!(
+            inbox.total_canonical_input_bytes(),
+            u64::try_from(first.len() + second.len()).unwrap()
+        );
+        match inbox.select_nil_quorum(&round) {
+            Ok(CurrentRoundQuorumSelectionV0::One {
+                canonical_certificate,
+            }) => assert_eq!(canonical_certificate, expected_certificate),
+            _ => panic!("the canonical nil quorum must be actionable"),
+        }
+        let (_, proposal_prevotes, mut nil_prevotes) =
+            drained_current_contents(inbox.drain_and_reset());
+        assert!(proposal_prevotes.is_empty());
+        nil_prevotes.sort_unstable();
+        let mut expected = vec![first.to_vec(), second.to_vec()];
+        expected.sort_unstable();
+        assert_eq!(nil_prevotes, expected);
+    }
+}
+
+#[test]
+fn current_nil_prevote_admission_is_target_typed_and_shares_current_limits() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-nil-prevote-admission");
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let position = round_at(&branch, 0).position();
+    let proposal_prevote = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let nil_precommit = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let inactive_signer = SigningKey::from_bytes(&signing_seed(2));
+    let inactive_nil_prevote = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &inactive_signer,
+    );
+    let wrong_position_nil_prevote = signed_vote_bytes(
+        fixture.context,
+        round_at(&branch, 1).position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let wrong_context = ConsensusContextV0::new(
+        fixture.definition.id(),
+        ConsensusGenesisId::from_bytes([0x99; 32]),
+        fixture.context.protocol_version(),
+    );
+    let wrong_context_nil_prevote = signed_vote_bytes(
+        wrong_context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let nil_prevote = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let mut invalid_signature_nil_prevote = nil_prevote.clone();
+    *invalid_signature_nil_prevote.last_mut().unwrap() ^= 0x01;
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, _) = step_arm(driver_with_inbox_limits(scope, 8, 1, 4));
+            let driver = reject_current_nil_prevote(driver, &proposal_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrevote(
+                        naome_consensus::FixedConsensusNilPrevoteVerifyErrorV0::ProposalTarget {
+                            actual
+                        }
+                    ) if *actual == value.proposal_signing_root()
+                ));
+            });
+            let driver = reject_current_nil_prevote(driver, &nil_precommit, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrevote(
+                        naome_consensus::FixedConsensusNilPrevoteVerifyErrorV0::RoleMismatch {
+                            actual: ConsensusVoteRole::Precommit
+                        }
+                    )
+                ));
+            });
+            let driver = reject_current_nil_prevote(driver, &inactive_nil_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrevote(
+                        naome_consensus::FixedConsensusNilPrevoteVerifyErrorV0::InactiveSigner { .. }
+                    )
+                ));
+            });
+            let driver = reject_current_nil_prevote(
+                driver,
+                &wrong_position_nil_prevote,
+                |rejection| {
+                    assert!(matches!(
+                        rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrevote(
+                            naome_consensus::FixedConsensusNilPrevoteVerifyErrorV0::PositionMismatch {
+                                ..
+                            }
+                        )
+                    ));
+                },
+            );
+            let driver = reject_current_nil_prevote(
+                driver,
+                &wrong_context_nil_prevote,
+                |rejection| {
+                    assert!(matches!(
+                        rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrevote(
+                            naome_consensus::FixedConsensusNilPrevoteVerifyErrorV0::Vote(
+                                naome_consensus::ConsensusVoteVerifyError::GenesisIdMismatch { .. }
+                            )
+                        )
+                    ));
+                },
+            );
+            let driver = reject_current_nil_prevote(
+                driver,
+                &invalid_signature_nil_prevote,
+                |rejection| {
+                    assert!(matches!(
+                        rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrevote(
+                            naome_consensus::FixedConsensusNilPrevoteVerifyErrorV0::Vote(
+                                naome_consensus::ConsensusVoteVerifyError::InvalidSignature { .. }
+                            )
+                        )
+                    ));
+                },
+            );
+            assert_eq!(driver.current_inbox_len(), 0);
+            assert_eq!(layout.images(), before);
+
+            let (driver, _) = admit(driver, current_proposal_event(&control, &payload));
+            let driver = reject_current_nil_prevote(driver, &nil_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentInboxSaturated {
+                        position: saturated_position,
+                        newly_saturated: true,
+                        ..
+                    } if *saturated_position == position
+                ));
+            });
+            assert_eq!(driver.current_inbox_len(), 1);
+            assert_eq!(layout.images(), before);
+            let (_, drained) = driver.drain_current_inbox_and_reset().into_parts();
+            let (proposals, proposal_prevotes, nil_prevotes) =
+                drained_current_contents(drained);
+            assert_eq!(proposals, vec![(control.clone(), payload.clone())]);
+            assert!(proposal_prevotes.is_empty());
+            assert!(nil_prevotes.is_empty());
+        })
+        .unwrap();
+}
+
+#[test]
 fn exact_due_progression_preserves_populated_lock_and_valid_evidence() {
     let fixture = Fixture::new();
-    let layout = TestLayout::new("driver-due-lock-valid-retention");
+    let layout = TestLayout::new("driver-due-lock-valid-retention-no-quorum");
     let branch = fixed_branch(&fixture);
     let (value, control, payload) = proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
     let evidence_position = round_at(&branch, 2).position();
@@ -1996,6 +2279,130 @@ fn exact_due_progression_preserves_populated_lock_and_valid_evidence() {
             let valid = signing
                 .valid_value()
                 .expect("exact due progression must preserve valid evidence");
+            assert_eq!(valid.round(), ConsensusRound::new(2));
+            assert_eq!(valid.value().proposal_signing_root(), root);
+            assert_eq!(
+                valid.canonical_prevote_certificate(),
+                expected_certificate.as_slice()
+            );
+            assert_eq!(layout.images(), durable);
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_nil_quorum_precedes_due_and_preserves_populated_valid_evidence() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-nil-quorum-lock-valid-retention");
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+    let evidence_position = round_at(&branch, 2).position();
+    let root = value.proposal_signing_root();
+    let prevote = signed_vote_bytes(
+        fixture.context,
+        evidence_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.signing_key(),
+    );
+    let expected_certificate = round_at(&branch, 2)
+        .build_quorum_certificate_from_signed_votes(
+            &[prevote.as_slice()],
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Proposal(root),
+        )
+        .unwrap()
+        .to_canonical_bytes();
+    let round_three_nil_prevote = signed_vote_bytes(
+        fixture.context,
+        round_at(&branch, 3).position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, _) = step_arm(driver(scope, 8, 4));
+            let (driver, _) = admit(driver, proposal_event(2, &control, &payload));
+            let (driver, _) = admit(driver, prevote_event(&prevote));
+            let driver = step_transition(driver);
+            let durable_evidence = layout.images();
+            let (driver, precommit, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_some());
+            assert_eq!(precommit.position(), evidence_position);
+            assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(precommit.target(), ConsensusVoteTarget::Proposal(root));
+            let (driver, precommit_timeout) = step_arm(driver);
+
+            let (driver, _) = admit_due(driver, precommit_timeout);
+            let driver = step_transition(driver);
+            assert_eq!(driver.position().round(), ConsensusRound::new(3));
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Proposal);
+            assert_eq!(layout.images(), durable_evidence);
+            let (driver, proposal_timeout) = step_arm(driver);
+
+            let (driver, _) = admit_due(driver, proposal_timeout);
+            let driver = step_transition(driver);
+            assert_eq!(driver.position().round(), ConsensusRound::new(3));
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Prevote);
+            let after_due_vote = layout.images();
+            assert_ne!(after_due_vote, durable_evidence);
+            let (driver, locked_prevote, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(locked_prevote.position(), driver.position());
+            assert_eq!(locked_prevote.role(), ConsensusVoteRole::Prevote);
+            assert_eq!(locked_prevote.target(), ConsensusVoteTarget::Proposal(root));
+            assert_eq!(layout.images(), after_due_vote);
+
+            let (driver, prevote_timeout) = step_arm(driver);
+            assert_eq!(prevote_timeout.position(), driver.position());
+            assert_eq!(prevote_timeout.phase(), FixedValidatorLockPhaseV0::Prevote);
+            let (driver, disposition) =
+                admit(driver, current_nil_prevote_event(&round_three_nil_prevote));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted
+            );
+            let (driver, _) = admit_due(driver, prevote_timeout);
+            let driver = step_transition(driver);
+            assert_eq!(driver.position().round(), ConsensusRound::new(3));
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+            let after_due_precommit = layout.images();
+            assert_ne!(after_due_precommit, after_due_vote);
+            let (driver, nil_precommit, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(nil_precommit.position(), driver.position());
+            assert_eq!(nil_precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(nil_precommit.target(), ConsensusVoteTarget::Nil);
+            assert_eq!(layout.images(), after_due_precommit);
+            drop(driver);
+        })
+        .unwrap();
+
+    let durable = layout.images();
+    let ready = expect_ready(
+        fixture
+            .provision(&layout, 8)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    ready
+        .run_with_signing_session(|mut scope| {
+            let signing = scope.signing_session();
+            assert_eq!(signing.position().round(), ConsensusRound::new(3));
+            assert_eq!(signing.phase(), FixedValidatorLockPhaseV0::Precommit);
+            assert!(
+                signing.locked_value().is_none(),
+                "the nil quorum must clear the prior lock"
+            );
+            let valid = signing
+                .valid_value()
+                .expect("the nil quorum must preserve complete valid evidence");
             assert_eq!(valid.round(), ConsensusRound::new(2));
             assert_eq!(valid.value().proposal_signing_root(), root);
             assert_eq!(
@@ -2153,15 +2560,312 @@ fn current_proposal_and_explicit_prevote_loopback_drive_anchored_precommit() {
             });
 
             let (driver, drained) = driver.drain_current_inbox_and_reset().into_parts();
-            let (proposals, prevotes) = drained_current_contents(drained);
+            let (proposals, prevotes, nil_prevotes) = drained_current_contents(drained);
             assert_eq!(proposals, vec![(control.clone(), payload.clone())]);
             let mut expected_prevotes = vec![canonical_prevote, mismatched_prevote.clone()];
             expected_prevotes.sort_unstable();
             assert_eq!(prevotes, expected_prevotes);
+            assert!(nil_prevotes.is_empty());
             assert_eq!(driver.current_inbox_len(), 0);
             assert_eq!(driver.current_inbox_canonical_input_bytes(), 0);
         })
         .unwrap();
+}
+
+#[test]
+fn current_nil_prevote_loopback_drives_anchored_precommit_ahead_of_due() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-nil-prevote-quorum");
+    let branch = fixed_branch(&fixture);
+    let position = round_at(&branch, 0).position();
+    let expected_prevote = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, proposal_timeout) = step_arm(driver(scope, 8, 4));
+            let (driver, _) = admit_due(driver, proposal_timeout);
+            let driver = step_transition(driver);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Prevote);
+            let after_prevote_anchor = layout.images();
+            assert_ne!(after_prevote_anchor, before);
+
+            let driver = match driver
+                .admit_event(current_nil_prevote_event(&expected_prevote))
+                .unwrap()
+            {
+                FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                    driver,
+                    event,
+                    rejection,
+                } => {
+                    assert!(matches!(
+                        *rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CommandPending
+                    ));
+                    assert!(matches!(
+                        *event,
+                        FixedValidatorNodeDriverEventV0::CurrentRoundNilPrevote {
+                            canonical_signed_prevote,
+                        } if canonical_signed_prevote.as_ref() == expected_prevote.as_slice()
+                    ));
+                    *driver
+                }
+                _ => panic!("nil loopback must wait for publication custody transfer"),
+            };
+            let (driver, prevote, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(prevote.position(), position);
+            assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
+            assert_eq!(prevote.target(), ConsensusVoteTarget::Nil);
+            assert_eq!(prevote.canonical_bytes(), expected_prevote.as_slice());
+            let (driver, prevote_timeout) = step_arm(driver);
+
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Idle { driver } => *driver,
+                _ => panic!("the driver must not self-observe its published nil prevote"),
+            };
+            let (driver, disposition) = admit(driver, current_nil_prevote_event(&expected_prevote));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted
+            );
+            let (driver, disposition) = admit(driver, current_nil_prevote_event(&expected_prevote));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::AlreadyRetained
+            );
+            assert_eq!(driver.current_inbox_len(), 1);
+            assert_eq!(
+                driver.current_inbox_canonical_input_bytes(),
+                u64::try_from(expected_prevote.len()).unwrap()
+            );
+            let (driver, _) = admit_due(driver, prevote_timeout);
+
+            let driver = step_transition(driver);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+            assert!(!driver.timeout_is_due());
+            assert_eq!(driver.current_inbox_len(), 1);
+            let after_precommit_anchor = layout.images();
+            assert_ne!(after_precommit_anchor, after_prevote_anchor);
+            let (driver, precommit, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(precommit.position(), position);
+            assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(precommit.target(), ConsensusVoteTarget::Nil);
+            assert_eq!(layout.images(), after_precommit_anchor);
+            let (driver, precommit_timeout) = step_arm(driver);
+            assert_eq!(precommit_timeout.position(), position);
+            assert_eq!(
+                precommit_timeout.phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            let driver = reject_current_nil_prevote(driver, &expected_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentEvidenceWrongPhase {
+                        actual: FixedValidatorLockPhaseV0::Precommit
+                    }
+                ));
+            });
+            let (_, drained) = driver.drain_current_inbox_and_reset().into_parts();
+            let (proposals, proposal_prevotes, nil_prevotes) = drained_current_contents(drained);
+            assert!(proposals.is_empty());
+            assert!(proposal_prevotes.is_empty());
+            assert_eq!(nil_prevotes, vec![expected_prevote.clone()]);
+        })
+        .unwrap();
+
+    let durable = layout.images();
+    let ready = expect_ready(
+        fixture
+            .provision(&layout, 8)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    ready
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(scope.signing_session().position(), position);
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert!(scope.signing_session().locked_value().is_none());
+            assert!(scope.signing_session().valid_value().is_none());
+            assert_eq!(layout.images(), durable);
+            let (driver, _) = step_arm(driver(scope, 8, 4));
+            let driver = reject_current_nil_prevote(driver, &expected_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentEvidenceWrongPhase {
+                        actual: FixedValidatorLockPhaseV0::Precommit
+                    }
+                ));
+            });
+            assert_eq!(driver.current_inbox_len(), 0);
+            assert_eq!(layout.images(), durable);
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_proposal_and_nil_quorums_fail_closed_with_higher_escape() {
+    let fixture = Fixture::new();
+    let branch = fixed_branch(&fixture);
+    let (current_value, current_control, current_payload) =
+        proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let current_position = round_at(&branch, 0).position();
+    let current_root = current_value.proposal_signing_root();
+    let proposal_prevote = signed_vote_bytes(
+        fixture.context,
+        current_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(current_root),
+        &fixture.signing_key(),
+    );
+    let nil_prevote = signed_vote_bytes(
+        fixture.context,
+        current_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let (higher_value, higher_control, higher_payload) =
+        proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
+    let higher_position = round_at(&branch, 2).position();
+    let higher_root = higher_value.proposal_signing_root();
+    let higher_prevote = signed_vote_bytes(
+        fixture.context,
+        higher_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(higher_root),
+        &fixture.signing_key(),
+    );
+
+    for (label, nil_first) in [
+        ("driver-current-cross-target-proposal-first", false),
+        ("driver-current-cross-target-nil-first", true),
+    ] {
+        let layout = TestLayout::new(label);
+        let ready = fixture
+            .provision(&layout, 8)
+            .create(fixture.signing_key())
+            .unwrap();
+        ready
+            .run_with_signing_session(|scope| {
+                let (driver, _) = step_arm(driver(scope, 16, 4));
+                let (driver, _) = admit(
+                    driver,
+                    current_proposal_event(&current_control, &current_payload),
+                );
+                let (driver, _) = if nil_first {
+                    admit(driver, current_nil_prevote_event(&nil_prevote))
+                } else {
+                    admit(driver, current_prevote_event(&proposal_prevote))
+                };
+                let (driver, _) = if nil_first {
+                    admit(driver, current_prevote_event(&proposal_prevote))
+                } else {
+                    admit(driver, current_nil_prevote_event(&nil_prevote))
+                };
+
+                let driver = step_transition(driver);
+                let (driver, local_prevote, released_proposal) = step_publish(driver);
+                assert!(released_proposal.is_none());
+                assert_eq!(
+                    local_prevote.target(),
+                    ConsensusVoteTarget::Proposal(current_root)
+                );
+                let (driver, prevote_timeout) = step_arm(driver);
+                let (driver, _) = admit_due(driver, prevote_timeout);
+                let before_ambiguity = layout.images();
+                let driver = match driver.step().unwrap() {
+                    FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                        assert!(matches!(
+                            reason,
+                            FixedValidatorNodeDriverBlockReasonV0::CurrentPrevoteQuorumAmbiguous {
+                                position,
+                                proposal_signing_root,
+                            } if position == current_position
+                                && proposal_signing_root == current_root
+                        ));
+                        *driver
+                    }
+                    _ => panic!("competing proposal and nil quorums must fail closed"),
+                };
+                assert_eq!(driver.current_inbox_len(), 3);
+                assert!(driver.timeout_is_due());
+                assert_eq!(layout.images(), before_ambiguity);
+
+                let driver = reject_current_nil_prevote(driver, &nil_prevote, |rejection| {
+                    assert!(matches!(
+                        rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::Blocked(
+                            FixedValidatorNodeDriverBlockReasonV0::CurrentPrevoteQuorumAmbiguous {
+                                position,
+                                proposal_signing_root,
+                            }
+                        ) if *position == current_position
+                            && *proposal_signing_root == current_root
+                    ));
+                });
+                assert_eq!(layout.images(), before_ambiguity);
+
+                let (driver, _) =
+                    admit(driver, proposal_event(2, &higher_control, &higher_payload));
+                let (driver, _) = admit(driver, prevote_event(&higher_prevote));
+                let driver = step_transition(driver);
+                assert_eq!(driver.position(), higher_position);
+                assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+                let (driver, higher_vote, released_proposal) = step_publish(driver);
+                assert_eq!(
+                    higher_vote.target(),
+                    ConsensusVoteTarget::Proposal(higher_root)
+                );
+                assert!(released_proposal.is_some());
+                let (driver, _) = step_arm(driver);
+                let driver = match driver.step().unwrap() {
+                    FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                        assert!(matches!(
+                            reason,
+                            FixedValidatorNodeDriverBlockReasonV0::CurrentPrevoteQuorumAmbiguous {
+                                position,
+                                proposal_signing_root,
+                            } if position == current_position
+                                && proposal_signing_root == current_root
+                        ));
+                        *driver
+                    }
+                    _ => panic!("current quorum ambiguity must remain latched until drain"),
+                };
+
+                let (driver, drained) = driver.drain_current_inbox_and_reset().into_parts();
+                let (proposals, proposal_prevotes, nil_prevotes) =
+                    drained_current_contents(drained);
+                assert_eq!(
+                    proposals,
+                    vec![(current_control.clone(), current_payload.clone())]
+                );
+                assert_eq!(proposal_prevotes, vec![proposal_prevote.clone()]);
+                assert_eq!(nil_prevotes, vec![nil_prevote.clone()]);
+                assert_eq!(driver.current_inbox_len(), 0);
+                assert!(matches!(
+                    driver.step().unwrap(),
+                    FixedValidatorNodeDriverStepOutcomeV0::Idle { .. }
+                ));
+            })
+            .unwrap();
+    }
 }
 
 #[test]
@@ -2353,10 +3057,20 @@ fn current_evidence_after_due_is_returned_without_mutation() {
             assert!(released_proposal.is_none());
             assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
             assert_eq!(prevote.target(), ConsensusVoteTarget::Nil);
+            let valid_nil_prevote = prevote.canonical_bytes().to_vec();
             assert_eq!(driver.current_inbox_len(), 0);
             let (driver, prevote_timeout) = step_arm(driver);
             let (driver, _) = admit_due(driver, prevote_timeout);
             let driver = reject_current_prevote(driver, &valid_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentEvidenceAfterDue {
+                        position: rejected_position,
+                        phase: FixedValidatorLockPhaseV0::Prevote,
+                    } if *rejected_position == position
+                ));
+            });
+            let driver = reject_current_nil_prevote(driver, &valid_nil_prevote, |rejection| {
                 assert!(matches!(
                     rejection,
                     FixedValidatorNodeDriverAdmissionRejectionV0::CurrentEvidenceAfterDue {
@@ -2531,7 +3245,7 @@ fn byte_distinct_same_root_current_proposals_fail_closed() {
             assert_eq!(driver.current_inbox_len(), 3);
             assert_eq!(layout.images(), before_ambiguity);
             let (driver, drained) = driver.drain_current_inbox_and_reset().into_parts();
-            let (proposals, prevotes) = drained_current_contents(drained);
+            let (proposals, prevotes, nil_prevotes) = drained_current_contents(drained);
             let mut first_expected = vec![
                 (round_one_control.clone(), round_one_payload.clone()),
                 (plain_control.clone(), payload.clone()),
@@ -2540,6 +3254,7 @@ fn byte_distinct_same_root_current_proposals_fail_closed() {
             first_expected.sort_unstable();
             assert_eq!(proposals, first_expected);
             assert!(prevotes.is_empty());
+            assert!(nil_prevotes.is_empty());
 
             let (driver, _) = admit(*driver, current_proposal_event(&proof_control, &payload));
             let (driver, _) = admit(driver, current_proposal_event(&plain_control, &payload));
@@ -2559,7 +3274,7 @@ fn byte_distinct_same_root_current_proposals_fail_closed() {
             };
             assert_eq!(layout.images(), before_ambiguity);
             let (_, drained) = driver.drain_current_inbox_and_reset().into_parts();
-            let (proposals, prevotes) = drained_current_contents(drained);
+            let (proposals, prevotes, nil_prevotes) = drained_current_contents(drained);
             let mut expected = vec![
                 (plain_control.clone(), payload.clone()),
                 (proof_control.clone(), payload.clone()),
@@ -2567,6 +3282,7 @@ fn byte_distinct_same_root_current_proposals_fail_closed() {
             expected.sort_unstable();
             assert_eq!(proposals, expected);
             assert!(prevotes.is_empty());
+            assert!(nil_prevotes.is_empty());
         })
         .unwrap();
 }
@@ -2636,7 +3352,7 @@ fn current_ambiguity_is_round_local_and_higher_evidence_escapes() {
             };
 
             let (_, drained) = driver.drain_current_inbox_and_reset().into_parts();
-            let (proposals, prevotes) = drained_current_contents(drained);
+            let (proposals, prevotes, nil_prevotes) = drained_current_contents(drained);
             let mut expected = vec![
                 (first_control.clone(), first_payload.clone()),
                 (second_control.clone(), second_payload.clone()),
@@ -2644,6 +3360,7 @@ fn current_ambiguity_is_round_local_and_higher_evidence_escapes() {
             expected.sort_unstable();
             assert_eq!(proposals, expected);
             assert!(prevotes.is_empty());
+            assert!(nil_prevotes.is_empty());
         })
         .unwrap();
 }
@@ -2812,12 +3529,13 @@ fn current_saturation_uses_a_separate_budget_and_preserves_higher_escape() {
             };
 
             let (driver, drained) = driver.drain_current_inbox_and_reset().into_parts();
-            let (proposals, prevotes) = drained_current_contents(drained);
+            let (proposals, prevotes, nil_prevotes) = drained_current_contents(drained);
             assert_eq!(
                 proposals,
                 vec![(retained_control.clone(), retained_payload.clone())]
             );
             assert!(prevotes.is_empty());
+            assert!(nil_prevotes.is_empty());
             assert_eq!(driver.current_inbox_len(), 0);
             assert_eq!(driver.inbox_len(), 1);
             assert!(matches!(
@@ -3124,9 +3842,10 @@ fn current_admission_returns_invalid_inputs_and_deduplicates_verified_evidence()
             assert_eq!(layout.images(), before);
 
             let (_, drained) = driver.drain_current_inbox_and_reset().into_parts();
-            let (proposals, prevotes) = drained_current_contents(drained);
+            let (proposals, prevotes, nil_prevotes) = drained_current_contents(drained);
             assert_eq!(proposals, vec![(control.clone(), payload.clone())]);
             assert_eq!(prevotes, vec![valid_prevote.clone()]);
+            assert!(nil_prevotes.is_empty());
         })
         .unwrap();
 }

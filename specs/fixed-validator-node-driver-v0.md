@@ -8,27 +8,29 @@ existing exact-event coordinators. For its lifetime it privately owns:
 
 - the sole live `FixedValidatorNodeSigningScopeV0`;
 - one existing bounded process-local higher-round proposal/prevote inbox;
-- one separately bounded process-local current-round proposal/prevote inbox;
+- one separately bounded process-local current-round proposal/proposal-or-nil-
+  prevote inbox;
 - one current phase-timer lineage and its checked generation;
 - at most one timeout-due observation for that exact lineage; and
 - at most one next outward command.
 
 The driver accepts complete current- or higher-round proposals that it fully
-admits into the existing private token boundary, complete canonical current- or
-higher-round proposal prevotes that it independently admits against the exact
-node-derived fixed-set round, and opaque timeout tickets that the same driver
-issued. One explicit step derives the live node identity, classifies the
-complete healthy inbox state, and invokes at most one existing consuming node
-coordinator. It emits at most one timeout-arm or signed-vote command. It does
-not expose the owned signing scope as an alternative caller-controlled path.
+admits into the existing private token boundary, complete canonical current-
+round proposal or nil prevotes and higher-round proposal prevotes that it
+independently admits against the exact node-derived fixed-set round, and opaque
+timeout tickets that the same driver issued. One explicit step derives the live
+node identity, classifies the complete healthy inbox state, and invokes at most
+one existing consuming node coordinator. It emits at most one timeout-arm or
+signed-vote command. It does not expose the owned signing scope as an
+alternative caller-controlled path.
 
 This remains a partial driver boundary. Its input surface now covers current-
-and higher-round proposal/prevote evidence plus exact driver-issued timeout-due
-tickets. It drives a current proposal through an anchored prevote and a matching
-current proposal-prevote quorum through an anchored precommit. Nil-quorum
-collection, current-, lower-, or candidate-backed finality routing, proposal
-authoring, height transition, networking, and artifact-payload persistence
-remain outside this driver.
+and higher-round proposal/prevote evidence, current-round nil prevotes, and
+exact driver-issued timeout-due tickets. It drives a current proposal through
+an anchored prevote and one sole matching current proposal or nil prevote
+quorum through an anchored precommit. Current-, lower-, or candidate-backed
+finality routing, proposal authoring, height transition, networking, and
+artifact-payload persistence remain outside this driver.
 
 This ownership moves event choice out of a caller that could otherwise select
 an inbox position or invoke a phase close directly. It does not make retained
@@ -88,7 +90,10 @@ preflights, bounded fallible copy, and complete proposal verification and
 retaining only the private token. `CurrentRoundProposalPrevote` likewise carries
 no caller position, role, target, or signer; after the same cheap fence, the
 reconstructed typed round must verify the complete canonical vote as an exact-
-position active-member `Prevote/Proposal(root)`.
+position active-member `Prevote/Proposal(root)`. `CurrentRoundNilPrevote`
+follows the same route but requires exactly `Prevote/Nil`. These event forms
+share the current inbox's count and logical canonical-input-byte limits; neither
+admission grants quorum, transition, or signing authority.
 
 The current due fence is phase-local. Evidence admitted before the exact active
 phase is marked due may act ahead of that due path; evidence submitted later is
@@ -138,28 +143,29 @@ timer-lineage rules below.
 
 The separately limited current-round inbox follows
 `fixed-validator-node-current-round-inbox-v0.md`. Its exact duplicates are
-no-growth; it retains all other fully admitted proposal and vote variants under
-checked combined count and logical canonical-input-byte limits. A first
-nonduplicate capacity or accounting rejection preserves the retained prefix and
+no-growth; it retains all other fully admitted proposal and proposal-or-nil-
+prevote variants under checked combined count and logical canonical-input-byte
+limits. A first nonduplicate capacity or accounting rejection preserves the retained prefix and
 exact event and latches current-class saturation. That saturation blocks later
-current admission, current action, and current due until explicit current-only
+current evidence admission, current action, and the due transition until explicit current-only
 lossless drain, even after position advancement, but does not block the
 independently budgeted higher-round escape class.
 
 At one live position, any two byte-distinct fully admitted current proposals
 are ambiguous, including variants with one proposal signing root, because an
 optional valid-round proof can change lock-directed voting without changing
-that root. While live, this ambiguity denies later current proposal and prevote
-admission with exact event return and blocks current action and current due at
+that root. While live, this ambiguity denies later current proposal and either
+prevote admission with exact event return and blocks current action and the due transition at
 that position. It retains every input and does not block higher-round admission
 or action. Once higher evidence advances the signer, old-position ambiguity is
 nonactionable, but its bytes remain charged until current-only drain.
 
 `drain_current_inbox_and_reset` returns every exact current proposal input and
-canonical prevote and clears only that inbox's entries, accounting, and
-saturation. It changes neither the higher-round inbox nor the signing state,
-active due observation, timer, or pending command, and grants no reinsertion or
-selection policy.
+typed canonical proposal or nil prevote and clears only that inbox's entries,
+accounting, saturation, and any latched current dual-quorum ambiguity. It
+changes neither the higher-round inbox nor the signing state, active due
+observation, timer, or pending command, and grants no reinsertion or selection
+policy.
 
 While the driver survives, the higher-round combined inbox retains distinct same-root
 proposal variants, distinct canonical signature variants, and competing targets
@@ -205,10 +211,12 @@ does not decide or verify when a timeout should become due.
 The due observation remains subordinate first to complete actionable
 higher-round evidence and then to current evidence already admitted before that
 exact active phase was marked due. A unique current proposal therefore beats
-Proposal due, and a matching current proposal-prevote quorum beats Prevote due.
-Current evidence submitted after that phase-local due observation is returned
-as late and cannot change the frozen choice. Within either admitted evidence
-class, peer identity and arrival order grant no preference.
+Proposal due, and a sole matching current proposal- or nil-prevote quorum beats
+Prevote due. Simultaneously actionable proposal and nil quorums instead block
+current action and the due transition. Current evidence submitted after that phase-local due
+observation is returned as late and cannot change the frozen choice. Within
+either admitted evidence class, peer identity and arrival order grant no
+preference.
 
 ## Deterministic step selection
 
@@ -217,7 +225,7 @@ command and does not also perform a transition. Event admission is denied while
 that command is pending, so later saturation or a potentially fatal admission
 cannot overtake its transfer. With no pending command, higher-inbox saturation
 globally blocks driver work, while current-inbox saturation blocks current
-action and due but still permits independently budgeted higher-round escape. A
+action and the due transition but still permits independently budgeted higher-round escape. A
 fatal coordinator failure consumes the driver and its sole signing scope and
 returns no driver on which another step could act; it also drops both
 process-local inboxes and their retained evidence with that volatile owner.
@@ -262,11 +270,12 @@ selection, or finality authority. While pending it is outside the inbox
 counters, but event admission is blocked, so the one-command state cannot be
 used to grow another inbox entry before custody transfers.
 
-If no higher-round pair is actionable, current saturation blocks every current
-admission, action, and due transition until current-only drain. Otherwise,
-live-position byte-distinct proposal ambiguity denies later current proposal and
-prevote admission and blocks current action and due for that position while
-higher-round escape remains available.
+If no higher-round pair is actionable, current saturation or a latched current
+dual-quorum ambiguity blocks every current evidence admission, action, and due transition
+until current-only drain. Otherwise, live-position byte-distinct proposal
+ambiguity denies later current proposal and either prevote admission and blocks
+current action and the due transition for that position while higher-round escape remains
+available.
 
 With a healthy unambiguous current inbox, Proposal phase selects only one exact
 fully admitted proposal representation, copies its inputs fallibly, and invokes
@@ -276,16 +285,30 @@ before the complete anchored vote-safety sequence may return a signed prevote.
 Success queues `PublishVote { released_proposal: None }` and retains the
 proposal in current-inbox custody.
 
-In Prevote phase, the driver considers only votes matching that one proposal's
-root and exact live parent and position, chooses the lexicographically smallest
-canonical variant per signer, and uses the unchanged typed-round constructor to
-require strict greater-than-two-thirds weight. Empty or insufficient evidence
-is not actionable. One canonical matching certificate enters the unchanged
+In Prevote phase, the driver independently classifies proposal and nil votes for
+the exact live parent and position. For each target it chooses the
+lexicographically smallest canonical variant per signer and uses the unchanged
+typed-round constructor to require strict greater-than-two-thirds weight. Empty
+or insufficient evidence is not actionable. A proposal quorum is considered
+only for exactly one retained proposal representation and the matching root.
+One sole proposal certificate enters the unchanged
 `sign_precommit_for_proposal_quorum` coordinator, which fully reverifies both
 proposal and certificate, updates lock and valid state under the existing rule,
-and completes the anchored precommit before success queues
-`PublishVote { released_proposal: None }`. The proposal and every current vote
-remain retained; the driver performs no finality action.
+and completes the anchored proposal precommit. One sole nil certificate enters
+the unchanged `sign_precommit_for_nil_quorum` coordinator, which fully
+reverifies that certificate, clears the lock while preserving complete valid
+evidence, and completes the anchored nil precommit. Either success queues
+`PublishVote { released_proposal: None }`, retains every current input, and
+performs no finality action.
+
+If both proposal and nil certificates are actionable in one complete retained
+snapshot, the driver chooses neither, signs nothing, does not fall through to
+due, and latches one typed current-class ambiguity. That latch continues to
+block current evidence admission, action, and the due transition until explicit current-only drain,
+even if an independently prioritized higher-round action changes the live
+position. Higher-round admission and action remain available because their
+resource and authority class is evaluated independently first. The ambiguity
+does not accuse a signer, discard evidence, or grant punishment authority.
 
 Only if no higher or current evidence action is available may an exact current
 due observation invoke the coordinator corresponding to the node-derived live
@@ -339,11 +362,12 @@ scope and relevant retained prefix. The first nonduplicate declared-capacity or
 checked-accounting rejection may additionally latch saturation while returning
 the exact rejected event. Higher-round saturation or actionable ambiguity blocks
 all later admission and work until full higher-inbox drain-and-reset. Current
-saturation blocks current admission, current action, and due until current-only
-drain but permits higher admission and action. Current proposal ambiguity is
-derived from the retained live-position set, denies later current proposal and
-prevote admission, blocks current action and due, and becomes nonactionable after
-authenticated advancement; it is never resolved by choosing a variant. Pending
+saturation or latched dual-quorum ambiguity blocks current evidence admission,
+current action, and the due transition until current-only drain but permits higher admission and
+action. Current proposal ambiguity is derived from the retained live-position
+set, denies later current proposal and either prevote admission, blocks current
+action and the due transition, and becomes nonactionable after authenticated advancement; it
+is never resolved by choosing a variant. Pending
 commands deny every event admission until they transfer; no rejection creates a
 signed command.
 
@@ -396,7 +420,7 @@ This driver does not define or perform:
 - a complete or protocol-wide evidence view, durable inbox or timer encoding,
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
-- proposal authoring, nil-quorum collection, current-, lower-, or
+- proposal authoring, higher-round nil-quorum collection, current-, lower-, or
   candidate-backed finality routing, finality or height transition, candidate
   discovery or ranking, branch or sibling choice, rollback, reorganization,
   candidate promotion, checkpoint synchronization, or store repair;
