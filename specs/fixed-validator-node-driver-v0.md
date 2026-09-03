@@ -8,25 +8,27 @@ existing exact-event coordinators. For its lifetime it privately owns:
 
 - the sole live `FixedValidatorNodeSigningScopeV0`;
 - one existing bounded process-local higher-round proposal/prevote inbox;
+- one separately bounded process-local current-round proposal/prevote inbox;
 - one current phase-timer lineage and its checked generation;
 - at most one timeout-due observation for that exact lineage; and
 - at most one next outward command.
 
-The driver accepts only complete higher-round proposals that it fully admits
-into the existing private token boundary, complete canonical higher-round
-proposal prevotes that it independently admits against the exact node-derived
-fixed-set round, and opaque timeout tickets that the same driver issued. One
-explicit step derives the live node identity, classifies one complete healthy
-inbox snapshot, and invokes at most one existing consuming node coordinator.
-It emits at most one timeout-arm or signed-vote command. It does not expose the
-owned signing scope as an alternative caller-controlled path.
+The driver accepts complete current- or higher-round proposals that it fully
+admits into the existing private token boundary, complete canonical current- or
+higher-round proposal prevotes that it independently admits against the exact
+node-derived fixed-set round, and opaque timeout tickets that the same driver
+issued. One explicit step derives the live node identity, classifies the
+complete healthy inbox state, and invokes at most one existing consuming node
+coordinator. It emits at most one timeout-arm or signed-vote command. It does
+not expose the owned signing scope as an alternative caller-controlled path.
 
-This is deliberately only a partial driver boundary. Its input surface covers
-higher-round proposal/prevote evidence and exact driver-issued timeout-due
-tickets. Ordinary current-round proposal receipt and proposal-backed voting,
-current-round quorum progression, current-, lower-, or candidate-backed
-finality routing, proposal authoring, height transition, networking, and
-artifact-payload persistence remain outside this driver.
+This remains a partial driver boundary. Its input surface now covers current-
+and higher-round proposal/prevote evidence plus exact driver-issued timeout-due
+tickets. It drives a current proposal through an anchored prevote and a matching
+current proposal-prevote quorum through an anchored precommit. Nil-quorum
+collection, current-, lower-, or candidate-backed finality routing, proposal
+authoring, height transition, networking, and artifact-payload persistence
+remain outside this driver.
 
 This ownership moves event choice out of a caller that could otherwise select
 an inbox position or invoke a phase close directly. It does not make retained
@@ -36,8 +38,9 @@ fully verifying, journal- and anchor-gated node operation.
 
 ## Construction and process-local lifecycle
 
-Construction takes one live signing scope, positive inbox limits, and the
-existing inclusive caller-local round-work ceiling. The driver owns every
+Construction takes one live signing scope, separate positive current- and
+higher-round inbox limits, and the existing inclusive caller-local round-work
+ceiling. The driver owns every
 subsequent replacement scope returned by a successful consuming operation. It
 is not cloneable and provides no accessor that returns or borrows the raw scope
 for mutation. Read-only diagnostics may expose the live context, position,
@@ -54,9 +57,11 @@ fatal coordinator outcome that returns no driver or scope, drops all of them.
 Strict restart independently reconstructs only the journal-anchored node and
 signer state under their existing contracts; this applies equally when a fatal
 error consumes the driver before a coordinator begins. A fresh driver then
-starts with an empty inbox, no inherited due observation, no inherited pending
-command, and a new process-local timer lineage. A ticket issued by the lost
-driver cannot authorize the fresh driver.
+starts with both inboxes empty, no inherited due observation, no inherited
+pending command, and a new process-local timer lineage. A ticket issued by the
+lost driver cannot authorize the fresh driver. Current proposal and vote inputs
+may be explicitly re-admitted against that recovered state; they are never
+reconstructed as cached validity.
 
 Dropping a driver neither rolls back a completed journal prefix nor proves that
 a returned command was delivered. It can lose volatile inbox evidence, an
@@ -72,7 +77,30 @@ underlying session failure cannot return an alternative signing scope. Any
 already pending arm or publication command first causes a lossless
 `CommandPending` rejection of the complete event, forcing command custody to
 transfer before input inspection or another potentially fatal admission. Its
-`FixedValidatorNodeDriverEventV0::HigherRoundProposal` variant carries one
+
+`CurrentRoundProposal` carries complete canonical proposal-control bytes and
+the owned complete canonical artifact payload, but no caller round or target.
+The driver first applies its cheap private phase and due fence: Precommit is
+stale and Proposal or Prevote already marked due is late, without round
+derivation or input inspection. Otherwise it reconstructs the exact live round
+from its private branch and signing session before applying payload and framing
+preflights, bounded fallible copy, and complete proposal verification and
+retaining only the private token. `CurrentRoundProposalPrevote` likewise carries
+no caller position, role, target, or signer; after the same cheap fence, the
+reconstructed typed round must verify the complete canonical vote as an exact-
+position active-member `Prevote/Proposal(root)`.
+
+The current due fence is phase-local. Evidence admitted before the exact active
+phase is marked due may act ahead of that due path; evidence submitted later is
+returned losslessly. A successful transition invalidates the old timer, so the
+newly armed Prevote phase may admit proposal and vote inputs again, including
+after strict restart. The driver never silently inserts the newly returned
+prevote: counting that returned instance requires the runtime to take the
+publication command and explicitly loop its canonical vote back through
+ordinary admission. Independently obtained strict-valid bytes signed by the
+local key remain ordinary evidence because the driver infers no provenance.
+
+Its `FixedValidatorNodeDriverEventV0::HigherRoundProposal` variant carries one
 descriptive `proposal_round`, complete canonical proposal-control bytes, and
 the owned complete canonical artifact payload. The driver first uses the shared
 live session, branch, successor-capacity, and persisted-before-local route
@@ -108,23 +136,50 @@ The `TimeoutDue` event accepts only an opaque ticket previously emitted by this
 driver. It records no proposal, vote, or peer data and is governed by the exact
 timer-lineage rules below.
 
-While the driver survives, the combined inbox retains distinct same-root
+The separately limited current-round inbox follows
+`fixed-validator-node-current-round-inbox-v0.md`. Its exact duplicates are
+no-growth; it retains all other fully admitted proposal and vote variants under
+checked combined count and logical canonical-input-byte limits. A first
+nonduplicate capacity or accounting rejection preserves the retained prefix and
+exact event and latches current-class saturation. That saturation blocks later
+current admission, current action, and current due until explicit current-only
+lossless drain, even after position advancement, but does not block the
+independently budgeted higher-round escape class.
+
+At one live position, any two byte-distinct fully admitted current proposals
+are ambiguous, including variants with one proposal signing root, because an
+optional valid-round proof can change lock-directed voting without changing
+that root. While live, this ambiguity denies later current proposal and prevote
+admission with exact event return and blocks current action and current due at
+that position. It retains every input and does not block higher-round admission
+or action. Once higher evidence advances the signer, old-position ambiguity is
+nonactionable, but its bytes remain charged until current-only drain.
+
+`drain_current_inbox_and_reset` returns every exact current proposal input and
+canonical prevote and clears only that inbox's entries, accounting, and
+saturation. It changes neither the higher-round inbox nor the signing state,
+active due observation, timer, or pending command, and grants no reinsertion or
+selection policy.
+
+While the driver survives, the higher-round combined inbox retains distinct same-root
 proposal variants, distinct canonical signature variants, and competing targets
 without eviction or preference while healthy. Exact duplicates are no-growth.
 The first nonduplicate declared-capacity or checked-accounting overflow
-preserves the pre-attempt set and enters the existing deny-only saturation
-state. Saturation blocks later event admission and any new action selection or
-transition so an arrival-dependent retained prefix cannot become actionable
-after another valid input was denied. Pending-command admission rejection
-prevents saturation and command custody from coexisting.
+preserves the pre-attempt higher-round set and enters the higher-round deny-only
+saturation state. Higher-round saturation blocks later event admission and any
+new action selection or transition so an arrival-dependent retained prefix
+cannot become actionable after another valid input was denied. Pending-command
+admission rejection prevents higher-round saturation and command custody from
+coexisting.
 
-While the driver survives, the only saturation or ambiguity recovery is an
-explicit full lossless inbox drain-and-reset. It returns every owned proposal
-token and every retained canonical prevote, restores the same inbox to healthy
-empty, and does not choose which evidence a caller should reinsert. Neither a
-successful timeout nor a round change silently prunes, evicts, or resets
-retained evidence. A fatal no-scope outcome instead destroys the volatile owner
-and therefore cannot return or retain that process-local inbox.
+While the driver survives, the only higher-round saturation or ambiguity
+recovery is an explicit full lossless higher-round inbox drain-and-reset. It
+returns every owned proposal token and every retained canonical prevote,
+restores the higher-round inbox to healthy empty, and does not choose which
+evidence a caller should reinsert. Neither a successful timeout nor a round
+change silently prunes, evicts, or resets retained higher-round evidence. A
+fatal no-scope outcome instead destroys the volatile owner and therefore cannot
+return or retain that process-local inbox.
 
 ## Opaque phase-timeout lineage
 
@@ -147,23 +202,28 @@ deadline, duration, monotonic-clock reading, backoff value, or proof that real
 time elapsed. The driver therefore prevents stale timeout reuse but deliberately
 does not decide or verify when a timeout should become due.
 
-The due observation remains subordinate to complete actionable higher-round
-evidence in the same step snapshot. Receipt time and the order in which the
-runtime returned a ticket or inserted evidence do not decide between those two
-classes.
+The due observation remains subordinate first to complete actionable
+higher-round evidence and then to current evidence already admitted before that
+exact active phase was marked due. A unique current proposal therefore beats
+Proposal due, and a matching current proposal-prevote quorum beats Prevote due.
+Current evidence submitted after that phase-local due observation is returned
+as late and cannot change the frozen choice. Within either admitted evidence
+class, peer identity and arrival order grant no preference.
 
 ## Deterministic step selection
 
 A consuming `FixedValidatorNodeDriverV0::step` first emits any already pending
 command and does not also perform a transition. Event admission is denied while
 that command is pending, so later saturation or a potentially fatal admission
-cannot overtake its transfer. With no pending command, a step denies new action
-selection or transition while the inbox is saturated. A fatal coordinator
-failure consumes the driver and its sole signing scope and returns no driver on
-which another step could act; it also drops the process-local inbox and retained
-evidence with that volatile owner. Otherwise, the step derives the exact current
-branch position and phase from the privately owned scope and evaluates the
-complete healthy retained inbox as one frozen snapshot.
+cannot overtake its transfer. With no pending command, higher-inbox saturation
+globally blocks driver work, while current-inbox saturation blocks current
+action and due but still permits independently budgeted higher-round escape. A
+fatal coordinator failure consumes the driver and its sole signing scope and
+returns no driver on which another step could act; it also drops both
+process-local inboxes and their retained evidence with that volatile owner.
+Otherwise, the step derives the exact current branch position and phase from the
+privately owned scope and evaluates the two complete retained sets in the order
+defined below.
 
 For that snapshot, the driver applies the existing higher-round inbox rules at
 every retained position still strictly above the live signer round and within
@@ -202,8 +262,34 @@ selection, or finality authority. While pending it is outside the inbox
 counters, but event admission is blocked, so the one-command state cannot be
 used to grow another inbox entry before custody transfers.
 
-If no higher-round pair is actionable, an exact current due observation invokes
-only the coordinator corresponding to the node-derived live phase:
+If no higher-round pair is actionable, current saturation blocks every current
+admission, action, and due transition until current-only drain. Otherwise,
+live-position byte-distinct proposal ambiguity denies later current proposal and
+prevote admission and blocks current action and due for that position while
+higher-round escape remains available.
+
+With a healthy unambiguous current inbox, Proposal phase selects only one exact
+fully admitted proposal representation, copies its inputs fallibly, and invokes
+the unchanged `sign_prevote_for_proposal` coordinator. That coordinator fully
+reverifies the proposal and applies the existing lock-directed target rule
+before the complete anchored vote-safety sequence may return a signed prevote.
+Success queues `PublishVote { released_proposal: None }` and retains the
+proposal in current-inbox custody.
+
+In Prevote phase, the driver considers only votes matching that one proposal's
+root and exact live parent and position, chooses the lexicographically smallest
+canonical variant per signer, and uses the unchanged typed-round constructor to
+require strict greater-than-two-thirds weight. Empty or insufficient evidence
+is not actionable. One canonical matching certificate enters the unchanged
+`sign_precommit_for_proposal_quorum` coordinator, which fully reverifies both
+proposal and certificate, updates lock and valid state under the existing rule,
+and completes the anchored precommit before success queues
+`PublishVote { released_proposal: None }`. The proposal and every current vote
+remain retained; the driver performs no finality action.
+
+Only if no higher or current evidence action is available may an exact current
+due observation invoke the coordinator corresponding to the node-derived live
+phase:
 
 - Proposal close uses the existing exact-context-and-position path and may
   produce one anchored `PublishVote` prevote command with `None` for the
@@ -215,17 +301,19 @@ only the coordinator corresponding to the node-derived live phase:
   perform only the volatile same-height `R + 1` Proposal transition, with no
   signed command and no finality.
 
-If neither class is actionable and the exact live phase has an armed timer that
-is not due, the step is idle and changes nothing. One step never chains a
-higher-round catch-up into another phase action, consumes more than one due
-observation, invokes more than one consuming coordinator, or emits more than
-one command. A signed transition records only its pending `PublishVote` plus an
-optional losslessly released proposal token; a separate later step transfers
-that command and prepares the successor phase's `ArmPhaseTimeout`, and another
-step emits that arm command. A transition without a vote prepares only the
-successor phase's arm command. Receiving either command does not acknowledge
-network delivery, peer receipt, relay, payload persistence, inclusion,
-real-time scheduling, or finality.
+If no evidence action is available and the exact live phase has an armed timer
+that is not due, the step is idle and changes nothing. One step never chains a
+higher-round catch-up into a current action, chains either current vote into the
+next phase, consumes more than one due observation, invokes more than one
+consuming coordinator, or emits more than one command. A signed transition
+records only its pending `PublishVote` plus an optional losslessly released
+proposal token; only higher-round pairing supplies that token as `Some`, while
+current and due votes supply `None`. A separate later step transfers that
+command and prepares the successor phase's `ArmPhaseTimeout`, and another step
+emits that arm command. A transition without a vote prepares only the successor
+phase's arm command. Receiving either command does not acknowledge network
+delivery, peer receipt, relay, payload persistence, inclusion, real-time
+scheduling, or finality.
 
 ## Determinism boundary
 
@@ -237,22 +325,27 @@ view, simultaneous observation, deterministic results across unequal retained
 sets, fairness across repeated drains and reinsertion, operating-system event
 ordering, or independence from when an external runtime invokes `step`.
 
-Peer identity and arrival order are absent from the classification key. They
-cannot grant validity, break ambiguity, select a proposal or round, or decide
-whether timeout or evidence acts.
+Peer identity and arrival order are absent from representative and quorum
+classification within one fully admitted pre-due retained set. They cannot
+grant validity, break ambiguity, or select a proposal or round. The explicit
+phase-local due-admission fence, rather than peer identity, distinguishes
+evidence accepted before due from evidence losslessly rejected afterward.
 
 ## Failures, command custody, and restart
 
 Proposal, vote, ticket, ceiling, exact-identity, phase, or no-action admission
 rejection causes no signer, consensus, or durable effect and preserves the live
-scope and retained inbox prefix. The first nonduplicate declared-capacity or
-checked-accounting rejection may additionally latch inbox saturation while
-returning the exact rejected event. A step that discovers same-class ambiguity
-may likewise latch that ambiguity while causing no signer or durable effect.
-Both are nonterminal deny-only states: new admission, action selection, and
-transitions stay blocked until full lossless drain-and-reset. Pending commands
-instead deny event admission until they transfer; no rejection creates a signed
-command.
+scope and relevant retained prefix. The first nonduplicate declared-capacity or
+checked-accounting rejection may additionally latch saturation while returning
+the exact rejected event. Higher-round saturation or actionable ambiguity blocks
+all later admission and work until full higher-inbox drain-and-reset. Current
+saturation blocks current admission, current action, and due until current-only
+drain but permits higher admission and action. Current proposal ambiguity is
+derived from the retained live-position set, denies later current proposal and
+prevote admission, blocks current action and due, and becomes nonactionable after
+authenticated advancement; it is never resolved by choosing a variant. Pending
+commands deny every event admission until they transfer; no rejection creates a
+signed command.
 
 Fatal errors are outside that surviving-owner contract even when they occur
 before a consuming coordinator begins. Authenticated prevote-round derivation,
@@ -277,8 +370,9 @@ evidence from a fatal authority state.
 
 At most one command is pending and at most one command is emitted from a step.
 A step with a pending command returns exactly that command and performs no
-transition. The evidence-driven publication transfers the exact selected token
-as `Some` inside that same command; timeout-driven publications carry `None`.
+transition. Only higher-round pairing transfers the exact selected token as
+`Some` inside its publication; current-evidence and timeout-driven publications
+carry `None`.
 Emitting a pending `PublishVote` prepares only the resulting phase's arm command
 for a later step, so no hidden multi-command queue can overwrite or reorder
 either action. Once a command is returned, the driver does not know whether the
@@ -302,8 +396,7 @@ This driver does not define or perform:
 - a complete or protocol-wide evidence view, durable inbox or timer encoding,
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
-- ordinary current-round proposal receipt or proposal-backed voting, proposal
-  authoring, current-round quorum progression, current-, lower-, or
+- proposal authoring, nil-quorum collection, current-, lower-, or
   candidate-backed finality routing, finality or height transition, candidate
   discovery or ranking, branch or sibling choice, rollback, reorganization,
   candidate promotion, checkpoint synchronization, or store repair;

@@ -1,3 +1,7 @@
+use ed25519_dalek::{
+    Digest, Sha512,
+    hazmat::{ExpandedSecretKey, raw_sign},
+};
 use naome_consensus::{
     ConsensusVoteRole, ConsensusVoteTarget, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
     VerifiedFixedConsensusProposalV0,
@@ -10,6 +14,7 @@ use std::path::Path;
 use super::*;
 
 type DrainedEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
+type DrainedCurrentEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
 type DriverPermutationResult = (
     naome_storage::FixedValidatorSignedVoteV0,
     [Vec<(String, Vec<u8>)>; 4],
@@ -20,9 +25,39 @@ fn driver<'node>(
     max_entries: usize,
     maximum_round: u64,
 ) -> FixedValidatorNodeDriverV0<'node> {
+    driver_with_inbox_limits(scope, max_entries, max_entries, maximum_round)
+}
+
+fn driver_with_inbox_limits<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+    higher_max_entries: usize,
+    current_max_entries: usize,
+    maximum_round: u64,
+) -> FixedValidatorNodeDriverV0<'node> {
+    driver_with_limits(
+        scope,
+        higher_max_entries,
+        1024 * 1024,
+        current_max_entries,
+        1024 * 1024,
+        maximum_round,
+    )
+}
+
+fn driver_with_limits<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+    higher_max_entries: usize,
+    higher_max_bytes: u64,
+    current_max_entries: usize,
+    current_max_bytes: u64,
+    maximum_round: u64,
+) -> FixedValidatorNodeDriverV0<'node> {
     FixedValidatorNodeDriverV0::new(
         scope,
-        FixedValidatorNodeHigherRoundInboxLimitsV0::new(max_entries, 1024 * 1024).unwrap(),
+        FixedValidatorNodeHigherRoundInboxLimitsV0::new(higher_max_entries, higher_max_bytes)
+            .unwrap(),
+        FixedValidatorNodeCurrentRoundInboxLimitsV0::new(current_max_entries, current_max_bytes)
+            .unwrap(),
         ConsensusRound::new(maximum_round),
     )
     .unwrap()
@@ -132,6 +167,35 @@ fn reject_prevote<'node>(
     }
 }
 
+fn reject_current_prevote<'node>(
+    driver: FixedValidatorNodeDriverV0<'node>,
+    canonical_signed_prevote: &[u8],
+    assert_rejection: impl FnOnce(&FixedValidatorNodeDriverAdmissionRejectionV0),
+) -> FixedValidatorNodeDriverV0<'node> {
+    match driver
+        .admit_event(current_prevote_event(canonical_signed_prevote))
+        .unwrap()
+    {
+        FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+            driver,
+            event,
+            rejection,
+        } => {
+            match *event {
+                FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrevote {
+                    canonical_signed_prevote: returned,
+                } => assert_eq!(returned.as_ref(), canonical_signed_prevote),
+                _ => panic!("rejected current prevote must return its exact event"),
+            }
+            assert_rejection(rejection.as_ref());
+            *driver
+        }
+        FixedValidatorNodeDriverAdmissionOutcomeV0::Admitted { .. } => {
+            panic!("invalid current prevote must be rejected")
+        }
+    }
+}
+
 fn drained_contents(drained: FixedValidatorNodeHigherRoundInboxDrainV0) -> DrainedEvidence {
     let mut proposals = Vec::new();
     let mut prevotes = Vec::new();
@@ -149,6 +213,58 @@ fn drained_contents(drained: FixedValidatorNodeHigherRoundInboxDrainV0) -> Drain
     proposals.sort_unstable();
     prevotes.sort_unstable();
     (proposals, prevotes)
+}
+
+fn drained_current_contents(
+    drained: FixedValidatorNodeCurrentRoundInboxDrainV0,
+) -> DrainedCurrentEvidence {
+    let mut proposals = Vec::new();
+    let mut prevotes = Vec::new();
+    for item in drained {
+        match item {
+            FixedValidatorNodeCurrentRoundInboxDrainItemV0::Proposal {
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+            } => proposals.push((
+                canonical_proposal_control_bytes.into_vec(),
+                canonical_artifact_bytes.into_vec(),
+            )),
+            FixedValidatorNodeCurrentRoundInboxDrainItemV0::ProposalPrevote(prevote) => {
+                prevotes.push(prevote.to_vec());
+            }
+        }
+    }
+    proposals.sort_unstable();
+    prevotes.sort_unstable();
+    (proposals, prevotes)
+}
+
+fn close_empty_round<'node>(
+    driver: FixedValidatorNodeDriverV0<'node>,
+    proposal_timeout: FixedValidatorNodePhaseTimeoutV0,
+) -> (
+    FixedValidatorNodeDriverV0<'node>,
+    FixedValidatorNodePhaseTimeoutV0,
+) {
+    let (driver, _) = admit_due(driver, proposal_timeout);
+    let driver = step_transition(driver);
+    let (driver, prevote, released_proposal) = step_publish(driver);
+    assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
+    assert_eq!(prevote.target(), ConsensusVoteTarget::Nil);
+    assert!(released_proposal.is_none());
+    let (driver, prevote_timeout) = step_arm(driver);
+
+    let (driver, _) = admit_due(driver, prevote_timeout);
+    let driver = step_transition(driver);
+    let (driver, precommit, released_proposal) = step_publish(driver);
+    assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+    assert_eq!(precommit.target(), ConsensusVoteTarget::Nil);
+    assert!(released_proposal.is_none());
+    let (driver, precommit_timeout) = step_arm(driver);
+
+    let (driver, _) = admit_due(driver, precommit_timeout);
+    let driver = step_transition(driver);
+    step_arm(driver)
 }
 
 fn next_anchor_collision(directory: &Path, sequence: u64) -> PathBuf {
@@ -202,6 +318,24 @@ fn proposal_inputs(
     (value, control, payload)
 }
 
+fn proposal_control_with_valid_round(
+    fixture: &Fixture,
+    value: ConsensusValueV0,
+    position: ConsensusPosition,
+    valid_round_certificate: &[u8],
+) -> Vec<u8> {
+    let mut control = value.to_canonical_bytes().to_vec();
+    control.extend_from_slice(&authorization_bytes(
+        value.context(),
+        position,
+        value.proposal_signing_root(),
+        &fixture.signing_key(),
+    ));
+    control.push(VerifiedFixedConsensusProposalV0::VALID_ROUND_PROOF_TAG);
+    control.extend_from_slice(valid_round_certificate);
+    control
+}
+
 fn signed_vote_bytes(
     context: ConsensusContextV0,
     position: ConsensusPosition,
@@ -240,6 +374,56 @@ fn signed_vote_bytes(
     bytes
 }
 
+fn signed_vote_bytes_with_test_only_nonce_prefix(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signer: &SigningKey,
+    prefix_tweak: u8,
+) -> Vec<u8> {
+    assert_ne!(prefix_tweak, 0);
+    let mut body = [0_u8; VOTE_BODY_BYTES];
+    body[0] = match role {
+        ConsensusVoteRole::Prevote => 1,
+        ConsensusVoteRole::Precommit => 2,
+    };
+    body[1..33].copy_from_slice(context.chain_id().as_bytes());
+    body[33..65].copy_from_slice(context.genesis_id().as_bytes());
+    body[65..69].copy_from_slice(&context.protocol_version().value().to_be_bytes());
+    body[69..77].copy_from_slice(&position.height().value().to_be_bytes());
+    body[77..85].copy_from_slice(&position.round().value().to_be_bytes());
+    match target {
+        ConsensusVoteTarget::Nil => body[85] = 0,
+        ConsensusVoteTarget::Proposal(root) => {
+            body[85] = 1;
+            body[86..].copy_from_slice(root.as_bytes());
+        }
+    }
+    let signer_key = consensus_key(signer);
+    let domain: &[u8] = match role {
+        ConsensusVoteRole::Prevote => b"naome:consensus-prevote-signing:v0\0",
+        ConsensusVoteRole::Precommit => b"naome:consensus-precommit-signing:v0\0",
+    };
+    let mut transcript = domain.to_vec();
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(signer_key.as_bytes());
+
+    // Test-only alternate nonce derivation produces another valid signature
+    // for the same key and message without changing production signing.
+    let digest = Sha512::digest(signer.to_bytes());
+    let mut expanded_bytes = [0_u8; 64];
+    expanded_bytes.copy_from_slice(&digest);
+    let mut expanded = ExpandedSecretKey::from_bytes(&expanded_bytes);
+    expanded.hash_prefix[0] ^= prefix_tweak;
+    let signature = raw_sign::<Sha512>(&expanded, &transcript, &signer.verifying_key());
+
+    let mut bytes = body.to_vec();
+    bytes.extend_from_slice(signer_key.as_bytes());
+    bytes.extend_from_slice(&signature.to_bytes());
+    bytes
+}
+
 fn proposal_event(round: u64, control: &[u8], payload: &[u8]) -> FixedValidatorNodeDriverEventV0 {
     FixedValidatorNodeDriverEventV0::HigherRoundProposal {
         proposal_round: ConsensusRound::new(round),
@@ -250,6 +434,19 @@ fn proposal_event(round: u64, control: &[u8], payload: &[u8]) -> FixedValidatorN
 
 fn prevote_event(bytes: &[u8]) -> FixedValidatorNodeDriverEventV0 {
     FixedValidatorNodeDriverEventV0::HigherRoundProposalPrevote {
+        canonical_signed_prevote: bytes.into(),
+    }
+}
+
+fn current_proposal_event(control: &[u8], payload: &[u8]) -> FixedValidatorNodeDriverEventV0 {
+    FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+        canonical_proposal_control_bytes: control.into(),
+        canonical_artifact_bytes: payload.into(),
+    }
+}
+
+fn current_prevote_event(bytes: &[u8]) -> FixedValidatorNodeDriverEventV0 {
+    FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrevote {
         canonical_signed_prevote: bytes.into(),
     }
 }
@@ -1806,6 +2003,1191 @@ fn exact_due_progression_preserves_populated_lock_and_valid_evidence() {
                 expected_certificate.as_slice()
             );
             assert_eq!(layout.images(), durable);
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_proposal_and_explicit_prevote_loopback_drive_anchored_precommit() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-two-phase");
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let root = value.proposal_signing_root();
+    let (other_value, _, _) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Union);
+    let mismatched_prevote = signed_vote_bytes(
+        fixture.context,
+        round_at(&branch, 0).position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(other_value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let expected_prevote = signed_vote_bytes(
+        fixture.context,
+        round_at(&branch, 0).position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, proposal_timeout) = step_arm(driver(scope, 8, 4));
+            let (driver, disposition) = admit(driver, current_proposal_event(&control, &payload));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted
+            );
+            let (driver, disposition) = admit(driver, current_proposal_event(&control, &payload));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::AlreadyRetained
+            );
+            assert_eq!(driver.current_inbox_len(), 1);
+            let (driver, _) = admit_due(driver, proposal_timeout);
+
+            let driver = step_transition(driver);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Prevote);
+            assert_eq!(driver.current_inbox_len(), 1);
+            let after_prevote_anchor = layout.images();
+            assert_eq!(after_prevote_anchor[0], before[0]);
+            assert_eq!(after_prevote_anchor[1], before[1]);
+            assert_ne!(after_prevote_anchor, before);
+
+            let driver = match driver
+                .admit_event(current_prevote_event(&expected_prevote))
+                .unwrap()
+            {
+                FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                    driver,
+                    event,
+                    rejection,
+                } => {
+                    assert!(matches!(
+                        *rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CommandPending
+                    ));
+                    assert!(matches!(
+                        *event,
+                        FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrevote {
+                            canonical_signed_prevote,
+                        } if canonical_signed_prevote.as_ref() == expected_prevote.as_slice()
+                    ));
+                    *driver
+                }
+                _ => panic!("current loopback must wait for publication custody transfer"),
+            };
+            let (driver, prevote, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
+            assert_eq!(prevote.target(), ConsensusVoteTarget::Proposal(root));
+            let canonical_prevote = prevote.canonical_bytes().to_vec();
+            assert_eq!(canonical_prevote, expected_prevote);
+            let (driver, prevote_timeout) = step_arm(driver);
+
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Idle { driver } => *driver,
+                _ => panic!("the driver must not count its own prevote before explicit loopback"),
+            };
+            let (driver, disposition) = admit(driver, current_prevote_event(&mismatched_prevote));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted
+            );
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Idle { driver } => *driver,
+                _ => panic!("a quorum for another root must not authorize this proposal"),
+            };
+            let (driver, disposition) = admit(driver, current_prevote_event(&canonical_prevote));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted
+            );
+            let (driver, disposition) = admit(driver, current_prevote_event(&canonical_prevote));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::AlreadyRetained
+            );
+            assert_eq!(driver.current_inbox_len(), 3);
+            assert_eq!(
+                driver.current_inbox_canonical_input_bytes(),
+                u64::try_from(
+                    control.len()
+                        + payload.len()
+                        + mismatched_prevote.len()
+                        + canonical_prevote.len()
+                )
+                .unwrap()
+            );
+            let (driver, _) = admit_due(driver, prevote_timeout);
+
+            let driver = step_transition(driver);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+            assert_eq!(driver.current_inbox_len(), 3);
+            let after_precommit_anchor = layout.images();
+            assert_eq!(after_precommit_anchor[0], before[0]);
+            assert_eq!(after_precommit_anchor[1], before[1]);
+            assert_ne!(after_precommit_anchor, after_prevote_anchor);
+            let (driver, precommit, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(precommit.target(), ConsensusVoteTarget::Proposal(root));
+            let (driver, precommit_timeout) = step_arm(driver);
+            assert_eq!(precommit_timeout.position(), driver.position());
+            assert_eq!(
+                precommit_timeout.phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            let driver = reject_current_prevote(driver, &canonical_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentEvidenceWrongPhase {
+                        actual: FixedValidatorLockPhaseV0::Precommit
+                    }
+                ));
+            });
+
+            let (driver, drained) = driver.drain_current_inbox_and_reset().into_parts();
+            let (proposals, prevotes) = drained_current_contents(drained);
+            assert_eq!(proposals, vec![(control.clone(), payload.clone())]);
+            let mut expected_prevotes = vec![canonical_prevote, mismatched_prevote.clone()];
+            expected_prevotes.sort_unstable();
+            assert_eq!(prevotes, expected_prevotes);
+            assert_eq!(driver.current_inbox_len(), 0);
+            assert_eq!(driver.current_inbox_canonical_input_bytes(), 0);
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_signature_variants_select_one_per_signer_independent_of_insertion_order() {
+    let fixture = Fixture::new();
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let position = round_at(&branch, 0).position();
+    let root = value.proposal_signing_root();
+    let standard = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.signing_key(),
+    );
+    let alternate = signed_vote_bytes_with_test_only_nonce_prefix(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.signing_key(),
+        0x01,
+    );
+    assert_ne!(standard, alternate);
+    let preferred = if standard < alternate {
+        standard.as_slice()
+    } else {
+        alternate.as_slice()
+    };
+    let expected_certificate = round_at(&branch, 0)
+        .build_quorum_certificate_from_signed_votes(
+            &[preferred],
+            ConsensusVoteRole::Prevote,
+            ConsensusVoteTarget::Proposal(root),
+        )
+        .unwrap()
+        .to_canonical_bytes();
+    let orders = [
+        (
+            "driver-current-signature-standard-first",
+            &standard,
+            &alternate,
+        ),
+        (
+            "driver-current-signature-alternate-first",
+            &alternate,
+            &standard,
+        ),
+    ];
+    let mut outcomes = Vec::new();
+
+    for (label, first, second) in orders {
+        let layout = TestLayout::new(label);
+        let ready = fixture
+            .provision(&layout, 8)
+            .create(fixture.signing_key())
+            .unwrap();
+        let before = layout.images();
+        let precommit_bytes = ready
+            .run_with_signing_session(|scope| {
+                let (driver, _) = step_arm(driver(scope, 8, 4));
+                let (driver, _) = admit(driver, current_proposal_event(&control, &payload));
+                let (driver, _) = admit(driver, current_prevote_event(first));
+                let (driver, _) = admit(driver, current_prevote_event(second));
+                assert_eq!(driver.current_inbox_len(), 3);
+
+                let driver = step_transition(driver);
+                let (driver, published_prevote, released_proposal) = step_publish(driver);
+                assert!(released_proposal.is_none());
+                assert_eq!(
+                    published_prevote.target(),
+                    ConsensusVoteTarget::Proposal(root)
+                );
+                let (driver, _) = step_arm(driver);
+                let driver = step_transition(driver);
+                let (driver, precommit, released_proposal) = step_publish(driver);
+                assert!(released_proposal.is_none());
+                assert_eq!(precommit.target(), ConsensusVoteTarget::Proposal(root));
+                assert_eq!(driver.current_inbox_len(), 3);
+                precommit.canonical_bytes().to_vec()
+            })
+            .unwrap();
+
+        let durable = layout.images();
+        assert_eq!(durable[0], before[0]);
+        assert_eq!(durable[1], before[1]);
+        let ready = expect_ready(
+            fixture
+                .provision(&layout, 8)
+                .open(fixture.signing_key())
+                .unwrap(),
+        );
+        ready
+            .run_with_signing_session(|mut scope| {
+                let signing = scope.signing_session();
+                assert_eq!(signing.position(), position);
+                assert_eq!(signing.phase(), FixedValidatorLockPhaseV0::Precommit);
+                let locked = signing
+                    .locked_value()
+                    .expect("current proposal quorum must restore its exact lock");
+                assert_eq!(locked.round(), ConsensusRound::new(0));
+                assert_eq!(locked.proposal_signing_root(), root);
+                let valid = signing
+                    .valid_value()
+                    .expect("current proposal quorum must restore valid evidence");
+                assert_eq!(valid.round(), ConsensusRound::new(0));
+                assert_eq!(valid.value().proposal_signing_root(), root);
+                assert_eq!(
+                    valid.canonical_prevote_certificate(),
+                    expected_certificate.as_slice()
+                );
+                assert_eq!(layout.images(), durable);
+            })
+            .unwrap();
+        outcomes.push((precommit_bytes, durable));
+    }
+
+    assert_eq!(outcomes[0], outcomes[1]);
+}
+
+#[test]
+fn current_evidence_after_due_is_returned_without_mutation() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-due-fence");
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let valid_prevote = signed_vote_bytes(
+        fixture.context,
+        round_at(&branch, 0).position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let control = control.into_boxed_slice();
+    let payload = payload.into_boxed_slice();
+    let control_pointer = control.as_ptr();
+    let payload_pointer = payload.as_ptr();
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, timeout) = step_arm(driver(scope, 8, 4));
+            let position = driver.position();
+            let (driver, _) = admit_due(driver, timeout);
+            let driver = match driver
+                .admit_event(FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                    canonical_proposal_control_bytes: control,
+                    canonical_artifact_bytes: payload,
+                })
+                .unwrap()
+            {
+                FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                    driver,
+                    event,
+                    rejection,
+                } => {
+                    assert!(matches!(
+                        *rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CurrentEvidenceAfterDue {
+                            position: rejected_position,
+                            phase: FixedValidatorLockPhaseV0::Proposal,
+                        } if rejected_position == position
+                    ));
+                    match *event {
+                        FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                            canonical_proposal_control_bytes,
+                            canonical_artifact_bytes,
+                        } => {
+                            assert_eq!(canonical_proposal_control_bytes.as_ptr(), control_pointer);
+                            assert_eq!(canonical_artifact_bytes.as_ptr(), payload_pointer);
+                        }
+                        _ => panic!("due-fenced proposal must return its exact event"),
+                    }
+                    *driver
+                }
+                _ => panic!("current proposal after due must be rejected"),
+            };
+            assert_eq!(driver.current_inbox_len(), 0);
+            assert!(driver.timeout_is_due());
+            assert_eq!(layout.images(), before);
+
+            let driver = step_transition(driver);
+            let (driver, prevote, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
+            assert_eq!(prevote.target(), ConsensusVoteTarget::Nil);
+            assert_eq!(driver.current_inbox_len(), 0);
+            let (driver, prevote_timeout) = step_arm(driver);
+            let (driver, _) = admit_due(driver, prevote_timeout);
+            let driver = reject_current_prevote(driver, &valid_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentEvidenceAfterDue {
+                        position: rejected_position,
+                        phase: FixedValidatorLockPhaseV0::Prevote,
+                    } if *rejected_position == position
+                ));
+            });
+            assert!(driver.timeout_is_due());
+            assert_eq!(driver.current_inbox_len(), 0);
+            let driver = step_transition(driver);
+            let (driver, precommit, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(precommit.target(), ConsensusVoteTarget::Nil);
+            assert_eq!(driver.current_inbox_len(), 0);
+        })
+        .unwrap();
+}
+
+#[test]
+fn byte_distinct_same_root_current_proposals_fail_closed() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-same-root-ambiguity");
+    let branch = fixed_branch(&fixture);
+    let (round_one_value, round_one_control, round_one_payload) =
+        proposal_inputs(&fixture, &branch, 1, ZfcAxiom::Pairing);
+    let (round_two_value, plain_control, payload) =
+        proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Pairing);
+    let root = round_two_value.proposal_signing_root();
+    assert_eq!(round_one_value.proposal_signing_root(), root);
+    assert_eq!(round_one_payload, payload);
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, round_zero_timeout) = step_arm(driver(scope, 8, 4));
+            let (driver, _round_one_timeout) = close_empty_round(driver, round_zero_timeout);
+            assert_eq!(driver.position(), round_at(&branch, 1).position());
+            let (driver, _) = admit(
+                driver,
+                current_proposal_event(&round_one_control, &round_one_payload),
+            );
+            let driver = step_transition(driver);
+            let (driver, valid_round_prevote, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(
+                valid_round_prevote.target(),
+                ConsensusVoteTarget::Proposal(root)
+            );
+            let valid_round_prevote = valid_round_prevote.canonical_bytes().to_vec();
+            let (driver, prevote_timeout) = step_arm(driver);
+            let (driver, _) = admit_due(driver, prevote_timeout);
+            let driver = step_transition(driver);
+            let (driver, nil_precommit, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(nil_precommit.target(), ConsensusVoteTarget::Nil);
+            let (driver, precommit_timeout) = step_arm(driver);
+            let (driver, _) = admit_due(driver, precommit_timeout);
+            let driver = step_transition(driver);
+            let (driver, _round_two_timeout) = step_arm(driver);
+            assert_eq!(driver.position(), round_at(&branch, 2).position());
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Proposal);
+            assert!(!driver.timeout_is_due());
+
+            let valid_round_certificate = round_at(&branch, 1)
+                .build_quorum_certificate_from_signed_votes(
+                    &[valid_round_prevote.as_slice()],
+                    ConsensusVoteRole::Prevote,
+                    ConsensusVoteTarget::Proposal(root),
+                )
+                .unwrap()
+                .to_canonical_bytes();
+            let proof_control = proposal_control_with_valid_round(
+                &fixture,
+                round_two_value,
+                round_at(&branch, 2).position(),
+                &valid_round_certificate,
+            );
+            assert_ne!(plain_control, proof_control);
+            let before_ambiguity = layout.images();
+
+            let (driver, _) = admit(driver, current_proposal_event(&plain_control, &payload));
+            let (driver, _) = admit(driver, current_proposal_event(&proof_control, &payload));
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::CurrentProposalAmbiguous {
+                            position,
+                            first,
+                            second,
+                        } if position == round_at(&branch, 2).position()
+                            && first == root
+                            && second == root
+                    ));
+                    *driver
+                }
+                _ => panic!("byte-distinct same-root proposals must block current action"),
+            };
+            assert_eq!(driver.current_inbox_len(), 3);
+            assert!(!driver.timeout_is_due());
+            assert_eq!(layout.images(), before_ambiguity);
+            let driver = match driver
+                .admit_event(current_proposal_event(&plain_control, &payload))
+                .unwrap()
+            {
+                FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                    driver,
+                    event,
+                    rejection,
+                } => {
+                    assert!(matches!(
+                        rejection.as_ref(),
+                        FixedValidatorNodeDriverAdmissionRejectionV0::Blocked(
+                            FixedValidatorNodeDriverBlockReasonV0::CurrentProposalAmbiguous {
+                                position,
+                                first,
+                                second,
+                            }
+                        ) if *position == round_at(&branch, 2).position()
+                            && *first == root
+                            && *second == root
+                    ));
+                    assert!(matches!(
+                        *event,
+                        FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                            canonical_proposal_control_bytes,
+                            canonical_artifact_bytes,
+                        } if canonical_proposal_control_bytes.as_ref() == plain_control.as_slice()
+                            && canonical_artifact_bytes.as_ref() == payload.as_slice()
+                    ));
+                    *driver
+                }
+                _ => panic!("live current ambiguity must deny later current proposals"),
+            };
+            let ambiguity_prevote = signed_vote_bytes(
+                fixture.context,
+                round_at(&branch, 2).position(),
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(root),
+                &fixture.signing_key(),
+            );
+            let driver = match driver
+                .admit_event(current_prevote_event(&ambiguity_prevote))
+                .unwrap()
+            {
+                FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                    driver,
+                    event,
+                    rejection,
+                } => {
+                    assert!(matches!(
+                        rejection.as_ref(),
+                        FixedValidatorNodeDriverAdmissionRejectionV0::Blocked(
+                            FixedValidatorNodeDriverBlockReasonV0::CurrentProposalAmbiguous { .. }
+                        )
+                    ));
+                    assert!(matches!(
+                        *event,
+                        FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrevote {
+                            canonical_signed_prevote,
+                        } if canonical_signed_prevote.as_ref() == ambiguity_prevote.as_slice()
+                    ));
+                    *driver
+                }
+                _ => panic!("live current ambiguity must deny later current prevotes"),
+            };
+            assert_eq!(driver.current_inbox_len(), 3);
+            assert_eq!(layout.images(), before_ambiguity);
+            let (driver, drained) = driver.drain_current_inbox_and_reset().into_parts();
+            let (proposals, prevotes) = drained_current_contents(drained);
+            let mut first_expected = vec![
+                (round_one_control.clone(), round_one_payload.clone()),
+                (plain_control.clone(), payload.clone()),
+                (proof_control.clone(), payload.clone()),
+            ];
+            first_expected.sort_unstable();
+            assert_eq!(proposals, first_expected);
+            assert!(prevotes.is_empty());
+
+            let (driver, _) = admit(*driver, current_proposal_event(&proof_control, &payload));
+            let (driver, _) = admit(driver, current_proposal_event(&plain_control, &payload));
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::CurrentProposalAmbiguous {
+                            first,
+                            second,
+                            ..
+                        } if first == root && second == root
+                    ));
+                    *driver
+                }
+                _ => panic!("reverse insertion must produce the same ambiguity"),
+            };
+            assert_eq!(layout.images(), before_ambiguity);
+            let (_, drained) = driver.drain_current_inbox_and_reset().into_parts();
+            let (proposals, prevotes) = drained_current_contents(drained);
+            let mut expected = vec![
+                (plain_control.clone(), payload.clone()),
+                (proof_control.clone(), payload.clone()),
+            ];
+            expected.sort_unstable();
+            assert_eq!(proposals, expected);
+            assert!(prevotes.is_empty());
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_ambiguity_is_round_local_and_higher_evidence_escapes() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-ambiguity-higher-escape");
+    let branch = fixed_branch(&fixture);
+    let (_, first_control, first_payload) =
+        proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let (_, second_control, second_payload) =
+        proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Union);
+    let (higher_value, higher_control, higher_payload) =
+        proposal_inputs(&fixture, &branch, 2, ZfcAxiom::PowerSet);
+    let higher_position = round_at(&branch, 2).position();
+    let higher_root = higher_value.proposal_signing_root();
+    let higher_prevote = signed_vote_bytes(
+        fixture.context,
+        higher_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(higher_root),
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, timeout) = step_arm(driver(scope, 8, 4));
+            let (driver, _) = admit(
+                driver,
+                current_proposal_event(&first_control, &first_payload),
+            );
+            let (driver, _) = admit(
+                driver,
+                current_proposal_event(&second_control, &second_payload),
+            );
+            let (driver, _) = admit_due(driver, timeout);
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::CurrentProposalAmbiguous { .. }
+                    ));
+                    *driver
+                }
+                _ => panic!("competing current proposals must block current action"),
+            };
+
+            let (driver, _) = admit(driver, proposal_event(2, &higher_control, &higher_payload));
+            let (driver, _) = admit(driver, prevote_event(&higher_prevote));
+            let driver = step_transition(driver);
+            assert_eq!(driver.position(), higher_position);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+            assert_eq!(driver.current_inbox_len(), 2);
+            assert!(!driver.timeout_is_due());
+            let (driver, vote, released_proposal) = step_publish(driver);
+            assert_eq!(vote.target(), ConsensusVoteTarget::Proposal(higher_root));
+            assert!(released_proposal.is_some());
+            let (driver, _) = step_arm(driver);
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Idle { driver } => *driver,
+                _ => panic!("stale current ambiguity must not block the advanced position"),
+            };
+
+            let (_, drained) = driver.drain_current_inbox_and_reset().into_parts();
+            let (proposals, prevotes) = drained_current_contents(drained);
+            let mut expected = vec![
+                (first_control.clone(), first_payload.clone()),
+                (second_control.clone(), second_payload.clone()),
+            ];
+            expected.sort_unstable();
+            assert_eq!(proposals, expected);
+            assert!(prevotes.is_empty());
+        })
+        .unwrap();
+}
+
+#[test]
+fn actionable_higher_evidence_precedes_healthy_current_evidence() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-higher-before-current");
+    let branch = fixed_branch(&fixture);
+    let (current_value, current_control, current_payload) =
+        proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let current_prevote = signed_vote_bytes(
+        fixture.context,
+        round_at(&branch, 0).position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(current_value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let (higher_value, higher_control, higher_payload) =
+        proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
+    let higher_position = round_at(&branch, 2).position();
+    let higher_root = higher_value.proposal_signing_root();
+    let higher_prevote = signed_vote_bytes(
+        fixture.context,
+        higher_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(higher_root),
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, _) = step_arm(driver(scope, 8, 4));
+            let (driver, _) = admit(
+                driver,
+                current_proposal_event(&current_control, &current_payload),
+            );
+            let (driver, _) = admit(driver, current_prevote_event(&current_prevote));
+            let (driver, _) = admit(driver, proposal_event(2, &higher_control, &higher_payload));
+            let (driver, _) = admit(driver, prevote_event(&higher_prevote));
+
+            let driver = step_transition(driver);
+            assert_eq!(driver.position(), higher_position);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+            assert_eq!(driver.current_inbox_len(), 2);
+            let (driver, precommit, released_proposal) = step_publish(driver);
+            assert_eq!(
+                precommit.target(),
+                ConsensusVoteTarget::Proposal(higher_root)
+            );
+            let released_proposal =
+                released_proposal.expect("higher action must transfer its selected token");
+            assert_eq!(
+                released_proposal.canonical_proposal_control_bytes(),
+                higher_control
+            );
+            assert_eq!(released_proposal.canonical_artifact_bytes(), higher_payload);
+            assert_eq!(driver.current_inbox_len(), 2);
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_saturation_uses_a_separate_budget_and_preserves_higher_escape() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-separate-saturation");
+    let branch = fixed_branch(&fixture);
+    let (_, retained_control, retained_payload) =
+        proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let (_, rejected_control, rejected_payload) =
+        proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Union);
+    let (higher_value, higher_control, higher_payload) =
+        proposal_inputs(&fixture, &branch, 2, ZfcAxiom::PowerSet);
+    let higher_position = round_at(&branch, 2).position();
+    let higher_prevote = signed_vote_bytes(
+        fixture.context,
+        higher_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(higher_value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, current_timeout) = step_arm(driver_with_inbox_limits(scope, 4, 1, 4));
+            let (driver, _) = admit(
+                driver,
+                current_proposal_event(&retained_control, &retained_payload),
+            );
+            let driver = match driver
+                .admit_event(current_proposal_event(&rejected_control, &rejected_payload))
+                .unwrap()
+            {
+                FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                    driver,
+                    event,
+                    rejection,
+                } => {
+                    assert!(matches!(
+                        *rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CurrentInboxSaturated {
+                            newly_saturated: true,
+                            ..
+                        }
+                    ));
+                    match *event {
+                        FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                            canonical_proposal_control_bytes,
+                            canonical_artifact_bytes,
+                        } => {
+                            assert_eq!(
+                                canonical_proposal_control_bytes.as_ref(),
+                                rejected_control.as_slice()
+                            );
+                            assert_eq!(
+                                canonical_artifact_bytes.as_ref(),
+                                rejected_payload.as_slice()
+                            );
+                        }
+                        _ => panic!("current saturation must return the rejected event"),
+                    }
+                    *driver
+                }
+                _ => panic!("the second current input must exceed its separate cap"),
+            };
+            assert_eq!(driver.current_inbox_len(), 1);
+            assert_eq!(driver.inbox_len(), 0);
+            let (driver, _) = admit_due(driver, current_timeout);
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::CurrentSaturated { .. }
+                    ));
+                    *driver
+                }
+                _ => panic!("current saturation must block the exact due path"),
+            };
+
+            let (driver, _) = admit(driver, proposal_event(2, &higher_control, &higher_payload));
+            let (driver, _) = admit(driver, prevote_event(&higher_prevote));
+            assert_eq!(driver.inbox_len(), 2);
+            let driver = step_transition(driver);
+            assert_eq!(driver.position(), higher_position);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+            let (driver, _, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_some());
+            let (driver, _) = step_arm(driver);
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::CurrentSaturated { .. }
+                    ));
+                    *driver
+                }
+                _ => panic!("current saturation must require an explicit drain after advance"),
+            };
+
+            let (driver, drained) = driver.drain_current_inbox_and_reset().into_parts();
+            let (proposals, prevotes) = drained_current_contents(drained);
+            assert_eq!(
+                proposals,
+                vec![(retained_control.clone(), retained_payload.clone())]
+            );
+            assert!(prevotes.is_empty());
+            assert_eq!(driver.current_inbox_len(), 0);
+            assert_eq!(driver.inbox_len(), 1);
+            assert!(matches!(
+                driver.step().unwrap(),
+                FixedValidatorNodeDriverStepOutcomeV0::Idle { .. }
+            ));
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_byte_saturation_does_not_consume_higher_inbox_capacity() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-separate-byte-saturation");
+    let branch = fixed_branch(&fixture);
+    let (current_value, current_control, current_payload) =
+        proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let current_prevote = signed_vote_bytes(
+        fixture.context,
+        round_at(&branch, 0).position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(current_value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let current_exact_bytes = u64::try_from(current_control.len() + current_payload.len()).unwrap();
+    let (higher_value, higher_control, higher_payload) =
+        proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
+    let higher_position = round_at(&branch, 2).position();
+    let higher_root = higher_value.proposal_signing_root();
+    let higher_prevote = signed_vote_bytes(
+        fixture.context,
+        higher_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(higher_root),
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, _) = step_arm(driver_with_limits(
+                scope,
+                4,
+                1024 * 1024,
+                4,
+                current_exact_bytes,
+                4,
+            ));
+            let (driver, _) = admit(
+                driver,
+                current_proposal_event(&current_control, &current_payload),
+            );
+            assert_eq!(
+                driver.current_inbox_canonical_input_bytes(),
+                current_exact_bytes
+            );
+            let driver = reject_current_prevote(driver, &current_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentInboxSaturated {
+                        saturation:
+                            FixedValidatorNodeCurrentRoundInboxSaturationV0::Capacity { .. },
+                        newly_saturated: true,
+                        ..
+                    }
+                ));
+            });
+            assert_eq!(driver.current_inbox_len(), 1);
+            assert_eq!(driver.inbox_len(), 0);
+
+            let (driver, _) = admit(
+                driver,
+                proposal_event(2, &higher_control, &higher_payload),
+            );
+            let (driver, _) = admit(driver, prevote_event(&higher_prevote));
+            assert_eq!(driver.inbox_len(), 2);
+            let driver = step_transition(driver);
+            assert_eq!(driver.position(), higher_position);
+            let (driver, vote, released_proposal) = step_publish(driver);
+            assert_eq!(vote.target(), ConsensusVoteTarget::Proposal(higher_root));
+            assert!(released_proposal.is_some());
+            assert_eq!(driver.current_inbox_len(), 1);
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_admission_returns_invalid_inputs_and_deduplicates_verified_evidence() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-admission");
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let position = round_at(&branch, 0).position();
+    let root = value.proposal_signing_root();
+    let valid_prevote = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.signing_key(),
+    );
+    let nil_prevote = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let precommit = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.signing_key(),
+    );
+    let wrong_position_prevote = signed_vote_bytes(
+        fixture.context,
+        round_at(&branch, 1).position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.signing_key(),
+    );
+    let wrong_context = ConsensusContextV0::new(
+        fixture.definition.id(),
+        ConsensusGenesisId::from_bytes([0x99; 32]),
+        fixture.context.protocol_version(),
+    );
+    let wrong_context_prevote = signed_vote_bytes(
+        wrong_context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.signing_key(),
+    );
+    let inactive_signer = SigningKey::from_bytes(&signing_seed(2));
+    let inactive_prevote = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(root),
+        &inactive_signer,
+    );
+    let mut invalid_signature_prevote = valid_prevote.clone();
+    *invalid_signature_prevote.last_mut().unwrap() ^= 0x01;
+    let mismatched_payload = proof_payload(ZfcAxiom::Union);
+    let malformed_control = vec![0x01, 0x02, 0x03].into_boxed_slice();
+    let malformed_payload = payload.clone().into_boxed_slice();
+    let malformed_control_pointer = malformed_control.as_ptr();
+    let malformed_payload_pointer = malformed_payload.as_ptr();
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, _) = step_arm(driver(scope, 8, 4));
+            let driver = match driver
+                .admit_event(FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                    canonical_proposal_control_bytes: malformed_control,
+                    canonical_artifact_bytes: malformed_payload,
+                })
+                .unwrap()
+            {
+                FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                    driver,
+                    event,
+                    rejection,
+                } => {
+                    assert!(matches!(
+                        rejection.as_ref(),
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CurrentProposal(source)
+                            if matches!(
+                                source.as_ref(),
+                                naome_consensus::ConsensusProposalVerifyError::InvalidLength {
+                                    actual: 3,
+                                    ..
+                                }
+                            )
+                    ));
+                    match *event {
+                        FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                            canonical_proposal_control_bytes,
+                            canonical_artifact_bytes,
+                        } => {
+                            assert_eq!(
+                                canonical_proposal_control_bytes.as_ptr(),
+                                malformed_control_pointer
+                            );
+                            assert_eq!(
+                                canonical_artifact_bytes.as_ptr(),
+                                malformed_payload_pointer
+                            );
+                        }
+                        _ => panic!("invalid current proposal must return its exact event"),
+                    }
+                    *driver
+                }
+                _ => panic!("malformed current proposal must be rejected"),
+            };
+            assert_eq!(driver.current_inbox_len(), 0);
+
+            let driver = match driver
+                .admit_event(current_proposal_event(&control, &mismatched_payload))
+                .unwrap()
+            {
+                FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                    driver,
+                    event,
+                    rejection,
+                } => {
+                    assert!(matches!(
+                        rejection.as_ref(),
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CurrentProposal(_)
+                    ));
+                    assert!(matches!(
+                        *event,
+                        FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                            canonical_proposal_control_bytes,
+                            canonical_artifact_bytes,
+                        } if canonical_proposal_control_bytes.as_ref() == control.as_slice()
+                            && canonical_artifact_bytes.as_ref() == mismatched_payload.as_slice()
+                    ));
+                    *driver
+                }
+                _ => panic!("a mismatched current proposal payload must be rejected"),
+            };
+            assert_eq!(driver.current_inbox_len(), 0);
+
+            let (driver, disposition) = admit(driver, current_proposal_event(&control, &payload));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted
+            );
+            let (driver, disposition) = admit(driver, current_proposal_event(&control, &payload));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::AlreadyRetained
+            );
+            let driver = reject_current_prevote(driver, &nil_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentPrevote(_)
+                ));
+            });
+            let driver = reject_current_prevote(driver, &precommit, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentPrevote(_)
+                ));
+            });
+            let driver = reject_current_prevote(driver, &wrong_position_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentPrevote(_)
+                ));
+            });
+            let driver = reject_current_prevote(driver, &wrong_context_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentPrevote(
+                        naome_consensus::FixedConsensusProposalPrevoteVerifyErrorV0::Vote(
+                            naome_consensus::ConsensusVoteVerifyError::GenesisIdMismatch { .. }
+                        )
+                    )
+                ));
+            });
+            let driver = reject_current_prevote(driver, &inactive_prevote, |rejection| {
+                assert!(matches!(
+                    rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentPrevote(
+                        naome_consensus::FixedConsensusProposalPrevoteVerifyErrorV0::InactiveSigner {
+                            ..
+                        }
+                    )
+                ));
+            });
+            let driver =
+                reject_current_prevote(driver, &invalid_signature_prevote, |rejection| {
+                    assert!(matches!(
+                        rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CurrentPrevote(
+                            naome_consensus::FixedConsensusProposalPrevoteVerifyErrorV0::Vote(
+                                naome_consensus::ConsensusVoteVerifyError::InvalidSignature { .. }
+                            )
+                        )
+                    ));
+                });
+            let (driver, disposition) = admit(driver, current_prevote_event(&valid_prevote));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted
+            );
+            let (driver, disposition) = admit(driver, current_prevote_event(&valid_prevote));
+            assert_eq!(
+                disposition,
+                FixedValidatorNodeDriverAdmissionDispositionV0::AlreadyRetained
+            );
+            assert_eq!(driver.current_inbox_len(), 2);
+            assert_eq!(layout.images(), before);
+
+            let (_, drained) = driver.drain_current_inbox_and_reset().into_parts();
+            let (proposals, prevotes) = drained_current_contents(drained);
+            assert_eq!(proposals, vec![(control.clone(), payload.clone())]);
+            assert_eq!(prevotes, vec![valid_prevote.clone()]);
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_evidence_is_volatile_and_can_be_readmitted_after_strict_restart() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-restart-readmission");
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let root = value.proposal_signing_root();
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+
+    let canonical_prevote = ready
+        .run_with_signing_session(|scope| {
+            let (driver, _) = step_arm(driver(scope, 8, 4));
+            let (driver, _) = admit(driver, current_proposal_event(&control, &payload));
+            let driver = step_transition(driver);
+            let (driver, prevote, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(prevote.target(), ConsensusVoteTarget::Proposal(root));
+            let canonical_prevote = prevote.canonical_bytes().to_vec();
+            let (driver, _) = step_arm(driver);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Prevote);
+            assert_eq!(driver.current_inbox_len(), 1);
+            drop(driver);
+            canonical_prevote
+        })
+        .unwrap();
+
+    let ready = expect_ready(
+        fixture
+            .provision(&layout, 8)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    ready
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(
+                scope.signing_session().position(),
+                round_at(&branch, 0).position()
+            );
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Prevote
+            );
+            let driver = driver(scope, 8, 4);
+            assert_eq!(driver.current_inbox_len(), 0);
+            let (driver, _) = step_arm(driver);
+            let (driver, _) = admit(driver, current_proposal_event(&control, &payload));
+            let (driver, _) = admit(driver, current_prevote_event(&canonical_prevote));
+            let driver = step_transition(driver);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+            let (driver, precommit, released_proposal) = step_publish(driver);
+            assert!(released_proposal.is_none());
+            assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(precommit.target(), ConsensusVoteTarget::Proposal(root));
+            assert_eq!(driver.current_inbox_len(), 2);
         })
         .unwrap();
 }

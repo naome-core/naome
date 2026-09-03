@@ -120,8 +120,8 @@ target, and membership of the authenticated signer in the round's immutable
 active fixed-validator snapshot. Success still treats the target root as opaque
 and establishes neither proposal existence nor validity, quorum, evidence
 retention or preference, round progression, locking, voting, or finality. The
-separately specified higher-round inbox owns any later retention and applies its
-own local bounds.
+separately specified current- and higher-round node inboxes own any later
+retention under independent local bounds and action policies.
 
 ## Canonical quorum certificate
 

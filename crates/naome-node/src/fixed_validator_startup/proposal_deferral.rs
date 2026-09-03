@@ -49,7 +49,7 @@ impl FixedValidatorNodeHigherRoundProposalRouteV0 {
     }
 }
 
-/// One fully checked higher-round proposal retained only in caller-owned memory.
+/// One fully checked proposal retained only in caller-owned memory.
 ///
 /// Private fields prevent raw construction. The token owns only descriptive
 /// identities and the exact canonical inputs that passed complete proposal and
@@ -128,6 +128,13 @@ impl FixedValidatorNodeDeferredProposalV0 {
         (
             self.canonical_proposal_control_bytes.into_vec(),
             self.canonical_artifact_bytes.into_vec(),
+        )
+    }
+
+    pub(super) fn into_unverified_boxed_inputs(self) -> (Box<[u8]>, Box<[u8]>) {
+        (
+            self.canonical_proposal_control_bytes,
+            self.canonical_artifact_bytes,
         )
     }
 }
