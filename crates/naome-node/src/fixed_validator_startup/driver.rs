@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use naome_consensus::{
     ConsensusContextV0, ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError,
     ConsensusRound, ConsensusVoteVerifyError, FixedConsensusNilPrevoteVerifyErrorV0,
-    FixedConsensusProposalPrevoteVerifyErrorV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
-    ProposalSigningRoot, ProposerSelectionError, VerifiedConsensusVoteV0,
+    FixedConsensusProposalPrecommitVerifyErrorV0, FixedConsensusProposalPrevoteVerifyErrorV0,
+    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, ProposalSigningRoot, ProposerSelectionError,
+    QuorumCertificateBuildError, VerifiedConsensusVoteV0,
 };
 use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
 use naome_storage::{
@@ -15,6 +16,11 @@ use naome_storage::{
     FixedValidatorVoteSafetyJournalErrorV0,
 };
 
+use super::current_round_finality_inbox::{
+    CurrentRoundFinalityClassificationErrorV0, CurrentRoundFinalityClassificationV0,
+    CurrentRoundFinalityInboxInsertOutcomeV0, CurrentRoundFinalityInboxV0,
+    CurrentRoundFinalityPrecommitInsertErrorV0, CurrentRoundFinalityProposalInsertErrorV0,
+};
 use super::current_round_inbox::{
     CurrentRoundInboxInsertOutcomeV0, CurrentRoundInboxV0, CurrentRoundNilPrevoteInsertErrorV0,
     CurrentRoundPrevoteInsertErrorV0, CurrentRoundProposalInsertErrorV0,
@@ -31,6 +37,9 @@ use super::{
     FixedValidatorNodeBufferedProposalPrecommitErrorV0,
     FixedValidatorNodeBufferedProposalPrecommitOutcomeV0,
     FixedValidatorNodeBufferedProposalPrecommitRejectionV0, FixedValidatorNodeCurrentRoundErrorV0,
+    FixedValidatorNodeCurrentRoundFinalityInboxDrainV0,
+    FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
+    FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
     FixedValidatorNodeCurrentRoundInboxDrainV0, FixedValidatorNodeCurrentRoundInboxLimitsV0,
     FixedValidatorNodeCurrentRoundInboxSaturationV0, FixedValidatorNodeDeferredProposalV0,
     FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodeHigherRoundInboxLimitsV0,
@@ -100,6 +109,15 @@ pub enum FixedValidatorNodeDriverEventV0 {
     CurrentRoundProposalPrevote { canonical_signed_prevote: Box<[u8]> },
     /// One complete canonical signed current-round nil prevote.
     CurrentRoundNilPrevote { canonical_signed_prevote: Box<[u8]> },
+    /// Complete raw proposal inputs retained only for current-round finality classification.
+    CurrentRoundFinalityProposal {
+        canonical_proposal_control_bytes: Box<[u8]>,
+        canonical_artifact_bytes: Box<[u8]>,
+    },
+    /// One complete canonical signed current-round proposal precommit.
+    CurrentRoundProposalPrecommit {
+        canonical_signed_precommit: Box<[u8]>,
+    },
     /// Complete raw inputs for one descriptively routed higher-round proposal.
     HigherRoundProposal {
         proposal_round: ConsensusRound,
@@ -117,7 +135,7 @@ pub enum FixedValidatorNodeDriverEventV0 {
 #[must_use]
 #[non_exhaustive]
 pub enum FixedValidatorNodeDriverAdmissionDispositionV0 {
-    /// One distinct proposal or prevote was retained.
+    /// One distinct proposal, prevote, precommit, or finality input was retained.
     Inserted,
     /// The exact proposal or vote bytes were already retained without growth.
     AlreadyRetained,
@@ -179,6 +197,18 @@ pub enum FixedValidatorNodeDriverAdmissionRejectionV0 {
     CurrentPrevote(FixedConsensusProposalPrevoteVerifyErrorV0),
     /// Exact current-round active nil-prevote admission failed.
     CurrentNilPrevote(FixedConsensusNilPrevoteVerifyErrorV0),
+    /// Complete current-round finality proposal admission rejected the raw input.
+    CurrentFinalityProposal(Box<ConsensusProposalVerifyError>),
+    /// Exact current-round active proposal-precommit admission failed.
+    CurrentFinalityPrecommit(FixedConsensusProposalPrecommitVerifyErrorV0),
+    /// The dedicated current proposal-finality inbox entered or retained saturation.
+    CurrentFinalityInboxSaturated {
+        position: ConsensusPosition,
+        saturation: FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
+        newly_saturated: bool,
+    },
+    /// The dedicated current proposal-finality inbox could not reserve one slot.
+    CurrentFinalityInboxReservation(TryReserveError),
     /// The separate current-round inbox entered or retained saturation.
     CurrentInboxSaturated {
         position: ConsensusPosition,
@@ -256,6 +286,28 @@ impl fmt::Display for FixedValidatorNodeDriverAdmissionRejectionV0 {
                     "current-round nil prevote was rejected: {source}"
                 )
             }
+            Self::CurrentFinalityProposal(source) => {
+                write!(
+                    formatter,
+                    "current finality proposal was rejected: {source}"
+                )
+            }
+            Self::CurrentFinalityPrecommit(source) => write!(
+                formatter,
+                "current proposal precommit was rejected: {source}"
+            ),
+            Self::CurrentFinalityInboxSaturated {
+                position,
+                saturation,
+                ..
+            } => write!(
+                formatter,
+                "current proposal-finality evidence for {position:?} was not retained because {saturation}"
+            ),
+            Self::CurrentFinalityInboxReservation(source) => write!(
+                formatter,
+                "current proposal-finality inbox reservation failed before insertion: {source}"
+            ),
             Self::CurrentInboxSaturated {
                 position,
                 saturation,
@@ -308,6 +360,9 @@ impl Error for FixedValidatorNodeDriverAdmissionRejectionV0 {
             Self::CurrentProposal(source) => Some(source.as_ref()),
             Self::CurrentPrevote(source) => Some(source),
             Self::CurrentNilPrevote(source) => Some(source),
+            Self::CurrentFinalityProposal(source) => Some(source.as_ref()),
+            Self::CurrentFinalityPrecommit(source) => Some(source),
+            Self::CurrentFinalityInboxReservation(source) => Some(source),
             Self::CurrentInboxReservation(source) => Some(source),
             Self::ProposalInbox(source) => Some(source.as_ref()),
             Self::PrevoteRouting(source) => Some(source),
@@ -317,6 +372,7 @@ impl Error for FixedValidatorNodeDriverAdmissionRejectionV0 {
             | Self::CurrentEvidenceAfterDue { .. }
             | Self::CurrentEvidenceWrongPhase { .. }
             | Self::CurrentInboxSaturated { .. }
+            | Self::CurrentFinalityInboxSaturated { .. }
             | Self::ProposalPayloadTooLong { .. }
             | Self::PrevoteHeightMismatch { .. }
             | Self::PrevoteNotHigher { .. }
@@ -396,6 +452,113 @@ impl FixedValidatorNodeDriverActionV0 {
     /// Returns the proposal root with strict-supermajority prevote evidence.
     pub const fn proposal_signing_root(self) -> ProposalSigningRoot {
         self.proposal_signing_root
+    }
+}
+
+/// Non-authoritative identity of one strict-supermajority proposal-precommit root.
+///
+/// This descriptor contains no proposal bytes, certificate, signing scope, or
+/// finality handle and cannot execute a consensus transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[must_use]
+#[allow(
+    dead_code,
+    reason = "the private descriptor is staged for the durable finality integration"
+)]
+pub(super) struct FixedValidatorNodeDriverFinalityActionV0 {
+    position: ConsensusPosition,
+    proposal_signing_root: ProposalSigningRoot,
+}
+
+#[allow(
+    dead_code,
+    reason = "the private descriptor is staged for the durable finality integration"
+)]
+impl FixedValidatorNodeDriverFinalityActionV0 {
+    /// Returns the exact current position classified by the driver.
+    pub(super) const fn position(self) -> ConsensusPosition {
+        self.position
+    }
+
+    /// Returns the proposal root with matching strict-supermajority precommits.
+    pub(super) const fn proposal_signing_root(self) -> ProposalSigningRoot {
+        self.proposal_signing_root
+    }
+}
+
+/// Read-only classification of the dedicated current proposal-finality inbox.
+///
+/// The classification does not affect [`FixedValidatorNodeDriverV0::step`]. It
+/// neither selects nor finalizes a value and exposes no raw retained evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+#[non_exhaustive]
+#[allow(
+    dead_code,
+    reason = "the private classification is staged for the durable finality integration"
+)]
+pub(super) enum FixedValidatorNodeDriverCurrentFinalityClassificationV0 {
+    /// No proposal-target root has retained strict-supermajority precommits.
+    Incomplete,
+    /// Exactly one quorate root is retained without a matching valid proposal.
+    QuorumMissingProposal(FixedValidatorNodeDriverFinalityActionV0),
+    /// Exactly one proposal-bearing root is locally complete.
+    Ready(FixedValidatorNodeDriverFinalityActionV0),
+    /// Multiple proposal roots have strict-supermajority precommits; no winner is chosen.
+    ConflictingRoots {
+        position: ConsensusPosition,
+        first: ProposalSigningRoot,
+        second: ProposalSigningRoot,
+    },
+    /// A denied distinct input made the retained prefix incomplete.
+    Saturated {
+        position: ConsensusPosition,
+        saturation: FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
+    },
+}
+
+/// A temporary or invariant failure while classifying retained finality evidence.
+#[derive(Debug)]
+#[non_exhaustive]
+#[allow(
+    dead_code,
+    reason = "the private classification is staged for the durable finality integration"
+)]
+pub(super) enum FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0 {
+    /// The exact current fixed-set round could not be derived.
+    Round(ProposerSelectionError),
+    /// Temporary classifier storage could not be reserved.
+    Reservation(TryReserveError),
+    /// Individually admitted retained votes failed exact certificate construction.
+    QuorumInvariant(QuorumCertificateBuildError),
+}
+
+impl fmt::Display for FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Round(source) => write!(
+                formatter,
+                "current proposal-finality round derivation failed: {source}"
+            ),
+            Self::Reservation(source) => write!(
+                formatter,
+                "current proposal-finality classification reservation failed: {source}"
+            ),
+            Self::QuorumInvariant(source) => write!(
+                formatter,
+                "retained current proposal precommits violated a classifier invariant: {source}"
+            ),
+        }
+    }
+}
+
+impl Error for FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Round(source) => Some(source),
+            Self::Reservation(source) => Some(source),
+            Self::QuorumInvariant(source) => Some(source),
+        }
     }
 }
 
@@ -608,6 +771,25 @@ pub struct FixedValidatorNodeDriverCurrentRoundDrainV0<'node> {
     drained: FixedValidatorNodeCurrentRoundInboxDrainV0,
 }
 
+/// Lossless result of clearing only the dedicated current finality inbox.
+#[must_use]
+pub struct FixedValidatorNodeDriverCurrentFinalityDrainV0<'node> {
+    driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    drained: FixedValidatorNodeCurrentRoundFinalityInboxDrainV0,
+}
+
+impl<'node> FixedValidatorNodeDriverCurrentFinalityDrainV0<'node> {
+    /// Separates the continuing driver from every finality evidence item.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Box<FixedValidatorNodeDriverV0<'node>>,
+        FixedValidatorNodeCurrentRoundFinalityInboxDrainV0,
+    ) {
+        (self.driver, self.drained)
+    }
+}
+
 impl<'node> FixedValidatorNodeDriverCurrentRoundDrainV0<'node> {
     /// Separates the continuing driver from every current-round evidence item.
     pub fn into_parts(
@@ -715,6 +897,7 @@ pub struct FixedValidatorNodeDriverV0<'node> {
     scope: Option<FixedValidatorNodeSigningScopeV0<'node>>,
     inbox: FixedValidatorNodeHigherRoundInboxV0,
     current_inbox: CurrentRoundInboxV0,
+    current_finality_inbox: CurrentRoundFinalityInboxV0,
     inclusive_maximum_round: ConsensusRound,
     lineage: u64,
     generation: u64,
@@ -734,6 +917,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         scope: FixedValidatorNodeSigningScopeV0<'node>,
         inbox_limits: FixedValidatorNodeHigherRoundInboxLimitsV0,
         current_inbox_limits: FixedValidatorNodeCurrentRoundInboxLimitsV0,
+        current_finality_inbox_limits: FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
         inclusive_maximum_round: ConsensusRound,
     ) -> Result<Self, FixedValidatorNodeDriverCreateErrorV0> {
         let finality_maximum_round = scope.finality.replay_limit().max_round();
@@ -764,6 +948,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             scope: Some(scope),
             inbox: FixedValidatorNodeHigherRoundInboxV0::new(inbox_limits),
             current_inbox: CurrentRoundInboxV0::new(current_inbox_limits),
+            current_finality_inbox: CurrentRoundFinalityInboxV0::new(current_finality_inbox_limits),
             inclusive_maximum_round,
             lineage,
             generation: 0,
@@ -805,6 +990,91 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         self.current_inbox.total_canonical_input_bytes()
     }
 
+    /// Returns the dedicated current finality proposal-and-precommit count.
+    pub fn current_finality_inbox_len(&self) -> usize {
+        self.current_finality_inbox.len()
+    }
+
+    /// Returns the finality inbox's checked logical canonical-input byte count.
+    pub const fn current_finality_inbox_canonical_input_bytes(&self) -> u64 {
+        self.current_finality_inbox.total_canonical_input_bytes()
+    }
+
+    /// Classifies current proposal-finality evidence without changing driver work.
+    ///
+    /// This read-only result is descriptive only. It exposes no proposal,
+    /// certificate, signing scope, or finality handle, and [`Self::step`] does not
+    /// consult it in this staged foundation.
+    #[allow(
+        dead_code,
+        reason = "the private classifier is staged for the durable finality integration"
+    )]
+    pub(super) fn classify_current_finality_evidence(
+        &self,
+    ) -> Result<
+        FixedValidatorNodeDriverCurrentFinalityClassificationV0,
+        FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0,
+    > {
+        let position = self.position();
+        let round = derive_round(&self.scope().branch, position.round())
+            .map_err(FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0::Round)?;
+        let classification = self.current_finality_inbox.classify(&round);
+        drop(round);
+        match classification {
+            Ok(CurrentRoundFinalityClassificationV0::Saturated {
+                position,
+                saturation,
+            }) => Ok(
+                FixedValidatorNodeDriverCurrentFinalityClassificationV0::Saturated {
+                    position,
+                    saturation,
+                },
+            ),
+            Ok(CurrentRoundFinalityClassificationV0::None) => {
+                Ok(FixedValidatorNodeDriverCurrentFinalityClassificationV0::Incomplete)
+            }
+            Ok(CurrentRoundFinalityClassificationV0::OneQuorumMissingProposal {
+                proposal_signing_root,
+                canonical_precommit_certificate: _,
+            }) => Ok(
+                FixedValidatorNodeDriverCurrentFinalityClassificationV0::QuorumMissingProposal(
+                    FixedValidatorNodeDriverFinalityActionV0 {
+                        position,
+                        proposal_signing_root,
+                    },
+                ),
+            ),
+            Ok(CurrentRoundFinalityClassificationV0::One {
+                proposal_signing_root,
+                canonical_proposal_control_bytes: _,
+                canonical_artifact_bytes: _,
+                canonical_precommit_certificate: _,
+            }) => Ok(
+                FixedValidatorNodeDriverCurrentFinalityClassificationV0::Ready(
+                    FixedValidatorNodeDriverFinalityActionV0 {
+                        position,
+                        proposal_signing_root,
+                    },
+                ),
+            ),
+            Ok(CurrentRoundFinalityClassificationV0::ConflictingRoots { first, second }) => Ok(
+                FixedValidatorNodeDriverCurrentFinalityClassificationV0::ConflictingRoots {
+                    position,
+                    first,
+                    second,
+                },
+            ),
+            Err(CurrentRoundFinalityClassificationErrorV0::Reservation(source)) => Err(
+                FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0::Reservation(source),
+            ),
+            Err(CurrentRoundFinalityClassificationErrorV0::Invariant(source)) => Err(
+                FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0::QuorumInvariant(
+                    source,
+                ),
+            ),
+        }
+    }
+
     /// Returns whether the exact active phase timer has been reported due.
     pub const fn timeout_is_due(&self) -> bool {
         self.due
@@ -834,7 +1104,12 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 FixedValidatorNodeDriverAdmissionRejectionV0::CommandPending,
             ));
         }
-        if let Some(reason) = self.higher_block_reason() {
+        let is_finality_event = matches!(
+            &event,
+            FixedValidatorNodeDriverEventV0::CurrentRoundFinalityProposal { .. }
+                | FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrecommit { .. }
+        );
+        if !is_finality_event && let Some(reason) = self.higher_block_reason() {
             return Ok(admission_rejected(
                 self,
                 event,
@@ -842,6 +1117,16 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             ));
         }
         match event {
+            FixedValidatorNodeDriverEventV0::CurrentRoundFinalityProposal {
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+            } => self.admit_current_finality_proposal(
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+            ),
+            FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrecommit {
+                canonical_signed_precommit,
+            } => self.admit_current_finality_precommit(canonical_signed_precommit),
             FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
                 canonical_proposal_control_bytes,
                 canonical_artifact_bytes,
@@ -1071,6 +1356,227 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         }
     }
 
+    /// Losslessly returns all separately budgeted current finality evidence.
+    ///
+    /// Ordinary current and higher inboxes, timer and due state, pending command,
+    /// and signer and finality authority remain unchanged.
+    pub fn drain_current_finality_inbox_and_reset(
+        mut self,
+    ) -> FixedValidatorNodeDriverCurrentFinalityDrainV0<'node> {
+        let drained = self.current_finality_inbox.drain_and_reset();
+        FixedValidatorNodeDriverCurrentFinalityDrainV0 {
+            driver: Box::new(self),
+            drained,
+        }
+    }
+
+    fn admit_current_finality_proposal(
+        mut self,
+        canonical_proposal_control_bytes: Box<[u8]>,
+        canonical_artifact_bytes: Box<[u8]>,
+    ) -> Result<
+        FixedValidatorNodeDriverAdmissionOutcomeV0<'node>,
+        FixedValidatorNodeDriverAdmissionErrorV0,
+    > {
+        let mut canonical_proposal_control_bytes = Some(canonical_proposal_control_bytes);
+        let mut canonical_artifact_bytes = Some(canonical_artifact_bytes);
+        if let Some((position, saturation)) = self.current_finality_inbox.saturation() {
+            return Ok(admission_rejected(
+                self,
+                current_finality_proposal_event(
+                    &mut canonical_proposal_control_bytes,
+                    &mut canonical_artifact_bytes,
+                ),
+                FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityInboxSaturated {
+                    position,
+                    saturation,
+                    newly_saturated: false,
+                },
+            ));
+        }
+        let scope = self
+            .scope
+            .as_ref()
+            .expect("live driver always owns its signing scope");
+        let round = match current_round(
+            &scope.branch,
+            &scope.signing_session,
+            self.inclusive_maximum_round,
+            scope.finality.replay_limit().max_round(),
+        ) {
+            Ok(round) => round,
+            Err(VotingCurrentRoundErrorV0::Rejected(rejection)) => {
+                return Ok(admission_rejected(
+                    self,
+                    current_finality_proposal_event(
+                        &mut canonical_proposal_control_bytes,
+                        &mut canonical_artifact_bytes,
+                    ),
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentRound(Box::new(rejection)),
+                ));
+            }
+            Err(VotingCurrentRoundErrorV0::Fatal(source)) => {
+                return Err(FixedValidatorNodeDriverAdmissionErrorV0::CurrentRound(
+                    Box::new(source),
+                ));
+            }
+        };
+        let proposal = match verify_current_proposal_at_round(
+            &round,
+            canonical_proposal_control_bytes
+                .as_ref()
+                .expect("original current finality proposal control is retained"),
+            canonical_artifact_bytes
+                .as_ref()
+                .expect("original current finality proposal payload is retained"),
+        ) {
+            Ok(proposal) => proposal,
+            Err(source) => {
+                drop(round);
+                let rejection =
+                    source.into_admission_rejection(CurrentProposalDestinationV0::Finality);
+                return Ok(admission_rejected(
+                    self,
+                    current_finality_proposal_event(
+                        &mut canonical_proposal_control_bytes,
+                        &mut canonical_artifact_bytes,
+                    ),
+                    rejection,
+                ));
+            }
+        };
+        drop(round);
+        match self.current_finality_inbox.try_insert_proposal(proposal) {
+            Ok(CurrentRoundFinalityInboxInsertOutcomeV0::Inserted) => Ok(admitted(
+                self,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted,
+            )),
+            Ok(CurrentRoundFinalityInboxInsertOutcomeV0::AlreadyRetained) => Ok(admitted(
+                self,
+                FixedValidatorNodeDriverAdmissionDispositionV0::AlreadyRetained,
+            )),
+            Err(CurrentRoundFinalityProposalInsertErrorV0::Saturated {
+                position,
+                saturation,
+                newly_saturated,
+            }) => Ok(admission_rejected(
+                self,
+                current_finality_proposal_event(
+                    &mut canonical_proposal_control_bytes,
+                    &mut canonical_artifact_bytes,
+                ),
+                FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityInboxSaturated {
+                    position,
+                    saturation,
+                    newly_saturated,
+                },
+            )),
+            Err(CurrentRoundFinalityProposalInsertErrorV0::Reservation(source)) => {
+                Ok(admission_rejected(
+                    self,
+                    current_finality_proposal_event(
+                        &mut canonical_proposal_control_bytes,
+                        &mut canonical_artifact_bytes,
+                    ),
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityInboxReservation(
+                        source,
+                    ),
+                ))
+            }
+        }
+    }
+
+    fn admit_current_finality_precommit(
+        mut self,
+        canonical_signed_precommit: Box<[u8]>,
+    ) -> Result<
+        FixedValidatorNodeDriverAdmissionOutcomeV0<'node>,
+        FixedValidatorNodeDriverAdmissionErrorV0,
+    > {
+        let mut canonical_signed_precommit = Some(canonical_signed_precommit);
+        if let Some((position, saturation)) = self.current_finality_inbox.saturation() {
+            return Ok(admission_rejected(
+                self,
+                current_finality_precommit_event(&mut canonical_signed_precommit),
+                FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityInboxSaturated {
+                    position,
+                    saturation,
+                    newly_saturated: false,
+                },
+            ));
+        }
+        let scope = self
+            .scope
+            .as_ref()
+            .expect("live driver always owns its signing scope");
+        let round = match current_round(
+            &scope.branch,
+            &scope.signing_session,
+            self.inclusive_maximum_round,
+            scope.finality.replay_limit().max_round(),
+        ) {
+            Ok(round) => round,
+            Err(VotingCurrentRoundErrorV0::Rejected(rejection)) => {
+                return Ok(admission_rejected(
+                    self,
+                    current_finality_precommit_event(&mut canonical_signed_precommit),
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentRound(Box::new(rejection)),
+                ));
+            }
+            Err(VotingCurrentRoundErrorV0::Fatal(source)) => {
+                return Err(FixedValidatorNodeDriverAdmissionErrorV0::CurrentRound(
+                    Box::new(source),
+                ));
+            }
+        };
+        let insertion = self.current_finality_inbox.try_insert_precommit(
+            &round,
+            canonical_signed_precommit
+                .as_ref()
+                .expect("original current proposal precommit is retained"),
+        );
+        drop(round);
+        match insertion {
+            Ok(CurrentRoundFinalityInboxInsertOutcomeV0::Inserted) => Ok(admitted(
+                self,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted,
+            )),
+            Ok(CurrentRoundFinalityInboxInsertOutcomeV0::AlreadyRetained) => Ok(admitted(
+                self,
+                FixedValidatorNodeDriverAdmissionDispositionV0::AlreadyRetained,
+            )),
+            Err(CurrentRoundFinalityPrecommitInsertErrorV0::Admission(source)) => {
+                Ok(admission_rejected(
+                    self,
+                    current_finality_precommit_event(&mut canonical_signed_precommit),
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityPrecommit(source),
+                ))
+            }
+            Err(CurrentRoundFinalityPrecommitInsertErrorV0::Saturated {
+                position,
+                saturation,
+                newly_saturated,
+            }) => Ok(admission_rejected(
+                self,
+                current_finality_precommit_event(&mut canonical_signed_precommit),
+                FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityInboxSaturated {
+                    position,
+                    saturation,
+                    newly_saturated,
+                },
+            )),
+            Err(CurrentRoundFinalityPrecommitInsertErrorV0::Reservation(source)) => {
+                Ok(admission_rejected(
+                    self,
+                    current_finality_precommit_event(&mut canonical_signed_precommit),
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityInboxReservation(
+                        source,
+                    ),
+                ))
+            }
+        }
+    }
+
     fn admit_current_proposal(
         mut self,
         canonical_proposal_control_bytes: Box<[u8]>,
@@ -1135,73 +1641,27 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 ));
             }
         };
-        let payload_len = canonical_artifact_bytes
-            .as_ref()
-            .expect("original current proposal payload is retained")
-            .len();
-        if payload_len > ARTIFACT_PAYLOAD_MAX_BYTES {
-            drop(round);
-            return Ok(admission_rejected(
-                self,
-                current_proposal_event(
-                    &mut canonical_proposal_control_bytes,
-                    &mut canonical_artifact_bytes,
-                ),
-                FixedValidatorNodeDriverAdmissionRejectionV0::ProposalPayloadTooLong {
-                    actual: payload_len,
-                    maximum: ARTIFACT_PAYLOAD_MAX_BYTES,
-                },
-            ));
-        }
-        if let Err(source) = preflight_deferred_proposal_control_framing(
-            canonical_proposal_control_bytes
-                .as_ref()
-                .expect("original current proposal control is retained"),
-        ) {
-            drop(round);
-            return Ok(admission_rejected(
-                self,
-                current_proposal_event(
-                    &mut canonical_proposal_control_bytes,
-                    &mut canonical_artifact_bytes,
-                ),
-                FixedValidatorNodeDriverAdmissionRejectionV0::CurrentProposal(Box::new(source)),
-            ));
-        }
-        let mut artifact_copy = Vec::new();
-        if let Err(source) = artifact_copy.try_reserve_exact(payload_len) {
-            drop(round);
-            return Ok(admission_rejected(
-                self,
-                current_proposal_event(
-                    &mut canonical_proposal_control_bytes,
-                    &mut canonical_artifact_bytes,
-                ),
-                FixedValidatorNodeDriverAdmissionRejectionV0::ProposalPayloadCopy(source),
-            ));
-        }
-        artifact_copy.extend_from_slice(
-            canonical_artifact_bytes
-                .as_ref()
-                .expect("original current proposal payload is retained"),
-        );
-        let proposal = match verify_deferred_proposal_at_round(
+        let proposal = match verify_current_proposal_at_round(
             &round,
             canonical_proposal_control_bytes
                 .as_ref()
                 .expect("original current proposal control is retained"),
-            artifact_copy,
+            canonical_artifact_bytes
+                .as_ref()
+                .expect("original current proposal payload is retained"),
         ) {
             Ok(proposal) => proposal,
             Err(source) => {
                 drop(round);
+                let rejection =
+                    source.into_admission_rejection(CurrentProposalDestinationV0::Voting);
                 return Ok(admission_rejected(
                     self,
                     current_proposal_event(
                         &mut canonical_proposal_control_bytes,
                         &mut canonical_artifact_bytes,
                     ),
-                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentProposal(Box::new(source)),
+                    rejection,
                 ));
             }
         };
@@ -2285,6 +2745,47 @@ enum DriverCurrentSelectionV0 {
     Reservation(TryReserveError),
 }
 
+#[derive(Clone, Copy)]
+enum CurrentProposalDestinationV0 {
+    Voting,
+    Finality,
+}
+
+enum CurrentProposalVerificationErrorV0 {
+    PayloadTooLong { actual: usize, maximum: usize },
+    Control(ConsensusProposalVerifyError),
+    PayloadCopy(TryReserveError),
+}
+
+impl CurrentProposalVerificationErrorV0 {
+    fn into_admission_rejection(
+        self,
+        destination: CurrentProposalDestinationV0,
+    ) -> FixedValidatorNodeDriverAdmissionRejectionV0 {
+        match self {
+            Self::PayloadTooLong { actual, maximum } => {
+                FixedValidatorNodeDriverAdmissionRejectionV0::ProposalPayloadTooLong {
+                    actual,
+                    maximum,
+                }
+            }
+            Self::Control(source) => match destination {
+                CurrentProposalDestinationV0::Voting => {
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentProposal(Box::new(source))
+                }
+                CurrentProposalDestinationV0::Finality => {
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityProposal(Box::new(
+                        source,
+                    ))
+                }
+            },
+            Self::PayloadCopy(source) => {
+                FixedValidatorNodeDriverAdmissionRejectionV0::ProposalPayloadCopy(source)
+            }
+        }
+    }
+}
+
 fn derive_round(
     branch: &naome_consensus::FixedConsensusBranchV0,
     required_round: ConsensusRound,
@@ -2295,6 +2796,26 @@ fn derive_round(
     }
     debug_assert_eq!(round.position().round(), required_round);
     Ok(round)
+}
+
+fn verify_current_proposal_at_round(
+    round: &FixedConsensusRoundV0<'_>,
+    canonical_proposal_control_bytes: &[u8],
+    canonical_artifact_bytes: &[u8],
+) -> Result<Box<FixedValidatorNodeDeferredProposalV0>, CurrentProposalVerificationErrorV0> {
+    let payload_len = canonical_artifact_bytes.len();
+    if payload_len > ARTIFACT_PAYLOAD_MAX_BYTES {
+        return Err(CurrentProposalVerificationErrorV0::PayloadTooLong {
+            actual: payload_len,
+            maximum: ARTIFACT_PAYLOAD_MAX_BYTES,
+        });
+    }
+    preflight_deferred_proposal_control_framing(canonical_proposal_control_bytes)
+        .map_err(CurrentProposalVerificationErrorV0::Control)?;
+    let artifact_copy = try_copy_bytes(canonical_artifact_bytes)
+        .map_err(CurrentProposalVerificationErrorV0::PayloadCopy)?;
+    verify_deferred_proposal_at_round(round, canonical_proposal_control_bytes, artifact_copy)
+        .map_err(CurrentProposalVerificationErrorV0::Control)
 }
 
 fn map_create_error(
@@ -2372,6 +2893,30 @@ fn current_proposal_event(
         canonical_artifact_bytes: canonical_artifact_bytes
             .take()
             .expect("rejected current proposal retains its original payload bytes"),
+    }
+}
+
+fn current_finality_proposal_event(
+    canonical_proposal_control_bytes: &mut Option<Box<[u8]>>,
+    canonical_artifact_bytes: &mut Option<Box<[u8]>>,
+) -> FixedValidatorNodeDriverEventV0 {
+    FixedValidatorNodeDriverEventV0::CurrentRoundFinalityProposal {
+        canonical_proposal_control_bytes: canonical_proposal_control_bytes
+            .take()
+            .expect("rejected current finality proposal retains its original control bytes"),
+        canonical_artifact_bytes: canonical_artifact_bytes
+            .take()
+            .expect("rejected current finality proposal retains its original payload bytes"),
+    }
+}
+
+fn current_finality_precommit_event(
+    canonical_signed_precommit: &mut Option<Box<[u8]>>,
+) -> FixedValidatorNodeDriverEventV0 {
+    FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrecommit {
+        canonical_signed_precommit: canonical_signed_precommit
+            .take()
+            .expect("rejected current proposal precommit retains its original bytes"),
     }
 }
 

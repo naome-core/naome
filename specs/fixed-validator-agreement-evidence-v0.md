@@ -112,18 +112,20 @@ Ed25519 key and applies strict Ed25519 verification to the exact transcript.
 Success authenticates the embedded position, role, signer, and target but does
 not establish active-set membership or agreement.
 
-One `FixedConsensusRoundV0` additionally exposes narrow proposal- and
-nil-prevote admission boundaries for process-local node composition. Each first
-performs that same complete signed-vote verification against the round's branch
-context, then requires the round's exact position, `Prevote` role, the
-boundary's exact proposal or nil target class, and membership of the
-authenticated signer in the round's immutable active fixed-validator snapshot,
-in that observable rejection order. Proposal admission still treats the target
-root as opaque. Either success establishes
-neither proposal existence or validity, quorum, evidence retention or
-preference, round progression, locking, voting, or finality. The separately
-specified current- and higher-round node inboxes own any later retention under
-independent local bounds and action policies.
+One `FixedConsensusRoundV0` additionally exposes narrow proposal-prevote,
+nil-prevote, and proposal-precommit admission boundaries for process-local node
+composition. Each first performs that same complete signed-vote verification
+against the round's branch context, then requires the round's exact position,
+the boundary's exact role and target class, and membership of the authenticated
+signer in the round's immutable active fixed-validator snapshot, in that
+observable rejection order. The prevote boundaries require respectively
+`Prevote/Proposal(root)` or `Prevote/Nil`; the proposal-precommit boundary
+requires `Precommit/Proposal(root)` and rejects nil. Proposal-target admission
+still treats the root as opaque. Success establishes neither proposal existence
+or validity, quorum, evidence retention or preference, round progression,
+locking, voting, finality, nor a height transition. The separately specified
+current-, higher-, and current-round finality node inboxes own any later
+retention under independent local bounds and action policies.
 
 ## Canonical quorum certificate
 
@@ -267,6 +269,19 @@ same-signer inputs as equivocation. Caller choice of the complete batch remains
 explicit and grants no evidence-retention or consensus-selection authority.
 Any stateful collection, competing-target handling, signature-variant policy,
 or certificate preference requires a separate bounded specification.
+
+The separately specified fixed-validator current-round finality inbox uses
+this exact constructor only after individually authenticating and retaining
+proposal precommits for one node-derived round. For each evaluated proposal
+root it selects the lexicographically smallest complete canonical variant per
+active signer, supplies that complete distinct-signer set as one exact batch,
+and retains every unchosen and competing-root input. The internal inbox result
+may carry the resulting certificate bytes to the crate-private driver adapter;
+that adapter deliberately reduces it to a position-and-root descriptor and
+exposes neither the certificate nor proposal bytes through a public runtime
+surface. This operation-local policy does not change the stateless constructor,
+define a globally preferred signer subset or signature variant, infer a
+complete network view, or grant finality.
 
 ## Resource and compatibility boundary
 

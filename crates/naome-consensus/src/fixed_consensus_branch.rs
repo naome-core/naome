@@ -422,6 +422,51 @@ impl<'branch> FixedConsensusRoundV0<'branch> {
         Ok(vote)
     }
 
+    /// Strictly admits one active fixed-set proposal precommit at this exact round.
+    ///
+    /// The complete canonical vote must authenticate this branch context and
+    /// exact position, carry the `Precommit` role and a non-nil proposal target,
+    /// and name one member of this round's immutable active snapshot. Success
+    /// does not establish that the opaque target proposal exists or is valid,
+    /// form a quorum, retain the vote, select evidence, or mutate consensus.
+    pub fn decode_and_verify_active_proposal_precommit(
+        &self,
+        canonical_signed_vote: &[u8],
+    ) -> Result<VerifiedConsensusVoteV0, FixedConsensusProposalPrecommitVerifyErrorV0> {
+        let vote =
+            VerifiedConsensusVoteV0::decode_and_verify(canonical_signed_vote, self.branch.context)
+                .map_err(FixedConsensusProposalPrecommitVerifyErrorV0::Vote)?;
+        if vote.position() != self.position {
+            return Err(
+                FixedConsensusProposalPrecommitVerifyErrorV0::PositionMismatch {
+                    expected: self.position,
+                    actual: vote.position(),
+                },
+            );
+        }
+        if vote.role() != ConsensusVoteRole::Precommit {
+            return Err(FixedConsensusProposalPrecommitVerifyErrorV0::RoleMismatch {
+                actual: vote.role(),
+            });
+        }
+        if vote.target() == ConsensusVoteTarget::Nil {
+            return Err(FixedConsensusProposalPrecommitVerifyErrorV0::NilTarget);
+        }
+        if self
+            .snapshot
+            .entries()
+            .binary_search_by_key(&vote.signer(), |entry| entry.consensus_key())
+            .is_err()
+        {
+            return Err(
+                FixedConsensusProposalPrecommitVerifyErrorV0::InactiveSigner {
+                    signer: vote.signer(),
+                },
+            );
+        }
+        Ok(vote)
+    }
+
     /// Strictly admits one active fixed-set nil prevote at this exact round.
     ///
     /// The complete canonical vote must authenticate this branch context and
@@ -755,6 +800,60 @@ impl Error for FixedConsensusNilPrevoteVerifyErrorV0 {
             Self::PositionMismatch { .. }
             | Self::RoleMismatch { .. }
             | Self::ProposalTarget { .. }
+            | Self::InactiveSigner { .. } => None,
+        }
+    }
+}
+
+/// Rejection while admitting one signed proposal precommit to an exact fixed round.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixedConsensusProposalPrecommitVerifyErrorV0 {
+    /// Canonical framing, context, public key, or signature verification failed.
+    Vote(ConsensusVoteVerifyError),
+    /// The authenticated vote names another height or round.
+    PositionMismatch {
+        expected: ConsensusPosition,
+        actual: ConsensusPosition,
+    },
+    /// The authenticated vote is a prevote rather than a precommit.
+    RoleMismatch { actual: ConsensusVoteRole },
+    /// Nil precommits do not address a proposal and cannot enter this boundary.
+    NilTarget,
+    /// The verified signer is absent from this round's immutable active set.
+    InactiveSigner { signer: ConsensusKey },
+}
+
+impl fmt::Display for FixedConsensusProposalPrecommitVerifyErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Vote(source) => write!(formatter, "proposal precommit is invalid: {source}"),
+            Self::PositionMismatch { expected, actual } => write!(
+                formatter,
+                "proposal precommit position {actual:?} does not equal exact round {expected:?}"
+            ),
+            Self::RoleMismatch { actual } => {
+                write!(
+                    formatter,
+                    "proposal precommit role {actual:?} is not Precommit"
+                )
+            }
+            Self::NilTarget => formatter.write_str("proposal precommit target must be non-nil"),
+            Self::InactiveSigner { signer } => write!(
+                formatter,
+                "proposal precommit signer {signer:?} is not active at this round"
+            ),
+        }
+    }
+}
+
+impl Error for FixedConsensusProposalPrecommitVerifyErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Vote(source) => Some(source),
+            Self::PositionMismatch { .. }
+            | Self::RoleMismatch { .. }
+            | Self::NilTarget
             | Self::InactiveSigner { .. } => None,
         }
     }

@@ -8,7 +8,8 @@ use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 use super::*;
 use crate::{
     ActiveAgreementEntry, AgreementWeight, CONSENSUS_KEY_BYTES, ConsensusRound,
-    FixedConsensusBranchV0, FixedValidatorLockPhaseV0, FixedValidatorLockStateV0,
+    ConsensusVoteVerifyError, FixedConsensusBranchV0, FixedConsensusProposalPrecommitVerifyErrorV0,
+    FixedValidatorLockPhaseV0, FixedValidatorLockStateV0, VerifiedConsensusVoteV0,
 };
 
 const AUTHORIZATION_BODY_BYTES: usize = 116;
@@ -145,6 +146,21 @@ fn quorum_certificate_bytes(
         bytes.extend_from_slice(key.as_bytes());
         bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
     }
+    bytes
+}
+
+fn signed_vote_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signer: &SigningKey,
+) -> Vec<u8> {
+    let certificate = quorum_certificate_bytes(context, position, role, target, &[signer]);
+    let mut bytes = Vec::with_capacity(VerifiedConsensusVoteV0::BYTE_LENGTH);
+    bytes.extend_from_slice(&certificate[..VOTE_BODY_BYTES]);
+    bytes.extend_from_slice(&certificate[CERTIFICATE_ENTRIES_OFFSET..]);
+    assert_eq!(bytes.len(), VerifiedConsensusVoteV0::BYTE_LENGTH);
     bytes
 }
 
@@ -1939,6 +1955,130 @@ fn admitted_proposal_drives_public_prevote_and_precommit_lock_paths() {
     assert_eq!(valid.value(), value);
     assert_eq!(valid.round(), ConsensusRound::new(0));
     assert_eq!(valid.canonical_prevote_certificate(), certificate);
+}
+
+#[test]
+fn active_proposal_precommit_admission_is_exact_and_fail_closed() {
+    let fixture = fixture(0);
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        fixture.context,
+        &[ActiveAgreementEntry::new(
+            consensus_key(&fixture.proposer),
+            AgreementWeight::new(1),
+        )],
+        fixture.parent.clone(),
+    )
+    .unwrap();
+    let round = branch.begin_round_zero().unwrap();
+    let root = fixture.value.proposal_signing_root();
+    let valid = signed_vote_bytes(
+        fixture.context,
+        round.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(root),
+        &fixture.proposer,
+    );
+
+    let admitted = round
+        .decode_and_verify_active_proposal_precommit(&valid)
+        .unwrap();
+    assert_eq!(admitted.position(), round.position());
+    assert_eq!(admitted.role(), ConsensusVoteRole::Precommit);
+    assert_eq!(admitted.target(), ConsensusVoteTarget::Proposal(root));
+    assert_eq!(admitted.signer(), consensus_key(&fixture.proposer));
+    assert_eq!(admitted.to_canonical_bytes().as_slice(), valid);
+
+    let inactive = signing_key(909);
+    let wrong_position = position(
+        round.position().height().value(),
+        round.position().round().value() + 1,
+    );
+    let wrong_position_role_target_and_signer = signed_vote_bytes(
+        fixture.context,
+        wrong_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &inactive,
+    );
+    assert_eq!(
+        round
+            .decode_and_verify_active_proposal_precommit(&wrong_position_role_target_and_signer,)
+            .unwrap_err(),
+        FixedConsensusProposalPrecommitVerifyErrorV0::PositionMismatch {
+            expected: round.position(),
+            actual: wrong_position,
+        }
+    );
+
+    let wrong_role_target_and_signer = signed_vote_bytes(
+        fixture.context,
+        round.position(),
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &inactive,
+    );
+    assert_eq!(
+        round
+            .decode_and_verify_active_proposal_precommit(&wrong_role_target_and_signer)
+            .unwrap_err(),
+        FixedConsensusProposalPrecommitVerifyErrorV0::RoleMismatch {
+            actual: ConsensusVoteRole::Prevote,
+        }
+    );
+
+    let nil_target_and_inactive_signer = signed_vote_bytes(
+        fixture.context,
+        round.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Nil,
+        &inactive,
+    );
+    assert_eq!(
+        round
+            .decode_and_verify_active_proposal_precommit(&nil_target_and_inactive_signer)
+            .unwrap_err(),
+        FixedConsensusProposalPrecommitVerifyErrorV0::NilTarget
+    );
+
+    let inactive_signer = signed_vote_bytes(
+        fixture.context,
+        round.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(root),
+        &inactive,
+    );
+    assert_eq!(
+        round
+            .decode_and_verify_active_proposal_precommit(&inactive_signer)
+            .unwrap_err(),
+        FixedConsensusProposalPrecommitVerifyErrorV0::InactiveSigner {
+            signer: consensus_key(&inactive),
+        }
+    );
+
+    let foreign_context = context(fixture.context.chain_id(), 0x43, 7);
+    let foreign = signed_vote_bytes(
+        foreign_context,
+        wrong_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &inactive,
+    );
+    assert!(matches!(
+        round.decode_and_verify_active_proposal_precommit(&foreign),
+        Err(FixedConsensusProposalPrecommitVerifyErrorV0::Vote(
+            ConsensusVoteVerifyError::GenesisIdMismatch { .. }
+        ))
+    ));
+
+    let mut invalid_signature = wrong_position_role_target_and_signer;
+    *invalid_signature.last_mut().unwrap() ^= 1;
+    assert!(matches!(
+        round.decode_and_verify_active_proposal_precommit(&invalid_signature),
+        Err(FixedConsensusProposalPrecommitVerifyErrorV0::Vote(
+            ConsensusVoteVerifyError::InvalidSignature { .. }
+        ))
+    ));
 }
 
 #[test]
