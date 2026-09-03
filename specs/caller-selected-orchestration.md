@@ -508,6 +508,59 @@ peer order, or establish peer trust, reachability, global availability,
 consensus ancestry, consensus, finality, economics, or protocol-wide resource
 authority.
 
+### Explicit fixed-validator acquisition-to-vote composition
+
+One optional caller-owned fixed-validator V0 composition may use the anchored
+finality journal exposed read-only by a live node signing scope as the
+`SelectedArtifactHistory` input to the existing candidate-ancestry and
+candidate-branch payload fills. The caller supplies one exact unselected target,
+complete proposal-control bytes, matching chain-scoped candidate and
+Foundation-scoped payload stores, positive reconstruction limits, and one exact
+statically configured Noise-authenticated peer for each direct fill. The caller
+owns the Tokio runtime, drives both network event loops, routes only exact
+correlated terminals, and explicitly starts each phase. The composition defines
+no background task, daemon, automatic phase transition, retry, delivery
+acknowledgement, peer selection, or target selection.
+
+The ancestry fill must complete before the payload fill starts. Its durable
+candidate insertion establishes only an unselected structural path and is not a
+payload-validation token. The payload fill therefore repeats its own selected-
+history, candidate-path, archive, and strict artifact validation and completes
+only after every required payload is durably inserted or idempotently confirmed.
+Neither fill mutates the selected-finality owner. A peer session and a successful
+response authenticate only the immediate transport endpoint and exact correlated
+exchange; they establish no provenance, truth, validity, selection, availability,
+consensus, or finality authority.
+
+Before the exact candidate path is retained, the existing candidate-backed
+prevote adapter returns its typed candidate-unavailable rejection with the
+unchanged signing scope. After block acquisition but before complete payload
+reconstruction, it likewise returns payload-unavailable. Even after both fills,
+store presence is not cached validation: the candidate-backed prevote path
+integrity-reads both stores and completely re-verifies the node-derived round,
+proposal control, producer authorization, block, payload, and lock effect before
+any signer write. Invalid proposal control therefore remains a no-signature
+rejection. The candidate-backed precommit path repeats the same source and
+proposal checks and additionally constructs and verifies the exact caller-routed
+prevote batch before signing.
+
+The Unix reference vector uses a one-validator fixed set, passes the exact
+anchored prevote it just received as the complete precommit batch, and proves
+that successful voting changes only the signer journal-and-anchor pair. Both
+caller-routed source stores and the finality journal-and-anchor pair remain
+byte-identical during voting, the acquired stores reopen with the exact target
+and payload, and strict node restart recovers the completed Precommit state.
+This is local two-peer transport evidence for one explicit library composition,
+not production liveness or a two-validator consensus claim.
+
+This composition does not acquire or route proposal-control or vote messages,
+observe its own returned vote automatically, select a consensus event or branch,
+advance or roll back finality, import or promote the candidate, provide
+cross-store atomicity, define operation-bearing blocks, integrate dynamic
+validators, or choose timeout, scheduling, custody, key-loading, retry, or
+production-runtime policy. Those remain separate component and product
+boundaries.
+
 ## Sequential ancestry import
 
 `ArtifactBlockAncestryImport` consumes one completed unselected ancestry so the
