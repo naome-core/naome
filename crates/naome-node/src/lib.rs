@@ -23,14 +23,16 @@
 //! proposal-bearing quorum using local lexicographic evidence normalization,
 //! while a closure-scoped driver owns that inbox, a separately bounded current-
 //! round proposal/proposal-or-nil-prevote inbox, a third independently bounded
-//! exact-current proposal-finality inbox, and the sole signing scope. The
+//! exact-current proposal-finality inbox, a fourth independently bounded
+//! exact-current nil-precommit inbox, and the sole signing scope. The
 //! proposal-finality inbox admits and retains proposals and proposal precommits
 //! for deterministic exact-current classification. After pending-command
 //! custody, the driver executes one unique proposal-backed precommit quorum
 //! through the fully verifying anchored finality coordinator before all voting
 //! or due work; a missing proposal or multiple quorate roots blocks without
 //! choosing, while finality saturation remains class-local. The driver next
-//! prioritizes one unique actionable higher-round pair, then drives one
+//! prioritizes one unique actionable higher-round pair, then advances one
+//! exact-current nil-precommit quorum to the next round before it drives one
 //! unambiguous current proposal through anchored prevote or one sole matching
 //! proposal or nil current quorum through anchored precommit, ahead of the
 //! exact phase-local opaque generation-bound due return. Simultaneously
@@ -61,12 +63,18 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeCurrentRoundFinalityRejectionV0,
     FixedValidatorNodeCurrentRoundInboxDrainItemV0, FixedValidatorNodeCurrentRoundInboxDrainV0,
     FixedValidatorNodeCurrentRoundInboxLimitsErrorV0, FixedValidatorNodeCurrentRoundInboxLimitsV0,
-    FixedValidatorNodeCurrentRoundInboxSaturationV0, FixedValidatorNodeDeferredProposalV0,
-    FixedValidatorNodeDirectoriesV0, FixedValidatorNodeDriverActionV0,
-    FixedValidatorNodeDriverAdmissionDispositionV0, FixedValidatorNodeDriverAdmissionErrorV0,
-    FixedValidatorNodeDriverAdmissionOutcomeV0, FixedValidatorNodeDriverAdmissionRejectionV0,
-    FixedValidatorNodeDriverBlockReasonV0, FixedValidatorNodeDriverCommandV0,
-    FixedValidatorNodeDriverCreateErrorV0, FixedValidatorNodeDriverCurrentFinalityDrainV0,
+    FixedValidatorNodeCurrentRoundInboxSaturationV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsErrorV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0,
+    FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeDirectoriesV0,
+    FixedValidatorNodeDriverActionV0, FixedValidatorNodeDriverAdmissionDispositionV0,
+    FixedValidatorNodeDriverAdmissionErrorV0, FixedValidatorNodeDriverAdmissionOutcomeV0,
+    FixedValidatorNodeDriverAdmissionRejectionV0, FixedValidatorNodeDriverBlockReasonV0,
+    FixedValidatorNodeDriverCommandV0, FixedValidatorNodeDriverCreateErrorV0,
+    FixedValidatorNodeDriverCurrentFinalityDrainV0,
+    FixedValidatorNodeDriverCurrentNilPrecommitDrainV0,
     FixedValidatorNodeDriverCurrentRoundDrainV0, FixedValidatorNodeDriverDrainV0,
     FixedValidatorNodeDriverEventV0, FixedValidatorNodeDriverStepErrorV0,
     FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverStepRejectionV0,

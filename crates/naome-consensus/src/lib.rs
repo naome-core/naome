@@ -7,7 +7,7 @@
 //! operator-minimum epochs through a numeric freshness window, and checks a
 //! caller-supplied upgrade activation epoch against a numeric minimum delay. It
 //! also freezes already selected agreement snapshots for standalone threshold
-//! and evidence verification, admits individually verified active prevotes
+//! and evidence verification, admits individually verified active votes
 //! against an exact typed round, and canonically assembles one exact
 //! caller-routed signed-vote batch against a typed round. Its typed V0 branch constructs one
 //! caller-selected fixed set only at a matching artifact virtual genesis; derives exact
@@ -50,11 +50,11 @@ pub use consensus_value::{
 pub use fixed_consensus_branch::{
     FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBoundedSeparateFinalityVerifyError,
     FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusGenesisError,
-    FixedConsensusNilPrevoteVerifyErrorV0, FixedConsensusPrecommitBatchSealErrorV0,
-    FixedConsensusProposalPrecommitVerifyErrorV0, FixedConsensusProposalPrevoteVerifyErrorV0,
-    FixedConsensusProposalValueVerifyErrorV0, FixedConsensusRoundV0,
-    OwnedVerifiedFixedConsensusTransitionV0, VerifiedFixedConsensusProposalV0,
-    VerifiedFixedConsensusTransitionV0,
+    FixedConsensusNilPrecommitVerifyErrorV0, FixedConsensusNilPrevoteVerifyErrorV0,
+    FixedConsensusPrecommitBatchSealErrorV0, FixedConsensusProposalPrecommitVerifyErrorV0,
+    FixedConsensusProposalPrevoteVerifyErrorV0, FixedConsensusProposalValueVerifyErrorV0,
+    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0,
+    VerifiedFixedConsensusProposalV0, VerifiedFixedConsensusTransitionV0,
 };
 pub use fixed_validator_lock_state::{
     FixedValidatorHigherRoundCheckpointErrorV0, FixedValidatorLockPhaseV0,

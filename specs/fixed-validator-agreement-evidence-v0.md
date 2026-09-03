@@ -112,20 +112,21 @@ Ed25519 key and applies strict Ed25519 verification to the exact transcript.
 Success authenticates the embedded position, role, signer, and target but does
 not establish active-set membership or agreement.
 
-One `FixedConsensusRoundV0` additionally exposes narrow proposal-prevote,
-nil-prevote, and proposal-precommit admission boundaries for process-local node
-composition. Each first performs that same complete signed-vote verification
-against the round's branch context, then requires the round's exact position,
-the boundary's exact role and target class, and membership of the authenticated
-signer in the round's immutable active fixed-validator snapshot, in that
-observable rejection order. The prevote boundaries require respectively
-`Prevote/Proposal(root)` or `Prevote/Nil`; the proposal-precommit boundary
-requires `Precommit/Proposal(root)` and rejects nil. Proposal-target admission
-still treats the root as opaque. Success establishes neither proposal existence
-or validity, quorum, evidence retention or preference, round progression,
-locking, voting, finality, nor a height transition. The separately specified
-current-, higher-, and current-round finality node inboxes own any later
-retention under independent local bounds and action policies.
+One `FixedConsensusRoundV0` additionally exposes narrow proposal-prevote, nil-
+prevote, proposal-precommit, and nil-precommit admission boundaries for
+process-local node composition. Each first performs that same complete signed-
+vote verification against the round's branch context, then requires the
+round's exact position, the boundary's exact role and target class, and
+membership of the authenticated signer in the round's immutable active fixed-
+validator snapshot, in that observable rejection order. The prevote boundaries
+require respectively `Prevote/Proposal(root)` or `Prevote/Nil`; the precommit
+boundaries require respectively `Precommit/Proposal(root)` or
+`Precommit/Nil`. Proposal-target admission still treats the root as opaque.
+Success establishes neither proposal existence or validity, quorum, evidence
+retention or preference, round progression, locking, voting, finality, nor a
+height transition. The separately specified current-voting, higher-round,
+current-round finality, and current-round nil-precommit node inboxes own any
+later retention under independent local bounds and action policies.
 
 ## Canonical quorum certificate
 
@@ -282,6 +283,17 @@ exposes neither the certificate nor proposal bytes through a public runtime
 surface. This operation-local policy does not change the stateless constructor,
 define a globally preferred signer subset or signature variant, infer a
 complete network view, or grant finality.
+
+The separately specified fixed-validator current-round nil-precommit inbox
+likewise uses the constructor only after individually authenticating and
+retaining exact-current `Precommit/Nil` votes. It selects the lexicographically
+smallest complete canonical variant per active signer and supplies only that
+complete distinct-signer set as one exact batch while retaining every unchosen
+variant. Because the inbox admits one role and target class, this operation-
+local policy makes no target choice. It does not change the constructor, define
+a globally preferred signer subset or signature variant, infer a complete
+network view, or grant round-progression, branch-selection, or finality
+authority.
 
 ## Resource and compatibility boundary
 

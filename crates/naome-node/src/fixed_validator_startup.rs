@@ -33,6 +33,7 @@ use naome_storage::{
 mod candidate_backed_proposal;
 mod current_round_finality_inbox;
 mod current_round_inbox;
+mod current_round_nil_precommit_inbox;
 mod driver;
 mod finality;
 mod higher_round_inbox;
@@ -55,16 +56,23 @@ pub use current_round_inbox::{
     FixedValidatorNodeCurrentRoundInboxLimitsErrorV0, FixedValidatorNodeCurrentRoundInboxLimitsV0,
     FixedValidatorNodeCurrentRoundInboxSaturationV0,
 };
+pub use current_round_nil_precommit_inbox::{
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsErrorV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0,
+};
 pub use driver::{
     FixedValidatorNodeDriverActionV0, FixedValidatorNodeDriverAdmissionDispositionV0,
     FixedValidatorNodeDriverAdmissionErrorV0, FixedValidatorNodeDriverAdmissionOutcomeV0,
     FixedValidatorNodeDriverAdmissionRejectionV0, FixedValidatorNodeDriverBlockReasonV0,
     FixedValidatorNodeDriverCommandV0, FixedValidatorNodeDriverCreateErrorV0,
-    FixedValidatorNodeDriverCurrentFinalityDrainV0, FixedValidatorNodeDriverCurrentRoundDrainV0,
-    FixedValidatorNodeDriverDrainV0, FixedValidatorNodeDriverEventV0,
-    FixedValidatorNodeDriverStepErrorV0, FixedValidatorNodeDriverStepOutcomeV0,
-    FixedValidatorNodeDriverStepRejectionV0, FixedValidatorNodeDriverV0,
-    FixedValidatorNodePhaseTimeoutV0,
+    FixedValidatorNodeDriverCurrentFinalityDrainV0,
+    FixedValidatorNodeDriverCurrentNilPrecommitDrainV0,
+    FixedValidatorNodeDriverCurrentRoundDrainV0, FixedValidatorNodeDriverDrainV0,
+    FixedValidatorNodeDriverEventV0, FixedValidatorNodeDriverStepErrorV0,
+    FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverStepRejectionV0,
+    FixedValidatorNodeDriverV0, FixedValidatorNodePhaseTimeoutV0,
 };
 pub use finality::{
     FixedValidatorNodeCandidateBackedFinalityErrorV0,

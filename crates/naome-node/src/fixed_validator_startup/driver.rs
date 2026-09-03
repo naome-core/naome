@@ -5,10 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use naome_consensus::{
     ConsensusContextV0, ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError,
-    ConsensusRound, ConsensusVoteVerifyError, FixedConsensusNilPrevoteVerifyErrorV0,
-    FixedConsensusProposalPrecommitVerifyErrorV0, FixedConsensusProposalPrevoteVerifyErrorV0,
-    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, ProposalSigningRoot, ProposerSelectionError,
-    QuorumCertificateBuildError, VerifiedConsensusVoteV0,
+    ConsensusRound, ConsensusVoteVerifyError, FixedConsensusNilPrecommitVerifyErrorV0,
+    FixedConsensusNilPrevoteVerifyErrorV0, FixedConsensusProposalPrecommitVerifyErrorV0,
+    FixedConsensusProposalPrevoteVerifyErrorV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
+    ProposalSigningRoot, ProposerSelectionError, QuorumCertificateBuildError,
+    VerifiedConsensusVoteV0,
 };
 use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
 use naome_storage::{
@@ -28,6 +29,11 @@ use super::current_round_inbox::{
     CurrentRoundProposalSelectionV0, CurrentRoundQuorumSelectionErrorV0,
     CurrentRoundQuorumSelectionV0,
 };
+use super::current_round_nil_precommit_inbox::{
+    CurrentRoundNilPrecommitInboxInsertOutcomeV0, CurrentRoundNilPrecommitInboxV0,
+    CurrentRoundNilPrecommitInsertErrorV0, CurrentRoundNilPrecommitPreclassificationV0,
+    CurrentRoundNilPrecommitQuorumSelectionErrorV0, CurrentRoundNilPrecommitQuorumSelectionV0,
+};
 use super::higher_round_proposal_pairing::{ActionableInboxSelectionV0, ActionableInboxSnapshotV0};
 use super::proposal_deferral::{
     CurrentRoundErrorV0, preflight_deferred_proposal_control_framing,
@@ -45,6 +51,9 @@ use super::{
     FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
     FixedValidatorNodeCurrentRoundFinalityRejectionV0, FixedValidatorNodeCurrentRoundInboxDrainV0,
     FixedValidatorNodeCurrentRoundInboxLimitsV0, FixedValidatorNodeCurrentRoundInboxSaturationV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0,
     FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeFinalityOutcomeV0,
     FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
     FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodeHigherRoundInboxLimitsV0,
@@ -121,6 +130,10 @@ pub enum FixedValidatorNodeDriverEventV0 {
     },
     /// One complete canonical signed current-round proposal precommit.
     CurrentRoundProposalPrecommit {
+        canonical_signed_precommit: Box<[u8]>,
+    },
+    /// One complete canonical signed exact-current nil precommit.
+    CurrentRoundNilPrecommit {
         canonical_signed_precommit: Box<[u8]>,
     },
     /// Complete raw inputs for one descriptively routed higher-round proposal.
@@ -206,6 +219,8 @@ pub enum FixedValidatorNodeDriverAdmissionRejectionV0 {
     CurrentFinalityProposal(Box<ConsensusProposalVerifyError>),
     /// Exact current-round active proposal-precommit admission failed.
     CurrentFinalityPrecommit(FixedConsensusProposalPrecommitVerifyErrorV0),
+    /// Exact current-round active nil-precommit admission failed.
+    CurrentNilPrecommit(FixedConsensusNilPrecommitVerifyErrorV0),
     /// The dedicated current proposal-finality inbox entered or retained saturation.
     CurrentFinalityInboxSaturated {
         position: ConsensusPosition,
@@ -214,6 +229,14 @@ pub enum FixedValidatorNodeDriverAdmissionRejectionV0 {
     },
     /// The dedicated current proposal-finality inbox could not reserve one slot.
     CurrentFinalityInboxReservation(TryReserveError),
+    /// The dedicated current nil-precommit inbox entered or retained saturation.
+    CurrentNilPrecommitInboxSaturated {
+        position: ConsensusPosition,
+        saturation: FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0,
+        newly_saturated: bool,
+    },
+    /// The dedicated current nil-precommit inbox could not reserve one slot.
+    CurrentNilPrecommitInboxReservation(TryReserveError),
     /// The separate current-round inbox entered or retained saturation.
     CurrentInboxSaturated {
         position: ConsensusPosition,
@@ -301,6 +324,9 @@ impl fmt::Display for FixedValidatorNodeDriverAdmissionRejectionV0 {
                 formatter,
                 "current proposal precommit was rejected: {source}"
             ),
+            Self::CurrentNilPrecommit(source) => {
+                write!(formatter, "current nil precommit was rejected: {source}")
+            }
             Self::CurrentFinalityInboxSaturated {
                 position,
                 saturation,
@@ -312,6 +338,18 @@ impl fmt::Display for FixedValidatorNodeDriverAdmissionRejectionV0 {
             Self::CurrentFinalityInboxReservation(source) => write!(
                 formatter,
                 "current proposal-finality inbox reservation failed before insertion: {source}"
+            ),
+            Self::CurrentNilPrecommitInboxSaturated {
+                position,
+                saturation,
+                ..
+            } => write!(
+                formatter,
+                "current nil-precommit evidence for {position:?} was not retained because {saturation}"
+            ),
+            Self::CurrentNilPrecommitInboxReservation(source) => write!(
+                formatter,
+                "current nil-precommit inbox reservation failed before insertion: {source}"
             ),
             Self::CurrentInboxSaturated {
                 position,
@@ -367,7 +405,9 @@ impl Error for FixedValidatorNodeDriverAdmissionRejectionV0 {
             Self::CurrentNilPrevote(source) => Some(source),
             Self::CurrentFinalityProposal(source) => Some(source.as_ref()),
             Self::CurrentFinalityPrecommit(source) => Some(source),
+            Self::CurrentNilPrecommit(source) => Some(source),
             Self::CurrentFinalityInboxReservation(source) => Some(source),
+            Self::CurrentNilPrecommitInboxReservation(source) => Some(source),
             Self::CurrentInboxReservation(source) => Some(source),
             Self::ProposalInbox(source) => Some(source.as_ref()),
             Self::PrevoteRouting(source) => Some(source),
@@ -378,6 +418,7 @@ impl Error for FixedValidatorNodeDriverAdmissionRejectionV0 {
             | Self::CurrentEvidenceWrongPhase { .. }
             | Self::CurrentInboxSaturated { .. }
             | Self::CurrentFinalityInboxSaturated { .. }
+            | Self::CurrentNilPrecommitInboxSaturated { .. }
             | Self::ProposalPayloadTooLong { .. }
             | Self::PrevoteHeightMismatch { .. }
             | Self::PrevoteNotHigher { .. }
@@ -680,10 +721,12 @@ pub enum FixedValidatorNodeDriverStepRejectionV0 {
     EvidenceExecution(Box<FixedValidatorNodeBufferedProposalPrecommitRejectionV0>),
     /// A current-evidence vote or exact due Proposal/Prevote close was rejected before mutation.
     Vote(Box<FixedValidatorNodeVoteRejectionV0>),
-    /// The exact due Precommit close was rejected before mutation.
+    /// Exact-current round progression was rejected before mutation.
     RoundAdvance(Box<FixedValidatorNodeRoundAdvanceRejectionV0>),
     /// Retained finality votes violated exact certificate-construction invariants.
     CurrentFinalitySelection(Box<QuorumCertificateBuildError>),
+    /// Retained nil precommits violated exact batch-construction invariants.
+    CurrentNilPrecommitSelection(Box<QuorumCertificateBuildError>),
     /// Fully reverified current finality evidence was rejected before mutation.
     CurrentFinality(Box<FixedValidatorNodeCurrentRoundFinalityRejectionV0>),
 }
@@ -701,6 +744,7 @@ impl fmt::Display for FixedValidatorNodeDriverStepRejectionV0 {
             Self::Vote(source) => source.fmt(formatter),
             Self::RoundAdvance(source) => source.fmt(formatter),
             Self::CurrentFinalitySelection(source) => source.fmt(formatter),
+            Self::CurrentNilPrecommitSelection(source) => source.fmt(formatter),
             Self::CurrentFinality(source) => source.fmt(formatter),
         }
     }
@@ -716,6 +760,7 @@ impl Error for FixedValidatorNodeDriverStepRejectionV0 {
             Self::Vote(source) => Some(source.as_ref()),
             Self::RoundAdvance(source) => Some(source.as_ref()),
             Self::CurrentFinalitySelection(source) => Some(source.as_ref()),
+            Self::CurrentNilPrecommitSelection(source) => Some(source.as_ref()),
             Self::CurrentFinality(source) => Some(source.as_ref()),
         }
     }
@@ -770,7 +815,7 @@ pub enum FixedValidatorNodeDriverStepOutcomeV0<'node> {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FixedValidatorNodeDriverStepErrorV0 {
-    /// A retained higher-round position could not be derived.
+    /// A driver evidence position or round could not be derived.
     Round(ProposerSelectionError),
     /// The checked timer generation has no successor.
     TimeoutGenerationExhausted { generation: u64 },
@@ -778,7 +823,7 @@ pub enum FixedValidatorNodeDriverStepErrorV0 {
     Evidence(Box<FixedValidatorNodeBufferedProposalPrecommitErrorV0>),
     /// Proposal- or Prevote-close voting failed after the consuming boundary began.
     Vote(Box<FixedValidatorNodeVoteExecutionErrorV0>),
-    /// Precommit-close progression failed after the consuming boundary began.
+    /// Exact-current round progression failed after the consuming boundary began.
     RoundAdvance(Box<FixedValidatorNodeRoundAdvanceErrorV0>),
     /// Current-round finality failed after the consuming boundary began.
     CurrentFinality(Box<FixedValidatorNodeCurrentRoundFinalityErrorV0>),
@@ -832,6 +877,25 @@ pub struct FixedValidatorNodeDriverCurrentRoundDrainV0<'node> {
 pub struct FixedValidatorNodeDriverCurrentFinalityDrainV0<'node> {
     driver: Box<FixedValidatorNodeDriverV0<'node>>,
     drained: FixedValidatorNodeCurrentRoundFinalityInboxDrainV0,
+}
+
+/// Lossless result of clearing only exact-current nil-precommit evidence.
+#[must_use]
+pub struct FixedValidatorNodeDriverCurrentNilPrecommitDrainV0<'node> {
+    driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    drained: FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0,
+}
+
+impl<'node> FixedValidatorNodeDriverCurrentNilPrecommitDrainV0<'node> {
+    /// Separates the continuing driver from every retained nil precommit.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Box<FixedValidatorNodeDriverV0<'node>>,
+        FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0,
+    ) {
+        (self.driver, self.drained)
+    }
 }
 
 impl<'node> FixedValidatorNodeDriverCurrentFinalityDrainV0<'node> {
@@ -954,6 +1018,7 @@ pub struct FixedValidatorNodeDriverV0<'node> {
     inbox: FixedValidatorNodeHigherRoundInboxV0,
     current_inbox: CurrentRoundInboxV0,
     current_finality_inbox: CurrentRoundFinalityInboxV0,
+    current_nil_precommit_inbox: CurrentRoundNilPrecommitInboxV0,
     inclusive_maximum_round: ConsensusRound,
     lineage: u64,
     generation: u64,
@@ -974,6 +1039,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         inbox_limits: FixedValidatorNodeHigherRoundInboxLimitsV0,
         current_inbox_limits: FixedValidatorNodeCurrentRoundInboxLimitsV0,
         current_finality_inbox_limits: FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
+        current_nil_precommit_inbox_limits: FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
         inclusive_maximum_round: ConsensusRound,
     ) -> Result<Self, FixedValidatorNodeDriverCreateErrorV0> {
         let finality_maximum_round = scope.finality.replay_limit().max_round();
@@ -1005,6 +1071,9 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             inbox: FixedValidatorNodeHigherRoundInboxV0::new(inbox_limits),
             current_inbox: CurrentRoundInboxV0::new(current_inbox_limits),
             current_finality_inbox: CurrentRoundFinalityInboxV0::new(current_finality_inbox_limits),
+            current_nil_precommit_inbox: CurrentRoundNilPrecommitInboxV0::new(
+                current_nil_precommit_inbox_limits,
+            ),
             inclusive_maximum_round,
             lineage,
             generation: 0,
@@ -1054,6 +1123,17 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     /// Returns the finality inbox's checked logical canonical-input byte count.
     pub const fn current_finality_inbox_canonical_input_bytes(&self) -> u64 {
         self.current_finality_inbox.total_canonical_input_bytes()
+    }
+
+    /// Returns the dedicated exact-current nil-precommit count.
+    pub fn current_nil_precommit_inbox_len(&self) -> usize {
+        self.current_nil_precommit_inbox.len()
+    }
+
+    /// Returns the nil-precommit inbox's checked canonical-input byte count.
+    pub const fn current_nil_precommit_inbox_canonical_input_bytes(&self) -> u64 {
+        self.current_nil_precommit_inbox
+            .total_canonical_input_bytes()
     }
 
     /// Classifies current proposal-finality evidence without changing driver work.
@@ -1156,12 +1236,13 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 FixedValidatorNodeDriverAdmissionRejectionV0::CommandPending,
             ));
         }
-        let is_finality_event = matches!(
+        let bypasses_higher_block = matches!(
             &event,
             FixedValidatorNodeDriverEventV0::CurrentRoundFinalityProposal { .. }
                 | FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrecommit { .. }
+                | FixedValidatorNodeDriverEventV0::CurrentRoundNilPrecommit { .. }
         );
-        if !is_finality_event && let Some(reason) = self.higher_block_reason() {
+        if !bypasses_higher_block && let Some(reason) = self.higher_block_reason() {
             return Ok(admission_rejected(
                 self,
                 event,
@@ -1179,6 +1260,9 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrecommit {
                 canonical_signed_precommit,
             } => self.admit_current_finality_precommit(canonical_signed_precommit),
+            FixedValidatorNodeDriverEventV0::CurrentRoundNilPrecommit {
+                canonical_signed_precommit,
+            } => self.admit_current_nil_precommit(canonical_signed_precommit),
             FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
                 canonical_proposal_control_bytes,
                 canonical_artifact_bytes,
@@ -1408,6 +1492,33 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             }
         }
 
+        match self.select_current_nil_precommit()? {
+            DriverCurrentNilPrecommitSelectionV0::None => {}
+            DriverCurrentNilPrecommitSelectionV0::One {
+                canonical_signed_precommits,
+            } => {
+                return self.execute_current_nil_precommit(canonical_signed_precommits);
+            }
+            DriverCurrentNilPrecommitSelectionV0::Rejected(source) => {
+                return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                    driver: Box::new(self),
+                    rejection: Box::new(
+                        FixedValidatorNodeDriverStepRejectionV0::CurrentNilPrecommitSelection(
+                            Box::new(source),
+                        ),
+                    ),
+                });
+            }
+            DriverCurrentNilPrecommitSelectionV0::Reservation(source) => {
+                return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                    driver: Box::new(self),
+                    rejection: Box::new(
+                        FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(source),
+                    ),
+                });
+            }
+        }
+
         if let Some(reason) = self.current_block_reason() {
             return Ok(FixedValidatorNodeDriverStepOutcomeV0::Blocked {
                 driver: Box::new(self),
@@ -1513,6 +1624,20 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     ) -> FixedValidatorNodeDriverCurrentFinalityDrainV0<'node> {
         let drained = self.current_finality_inbox.drain_and_reset();
         FixedValidatorNodeDriverCurrentFinalityDrainV0 {
+            driver: Box::new(self),
+            drained,
+        }
+    }
+
+    /// Losslessly returns all separately budgeted current nil precommits.
+    ///
+    /// Every other inbox, timer, due state, pending command, signing state, and
+    /// durable authority file remains unchanged.
+    pub fn drain_current_nil_precommit_inbox_and_reset(
+        mut self,
+    ) -> FixedValidatorNodeDriverCurrentNilPrecommitDrainV0<'node> {
+        let drained = self.current_nil_precommit_inbox.drain_and_reset();
+        FixedValidatorNodeDriverCurrentNilPrecommitDrainV0 {
             driver: Box::new(self),
             drained,
         }
@@ -1718,6 +1843,97 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                     self,
                     current_finality_precommit_event(&mut canonical_signed_precommit),
                     FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityInboxReservation(
+                        source,
+                    ),
+                ))
+            }
+        }
+    }
+
+    fn admit_current_nil_precommit(
+        mut self,
+        canonical_signed_precommit: Box<[u8]>,
+    ) -> Result<
+        FixedValidatorNodeDriverAdmissionOutcomeV0<'node>,
+        FixedValidatorNodeDriverAdmissionErrorV0,
+    > {
+        let mut canonical_signed_precommit = Some(canonical_signed_precommit);
+        if let Some((position, saturation)) = self.current_nil_precommit_inbox.saturation() {
+            return Ok(admission_rejected(
+                self,
+                current_nil_precommit_event(&mut canonical_signed_precommit),
+                FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrecommitInboxSaturated {
+                    position,
+                    saturation,
+                    newly_saturated: false,
+                },
+            ));
+        }
+        let scope = self
+            .scope
+            .as_ref()
+            .expect("live driver always owns its signing scope");
+        let round = match current_round(
+            &scope.branch,
+            &scope.signing_session,
+            self.inclusive_maximum_round,
+            scope.finality.replay_limit().max_round(),
+        ) {
+            Ok(round) => round,
+            Err(VotingCurrentRoundErrorV0::Rejected(rejection)) => {
+                return Ok(admission_rejected(
+                    self,
+                    current_nil_precommit_event(&mut canonical_signed_precommit),
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentRound(Box::new(rejection)),
+                ));
+            }
+            Err(VotingCurrentRoundErrorV0::Fatal(source)) => {
+                return Err(FixedValidatorNodeDriverAdmissionErrorV0::CurrentRound(
+                    Box::new(source),
+                ));
+            }
+        };
+        let insertion = self.current_nil_precommit_inbox.try_insert_nil_precommit(
+            &round,
+            canonical_signed_precommit
+                .as_ref()
+                .expect("original current nil precommit is retained"),
+        );
+        drop(round);
+        match insertion {
+            Ok(CurrentRoundNilPrecommitInboxInsertOutcomeV0::Inserted) => Ok(admitted(
+                self,
+                FixedValidatorNodeDriverAdmissionDispositionV0::Inserted,
+            )),
+            Ok(CurrentRoundNilPrecommitInboxInsertOutcomeV0::AlreadyRetained) => Ok(admitted(
+                self,
+                FixedValidatorNodeDriverAdmissionDispositionV0::AlreadyRetained,
+            )),
+            Err(CurrentRoundNilPrecommitInsertErrorV0::Admission(source)) => {
+                Ok(admission_rejected(
+                    self,
+                    current_nil_precommit_event(&mut canonical_signed_precommit),
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrecommit(source),
+                ))
+            }
+            Err(CurrentRoundNilPrecommitInsertErrorV0::Saturated {
+                position,
+                saturation,
+                newly_saturated,
+            }) => Ok(admission_rejected(
+                self,
+                current_nil_precommit_event(&mut canonical_signed_precommit),
+                FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrecommitInboxSaturated {
+                    position,
+                    saturation,
+                    newly_saturated,
+                },
+            )),
+            Err(CurrentRoundNilPrecommitInsertErrorV0::Reservation(source)) => {
+                Ok(admission_rejected(
+                    self,
+                    current_nil_precommit_event(&mut canonical_signed_precommit),
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrecommitInboxReservation(
                         source,
                     ),
                 ))
@@ -2568,6 +2784,87 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         }
     }
 
+    fn select_current_nil_precommit(
+        &self,
+    ) -> Result<DriverCurrentNilPrecommitSelectionV0, FixedValidatorNodeDriverStepErrorV0> {
+        let position = self.position();
+        let parent_coordinate = self.scope().branch.coordinate();
+        if matches!(
+            self.current_nil_precommit_inbox
+                .preclassify(parent_coordinate, position),
+            CurrentRoundNilPrecommitPreclassificationV0::NoMatchingPrecommit
+        ) {
+            return Ok(DriverCurrentNilPrecommitSelectionV0::None);
+        }
+        let round = derive_round(&self.scope().branch, position.round())
+            .map_err(FixedValidatorNodeDriverStepErrorV0::Round)?;
+        let selection = self.current_nil_precommit_inbox.select_nil_quorum(&round);
+        drop(round);
+        match selection {
+            Ok(CurrentRoundNilPrecommitQuorumSelectionV0::None) => {
+                Ok(DriverCurrentNilPrecommitSelectionV0::None)
+            }
+            Ok(CurrentRoundNilPrecommitQuorumSelectionV0::One {
+                canonical_signed_precommits,
+            }) => Ok(DriverCurrentNilPrecommitSelectionV0::One {
+                canonical_signed_precommits,
+            }),
+            Err(CurrentRoundNilPrecommitQuorumSelectionErrorV0::Reservation(source)) => {
+                Ok(DriverCurrentNilPrecommitSelectionV0::Reservation(source))
+            }
+            Err(CurrentRoundNilPrecommitQuorumSelectionErrorV0::Invariant(source)) => {
+                Ok(DriverCurrentNilPrecommitSelectionV0::Rejected(source))
+            }
+        }
+    }
+
+    fn execute_current_nil_precommit(
+        mut self,
+        canonical_signed_precommits: Vec<[u8; VerifiedConsensusVoteV0::BYTE_LENGTH]>,
+    ) -> Result<FixedValidatorNodeDriverStepOutcomeV0<'node>, FixedValidatorNodeDriverStepErrorV0>
+    {
+        let mut vote_refs: Vec<&[u8]> = Vec::new();
+        if let Err(source) = vote_refs.try_reserve_exact(canonical_signed_precommits.len()) {
+            return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                driver: Box::new(self),
+                rejection: Box::new(
+                    FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(source),
+                ),
+            });
+        }
+        vote_refs.extend(
+            canonical_signed_precommits
+                .iter()
+                .map(|canonical| canonical.as_slice()),
+        );
+        let next_generation = self.next_generation()?;
+        let scope = self.take_scope();
+        match scope
+            .advance_round_for_nil_precommit_vote_batch(&vote_refs, self.inclusive_maximum_round)
+        {
+            Ok(FixedValidatorNodeRoundAdvanceOutcomeV0::Advanced { scope, .. }) => {
+                self.scope = Some(*scope);
+                let timeout = self.install_next_timeout(next_generation);
+                self.pending_command = Some(PendingCommandV0::Arm(timeout));
+                Ok(FixedValidatorNodeDriverStepOutcomeV0::Transitioned {
+                    driver: Box::new(self),
+                })
+            }
+            Ok(FixedValidatorNodeRoundAdvanceOutcomeV0::Rejected { scope, rejection }) => {
+                self.scope = Some(*scope);
+                Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                    driver: Box::new(self),
+                    rejection: Box::new(FixedValidatorNodeDriverStepRejectionV0::RoundAdvance(
+                        rejection,
+                    )),
+                })
+            }
+            Err(source) => Err(FixedValidatorNodeDriverStepErrorV0::RoundAdvance(Box::new(
+                source,
+            ))),
+        }
+    }
+
     fn select_actionable_current(
         &self,
     ) -> Result<DriverCurrentSelectionV0, FixedValidatorNodeDriverStepErrorV0> {
@@ -3020,6 +3317,15 @@ enum DriverCurrentFinalitySelectionV0<'inbox> {
     Reservation(TryReserveError),
 }
 
+enum DriverCurrentNilPrecommitSelectionV0 {
+    None,
+    One {
+        canonical_signed_precommits: Vec<[u8; VerifiedConsensusVoteV0::BYTE_LENGTH]>,
+    },
+    Rejected(QuorumCertificateBuildError),
+    Reservation(TryReserveError),
+}
+
 enum DriverCurrentSelectionV0 {
     None,
     Proposal {
@@ -3214,6 +3520,16 @@ fn current_finality_precommit_event(
         canonical_signed_precommit: canonical_signed_precommit
             .take()
             .expect("rejected current proposal precommit retains its original bytes"),
+    }
+}
+
+fn current_nil_precommit_event(
+    canonical_signed_precommit: &mut Option<Box<[u8]>>,
+) -> FixedValidatorNodeDriverEventV0 {
+    FixedValidatorNodeDriverEventV0::CurrentRoundNilPrecommit {
+        canonical_signed_precommit: canonical_signed_precommit
+            .take()
+            .expect("rejected current nil precommit retains its original bytes"),
     }
 }
 
