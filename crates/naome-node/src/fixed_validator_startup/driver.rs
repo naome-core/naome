@@ -19,7 +19,8 @@ use naome_storage::{
 use super::current_round_finality_inbox::{
     CurrentRoundFinalityClassificationErrorV0, CurrentRoundFinalityClassificationV0,
     CurrentRoundFinalityInboxInsertOutcomeV0, CurrentRoundFinalityInboxV0,
-    CurrentRoundFinalityPrecommitInsertErrorV0, CurrentRoundFinalityProposalInsertErrorV0,
+    CurrentRoundFinalityPreclassificationV0, CurrentRoundFinalityPrecommitInsertErrorV0,
+    CurrentRoundFinalityProposalInsertErrorV0,
 };
 use super::current_round_inbox::{
     CurrentRoundInboxInsertOutcomeV0, CurrentRoundInboxV0, CurrentRoundNilPrevoteInsertErrorV0,
@@ -37,11 +38,15 @@ use super::{
     FixedValidatorNodeBufferedProposalPrecommitErrorV0,
     FixedValidatorNodeBufferedProposalPrecommitOutcomeV0,
     FixedValidatorNodeBufferedProposalPrecommitRejectionV0, FixedValidatorNodeCurrentRoundErrorV0,
+    FixedValidatorNodeCurrentRoundFinalityErrorV0,
     FixedValidatorNodeCurrentRoundFinalityInboxDrainV0,
     FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
     FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
-    FixedValidatorNodeCurrentRoundInboxDrainV0, FixedValidatorNodeCurrentRoundInboxLimitsV0,
-    FixedValidatorNodeCurrentRoundInboxSaturationV0, FixedValidatorNodeDeferredProposalV0,
+    FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
+    FixedValidatorNodeCurrentRoundFinalityRejectionV0, FixedValidatorNodeCurrentRoundInboxDrainV0,
+    FixedValidatorNodeCurrentRoundInboxLimitsV0, FixedValidatorNodeCurrentRoundInboxSaturationV0,
+    FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeFinalityOutcomeV0,
+    FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
     FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodeHigherRoundInboxLimitsV0,
     FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0,
     FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0,
@@ -463,7 +468,7 @@ impl FixedValidatorNodeDriverActionV0 {
 #[must_use]
 #[allow(
     dead_code,
-    reason = "the private descriptor is staged for the durable finality integration"
+    reason = "the non-authoritative descriptor is exposed only to crate diagnostics"
 )]
 pub(super) struct FixedValidatorNodeDriverFinalityActionV0 {
     position: ConsensusPosition,
@@ -472,7 +477,7 @@ pub(super) struct FixedValidatorNodeDriverFinalityActionV0 {
 
 #[allow(
     dead_code,
-    reason = "the private descriptor is staged for the durable finality integration"
+    reason = "the descriptor accessors are exercised only by crate diagnostics"
 )]
 impl FixedValidatorNodeDriverFinalityActionV0 {
     /// Returns the exact current position classified by the driver.
@@ -486,16 +491,18 @@ impl FixedValidatorNodeDriverFinalityActionV0 {
     }
 }
 
-/// Read-only classification of the dedicated current proposal-finality inbox.
+/// Read-only diagnostics for the dedicated current proposal-finality inbox.
 ///
-/// The classification does not affect [`FixedValidatorNodeDriverV0::step`]. It
-/// neither selects nor finalizes a value and exposes no raw retained evidence.
+/// The classification itself neither selects nor finalizes a value and exposes
+/// no raw retained evidence. Driver execution uses the same private selection
+/// pipeline, then owns the ready inputs and repeats complete verification through
+/// the node-owned finality coordinator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 #[non_exhaustive]
 #[allow(
     dead_code,
-    reason = "the private classification is staged for the durable finality integration"
+    reason = "the private diagnostic classification is exercised by crate tests"
 )]
 pub(super) enum FixedValidatorNodeDriverCurrentFinalityClassificationV0 {
     /// No proposal-target root has retained strict-supermajority precommits.
@@ -522,7 +529,7 @@ pub(super) enum FixedValidatorNodeDriverCurrentFinalityClassificationV0 {
 #[non_exhaustive]
 #[allow(
     dead_code,
-    reason = "the private classification is staged for the durable finality integration"
+    reason = "the private diagnostic classification is exercised by crate tests"
 )]
 pub(super) enum FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0 {
     /// The exact current fixed-set round could not be derived.
@@ -562,13 +569,16 @@ impl Error for FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0 {
     }
 }
 
-/// A deny-only driver state with class-specific recovery semantics.
+/// A driver-step block reason with class-specific recovery semantics.
 ///
 /// Higher-round saturation or ambiguity requires the higher inbox's full
 /// drain/reset. Current saturation requires current-only drain/reset, while
 /// current proposal ambiguity is derived only for the live position and may
 /// become stale after authenticated higher-round advancement. Current
-/// dual-quorum ambiguity remains latched until current-only drain/reset.
+/// dual-quorum ambiguity remains latched until current-only drain/reset. Healthy
+/// finality missing-proposal and conflicting-root blocks are derived, remain
+/// open to finality admission, and end when the classification becomes
+/// nonblocking or the finality inbox is drained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 #[non_exhaustive]
@@ -595,6 +605,17 @@ pub enum FixedValidatorNodeDriverBlockReasonV0 {
     CurrentPrevoteQuorumAmbiguous {
         position: ConsensusPosition,
         proposal_signing_root: ProposalSigningRoot,
+    },
+    /// A strict-supermajority proposal precommit certificate lacks its proposal.
+    CurrentFinalityProposalMissing {
+        position: ConsensusPosition,
+        proposal_signing_root: ProposalSigningRoot,
+    },
+    /// Multiple proposal roots have strict-supermajority precommit evidence.
+    CurrentFinalityRootsConflicting {
+        position: ConsensusPosition,
+        first: ProposalSigningRoot,
+        second: ProposalSigningRoot,
     },
 }
 
@@ -628,6 +649,21 @@ impl fmt::Display for FixedValidatorNodeDriverBlockReasonV0 {
                 formatter,
                 "driver has actionable proposal {proposal_signing_root:?} and nil prevote quorums at {position:?}"
             ),
+            Self::CurrentFinalityProposalMissing {
+                position,
+                proposal_signing_root,
+            } => write!(
+                formatter,
+                "driver has finality precommit quorum {proposal_signing_root:?} at {position:?} but no matching proposal"
+            ),
+            Self::CurrentFinalityRootsConflicting {
+                position,
+                first,
+                second,
+            } => write!(
+                formatter,
+                "driver has conflicting proposal-finality quorums {first:?} and {second:?} at {position:?}"
+            ),
         }
     }
 }
@@ -636,7 +672,7 @@ impl fmt::Display for FixedValidatorNodeDriverBlockReasonV0 {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FixedValidatorNodeDriverStepRejectionV0 {
-    /// Temporary position-selection storage could not be reserved.
+    /// Temporary driver-selection storage could not be reserved.
     SelectionReservation(TryReserveError),
     /// Existing inbox classification rejected retained evidence before mutation.
     EvidenceSelection(Box<FixedValidatorNodeBufferedProposalPrecommitRejectionV0>),
@@ -646,6 +682,10 @@ pub enum FixedValidatorNodeDriverStepRejectionV0 {
     Vote(Box<FixedValidatorNodeVoteRejectionV0>),
     /// The exact due Precommit close was rejected before mutation.
     RoundAdvance(Box<FixedValidatorNodeRoundAdvanceRejectionV0>),
+    /// Retained finality votes violated exact certificate-construction invariants.
+    CurrentFinalitySelection(Box<QuorumCertificateBuildError>),
+    /// Fully reverified current finality evidence was rejected before mutation.
+    CurrentFinality(Box<FixedValidatorNodeCurrentRoundFinalityRejectionV0>),
 }
 
 impl fmt::Display for FixedValidatorNodeDriverStepRejectionV0 {
@@ -653,13 +693,15 @@ impl fmt::Display for FixedValidatorNodeDriverStepRejectionV0 {
         match self {
             Self::SelectionReservation(source) => write!(
                 formatter,
-                "driver snapshot position reservation failed: {source}"
+                "driver selection storage reservation failed: {source}"
             ),
             Self::EvidenceSelection(source) | Self::EvidenceExecution(source) => {
                 source.fmt(formatter)
             }
             Self::Vote(source) => source.fmt(formatter),
             Self::RoundAdvance(source) => source.fmt(formatter),
+            Self::CurrentFinalitySelection(source) => source.fmt(formatter),
+            Self::CurrentFinality(source) => source.fmt(formatter),
         }
     }
 }
@@ -673,6 +715,8 @@ impl Error for FixedValidatorNodeDriverStepRejectionV0 {
             }
             Self::Vote(source) => Some(source.as_ref()),
             Self::RoundAdvance(source) => Some(source.as_ref()),
+            Self::CurrentFinalitySelection(source) => Some(source.as_ref()),
+            Self::CurrentFinality(source) => Some(source.as_ref()),
         }
     }
 }
@@ -690,13 +734,19 @@ pub enum FixedValidatorNodeDriverStepOutcomeV0<'node> {
     Transitioned {
         driver: Box<FixedValidatorNodeDriverV0<'node>>,
     },
+    /// Exact current evidence reached finality and the aligned driver survives.
+    Finality {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        selection: FixedValidatorNodeFinalitySelectionV0,
+    },
     /// No evidence or exact due timer was actionable.
     Idle {
         driver: Box<FixedValidatorNodeDriverV0<'node>>,
     },
-    /// Saturation or same-class ambiguity denied both evidence and timeout action.
+    /// A blocking inbox classification denied this step's lower-priority work.
     ///
-    /// This step may newly latch ambiguity, but it causes no signer or durable effect.
+    /// Only the existing higher/current ambiguity cases may newly latch. This
+    /// outcome causes no signer or durable effect.
     Blocked {
         driver: Box<FixedValidatorNodeDriverV0<'node>>,
         reason: FixedValidatorNodeDriverBlockReasonV0,
@@ -708,6 +758,8 @@ pub enum FixedValidatorNodeDriverStepOutcomeV0<'node> {
     },
     /// A non-identical vote intent durably stopped the signer; no driver survives.
     SignerStopped(FixedValidatorVoteSafetyHaltV0),
+    /// A durable finality conflict stopped finality and the signer; no driver survives.
+    FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
 }
 
 /// Fatal driver-step failure; no driver or signing scope is returned.
@@ -728,6 +780,8 @@ pub enum FixedValidatorNodeDriverStepErrorV0 {
     Vote(Box<FixedValidatorNodeVoteExecutionErrorV0>),
     /// Precommit-close progression failed after the consuming boundary began.
     RoundAdvance(Box<FixedValidatorNodeRoundAdvanceErrorV0>),
+    /// Current-round finality failed after the consuming boundary began.
+    CurrentFinality(Box<FixedValidatorNodeCurrentRoundFinalityErrorV0>),
 }
 
 impl fmt::Display for FixedValidatorNodeDriverStepErrorV0 {
@@ -741,6 +795,7 @@ impl fmt::Display for FixedValidatorNodeDriverStepErrorV0 {
             Self::Evidence(source) => source.fmt(formatter),
             Self::Vote(source) => source.fmt(formatter),
             Self::RoundAdvance(source) => source.fmt(formatter),
+            Self::CurrentFinality(source) => source.fmt(formatter),
         }
     }
 }
@@ -752,6 +807,7 @@ impl Error for FixedValidatorNodeDriverStepErrorV0 {
             Self::Evidence(source) => Some(source.as_ref()),
             Self::Vote(source) => Some(source.as_ref()),
             Self::RoundAdvance(source) => Some(source.as_ref()),
+            Self::CurrentFinality(source) => Some(source.as_ref()),
             Self::TimeoutGenerationExhausted { .. } => None,
         }
     }
@@ -1003,11 +1059,12 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     /// Classifies current proposal-finality evidence without changing driver work.
     ///
     /// This read-only result is descriptive only. It exposes no proposal,
-    /// certificate, signing scope, or finality handle, and [`Self::step`] does not
-    /// consult it in this staged foundation.
+    /// certificate, signing scope, or finality handle. [`Self::step`] uses the
+    /// same private selection pipeline before independently copying and fully
+    /// reverifying any uniquely ready evidence.
     #[allow(
         dead_code,
-        reason = "the private classifier is staged for the durable finality integration"
+        reason = "the private diagnostic classifier is exercised by crate tests"
     )]
     pub(super) fn classify_current_finality_evidence(
         &self,
@@ -1015,28 +1072,26 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         FixedValidatorNodeDriverCurrentFinalityClassificationV0,
         FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0,
     > {
-        let position = self.position();
-        let round = derive_round(&self.scope().branch, position.round())
-            .map_err(FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0::Round)?;
-        let classification = self.current_finality_inbox.classify(&round);
-        drop(round);
-        match classification {
-            Ok(CurrentRoundFinalityClassificationV0::Saturated {
+        match self
+            .select_current_finality()
+            .map_err(FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0::Round)?
+        {
+            DriverCurrentFinalitySelectionV0::Saturated {
                 position,
                 saturation,
-            }) => Ok(
+            } => Ok(
                 FixedValidatorNodeDriverCurrentFinalityClassificationV0::Saturated {
                     position,
                     saturation,
                 },
             ),
-            Ok(CurrentRoundFinalityClassificationV0::None) => {
+            DriverCurrentFinalitySelectionV0::None => {
                 Ok(FixedValidatorNodeDriverCurrentFinalityClassificationV0::Incomplete)
             }
-            Ok(CurrentRoundFinalityClassificationV0::OneQuorumMissingProposal {
+            DriverCurrentFinalitySelectionV0::MissingProposal {
+                position,
                 proposal_signing_root,
-                canonical_precommit_certificate: _,
-            }) => Ok(
+            } => Ok(
                 FixedValidatorNodeDriverCurrentFinalityClassificationV0::QuorumMissingProposal(
                     FixedValidatorNodeDriverFinalityActionV0 {
                         position,
@@ -1044,30 +1099,27 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                     },
                 ),
             ),
-            Ok(CurrentRoundFinalityClassificationV0::One {
-                proposal_signing_root,
+            DriverCurrentFinalitySelectionV0::Ready {
+                action,
                 canonical_proposal_control_bytes: _,
                 canonical_artifact_bytes: _,
                 canonical_precommit_certificate: _,
-            }) => Ok(
-                FixedValidatorNodeDriverCurrentFinalityClassificationV0::Ready(
-                    FixedValidatorNodeDriverFinalityActionV0 {
-                        position,
-                        proposal_signing_root,
-                    },
-                ),
-            ),
-            Ok(CurrentRoundFinalityClassificationV0::ConflictingRoots { first, second }) => Ok(
+            } => Ok(FixedValidatorNodeDriverCurrentFinalityClassificationV0::Ready(action)),
+            DriverCurrentFinalitySelectionV0::ConflictingRoots {
+                position,
+                first,
+                second,
+            } => Ok(
                 FixedValidatorNodeDriverCurrentFinalityClassificationV0::ConflictingRoots {
                     position,
                     first,
                     second,
                 },
             ),
-            Err(CurrentRoundFinalityClassificationErrorV0::Reservation(source)) => Err(
+            DriverCurrentFinalitySelectionV0::Reservation(source) => Err(
                 FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0::Reservation(source),
             ),
-            Err(CurrentRoundFinalityClassificationErrorV0::Invariant(source)) => Err(
+            DriverCurrentFinalitySelectionV0::Rejected(source) => Err(
                 FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0::QuorumInvariant(
                     source,
                 ),
@@ -1222,6 +1274,102 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 command,
             });
         }
+
+        match self
+            .select_current_finality()
+            .map_err(FixedValidatorNodeDriverStepErrorV0::Round)?
+        {
+            DriverCurrentFinalitySelectionV0::None
+            | DriverCurrentFinalitySelectionV0::Saturated { .. } => {}
+            DriverCurrentFinalitySelectionV0::Ready {
+                action: _,
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+                canonical_precommit_certificate,
+            } => {
+                let canonical_proposal_control_bytes =
+                    match try_copy_bytes(canonical_proposal_control_bytes) {
+                        Ok(bytes) => bytes,
+                        Err(source) => {
+                            return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                                driver: Box::new(self),
+                                rejection: Box::new(
+                                    FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(
+                                        source,
+                                    ),
+                                ),
+                            });
+                        }
+                    };
+                let canonical_artifact_bytes = match try_copy_bytes(canonical_artifact_bytes) {
+                    Ok(bytes) => bytes,
+                    Err(source) => {
+                        return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                            driver: Box::new(self),
+                            rejection: Box::new(
+                                FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(
+                                    source,
+                                ),
+                            ),
+                        });
+                    }
+                };
+                return self.execute_current_finality(
+                    canonical_proposal_control_bytes,
+                    canonical_artifact_bytes,
+                    canonical_precommit_certificate,
+                );
+            }
+            DriverCurrentFinalitySelectionV0::MissingProposal {
+                position,
+                proposal_signing_root,
+            } => {
+                let reason =
+                    FixedValidatorNodeDriverBlockReasonV0::CurrentFinalityProposalMissing {
+                        position,
+                        proposal_signing_root,
+                    };
+                return Ok(FixedValidatorNodeDriverStepOutcomeV0::Blocked {
+                    driver: Box::new(self),
+                    reason,
+                });
+            }
+            DriverCurrentFinalitySelectionV0::ConflictingRoots {
+                position,
+                first,
+                second,
+            } => {
+                let reason =
+                    FixedValidatorNodeDriverBlockReasonV0::CurrentFinalityRootsConflicting {
+                        position,
+                        first,
+                        second,
+                    };
+                return Ok(FixedValidatorNodeDriverStepOutcomeV0::Blocked {
+                    driver: Box::new(self),
+                    reason,
+                });
+            }
+            DriverCurrentFinalitySelectionV0::Rejected(source) => {
+                return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                    driver: Box::new(self),
+                    rejection: Box::new(
+                        FixedValidatorNodeDriverStepRejectionV0::CurrentFinalitySelection(
+                            Box::new(source),
+                        ),
+                    ),
+                });
+            }
+            DriverCurrentFinalitySelectionV0::Reservation(source) => {
+                return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                    driver: Box::new(self),
+                    rejection: Box::new(
+                        FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(source),
+                    ),
+                });
+            }
+        }
+
         if let Some(reason) = self.higher_block_reason() {
             return Ok(FixedValidatorNodeDriverStepOutcomeV0::Blocked {
                 driver: Box::new(self),
@@ -2247,6 +2395,130 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         })
     }
 
+    fn select_current_finality(
+        &self,
+    ) -> Result<DriverCurrentFinalitySelectionV0<'_>, ProposerSelectionError> {
+        let position = self.position();
+        let parent_coordinate = self.scope().branch.coordinate();
+        match self
+            .current_finality_inbox
+            .preclassify(parent_coordinate, position)
+        {
+            CurrentRoundFinalityPreclassificationV0::Saturated {
+                position,
+                saturation,
+            } => {
+                return Ok(DriverCurrentFinalitySelectionV0::Saturated {
+                    position,
+                    saturation,
+                });
+            }
+            CurrentRoundFinalityPreclassificationV0::NoMatchingPrecommit => {
+                return Ok(DriverCurrentFinalitySelectionV0::None);
+            }
+            CurrentRoundFinalityPreclassificationV0::NeedsRound => {}
+        }
+        let round = derive_round(&self.scope().branch, position.round())?;
+        let classification = self.current_finality_inbox.classify(&round);
+        drop(round);
+        match classification {
+            Ok(CurrentRoundFinalityClassificationV0::Saturated {
+                position,
+                saturation,
+            }) => Ok(DriverCurrentFinalitySelectionV0::Saturated {
+                position,
+                saturation,
+            }),
+            Ok(CurrentRoundFinalityClassificationV0::None) => {
+                Ok(DriverCurrentFinalitySelectionV0::None)
+            }
+            Ok(CurrentRoundFinalityClassificationV0::OneQuorumMissingProposal {
+                proposal_signing_root,
+                canonical_precommit_certificate,
+            }) => {
+                drop(canonical_precommit_certificate);
+                Ok(DriverCurrentFinalitySelectionV0::MissingProposal {
+                    position,
+                    proposal_signing_root,
+                })
+            }
+            Ok(CurrentRoundFinalityClassificationV0::One {
+                proposal_signing_root,
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+                canonical_precommit_certificate,
+            }) => Ok(DriverCurrentFinalitySelectionV0::Ready {
+                action: FixedValidatorNodeDriverFinalityActionV0 {
+                    position,
+                    proposal_signing_root,
+                },
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+                canonical_precommit_certificate,
+            }),
+            Ok(CurrentRoundFinalityClassificationV0::ConflictingRoots { first, second }) => {
+                Ok(DriverCurrentFinalitySelectionV0::ConflictingRoots {
+                    position,
+                    first,
+                    second,
+                })
+            }
+            Err(CurrentRoundFinalityClassificationErrorV0::Reservation(source)) => {
+                Ok(DriverCurrentFinalitySelectionV0::Reservation(source))
+            }
+            Err(CurrentRoundFinalityClassificationErrorV0::Invariant(source)) => {
+                Ok(DriverCurrentFinalitySelectionV0::Rejected(source))
+            }
+        }
+    }
+
+    fn execute_current_finality(
+        mut self,
+        canonical_proposal_control_bytes: Vec<u8>,
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_precommit_certificate: Vec<u8>,
+    ) -> Result<FixedValidatorNodeDriverStepOutcomeV0<'node>, FixedValidatorNodeDriverStepErrorV0>
+    {
+        let next_generation = self.next_generation()?;
+        let previous_position = self.position();
+        let scope = self.take_scope();
+        match scope.commit_current_round_finality(
+            &canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+            &canonical_precommit_certificate,
+            self.inclusive_maximum_round,
+        ) {
+            Ok(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality(
+                FixedValidatorNodeFinalityOutcomeV0::Continues { scope, selection },
+            )) => {
+                self.scope = Some(*scope);
+                if self.position() != previous_position {
+                    let timeout = self.install_next_timeout(next_generation);
+                    self.pending_command = Some(PendingCommandV0::Arm(timeout));
+                }
+                Ok(FixedValidatorNodeDriverStepOutcomeV0::Finality {
+                    driver: Box::new(self),
+                    selection,
+                })
+            }
+            Ok(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality(
+                FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(stop),
+            )) => Ok(FixedValidatorNodeDriverStepOutcomeV0::FinalityStopped(stop)),
+            Ok(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Rejected { scope, rejection }) => {
+                self.scope = Some(*scope);
+                Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                    driver: Box::new(self),
+                    rejection: Box::new(FixedValidatorNodeDriverStepRejectionV0::CurrentFinality(
+                        rejection,
+                    )),
+                })
+            }
+            Err(source) => Err(FixedValidatorNodeDriverStepErrorV0::CurrentFinality(
+                Box::new(source),
+            )),
+        }
+    }
+
     fn execute_evidence(
         mut self,
         action: FixedValidatorNodeDriverActionV0,
@@ -2720,6 +2992,31 @@ enum DriverEvidenceSelectionV0 {
         second: FixedValidatorNodeDriverActionV0,
     },
     Rejected(Box<FixedValidatorNodeBufferedProposalPrecommitRejectionV0>),
+    Reservation(TryReserveError),
+}
+
+enum DriverCurrentFinalitySelectionV0<'inbox> {
+    None,
+    MissingProposal {
+        position: ConsensusPosition,
+        proposal_signing_root: ProposalSigningRoot,
+    },
+    Ready {
+        action: FixedValidatorNodeDriverFinalityActionV0,
+        canonical_proposal_control_bytes: &'inbox [u8],
+        canonical_artifact_bytes: &'inbox [u8],
+        canonical_precommit_certificate: Vec<u8>,
+    },
+    ConflictingRoots {
+        position: ConsensusPosition,
+        first: ProposalSigningRoot,
+        second: ProposalSigningRoot,
+    },
+    Saturated {
+        position: ConsensusPosition,
+        saturation: FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
+    },
+    Rejected(QuorumCertificateBuildError),
     Reservation(TryReserveError),
 }
 

@@ -25,17 +25,22 @@
 //! round proposal/proposal-or-nil-prevote inbox, a third independently bounded
 //! exact-current proposal-finality inbox, and the sole signing scope. The
 //! proposal-finality inbox admits and retains proposals and proposal precommits
-//! for private non-executing classification only. The driver prioritizes one
-//! unique actionable higher-round pair, then drives one unambiguous current
-//! proposal through anchored prevote or one sole matching proposal or nil
-//! current quorum through anchored precommit, ahead of the exact phase-local
-//! opaque generation-bound due return. Simultaneously actionable proposal and
-//! nil quorums fail closed until current-only drain; current proposal ambiguity
-//! remains round-local, current saturation requires the same drain, and the
-//! driver serializes every anchored vote-publication and timer-arm command. It
-//! deliberately leaves daemon scheduling, networking, timeout measurement and
-//! duration, key loading, automatic finality execution, network acquisition and
-//! broader finality routing, and branch-selection policy to later components.
+//! for deterministic exact-current classification. After pending-command
+//! custody, the driver executes one unique proposal-backed precommit quorum
+//! through the fully verifying anchored finality coordinator before all voting
+//! or due work; a missing proposal or multiple quorate roots blocks without
+//! choosing, while finality saturation remains class-local. The driver next
+//! prioritizes one unique actionable higher-round pair, then drives one
+//! unambiguous current proposal through anchored prevote or one sole matching
+//! proposal or nil current quorum through anchored precommit, ahead of the
+//! exact phase-local opaque generation-bound due return. Simultaneously
+//! actionable proposal and nil quorums fail closed until current-only drain;
+//! current proposal ambiguity remains round-local, current saturation requires
+//! the same drain, and the driver serializes every anchored vote-publication
+//! and timer-arm command. It deliberately leaves daemon scheduling, networking,
+//! timeout measurement and duration, key loading, automatic evidence
+//! acquisition, broader finality routing, durable preselection conflict
+//! handling, and branch-selection policy to later components.
 
 mod fixed_validator_startup;
 

@@ -13,7 +13,7 @@ use std::path::Path;
 
 use super::super::current_round_finality_inbox::{
     CurrentRoundFinalityClassificationV0, CurrentRoundFinalityInboxInsertOutcomeV0,
-    CurrentRoundFinalityInboxV0,
+    CurrentRoundFinalityInboxV0, CurrentRoundFinalityPreclassificationV0,
 };
 use super::super::current_round_inbox::{
     CurrentRoundInboxInsertOutcomeV0, CurrentRoundInboxV0, CurrentRoundQuorumSelectionV0,
@@ -145,6 +145,20 @@ fn step_transition<'node>(
     match driver.step().unwrap() {
         FixedValidatorNodeDriverStepOutcomeV0::Transitioned { driver } => *driver,
         _ => panic!("expected exactly one driver transition"),
+    }
+}
+
+fn step_finality<'node>(
+    driver: FixedValidatorNodeDriverV0<'node>,
+) -> (
+    FixedValidatorNodeDriverV0<'node>,
+    FixedValidatorNodeFinalitySelectionV0,
+) {
+    match driver.step().unwrap() {
+        FixedValidatorNodeDriverStepOutcomeV0::Finality { driver, selection } => {
+            (*driver, selection)
+        }
+        _ => panic!("expected exactly one current-round finality transition"),
     }
 }
 
@@ -301,6 +315,43 @@ fn reject_current_finality_precommit<'node>(
     }
 }
 
+fn reject_current_finality_proposal<'node>(
+    driver: FixedValidatorNodeDriverV0<'node>,
+    canonical_proposal_control_bytes: &[u8],
+    canonical_artifact_bytes: &[u8],
+    assert_rejection: impl FnOnce(&FixedValidatorNodeDriverAdmissionRejectionV0),
+) -> FixedValidatorNodeDriverV0<'node> {
+    match driver
+        .admit_event(current_finality_proposal_event(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+        ))
+        .unwrap()
+    {
+        FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+            driver,
+            event,
+            rejection,
+        } => {
+            match *event {
+                FixedValidatorNodeDriverEventV0::CurrentRoundFinalityProposal {
+                    canonical_proposal_control_bytes: returned_control,
+                    canonical_artifact_bytes: returned_artifact,
+                } => {
+                    assert_eq!(returned_control.as_ref(), canonical_proposal_control_bytes);
+                    assert_eq!(returned_artifact.as_ref(), canonical_artifact_bytes);
+                }
+                _ => panic!("rejected current finality proposal must return its exact event"),
+            }
+            assert_rejection(rejection.as_ref());
+            *driver
+        }
+        FixedValidatorNodeDriverAdmissionOutcomeV0::Admitted { .. } => {
+            panic!("invalid current finality proposal must be rejected")
+        }
+    }
+}
+
 fn drained_contents(drained: FixedValidatorNodeHigherRoundInboxDrainV0) -> DrainedEvidence {
     let mut proposals = Vec::new();
     let mut prevotes = Vec::new();
@@ -435,6 +486,22 @@ fn proposal_inputs(
     proposal_round: u64,
     axiom: ZfcAxiom,
 ) -> (ConsensusValueV0, Vec<u8>, Vec<u8>) {
+    proposal_inputs_with_signing_key(
+        fixture,
+        branch,
+        proposal_round,
+        axiom,
+        &fixture.signing_key(),
+    )
+}
+
+fn proposal_inputs_with_signing_key(
+    fixture: &Fixture,
+    branch: &FixedConsensusBranchV0,
+    proposal_round: u64,
+    axiom: ZfcAxiom,
+    signing_key: &SigningKey,
+) -> (ConsensusValueV0, Vec<u8>, Vec<u8>) {
     let payload = proof_payload(axiom);
     let block = ArtifactChainState::new(fixture.definition)
         .prepare_block(artifact_id(&payload))
@@ -446,7 +513,7 @@ fn proposal_inputs(
         value.context(),
         round.position(),
         value.proposal_signing_root(),
-        &fixture.signing_key(),
+        signing_key,
     ));
     control.push(VerifiedFixedConsensusProposalV0::NO_VALID_ROUND_PROOF_TAG);
     (value, control, payload)
@@ -605,62 +672,6 @@ fn current_finality_precommit_event(bytes: &[u8]) -> FixedValidatorNodeDriverEve
     FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrecommit {
         canonical_signed_precommit: bytes.into(),
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn exercise_current_finality_pair<'node>(
-    driver: FixedValidatorNodeDriverV0<'node>,
-    expected_phase: FixedValidatorLockPhaseV0,
-    expected_due: bool,
-    control: &[u8],
-    payload: &[u8],
-    precommit: &[u8],
-    root: ProposalSigningRoot,
-    layout: &TestLayout,
-) -> FixedValidatorNodeDriverV0<'node> {
-    assert_eq!(driver.phase(), expected_phase);
-    assert_eq!(driver.timeout_is_due(), expected_due);
-    assert_eq!(driver.current_finality_inbox_len(), 0);
-    let before = layout.images();
-
-    let (driver, disposition) = admit(driver, current_finality_proposal_event(control, payload));
-    assert_eq!(
-        disposition,
-        FixedValidatorNodeDriverAdmissionDispositionV0::Inserted
-    );
-    let (driver, disposition) = admit(driver, current_finality_precommit_event(precommit));
-    assert_eq!(
-        disposition,
-        FixedValidatorNodeDriverAdmissionDispositionV0::Inserted
-    );
-    assert_eq!(driver.current_finality_inbox_len(), 2);
-    assert_eq!(
-        driver.current_finality_inbox_canonical_input_bytes(),
-        u64::try_from(control.len() + payload.len() + precommit.len()).unwrap()
-    );
-    assert!(matches!(
-        driver.classify_current_finality_evidence().unwrap(),
-        FixedValidatorNodeDriverCurrentFinalityClassificationV0::Ready(action)
-            if action.position() == driver.position()
-                && action.proposal_signing_root() == root
-    ));
-    assert_eq!(layout.images(), before);
-
-    let driver = if expected_due {
-        driver
-    } else {
-        step_idle(driver)
-    };
-    let (driver, drained) = driver.drain_current_finality_inbox_and_reset().into_parts();
-    let (proposals, precommits) = drained_current_finality_contents(drained);
-    assert_eq!(proposals, vec![(control.to_vec(), payload.to_vec())]);
-    assert_eq!(precommits, vec![precommit.to_vec()]);
-    assert_eq!(driver.current_finality_inbox_len(), 0);
-    assert_eq!(driver.current_finality_inbox_canonical_input_bytes(), 0);
-    assert_eq!(driver.phase(), expected_phase);
-    assert_eq!(driver.timeout_is_due(), expected_due);
-    assert_eq!(layout.images(), before);
-    *driver
 }
 
 fn run_actionable_permutation(
@@ -2088,6 +2099,77 @@ fn fatal_vote_anchor_failure_returns_no_driver_command_and_reopens_strictly() {
                     if matches!(
                         inner.as_ref(),
                         FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }
+                    )
+            )
+    ));
+
+    fs::remove_file(collision).unwrap();
+    assert!(matches!(
+        fixture.provision(&layout, 8).open(fixture.signing_key()),
+        Err(FixedValidatorNodeStartupErrorV0::VotePair(source))
+            if matches!(
+                source.as_ref(),
+                FixedValidatorAnchoredVoteSafetyJournalErrorV0::Journal(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind { .. }
+                    )
+            )
+    ));
+}
+
+#[test]
+fn fatal_finality_handoff_failure_returns_no_driver_and_reopens_strictly() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-finality-handoff-failure");
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let position = round_at(&branch, 0).position();
+    let precommit = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let collision = next_anchor_collision(&layout.vote_anchor, 3);
+
+    let error = ready
+        .run_with_signing_session(|scope| {
+            let (driver, _) = step_arm(driver(scope, 8, 4));
+            let (driver, _) = admit(driver, current_finality_proposal_event(&control, &payload));
+            let (driver, _) = admit(driver, current_finality_precommit_event(&precommit));
+            match driver.step() {
+                Err(error) => error,
+                Ok(_) => panic!("fatal finality handoff failure must return no live driver"),
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        error,
+        FixedValidatorNodeDriverStepErrorV0::CurrentFinality(source)
+            if matches!(
+                source.as_ref(),
+                FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorNodeFinalityErrorV0::SignerHeightPrepare {
+                            selection,
+                            source,
+                        } if matches!(
+                            selection.as_ref(),
+                            FixedValidatorNodeFinalitySelectionV0::Finalized {
+                                position: finalized,
+                                ..
+                            } if *finalized == position
+                        ) && matches!(
+                            source.as_ref(),
+                            FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }
+                        )
                     )
             )
     ));
@@ -4081,9 +4163,8 @@ fn current_evidence_is_volatile_and_can_be_readmitted_after_strict_restart() {
 }
 
 #[test]
-fn current_finality_events_are_phase_and_due_independent_without_step_authority() {
+fn current_finality_executes_from_every_phase_and_due_state() {
     let fixture = Fixture::new();
-    let layout = TestLayout::new("driver-current-finality-all-phases");
     let branch = fixed_branch(&fixture);
     let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
     let root = value.proposal_signing_root();
@@ -4095,105 +4176,183 @@ fn current_finality_events_are_phase_and_due_independent_without_step_authority(
         ConsensusVoteTarget::Proposal(root),
         &fixture.signing_key(),
     );
-    let ready = fixture
-        .provision(&layout, 8)
-        .create(fixture.signing_key())
-        .unwrap();
+    let finality_bytes = u64::try_from(control.len() + payload.len() + precommit.len()).unwrap();
+    let child_height = position.height().value().checked_add(1).unwrap();
 
-    ready
-        .run_with_signing_session(|scope| {
-            let (driver, proposal_timeout) = step_arm(driver(scope, 8, 4));
-            let driver = exercise_current_finality_pair(
-                driver,
-                FixedValidatorLockPhaseV0::Proposal,
-                false,
-                &control,
-                &payload,
-                &precommit,
-                root,
-                &layout,
-            );
-            let (driver, disposition) = admit_due(driver, proposal_timeout);
-            assert_eq!(
-                disposition,
-                FixedValidatorNodeDriverAdmissionDispositionV0::TimeoutMarkedDue
-            );
-            let driver = exercise_current_finality_pair(
-                driver,
-                FixedValidatorLockPhaseV0::Proposal,
-                true,
-                &control,
-                &payload,
-                &precommit,
-                root,
-                &layout,
-            );
-            let driver = step_transition(driver);
-            let (driver, prevote, released_proposal) = step_publish(driver);
-            assert!(released_proposal.is_none());
-            assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
-            assert_eq!(prevote.target(), ConsensusVoteTarget::Nil);
-            let (driver, prevote_timeout) = step_arm(driver);
+    for (label, expected_phase, mark_due) in [
+        (
+            "driver-current-finality-proposal-live",
+            FixedValidatorLockPhaseV0::Proposal,
+            false,
+        ),
+        (
+            "driver-current-finality-proposal-due",
+            FixedValidatorLockPhaseV0::Proposal,
+            true,
+        ),
+        (
+            "driver-current-finality-prevote-live",
+            FixedValidatorLockPhaseV0::Prevote,
+            false,
+        ),
+        (
+            "driver-current-finality-prevote-due",
+            FixedValidatorLockPhaseV0::Prevote,
+            true,
+        ),
+        (
+            "driver-current-finality-precommit-live",
+            FixedValidatorLockPhaseV0::Precommit,
+            false,
+        ),
+        (
+            "driver-current-finality-precommit-due",
+            FixedValidatorLockPhaseV0::Precommit,
+            true,
+        ),
+    ] {
+        let layout = TestLayout::new(label);
+        let ready = fixture
+            .provision(&layout, 8)
+            .create(fixture.signing_key())
+            .unwrap();
+        ready
+            .run_with_signing_session(|scope| {
+                let (driver, proposal_timeout) = step_arm(driver(scope, 8, 4));
+                let (driver, active_timeout) = match expected_phase {
+                    FixedValidatorLockPhaseV0::Proposal => (driver, proposal_timeout),
+                    FixedValidatorLockPhaseV0::Prevote => {
+                        let (driver, _) = admit_due(driver, proposal_timeout);
+                        let driver = step_transition(driver);
+                        let (driver, vote, released_proposal) = step_publish(driver);
+                        assert_eq!(vote.role(), ConsensusVoteRole::Prevote);
+                        assert_eq!(vote.target(), ConsensusVoteTarget::Nil);
+                        assert!(released_proposal.is_none());
+                        step_arm(driver)
+                    }
+                    FixedValidatorLockPhaseV0::Precommit => {
+                        let (driver, _) = admit_due(driver, proposal_timeout);
+                        let driver = step_transition(driver);
+                        let (driver, vote, released_proposal) = step_publish(driver);
+                        assert_eq!(vote.role(), ConsensusVoteRole::Prevote);
+                        assert_eq!(vote.target(), ConsensusVoteTarget::Nil);
+                        assert!(released_proposal.is_none());
+                        let (driver, prevote_timeout) = step_arm(driver);
+                        let (driver, _) = admit_due(driver, prevote_timeout);
+                        let driver = step_transition(driver);
+                        let (driver, vote, released_proposal) = step_publish(driver);
+                        assert_eq!(vote.role(), ConsensusVoteRole::Precommit);
+                        assert_eq!(vote.target(), ConsensusVoteTarget::Nil);
+                        assert!(released_proposal.is_none());
+                        step_arm(driver)
+                    }
+                };
+                let driver = if mark_due {
+                    let (driver, disposition) = admit_due(driver, active_timeout);
+                    assert_eq!(
+                        disposition,
+                        FixedValidatorNodeDriverAdmissionDispositionV0::TimeoutMarkedDue
+                    );
+                    driver
+                } else {
+                    driver
+                };
+                assert_eq!(driver.phase(), expected_phase);
+                assert_eq!(driver.timeout_is_due(), mark_due);
+                let before_finality = layout.images();
 
-            let driver = exercise_current_finality_pair(
-                driver,
-                FixedValidatorLockPhaseV0::Prevote,
-                false,
-                &control,
-                &payload,
-                &precommit,
-                root,
-                &layout,
-            );
-            let (driver, disposition) = admit_due(driver, prevote_timeout);
-            assert_eq!(
-                disposition,
-                FixedValidatorNodeDriverAdmissionDispositionV0::TimeoutMarkedDue
-            );
-            let driver = exercise_current_finality_pair(
-                driver,
-                FixedValidatorLockPhaseV0::Prevote,
-                true,
-                &control,
-                &payload,
-                &precommit,
-                root,
-                &layout,
-            );
-            let driver = step_transition(driver);
-            let (driver, nil_precommit, released_proposal) = step_publish(driver);
-            assert!(released_proposal.is_none());
-            assert_eq!(nil_precommit.role(), ConsensusVoteRole::Precommit);
-            assert_eq!(nil_precommit.target(), ConsensusVoteTarget::Nil);
-            let (driver, precommit_timeout) = step_arm(driver);
+                let (driver, _) =
+                    admit(driver, current_finality_proposal_event(&control, &payload));
+                let (driver, _) = admit(driver, current_finality_precommit_event(&precommit));
+                assert!(matches!(
+                    driver.classify_current_finality_evidence().unwrap(),
+                    FixedValidatorNodeDriverCurrentFinalityClassificationV0::Ready(action)
+                        if action.position() == position
+                            && action.proposal_signing_root() == root
+                ));
+                let (driver, selection) = step_finality(driver);
+                assert!(matches!(
+                    selection,
+                    FixedValidatorNodeFinalitySelectionV0::Finalized {
+                        position: finalized,
+                        ..
+                    } if finalized == position
+                ));
+                assert_eq!(driver.position().height().value(), child_height);
+                assert_eq!(driver.position().round().value(), 0);
+                assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Proposal);
+                assert!(!driver.timeout_is_due());
+                assert!(driver.has_pending_command());
+                assert_eq!(driver.current_finality_inbox_len(), 2);
+                assert_eq!(
+                    driver.current_finality_inbox_canonical_input_bytes(),
+                    finality_bytes
+                );
+                let after_finality = layout.images();
+                for (before, after) in before_finality.iter().zip(after_finality.iter()) {
+                    assert_ne!(before, after, "each authority image must advance");
+                }
 
-            let driver = exercise_current_finality_pair(
-                driver,
-                FixedValidatorLockPhaseV0::Precommit,
-                false,
-                &control,
-                &payload,
-                &precommit,
-                root,
-                &layout,
-            );
-            let (driver, disposition) = admit_due(driver, precommit_timeout);
-            assert_eq!(
-                disposition,
-                FixedValidatorNodeDriverAdmissionDispositionV0::TimeoutMarkedDue
-            );
-            let _driver = exercise_current_finality_pair(
-                driver,
-                FixedValidatorLockPhaseV0::Precommit,
-                true,
-                &control,
-                &payload,
-                &precommit,
-                root,
-                &layout,
-            );
-        })
-        .unwrap();
+                let (driver, child_timeout) = step_arm(driver);
+                assert_eq!(child_timeout.position(), driver.position());
+                assert_eq!(child_timeout.phase(), FixedValidatorLockPhaseV0::Proposal);
+                assert_eq!(
+                    child_timeout.generation(),
+                    active_timeout.generation().checked_add(1).unwrap()
+                );
+                let driver = match driver
+                    .admit_event(FixedValidatorNodeDriverEventV0::TimeoutDue(active_timeout))
+                    .unwrap()
+                {
+                    FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                        driver,
+                        event,
+                        rejection,
+                    } => {
+                        assert!(matches!(
+                            *event,
+                            FixedValidatorNodeDriverEventV0::TimeoutDue(returned)
+                                if returned == active_timeout
+                        ));
+                        assert!(matches!(
+                            rejection.as_ref(),
+                            FixedValidatorNodeDriverAdmissionRejectionV0::TimeoutMismatch
+                        ));
+                        *driver
+                    }
+                    FixedValidatorNodeDriverAdmissionOutcomeV0::Admitted { .. } => {
+                        panic!("the pre-finality timer must be stale")
+                    }
+                };
+                let (driver, drained) =
+                    driver.drain_current_finality_inbox_and_reset().into_parts();
+                let (proposals, precommits) = drained_current_finality_contents(drained);
+                assert_eq!(proposals, vec![(control.clone(), payload.clone())]);
+                assert_eq!(precommits, vec![precommit.clone()]);
+                assert_eq!(driver.position().height().value(), child_height);
+            })
+            .unwrap();
+
+        let reopened = expect_ready(
+            fixture
+                .provision(&layout, 8)
+                .open(fixture.signing_key())
+                .unwrap(),
+        );
+        reopened
+            .run_with_signing_session(|mut scope| {
+                assert_eq!(
+                    scope.signing_session().position().height().value(),
+                    child_height
+                );
+                assert_eq!(scope.signing_session().position().round().value(), 0);
+                assert_eq!(
+                    scope.signing_session().phase(),
+                    FixedValidatorLockPhaseV0::Proposal
+                );
+            })
+            .unwrap();
+    }
 }
 
 #[test]
@@ -4680,6 +4839,20 @@ fn current_finality_classifier_is_four_way_and_variant_order_stable() {
                     ) if action.position() == position
                         && action.proposal_signing_root() == root
                 ));
+                let driver = match driver.step().unwrap() {
+                    FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                        assert!(matches!(
+                            reason,
+                            FixedValidatorNodeDriverBlockReasonV0::CurrentFinalityProposalMissing {
+                                position: blocked_position,
+                                proposal_signing_root,
+                            } if blocked_position == position && proposal_signing_root == root
+                        ));
+                        *driver
+                    }
+                    _ => panic!("a finality quorum missing its proposal must block"),
+                };
+                assert_eq!(layout.images(), before);
 
                 let (driver, _) =
                     admit(driver, current_finality_proposal_event(&control, &payload));
@@ -4706,7 +4879,21 @@ fn current_finality_classifier_is_four_way_and_variant_order_stable() {
                     _ => panic!("two quorate roots must fail closed without selection"),
                 };
                 assert_eq!(driver.current_finality_inbox_len(), 4);
-                let driver = step_idle(driver);
+                let driver = match driver.step().unwrap() {
+                    FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                        assert!(matches!(
+                            reason,
+                            FixedValidatorNodeDriverBlockReasonV0::CurrentFinalityRootsConflicting {
+                                position: blocked_position,
+                                first,
+                                second,
+                            } if blocked_position == position
+                                && (first, second) == expected_roots
+                        ));
+                        *driver
+                    }
+                    _ => panic!("conflicting finality quorums must choose no winner and block"),
+                };
                 assert_eq!(driver.current_finality_inbox_len(), 4);
                 assert_eq!(layout.images(), before);
                 (missing, ready, conflict)
@@ -4970,6 +5157,10 @@ fn finality_admission_bypasses_latched_current_and_higher_saturation() {
         ConsensusVoteTarget::Proposal(current_value.proposal_signing_root()),
         &fixture.signing_key(),
     );
+    let current_input_bytes = u64::try_from(current_control.len() + current_payload.len()).unwrap();
+    let finality_input_bytes = current_input_bytes
+        .checked_add(u64::try_from(finality_precommit.len()).unwrap())
+        .unwrap();
     let ready = fixture
         .provision(&layout, 8)
         .create(fixture.signing_key())
@@ -4993,31 +5184,38 @@ fn finality_admission_bypasses_latched_current_and_higher_saturation() {
                 driver,
                 current_proposal_event(&current_control, &current_payload),
             );
-            let driver = reject_current_prevote(driver, &current_prevote, |rejection| {
-                assert!(matches!(
-                    rejection,
+            let mut current_saturation = None;
+            let driver =
+                reject_current_prevote(driver, &current_prevote, |rejection| match rejection {
                     FixedValidatorNodeDriverAdmissionRejectionV0::CurrentInboxSaturated {
+                        saturation,
                         newly_saturated: true,
                         ..
-                    }
-                ));
-            });
+                    } => current_saturation = Some(*saturation),
+                    _ => panic!("current voting inbox must newly saturate"),
+                });
+            let current_saturation = current_saturation.unwrap();
             assert_eq!(driver.current_inbox_len(), 1);
+            assert_eq!(
+                driver.current_inbox_canonical_input_bytes(),
+                current_input_bytes
+            );
 
             let (driver, _) = admit(driver, proposal_event(1, &higher_control, &higher_payload));
-            let driver = reject_prevote(driver, &higher_prevote, |rejection| {
-                assert!(matches!(
-                    rejection,
-                    FixedValidatorNodeDriverAdmissionRejectionV0::PrevoteInbox(source)
-                        if matches!(
-                            source.as_ref(),
-                            FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0::Saturated {
-                                newly_saturated: true,
-                                ..
-                            }
-                        )
-                ));
+            let mut higher_saturation = None;
+            let driver = reject_prevote(driver, &higher_prevote, |rejection| match rejection {
+                FixedValidatorNodeDriverAdmissionRejectionV0::PrevoteInbox(source) => {
+                    match source.as_ref() {
+                        FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0::Saturated {
+                            saturation,
+                            newly_saturated: true,
+                        } => higher_saturation = Some(*saturation),
+                        _ => panic!("higher voting inbox must newly saturate"),
+                    }
+                }
+                _ => panic!("higher prevote must be rejected by its inbox"),
             });
+            let higher_saturation = higher_saturation.unwrap();
             assert_eq!(driver.inbox_len(), 1);
 
             let (driver, disposition) = admit(
@@ -5039,6 +5237,14 @@ fn finality_admission_bypasses_latched_current_and_higher_saturation() {
             assert_eq!(driver.current_inbox_len(), 1);
             assert_eq!(driver.inbox_len(), 1);
             assert_eq!(driver.current_finality_inbox_len(), 2);
+            assert_eq!(
+                driver.current_inbox_canonical_input_bytes(),
+                current_input_bytes
+            );
+            assert_eq!(
+                driver.current_finality_inbox_canonical_input_bytes(),
+                finality_input_bytes
+            );
             assert!(matches!(
                 driver.classify_current_finality_evidence().unwrap(),
                 FixedValidatorNodeDriverCurrentFinalityClassificationV0::Ready(action)
@@ -5047,6 +5253,178 @@ fn finality_admission_bypasses_latched_current_and_higher_saturation() {
                             == current_value.proposal_signing_root()
             ));
             assert_eq!(layout.images(), before);
+
+            let (driver, selection) = step_finality(driver);
+            assert!(matches!(
+                selection,
+                FixedValidatorNodeFinalitySelectionV0::Finalized {
+                    position: finalized,
+                    ..
+                } if finalized == current_position
+            ));
+            assert_eq!(driver.position().height().value(), 2);
+            assert_eq!(driver.position().round().value(), 0);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Proposal);
+            assert_eq!(driver.current_inbox_len(), 1);
+            assert_eq!(driver.inbox_len(), 1);
+            assert_eq!(driver.current_finality_inbox_len(), 2);
+            assert_eq!(
+                driver.current_inbox_canonical_input_bytes(),
+                current_input_bytes
+            );
+            assert_eq!(
+                driver.current_finality_inbox_canonical_input_bytes(),
+                finality_input_bytes
+            );
+            assert_ne!(layout.images(), before);
+
+            let (driver, _) = step_arm(driver);
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::Saturated(saturation)
+                            if saturation == higher_saturation
+                    ));
+                    *driver
+                }
+                _ => panic!("stale higher saturation must remain until its explicit drain"),
+            };
+            let (driver, drained) = driver.drain_inbox_and_reset().into_parts();
+            let (proposals, prevotes) = drained_contents(drained);
+            assert_eq!(
+                proposals,
+                vec![(higher_control.clone(), higher_payload.clone())]
+            );
+            assert!(prevotes.is_empty());
+
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::CurrentSaturated {
+                            position,
+                            saturation,
+                        } if position == current_position && saturation == current_saturation
+                    ));
+                    *driver
+                }
+                _ => panic!("stale current saturation must remain until its explicit drain"),
+            };
+            let (driver, drained) = driver.drain_current_inbox_and_reset().into_parts();
+            let (proposals, proposal_prevotes, nil_prevotes) = drained_current_contents(drained);
+            assert_eq!(
+                proposals,
+                vec![(current_control.clone(), current_payload.clone())]
+            );
+            assert!(proposal_prevotes.is_empty());
+            assert!(nil_prevotes.is_empty());
+
+            let driver = step_idle(*driver);
+            let (driver, drained) = driver.drain_current_finality_inbox_and_reset().into_parts();
+            let (proposals, precommits) = drained_current_finality_contents(drained);
+            assert_eq!(
+                proposals,
+                vec![(current_control.clone(), current_payload.clone())]
+            );
+            assert_eq!(precommits, vec![finality_precommit.clone()]);
+            assert_eq!(driver.position().height().value(), 2);
+        })
+        .unwrap();
+}
+
+#[test]
+fn ready_current_finality_precedes_higher_current_and_due_work() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-finality-priority");
+    let branch = fixed_branch(&fixture);
+    let (current_value, current_control, current_payload) =
+        proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let (higher_value, higher_control, higher_payload) =
+        proposal_inputs(&fixture, &branch, 1, ZfcAxiom::Union);
+    let current_position = round_at(&branch, 0).position();
+    let higher_position = round_at(&branch, 1).position();
+    let current_prevote = signed_vote_bytes(
+        fixture.context,
+        current_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(current_value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let higher_prevote = signed_vote_bytes(
+        fixture.context,
+        higher_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(higher_value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let finality_precommit = signed_vote_bytes(
+        fixture.context,
+        current_position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(current_value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let (driver, timeout) = step_arm(driver(scope, 16, 4));
+            let (driver, _) = admit(
+                driver,
+                current_proposal_event(&current_control, &current_payload),
+            );
+            let (driver, _) = admit(driver, current_prevote_event(&current_prevote));
+            let (driver, _) = admit(driver, proposal_event(1, &higher_control, &higher_payload));
+            let (driver, _) = admit(driver, prevote_event(&higher_prevote));
+            let (driver, _) = admit_due(driver, timeout);
+            let (driver, _) = admit(
+                driver,
+                current_finality_precommit_event(&finality_precommit),
+            );
+
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::CurrentFinalityProposalMissing {
+                            position,
+                            proposal_signing_root,
+                        } if position == current_position
+                            && proposal_signing_root == current_value.proposal_signing_root()
+                    ));
+                    *driver
+                }
+                _ => panic!("missing finality proposal must block every lower-priority action"),
+            };
+            assert_eq!(layout.images(), before);
+            assert!(driver.timeout_is_due());
+
+            let (driver, _) = admit(
+                driver,
+                current_finality_proposal_event(&current_control, &current_payload),
+            );
+            let (driver, selection) = step_finality(driver);
+            assert!(matches!(
+                selection,
+                FixedValidatorNodeFinalitySelectionV0::Finalized {
+                    position,
+                    ..
+                } if position == current_position
+            ));
+            assert_eq!(driver.position().height().value(), 2);
+            assert_eq!(driver.position().round().value(), 0);
+            assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Proposal);
+            assert!(!driver.timeout_is_due());
+            assert!(driver.has_pending_command());
+            assert_eq!(driver.inbox_len(), 2);
+            assert_eq!(driver.current_inbox_len(), 2);
+            assert_eq!(driver.current_finality_inbox_len(), 2);
+            assert_ne!(layout.images(), before);
         })
         .unwrap();
 }
@@ -5193,6 +5571,90 @@ fn finality_count_and_byte_saturation_latch_and_reset_independently() {
 }
 
 #[test]
+fn finality_saturation_supersedes_healthy_missing_proposal_block() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("driver-current-finality-block-then-saturation");
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let position = round_at(&branch, 0).position();
+    let precommit = signed_vote_bytes(
+        fixture.context,
+        position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|scope| {
+            let driver = driver_with_finality_limits(
+                scope,
+                8,
+                1024 * 1024,
+                8,
+                1024 * 1024,
+                1,
+                1024 * 1024,
+                4,
+            );
+            let (driver, timeout) = step_arm(driver);
+            let (driver, _) = admit_due(driver, timeout);
+            let (driver, _) = admit(driver, current_finality_precommit_event(&precommit));
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::CurrentFinalityProposalMissing {
+                            position: blocked_position,
+                            proposal_signing_root,
+                        } if blocked_position == position
+                            && proposal_signing_root == value.proposal_signing_root()
+                    ));
+                    *driver
+                }
+                _ => panic!("healthy missing-proposal finality must block due work"),
+            };
+            assert_eq!(layout.images(), before);
+
+            let driver = reject_current_finality_proposal(
+                driver,
+                &control,
+                &payload,
+                |rejection| {
+                    assert!(matches!(
+                        rejection,
+                        FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityInboxSaturated {
+                            position: saturated_position,
+                            newly_saturated: true,
+                            ..
+                        } if *saturated_position == position
+                    ));
+                },
+            );
+            assert!(matches!(
+                driver.classify_current_finality_evidence().unwrap(),
+                FixedValidatorNodeDriverCurrentFinalityClassificationV0::Saturated {
+                    position: saturated_position,
+                    ..
+                } if saturated_position == position
+            ));
+            assert_eq!(layout.images(), before);
+
+            let driver = step_transition(driver);
+            let (_driver, vote, released_proposal) = step_publish(driver);
+            assert_eq!(vote.role(), ConsensusVoteRole::Prevote);
+            assert_eq!(vote.target(), ConsensusVoteTarget::Nil);
+            assert!(released_proposal.is_none());
+        })
+        .unwrap();
+}
+
+#[test]
 fn saturated_finality_inbox_leaves_due_step_and_authority_state_unchanged() {
     let fixture = Fixture::new();
     let branch = fixed_branch(&fixture);
@@ -5286,35 +5748,62 @@ fn saturated_finality_inbox_leaves_due_step_and_authority_state_unchanged() {
 }
 
 #[test]
-fn current_finality_evidence_becomes_nonmatching_after_position_advance_but_drains_unchanged() {
+fn incomplete_current_finality_evidence_becomes_nonmatching_after_position_advance() {
     let fixture = Fixture::new();
     let layout = TestLayout::new("driver-current-finality-former-position");
-    let branch = fixed_branch(&fixture);
+    let signing_keys = [
+        SigningKey::from_bytes(&signing_seed(1)),
+        SigningKey::from_bytes(&signing_seed(2)),
+        SigningKey::from_bytes(&signing_seed(3)),
+    ];
+    let entries = signing_keys
+        .iter()
+        .map(|key| ActiveAgreementEntry::new(consensus_key(key), AgreementWeight::new(1)))
+        .collect::<Vec<_>>();
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        fixture.context,
+        &entries,
+        ArtifactChainState::new(fixture.definition).branch_snapshot(),
+    )
+    .unwrap();
+    let current_round = round_at(&branch, 0);
+    let current_proposer = signing_keys
+        .iter()
+        .find(|key| consensus_key(key) == current_round.proposer())
+        .unwrap();
     let (current_value, current_control, current_payload) =
-        proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
-    let current_position = round_at(&branch, 0).position();
+        proposal_inputs_with_signing_key(&fixture, &branch, 0, ZfcAxiom::Pairing, current_proposer);
     let current_precommit = signed_vote_bytes(
         fixture.context,
-        current_position,
+        current_round.position(),
         ConsensusVoteRole::Precommit,
         ConsensusVoteTarget::Proposal(current_value.proposal_signing_root()),
-        &fixture.signing_key(),
+        &signing_keys[0],
     );
+    let higher_round = round_at(&branch, 1);
+    let higher_proposer = signing_keys
+        .iter()
+        .find(|key| consensus_key(key) == higher_round.proposer())
+        .unwrap();
     let (higher_value, higher_control, higher_payload) =
-        proposal_inputs(&fixture, &branch, 1, ZfcAxiom::Union);
-    let higher_position = round_at(&branch, 1).position();
-    let higher_prevote = signed_vote_bytes(
-        fixture.context,
-        higher_position,
-        ConsensusVoteRole::Prevote,
-        ConsensusVoteTarget::Proposal(higher_value.proposal_signing_root()),
-        &fixture.signing_key(),
-    );
+        proposal_inputs_with_signing_key(&fixture, &branch, 1, ZfcAxiom::Union, higher_proposer);
+    let higher_position = higher_round.position();
+    let higher_prevotes = signing_keys
+        .iter()
+        .map(|key| {
+            signed_vote_bytes(
+                fixture.context,
+                higher_position,
+                ConsensusVoteRole::Prevote,
+                ConsensusVoteTarget::Proposal(higher_value.proposal_signing_root()),
+                key,
+            )
+        })
+        .collect::<Vec<_>>();
     let retained_bytes =
         u64::try_from(current_control.len() + current_payload.len() + current_precommit.len())
             .unwrap();
-    let ready = fixture
-        .provision(&layout, 8)
+    let ready = provision_with_fixed_entries(&fixture, &layout, &entries)
         .create(fixture.signing_key())
         .unwrap();
 
@@ -5328,8 +5817,7 @@ fn current_finality_evidence_becomes_nonmatching_after_position_advance_but_drai
             let (driver, _) = admit(driver, current_finality_precommit_event(&current_precommit));
             assert!(matches!(
                 driver.classify_current_finality_evidence().unwrap(),
-                FixedValidatorNodeDriverCurrentFinalityClassificationV0::Ready(action)
-                    if action.position() == current_position
+                FixedValidatorNodeDriverCurrentFinalityClassificationV0::Incomplete
             ));
             assert_eq!(driver.current_finality_inbox_len(), 2);
             assert_eq!(
@@ -5338,7 +5826,10 @@ fn current_finality_evidence_becomes_nonmatching_after_position_advance_but_drai
             );
 
             let (driver, _) = admit(driver, proposal_event(1, &higher_control, &higher_payload));
-            let (driver, _) = admit(driver, prevote_event(&higher_prevote));
+            let mut driver = driver;
+            for higher_prevote in &higher_prevotes {
+                (driver, _) = admit(driver, prevote_event(higher_prevote));
+            }
             let driver = step_transition(driver);
             assert_eq!(driver.position(), higher_position);
             assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
@@ -5364,6 +5855,67 @@ fn current_finality_evidence_becomes_nonmatching_after_position_advance_but_drai
             assert_eq!(driver.current_finality_inbox_canonical_input_bytes(), 0);
         })
         .unwrap();
+}
+
+#[test]
+fn current_finality_preclassification_routes_only_matching_precommits_to_round_work() {
+    let fixture = Fixture::new();
+    let branch = fixed_branch(&fixture);
+    let round = round_at(&branch, 0);
+    let next_round = round_at(&branch, 1);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let precommit = signed_vote_bytes(
+        fixture.context,
+        round.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        &fixture.signing_key(),
+    );
+    let limits = FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0::new(2, 1024 * 1024).unwrap();
+
+    let empty = CurrentRoundFinalityInboxV0::new(limits);
+    assert_eq!(
+        empty.preclassify(round.parent_coordinate(), round.position()),
+        CurrentRoundFinalityPreclassificationV0::NoMatchingPrecommit
+    );
+
+    let mut proposal_only = CurrentRoundFinalityInboxV0::new(limits);
+    let proposal = verify_deferred_proposal_at_round(&round, &control, payload.clone()).unwrap();
+    assert!(matches!(
+        proposal_only.try_insert_proposal(proposal),
+        Ok(CurrentRoundFinalityInboxInsertOutcomeV0::Inserted)
+    ));
+    assert_eq!(
+        proposal_only.preclassify(round.parent_coordinate(), round.position()),
+        CurrentRoundFinalityPreclassificationV0::NoMatchingPrecommit
+    );
+
+    let mut precommit_only = CurrentRoundFinalityInboxV0::new(
+        FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0::new(1, 1024 * 1024).unwrap(),
+    );
+    assert!(matches!(
+        precommit_only.try_insert_precommit(&round, &precommit),
+        Ok(CurrentRoundFinalityInboxInsertOutcomeV0::Inserted)
+    ));
+    assert_eq!(
+        precommit_only.preclassify(next_round.parent_coordinate(), next_round.position()),
+        CurrentRoundFinalityPreclassificationV0::NoMatchingPrecommit
+    );
+    assert_eq!(
+        precommit_only.preclassify(round.parent_coordinate(), round.position()),
+        CurrentRoundFinalityPreclassificationV0::NeedsRound
+    );
+
+    let proposal = verify_deferred_proposal_at_round(&round, &control, payload).unwrap();
+    assert!(precommit_only.try_insert_proposal(proposal).is_err());
+    let (saturated_position, saturation) = precommit_only.saturation().unwrap();
+    assert_eq!(
+        precommit_only.preclassify(round.parent_coordinate(), round.position()),
+        CurrentRoundFinalityPreclassificationV0::Saturated {
+            position: saturated_position,
+            saturation,
+        }
+    );
 }
 
 #[test]
