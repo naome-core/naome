@@ -1802,6 +1802,7 @@ dependencies = [
  "naome-consensus",
  "naome-foundation",
  "naome-ledger",
+ "naome-node",
  "naome-proof",
  "naome-storage",
  "sha2 0.11.0",

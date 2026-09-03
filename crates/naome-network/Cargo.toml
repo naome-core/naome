@@ -31,6 +31,7 @@ ed25519-dalek.workspace = true
 naome-consensus = { path = "../naome-consensus" }
 naome-foundation = { path = "../naome-foundation" }
 naome-ledger = { path = "../naome-ledger" }
+naome-node = { path = "../naome-node" }
 tokio = { version = "1", default-features = false, features = [
     "rt",
     "test-util",
