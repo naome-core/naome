@@ -65,6 +65,21 @@ classifier remains crate-private. The public `step` surface exposes only the
 typed operational block, finality, rejection, and stop outcomes described
 below.
 
+`FixedValidatorNodeDriverV0::selected_artifact_history` is the sole public
+non-diagnostic projection from the privately owned scope. It returns only the
+sealed read-only `SelectedArtifactHistory` trait implemented by the anchored
+finality owner; it cannot expose the branch, signing session, raw scope, or any
+mutable finality operation. The reference composition retains this shared
+borrow while driving its explicit candidate-ancestry and candidate-branch
+payload fills. Rust borrowing then prevents that composition from consuming the
+same driver through event admission or a step until its retained acquisition
+borrow ends. The lower-level progress values do not themselves retain or widen
+this capability. The caller still chooses the exact target, peer, stores,
+limits, and event routing, and the later driver event must pass the ordinary
+complete proposal verification. The projection establishes no availability,
+provenance, validity, vote-target, branch-selection, rollback, consensus, or
+finality authority.
+
 Construction is consuming. If construction fails, it returns neither a driver
 nor the supplied signing scope. The caller must strictly reopen the anchored
 signer state before retrying; no construction error grants a reusable scope.

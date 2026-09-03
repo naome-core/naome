@@ -14,7 +14,7 @@ use naome_consensus::{
 use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
 use naome_storage::{
     FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyHaltV0,
-    FixedValidatorVoteSafetyJournalErrorV0,
+    FixedValidatorVoteSafetyJournalErrorV0, SelectedArtifactHistory,
 };
 
 use super::current_round_finality_inbox::{
@@ -1008,9 +1008,11 @@ enum PendingCommandV0 {
 
 /// One non-clone, closure-scoped fixed-validator event driver.
 ///
-/// The driver privately owns the sole live signing scope. It exposes neither an
-/// escape hatch back to that scope nor a caller-selected action method. Evidence
-/// and due timers become authoritative only through the existing fully checking
+/// The driver privately owns the sole live signing scope. It exposes neither a
+/// mutable or consuming escape hatch back to that scope nor a caller-selected
+/// action method. Its only authority projection is the sealed read-only selected
+/// artifact history required by caller-owned acquisition. Evidence and due
+/// timers become authoritative only through the existing fully checking
 /// consuming coordinators selected by [`Self::step`].
 #[must_use]
 pub struct FixedValidatorNodeDriverV0<'node> {
@@ -1088,6 +1090,16 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     /// Returns the exact live signer position as read-only diagnostics.
     pub fn position(&self) -> ConsensusPosition {
         self.scope().signing_session.position()
+    }
+
+    /// Borrows only the sealed read-only selected artifact history.
+    ///
+    /// The borrow cannot expose the signing session or mutate selected finality.
+    /// Its lifetime also prevents consuming driver work while a caller-owned
+    /// acquisition workflow retains it. Target and peer choice, persistence,
+    /// proposal admission, voting, and finality remain separate explicit steps.
+    pub fn selected_artifact_history(&self) -> &dyn SelectedArtifactHistory {
+        self.scope().finality()
     }
 
     /// Returns the exact live lock phase as read-only diagnostics.

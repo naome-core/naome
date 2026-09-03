@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ed25519_dalek::{Signer, SigningKey};
-use naome_chain::{ArtifactChainDefinition, ArtifactChainState, ArtifactDag};
+use naome_chain::{ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactDag};
 use naome_consensus::{
     ActiveAgreementEntry, AgreementWeight, ConsensusContextV0, ConsensusGenesisId, ConsensusKey,
     ConsensusPosition, ConsensusProtocolVersion, ConsensusRound, ConsensusValueV0,
@@ -20,10 +20,16 @@ use naome_network::{
     PeerSessionEvent, StaticArtifactNetwork, StaticPeer,
 };
 use naome_node::{
-    FixedValidatorNodeDirectoriesV0, FixedValidatorNodeProvisionV0, FixedValidatorNodeReadyV0,
-    FixedValidatorNodeSigningScopeV0, FixedValidatorNodeStartupV0,
-    FixedValidatorNodeVoteExecutionOutcomeV0, FixedValidatorNodeVoteRejectionV0,
-    FixedValidatorSignerCatchUpHeightLimitV0,
+    FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
+    FixedValidatorNodeCurrentRoundInboxLimitsV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0, FixedValidatorNodeDirectoriesV0,
+    FixedValidatorNodeDriverAdmissionDispositionV0, FixedValidatorNodeDriverAdmissionOutcomeV0,
+    FixedValidatorNodeDriverAdmissionRejectionV0, FixedValidatorNodeDriverCommandV0,
+    FixedValidatorNodeDriverEventV0, FixedValidatorNodeDriverStepOutcomeV0,
+    FixedValidatorNodeDriverV0, FixedValidatorNodeHigherRoundInboxLimitsV0,
+    FixedValidatorNodeProvisionV0, FixedValidatorNodeReadyV0, FixedValidatorNodeSigningScopeV0,
+    FixedValidatorNodeStartupV0, FixedValidatorNodeVoteExecutionOutcomeV0,
+    FixedValidatorNodeVoteRejectionV0, FixedValidatorSignerCatchUpHeightLimitV0,
 };
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate};
 use naome_storage::{
@@ -32,7 +38,7 @@ use naome_storage::{
     CandidateBranchReconstructionLimits, CanonicalArtifactPayloadStore,
     FixedValidatorFinalityReplayLimitV0, FixedValidatorProposalReplayLimitV0,
     FixedValidatorSignedVoteV0, FixedValidatorSignerRecoveryRoundLimitV0,
-    FixedValidatorVoteSafetyReplayLimitV0,
+    FixedValidatorVoteSafetyReplayLimitV0, SelectedArtifactHistory,
 };
 use tokio::runtime::Builder;
 use tokio::time::timeout;
@@ -228,6 +234,221 @@ fn expect_signed<'node>(
         }
         _ => panic!("unexpected future vote-execution outcome"),
     }
+}
+
+fn node_driver<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+) -> FixedValidatorNodeDriverV0<'node> {
+    FixedValidatorNodeDriverV0::new(
+        scope,
+        FixedValidatorNodeHigherRoundInboxLimitsV0::new(8, STORE_BYTE_LIMIT).unwrap(),
+        FixedValidatorNodeCurrentRoundInboxLimitsV0::new(8, STORE_BYTE_LIMIT).unwrap(),
+        FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0::new(8, STORE_BYTE_LIMIT).unwrap(),
+        FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0::new(8, STORE_BYTE_LIMIT).unwrap(),
+        ConsensusRound::new(0),
+    )
+    .unwrap()
+}
+
+fn transfer_arm<'node>(
+    driver: FixedValidatorNodeDriverV0<'node>,
+) -> FixedValidatorNodeDriverV0<'node> {
+    match driver.step().unwrap() {
+        FixedValidatorNodeDriverStepOutcomeV0::Command { driver, command } => match command {
+            FixedValidatorNodeDriverCommandV0::ArmPhaseTimeout(_) => *driver,
+            FixedValidatorNodeDriverCommandV0::PublishVote { .. } => {
+                panic!("expected a timeout-arm command")
+            }
+            _ => panic!("unexpected future driver command"),
+        },
+        _ => panic!("expected a timeout-arm command"),
+    }
+}
+
+fn admit_driver_event<'node>(
+    driver: FixedValidatorNodeDriverV0<'node>,
+    event: FixedValidatorNodeDriverEventV0,
+) -> FixedValidatorNodeDriverV0<'node> {
+    match driver.admit_event(event).unwrap() {
+        FixedValidatorNodeDriverAdmissionOutcomeV0::Admitted {
+            driver,
+            disposition: FixedValidatorNodeDriverAdmissionDispositionV0::Inserted,
+        } => *driver,
+        FixedValidatorNodeDriverAdmissionOutcomeV0::Admitted { .. } => {
+            panic!("expected one newly inserted driver event")
+        }
+        FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected { .. } => {
+            panic!("expected driver event admission")
+        }
+        _ => panic!("unexpected future driver admission outcome"),
+    }
+}
+
+fn transition_driver<'node>(
+    driver: FixedValidatorNodeDriverV0<'node>,
+) -> FixedValidatorNodeDriverV0<'node> {
+    match driver.step().unwrap() {
+        FixedValidatorNodeDriverStepOutcomeV0::Transitioned { driver } => *driver,
+        _ => panic!("expected one driver transition"),
+    }
+}
+
+fn publish_driver_vote<'node>(
+    driver: FixedValidatorNodeDriverV0<'node>,
+) -> (
+    FixedValidatorNodeDriverV0<'node>,
+    FixedValidatorSignedVoteV0,
+) {
+    match driver.step().unwrap() {
+        FixedValidatorNodeDriverStepOutcomeV0::Command { driver, command } => match command {
+            FixedValidatorNodeDriverCommandV0::PublishVote {
+                vote,
+                released_proposal: None,
+            } => (*driver, vote),
+            FixedValidatorNodeDriverCommandV0::PublishVote {
+                released_proposal: Some(_),
+                ..
+            } => panic!("current-round publication must not release proposal custody"),
+            FixedValidatorNodeDriverCommandV0::ArmPhaseTimeout(_) => {
+                panic!("expected a vote-publication command")
+            }
+            _ => panic!("unexpected future driver command"),
+        },
+        _ => panic!("expected a vote-publication command"),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the integration helper keeps each explicit caller-owned network and store boundary visible"
+)]
+async fn fill_candidate_and_payload(
+    selected: &dyn SelectedArtifactHistory,
+    client: &mut StaticArtifactNetwork,
+    server: &mut StaticArtifactNetwork,
+    client_candidates: &mut ArtifactBlockCandidateStore,
+    client_payloads: &mut CanonicalArtifactPayloadStore,
+    server_candidates: &mut ArtifactBlockCandidateStore,
+    server_payloads: &mut CanonicalArtifactPayloadStore,
+    server_peer_id: PeerId,
+    target: ArtifactBlockId,
+) {
+    let mut ancestry = client
+        .start_artifact_block_candidate_ancestry_fill(
+            selected,
+            client_candidates,
+            server_peer_id,
+            target,
+        )
+        .unwrap();
+    let mut served_blocks = 0_usize;
+    timeout(Duration::from_secs(20), async {
+        while ancestry.is_some() {
+            tokio::select! {
+                event = client.next_event() => {
+                    let active = ancestry.take().unwrap();
+                    if active.accepts_event(&event) {
+                        ancestry = active.on_event(client, selected, event).unwrap();
+                    } else {
+                        if let NetworkEvent::ListenerError { error, .. } = event {
+                            panic!("driver candidate-fill client listener failed: {error}");
+                        }
+                        ancestry = Some(active);
+                    }
+                }
+                event = server.next_event() => match event {
+                    NetworkEvent::InboundBlockRequest(inbound) => {
+                        server
+                            .respond_block_from_candidate_store(inbound, server_candidates)
+                            .unwrap();
+                        served_blocks += 1;
+                    }
+                    NetworkEvent::InboundBlockFailure { error, .. } => {
+                        panic!("driver candidate-fill server request failed: {error}")
+                    }
+                    NetworkEvent::ListenerError { error, .. } => {
+                        panic!("driver candidate-fill server listener failed: {error}")
+                    }
+                    NetworkEvent::PeerSession(
+                        PeerSessionEvent::DialFailed { peer_id }
+                        | PeerSessionEvent::Disconnected { peer_id },
+                    ) => panic!("driver candidate-fill server lost peer {peer_id}"),
+                    _ => {}
+                },
+            }
+        }
+    })
+    .await
+    .expect("driver-held candidate fill timed out");
+    assert_eq!(served_blocks, 1);
+
+    let progress = client
+        .start_artifact_block_candidate_branch_payload_fill(
+            selected,
+            client_candidates,
+            client_payloads,
+            server_peer_id,
+            target,
+            CandidateBranchReconstructionLimits::new(1).unwrap(),
+        )
+        .unwrap();
+    let mut payload_fill = match progress {
+        ArtifactBlockCandidateBranchPayloadFillProgress::AwaitingResponse(fill) => Some(fill),
+        ArtifactBlockCandidateBranchPayloadFillProgress::Complete(_) => {
+            panic!("the empty driver payload archive unexpectedly completed")
+        }
+    };
+    let mut reconstruction = None;
+    let mut served_payloads = 0_usize;
+    timeout(Duration::from_secs(20), async {
+        while payload_fill.is_some() {
+            tokio::select! {
+                event = client.next_event() => {
+                    if payload_fill.as_ref().unwrap().accepts_event(&event) {
+                        let active = payload_fill.take().unwrap();
+                        match active.on_event(client, event).unwrap() {
+                            ArtifactBlockCandidateBranchPayloadFillProgress::AwaitingResponse(next) => {
+                                payload_fill = Some(next);
+                            }
+                            ArtifactBlockCandidateBranchPayloadFillProgress::Complete(complete) => {
+                                reconstruction = Some(complete);
+                            }
+                        }
+                    } else if let NetworkEvent::ListenerError { error, .. } = event {
+                        panic!("driver payload-fill client listener failed: {error}");
+                    }
+                }
+                event = server.next_event() => match event {
+                    NetworkEvent::InboundArtifactRequest(inbound) => {
+                        server
+                            .respond_artifact_from_payload_store(inbound, server_payloads)
+                            .unwrap();
+                        served_payloads += 1;
+                    }
+                    NetworkEvent::InboundArtifactFailure { error, .. } => {
+                        panic!("driver payload-fill server request failed: {error}")
+                    }
+                    NetworkEvent::ListenerError { error, .. } => {
+                        panic!("driver payload-fill server listener failed: {error}")
+                    }
+                    NetworkEvent::PeerSession(
+                        PeerSessionEvent::DialFailed { peer_id }
+                        | PeerSessionEvent::Disconnected { peer_id },
+                    ) => panic!("driver payload-fill server lost peer {peer_id}"),
+                    _ => {}
+                },
+            }
+        }
+    })
+    .await
+    .expect("driver-held payload fill timed out");
+    assert_eq!(served_payloads, 1);
+    assert_eq!(
+        reconstruction
+            .expect("driver-held payload fill must complete")
+            .target_block_id(),
+        target
+    );
 }
 
 fn consensus_key(signing_key: &SigningKey) -> ConsensusKey {
@@ -758,6 +979,248 @@ fn authenticated_candidate_and_payload_fill_gate_store_backed_votes() {
         .run_with_signing_session(|mut scope| {
             assert_eq!(client_layout.authority_images(), completed_authority);
             assert_eq!(client_layout.source_images(), complete_client_sources);
+            assert_eq!(scope.signing_session().position(), position);
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Precommit
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .locked_value()
+                    .unwrap()
+                    .proposal_signing_root(),
+                root
+            );
+            assert_eq!(
+                scope
+                    .signing_session()
+                    .valid_value()
+                    .unwrap()
+                    .canonical_prevote_certificate(),
+                certificate
+            );
+        })
+        .unwrap();
+}
+
+#[test]
+fn driver_owned_history_supports_caller_acquisition_and_explicit_vote_loopback() {
+    let definition = ArtifactChainDefinition::new([0x51; 32]);
+    let context = ConsensusContextV0::new(
+        definition.id(),
+        ConsensusGenesisId::from_bytes([0x62; 32]),
+        ConsensusProtocolVersion::new(7),
+    );
+    let mut seed = [0_u8; 32];
+    seed[0] = 2;
+    seed[2] = 0xb6;
+    let signing_key = SigningKey::from_bytes(&seed);
+    let entries = [ActiveAgreementEntry::new(
+        consensus_key(&signing_key),
+        AgreementWeight::new(1),
+    )];
+    let selected = ArtifactChainState::new(definition);
+    let payload = pairing_payload();
+    let block = selected.prepare_block(artifact_id(&payload)).unwrap();
+    let target = block.id();
+
+    let client_layout = TestLayout::new("fixed-validator-driver-fill-client");
+    let server_layout = TestLayout::new("fixed-validator-driver-fill-server");
+    let mut client_candidates = candidate_store(&client_layout.candidate_store, definition);
+    let mut client_payloads = payload_store(&client_layout.payload_store);
+    let mut server_candidates = candidate_store(&server_layout.candidate_store, definition);
+    let mut server_payloads = payload_store(&server_layout.payload_store);
+    assert!(matches!(
+        server_candidates.insert(&block).unwrap(),
+        ArtifactBlockCandidateInsertOutcome::Inserted
+    ));
+    assert!(matches!(
+        server_payloads
+            .validate_and_insert_branch_payload(
+                &selected.branch_snapshot(),
+                &block,
+                payload.clone(),
+            )
+            .unwrap()
+            .insertion_outcome(),
+        ArtifactPayloadInsertOutcome::Inserted
+    ));
+    let server_sources = server_layout.source_images();
+
+    let ready = provision(definition, context, &entries, &client_layout)
+        .create(signing_key.clone())
+        .unwrap();
+    let authority_before = client_layout.authority_images();
+    let empty_client_sources = client_layout.source_images();
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    let (mut client, mut server, server_peer_id) = runtime.block_on(connected_pair());
+    let client_layout_ref = &client_layout;
+    let server_layout_ref = &server_layout;
+    let authority_before_in_session = authority_before.clone();
+    let server_sources_in_session = server_sources.clone();
+
+    let (position, root, certificate, completed_sources) = ready
+        .run_with_signing_session(|scope| {
+            runtime.block_on(async move {
+                let branch = scope.branch().clone();
+                let round = branch.begin_round_zero().unwrap();
+                let position = round.position();
+                let value = round.value_for_artifact_block(block);
+                let root = value.proposal_signing_root();
+                let control = proposal_control_bytes(value, position, &signing_key);
+
+                let driver = node_driver(scope);
+                assert_eq!(driver.position(), position);
+                assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Proposal);
+                let driver = transfer_arm(driver);
+                assert!(!driver.has_pending_command());
+                assert_eq!(client_layout_ref.source_images(), empty_client_sources);
+
+                fill_candidate_and_payload(
+                    driver.selected_artifact_history(),
+                    &mut client,
+                    &mut server,
+                    &mut client_candidates,
+                    &mut client_payloads,
+                    &mut server_candidates,
+                    &mut server_payloads,
+                    server_peer_id,
+                    target,
+                )
+                .await;
+                assert_eq!(client_candidates.get(target).unwrap(), Some(block));
+                let acquired_payload = client_payloads
+                    .get(block.artifact_id())
+                    .unwrap()
+                    .expect("the driver caller must read the acquired payload")
+                    .canonical_artifact_bytes()
+                    .to_vec();
+                assert_eq!(acquired_payload, payload);
+                assert_eq!(
+                    client_layout_ref.authority_images(),
+                    authority_before_in_session
+                );
+                assert_eq!(server_layout_ref.source_images(), server_sources_in_session);
+                let completed_sources = client_layout_ref.source_images();
+
+                let mut invalid_payload = acquired_payload.clone();
+                invalid_payload[0] ^= 1;
+                let driver = match driver
+                    .admit_event(FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                        canonical_proposal_control_bytes: control.clone().into_boxed_slice(),
+                        canonical_artifact_bytes: invalid_payload.clone().into_boxed_slice(),
+                    })
+                    .unwrap()
+                {
+                    FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                        driver,
+                        event,
+                        rejection,
+                    } => {
+                        assert!(matches!(
+                            *rejection,
+                            FixedValidatorNodeDriverAdmissionRejectionV0::CurrentProposal(_)
+                        ));
+                        assert!(matches!(
+                            *event,
+                            FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                                canonical_proposal_control_bytes,
+                                canonical_artifact_bytes,
+                            } if canonical_proposal_control_bytes.as_ref() == control.as_slice()
+                                && canonical_artifact_bytes.as_ref() == invalid_payload.as_slice()
+                        ));
+                        *driver
+                    }
+                    FixedValidatorNodeDriverAdmissionOutcomeV0::Admitted { .. } => {
+                        panic!("tampered acquired payload must not be admitted")
+                    }
+                    _ => panic!("unexpected future driver admission outcome"),
+                };
+                assert_eq!(driver.current_inbox_len(), 0);
+                assert_eq!(
+                    client_layout_ref.authority_images(),
+                    authority_before_in_session
+                );
+                assert_eq!(client_layout_ref.source_images(), completed_sources);
+
+                let driver = admit_driver_event(
+                    driver,
+                    FixedValidatorNodeDriverEventV0::CurrentRoundProposal {
+                        canonical_proposal_control_bytes: control.into_boxed_slice(),
+                        canonical_artifact_bytes: acquired_payload.into_boxed_slice(),
+                    },
+                );
+                assert_eq!(driver.current_inbox_len(), 1);
+                let driver = transition_driver(driver);
+                assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Prevote);
+                let (driver, prevote) = publish_driver_vote(driver);
+                assert_eq!(prevote.position(), position);
+                assert_eq!(prevote.role(), ConsensusVoteRole::Prevote);
+                assert_eq!(prevote.target(), ConsensusVoteTarget::Proposal(root));
+                let prevote_bytes = prevote.canonical_bytes().to_vec();
+                let after_prevote = client_layout_ref.authority_images();
+                assert_eq!(after_prevote[0], authority_before_in_session[0]);
+                assert_eq!(after_prevote[1], authority_before_in_session[1]);
+                assert_ne!(after_prevote[2], authority_before_in_session[2]);
+                assert_ne!(after_prevote[3], authority_before_in_session[3]);
+                assert_eq!(client_layout_ref.source_images(), completed_sources);
+
+                let driver = transfer_arm(driver);
+                let driver = admit_driver_event(
+                    driver,
+                    FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrevote {
+                        canonical_signed_prevote: prevote_bytes.clone().into_boxed_slice(),
+                    },
+                );
+                assert_eq!(driver.current_inbox_len(), 2);
+                let driver = transition_driver(driver);
+                assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+                let (driver, precommit) = publish_driver_vote(driver);
+                assert_eq!(precommit.position(), position);
+                assert_eq!(precommit.role(), ConsensusVoteRole::Precommit);
+                assert_eq!(precommit.target(), ConsensusVoteTarget::Proposal(root));
+                let driver = transfer_arm(driver);
+                assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
+                assert!(!driver.has_pending_command());
+
+                let certificate = round
+                    .build_quorum_certificate_from_signed_votes(
+                        &[prevote_bytes.as_slice()],
+                        ConsensusVoteRole::Prevote,
+                        ConsensusVoteTarget::Proposal(root),
+                    )
+                    .unwrap()
+                    .to_canonical_bytes();
+                let after_precommit = client_layout_ref.authority_images();
+                assert_eq!(after_precommit[0], authority_before_in_session[0]);
+                assert_eq!(after_precommit[1], authority_before_in_session[1]);
+                assert_ne!(after_precommit[2], after_prevote[2]);
+                assert_ne!(after_precommit[3], after_prevote[3]);
+                assert_eq!(client_layout_ref.source_images(), completed_sources);
+                assert_eq!(server_layout_ref.source_images(), server_sources_in_session);
+                (position, root, certificate, completed_sources)
+            })
+        })
+        .unwrap();
+
+    let completed_authority = client_layout.authority_images();
+    assert_eq!(completed_authority[0], authority_before[0]);
+    assert_eq!(completed_authority[1], authority_before[1]);
+    assert_ne!(completed_authority[2], authority_before[2]);
+    assert_ne!(completed_authority[3], authority_before[3]);
+    assert_eq!(client_layout.source_images(), completed_sources);
+    assert_eq!(server_layout.source_images(), server_sources);
+
+    let reopened = expect_ready(
+        provision(definition, context, &entries, &client_layout)
+            .open(SigningKey::from_bytes(&seed))
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(client_layout.authority_images(), completed_authority);
+            assert_eq!(client_layout.source_images(), completed_sources);
             assert_eq!(scope.signing_session().position(), position);
             assert_eq!(
                 scope.signing_session().phase(),
