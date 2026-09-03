@@ -695,6 +695,12 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
         }
     }
 
+    pub(super) fn retained_positions(&self) -> impl Iterator<Item = ConsensusPosition> + '_ {
+        self.proposals
+            .retained_positions()
+            .chain(self.prevotes.iter().map(|vote| vote.position()))
+    }
+
     pub(super) fn note_selected_proposal_removed(&mut self, canonical_input_bytes: u64) {
         self.total_canonical_input_bytes = self
             .total_canonical_input_bytes

@@ -11,12 +11,12 @@ publish.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 naome-chain = { path = "../naome-chain" }
 naome-consensus = { path = "../naome-consensus" }
+naome-proof = { path = "../naome-proof" }
 naome-storage = { path = "../naome-storage" }
 
 [dev-dependencies]
 ed25519-dalek = { workspace = true, features = ["digest", "hazmat"] }
 naome-foundation = { path = "../naome-foundation" }
-naome-proof = { path = "../naome-proof" }
 
 [lints]
 workspace = true

@@ -31,6 +31,7 @@ use naome_storage::{
 };
 
 mod candidate_backed_proposal;
+mod driver;
 mod finality;
 mod higher_round_inbox;
 mod higher_round_proposal_pairing;
@@ -40,6 +41,16 @@ mod proposal_deferral;
 mod round_progression;
 mod voting;
 
+pub use driver::{
+    FixedValidatorNodeDriverActionV0, FixedValidatorNodeDriverAdmissionDispositionV0,
+    FixedValidatorNodeDriverAdmissionErrorV0, FixedValidatorNodeDriverAdmissionOutcomeV0,
+    FixedValidatorNodeDriverAdmissionRejectionV0, FixedValidatorNodeDriverBlockReasonV0,
+    FixedValidatorNodeDriverCommandV0, FixedValidatorNodeDriverCreateErrorV0,
+    FixedValidatorNodeDriverDrainV0, FixedValidatorNodeDriverEventV0,
+    FixedValidatorNodeDriverStepErrorV0, FixedValidatorNodeDriverStepOutcomeV0,
+    FixedValidatorNodeDriverStepRejectionV0, FixedValidatorNodeDriverV0,
+    FixedValidatorNodePhaseTimeoutV0,
+};
 pub use finality::{
     FixedValidatorNodeCandidateBackedFinalityErrorV0,
     FixedValidatorNodeCandidateBackedFinalityOutcomeV0,
