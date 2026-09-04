@@ -356,7 +356,7 @@ fn direct_child_handoff_preserves_four_inboxes_replaces_timer_and_reopens() {
     }
 }
 
-fn custody(driver: &FixedValidatorNodeDriverV0<'_>) -> ([usize; 4], [u64; 3]) {
+pub(super) fn custody(driver: &FixedValidatorNodeDriverV0<'_>) -> ([usize; 4], [u64; 3]) {
     (
         [
             driver.inbox_len(),
