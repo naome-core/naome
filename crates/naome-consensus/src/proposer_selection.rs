@@ -117,15 +117,25 @@ impl FixedProposerStateV0 {
     pub(crate) fn try_from_preselected(
         entries: &[ActiveAgreementEntry],
     ) -> Result<Self, ActiveAgreementSnapshotError> {
-        let fixed_set = Arc::new(FixedAgreementSetV0::try_from_preselected(entries)?);
+        Ok(Self::from_zeroed_fixed_set(
+            FixedAgreementSetV0::try_from_preselected(entries)?,
+        ))
+    }
+
+    fn from_zeroed_preselected_snapshot(snapshot: &ActiveAgreementSnapshot) -> Self {
+        Self::from_zeroed_fixed_set(FixedAgreementSetV0::from_active_snapshot(snapshot))
+    }
+
+    fn from_zeroed_fixed_set(fixed_set: FixedAgreementSetV0) -> Self {
+        let fixed_set = Arc::new(fixed_set);
         let priorities = vec![BigInt::from(0_u8); fixed_set.entries().len()].into_boxed_slice();
         let id = derive_priority_state_id(fixed_set.id(), &priorities)
             .expect("zero priorities fit the canonical signed-256-bit representation");
-        Ok(Self {
+        Self {
             fixed_set,
             priorities,
             id,
-        })
+        }
     }
 
     pub(crate) fn select_next(&self) -> Result<(ConsensusKey, Self), ProposerSelectionError> {
@@ -165,10 +175,6 @@ impl FixedProposerStateV0 {
     ///
     /// This arithmetic does not establish snapshot provenance, canonicality,
     /// activation, branch selection, finality, persistence, or network trust.
-    #[allow(
-        dead_code,
-        reason = "canonical dynamic-snapshot integration is owned by later ledger work"
-    )]
     fn transition_to_preselected_snapshot(
         &self,
         final_snapshot: &ActiveAgreementSnapshot,
@@ -249,6 +255,83 @@ impl FixedProposerStateV0 {
     #[cfg(test)]
     pub(crate) fn canonical_priorities(&self) -> Result<Vec<[u8; 32]>, ProposerSelectionError> {
         self.priorities.iter().map(encode_signed_i256).collect()
+    }
+}
+
+/// Opaque arithmetic reference state for caller-preselected agreement snapshots.
+///
+/// A value starts with zero priorities for one already validated snapshot and
+/// can then advance only through [`Self::select_next`] or
+/// [`Self::transition_to_preselected_snapshot`]. Snapshot positions are not
+/// bound into this state. Construction does not establish genesis, authorize a
+/// reset or recovery, or make the supplied snapshot canonical. A returned key
+/// is an arithmetic winner only and grants no proposal or signing authority.
+///
+/// The raw priorities and validator entries are not exposed, and there is no
+/// conversion from this reference state into a consensus branch. Cloning,
+/// comparing, or deriving identities for alternative states grants none of
+/// them activation, branch-selection, finality, persistence, or peer authority.
+#[derive(Clone, PartialEq, Eq)]
+#[must_use]
+pub struct PreselectedProposerStateV0(FixedProposerStateV0);
+
+impl PreselectedProposerStateV0 {
+    /// Creates the zero-priority arithmetic root for one validated snapshot.
+    ///
+    /// This operation is not a genesis, reset, recovery, or activation rule.
+    pub fn from_zeroed_preselected_snapshot(snapshot: &ActiveAgreementSnapshot) -> Self {
+        Self(FixedProposerStateV0::from_zeroed_preselected_snapshot(
+            snapshot,
+        ))
+    }
+
+    /// Computes the next weighted-round-robin key and immutable successor.
+    ///
+    /// The returned key is not evidence of proposal or signing authority.
+    pub fn select_next(&self) -> Result<(ConsensusKey, Self), ProposerSelectionError> {
+        let (key, successor) = self.0.select_next()?;
+        Ok((key, Self(successor)))
+    }
+
+    /// Applies the exact arithmetic transition to a complete validated snapshot.
+    ///
+    /// This does not establish snapshot provenance, canonicality, activation,
+    /// branch selection, finality, persistence, recovery, or network trust. An
+    /// empty result is a halt state and grants no authority to resume consensus.
+    pub fn transition_to_preselected_snapshot(
+        &self,
+        final_snapshot: &ActiveAgreementSnapshot,
+    ) -> Result<Self, ProposerSelectionError> {
+        self.0
+            .transition_to_preselected_snapshot(final_snapshot)
+            .map(Self)
+    }
+
+    /// Returns the content identity of the state's sorted key-and-weight set.
+    ///
+    /// This identity does not prove provenance, canonicality, or activation.
+    pub fn fixed_agreement_set_id(&self) -> FixedAgreementSetId {
+        self.0.fixed_set_id()
+    }
+
+    /// Returns the content identity of the set and canonical priority vector.
+    ///
+    /// This identity does not prove provenance, canonicality, or activation.
+    pub const fn proposer_priority_state_id(&self) -> ProposerPriorityStateId {
+        self.0.id()
+    }
+}
+
+impl fmt::Debug for PreselectedProposerStateV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreselectedProposerStateV0")
+            .field("fixed_agreement_set_id", &self.fixed_agreement_set_id())
+            .field(
+                "proposer_priority_state_id",
+                &self.proposer_priority_state_id(),
+            )
+            .finish_non_exhaustive()
     }
 }
 

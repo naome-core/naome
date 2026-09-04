@@ -3,9 +3,11 @@
 ## Status and authority
 
 This specification fixes the deterministic V0 priority transformation between
-two complete active agreement snapshots. It consumes one internally reachable
-proposer-priority state and one complete, caller-preselected replacement
-[`ActiveAgreementSnapshot`]. The replacement snapshot has already enforced the
+two complete active agreement snapshots. The public arithmetic reference is
+the opaque [`PreselectedProposerStateV0`]. A reference state is produced only
+by zeroing one structurally validated caller-preselected snapshot or by an
+ordinary sequential step or complete-snapshot transition from another such
+state. The replacement [`ActiveAgreementSnapshot`] has already enforced the
 existing maximum count, distinct-key, positive-weight, and `u128::MAX` final
 total-weight bounds.
 
@@ -16,6 +18,12 @@ consensus adoption. The transition does not mutate a fixed-validator branch,
 choose or sign a proposal, install finality, persist state, recover after a
 restart, contact or trust a peer, execute economics, or prove any finite-window
 or cross-snapshot liveness bound.
+
+Constructing a zero-priority reference state is not a genesis, reset, recovery,
+resume, or activation rule. A key returned by its ordinary proposer step is an
+arithmetic winner only and grants no proposal or signing authority. Cloned or
+alternative reference states and their identities have no preference or branch
+authority.
 
 ## Complete replacement input
 
@@ -94,9 +102,13 @@ immutable on both success and failure.
 ## Compatibility boundary
 
 The fixed-validator artifact-only V0 branch continues to use one immutable set
-for its complete lifetime. This transition kernel is deliberately separate
-from that branch and supplies no canonical activation or integration path.
-Existing fixed-set identity bytes, zero-state identity bytes, and proposer
-schedules remain unchanged.
+for its complete lifetime. The opaque arithmetic reference has no public
+conversion into that branch and supplies no canonical activation or integration
+path. It exposes only zero-state construction from a validated snapshot,
+sequential selection, complete-snapshot transition, and the two content
+identities; it exposes neither entries nor raw priorities. Existing fixed-set
+identity bytes, zero-state identity bytes, and proposer schedules remain
+unchanged.
 
 [`ActiveAgreementSnapshot`]: ../crates/naome-consensus/src/lib.rs
+[`PreselectedProposerStateV0`]: ../crates/naome-consensus/src/proposer_selection.rs
