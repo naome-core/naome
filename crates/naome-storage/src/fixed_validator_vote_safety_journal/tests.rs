@@ -18,12 +18,13 @@ use naome_foundation::ZfcAxiom;
 use naome_proof::{ArtifactPayload, ProofCertificate, ProofStep};
 
 use super::*;
+#[cfg(unix)]
+use crate::FixedValidatorAnchoredFinalityJournalV0;
 use crate::fault_io::{ScriptedIo, all_append_faults};
 use crate::{
-    FixedValidatorAnchoredFinalityJournalV0, FixedValidatorFinalityCommitOutcomeV0,
-    FixedValidatorFinalityHaltV0, FixedValidatorFinalityJournalErrorV0,
-    FixedValidatorFinalityJournalStateIdV0, FixedValidatorFinalityJournalV0,
-    FixedValidatorFinalityReplayLimitV0,
+    FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityHaltV0,
+    FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
+    FixedValidatorFinalityJournalV0, FixedValidatorFinalityReplayLimitV0,
 };
 
 const AUTHORIZATION_BODY_BYTES: usize = 116;

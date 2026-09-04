@@ -3373,7 +3373,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn set_timer_generation_for_test(&mut self, generation: u64) {
         self.generation = generation;
     }

@@ -374,6 +374,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[cfg(unix)]
 fn single_entry_image(
     prefix: &[u8],
     previous: FixedValidatorFinalityJournalStateIdV0,
