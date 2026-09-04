@@ -13,8 +13,9 @@ use naome_consensus::{
 };
 use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
 use naome_storage::{
-    FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyHaltV0,
-    FixedValidatorVoteSafetyJournalErrorV0, SelectedArtifactHistory,
+    ArtifactBlockCandidateStore, CanonicalArtifactPayloadStore, FixedValidatorSignedVoteV0,
+    FixedValidatorVoteSafetyHaltV0, FixedValidatorVoteSafetyJournalErrorV0,
+    SelectedArtifactHistory,
 };
 
 use super::current_round_finality_inbox::{
@@ -55,7 +56,8 @@ use super::{
     FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
     FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0,
     FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0,
-    FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeFinalityOutcomeV0,
+    FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeFinalityErrorV0,
+    FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalityRoundRouteV0,
     FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
     FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodeHigherRoundInboxLimitsV0,
     FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0,
@@ -808,6 +810,22 @@ pub enum FixedValidatorNodeDriverStepOutcomeV0<'node> {
     FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
 }
 
+/// Result of one explicitly routed candidate-backed historical conflict.
+///
+/// A pending command is the only outcome that returns the driver. Once proof
+/// processing begins, both success and failure consume the driver and its sole
+/// signing scope under the existing finality coordination contract.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0<'node> {
+    /// An already pending outward command must transfer before proof processing.
+    CommandPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// The fully verified sibling conflict durably stopped finality and the signer.
+    FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+}
+
 /// Fatal driver-step failure; no driver or signing scope is returned.
 ///
 /// On `Err`, consuming the step loses both volatile owners even when the failure
@@ -1010,11 +1028,13 @@ enum PendingCommandV0 {
 /// One non-clone, closure-scoped fixed-validator event driver.
 ///
 /// The driver privately owns the sole live signing scope. It exposes neither a
-/// mutable or consuming escape hatch back to that scope nor a caller-selected
-/// action method. Its only authority projection is the sealed read-only selected
-/// artifact history required by caller-owned acquisition. Evidence and due
-/// timers become authoritative only through the existing fully checking
-/// consuming coordinators selected by [`Self::step`].
+/// mutable nor consuming escape hatch back to that scope. Its ordinary actions
+/// remain selected only by [`Self::step`]; the sole explicit terminal exception
+/// routes one caller-selected candidate-backed historical conflict after pending
+/// command custody transfers. Its only authority projection is the sealed
+/// read-only selected artifact history required by caller-owned acquisition.
+/// Evidence and due timers become authoritative only through the existing fully
+/// checking consuming coordinators.
 #[must_use]
 pub struct FixedValidatorNodeDriverV0<'node> {
     scope: Option<FixedValidatorNodeSigningScopeV0<'node>>,
@@ -1239,6 +1259,56 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     /// Returns whether one outward command must be emitted before another transition.
     pub const fn has_pending_command(&self) -> bool {
         self.pending_command.is_some()
+    }
+
+    /// Routes one exact candidate-backed historical sibling conflict.
+    ///
+    /// An already pending outward command causes the unchanged driver to be
+    /// returned before any input or store inspection. Otherwise this consumes
+    /// the sole signing scope and delegates the caller-selected target, proposal,
+    /// exact precommit batch, and evidence round to the existing fully verifying
+    /// candidate-backed finality coordinator. The driver's construction-time
+    /// round ceiling is reused as the local work ceiling. Every proof-processing
+    /// success or error consumes the driver; success returns only terminal
+    /// finality-and-signer evidence.
+    pub fn commit_candidate_backed_finality_conflict_vote_batch(
+        mut self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: naome_chain::ArtifactBlockId,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_signed_precommits: &[&[u8]],
+        evidence_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0<'node>,
+        FixedValidatorNodeFinalityErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        let inclusive_maximum_round = self.inclusive_maximum_round;
+        let scope = self.take_scope();
+        scope
+            .commit_candidate_backed_finality_conflict_vote_batch(
+                candidates,
+                payloads,
+                expected_target,
+                canonical_proposal_control_bytes,
+                canonical_signed_precommits,
+                FixedValidatorNodeFinalityRoundRouteV0::new(
+                    evidence_round,
+                    inclusive_maximum_round,
+                ),
+            )
+            .map(|stopped| {
+                FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0::FinalityStopped(
+                    Box::new(stopped),
+                )
+            })
     }
 
     /// Admits one owned event without choosing or executing a consensus action.

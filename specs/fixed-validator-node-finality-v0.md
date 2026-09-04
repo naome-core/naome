@@ -349,6 +349,23 @@ returns no branch or continuation scope. The target, route, source presence,
 vote order, and caller provenance grant no observation, preference, selection,
 winner, rollback, or reusable-proof authority.
 
+### Driver-owned terminal routing exception
+
+After its existing pending-command custody gate, the long-lived node driver may
+consume its sole signing scope through exactly this finalized-sibling batch
+ingress. The caller supplies the target, proposal bytes, exact precommit batch,
+evidence round, and borrowed stores; the driver supplies only its already bound
+inclusive round-work ceiling. A pending command returns the unchanged driver
+before any proof or source work. Once the gate passes, success returns only the
+paired terminal evidence and every error consumes the driver under this
+section's unchanged strict-restart contract.
+
+This bridge is neither an event nor an inbox action. It does not acquire,
+retain, group, rank, or automatically route evidence, choose a peer or sibling,
+or define priority among multiple caller-known conflicts. Caller selection and
+store or peer provenance grant no validity, finality, winner, rollback, or
+branch-selection authority.
+
 ## Ordered transitions
 
 `commit_verified_finality` applies exactly one sealed transition in this order:
@@ -440,7 +457,10 @@ same stop-capability and signer-stop sequence as the sealed-transition path.
 The method returns only the paired terminal evidence after both anchors advance.
 `commit_candidate_backed_finality_conflict_vote_batch` preserves that exact
 ordering and consuming outcome while replacing only the prebuilt envelope with
-the explicitly routed proposal and all-or-nothing signed-precommit batch.
+the explicitly routed proposal and all-or-nothing signed-precommit batch. The
+driver-owned terminal wrapper first transfers any pending command, injects only
+its existing local round ceiling, and otherwise preserves this method's exact
+verification, ordering, terminal evidence, and consume-on-error behavior.
 
 ## Nonterminal outcomes
 

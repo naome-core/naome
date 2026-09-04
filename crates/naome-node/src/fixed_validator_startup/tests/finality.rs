@@ -25,7 +25,7 @@ use super::super::finality::{
 };
 use super::*;
 
-fn expect_continuation(
+pub(super) fn expect_continuation(
     outcome: FixedValidatorNodeFinalityOutcomeV0<'_>,
 ) -> (
     FixedValidatorNodeSigningScopeV0<'_>,
@@ -774,7 +774,7 @@ fn commit_complete_lower_round_preselection_batch_pair<'node>(
     }
 }
 
-fn candidate_backed_batch_finality_inputs(
+pub(super) fn candidate_backed_batch_finality_inputs(
     fixture: &Fixture,
     branch: &FixedConsensusBranchV0,
     selected: &ArtifactChainState,
