@@ -17,6 +17,14 @@ fn signed(value: i128) -> [u8; SIGNED_PRIORITY_BYTES] {
     encode_signed_i256(&BigInt::from(value)).unwrap()
 }
 
+fn snapshot(height: u64, round: u64, entries: &[ActiveAgreementEntry]) -> ActiveAgreementSnapshot {
+    ActiveAgreementSnapshot::try_from_preselected(
+        ConsensusPosition::new(ConsensusHeight::new(height), ConsensusRound::new(round)),
+        entries,
+    )
+    .unwrap()
+}
+
 fn hex_array<const N: usize>(hex: &str) -> [u8; N] {
     assert_eq!(hex.len(), N * 2);
     let mut bytes = [0_u8; N];
@@ -308,6 +316,242 @@ fn each_step_normalizes_instead_of_reusing_one_batched_normalization() {
         state.canonical_priorities().unwrap(),
         vec![signed(0), signed(0), signed(-2), signed(4)]
     );
+}
+
+#[test]
+fn snapshot_transition_matches_the_mixed_membership_and_reweight_golden() {
+    let fixed_set =
+        FixedAgreementSetV0::try_from_preselected(&[entry(1, 2), entry(2, 3), entry(3, 5)])
+            .unwrap();
+    let priorities = [6, -1, -5]
+        .into_iter()
+        .map(BigInt::from)
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let source = FixedProposerStateV0 {
+        id: derive_priority_state_id(fixed_set.id(), &priorities).unwrap(),
+        fixed_set: Arc::new(fixed_set),
+        priorities,
+    };
+    let source_before = source.clone();
+    let final_snapshot = snapshot(2, 0, &[entry(4, 1), entry(2, 7), entry(1, 2)]);
+
+    let transitioned = source
+        .transition_to_preselected_snapshot(&final_snapshot)
+        .unwrap();
+
+    assert_eq!(source, source_before);
+    assert_eq!(
+        transitioned.canonical_priorities().unwrap(),
+        vec![signed(5), signed(2), signed(-6)]
+    );
+    assert_eq!(
+        transitioned.fixed_set_id().as_bytes(),
+        &hex_array("c55fe9d882faa3a47b162c959c1eebea546dae07f47ac37414e428357da8bc45")
+    );
+    assert_eq!(
+        transitioned.id().as_bytes(),
+        &hex_array("cb383dcbab9fe21db1fb0ad115252450bb66328ae59a969a6fa62f5df6cc4834")
+    );
+    assert_ne!(transitioned.fixed_set_id(), source.fixed_set_id());
+    assert_ne!(transitioned.id(), source.id());
+
+    let (proposer, successor) = transitioned.select_next().unwrap();
+    assert_eq!(proposer, key(2));
+    assert_eq!(
+        successor.canonical_priorities().unwrap(),
+        vec![signed(7), signed(-1), signed(-5)]
+    );
+}
+
+#[test]
+fn snapshot_transition_ignores_input_permutation_and_snapshot_position() {
+    let mut source =
+        FixedProposerStateV0::try_from_preselected(&[entry(1, 2), entry(2, 5)]).unwrap();
+    for _ in 0..3 {
+        source = source.select_next().unwrap().1;
+    }
+
+    let ordered = snapshot(2, 0, &[entry(1, 3), entry(2, 5), entry(3, 2)]);
+    let permuted = snapshot(999, 42, &[entry(3, 2), entry(1, 3), entry(2, 5)]);
+    let left = source.transition_to_preselected_snapshot(&ordered).unwrap();
+    let right = source
+        .transition_to_preselected_snapshot(&permuted)
+        .unwrap();
+
+    assert_eq!(left, right);
+    assert_eq!(left.fixed_set_id(), right.fixed_set_id());
+    assert_eq!(left.id(), right.id());
+    assert_eq!(
+        left.select_next().unwrap().0,
+        right.select_next().unwrap().0
+    );
+}
+
+#[test]
+fn snapshot_transition_uses_exact_pre_removal_total_above_u128() {
+    let mut source =
+        FixedProposerStateV0::try_from_preselected(&[entry(1, 1), entry(2, u128::MAX - 1)])
+            .unwrap();
+    source = source.select_next().unwrap().1;
+    assert_eq!(
+        source.canonical_priorities().unwrap(),
+        vec![signed(1), signed(-1)]
+    );
+
+    let final_snapshot = snapshot(2, 0, &[entry(1, u128::MAX - 1), entry(3, 1)]);
+    let transitioned = source
+        .transition_to_preselected_snapshot(&final_snapshot)
+        .unwrap();
+    let magnitude = (BigInt::from(1_u8) << 127_usize) + (BigInt::from(1_u8) << 124_usize) - 1_u8;
+
+    assert_eq!(
+        transitioned.canonical_priorities().unwrap(),
+        vec![
+            encode_signed_i256(&magnitude).unwrap(),
+            encode_signed_i256(&-magnitude).unwrap(),
+        ]
+    );
+}
+
+#[test]
+fn snapshot_transition_to_empty_publishes_only_the_existing_halt_state() {
+    let mut source =
+        FixedProposerStateV0::try_from_preselected(&[entry(1, 1), entry(2, 3)]).unwrap();
+    source = source.select_next().unwrap().1;
+    let source_before = source.clone();
+
+    let halted = source
+        .transition_to_preselected_snapshot(&snapshot(2, 0, &[]))
+        .unwrap();
+
+    assert_eq!(source, source_before);
+    assert_eq!(
+        halted.canonical_priorities().unwrap(),
+        Vec::<[u8; 32]>::new()
+    );
+    assert_eq!(
+        halted,
+        FixedProposerStateV0::try_from_preselected(&[]).unwrap()
+    );
+    assert_eq!(
+        halted.select_next(),
+        Err(ProposerSelectionError::NoActiveValidators)
+    );
+}
+
+#[test]
+fn all_new_keys_receive_one_penalty_before_raw_key_tie_selection() {
+    let source = FixedProposerStateV0::try_from_preselected(&[entry(9, 10)]).unwrap();
+    let transitioned = source
+        .transition_to_preselected_snapshot(&snapshot(2, 0, &[entry(3, 1), entry(1, 1)]))
+        .unwrap();
+
+    assert_eq!(
+        transitioned.canonical_priorities().unwrap(),
+        vec![signed(0), signed(0)]
+    );
+    assert_eq!(transitioned.select_next().unwrap().0, key(1));
+}
+
+#[test]
+fn snapshot_transition_rejects_an_unrepresentable_source_priority() {
+    let fixed_set = FixedAgreementSetV0::try_from_preselected(&[entry(1, 1)]).unwrap();
+    let priorities = vec![BigInt::from(1_u8) << 255_usize].into_boxed_slice();
+    let source = FixedProposerStateV0 {
+        id: ProposerPriorityStateId([0; ProposerPriorityStateId::BYTE_LENGTH]),
+        fixed_set: Arc::new(fixed_set),
+        priorities,
+    };
+
+    assert_eq!(
+        source.transition_to_preselected_snapshot(&snapshot(2, 0, &[entry(1, 1)])),
+        Err(ProposerSelectionError::PriorityOutOfRange)
+    );
+}
+
+#[test]
+fn small_snapshot_transitions_match_an_independent_i128_model() {
+    fn normalize(weights: &[i128], priorities: &mut [i128]) {
+        let total = weights.iter().sum::<i128>();
+        let spread = priorities.iter().max().unwrap() - priorities.iter().min().unwrap();
+        if spread > 2 * total {
+            let ratio = (spread + 2 * total - 1) / (2 * total);
+            for priority in priorities.iter_mut() {
+                *priority /= ratio;
+            }
+        }
+        let average = priorities
+            .iter()
+            .sum::<i128>()
+            .div_euclid(priorities.len() as i128);
+        for priority in priorities {
+            *priority -= average;
+        }
+    }
+
+    let old_entries = [entry(1, 1), entry(2, 2), entry(3, 3)];
+    let mut source = FixedProposerStateV0::try_from_preselected(&old_entries).unwrap();
+    for _ in 0..7 {
+        source = source.select_next().unwrap().1;
+    }
+    let old_priorities = source
+        .canonical_priorities()
+        .unwrap()
+        .into_iter()
+        .map(|bytes| i128::from_be_bytes(bytes[16..].try_into().unwrap()))
+        .collect::<Vec<_>>();
+
+    for mask in 1_u8..16 {
+        let final_entries = (1_u8..=4)
+            .filter(|key_byte| mask & (1 << (key_byte - 1)) != 0)
+            .map(|key_byte| entry(key_byte, u128::from(key_byte % 3 + 1)))
+            .rev()
+            .collect::<Vec<_>>();
+        let final_snapshot = snapshot(2, u64::from(mask), &final_entries);
+        let mut expected_entries = final_snapshot.entries().to_vec();
+        expected_entries.sort_unstable_by_key(|entry| entry.consensus_key());
+        let final_weight = expected_entries
+            .iter()
+            .map(|entry| entry.agreement_weight().units() as i128)
+            .sum::<i128>();
+        let removed_weight = old_entries
+            .iter()
+            .filter(|old| {
+                !expected_entries
+                    .iter()
+                    .any(|new| new.consensus_key() == old.consensus_key())
+            })
+            .map(|entry| entry.agreement_weight().units() as i128)
+            .sum::<i128>();
+        let updated_total = final_weight + removed_weight;
+        let joiner_priority = -(updated_total + updated_total.div_euclid(8));
+        let mut expected_priorities = expected_entries
+            .iter()
+            .map(|new_entry| {
+                old_entries
+                    .iter()
+                    .position(|old| old.consensus_key() == new_entry.consensus_key())
+                    .map_or(joiner_priority, |index| old_priorities[index])
+            })
+            .collect::<Vec<_>>();
+        let weights = expected_entries
+            .iter()
+            .map(|entry| entry.agreement_weight().units() as i128)
+            .collect::<Vec<_>>();
+        normalize(&weights, &mut expected_priorities);
+
+        let transitioned = source
+            .transition_to_preselected_snapshot(&final_snapshot)
+            .unwrap();
+        assert_eq!(
+            transitioned.canonical_priorities().unwrap(),
+            expected_priorities
+                .into_iter()
+                .map(signed)
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]

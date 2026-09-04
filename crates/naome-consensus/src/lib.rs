@@ -23,6 +23,12 @@
 //! locking or signing-safety state; schedule timeouts; install durable finality;
 //! create or release signatures; trust peers; mutate a selected chain; or
 //! execute economics.
+//!
+//! [`PreselectedProposerStateV0`] separately exposes an opaque arithmetic
+//! reference for zero-rooted caller-preselected snapshots, sequential proposer
+//! steps, and complete snapshot replacement. It has no branch conversion and
+//! grants no snapshot-selection, activation, proposal, signing, finality,
+//! persistence, recovery, or peer authority.
 
 use std::error::Error;
 use std::fmt;
@@ -73,7 +79,8 @@ pub use producer_authorization::{
     ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,
 };
 pub use proposer_selection::{
-    FixedAgreementSetId, ProposerPriorityStateId, ProposerSelectionError,
+    FixedAgreementSetId, PreselectedProposerStateV0, ProposerPriorityStateId,
+    ProposerSelectionError,
 };
 
 /// Exact width of one opaque consensus-key address.
