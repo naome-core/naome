@@ -1,8 +1,8 @@
 //! Caller-driven journal serving for one static artifact-network event loop.
 
-use naome::artifact_exchange::ArtifactRequest;
-use naome::block_exchange::ArtifactBlockRequest;
-use naome::chain_head_exchange::ArtifactChainHeadRequest;
+use naome_protocol::artifact_exchange::ArtifactRequest;
+use naome_protocol::block_exchange::ArtifactBlockRequest;
+use naome_protocol::chain_head_exchange::ArtifactChainHeadRequest;
 use naome_storage::ArtifactChainJournal;
 
 use super::{NetworkEvent, PeerId, RespondError, StaticArtifactNetwork};

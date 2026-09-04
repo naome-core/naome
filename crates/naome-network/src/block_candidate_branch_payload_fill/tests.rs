@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome_chain::{
     ArtifactBlock, ArtifactChainDefinition, ArtifactChainState, ArtifactDag, ArtifactSetRoot,
 };
 use naome_foundation::FreeVariable;
 use naome_proof::{ArtifactPayload, ProofCertificate, ProofStep};
+use naome_protocol::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome_storage::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreLimits, ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits,

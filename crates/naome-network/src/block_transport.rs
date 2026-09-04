@@ -5,10 +5,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use libp2p::request_response;
-use naome::block_exchange::{
+use naome_chain::{ArtifactBlock, ArtifactBlockId};
+use naome_protocol::block_exchange::{
     ArtifactBlockExchangeWireError, ArtifactBlockRequest, ArtifactBlockResponse,
 };
-use naome_chain::{ArtifactBlock, ArtifactBlockId};
 use naome_storage::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreError, ArtifactChainJournal,

@@ -3,10 +3,12 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::Duration;
 
-use naome::artifact_exchange::{ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRequest, ArtifactResponse};
 use naome_chain::{ArtifactBlock, ArtifactChainState, ArtifactDag, ArtifactSetRoot};
 use naome_foundation::{FOUNDATION_ID, FreeVariable};
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
+use naome_protocol::artifact_exchange::{
+    ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRequest, ArtifactResponse,
+};
 use naome_storage::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreLimits, ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits,

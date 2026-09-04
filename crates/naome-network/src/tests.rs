@@ -10,7 +10,6 @@ use std::time::Duration;
 use ed25519_dalek::{Signer, SigningKey};
 use libp2p::core::{Endpoint, transport::PortUse};
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, ToSwarm};
-use naome::artifact_exchange::ArtifactRequest;
 use naome_chain::{
     ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactDag, ArtifactSetRoot,
 };
@@ -21,6 +20,7 @@ use naome_consensus::{
 };
 use naome_foundation::FreeVariable;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
+use naome_protocol::artifact_exchange::ArtifactRequest;
 use naome_storage::{
     ArtifactChainJournal, ArtifactChainJournalError, FixedValidatorFinalityCommitOutcomeV0,
     FixedValidatorFinalityJournalStateIdV0, FixedValidatorFinalityJournalV0,

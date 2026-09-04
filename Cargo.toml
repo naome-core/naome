@@ -19,6 +19,7 @@ members = [
     "crates/naome-network",
     "crates/naome-node",
     "crates/naome-proof",
+    "crates/naome-protocol",
     "crates/naome-storage",
 ]
 resolver = "3"
@@ -41,6 +42,7 @@ naome-checker = { path = "crates/naome-checker" }
 naome-consensus = { path = "crates/naome-consensus" }
 naome-economy = { path = "crates/naome-economy" }
 naome-proof = { path = "crates/naome-proof" }
+naome-protocol = { path = "crates/naome-protocol" }
 
 [dev-dependencies]
 naome-foundation = { path = "crates/naome-foundation" }

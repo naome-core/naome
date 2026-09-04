@@ -21,12 +21,13 @@
 //! but establishes no partition completeness or grouping, certificate,
 //! entitlement, burn, settlement, or state authority.
 
-pub mod artifact_exchange;
 pub mod artifact_inclusion_priority;
-pub mod block_exchange;
-pub mod chain_head_announcement;
-pub mod chain_head_exchange;
 pub mod citation_pool_split;
 pub mod citation_reward_weight;
 pub mod validator_bond;
 pub mod validator_fee_share;
+
+// Compatibility paths for the transport-neutral protocol contracts.
+pub use naome_protocol::{
+    artifact_exchange, block_exchange, chain_head_announcement, chain_head_exchange,
+};

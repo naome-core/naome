@@ -5,8 +5,6 @@ use std::sync::atomic::Ordering;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
-use naome::block_exchange::ArtifactBlockRequest;
 use naome_chain::{
     ArtifactBlock, ArtifactBlockApplyError, ArtifactChainDefinition, ArtifactChainState,
     ArtifactDag, ArtifactSetRoot,
@@ -16,6 +14,8 @@ use naome_proof::{
     ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate, DefinitionId,
     ProofCertificate, ProofFormula, ProofStep,
 };
+use naome_protocol::artifact_exchange::{ArtifactRequest, ArtifactResponse};
+use naome_protocol::block_exchange::ArtifactBlockRequest;
 use naome_storage::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreError, ArtifactBlockCandidateStoreLimits, ArtifactChainJournal,

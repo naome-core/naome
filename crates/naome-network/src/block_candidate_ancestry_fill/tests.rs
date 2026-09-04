@@ -4,13 +4,13 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome_chain::{
     ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, ArtifactDag,
     ArtifactSetRoot,
 };
 use naome_foundation::FreeVariable;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
+use naome_protocol::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome_storage::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreError, ArtifactBlockCandidateStoreLimits,
@@ -133,7 +133,7 @@ fn pending_block_request(
     peer_id: PeerId,
 ) -> (
     request_response::OutboundRequestId,
-    naome::block_exchange::ArtifactBlockRequest,
+    naome_protocol::block_exchange::ArtifactBlockRequest,
 ) {
     network
         .pending

@@ -8,20 +8,20 @@ use libp2p::futures::AsyncRead;
 use libp2p::futures::executor::block_on;
 use libp2p::futures::io::Cursor;
 use libp2p::request_response::Codec;
-use naome::artifact_exchange::{
+use naome_chain::{ArtifactBlockId, ArtifactChainId};
+use naome_protocol::artifact_exchange::{
     ARTIFACT_REQUEST_BYTES, ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRequest, ArtifactResponse,
 };
-use naome::block_exchange::{
+use naome_protocol::block_exchange::{
     ARTIFACT_BLOCK_REQUEST_BYTES, ARTIFACT_BLOCK_RESPONSE_MAX_BYTES, ArtifactBlockRequest,
 };
-use naome::chain_head_announcement::{
+use naome_protocol::chain_head_announcement::{
     ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_BYTES, ArtifactChainHeadAnnouncement,
 };
-use naome::chain_head_exchange::{
+use naome_protocol::chain_head_exchange::{
     ARTIFACT_CHAIN_HEAD_REQUEST_BYTES, ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES,
     ArtifactChainHeadRequest, ArtifactChainHeadResponse,
 };
-use naome_chain::{ArtifactBlockId, ArtifactChainId};
 
 use crate::recovery_bundle_push::{
     RECOVERY_BUNDLE_PUSH_MAX_BYTES, RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS,

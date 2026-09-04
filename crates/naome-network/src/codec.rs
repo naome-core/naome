@@ -5,16 +5,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use libp2p::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{StreamProtocol, request_response};
-use naome::artifact_exchange::{
+use naome_protocol::artifact_exchange::{
     ARTIFACT_REQUEST_BYTES, ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRequest, ArtifactResponse,
 };
-use naome::block_exchange::{
+use naome_protocol::block_exchange::{
     ARTIFACT_BLOCK_REQUEST_BYTES, ARTIFACT_BLOCK_RESPONSE_MAX_BYTES, ArtifactBlockRequest,
 };
-use naome::chain_head_announcement::{
+use naome_protocol::chain_head_announcement::{
     ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_BYTES, ArtifactChainHeadAnnouncement,
 };
-use naome::chain_head_exchange::{
+use naome_protocol::chain_head_exchange::{
     ARTIFACT_CHAIN_HEAD_REQUEST_BYTES, ARTIFACT_CHAIN_HEAD_RESPONSE_BYTES,
     ArtifactChainHeadExchangeWireError, ArtifactChainHeadRequest, ArtifactChainHeadResponse,
 };

@@ -2,9 +2,9 @@ use std::sync::atomic::Ordering;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::block_exchange::ArtifactBlockExchangeWireError;
 use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactSetRoot};
 use naome_proof::ArtifactId;
+use naome_protocol::block_exchange::ArtifactBlockExchangeWireError;
 use naome_storage::ArtifactChainJournal;
 
 use super::*;
@@ -52,7 +52,7 @@ fn pending_block_request(
     peer_id: PeerId,
 ) -> (
     request_response::OutboundRequestId,
-    naome::block_exchange::ArtifactBlockRequest,
+    naome_protocol::block_exchange::ArtifactBlockRequest,
 ) {
     network
         .pending
@@ -637,7 +637,7 @@ fn next_parent_request_failure_discards_the_unselected_prefix() {
     let unrelated = network
         .request_block(
             peer_id,
-            naome::block_exchange::ArtifactBlockRequest::new(ArtifactBlockId::from_bytes(
+            naome_protocol::block_exchange::ArtifactBlockRequest::new(ArtifactBlockId::from_bytes(
                 [0x91; 32],
             )),
         )

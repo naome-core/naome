@@ -115,8 +115,10 @@ use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{
     Swarm, SwarmBuilder, allow_block_list, connection_limits, noise, request_response, tcp, yamux,
 };
-use naome::artifact_exchange::{ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRequest, ArtifactResponse};
 use naome_chain::ArtifactBlockId;
+use naome_protocol::artifact_exchange::{
+    ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRequest, ArtifactResponse,
+};
 use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 use session::Behaviour as SessionBehaviour;
 use tokio::time::Instant;

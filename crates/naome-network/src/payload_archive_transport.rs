@@ -1,6 +1,6 @@
 //! Caller-routed serving from one canonical artifact-payload archive.
 
-use naome::artifact_exchange::{ARTIFACT_RESPONSE_MAX_BYTES, ArtifactResponse};
+use naome_protocol::artifact_exchange::{ARTIFACT_RESPONSE_MAX_BYTES, ArtifactResponse};
 use naome_storage::CanonicalArtifactPayloadStore;
 
 use super::{InboundArtifactRequest, RespondError, StaticArtifactNetwork};

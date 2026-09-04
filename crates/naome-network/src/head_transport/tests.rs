@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::artifact_exchange::ArtifactRequest;
-use naome::block_exchange::ArtifactBlockRequest;
-use naome::chain_head_exchange::{ArtifactChainHeadRequest, ArtifactChainHeadResponse};
 use naome_chain::{ArtifactBlockId, ArtifactChainId};
+use naome_protocol::artifact_exchange::ArtifactRequest;
+use naome_protocol::block_exchange::ArtifactBlockRequest;
+use naome_protocol::chain_head_exchange::{ArtifactChainHeadRequest, ArtifactChainHeadResponse};
 use tokio::time::timeout;
 
 use super::*;

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::chain_head_exchange::{ArtifactChainHeadRequest, ArtifactChainHeadResponse};
 use naome_chain::{ArtifactBlockId, ArtifactChainDefinition, ArtifactChainId};
+use naome_protocol::chain_head_exchange::{ArtifactChainHeadRequest, ArtifactChainHeadResponse};
 use naome_storage::ArtifactChainJournal;
 use tokio::time::timeout;
 

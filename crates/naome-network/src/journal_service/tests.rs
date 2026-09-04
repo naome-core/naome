@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use naome::artifact_exchange::ArtifactRequest;
-use naome::block_exchange::ArtifactBlockRequest;
-use naome::chain_head_exchange::ArtifactChainHeadRequest;
 use naome_chain::{ArtifactBlockId, ArtifactChainId};
+use naome_protocol::artifact_exchange::ArtifactRequest;
+use naome_protocol::block_exchange::ArtifactBlockRequest;
+use naome_protocol::chain_head_exchange::ArtifactChainHeadRequest;
 use tokio::time::{Instant, timeout};
 
 use super::*;
@@ -26,10 +26,11 @@ async fn service_forwards_announcement_without_acknowledging_or_mutating() {
     let service_journal = create_journal(service_directory.path()).unwrap();
     let sender_before = snapshot(&sender_directory, &sender_journal);
     let service_before = snapshot(&service_directory, &service_journal);
-    let expected_announcement = naome::chain_head_announcement::ArtifactChainHeadAnnouncement::new(
-        sender_journal.chain_id(),
-        sender_journal.head_block_id().unwrap(),
-    );
+    let expected_announcement =
+        naome_protocol::chain_head_announcement::ArtifactChainHeadAnnouncement::new(
+            sender_journal.chain_id(),
+            sender_journal.head_block_id().unwrap(),
+        );
     let ticket = sender
         .announce_chain_head_from_journal(service_peer_id, &sender_journal)
         .unwrap();

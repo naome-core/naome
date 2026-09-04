@@ -1,0 +1,18 @@
+[package]
+name = "naome-protocol"
+version.workspace = true
+edition.workspace = true
+description = "Transport-neutral artifact and chain-head exchange contracts for NAOME."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+naome-chain = { path = "../naome-chain" }
+naome-proof = { path = "../naome-proof" }
+
+[dev-dependencies]
+naome-foundation = { path = "../naome-foundation" }
+
+[lints]
+workspace = true

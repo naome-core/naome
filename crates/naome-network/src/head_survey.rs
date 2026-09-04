@@ -3,8 +3,8 @@
 use std::error::Error;
 use std::fmt;
 
-use naome::chain_head_exchange::ArtifactChainHeadRequest;
 use naome_chain::ArtifactBlockId;
+use naome_protocol::chain_head_exchange::ArtifactChainHeadRequest;
 
 use super::{
     ChainHeadRequestTicket, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent,

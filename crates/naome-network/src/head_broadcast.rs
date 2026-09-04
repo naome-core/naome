@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
-use naome::chain_head_announcement::ArtifactChainHeadAnnouncement;
+use naome_protocol::chain_head_announcement::ArtifactChainHeadAnnouncement;
 use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 use super::{

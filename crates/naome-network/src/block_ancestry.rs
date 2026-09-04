@@ -3,8 +3,8 @@
 use std::error::Error;
 use std::fmt;
 
-use naome::block_exchange::ArtifactBlockRequest;
 use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactSetRoot};
+use naome_protocol::block_exchange::ArtifactBlockRequest;
 use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 use super::{

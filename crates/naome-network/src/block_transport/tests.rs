@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
-use naome::block_exchange::{
+use naome_chain::{ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockDecodeError, ArtifactBlockId};
+use naome_protocol::artifact_exchange::{ArtifactRequest, ArtifactResponse};
+use naome_protocol::block_exchange::{
     ARTIFACT_BLOCK_RESPONSE_MAX_BYTES, ArtifactBlockExchangeWireError, ArtifactBlockRequest,
 };
-use naome_chain::{ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockDecodeError, ArtifactBlockId};
 use naome_storage::ArtifactBlockCandidateStoreLimits;
 use tokio::time::timeout;
 

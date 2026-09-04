@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome_chain::{
     ArtifactBlock, ArtifactBlockApplyError, ArtifactBlockId, ArtifactDag, ArtifactSetRoot,
 };
@@ -13,6 +12,7 @@ use naome_proof::{
     ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate, DefinitionId,
     ProofCertificate, ProofFormula, ProofId, ProofStep,
 };
+use naome_protocol::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 use super::*;

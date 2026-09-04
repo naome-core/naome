@@ -5,8 +5,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use libp2p::request_response;
-use naome::chain_head_exchange::{ArtifactChainHeadRequest, ArtifactChainHeadResponse};
 use naome_chain::ArtifactBlockId;
+use naome_protocol::chain_head_exchange::{ArtifactChainHeadRequest, ArtifactChainHeadResponse};
 use naome_storage::ArtifactChainJournal;
 
 use super::{

@@ -3,10 +3,10 @@ use std::sync::atomic::Ordering;
 
 use libp2p::request_response;
 use libp2p::swarm::ConnectionId;
-use naome::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactDag, ArtifactSetRoot};
 use naome_foundation::FreeVariable;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
+use naome_protocol::artifact_exchange::{ArtifactRequest, ArtifactResponse};
 use naome_storage::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreLimits, ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits,

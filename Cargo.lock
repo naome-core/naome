@@ -1727,6 +1727,7 @@ dependencies = [
  "naome-economy",
  "naome-foundation",
  "naome-proof",
+ "naome-protocol",
 ]
 
 [[package]]
@@ -1797,13 +1798,13 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.3.4",
  "libp2p",
- "naome",
  "naome-chain",
  "naome-consensus",
  "naome-foundation",
  "naome-ledger",
  "naome-node",
  "naome-proof",
+ "naome-protocol",
  "naome-storage",
  "sha2 0.11.0",
  "tokio",
@@ -1827,6 +1828,15 @@ version = "0.1.0"
 dependencies = [
  "naome-foundation",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "naome-protocol"
+version = "0.1.0"
+dependencies = [
+ "naome-chain",
+ "naome-foundation",
+ "naome-proof",
 ]
 
 [[package]]

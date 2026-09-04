@@ -5,10 +5,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use libp2p::request_response::OutboundRequestId;
-use naome::artifact_exchange::ArtifactRequest;
-use naome::block_exchange::ArtifactBlockRequest;
 use naome_chain::{ArtifactBlock, ArtifactBlockId, ArtifactSetRoot};
 use naome_proof::ArtifactId;
+use naome_protocol::artifact_exchange::ArtifactRequest;
+use naome_protocol::block_exchange::ArtifactBlockRequest;
 use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 use super::{

@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use libp2p::request_response;
-use naome::chain_head_announcement::ArtifactChainHeadAnnouncement;
+use naome_protocol::chain_head_announcement::ArtifactChainHeadAnnouncement;
 use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 use super::codec::ArtifactChainHeadAnnouncementReceipt;
