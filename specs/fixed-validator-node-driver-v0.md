@@ -56,9 +56,9 @@ complete proposal-backed roots instead run through the neutral paired halt and
 return no driver or selected branch. An explicit caller may separately submit
 one exact candidate-backed direct-child proposal and precommit batch after
 command custody and only when current-finality classification would otherwise
-fall through. Lower-round finality routing, automatic candidate-backed evidence
-routing, broader or incomplete preselection conflict handling, proposal
-authoring, networking, and artifact-payload persistence remain outside this
+fall through. Separate non-candidate lower-round finality routing, automatic
+candidate-backed evidence routing, broader or incomplete preselection conflict
+handling, proposal authoring, networking, and artifact-payload persistence remain outside this
 driver.
 
 This ownership moves event choice out of a caller that could otherwise select
@@ -808,9 +808,9 @@ This driver does not define or perform:
 - a complete or protocol-wide evidence view, durable inbox or timer encoding,
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
-- proposal authoring, higher-round nil-quorum collection, lower-round finality
-  routing, automatic acquisition or routing for candidate-backed direct-child
-  or conflict evidence or a missing proposal, durable
+- proposal authoring, higher-round nil-quorum collection, separate non-candidate
+  lower-round finality routing, automatic acquisition or routing for
+  candidate-backed direct-child or conflict evidence or a missing proposal, durable
   handling of incomplete or broader multi-root cases beyond the exact retained
   proposal-backed pair, caller-selected branch or winner choice beyond the one
   deny-only terminal sibling submission, rollback, reorganization, candidate
