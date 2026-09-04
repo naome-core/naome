@@ -1,3 +1,4 @@
+use std::collections::TryReserveError;
 use std::error::Error;
 use std::fmt;
 
@@ -7,6 +8,7 @@ use naome_consensus::{
     FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorProposalIntentErrorV0,
     FixedValidatorProposalSourceV0, ProposerSelectionError,
 };
+use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
 use naome_storage::{
     ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, CanonicalArtifactPayloadStore,
     CanonicalArtifactPayloadStoreError, FixedValidatorProposalPrepareOutcomeV0,
@@ -64,6 +66,10 @@ pub enum FixedValidatorNodeProposalAuthoringRejectionV0 {
     PayloadStore(Box<CanonicalArtifactPayloadStoreError>),
     /// The exact proposal target's canonical artifact payload is not locally available.
     PayloadUnavailable { target: ArtifactBlockId },
+    /// The driver publication payload exceeds the protocol bound.
+    PublicationPayloadTooLong { actual: usize, maximum: usize },
+    /// The driver could not reserve payload custody before any durable effect.
+    PublicationPayloadCopy(TryReserveError),
     /// The current phase, proposer, source, artifact, or retained value was invalid.
     Proposal(Box<FixedValidatorProposalIntentErrorV0>),
 }
@@ -101,6 +107,14 @@ impl fmt::Display for FixedValidatorNodeProposalAuthoringRejectionV0 {
                 formatter,
                 "canonical payload for proposal target {target:?} is not locally available"
             ),
+            Self::PublicationPayloadTooLong { actual, maximum } => write!(
+                formatter,
+                "proposal publication payload length {actual} exceeds {maximum}"
+            ),
+            Self::PublicationPayloadCopy(source) => write!(
+                formatter,
+                "proposal publication payload custody could not be reserved: {source}"
+            ),
             Self::Proposal(source) => {
                 write!(
                     formatter,
@@ -117,10 +131,12 @@ impl Error for FixedValidatorNodeProposalAuthoringRejectionV0 {
             Self::CandidateStore(source) => Some(source.as_ref()),
             Self::PayloadStore(source) => Some(source.as_ref()),
             Self::Proposal(source) => Some(source.as_ref()),
+            Self::PublicationPayloadCopy(source) => Some(source),
             Self::RoundWorkLimitExceeded { .. }
             | Self::CandidateChainMismatch { .. }
             | Self::CandidateUnavailable { .. }
-            | Self::PayloadUnavailable { .. } => None,
+            | Self::PayloadUnavailable { .. }
+            | Self::PublicationPayloadTooLong { .. } => None,
         }
     }
 }
@@ -210,6 +226,151 @@ enum CurrentRoundErrorV0 {
     Fatal(FixedValidatorNodeProposalAuthoringErrorV0),
 }
 
+pub(super) enum NodeProposalInputV0<'input> {
+    Direct(FixedValidatorProposalSourceV0),
+    CandidateFresh {
+        candidates: &'input mut ArtifactBlockCandidateStore,
+        payloads: &'input mut CanonicalArtifactPayloadStore,
+        expected_target: ArtifactBlockId,
+    },
+    PayloadRetained(&'input mut CanonicalArtifactPayloadStore),
+}
+
+impl NodeProposalInputV0<'_> {
+    fn resolve(
+        self,
+        round: &FixedConsensusRoundV0<'_>,
+        signing_session: &FixedValidatorNodeVotingSessionV0<'_>,
+    ) -> Result<FixedValidatorProposalSourceV0, FixedValidatorNodeProposalAuthoringRejectionV0>
+    {
+        match self {
+            Self::Direct(source) => Ok(source),
+            Self::CandidateFresh {
+                candidates,
+                payloads,
+                expected_target,
+            } => {
+                if signing_session.valid_value().is_some() {
+                    return Err(FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(
+                        Box::new(FixedValidatorProposalIntentErrorV0::RetainedValidValueRequired),
+                    ));
+                }
+
+                let expected_chain = round.context().chain_id();
+                let actual_chain = candidates.chain_id();
+                if actual_chain != expected_chain {
+                    return Err(
+                        FixedValidatorNodeProposalAuthoringRejectionV0::CandidateChainMismatch {
+                            expected: expected_chain,
+                            actual: actual_chain,
+                        },
+                    );
+                }
+
+                let artifact_block = candidates
+                    .get(expected_target)
+                    .map_err(|source| {
+                        FixedValidatorNodeProposalAuthoringRejectionV0::CandidateStore(Box::new(
+                            source,
+                        ))
+                    })?
+                    .ok_or(
+                        FixedValidatorNodeProposalAuthoringRejectionV0::CandidateUnavailable {
+                            target: expected_target,
+                        },
+                    )?;
+                let payload = payloads
+                    .get(artifact_block.artifact_id())
+                    .map_err(|source| {
+                        FixedValidatorNodeProposalAuthoringRejectionV0::PayloadStore(Box::new(
+                            source,
+                        ))
+                    })?
+                    .ok_or(
+                        FixedValidatorNodeProposalAuthoringRejectionV0::PayloadUnavailable {
+                            target: expected_target,
+                        },
+                    )?;
+
+                Ok(FixedValidatorProposalSourceV0::Fresh {
+                    artifact_block,
+                    canonical_artifact_bytes: payload.into_canonical_artifact_bytes().into_vec(),
+                })
+            }
+            Self::PayloadRetained(payloads) => {
+                let retained_value = signing_session.valid_value().ok_or_else(|| {
+                    FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(Box::new(
+                        FixedValidatorProposalIntentErrorV0::FreshValueRequired,
+                    ))
+                })?;
+                let artifact_block = retained_value.value().artifact_block();
+                let target = artifact_block.id();
+                let payload = payloads
+                    .get(artifact_block.artifact_id())
+                    .map_err(|source| {
+                        FixedValidatorNodeProposalAuthoringRejectionV0::PayloadStore(Box::new(
+                            source,
+                        ))
+                    })?
+                    .ok_or(
+                        FixedValidatorNodeProposalAuthoringRejectionV0::PayloadUnavailable {
+                            target,
+                        },
+                    )?;
+
+                Ok(FixedValidatorProposalSourceV0::RetainedValid {
+                    canonical_artifact_bytes: payload.into_canonical_artifact_bytes().into_vec(),
+                })
+            }
+        }
+    }
+}
+
+fn capture_publication_payload(
+    source: &FixedValidatorProposalSourceV0,
+    has_retained_value: bool,
+    payload: &mut Vec<u8>,
+) -> Result<(), FixedValidatorNodeProposalAuthoringRejectionV0> {
+    let bytes = match (has_retained_value, source) {
+        (
+            false,
+            FixedValidatorProposalSourceV0::Fresh {
+                canonical_artifact_bytes,
+                ..
+            },
+        )
+        | (
+            true,
+            FixedValidatorProposalSourceV0::RetainedValid {
+                canonical_artifact_bytes,
+            },
+        ) => canonical_artifact_bytes,
+        (false, FixedValidatorProposalSourceV0::RetainedValid { .. }) => {
+            return Err(FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(
+                Box::new(FixedValidatorProposalIntentErrorV0::FreshValueRequired),
+            ));
+        }
+        (true, FixedValidatorProposalSourceV0::Fresh { .. }) => {
+            return Err(FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(
+                Box::new(FixedValidatorProposalIntentErrorV0::RetainedValidValueRequired),
+            ));
+        }
+    };
+    if bytes.len() > ARTIFACT_PAYLOAD_MAX_BYTES {
+        return Err(
+            FixedValidatorNodeProposalAuthoringRejectionV0::PublicationPayloadTooLong {
+                actual: bytes.len(),
+                maximum: ARTIFACT_PAYLOAD_MAX_BYTES,
+            },
+        );
+    }
+    payload
+        .try_reserve_exact(bytes.len())
+        .map_err(FixedValidatorNodeProposalAuthoringRejectionV0::PublicationPayloadCopy)?;
+    payload.extend_from_slice(bytes);
+    Ok(())
+}
+
 impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     /// Validates, durably prepares, signs, and completes one current-round proposal.
     ///
@@ -225,7 +386,11 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeProposalAuthoringOutcomeV0<'node>,
         FixedValidatorNodeProposalAuthoringErrorV0,
     > {
-        self.author_proposal_with_source(inclusive_maximum_round, |_, _| Ok(source))
+        self.author_proposal_with_input(
+            inclusive_maximum_round,
+            NodeProposalInputV0::Direct(source),
+            None,
+        )
     }
 
     /// Authors one caller-selected fresh proposal from exact local availability stores.
@@ -245,50 +410,15 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeProposalAuthoringOutcomeV0<'node>,
         FixedValidatorNodeProposalAuthoringErrorV0,
     > {
-        self.author_proposal_with_source(inclusive_maximum_round, |round, signing_session| {
-            if signing_session.valid_value().is_some() {
-                return Err(FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(
-                    Box::new(FixedValidatorProposalIntentErrorV0::RetainedValidValueRequired),
-                ));
-            }
-
-            let expected_chain = round.context().chain_id();
-            let actual_chain = candidates.chain_id();
-            if actual_chain != expected_chain {
-                return Err(
-                    FixedValidatorNodeProposalAuthoringRejectionV0::CandidateChainMismatch {
-                        expected: expected_chain,
-                        actual: actual_chain,
-                    },
-                );
-            }
-
-            let artifact_block = candidates
-                .get(expected_target)
-                .map_err(|source| {
-                    FixedValidatorNodeProposalAuthoringRejectionV0::CandidateStore(Box::new(source))
-                })?
-                .ok_or(
-                    FixedValidatorNodeProposalAuthoringRejectionV0::CandidateUnavailable {
-                        target: expected_target,
-                    },
-                )?;
-            let payload = payloads
-                .get(artifact_block.artifact_id())
-                .map_err(|source| {
-                    FixedValidatorNodeProposalAuthoringRejectionV0::PayloadStore(Box::new(source))
-                })?
-                .ok_or(
-                    FixedValidatorNodeProposalAuthoringRejectionV0::PayloadUnavailable {
-                        target: expected_target,
-                    },
-                )?;
-
-            Ok(FixedValidatorProposalSourceV0::Fresh {
-                artifact_block,
-                canonical_artifact_bytes: payload.into_canonical_artifact_bytes().into_vec(),
-            })
-        })
+        self.author_proposal_with_input(
+            inclusive_maximum_round,
+            NodeProposalInputV0::CandidateFresh {
+                candidates,
+                payloads,
+                expected_target,
+            },
+            None,
+        )
     }
 
     /// Re-authors the exact retained valid value from one local payload store.
@@ -306,39 +436,33 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeProposalAuthoringOutcomeV0<'node>,
         FixedValidatorNodeProposalAuthoringErrorV0,
     > {
-        self.author_proposal_with_source(inclusive_maximum_round, |_, signing_session| {
-            let retained_value = signing_session.valid_value().ok_or_else(|| {
-                FixedValidatorNodeProposalAuthoringRejectionV0::Proposal(Box::new(
-                    FixedValidatorProposalIntentErrorV0::FreshValueRequired,
-                ))
-            })?;
-            let artifact_block = retained_value.value().artifact_block();
-            let target = artifact_block.id();
-            let payload = payloads
-                .get(artifact_block.artifact_id())
-                .map_err(|source| {
-                    FixedValidatorNodeProposalAuthoringRejectionV0::PayloadStore(Box::new(source))
-                })?
-                .ok_or(
-                    FixedValidatorNodeProposalAuthoringRejectionV0::PayloadUnavailable { target },
-                )?;
-
-            Ok(FixedValidatorProposalSourceV0::RetainedValid {
-                canonical_artifact_bytes: payload.into_canonical_artifact_bytes().into_vec(),
-            })
-        })
+        self.author_proposal_with_input(
+            inclusive_maximum_round,
+            NodeProposalInputV0::PayloadRetained(payloads),
+            None,
+        )
     }
 
-    fn author_proposal_with_source(
+    /// Captures the exact resolved payload before signer effects for one driver command.
+    pub(super) fn author_proposal_for_driver(
+        self,
+        input: NodeProposalInputV0<'_>,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        (FixedValidatorNodeProposalAuthoringOutcomeV0<'node>, Vec<u8>),
+        FixedValidatorNodeProposalAuthoringErrorV0,
+    > {
+        let mut payload = Vec::new();
+        let outcome =
+            self.author_proposal_with_input(inclusive_maximum_round, input, Some(&mut payload))?;
+        Ok((outcome, payload))
+    }
+
+    fn author_proposal_with_input(
         mut self,
         inclusive_maximum_round: ConsensusRound,
-        resolve_source: impl FnOnce(
-            &FixedConsensusRoundV0<'_>,
-            &FixedValidatorNodeVotingSessionV0<'_>,
-        ) -> Result<
-            FixedValidatorProposalSourceV0,
-            FixedValidatorNodeProposalAuthoringRejectionV0,
-        >,
+        input: NodeProposalInputV0<'_>,
+        publication_payload: Option<&mut Vec<u8>>,
     ) -> Result<
         FixedValidatorNodeProposalAuthoringOutcomeV0<'node>,
         FixedValidatorNodeProposalAuthoringErrorV0,
@@ -379,13 +503,24 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
             ));
         }
 
-        let source = match resolve_source(&round, &self.signing_session) {
+        let source = match input.resolve(&round, &self.signing_session) {
             Ok(source) => source,
             Err(rejection) => {
                 drop(round);
                 return Ok(rejected(self, rejection));
             }
         };
+
+        if let Some(payload) = publication_payload
+            && let Err(rejection) = capture_publication_payload(
+                &source,
+                self.signing_session.valid_value().is_some(),
+                payload,
+            )
+        {
+            drop(round);
+            return Ok(rejected(self, rejection));
+        }
 
         let preparation = match self.signing_session.prepare_proposal(&round, source) {
             Ok(preparation) => preparation,

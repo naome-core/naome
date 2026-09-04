@@ -28,12 +28,13 @@ tickets that the same driver issued. One explicit step derives the live node
 identity, classifies the exact-current finality, higher-round, nil-precommit,
 and ordinary current-voting inbox state in its fixed order, and invokes at most
 one existing consuming node coordinator. It emits at most one timeout-arm or
-signed-vote command. It does not expose the owned signing scope as an
+signed-vote or signed-proposal command. It does not expose the owned signing scope as an
 alternative caller-controlled path.
 
 The caller-selected action exceptions are the candidate-backed finality bridges,
 strictly lower-round paired-conflict bridge, and explicit higher-round quorum
-catch-up methods outside ordinary `step` selection.
+catch-up methods, and explicit current-round proposal authoring outside ordinary
+`step` selection.
 All are available only after any pending outward command has transferred,
 retain no evidence, use the driver's existing inclusive round-work ceiling,
 and delegate every applicable proposal, source, positioned-fixed-set, batch,
@@ -67,11 +68,14 @@ fall through. An explicit lower-round paired-conflict submission may instead
 enter the fully verifying neutral halt after command custody, without waiting
 for current-round finality classification. An explicit canonical higher-round
 certificate or exact routed vote batch may separately advance to the evidence's
-authenticated phase under the priority and lifecycle contract below.
+authenticated phase under the priority and lifecycle contract below. Explicit
+proposal authoring may sign fresh or retained-valid input only after existing
+step work is resolved and queues one proposal with its exact payload for
+publication, without changing the phase, timer, or local voting inbox.
 Separate non-candidate lower-round
 single-proof finality routing, automatic candidate-backed evidence routing,
-broader or incomplete preselection conflict handling, proposal authoring,
-networking, and artifact-payload persistence remain outside this driver.
+broader or incomplete preselection conflict handling, automatic proposal source
+selection, networking, and artifact-payload persistence remain outside this driver.
 
 This ownership moves event choice out of a caller that could otherwise select
 an inbox position or invoke a phase close directly. It does not make retained
@@ -131,6 +135,74 @@ unreleased command, and a selected proposal token still held with that command.
 The durable signer and finality stores keep their existing strict-reopen
 classifications; closing this command-custody crash gap belongs to the later
 runtime boundary.
+
+## Explicit current-round proposal authoring
+
+The driver exposes three consuming source-specific methods, all using its
+construction-time inclusive round-work ceiling:
+
+- `author_proposal` takes one explicit fresh artifact and canonical payload, or
+  the canonical payload for the private retained valid value.
+- `author_candidate_backed_fresh_proposal` takes one exact caller-selected block
+  target and its caller-routed candidate and payload stores.
+- `author_payload_store_backed_retained_proposal` takes only the payload store;
+  the private retained valid value supplies its sole artifact address.
+
+Pending outward command custody takes priority and returns `CommandPending`
+before source inspection. Otherwise the driver runs a read-only version of the
+ordinary `step` priority prefix: non-fallthrough exact-current finality,
+higher-round saturation or ambiguity and complete higher-proposal selection,
+current nil-precommit selection, current-voting blocking and selection, then
+the due observation. Any actionable result, blocker, selection rejection, or
+reservation failure returns `StepWorkPending` with the unchanged driver before
+source resolution. Finality `None` or non-pair `Saturated`, empty selections,
+and incomplete evidence that would leave `step` idle do not themselves prevent
+authoring. Newly detected ambiguity does not latch here. Ordinary `step` or the
+corresponding lossless drain resolves the existing work; authoring never runs a
+hidden step or chooses a proposal ahead of that work.
+
+The existing proposal-authoring coordinator then derives the exact live
+branch, height, round, phase, and scheduled proposer. Its session and ceiling
+checks remain authoritative. Proposal phase, scheduled-proposer authority, and
+the fresh-versus-retained source-kind checks precede any availability-store
+read. The direct input follows the same source-kind contract. Store membership
+supplies availability only; source selection grants no branch, validity,
+finality, or vote authority.
+
+After resolving one exact owned source, the driver path checks the canonical
+payload length against `ARTIFACT_PAYLOAD_MAX_BYTES` and fallibly reserves and
+copies publication custody before entering durable proposal preparation. The
+unchanged consensus path fully verifies that same resolved artifact, payload,
+and, when present, exact retained valid value and earlier-round prevote proof.
+Anchored intent preparation, acknowledgement, signing, self-verification,
+completion, and completion anchoring must all succeed before `Authored` returns.
+The copied payload is moved directly into one pending `PublishProposal` with
+the completed signed proposal. No source is read again after signing and no
+payload copy or resize is required at that point. Existing public signing-scope
+authoring methods keep their control-only outcome and do not request this
+additional publication copy.
+
+`Authored` preserves the position, Proposal phase, exact active timer ticket,
+generation, all four inboxes, accounting, latches, lock and complete valid-value
+evidence, and finality journal-anchor pair. It reserves no successor timer
+generation. A separate `step` transfers exactly
+`PublishProposal { proposal, canonical_artifact_bytes }`, then leaves no pending
+arm command. It neither admits the proposal nor signs a local vote. The caller
+must explicitly re-admit the published control and payload through the
+ordinary current-proposal event before local voting; the existing admission
+closure after a due observation still applies. Publication does not extend the
+Proposal deadline or acknowledge delivery, retention, or payload persistence.
+
+Typed source, input, payload-bound, or publication-reservation rejection restores
+the unchanged driver with no signer effect. Exact completed replay queues the
+same proposal and payload without another durable write, including at the
+existing proposal replay ceiling. A fully valid different same-slot intent
+instead returns only the existing terminal proposal-safety halt. Every fatal
+round, session, preparation, acknowledgement, signing, or anchor error returns
+no driver and no outward bytes; strict anchored reopen is the only continuation
+classifier. A completed durable proposal may survive loss of pending volatile
+publication, but restart creates no outbox or publication command. The caller
+may explicitly supply the exact source again for the existing no-write replay.
 
 ## Explicit higher-round quorum catch-up
 
@@ -562,10 +634,12 @@ process-local value bound to the driver's identity, exact consensus context,
 live source position, live phase, and checked timer generation. Construction
 records the initial arm command as pending, so the first step emits that command
 and performs no transition. A no-vote transition immediately prepares the next
-arm command. A signed transition instead invalidates the source timer and keeps
+arm command. A signed-vote transition instead invalidates the source timer and keeps
 only its checked successor generation with the pending publication; emitting
 that publication prepares the successor arm command for one still later step.
-Generation overflow fails closed before either transition begins.
+Generation overflow fails closed before either transition begins. Explicit
+proposal authoring preserves this ticket and generation and does not create a
+successor, including when the generation has no successor.
 
 Returning one exact current ticket records only that the external runtime has
 classified this issued timer as due. A foreign-driver, stale-generation,
@@ -781,12 +855,12 @@ that is not due, the step is idle and changes nothing. One step never chains a
 higher-round catch-up or nil-precommit advance into a current action, chains
 either current vote into the next phase, consumes more than one due
 observation, invokes more than one consuming coordinator, or emits more than one
-command. A signed transition records only its pending `PublishVote` plus an
+command. A signed-vote transition records only its pending `PublishVote` plus an
 optional losslessly released proposal token; only higher-round pairing supplies
 that token as `Some`, while current and due votes supply `None`. A separate
 later step transfers that command and prepares the successor phase's
-`ArmPhaseTimeout`, and another step emits that arm command. A transition without
-a vote prepares only the successor phase's arm command. Receiving either
+`ArmPhaseTimeout`, and another step emits that arm command. An ordinary step transition without
+a vote prepares only the successor phase's arm command. Receiving a
 command does not acknowledge network delivery, peer receipt, relay, payload
 persistence, inclusion, real-time scheduling, or finality.
 
@@ -892,8 +966,9 @@ evidence from a fatal authority state.
 
 At most one command is pending and at most one command is emitted from a step.
 A step with a pending command returns exactly that command and performs no
-transition. Only higher-round pairing transfers the exact selected token as
-`Some` inside its publication; current-evidence and timeout-driven publications
+transition. Explicit proposal publication transfers its exact owned payload
+without preparing another command. Only higher-round pairing transfers the exact selected token as
+`Some` inside its publication; current-evidence and timeout-driven vote publications
 carry `None`.
 Emitting a pending `PublishVote` prepares only the resulting phase's arm command
 for a later step, so no hidden multi-command queue can overwrite or reorder
@@ -918,7 +993,8 @@ This driver does not define or perform:
 - a complete or protocol-wide evidence view, durable inbox or timer encoding,
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
-- proposal authoring, automatic general higher-round quorum observation,
+- automatic proposal source selection, proposal self-admission, general
+  higher-round quorum observation,
   collection, routing, or arbitration, separate non-candidate
   lower-round single-proof finality routing, automatic acquisition or routing for
   candidate-backed direct-child or conflict evidence or a missing proposal, durable

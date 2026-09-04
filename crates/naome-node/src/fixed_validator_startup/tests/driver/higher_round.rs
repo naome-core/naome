@@ -502,7 +502,7 @@ fn advanced(
     }
 }
 
-fn quorum(
+pub(super) fn quorum(
     fixture: &Fixture,
     round: u64,
     role: ConsensusVoteRole,

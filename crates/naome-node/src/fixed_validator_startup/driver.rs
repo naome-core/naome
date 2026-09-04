@@ -8,14 +8,15 @@ use naome_consensus::{
     ConsensusRound, ConsensusVoteRole, ConsensusVoteTarget, ConsensusVoteVerifyError,
     FixedConsensusNilPrecommitVerifyErrorV0, FixedConsensusNilPrevoteVerifyErrorV0,
     FixedConsensusProposalPrecommitVerifyErrorV0, FixedConsensusProposalPrevoteVerifyErrorV0,
-    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, ProposalSigningRoot, ProposerSelectionError,
-    QuorumCertificateBuildError, VerifiedConsensusVoteV0,
+    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorProposalSourceV0,
+    ProposalSigningRoot, ProposerSelectionError, QuorumCertificateBuildError,
+    VerifiedConsensusVoteV0,
 };
 use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
 use naome_storage::{
-    ArtifactBlockCandidateStore, CanonicalArtifactPayloadStore, FixedValidatorSignedVoteV0,
-    FixedValidatorVoteSafetyHaltV0, FixedValidatorVoteSafetyJournalErrorV0,
-    SelectedArtifactHistory,
+    ArtifactBlockCandidateStore, CanonicalArtifactPayloadStore, FixedValidatorProposalSafetyHaltV0,
+    FixedValidatorSignedProposalV0, FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyHaltV0,
+    FixedValidatorVoteSafetyJournalErrorV0, SelectedArtifactHistory,
 };
 
 use super::current_round_finality_inbox::{
@@ -36,6 +37,7 @@ use super::current_round_nil_precommit_inbox::{
     CurrentRoundNilPrecommitQuorumSelectionErrorV0, CurrentRoundNilPrecommitQuorumSelectionV0,
 };
 use super::higher_round_proposal_pairing::{ActionableInboxSelectionV0, ActionableInboxSnapshotV0};
+use super::proposal_authoring::NodeProposalInputV0;
 use super::proposal_deferral::{
     CurrentRoundErrorV0, preflight_deferred_proposal_control_framing,
     preflight_higher_round_proposal_route, verify_deferred_proposal_at_round,
@@ -72,11 +74,13 @@ use super::{
     FixedValidatorNodeLowerRoundFinalityErrorV0,
     FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0,
-    FixedValidatorNodeProposalDeferralErrorV0, FixedValidatorNodeProposalDeferralRejectionV0,
-    FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,
-    FixedValidatorNodeRoundAdvanceRejectionV0, FixedValidatorNodeSigningScopeV0,
-    FixedValidatorNodeVoteExecutionErrorV0, FixedValidatorNodeVoteExecutionOutcomeV0,
-    FixedValidatorNodeVoteRejectionV0, fixed_validator_node_current_round,
+    FixedValidatorNodeProposalAuthoringErrorV0, FixedValidatorNodeProposalAuthoringOutcomeV0,
+    FixedValidatorNodeProposalAuthoringRejectionV0, FixedValidatorNodeProposalDeferralErrorV0,
+    FixedValidatorNodeProposalDeferralRejectionV0, FixedValidatorNodeRoundAdvanceErrorV0,
+    FixedValidatorNodeRoundAdvanceOutcomeV0, FixedValidatorNodeRoundAdvanceRejectionV0,
+    FixedValidatorNodeSigningScopeV0, FixedValidatorNodeVoteExecutionErrorV0,
+    FixedValidatorNodeVoteExecutionOutcomeV0, FixedValidatorNodeVoteRejectionV0,
+    fixed_validator_node_current_round,
 };
 
 static NEXT_DRIVER_LINEAGE: AtomicU64 = AtomicU64::new(1);
@@ -483,6 +487,14 @@ impl Error for FixedValidatorNodeDriverAdmissionErrorV0 {
 pub enum FixedValidatorNodeDriverCommandV0 {
     /// Schedule a timer using runtime policy, then retain this exact ticket.
     ArmPhaseTimeout(FixedValidatorNodePhaseTimeoutV0),
+    /// Publish one anchored proposal with its exact owned payload.
+    ///
+    /// Publication preserves the current timer. Local voting requires explicit
+    /// re-admission through the ordinary proposal event path.
+    PublishProposal {
+        proposal: FixedValidatorSignedProposalV0,
+        canonical_artifact_bytes: Vec<u8>,
+    },
     /// Publish one already anchored vote and assume custody of any released proposal.
     PublishVote {
         vote: FixedValidatorSignedVoteV0,
@@ -958,6 +970,31 @@ pub enum FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0<'node> {
     },
 }
 
+/// Result of explicit driver-owned current-round proposal authoring.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverProposalAuthoringOutcomeV0<'node> {
+    /// An existing command must transfer before inspecting authoring input.
+    CommandPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Existing actionable evidence, a blocker, rejection, or due work takes priority.
+    StepWorkPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// One durable proposal and exact payload await publication by `step`.
+    Authored {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Input or availability failed before any durable signer effect.
+    Rejected {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        rejection: Box<FixedValidatorNodeProposalAuthoringRejectionV0>,
+    },
+    /// A same-slot conflicting intent durably stopped the signer; no driver survives.
+    SignerStopped(FixedValidatorProposalSafetyHaltV0),
+}
+
 /// Fatal driver transition failure; no driver or signing scope is returned.
 ///
 /// On `Err`, the consuming operation loses both volatile owners even when the failure
@@ -976,6 +1013,8 @@ pub enum FixedValidatorNodeDriverStepErrorV0 {
     Vote(Box<FixedValidatorNodeVoteExecutionErrorV0>),
     /// Node-owned round progression failed after the consuming boundary began.
     RoundAdvance(Box<FixedValidatorNodeRoundAdvanceErrorV0>),
+    /// Explicit proposal authoring failed after the consuming boundary began.
+    ProposalAuthoring(Box<FixedValidatorNodeProposalAuthoringErrorV0>),
     /// Current-round finality failed after the consuming boundary began.
     CurrentFinality(Box<FixedValidatorNodeCurrentRoundFinalityErrorV0>),
 }
@@ -992,6 +1031,7 @@ impl fmt::Display for FixedValidatorNodeDriverStepErrorV0 {
             Self::Vote(source) => source.fmt(formatter),
             Self::RoundAdvance(source) => source.fmt(formatter),
             Self::CurrentFinality(source) => source.fmt(formatter),
+            Self::ProposalAuthoring(source) => source.fmt(formatter),
         }
     }
 }
@@ -1004,6 +1044,7 @@ impl Error for FixedValidatorNodeDriverStepErrorV0 {
             Self::Vote(source) => Some(source.as_ref()),
             Self::RoundAdvance(source) => Some(source.as_ref()),
             Self::CurrentFinality(source) => Some(source.as_ref()),
+            Self::ProposalAuthoring(source) => Some(source.as_ref()),
             Self::TimeoutGenerationExhausted { .. } => None,
         }
     }
@@ -1159,6 +1200,10 @@ enum DriverHigherRoundInputV0<'input> {
 }
 
 enum PendingCommandV0 {
+    PublishProposal {
+        proposal: FixedValidatorSignedProposalV0,
+        canonical_artifact_bytes: Vec<u8>,
+    },
     Arm(FixedValidatorNodePhaseTimeoutV0),
     Publish {
         vote: FixedValidatorSignedVoteV0,
@@ -1174,6 +1219,8 @@ enum PendingCommandV0 {
 /// remain selected only by [`Self::step`]. Separate explicit methods submit
 /// candidate-backed direct-child or historical-conflict evidence and complete
 /// strictly lower-round conflict pairs after pending command custody transfers.
+/// Explicit proposal authoring waits for ordinary step work, then queues the
+/// completed proposal and exact payload without local admission or timer change.
 /// Its only authority projection is the sealed
 /// read-only selected artifact history required by caller-owned acquisition.
 /// Evidence and due timers become authoritative only through the existing fully
@@ -1877,6 +1924,138 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         }
     }
 
+    /// Authors one current-round proposal from explicit fresh or retained-value input.
+    ///
+    /// Existing commands and all work selected or blocked by `step` take priority.
+    /// Success queues publication with the exact payload, preserves every inbox
+    /// and the current timer, and does not admit the proposal for local voting.
+    pub fn author_proposal(
+        self,
+        source: FixedValidatorProposalSourceV0,
+    ) -> Result<
+        FixedValidatorNodeDriverProposalAuthoringOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        self.author_proposal_with_input(NodeProposalInputV0::Direct(source))
+    }
+
+    /// Authors the caller's exact fresh candidate through its two availability stores.
+    ///
+    /// Driver work, phase, proposer, and source-kind checks precede store access.
+    /// The stores grant availability only; complete proposal validation is unchanged.
+    pub fn author_candidate_backed_fresh_proposal(
+        self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: naome_chain::ArtifactBlockId,
+    ) -> Result<
+        FixedValidatorNodeDriverProposalAuthoringOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        self.author_proposal_with_input(NodeProposalInputV0::CandidateFresh {
+            candidates,
+            payloads,
+            expected_target,
+        })
+    }
+
+    /// Re-authors the private retained value using its exact payload-store address.
+    ///
+    /// The retained value and certificate remain authoritative; source membership
+    /// supplies only availability and is resolved once before any signer effect.
+    pub fn author_payload_store_backed_retained_proposal(
+        self,
+        payloads: &mut CanonicalArtifactPayloadStore,
+    ) -> Result<
+        FixedValidatorNodeDriverProposalAuthoringOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        self.author_proposal_with_input(NodeProposalInputV0::PayloadRetained(payloads))
+    }
+
+    fn author_proposal_with_input(
+        mut self,
+        input: NodeProposalInputV0<'_>,
+    ) -> Result<
+        FixedValidatorNodeDriverProposalAuthoringOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverProposalAuthoringOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        if self.ordinary_step_work_pending()? {
+            return Ok(
+                FixedValidatorNodeDriverProposalAuthoringOutcomeV0::StepWorkPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        let scope = self.take_scope();
+        let (outcome, canonical_artifact_bytes) = scope
+            .author_proposal_for_driver(input, self.inclusive_maximum_round)
+            .map_err(|source| {
+                FixedValidatorNodeDriverStepErrorV0::ProposalAuthoring(Box::new(source))
+            })?;
+        match outcome {
+            FixedValidatorNodeProposalAuthoringOutcomeV0::Authored { scope, proposal } => {
+                self.scope = Some(*scope);
+                self.pending_command = Some(PendingCommandV0::PublishProposal {
+                    proposal,
+                    canonical_artifact_bytes,
+                });
+                Ok(
+                    FixedValidatorNodeDriverProposalAuthoringOutcomeV0::Authored {
+                        driver: Box::new(self),
+                    },
+                )
+            }
+            FixedValidatorNodeProposalAuthoringOutcomeV0::Rejected { scope, rejection } => {
+                self.scope = Some(*scope);
+                Ok(
+                    FixedValidatorNodeDriverProposalAuthoringOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection,
+                    },
+                )
+            }
+            FixedValidatorNodeProposalAuthoringOutcomeV0::SignerStopped(halt) => {
+                Ok(FixedValidatorNodeDriverProposalAuthoringOutcomeV0::SignerStopped(halt))
+            }
+        }
+    }
+
+    // Keep this read-only priority gate aligned with `step`: none of its selectors
+    // advances consensus, latches ambiguity, consumes custody, or marks a timer due.
+    fn ordinary_step_work_pending(&self) -> Result<bool, FixedValidatorNodeDriverStepErrorV0> {
+        if !matches!(
+            self.select_current_finality()
+                .map_err(FixedValidatorNodeDriverStepErrorV0::Round)?,
+            DriverCurrentFinalitySelectionV0::None
+                | DriverCurrentFinalitySelectionV0::Saturated { .. }
+        ) || self.higher_block_reason().is_some()
+            || !matches!(
+                self.select_actionable_higher_round()?,
+                DriverEvidenceSelectionV0::None
+            )
+            || !matches!(
+                self.select_current_nil_precommit()?,
+                DriverCurrentNilPrecommitSelectionV0::None
+            )
+            || self.current_block_reason().is_some()
+            || !matches!(
+                self.select_actionable_current()?,
+                DriverCurrentSelectionV0::None
+            )
+        {
+            return Ok(true);
+        }
+        Ok(self.due)
+    }
+
     /// Executes at most one transition or emits exactly one pending command.
     ///
     /// On `Err`, this consuming call returns neither the driver nor its signing
@@ -1891,6 +2070,13 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 PendingCommandV0::Arm(timeout) => {
                     FixedValidatorNodeDriverCommandV0::ArmPhaseTimeout(timeout)
                 }
+                PendingCommandV0::PublishProposal {
+                    proposal,
+                    canonical_artifact_bytes,
+                } => FixedValidatorNodeDriverCommandV0::PublishProposal {
+                    proposal,
+                    canonical_artifact_bytes,
+                },
                 PendingCommandV0::Publish {
                     vote,
                     released_proposal,
