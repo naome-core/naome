@@ -511,6 +511,127 @@ fn anchored_finality_advances_before_publication_and_reopens_exactly() {
 
 #[cfg(unix)]
 #[test]
+fn anchor_operation_failures_withhold_finality_until_exact_stabilized_reopen() {
+    use crate::fixed_validator_anchor::faults::{Operation, REPLACEMENT_OPERATIONS, inject};
+
+    let fixture = Fixture::new();
+    let (expected_state, expected_head, expected_images) = {
+        let journal_directory = TestDirectory::new("anchor-fault-finality-control-journal");
+        let anchor_directory = TestDirectory::new("anchor-fault-finality-control-anchor");
+        let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+        let mut selected = ArtifactChainState::new(fixture.definition);
+        let transition =
+            fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+        let expected_head = transition.value().ancestry_id();
+        assert!(matches!(
+            journal.commit_verified(transition).unwrap(),
+            FixedValidatorFinalityCommitOutcomeV0::Finalized { .. }
+        ));
+        (
+            journal.state_id().unwrap(),
+            expected_head,
+            (
+                fs::read(journal_directory.journal()).unwrap(),
+                fs::read(anchor_directory.finality_anchor()).unwrap(),
+            ),
+        )
+    };
+
+    for operation in REPLACEMENT_OPERATIONS {
+        let journal_directory = TestDirectory::new("anchor-fault-finality-journal");
+        let anchor_directory = TestDirectory::new("anchor-fault-finality-anchor");
+        let anchor_path = anchor_directory.finality_anchor();
+        let temporary_path = anchor_directory
+            .0
+            .join("fixed-validator-finality.anchor.tmp-0000000000000001");
+        let images = || {
+            (
+                fs::read(journal_directory.journal()).unwrap(),
+                fs::read(&anchor_path).unwrap(),
+            )
+        };
+        let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+        let before = images();
+        let mut selected = ArtifactChainState::new(fixture.definition);
+        let transition =
+            fixture.transition(journal.head().unwrap(), &mut selected, ZfcAxiom::Pairing, 0);
+        let fault = inject(&anchor_path, operation);
+        assert!(
+            matches!(
+                journal.commit_verified(transition),
+                Err(FixedValidatorFinalityJournalErrorV0::Commit { .. })
+            ),
+            "{operation:?}"
+        );
+        fault.assert_fired();
+        drop(fault);
+        assert!(matches!(
+            journal.head(),
+            Err(FixedValidatorFinalityJournalErrorV0::Poisoned)
+        ));
+        assert!(matches!(
+            journal.state_id(),
+            Err(FixedValidatorFinalityJournalErrorV0::Poisoned)
+        ));
+        let after = images();
+        assert_eq!(after.0, expected_images.0, "{operation:?}");
+        assert_ne!(after.0, before.0);
+        match operation {
+            Operation::CreateTemporary | Operation::SyncReplacementDirectory => {
+                assert!(!temporary_path.exists())
+            }
+            Operation::WriteTemporary => assert!(fs::read(&temporary_path).unwrap().is_empty()),
+            Operation::SyncTemporary | Operation::Rename => {
+                assert_eq!(fs::read(&temporary_path).unwrap(), expected_images.1)
+            }
+            Operation::StabilizeFile | Operation::StabilizeDirectory => unreachable!(),
+        }
+        drop(journal);
+
+        if operation != Operation::SyncReplacementDirectory {
+            assert_eq!(after.1, before.1);
+            let temporary_before = fs::read(&temporary_path).ok();
+            for _ in 0..2 {
+                assert!(matches!(
+                    fixture.open_anchored(&journal_directory, &anchor_directory),
+                    Err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal(
+                        FixedValidatorFinalityJournalErrorV0::AnchorBehind {
+                            anchored_sequence: 0,
+                            journal_sequence: 1
+                        }
+                    ))
+                ));
+                assert_eq!(images(), after);
+                assert_eq!(fs::read(&temporary_path).ok(), temporary_before);
+            }
+            continue;
+        }
+
+        assert_eq!(after, expected_images);
+        for stabilization in [Operation::StabilizeFile, Operation::StabilizeDirectory] {
+            let fault = inject(&anchor_path, stabilization);
+            assert!(matches!(
+                fixture.open_anchored(&journal_directory, &anchor_directory),
+                Err(FixedValidatorAnchoredFinalityJournalErrorV0::Anchor(
+                    FixedValidatorAnchorErrorV0::Stabilize { .. }
+                ))
+            ));
+            fault.assert_fired();
+            drop(fault);
+            assert_eq!(images(), after);
+        }
+        let reopened = fixture
+            .open_anchored(&journal_directory, &anchor_directory)
+            .unwrap();
+        assert_eq!(reopened.state_id().unwrap(), expected_state);
+        assert_eq!(reopened.head().unwrap().ancestry_id(), expected_head);
+        assert_eq!(reopened.finalized_len().unwrap(), 1);
+        assert_eq!(images(), after);
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn anchored_preselection_conflict_writes_one_canonical_terminal_pair_without_selection() {
     let fixture = Fixture::new();
     let first_journal_directory = TestDirectory::new("preselection-pair-first-journal");

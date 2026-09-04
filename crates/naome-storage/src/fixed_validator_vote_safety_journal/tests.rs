@@ -1209,6 +1209,149 @@ fn anchor_update_failure_releases_no_signed_vote_and_strict_reopen_fails_behind(
 
 #[cfg(unix)]
 #[test]
+fn anchor_operation_failures_withhold_signed_vote_until_exact_stabilized_reopen() {
+    use crate::fixed_validator_anchor::faults::{Operation, REPLACEMENT_OPERATIONS, inject};
+
+    let fixture = Fixture::new(2);
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let (expected_signed, expected_images) = {
+        let journal_directory = TestDirectory::new("anchor-fault-vote-control-journal");
+        let anchor_directory = TestDirectory::new("anchor-fault-vote-control-anchor");
+        let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+        let _ = activate_anchored_proposal_authoring(&mut journal);
+        let _ = journal.bind_signing_lineage(&round).unwrap();
+        let mut session = journal.issue_signing_session(&round).unwrap();
+        let effect = session.decide_prevote_without_proposal().unwrap();
+        let prepared = prepared(session.prepare_vote(&round, effect).unwrap());
+        let acknowledgement = session.acknowledge_prepared_vote(prepared).unwrap();
+        let signed = session.sign_prepared_vote(acknowledgement).unwrap();
+        (
+            signed,
+            (
+                fs::read(
+                    keyed_paths(&journal_directory.0, fixture.signer())
+                        .unwrap()
+                        .1,
+                )
+                .unwrap(),
+                fs::read(anchor_directory.vote_anchor(fixture.signer())).unwrap(),
+            ),
+        )
+    };
+
+    for operation in REPLACEMENT_OPERATIONS {
+        let journal_directory = TestDirectory::new("anchor-fault-vote-journal");
+        let anchor_directory = TestDirectory::new("anchor-fault-vote-anchor");
+        let anchor_path = anchor_directory.vote_anchor(fixture.signer());
+        let temporary_path = anchor_directory.vote_anchor_temporary(fixture.signer(), 4);
+        let journal_path = keyed_paths(&journal_directory.0, fixture.signer())
+            .unwrap()
+            .1;
+        let images = || {
+            (
+                fs::read(&journal_path).unwrap(),
+                fs::read(&anchor_path).unwrap(),
+            )
+        };
+        let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+        let _ = activate_anchored_proposal_authoring(&mut journal);
+        let _ = journal.bind_signing_lineage(&round).unwrap();
+        let mut session = journal.issue_signing_session(&round).unwrap();
+        let effect = session.decide_prevote_without_proposal().unwrap();
+        let prepared = prepared(session.prepare_vote(&round, effect).unwrap());
+        let acknowledgement = session.acknowledge_prepared_vote(prepared).unwrap();
+        let before = images();
+        let fault = inject(&anchor_path, operation);
+        assert!(
+            matches!(
+                session.sign_prepared_vote(acknowledgement),
+                Err(FixedValidatorVoteSafetyJournalErrorV0::Commit { .. })
+            ),
+            "{operation:?}"
+        );
+        fault.assert_fired();
+        drop(fault);
+        assert!(matches!(
+            session.decide_precommit_without_quorum(),
+            Err(FixedValidatorVoteSafetyJournalErrorV0::Poisoned)
+        ));
+        drop(session);
+        assert!(matches!(
+            journal.state_id(),
+            Err(FixedValidatorVoteSafetyJournalErrorV0::Poisoned)
+        ));
+        assert!(matches!(
+            journal.retained_signed_vote(round.position(), ConsensusVoteRole::Prevote),
+            Err(FixedValidatorVoteSafetyJournalErrorV0::Poisoned)
+        ));
+        assert!(matches!(
+            journal.issue_signing_session(&round),
+            Err(FixedValidatorVoteSafetyJournalErrorV0::Poisoned)
+        ));
+        let after = images();
+        assert_eq!(after.0, expected_images.0, "{operation:?}");
+        assert_ne!(after.0, before.0);
+        match operation {
+            Operation::CreateTemporary | Operation::SyncReplacementDirectory => {
+                assert!(!temporary_path.exists())
+            }
+            Operation::WriteTemporary => assert!(fs::read(&temporary_path).unwrap().is_empty()),
+            Operation::SyncTemporary | Operation::Rename => {
+                assert_eq!(fs::read(&temporary_path).unwrap(), expected_images.1)
+            }
+            Operation::StabilizeFile | Operation::StabilizeDirectory => unreachable!(),
+        }
+        drop(journal);
+
+        if operation != Operation::SyncReplacementDirectory {
+            assert_eq!(after.1, before.1);
+            let temporary_before = fs::read(&temporary_path).ok();
+            for _ in 0..2 {
+                assert!(matches!(
+                    fixture.open_anchored(&journal_directory, &anchor_directory),
+                    Err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::Journal(source))
+                        if matches!(source.as_ref(), FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind { anchored_sequence: 3, journal_sequence: 4 })
+                ));
+                assert_eq!(images(), after);
+                assert_eq!(fs::read(&temporary_path).ok(), temporary_before);
+            }
+            continue;
+        }
+
+        assert_eq!(after, expected_images);
+        for stabilization in [Operation::StabilizeFile, Operation::StabilizeDirectory] {
+            let fault = inject(&anchor_path, stabilization);
+            assert!(matches!(
+                fixture.open_anchored(&journal_directory, &anchor_directory),
+                Err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::Anchor(
+                    FixedValidatorAnchorErrorV0::Stabilize { .. }
+                ))
+            ));
+            fault.assert_fired();
+            drop(fault);
+            assert_eq!(images(), after);
+        }
+        let mut reopened = fixture
+            .open_anchored(&journal_directory, &anchor_directory)
+            .unwrap();
+        assert_eq!(reopened.state_id().unwrap(), expected_signed.state_id());
+        assert_eq!(
+            reopened
+                .retained_signed_vote(round.position(), ConsensusVoteRole::Prevote)
+                .unwrap()
+                .as_ref(),
+            Some(&expected_signed)
+        );
+        let resumed = reopened.issue_signing_session(&round).unwrap();
+        assert_eq!(resumed.position(), round.position());
+        assert_eq!(resumed.phase(), FixedValidatorLockPhaseV0::Prevote);
+        assert_eq!(images(), after);
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn anchored_height_handoff_and_finality_stop_advance_both_authority_files() {
     let fixture = Fixture::new(2);
     let finality_directory = TestDirectory::new("anchored-handoff-finality-journal");

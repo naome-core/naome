@@ -157,6 +157,24 @@ again before the wrapper is published, so a prior post-rename directory-sync
 failure cannot be silently accepted as stable merely because the bytes are
 currently visible.
 
+A completed journal successor with a replacement failure before rename retains
+the old authoritative anchor and therefore reopens only as `AnchorBehind`. A
+successful rename followed by directory-synchronization failure can instead
+leave the exact successor anchor visible. That failed call still publishes no
+result or signed bytes and leaves the live pair poisoned. Reopen must perform
+the stabilization above even for those matching bytes; an anchor-file or
+directory stabilization error returns no wrapper and releases both locks for a
+later explicit strict-open attempt. Successful stabilization exposes only the
+exact replayed child or completed signing state, never a repaired alternative.
+
+Unix tests inject errors immediately before temporary creation, temporary write,
+temporary file synchronization, rename, post-rename directory synchronization,
+and both anchor stabilization operations. They compare full journal and anchor
+images for one finality commit and one signed-vote completion against successful
+controls. These operation-error tests do not simulate power loss, every partial
+write or ambiguous syscall outcome, or hardware durability. Journal append and
+recovery fault matrices remain separate evidence.
+
 No mismatch chooses a winner, promotes a temporary file, truncates a complete
 suffix, rolls either side back, or automatically repairs the pair. Temporary
 files are non-authoritative and never accepted on reopen.
