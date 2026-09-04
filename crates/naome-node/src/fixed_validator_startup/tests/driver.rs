@@ -31,6 +31,7 @@ use super::*;
 mod candidate_backed;
 mod higher_round;
 mod lower_round_pair;
+mod proposal_authoring;
 
 type DrainedEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
 type DrainedCurrentEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>, Vec<Vec<u8>>);
@@ -173,7 +174,8 @@ fn step_arm<'node>(
     match driver.step().unwrap() {
         FixedValidatorNodeDriverStepOutcomeV0::Command { driver, command } => match command {
             FixedValidatorNodeDriverCommandV0::ArmPhaseTimeout(timeout) => (*driver, timeout),
-            FixedValidatorNodeDriverCommandV0::PublishVote { .. } => {
+            FixedValidatorNodeDriverCommandV0::PublishVote { .. }
+            | FixedValidatorNodeDriverCommandV0::PublishProposal { .. } => {
                 panic!("expected timeout-arm command")
             }
         },
@@ -194,7 +196,8 @@ fn step_publish<'node>(
                 vote,
                 released_proposal,
             } => (*driver, vote, released_proposal),
-            FixedValidatorNodeDriverCommandV0::ArmPhaseTimeout(_) => {
+            FixedValidatorNodeDriverCommandV0::ArmPhaseTimeout(_)
+            | FixedValidatorNodeDriverCommandV0::PublishProposal { .. } => {
                 panic!("expected vote-publication command")
             }
         },

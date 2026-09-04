@@ -95,7 +95,7 @@ fn prevote_certificate_bytes(
     bytes
 }
 
-fn retain_candidate_inputs(
+pub(super) fn retain_candidate_inputs(
     candidates: &mut ArtifactBlockCandidateStore,
     payloads: &mut CanonicalArtifactPayloadStore,
     predecessor: &naome_chain::ArtifactChainBranchSnapshot,
@@ -108,7 +108,7 @@ fn retain_candidate_inputs(
         .unwrap();
 }
 
-fn flip_last_store_byte(directory: &PathBuf) {
+pub(super) fn flip_last_store_byte(directory: &PathBuf) {
     let path = fs::read_dir(directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())
