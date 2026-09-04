@@ -444,7 +444,7 @@ Neither transition is added to the selected branch vector, first-finality
 records, artifact-snapshot index, or signer-height lineage. No intermediate
 state identity exists between the two embedded transitions, and neither raw nor
 anchored replay can expose one as an operable head. The halt summary identifies
-its `Preselection` kind, positive height, canonical first and second ancestry
+its `PreselectionPair` kind, positive height, canonical first and second ancestry
 and envelope identities, and final state identity. Those identities are
 diagnostic witnesses only; “first” and “second” never mean selected and
 conflicting.
