@@ -20,6 +20,8 @@ use super::super::finality::{
     FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
     FixedValidatorNodeLowerRoundFinalityRejectionV0,
+    FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0,
+    FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0,
 };
 use super::*;
 
@@ -114,6 +116,23 @@ fn expect_lower_round_finality_rejection(
         }
         FixedValidatorNodeLowerRoundFinalityOutcomeV0::Finality(_) => {
             panic!("expected a no-effect lower-round finality rejection")
+        }
+    }
+}
+
+fn expect_lower_round_preselection_conflict_rejection(
+    outcome: FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0<'_>,
+) -> (
+    FixedValidatorNodeSigningScopeV0<'_>,
+    FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0,
+) {
+    match outcome {
+        FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::Rejected {
+            scope,
+            rejection,
+        } => (*scope, *rejection),
+        FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::FinalityStopped(_) => {
+            panic!("expected a no-effect lower-round paired-finality rejection")
         }
     }
 }
@@ -334,6 +353,125 @@ fn current_round_finality_inputs(
         certificate_signers,
     );
     (control, payload, certificate, position, value)
+}
+
+fn run_lower_round_preselection_pair(
+    fixture: &Fixture,
+    label: &str,
+    reverse_inputs: bool,
+) -> FixedValidatorNodeFinalityStoppedV0 {
+    let layout = TestLayout::new(label);
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let selected = ArtifactChainState::new(fixture.definition);
+    let before = layout.images();
+    let stopped =
+        ready
+            .run_with_signing_session(|scope| match commit_complete_lower_round_preselection_pair(
+                scope,
+                fixture,
+                &selected,
+                reverse_inputs,
+            )
+            .unwrap()
+            {
+                FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::FinalityStopped(
+                    stopped,
+                ) => *stopped,
+                FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::Rejected { .. } => {
+                    panic!("the complete same-position lower-round pair must halt")
+                }
+            })
+            .unwrap();
+
+    assert_eq!(
+        stopped.finality_halt().kind(),
+        naome_storage::FixedValidatorFinalityHaltKindV0::PreselectionPair
+    );
+    assert_eq!(
+        stopped.signer_stop().kind(),
+        naome_storage::FixedValidatorFinalityHaltKindV0::PreselectionPair
+    );
+    assert_eq!(stopped.finality_halt().height().value(), 1);
+    assert_eq!(
+        stopped.signer_stop().height(),
+        stopped.finality_halt().height()
+    );
+    assert_eq!(
+        stopped.signer_stop().finality_state_id(),
+        stopped.finality_halt().state_id()
+    );
+    let after = layout.images();
+    for index in 0..after.len() {
+        assert_ne!(after[index], before[index], "durable image index {index}");
+    }
+    match fixture
+        .provision(&layout, 8)
+        .open(fixture.signing_key())
+        .unwrap()
+    {
+        FixedValidatorNodeStartupV0::FinalityStopped(reopened) => {
+            assert_eq!(reopened, stopped);
+        }
+        _ => panic!("strict restart must expose the exact neutral terminal pair"),
+    }
+    stopped
+}
+
+fn commit_complete_lower_round_preselection_pair<'node>(
+    mut scope: FixedValidatorNodeSigningScopeV0<'node>,
+    fixture: &Fixture,
+    selected: &ArtifactChainState,
+    reverse_inputs: bool,
+) -> Result<
+    FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0<'node>,
+    FixedValidatorNodeLowerRoundFinalityErrorV0,
+> {
+    let branch = scope.branch().clone();
+    let round_one = round_at(&branch, 1);
+    advance_signer_round_without_writing(&mut scope, &round_one);
+    let round_two = round_at(&branch, 2);
+    advance_signer_round_without_writing(&mut scope, &round_two);
+    let proposer = fixture.signing_key();
+    let (first_control, first_payload, first_certificate, _, _) = current_round_finality_inputs(
+        &branch,
+        selected,
+        ZfcAxiom::Pairing,
+        1,
+        &proposer,
+        &[&proposer],
+    );
+    let (second_control, second_payload, second_certificate, _, _) = current_round_finality_inputs(
+        &branch,
+        selected,
+        ZfcAxiom::Union,
+        1,
+        &proposer,
+        &[&proposer],
+    );
+    if reverse_inputs {
+        scope.commit_lower_round_preselection_conflict(
+            &second_control,
+            second_payload,
+            &second_certificate,
+            &first_control,
+            first_payload,
+            &first_certificate,
+            ConsensusRound::new(1),
+        )
+    } else {
+        scope.commit_lower_round_preselection_conflict(
+            &first_control,
+            first_payload,
+            &first_certificate,
+            &second_control,
+            second_payload,
+            &second_certificate,
+            ConsensusRound::new(1),
+        )
+    }
 }
 
 fn candidate_backed_batch_finality_inputs(
@@ -1368,6 +1506,563 @@ fn paired_current_round_rejections_restore_the_exact_scope_and_all_files_before_
     for index in 0..after.len() {
         assert_ne!(after[index], before[index], "durable image index {index}");
     }
+}
+
+#[test]
+fn lower_round_preselection_pair_is_canonical_and_strictly_restarts_terminal() {
+    let fixture = Fixture::new();
+    let first =
+        run_lower_round_preselection_pair(&fixture, "lower-round-preselection-pair-forward", false);
+    let reversed =
+        run_lower_round_preselection_pair(&fixture, "lower-round-preselection-pair-reversed", true);
+
+    assert_eq!(reversed, first);
+}
+
+#[test]
+fn lower_round_preselection_pair_rejections_preserve_scope_files_and_retry() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("lower-round-preselection-pair-rejections");
+    let proposer = fixture.signing_key();
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let selected = ArtifactChainState::new(fixture.definition);
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|mut scope| {
+            let branch = scope.branch().clone();
+            let round_one = round_at(&branch, 1);
+            advance_signer_round_without_writing(&mut scope, &round_one);
+            let round_two = round_at(&branch, 2);
+            advance_signer_round_without_writing(&mut scope, &round_two);
+
+            let (first_control, first_payload, first_certificate, position_one, first_value) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Pairing,
+                    1,
+                    &proposer,
+                    &[&proposer],
+                );
+            let (second_control, second_payload, second_certificate, second_position, second_value) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Union,
+                    1,
+                    &proposer,
+                    &[&proposer],
+                );
+            assert_eq!(second_position, position_one);
+            let (zero_control, zero_payload, zero_certificate, position_zero, _) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Infinity,
+                    0,
+                    &proposer,
+                    &[&proposer],
+                );
+            let (current_control, current_payload, current_certificate, current_position, _) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Extensionality,
+                    2,
+                    &proposer,
+                    &[&proposer],
+                );
+            let (future_control, future_payload, future_certificate, future_position, _) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::PowerSet,
+                    3,
+                    &proposer,
+                    &[&proposer],
+                );
+            let wrong_height = ConsensusPosition::new(
+                ConsensusHeight::new(position_one.height().value() + 1),
+                position_one.round(),
+            );
+            let wrong_first_height_certificate = quorum_certificate_bytes(
+                fixture.context,
+                wrong_height,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(first_value.proposal_signing_root()),
+                &[&proposer],
+            );
+            let wrong_second_height_certificate = quorum_certificate_bytes(
+                fixture.context,
+                wrong_height,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(second_value.proposal_signing_root()),
+                &[&proposer],
+            );
+            let mut invalid_first_certificate = first_certificate.clone();
+            *invalid_first_certificate.last_mut().unwrap() ^= 0x80;
+            let mut invalid_second_certificate = second_certificate.clone();
+            *invalid_second_certificate.last_mut().unwrap() ^= 0x80;
+            let mut invalid_first_control = first_control.clone();
+            invalid_first_control.pop();
+            let mut invalid_second_control = second_control.clone();
+            invalid_second_control.pop();
+            let diagnostics = signing_scope_diagnostics(&mut scope);
+
+            macro_rules! reject_pair {
+                (
+                    $first_control:expr,
+                    $first_payload:expr,
+                    $first_certificate:expr,
+                    $second_control:expr,
+                    $second_payload:expr,
+                    $second_certificate:expr,
+                    $maximum:expr,
+                    $check:expr
+                ) => {{
+                    let (mut next, rejection) =
+                        expect_lower_round_preselection_conflict_rejection(
+                            scope
+                                .commit_lower_round_preselection_conflict(
+                                    $first_control,
+                                    $first_payload,
+                                    $first_certificate,
+                                    $second_control,
+                                    $second_payload,
+                                    $second_certificate,
+                                    $maximum,
+                                )
+                                .unwrap(),
+                        );
+                    let check = $check;
+                    assert!(check(&rejection), "unexpected rejection: {rejection}");
+                    assert_eq!(signing_scope_diagnostics(&mut next), diagnostics);
+                    assert_eq!(layout.images(), before);
+                    scope = next;
+                }};
+            }
+
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &[0_u8],
+                &second_control,
+                second_payload.clone(),
+                &second_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::First(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::EmbeddedCertificatePosition(_)
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &first_certificate,
+                &second_control,
+                second_payload.clone(),
+                &[0_u8],
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::Second(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::EmbeddedCertificatePosition(_)
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &wrong_first_height_certificate,
+                &second_control,
+                second_payload.clone(),
+                &second_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::First(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::CertificateHeightMismatch { .. }
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &first_certificate,
+                &second_control,
+                second_payload.clone(),
+                &wrong_second_height_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::Second(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::CertificateHeightMismatch { .. }
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &invalid_first_control,
+                first_payload.clone(),
+                &first_certificate,
+                &second_control,
+                second_payload.clone(),
+                &second_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::First(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::Proposal(
+                                            ConsensusProposalVerifyError::InvalidLength { .. }
+                                        )
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &first_certificate,
+                &invalid_second_control,
+                second_payload.clone(),
+                &second_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::Second(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::Proposal(
+                                            ConsensusProposalVerifyError::InvalidLength { .. }
+                                        )
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                proof_payload(ZfcAxiom::Union),
+                &first_certificate,
+                &second_control,
+                second_payload.clone(),
+                &second_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::First(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::Proposal(
+                                            ConsensusProposalVerifyError::ArtifactValidation(_)
+                                        )
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &first_certificate,
+                &second_control,
+                proof_payload(ZfcAxiom::Pairing),
+                &second_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::Second(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::Proposal(
+                                            ConsensusProposalVerifyError::ArtifactValidation(_)
+                                        )
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &invalid_first_certificate,
+                &second_control,
+                second_payload.clone(),
+                &second_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::First(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::PrecommitCertificate(_)
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &first_certificate,
+                &second_control,
+                second_payload.clone(),
+                &invalid_second_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::Second(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(inner)
+                                    if matches!(
+                                        inner.as_ref(),
+                                        FixedConsensusBoundedSeparateFinalityVerifyError::PrecommitCertificate(_)
+                                    )
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &zero_control,
+                zero_payload,
+                &zero_certificate,
+                &second_control,
+                second_payload.clone(),
+                &second_certificate,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::PositionMismatch {
+                            first,
+                            second,
+                        } if *first == position_zero && *second == position_one
+                    )
+                }
+            );
+            reject_pair!(
+                &current_control,
+                current_payload,
+                &current_certificate,
+                &second_control,
+                second_payload.clone(),
+                &second_certificate,
+                ConsensusRound::new(8),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::First(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::NotEarlierThanSigner {
+                                    evidence,
+                                    signer,
+                                } if *evidence == current_position.round()
+                                    && *signer == ConsensusRound::new(2)
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &first_certificate,
+                &future_control,
+                future_payload,
+                &future_certificate,
+                ConsensusRound::new(8),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::Second(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::NotEarlierThanSigner {
+                                    evidence,
+                                    signer,
+                                } if *evidence == future_position.round()
+                                    && *signer == ConsensusRound::new(2)
+                            )
+                    )
+                }
+            );
+            reject_pair!(
+                &first_control,
+                first_payload.clone(),
+                &first_certificate,
+                &second_control,
+                second_payload.clone(),
+                &second_certificate,
+                ConsensusRound::new(0),
+                |rejection: &FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::First(source)
+                            if matches!(
+                                source.as_ref(),
+                                FixedValidatorNodeLowerRoundFinalityRejectionV0::RoundWorkLimitExceeded {
+                                    required,
+                                    maximum,
+                                } if *required == ConsensusRound::new(1)
+                                    && *maximum == ConsensusRound::new(0)
+                            )
+                    )
+                }
+            );
+
+            match scope
+                .commit_lower_round_preselection_conflict(
+                    &first_control,
+                    first_payload,
+                    &first_certificate,
+                    &second_control,
+                    second_payload,
+                    &second_certificate,
+                    ConsensusRound::new(1),
+                )
+                .unwrap()
+            {
+                FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::FinalityStopped(_) => {}
+                FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::Rejected { .. } => {
+                    panic!("the intact lower-round pair must succeed after no-effect rejections")
+                }
+            }
+        })
+        .unwrap();
+}
+
+#[test]
+fn lower_round_pair_journal_rejection_consumes_scope_and_strictly_reopens_ready() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("lower-round-pair-not-distinct");
+    let proposer = fixture.signing_key();
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let selected = ArtifactChainState::new(fixture.definition);
+    let before = layout.images();
+
+    let error = ready
+        .run_with_signing_session(|mut scope| {
+            let branch = scope.branch().clone();
+            let round_one = round_at(&branch, 1);
+            advance_signer_round_without_writing(&mut scope, &round_one);
+            let round_two = round_at(&branch, 2);
+            advance_signer_round_without_writing(&mut scope, &round_two);
+            let (control, payload, certificate, _, _) = current_round_finality_inputs(
+                &branch,
+                &selected,
+                ZfcAxiom::Pairing,
+                1,
+                &proposer,
+                &[&proposer],
+            );
+
+            match scope.commit_lower_round_preselection_conflict(
+                &control,
+                payload.clone(),
+                &certificate,
+                &control,
+                payload,
+                &certificate,
+                ConsensusRound::new(1),
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("a same-transition pair must fail inside finality"),
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        error,
+        FixedValidatorNodeLowerRoundFinalityErrorV0::Finality(source)
+            if matches!(
+                source.as_ref(),
+                FixedValidatorNodeFinalityErrorV0::Commit(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorFinalityJournalErrorV0::PreselectionConflictNotDistinct {
+                            height,
+                        } if *height == ConsensusHeight::new(1)
+                    )
+            )
+    ));
+    assert_eq!(layout.images(), before);
+
+    let reopened = expect_ready(
+        fixture
+            .provision(&layout, 8)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(scope.signing_session().position().round().value(), 0);
+            assert_eq!(layout.images(), before);
+        })
+        .unwrap();
 }
 
 #[test]
@@ -2415,6 +3110,57 @@ fn lower_round_finality_checks_persisted_signer_ceiling_before_input_parsing() {
             advance_signer_round_without_writing(&mut scope, &round_two);
             assert!(matches!(
                 scope.commit_lower_round_finality(
+                    &[0_u8],
+                    Vec::new(),
+                    &[0_u8],
+                    ConsensusRound::new(0),
+                ),
+                Err(
+                    FixedValidatorNodeLowerRoundFinalityErrorV0::FinalityRoundLimitExceeded {
+                        required,
+                        maximum,
+                    }
+                ) if required == ConsensusRound::new(2)
+                    && maximum == ConsensusRound::new(1)
+            ));
+            assert_eq!(layout.images(), before);
+        })
+        .unwrap();
+
+    let reopened = expect_ready(
+        provision_with_finality_round_limit(&fixture, &layout, 1, 8)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(scope.signing_session().position().round().value(), 0);
+            assert_eq!(layout.images(), before);
+        })
+        .unwrap();
+}
+
+#[test]
+fn lower_round_pair_checks_persisted_ceiling_before_input_parsing() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("lower-round-pair-persisted-ceiling");
+    let ready = provision_with_finality_round_limit(&fixture, &layout, 1, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|mut scope| {
+            let branch = scope.branch().clone();
+            let round_one = round_at(&branch, 1);
+            let round_two = round_at(&branch, 2);
+            advance_signer_round_without_writing(&mut scope, &round_one);
+            advance_signer_round_without_writing(&mut scope, &round_two);
+            assert!(matches!(
+                scope.commit_lower_round_preselection_conflict(
+                    &[0_u8],
+                    Vec::new(),
+                    &[0_u8],
                     &[0_u8],
                     Vec::new(),
                     &[0_u8],
@@ -3796,6 +4542,110 @@ fn paired_conflict_anchor_failures_return_no_scope_and_reopen_only_as_journal_ah
     assert!(matches!(
         error,
         FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(source)
+            if matches!(
+                source.as_ref(),
+                FixedValidatorNodeFinalityErrorV0::SignerStop { halt, source }
+                    if halt.kind()
+                        == naome_storage::FixedValidatorFinalityHaltKindV0::PreselectionPair
+                        && matches!(
+                            source.as_ref(),
+                            FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }
+                        )
+            )
+    ));
+    fs::remove_file(collision).unwrap();
+    assert!(matches!(
+        fixture
+            .provision(&signer_layout, 8)
+            .open(fixture.signing_key()),
+        Err(FixedValidatorNodeStartupErrorV0::VotePair(source))
+            if matches!(
+                source.as_ref(),
+                FixedValidatorAnchoredVoteSafetyJournalErrorV0::Journal(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind { .. }
+                    )
+            )
+    ));
+}
+
+#[test]
+fn lower_round_pair_anchor_failures_consume_scope_and_require_strict_reopen() {
+    let fixture = Fixture::new();
+    let selected = ArtifactChainState::new(fixture.definition);
+
+    let finality_layout = TestLayout::new("lower-pair-finality-anchor-failure");
+    let ready = fixture
+        .provision(&finality_layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let finality_anchor_image = directory_image(&finality_layout.finality_anchor);
+    let finality_anchor_bytes = &finality_anchor_image
+        .iter()
+        .find(|(name, _)| name.ends_with(".anchor"))
+        .unwrap()
+        .1;
+    let finality_sequence = u64::from_be_bytes(finality_anchor_bytes[149..157].try_into().unwrap());
+    let collision = next_anchor_collision(&finality_layout.finality_anchor, finality_sequence + 1);
+    let error = ready
+        .run_with_signing_session(|scope| {
+            match commit_complete_lower_round_preselection_pair(scope, &fixture, &selected, false) {
+                Err(error) => error,
+                Ok(_) => panic!("the lower-round pair finality anchor collision must fail closed"),
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        error,
+        FixedValidatorNodeLowerRoundFinalityErrorV0::Finality(source)
+            if matches!(
+                source.as_ref(),
+                FixedValidatorNodeFinalityErrorV0::Commit(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorFinalityJournalErrorV0::PairedCommit { .. }
+                    )
+            )
+    ));
+    fs::remove_file(collision).unwrap();
+    assert!(matches!(
+        fixture
+            .provision(&finality_layout, 8)
+            .open(fixture.signing_key()),
+        Err(FixedValidatorNodeStartupErrorV0::FinalityPair(source))
+            if matches!(
+                source.as_ref(),
+                FixedValidatorAnchoredFinalityJournalErrorV0::Journal(
+                    FixedValidatorFinalityJournalErrorV0::AnchorBehind { .. }
+                )
+            )
+    ));
+
+    let signer_layout = TestLayout::new("lower-pair-signer-stop-anchor-failure");
+    let ready = fixture
+        .provision(&signer_layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let vote_anchor_image = directory_image(&signer_layout.vote_anchor);
+    let vote_anchor_bytes = &vote_anchor_image
+        .iter()
+        .find(|(name, _)| name.ends_with(".anchor"))
+        .unwrap()
+        .1;
+    let vote_sequence = u64::from_be_bytes(vote_anchor_bytes[184..192].try_into().unwrap());
+    let collision = next_anchor_collision(&signer_layout.vote_anchor, vote_sequence + 1);
+    let error = ready
+        .run_with_signing_session(|scope| {
+            match commit_complete_lower_round_preselection_pair(scope, &fixture, &selected, false) {
+                Err(error) => error,
+                Ok(_) => panic!("the lower-round pair signer anchor collision must fail closed"),
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        error,
+        FixedValidatorNodeLowerRoundFinalityErrorV0::Finality(source)
             if matches!(
                 source.as_ref(),
                 FixedValidatorNodeFinalityErrorV0::SignerStop { halt, source }

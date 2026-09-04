@@ -297,6 +297,34 @@ pub enum FixedValidatorNodeLowerRoundFinalityOutcomeV0<'node> {
     },
 }
 
+/// Result of admitting two strictly lower-round proofs into the neutral halt path.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0<'node> {
+    /// Both proofs became one durable finality halt and signer stop.
+    FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+    /// Caller-supplied evidence was rejected before any finality or signer effect.
+    Rejected {
+        scope: Box<FixedValidatorNodeSigningScopeV0<'node>>,
+        rejection: Box<FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0>,
+    },
+}
+
+/// A pre-effect strictly lower-round paired-finality rejection.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0 {
+    /// The first complete proof was rejected by the lower-round boundary.
+    First(Box<FixedValidatorNodeLowerRoundFinalityRejectionV0>),
+    /// The second complete proof was rejected by the lower-round boundary.
+    Second(Box<FixedValidatorNodeLowerRoundFinalityRejectionV0>),
+    /// The independently authenticated proofs do not name one exact position.
+    PositionMismatch {
+        first: ConsensusPosition,
+        second: ConsensusPosition,
+    },
+}
+
 /// A pre-effect strictly lower-round finality rejection.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -348,6 +376,36 @@ impl Error for FixedValidatorNodeLowerRoundFinalityRejectionV0 {
             Self::Evidence(source) => Some(source.as_ref()),
             Self::PrecommitBatch(source) => Some(source.as_ref()),
             Self::NotEarlierThanSigner { .. } | Self::RoundWorkLimitExceeded { .. } => None,
+        }
+    }
+}
+
+impl fmt::Display for FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::First(source) => {
+                write!(
+                    formatter,
+                    "first lower-round paired proof was rejected: {source}"
+                )
+            }
+            Self::Second(source) => write!(
+                formatter,
+                "second lower-round paired proof was rejected: {source}"
+            ),
+            Self::PositionMismatch { first, second } => write!(
+                formatter,
+                "lower-round paired proofs name different positions: {first:?} and {second:?}"
+            ),
+        }
+    }
+}
+
+impl Error for FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::First(source) | Self::Second(source) => Some(source.as_ref()),
+            Self::PositionMismatch { .. } => None,
         }
     }
 }
@@ -865,46 +923,20 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         let signer_position = self.signing_session.position();
         lower_round_finality_preflight(&self.branch, signer_position, finality_maximum_round)?;
 
-        let transition = match self.branch.decode_and_verify_separate_finality_below_round(
+        let transition = match verify_lower_round_finality_inputs(
+            &self.branch,
+            signer_position.round(),
             canonical_proposal_control_bytes,
             canonical_artifact_bytes,
             canonical_precommit_certificate,
-            signer_position.round(),
             inclusive_maximum_round,
         ) {
             Ok(transition) => transition,
-            Err(FixedConsensusBoundedSeparateFinalityVerifyError::Proposer(source)) => {
+            Err(LowerRoundFinalityVerifyFailureV0::Fatal(source)) => {
                 return Err(FixedValidatorNodeLowerRoundFinalityErrorV0::Round(source));
             }
-            Err(FixedConsensusBoundedSeparateFinalityVerifyError::RoundNotBelowUpperBound {
-                round,
-                exclusive_upper: _,
-            }) => {
-                return Ok(lower_round_finality_rejected(
-                    self,
-                    FixedValidatorNodeLowerRoundFinalityRejectionV0::NotEarlierThanSigner {
-                        evidence: round,
-                        signer: signer_position.round(),
-                    },
-                ));
-            }
-            Err(FixedConsensusBoundedSeparateFinalityVerifyError::RoundLimitExceeded {
-                round,
-                maximum,
-            }) => {
-                return Ok(lower_round_finality_rejected(
-                    self,
-                    FixedValidatorNodeLowerRoundFinalityRejectionV0::RoundWorkLimitExceeded {
-                        required: round,
-                        maximum,
-                    },
-                ));
-            }
-            Err(source) => {
-                return Ok(lower_round_finality_rejected(
-                    self,
-                    FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(Box::new(source)),
-                ));
+            Err(LowerRoundFinalityVerifyFailureV0::Rejected(rejection)) => {
+                return Ok(lower_round_finality_rejected(self, rejection));
             }
         };
 
@@ -913,6 +945,108 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
             .map_err(|source| {
                 FixedValidatorNodeLowerRoundFinalityErrorV0::Finality(Box::new(source))
             })
+    }
+
+    /// Commits two strictly earlier-round proposal proofs as one neutral halt.
+    ///
+    /// Each complete triple independently passes the existing bounded lower-
+    /// round verifier before their authenticated positions are compared. Any
+    /// rejection returns the unchanged scope without a write. Only one exact
+    /// shared position may enter the existing paired finality append and signer-
+    /// stop sequence; caller order grants no root or winner preference.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_lower_round_preselection_conflict(
+        self,
+        first_canonical_proposal_control_bytes: &[u8],
+        first_canonical_artifact_bytes: Vec<u8>,
+        first_canonical_precommit_certificate: &[u8],
+        second_canonical_proposal_control_bytes: &[u8],
+        second_canonical_artifact_bytes: Vec<u8>,
+        second_canonical_precommit_certificate: &[u8],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0<'node>,
+        FixedValidatorNodeLowerRoundFinalityErrorV0,
+    > {
+        let finality_maximum_round = ConsensusRound::new(self.finality.replay_limit().max_round());
+        let signer_position = self.signing_session.position();
+        lower_round_finality_preflight(&self.branch, signer_position, finality_maximum_round)?;
+
+        let first = match verify_lower_round_finality_inputs(
+            &self.branch,
+            signer_position.round(),
+            first_canonical_proposal_control_bytes,
+            first_canonical_artifact_bytes,
+            first_canonical_precommit_certificate,
+            inclusive_maximum_round,
+        ) {
+            Ok(transition) => transition,
+            Err(LowerRoundFinalityVerifyFailureV0::Fatal(source)) => {
+                return Err(FixedValidatorNodeLowerRoundFinalityErrorV0::Round(source));
+            }
+            Err(LowerRoundFinalityVerifyFailureV0::Rejected(rejection)) => {
+                return Ok(lower_round_preselection_conflict_rejected(
+                    self,
+                    FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::First(Box::new(
+                        rejection,
+                    )),
+                ));
+            }
+        };
+        let second = match verify_lower_round_finality_inputs(
+            &self.branch,
+            signer_position.round(),
+            second_canonical_proposal_control_bytes,
+            second_canonical_artifact_bytes,
+            second_canonical_precommit_certificate,
+            inclusive_maximum_round,
+        ) {
+            Ok(transition) => transition,
+            Err(LowerRoundFinalityVerifyFailureV0::Fatal(source)) => {
+                return Err(FixedValidatorNodeLowerRoundFinalityErrorV0::Round(source));
+            }
+            Err(LowerRoundFinalityVerifyFailureV0::Rejected(rejection)) => {
+                return Ok(lower_round_preselection_conflict_rejected(
+                    self,
+                    FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::Second(Box::new(
+                        rejection,
+                    )),
+                ));
+            }
+        };
+        let first_position = first.position();
+        let second_position = second.position();
+        if first_position != second_position {
+            return Ok(lower_round_preselection_conflict_rejected(
+                self,
+                FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0::PositionMismatch {
+                    first: first_position,
+                    second: second_position,
+                },
+            ));
+        }
+
+        let Self {
+            finality,
+            branch: _,
+            signing_session,
+        } = self;
+        let halt = finality
+            .commit_verified_preselection_conflict(first, second)
+            .map_err(|source| {
+                FixedValidatorNodeLowerRoundFinalityErrorV0::Finality(Box::new(
+                    FixedValidatorNodeFinalityErrorV0::Commit(Box::new(source)),
+                ))
+            })?;
+        let stopped =
+            stop_after_finality_halt(finality, signing_session, halt).map_err(|source| {
+                FixedValidatorNodeLowerRoundFinalityErrorV0::Finality(Box::new(source))
+            })?;
+        Ok(
+            FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::FinalityStopped(Box::new(
+                stopped,
+            )),
+        )
     }
 
     /// Finalizes one explicitly routed strictly earlier-round proposal from an
@@ -1279,6 +1413,11 @@ enum CurrentRoundFinalityRoundErrorV0 {
     Fatal(FixedValidatorNodeCurrentRoundFinalityErrorV0),
 }
 
+enum LowerRoundFinalityVerifyFailureV0 {
+    Rejected(FixedValidatorNodeLowerRoundFinalityRejectionV0),
+    Fatal(ProposerSelectionError),
+}
+
 fn commit_current_round_finality_with_precommits<'node>(
     scope: FixedValidatorNodeSigningScopeV0<'node>,
     canonical_proposal_control_bytes: &[u8],
@@ -1477,6 +1616,49 @@ fn current_round_preselection_conflict_rejected<'node>(
     }
 }
 
+fn verify_lower_round_finality_inputs(
+    branch: &FixedConsensusBranchV0,
+    signer_round: ConsensusRound,
+    canonical_proposal_control_bytes: &[u8],
+    canonical_artifact_bytes: Vec<u8>,
+    canonical_precommit_certificate: &[u8],
+    inclusive_maximum_round: ConsensusRound,
+) -> Result<OwnedVerifiedFixedConsensusTransitionV0, LowerRoundFinalityVerifyFailureV0> {
+    match branch.decode_and_verify_separate_finality_below_round(
+        canonical_proposal_control_bytes,
+        canonical_artifact_bytes,
+        canonical_precommit_certificate,
+        signer_round,
+        inclusive_maximum_round,
+    ) {
+        Ok(transition) => Ok(transition),
+        Err(FixedConsensusBoundedSeparateFinalityVerifyError::Proposer(source)) => {
+            Err(LowerRoundFinalityVerifyFailureV0::Fatal(source))
+        }
+        Err(FixedConsensusBoundedSeparateFinalityVerifyError::RoundNotBelowUpperBound {
+            round,
+            exclusive_upper: _,
+        }) => Err(LowerRoundFinalityVerifyFailureV0::Rejected(
+            FixedValidatorNodeLowerRoundFinalityRejectionV0::NotEarlierThanSigner {
+                evidence: round,
+                signer: signer_round,
+            },
+        )),
+        Err(FixedConsensusBoundedSeparateFinalityVerifyError::RoundLimitExceeded {
+            round,
+            maximum,
+        }) => Err(LowerRoundFinalityVerifyFailureV0::Rejected(
+            FixedValidatorNodeLowerRoundFinalityRejectionV0::RoundWorkLimitExceeded {
+                required: round,
+                maximum,
+            },
+        )),
+        Err(source) => Err(LowerRoundFinalityVerifyFailureV0::Rejected(
+            FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(Box::new(source)),
+        )),
+    }
+}
+
 fn lower_round_finality_preflight(
     branch: &FixedConsensusBranchV0,
     signer_position: ConsensusPosition,
@@ -1511,6 +1693,16 @@ fn lower_round_finality_rejected<'node>(
     rejection: FixedValidatorNodeLowerRoundFinalityRejectionV0,
 ) -> FixedValidatorNodeLowerRoundFinalityOutcomeV0<'node> {
     FixedValidatorNodeLowerRoundFinalityOutcomeV0::Rejected {
+        scope: Box::new(scope),
+        rejection: Box::new(rejection),
+    }
+}
+
+fn lower_round_preselection_conflict_rejected<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+    rejection: FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0,
+) -> FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0<'node> {
+    FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::Rejected {
         scope: Box::new(scope),
         rejection: Box::new(rejection),
     }
