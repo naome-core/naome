@@ -44,7 +44,10 @@ use super::voting::{CurrentRoundErrorV0 as VotingCurrentRoundErrorV0, current_ro
 use super::{
     FixedValidatorNodeBufferedProposalPrecommitErrorV0,
     FixedValidatorNodeBufferedProposalPrecommitOutcomeV0,
-    FixedValidatorNodeBufferedProposalPrecommitRejectionV0, FixedValidatorNodeCurrentRoundErrorV0,
+    FixedValidatorNodeBufferedProposalPrecommitRejectionV0,
+    FixedValidatorNodeCandidateBackedFinalityErrorV0,
+    FixedValidatorNodeCandidateBackedFinalityOutcomeV0,
+    FixedValidatorNodeCandidateBackedFinalityRejectionV0, FixedValidatorNodeCurrentRoundErrorV0,
     FixedValidatorNodeCurrentRoundFinalityErrorV0,
     FixedValidatorNodeCurrentRoundFinalityInboxDrainV0,
     FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
@@ -826,6 +829,78 @@ pub enum FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0<'node>
     FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
 }
 
+/// Result of one explicitly routed candidate-backed direct-child finality attempt.
+///
+/// Pending command custody and every non-fallthrough current-finality
+/// classification return the unchanged driver before candidate input or source
+/// work. A typed candidate rejection likewise returns the unchanged driver
+/// because the existing coordinator made no node effect.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0<'node> {
+    /// An already pending outward command must transfer before classification.
+    CommandPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Retained exact-current finality must be resolved through [`FixedValidatorNodeDriverV0::step`].
+    CurrentFinalityUnresolved {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Candidate-backed finality completed and the aligned driver survives.
+    Finality {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        selection: FixedValidatorNodeFinalitySelectionV0,
+    },
+    /// Candidate input or source state was rejected before any node effect.
+    Rejected {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        rejection: Box<FixedValidatorNodeCandidateBackedFinalityRejectionV0>,
+    },
+    /// A defensive durable finality conflict stopped finality and the signer.
+    FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+}
+
+/// Fatal explicit candidate-backed direct-child driver failure.
+///
+/// Every variant consumes the driver, its sole signing scope, timer, and all
+/// volatile inbox custody. Strict anchored reopen is the only continuation path.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverCandidateBackedFinalityErrorV0 {
+    /// Exact-current finality classification could not derive the live round.
+    CurrentFinalityRound(ProposerSelectionError),
+    /// The checked timer generation has no successor for a possible child.
+    TimeoutGenerationExhausted { generation: u64 },
+    /// Candidate evidence reached the existing consuming finality coordinator.
+    Finality(Box<FixedValidatorNodeCandidateBackedFinalityErrorV0>),
+}
+
+impl fmt::Display for FixedValidatorNodeDriverCandidateBackedFinalityErrorV0 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CurrentFinalityRound(source) => write!(
+                formatter,
+                "driver current-finality round could not be reconstructed: {source}"
+            ),
+            Self::TimeoutGenerationExhausted { generation } => write!(
+                formatter,
+                "driver timeout generation {generation} has no successor"
+            ),
+            Self::Finality(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl Error for FixedValidatorNodeDriverCandidateBackedFinalityErrorV0 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::CurrentFinalityRound(source) => Some(source),
+            Self::Finality(source) => Some(source.as_ref()),
+            Self::TimeoutGenerationExhausted { .. } => None,
+        }
+    }
+}
+
 /// Fatal driver-step failure; no driver or signing scope is returned.
 ///
 /// On `Err`, consuming the step loses both volatile owners even when the failure
@@ -1259,6 +1334,112 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     /// Returns whether one outward command must be emitted before another transition.
     pub const fn has_pending_command(&self) -> bool {
         self.pending_command.is_some()
+    }
+
+    /// Routes one exact candidate-backed direct-child finality batch.
+    ///
+    /// Pending command custody and every non-fallthrough exact-current finality
+    /// classification return the unchanged driver before candidate input or
+    /// source work. Otherwise this preflights a successor timer generation and
+    /// delegates the explicit caller target, proposal, exact precommit batch,
+    /// evidence round, and source stores to the existing fully verifying
+    /// candidate-backed coordinator under the driver's construction-time round
+    /// ceiling. A pre-effect rejection restores the unchanged driver. Successful
+    /// height advancement queues exactly one child round-zero Proposal arm;
+    /// every fatal or post-effect failure consumes the driver and requires strict
+    /// anchored reopen.
+    pub fn commit_candidate_backed_finality_vote_batch(
+        mut self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: naome_chain::ArtifactBlockId,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_signed_precommits: &[&[u8]],
+        evidence_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0<'node>,
+        FixedValidatorNodeDriverCandidateBackedFinalityErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+
+        match self
+            .select_current_finality()
+            .map_err(FixedValidatorNodeDriverCandidateBackedFinalityErrorV0::CurrentFinalityRound)?
+        {
+            DriverCurrentFinalitySelectionV0::None
+            | DriverCurrentFinalitySelectionV0::Saturated { .. } => {}
+            DriverCurrentFinalitySelectionV0::Ready { .. }
+            | DriverCurrentFinalitySelectionV0::PreselectionConflict { .. }
+            | DriverCurrentFinalitySelectionV0::MissingProposal { .. }
+            | DriverCurrentFinalitySelectionV0::ConflictingRoots { .. }
+            | DriverCurrentFinalitySelectionV0::Rejected(_)
+            | DriverCurrentFinalitySelectionV0::Reservation(_) => {
+                return Ok(
+                    FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::CurrentFinalityUnresolved {
+                        driver: Box::new(self),
+                    },
+                );
+            }
+        }
+
+        let next_generation = self.generation.checked_add(1).ok_or(
+            FixedValidatorNodeDriverCandidateBackedFinalityErrorV0::TimeoutGenerationExhausted {
+                generation: self.generation,
+            },
+        )?;
+        let previous_position = self.position();
+        let inclusive_maximum_round = self.inclusive_maximum_round;
+        let scope = self.take_scope();
+        match scope.commit_candidate_backed_finality_vote_batch(
+            candidates,
+            payloads,
+            expected_target,
+            canonical_proposal_control_bytes,
+            canonical_signed_precommits,
+            FixedValidatorNodeFinalityRoundRouteV0::new(evidence_round, inclusive_maximum_round),
+        ) {
+            Ok(FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Finality(
+                FixedValidatorNodeFinalityOutcomeV0::Continues { scope, selection },
+            )) => {
+                self.scope = Some(*scope);
+                if self.position() != previous_position {
+                    let timeout = self.install_next_timeout(next_generation);
+                    self.pending_command = Some(PendingCommandV0::Arm(timeout));
+                }
+                Ok(
+                    FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::Finality {
+                        driver: Box::new(self),
+                        selection,
+                    },
+                )
+            }
+            Ok(FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Finality(
+                FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(stopped),
+            )) => Ok(
+                FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::FinalityStopped(stopped),
+            ),
+            Ok(FixedValidatorNodeCandidateBackedFinalityOutcomeV0::Rejected {
+                scope,
+                rejection,
+            }) => {
+                self.scope = Some(*scope);
+                Ok(
+                    FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection,
+                    },
+                )
+            }
+            Err(source) => Err(
+                FixedValidatorNodeDriverCandidateBackedFinalityErrorV0::Finality(Box::new(source)),
+            ),
+        }
     }
 
     /// Routes one exact candidate-backed historical sibling conflict.
