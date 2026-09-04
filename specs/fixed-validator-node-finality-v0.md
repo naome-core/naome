@@ -52,15 +52,17 @@ complete verification result becomes the same private-field owned transition.
 Neither certificate framing, explicit routing metadata, nor caller submission
 establishes certificate validity or finality.
 
-The certificate-only paired strictly lower-round preselection-conflict ingress
-accepts two complete proposal-control, owned-payload, and canonical-certificate
-triples plus one shared caller-local work ceiling. It independently applies the
-same bounded lower-round verification to each triple, retains both resulting
-private-field transitions only inside the consuming call, and requires their
-authenticated positions to be identical before either enters finality. A
-cross-position pair is rejected with the unchanged scope and grants no claim
-about the validity, compatibility, preference, or safety of evidence across
-different rounds.
+The paired strictly lower-round preselection-conflict ingresses accept two
+complete proposal-control and owned-payload inputs with either two canonical
+certificates plus one shared caller-local ceiling, or two exact signed-
+precommit batches plus one shared explicit route. The certificate form
+independently derives and authenticates each routed position before requiring
+equality. The batch form derives the one explicit position once and requires
+both proposals and every vote to authenticate it. Each retains both resulting
+private-field transitions only inside the consuming call before the same
+neutral halt. A cross-position or separately routed pair is not classified and
+grants no claim about the validity, compatibility, preference, or safety of
+evidence across different rounds.
 
 These direct ingresses are supplemental rather than the node's sole finality
 policy. Exact-current and strictly lower evidence use distinct methods, while
@@ -114,16 +116,17 @@ the complete current-round durable sequence and bounded round progression. The
 node-owned finality journal is therefore the exclusive source of height and
 stop authority for this scope. Only `commit_verified_finality`,
 `commit_current_round_finality`, `commit_lower_round_finality`,
-`commit_candidate_backed_finality`, and the three exact-precommit-batch siblings
-may couple its height capability into the signer. `commit_verified_finality`
-and the separate `commit_candidate_backed_finality_conflict` may instead couple
-an exact anchored selected-sibling stop capability into the signer, while
+`commit_candidate_backed_finality`, and their three height-advancing exact-
+precommit-batch siblings may couple its height capability into the signer.
+`commit_verified_finality` and the separate
+`commit_candidate_backed_finality_conflict` may instead couple an exact anchored
+selected-sibling stop capability into the signer, while
 `commit_current_round_preselection_conflict` and
-`commit_lower_round_preselection_conflict` may couple only the neutral paired-
-preselection stop capability. There is no public mutable-journal or raw signing-
-session escape hatch. A continuation scope is returned only by a complete
-nonterminal outcome; none of the conflict-specific methods has a continuation
-success path.
+`commit_lower_round_preselection_conflict` plus its exact-precommit-batch
+sibling may couple only the neutral paired-preselection stop capability. There
+is no public mutable-journal or raw signing-session escape hatch. A continuation
+scope is returned only by a complete nonterminal outcome; none of the conflict-
+specific methods has a continuation success path.
 
 ## Exact-current-round admission
 
@@ -251,6 +254,22 @@ sequence. The finality journal independently rechecks the shared parent,
 position, distinct values and roots, and canonical root order. Success returns
 only `FinalityStopped`, never a selected child, branch, or continuation scope.
 
+`commit_lower_round_preselection_conflict_vote_batches` is the explicitly
+routed exact-batch sibling. One shared `FixedValidatorNodeFinalityRoundRouteV0`
+names the sole evidence round and inclusive caller-local ceiling for the whole
+operation. After the same node-coherence and persisted-ceiling preflight, the
+method rejects a route that is not strictly below the signer or exceeds the
+caller ceiling before proposal decoding or vote work, derives that one typed
+round once, and independently admits both complete proposal/payload/batch
+triples against it. Every vote must authenticate that exact position, precommit
+role, and its own proposal root, and each whole batch passes the unchanged all-
+or-nothing exact quorum constructor. A route, first-side, or second-side
+rejection returns the unchanged scope without a write or reusable verified
+half. Because the one route fixes both authenticated positions, only the two
+sealed transitions enter the same tag-`03`/tag-`0b` neutral halt; the method
+accepts no separate side route and assigns no meaning to cross-round evidence,
+batch order, caller order, or provenance.
+
 ## Candidate-backed exact-batch admission
 
 The candidate-backed exact-batch ingress performs this bounded pre-effect
@@ -339,11 +358,14 @@ exact-current ingresses, they name one unselected direct child and claim no
 selected-value replay or sibling-conflict result.
 
 `commit_lower_round_preselection_conflict` completes both independently bounded
-lower-round admissions and the authenticated-position equality check before
-changing node state. It then uses the same paired finality append, neutral stop
-capability, anchored signer stop, consume-on-failure boundary, and strict-restart
-classification as `commit_current_round_preselection_conflict`. It issues no
-height capability, selects no child, and grants no cross-round interpretation.
+certificate admissions and the authenticated-position equality check before
+changing node state. Its exact-batch sibling instead completes the shared route
+preflight and both independently sealed batch admissions at the one derived
+position before changing state. Both then use the same paired finality append,
+neutral stop capability, anchored signer stop, consume-on-failure boundary, and
+strict-restart classification as `commit_current_round_preselection_conflict`.
+Neither issues a height capability, selects a child, or grants a cross-round
+interpretation.
 
 `commit_candidate_backed_finality` first applies the complete read-only source
 and envelope verification described above. It then commits exactly one new
@@ -390,11 +412,12 @@ typed reason with the unchanged scope before a finality effect exists.
 Lower-round success uses the ordinary `Finalized` result and introduces no
 additional identity, selection rule, or authority source.
 
-A lower-round paired rejection identifies the first or second lower-round
-proof, or the mismatch between their fully authenticated positions, and returns
-the unchanged scope before finality. This diagnostic side or caller order is not
-the journal's canonical witness order. Equal-position success is terminal and
-therefore is not a nonterminal finality selection.
+A lower-round paired rejection identifies shared route metadata, the first or
+second lower-round proof, or the mismatch between independently authenticated
+certificate positions, and returns the unchanged scope before finality. This
+diagnostic route or side and the caller order are not the journal's canonical
+witness order. Equal-position success is terminal and therefore is not a
+nonterminal finality selection.
 
 A candidate-backed child returns `CandidateBackedFinalized` metadata naming
 the exact caller-selected target plus the same authenticated position,
@@ -502,7 +525,8 @@ This coordinator does not define or perform:
   routing, higher-round direct finality ingress beyond the existing
   checkpoint-then-current path, any claim that either direct input is the node's
   sole finality policy, or automatic finality retry;
-- cross-round conflict pairing or interpretation, and signed-vote-batch pairing;
+- cross-round conflict pairing or interpretation, separately routed batch
+  pairing, and driver-, inbox-, or network-owned batch-pair acquisition;
 - candidate discovery, branch discovery, sibling ranking or winner selection,
   signer-relative candidate-round preference, rollback, source mutation, or
   multi-height promotion;
