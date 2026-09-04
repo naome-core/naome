@@ -1165,6 +1165,7 @@ fn candidate_backed_historical_sibling_batch_matches_envelope_terminal_evidence(
     assert_eq!(batch_images, envelope_images);
 }
 
+#[cfg(unix)]
 #[test]
 fn candidate_backed_historical_sibling_halts_anchored_finality_without_mutating_sources() {
     let fixture = Fixture::new();
