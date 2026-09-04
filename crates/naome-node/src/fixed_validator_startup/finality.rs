@@ -16,6 +16,7 @@ use naome_storage::{
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityHaltV0,
     FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
     FixedValidatorVoteSafetyJournalErrorV0, commit_candidate_backed_anchored_finality_conflict_v0,
+    commit_candidate_backed_anchored_finality_conflict_vote_batch_v0,
     commit_candidate_backed_anchored_finality_v0,
 };
 
@@ -1445,6 +1446,47 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
             expected_target,
             canonical_envelope_bytes,
             inclusive_maximum_round,
+        )
+        .map_err(|source| {
+            FixedValidatorNodeFinalityErrorV0::CandidateBackedFinality(Box::new(source))
+        })?;
+        debug_assert_eq!(conflict.target(), expected_target);
+        stop_after_finality_halt(finality, signing_session, conflict.halt())
+    }
+
+    /// Consumes one exact retained candidate and stops on a finalized sibling
+    /// proven by separate proposal-control and signed-precommit-batch inputs.
+    ///
+    /// The caller explicitly supplies the target, evidence round, work ceiling,
+    /// proposal bytes, vote batch, and source stores. The anchored finality owner
+    /// reconstructs the retained selected parent and completely verifies every
+    /// input before its existing deny-only conflict halt may be recorded. Success
+    /// returns only after the matching signer stop is independently anchored.
+    /// Candidate and payload bytes remain unchanged; every outcome consumes the
+    /// scope and grants no target, route, branch, winner, or rollback authority.
+    pub fn commit_candidate_backed_finality_conflict_vote_batch(
+        self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: ArtifactBlockId,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_signed_precommits: &[&[u8]],
+        route: FixedValidatorNodeFinalityRoundRouteV0,
+    ) -> Result<FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeFinalityErrorV0> {
+        let Self {
+            finality,
+            branch: _,
+            signing_session,
+        } = self;
+        let conflict = commit_candidate_backed_anchored_finality_conflict_vote_batch_v0(
+            finality,
+            candidates,
+            payloads,
+            expected_target,
+            canonical_proposal_control_bytes,
+            canonical_signed_precommits,
+            route.evidence_round(),
+            route.inclusive_maximum_round(),
         )
         .map_err(|source| {
             FixedValidatorNodeFinalityErrorV0::CandidateBackedFinality(Box::new(source))

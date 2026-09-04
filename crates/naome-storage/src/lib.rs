@@ -149,8 +149,9 @@ pub use fixed_validator_finality_journal::{
     FixedValidatorFinalityJournalV0, FixedValidatorFinalityRecordV0,
     FixedValidatorFinalityReplayLimitErrorV0, FixedValidatorFinalityReplayLimitV0,
     commit_candidate_backed_anchored_finality_conflict_v0,
+    commit_candidate_backed_anchored_finality_conflict_vote_batch_v0,
     commit_candidate_backed_anchored_finality_v0, commit_candidate_backed_finality_conflict_v0,
-    commit_candidate_backed_finality_v0,
+    commit_candidate_backed_finality_conflict_vote_batch_v0, commit_candidate_backed_finality_v0,
 };
 pub use fixed_validator_vote_safety_journal::{
     FixedValidatorAnchoredRecoveredSigningSessionV0, FixedValidatorAnchoredSignerRecoveryV0,

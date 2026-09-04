@@ -7,7 +7,7 @@
 //! strictly lower-round certificate or exact signed-precommit-batch finality
 //! admission, certificate or exact signed-precommit-batch exact-current and
 //! strictly lower-round paired-preselection halt, and caller-targeted
-//! candidate-backed batch admission;
+//! candidate-backed batch admission plus selected-sibling batch halt;
 //! direct and exact-target fresh-only candidate-store-backed plus exact
 //! retained-value payload-store-backed current-round proposal authoring; direct
 //! plus exact-target candidate- and payload-store-backed proposal vote

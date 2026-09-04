@@ -10,9 +10,10 @@ use naome_chain::{
 };
 use naome_consensus::{
     ActiveAgreementEntry, AgreementWeight, CONSENSUS_KEY_BYTES, ConsensusContextV0,
-    ConsensusGenesisId, ConsensusKey, ConsensusProtocolVersion, ConsensusRound, ConsensusValueV0,
+    ConsensusGenesisId, ConsensusKey, ConsensusPosition, ConsensusProtocolVersion, ConsensusRound,
+    ConsensusValueV0, FixedConsensusPrecommitBatchSealErrorV0,
     OwnedVerifiedFixedConsensusTransitionV0, PrecommitCertificateVerifyError, ProposalSigningRoot,
-    VerifiedProducerAuthorizationV0,
+    QuorumCertificateBuildError, VerifiedFixedConsensusProposalV0, VerifiedProducerAuthorizationV0,
 };
 use naome_foundation::{FOUNDATION_ID, FreeVariable, ZfcAxiom};
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
@@ -164,6 +165,47 @@ fn certificate_bytes(
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&body);
     bytes.extend_from_slice(&1_u16.to_be_bytes());
+    bytes.extend_from_slice(key.as_bytes());
+    bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
+    bytes
+}
+
+fn proposal_control_bytes(
+    value: ConsensusValueV0,
+    position: ConsensusPosition,
+    proposer: &SigningKey,
+) -> Vec<u8> {
+    let mut bytes = value.to_canonical_bytes().to_vec();
+    bytes.extend_from_slice(&authorization_bytes(
+        value.context(),
+        position,
+        value.proposal_signing_root(),
+        proposer,
+    ));
+    bytes.push(VerifiedFixedConsensusProposalV0::NO_VALID_ROUND_PROOF_TAG);
+    bytes
+}
+
+fn signed_precommit_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    root: ProposalSigningRoot,
+    signer: &SigningKey,
+) -> Vec<u8> {
+    let mut body = [0_u8; VOTE_BODY_BYTES];
+    body[0] = 2;
+    body[1..33].copy_from_slice(context.chain_id().as_bytes());
+    body[33..65].copy_from_slice(context.genesis_id().as_bytes());
+    body[65..69].copy_from_slice(&context.protocol_version().value().to_be_bytes());
+    body[69..77].copy_from_slice(&position.height().value().to_be_bytes());
+    body[77..85].copy_from_slice(&position.round().value().to_be_bytes());
+    body[85] = 1;
+    body[86..].copy_from_slice(root.as_bytes());
+    let key = consensus_key(signer);
+    let mut transcript = b"naome:consensus-precommit-signing:v0\0".to_vec();
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(key.as_bytes());
+    let mut bytes = body.to_vec();
     bytes.extend_from_slice(key.as_bytes());
     bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
     bytes
@@ -1017,6 +1059,113 @@ fn candidate_backed_anchored_finality_keeps_the_safe_product_path_composable() {
 }
 
 #[cfg(unix)]
+fn candidate_backed_historical_sibling_terminal_case(
+    label: &str,
+    use_vote_batch: bool,
+) -> (FixedValidatorFinalityHaltV0, [Vec<u8>; 4]) {
+    let fixture = Fixture::new();
+    let finality_directory = TestDirectory::new(&format!("{label}-finality"));
+    let anchor_directory = TestDirectory::new(&format!("{label}-anchor"));
+    let candidate_directory = TestDirectory::new(&format!("{label}-candidates"));
+    let payload_directory = TestDirectory::new(&format!("{label}-payloads"));
+    let mut journal = fixture.create_anchored(&finality_directory, &anchor_directory);
+    let mut candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut payloads = create_payload_store(&payload_directory);
+    let genesis = journal.head().unwrap().clone();
+
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let first = fixture.transition(&genesis, &mut selected, ZfcAxiom::Pairing, 0);
+    let first_block = first.value().artifact_block();
+    let first_payload = first.canonical_artifact_bytes().to_vec();
+
+    let mut sibling_state = ArtifactChainState::new(fixture.definition);
+    let sibling = fixture.transition(&genesis, &mut sibling_state, ZfcAxiom::Union, 2);
+    let sibling_target = sibling.value().artifact_block().id();
+    let sibling_envelope = sibling.canonical_envelope_bytes().to_vec();
+    let sibling_control =
+        proposal_control_bytes(sibling.value(), sibling.position(), &fixture.proposer);
+    let sibling_precommit = signed_precommit_bytes(
+        fixture.context,
+        sibling.position(),
+        sibling.value().proposal_signing_root(),
+        &fixture.proposer,
+    );
+    let sibling_batch = [sibling_precommit.as_slice()];
+    retain_transition_inputs(&mut candidates, &mut payloads, &genesis, &sibling);
+
+    let _ = journal.commit_verified(first).unwrap();
+    selected.apply_block(&first_block, first_payload).unwrap();
+    let second = fixture.transition(
+        journal.head().unwrap(),
+        &mut selected,
+        ZfcAxiom::PowerSet,
+        0,
+    );
+    let _ = journal.commit_verified(second).unwrap();
+    let sources_before = [
+        candidate_image(&candidate_directory),
+        payload_image(&payload_directory),
+    ];
+
+    let conflict = if use_vote_batch {
+        commit_candidate_backed_anchored_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &sibling_control,
+            &sibling_batch,
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        )
+        .unwrap()
+    } else {
+        commit_candidate_backed_anchored_finality_conflict_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &sibling_envelope,
+            ConsensusRound::new(2),
+        )
+        .unwrap()
+    };
+    let halt = conflict.halt();
+    assert_eq!(conflict.target(), sibling_target);
+    assert_eq!(
+        [
+            candidate_image(&candidate_directory),
+            payload_image(&payload_directory),
+        ],
+        sources_before
+    );
+    let images = [
+        fs::read(finality_directory.journal()).unwrap(),
+        fs::read(anchor_directory.finality_anchor()).unwrap(),
+        candidate_image(&candidate_directory),
+        payload_image(&payload_directory),
+    ];
+    drop(journal);
+    let reopened = fixture
+        .open_anchored(&finality_directory, &anchor_directory)
+        .unwrap();
+    assert_eq!(reopened.halt().unwrap(), Some(halt));
+    assert_eq!(reopened.state_id().unwrap(), halt.state_id());
+    (halt, images)
+}
+
+#[cfg(unix)]
+#[test]
+fn candidate_backed_historical_sibling_batch_matches_envelope_terminal_evidence() {
+    let (envelope_halt, envelope_images) =
+        candidate_backed_historical_sibling_terminal_case("candidate-conflict-envelope", false);
+    let (batch_halt, batch_images) =
+        candidate_backed_historical_sibling_terminal_case("candidate-conflict-batch", true);
+    assert_eq!(batch_halt, envelope_halt);
+    assert_eq!(batch_images, envelope_images);
+}
+
+#[cfg(unix)]
 #[test]
 fn candidate_backed_historical_sibling_halts_anchored_finality_without_mutating_sources() {
     let fixture = Fixture::new();
@@ -1170,6 +1319,312 @@ fn candidate_backed_conflict_rejects_nonselected_or_same_values_before_source_re
     );
     assert_eq!(candidate_image(&candidate_directory), candidate_before);
     assert_eq!(payload_image(&payload_directory), payload_before);
+}
+
+#[test]
+fn candidate_backed_conflict_vote_batch_rejects_routes_sources_and_votes_without_finality_write() {
+    let fixture = Fixture::new();
+    let finality_directory = TestDirectory::new("candidate-conflict-batch-rejections-finality");
+    let candidate_directory = TestDirectory::new("candidate-conflict-batch-rejections-candidates");
+    let payload_directory = TestDirectory::new("candidate-conflict-batch-rejections-payloads");
+    let mut journal = fixture.create(&finality_directory);
+    let mut candidates = create_candidate_store(&candidate_directory, fixture.definition);
+    let mut payloads = create_payload_store(&payload_directory);
+    let genesis = journal.head().unwrap().clone();
+    let mut selected = ArtifactChainState::new(fixture.definition);
+    let first = fixture.transition(&genesis, &mut selected, ZfcAxiom::Pairing, 0);
+    let first_target = first.value().artifact_block().id();
+    let first_control = proposal_control_bytes(first.value(), first.position(), &fixture.proposer);
+    let first_block = first.value().artifact_block();
+    let first_payload = first.canonical_artifact_bytes().to_vec();
+    let _ = journal.commit_verified(first).unwrap();
+    selected.apply_block(&first_block, first_payload).unwrap();
+
+    let mut sibling_state = ArtifactChainState::new(fixture.definition);
+    let sibling = fixture.transition(&genesis, &mut sibling_state, ZfcAxiom::Union, 2);
+    let sibling_block = sibling.value().artifact_block();
+    let sibling_target = sibling_block.id();
+    let sibling_control =
+        proposal_control_bytes(sibling.value(), sibling.position(), &fixture.proposer);
+    let sibling_precommit = signed_precommit_bytes(
+        fixture.context,
+        sibling.position(),
+        sibling.value().proposal_signing_root(),
+        &fixture.proposer,
+    );
+    let sibling_batch = [sibling_precommit.as_slice()];
+    let journal_before = fs::read(finality_directory.journal()).unwrap();
+    let state_before = journal.state_id().unwrap();
+    let empty_sources = [
+        candidate_image(&candidate_directory),
+        payload_image(&payload_directory),
+    ];
+
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &[0_u8],
+            &[],
+            ConsensusRound::new(10),
+            ConsensusRound::new(9),
+        ),
+        Err(
+            CandidateBackedFinalityErrorV0::RoundWorkLimitExceedsJournal {
+                requested: 9,
+                journal: 8
+            }
+        )
+    ));
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &[0_u8],
+            &[],
+            ConsensusRound::new(2),
+            ConsensusRound::new(1),
+        ),
+        Err(CandidateBackedFinalityErrorV0::EvidenceRoundWorkLimitExceeded {
+            required,
+            maximum
+        }) if required == ConsensusRound::new(2) && maximum == ConsensusRound::new(1)
+    ));
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            first_target,
+            &sibling_control,
+            &[],
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        ),
+        Err(CandidateBackedFinalityErrorV0::ProposalTargetMismatch {
+            expected,
+            actual
+        }) if expected == first_target && actual == sibling_target
+    ));
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            first_target,
+            &first_control,
+            &[],
+            ConsensusRound::new(0),
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::SelectedValueNotDistinct { height })
+            if height == ConsensusHeight::new(1)
+    ));
+    let next = fixture.transition(
+        journal.head().unwrap(),
+        &mut selected,
+        ZfcAxiom::PowerSet,
+        0,
+    );
+    let next_control = proposal_control_bytes(next.value(), next.position(), &fixture.proposer);
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            next.value().artifact_block().id(),
+            &next_control,
+            &[],
+            ConsensusRound::new(0),
+            ConsensusRound::new(0),
+        ),
+        Err(CandidateBackedFinalityErrorV0::SelectedHeightUnavailable { height })
+            if height == ConsensusHeight::new(2)
+    ));
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &sibling_control,
+            &sibling_batch,
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        ),
+        Err(CandidateBackedFinalityErrorV0::CandidateUnavailable { target })
+            if target == sibling_target
+    ));
+    assert_eq!(
+        [
+            candidate_image(&candidate_directory),
+            payload_image(&payload_directory),
+        ],
+        empty_sources
+    );
+
+    let _ = candidates.insert(&sibling_block).unwrap();
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &sibling_control,
+            &sibling_batch,
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        ),
+        Err(CandidateBackedFinalityErrorV0::PayloadUnavailable { artifact_id })
+            if artifact_id == sibling_block.artifact_id()
+    ));
+    let _ = payloads
+        .validate_and_insert_branch_payload(
+            genesis.artifact_snapshot(),
+            &sibling_block,
+            sibling.canonical_artifact_bytes().to_vec(),
+        )
+        .unwrap();
+    let complete_sources = [
+        candidate_image(&candidate_directory),
+        payload_image(&payload_directory),
+    ];
+
+    let mut invalid_proposal = sibling_control.clone();
+    *invalid_proposal.last_mut().unwrap() ^= 0xff;
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &invalid_proposal,
+            &[],
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        ),
+        Err(CandidateBackedFinalityErrorV0::Proposal(_))
+    ));
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &sibling_control,
+            &[],
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        ),
+        Err(CandidateBackedFinalityErrorV0::PrecommitBatch(
+            FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                QuorumCertificateBuildError::EmptyVoteBatch
+            )
+        ))
+    ));
+    let duplicate_batch = [sibling_precommit.as_slice(), sibling_precommit.as_slice()];
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &sibling_control,
+            &duplicate_batch,
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        ),
+        Err(CandidateBackedFinalityErrorV0::PrecommitBatch(
+            FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                QuorumCertificateBuildError::DuplicateSigner { .. }
+            )
+        ))
+    ));
+    let inactive = signing_key(2);
+    let inactive_precommit = signed_precommit_bytes(
+        fixture.context,
+        sibling.position(),
+        sibling.value().proposal_signing_root(),
+        &inactive,
+    );
+    let inactive_batch = [inactive_precommit.as_slice()];
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &sibling_control,
+            &inactive_batch,
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        ),
+        Err(CandidateBackedFinalityErrorV0::PrecommitBatch(
+            FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                QuorumCertificateBuildError::UnknownSigner { .. }
+            )
+        ))
+    ));
+    let mut invalid_precommit = sibling_precommit.clone();
+    *invalid_precommit.last_mut().unwrap() ^= 0xff;
+    let invalid_batch = [invalid_precommit.as_slice()];
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &sibling_control,
+            &invalid_batch,
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        ),
+        Err(CandidateBackedFinalityErrorV0::PrecommitBatch(
+            FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                QuorumCertificateBuildError::Vote { .. }
+            )
+        ))
+    ));
+    let wrong_round_precommit = signed_precommit_bytes(
+        fixture.context,
+        ConsensusPosition::new(sibling.position().height(), ConsensusRound::new(1)),
+        sibling.value().proposal_signing_root(),
+        &fixture.proposer,
+    );
+    let wrong_round_batch = [wrong_round_precommit.as_slice()];
+    assert!(matches!(
+        commit_candidate_backed_finality_conflict_vote_batch_v0(
+            &mut journal,
+            &mut candidates,
+            &mut payloads,
+            sibling_target,
+            &sibling_control,
+            &wrong_round_batch,
+            ConsensusRound::new(2),
+            ConsensusRound::new(2),
+        ),
+        Err(CandidateBackedFinalityErrorV0::PrecommitBatch(
+            FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                QuorumCertificateBuildError::PositionMismatch { .. }
+            )
+        ))
+    ));
+    assert_eq!(journal.state_id().unwrap(), state_before);
+    assert_eq!(
+        fs::read(finality_directory.journal()).unwrap(),
+        journal_before
+    );
+    assert_eq!(
+        [
+            candidate_image(&candidate_directory),
+            payload_image(&payload_directory),
+        ],
+        complete_sources
+    );
 }
 
 #[test]
