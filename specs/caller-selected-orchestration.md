@@ -596,6 +596,53 @@ non-Unix claim. It adds no proposal or vote transport, self-delivery, scheduling
 retry, acknowledgement, peer or target selection, operation-bearing block, or
 dynamic-validator policy.
 
+### Driver-held historical-conflict acquisition composition
+
+One separate explicit caller-owned composition may use the same live driver's
+sealed `selected_artifact_history` borrow to acquire one exact sibling at an
+already selected positive height. The caller chooses the exact retained
+historical parent anchor, sibling target, configured block peer, configured
+payload peer, candidate and Foundation payload stores, positive reconstruction
+limit, complete proposal-control bytes, exact signed-precommit batch, evidence
+round, and invocation time. The historical-anchor ancestry fill first obtains
+only the exact structurally continuous candidate path to that replay-retained
+anchor. The separately started branch-payload fill then captures the applicable
+selected artifact snapshot and completely validates and archives every required
+payload. Neither successful phase supplies a proposal, vote, validity, or
+finality token to the next phase.
+
+The shared selected-history borrow ends before the driver can be consumed. Any
+pending arm or vote-publication command must then transfer before the terminal
+attempt may inspect the route, evidence, or source stores. After that custody
+gate, the existing
+`commit_candidate_backed_finality_conflict_vote_batch` method integrity-reads
+the exact acquired target and payload and repeats complete branch-relative
+proposal, producer, artifact transition, positioned fixed-set, and
+strict-supermajority batch verification against the replay-retained selected
+parent. Only the resulting owned sibling proof may enter the existing anchored
+selected-sibling halt and signer-stop sequence. Success returns only their exact
+paired terminal evidence, no driver, signing scope, selected branch, or winner.
+
+Candidate acquisition may durably add exact entries only to the caller-routed
+candidate store, and payload reconstruction may durably add exact validated
+entries only to the caller-routed archive. The later terminal attempt changes
+neither completed source image. A malformed or insufficient terminal batch
+after successful acquisition grants no finality or signer effect, consumes the
+driver under its existing terminal-call contract, and leaves strict anchored
+restart as the only continuation classifier. The two fills are not one atomic
+operation with each other or with either authority pair.
+
+The authenticated immediate peer, correlated response, caller-selected target
+and anchor, network completion, and store presence establish no provenance,
+truth, availability, cached validity, preference, selection, rollback, or
+finality authority. This composition adds no automatic target, anchor, peer,
+proposal, or vote acquisition; fallback or retry policy; consensus-message
+transport; inbox or durable acquisition intent; background scheduling,
+acknowledgement, daemon, or production runtime; dynamic validators; repair; or
+cross-store atomicity. Its Unix two-peer reference vector is local library
+runtime evidence only, not production liveness, multi-validator consensus, or a
+non-Unix guarantee.
+
 ## Sequential ancestry import
 
 `ArtifactBlockAncestryImport` consumes one completed unselected ancestry so the
