@@ -78,17 +78,25 @@ Unsupported bundles must be re-exported from supported local stores.
 
 ## Current-head export
 
-`ArtifactChainJournal::export_candidate_branch_recovery_bundle_v0` accepts one
-exact target, the selected journal, a caller-routed candidate store with the same
-`ArtifactChainId`, a caller-routed Foundation-scoped payload archive, and one
-limit value.
+`export_candidate_branch_recovery_bundle_v0` accepts one sealed read-only
+`SelectedArtifactHistory`, one exact caller-selected target, a caller-routed
+candidate store with the same `ArtifactChainId`, a caller-routed Foundation-scoped
+payload archive, and one limit value. The history may belong to an artifact-only
+journal, a raw or anchored fixed-validator finality journal, or the same shared
+projection borrowed from a live driver. No concrete or mutable finality owner
+is exposed. `ArtifactChainJournal::export_candidate_branch_recovery_bundle_v0`
+delegates to this entry point and preserves its existing error variants.
 
-It captures the healthy journal's exact current head and root, rejects a selected
-target, and integrity-walks the retained candidate path backward to that head
-within `max_blocks`. Missing candidates, repetition, broken parent or root
-continuity, or encountering virtual genesis or selected history before the exact
-captured head fail. Store integrity failures keep the existing poison-and-reopen
-rules.
+The immutable chain identities are compared before an operable selected-state
+read. Export then captures the healthy, non-halted history's exact current head
+and replay-verified artifact snapshot, rejects every selected target including
+virtual genesis, and integrity-walks the retained candidate path backward to
+that head within `max_blocks`. Missing candidates, repetition, broken parent or
+root continuity, or encountering virtual genesis or selected history before the
+exact captured head fail. Terminal halt and poison return the selected-history
+error before either source's entry reads; a foreign candidate chain still fails
+first. Store integrity failures keep the existing poison-and-reopen rules and
+affect only the failed source handle.
 
 In forward order, export integrity-reads each exact archived payload, applies the
 payload and complete-byte bounds before retaining it, and repeats the full
@@ -97,9 +105,15 @@ immutable branch validation defined by
 identity, dependencies, mathematics, novelty, parent, and roots.
 
 Only complete validation may publish one owned canonical bundle. Failure returns
-no bundle or partial validation result. Export does not mutate the journal,
-candidate store, or payload archive; caller-managed transport and durable file
-placement remain outside this contract.
+no bundle or partial validation result. Export does not write any source or
+change selected history, its state identity, head, root, finalized length, halt
+diagnostics, or an anchored owner's external anchor. Equal selected artifact
+history and exact source contents yield the same canonical V0 bytes regardless
+of the selected-history owner; finality envelopes, votes, certificates, and
+external anchors are not encoded. Caller-managed transport and durable file
+placement remain outside this contract. This entry point does not add a
+selected-prefix export, selected-history backup, selected-state import,
+selection, cached validity, or finality authority.
 
 ## Virtual-genesis candidate-only export
 

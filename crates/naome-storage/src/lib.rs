@@ -126,6 +126,7 @@ pub use candidate_branch_recovery_bundle::{
     CandidateBranchRecoveryBundleExportError, CandidateBranchRecoveryBundleImportError,
     CandidateBranchRecoveryBundleImportOutcome, CandidateBranchRecoveryBundleLimits,
     CandidateBranchRecoveryBundleLimitsError, CandidateBranchRecoveryBundleV0,
+    export_candidate_branch_recovery_bundle_v0,
 };
 
 pub use candidate_branch_recovery_staging::{

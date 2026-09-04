@@ -26,6 +26,9 @@ use crate::{
     CandidateBranchReconstructionLimits, CanonicalArtifactPayloadStore,
 };
 
+#[cfg(unix)]
+mod recovery_bundle_export;
+
 const AUTHORIZATION_BODY_BYTES: usize = 116;
 const VOTE_BODY_BYTES: usize = 118;
 static DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);

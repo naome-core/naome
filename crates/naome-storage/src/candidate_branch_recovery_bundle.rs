@@ -16,7 +16,7 @@ use crate::candidate_branch_reconstruction::{
 use crate::{
     ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError, ArtifactChainJournal,
     ArtifactChainJournalError, CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError,
-    JournalCore, StoreIo,
+    JournalCore, SelectedArtifactHistory, SelectedArtifactHistoryError, StoreIo,
 };
 
 const BUNDLE_HEADER: &[u8] = b"naome:candidate-branch-recovery-bundle:v0\0";
@@ -619,6 +619,78 @@ impl Error for CandidateBranchRecoveryBundleDecodeError {
     }
 }
 
+/// Exports one exact current-head candidate extension from sealed selected history.
+///
+/// The immutable chain context is checked before selected-state health. A healthy,
+/// non-halted artifact or finality journal supplies the exact current anchor; all
+/// candidate blocks and archived payloads are bounded, integrity-read, and fully
+/// validated before canonical bytes are returned. This read-only operation grants
+/// no selection or finality authority and chooses no target or transport.
+pub fn export_candidate_branch_recovery_bundle_v0(
+    selected: &dyn SelectedArtifactHistory,
+    target_block_id: ArtifactBlockId,
+    candidates: &mut ArtifactBlockCandidateStore,
+    payloads: &mut CanonicalArtifactPayloadStore,
+    limits: CandidateBranchRecoveryBundleLimits,
+) -> Result<CandidateBranchRecoveryBundleV0, CandidateBranchRecoveryBundleExportError> {
+    let selected_chain_id = selected.selected_chain_id();
+    if selected_chain_id != candidates.chain_id() {
+        return Err(CandidateBranchRecoveryBundleExportError::ChainIdMismatch {
+            selected: selected_chain_id,
+            candidates: candidates.chain_id(),
+        });
+    }
+
+    let anchor_block_id = selected
+        .selected_head_block_id()
+        .map_err(CandidateBranchRecoveryBundleExportError::selected_history_state)?;
+    let anchor_snapshot = selected
+        .selected_branch_snapshot_at(anchor_block_id)
+        .map_err(CandidateBranchRecoveryBundleExportError::selected_history_state)?
+        .expect("a healthy current selected head retains its exact snapshot");
+
+    let path = collect_candidate_branch_path(
+        target_block_id,
+        candidates,
+        limits.max_blocks,
+        CandidateBranchPathAnchor::ExactSelected {
+            block_id: anchor_block_id,
+            snapshot: anchor_snapshot,
+        },
+        |block_id| selected.selected_branch_snapshot_at(block_id),
+    )
+    .map_err(|error| {
+        CandidateBranchRecoveryBundleExportError::from_path(
+            error,
+            CandidateBranchRecoveryBundleExportError::selected_history_state,
+        )
+    })?;
+    debug_assert_eq!(path.anchor_block_id, anchor_block_id);
+    let block_count = path.blocks.len();
+    let mut entries = Vec::new();
+    entries.try_reserve_exact(block_count).map_err(|_| {
+        CandidateBranchRecoveryBundleExportError::EntryAllocation {
+            entries: block_count,
+        }
+    })?;
+    entries.extend(path.blocks.into_iter().map(|block| BundleExportEntry {
+        block,
+        payload: BundleExportPayload::Archive,
+        payload_len: 0,
+    }));
+
+    encode_recovery_bundle(
+        BundleExportContext {
+            chain_id: selected_chain_id,
+            target_block_id,
+            snapshot: path.snapshot,
+        },
+        entries,
+        payloads,
+        limits,
+    )
+}
+
 impl ArtifactChainJournal {
     fn recovery_bundle_chain_id(
         &self,
@@ -647,48 +719,10 @@ impl ArtifactChainJournal {
         payloads: &mut CanonicalArtifactPayloadStore,
         limits: CandidateBranchRecoveryBundleLimits,
     ) -> Result<CandidateBranchRecoveryBundleV0, CandidateBranchRecoveryBundleExportError> {
-        let selected_chain_id = self.recovery_bundle_chain_id(candidates)?;
-
-        let anchor_block_id = self
-            .head_block_id()
-            .map_err(CandidateBranchRecoveryBundleExportError::selected_state)?;
-        let anchor_snapshot = self
-            .branch_snapshot_at(anchor_block_id)
-            .map_err(CandidateBranchRecoveryBundleExportError::selected_state)?
-            .expect("a healthy current selected head retains its exact snapshot");
-
-        let path = collect_candidate_branch_path(
+        export_candidate_branch_recovery_bundle_v0(
+            self,
             target_block_id,
             candidates,
-            limits.max_blocks,
-            CandidateBranchPathAnchor::ExactSelected {
-                block_id: anchor_block_id,
-                snapshot: anchor_snapshot,
-            },
-            |block_id| self.branch_snapshot_at(block_id),
-        )
-        .map_err(CandidateBranchRecoveryBundleExportError::from_path)?;
-        debug_assert_eq!(path.anchor_block_id, anchor_block_id);
-        let block_count = path.blocks.len();
-        let mut entries = Vec::new();
-        entries.try_reserve_exact(block_count).map_err(|_| {
-            CandidateBranchRecoveryBundleExportError::EntryAllocation {
-                entries: block_count,
-            }
-        })?;
-        entries.extend(path.blocks.into_iter().map(|block| BundleExportEntry {
-            block,
-            payload: BundleExportPayload::Archive,
-            payload_len: 0,
-        }));
-
-        encode_recovery_bundle(
-            BundleExportContext {
-                chain_id: selected_chain_id,
-                target_block_id,
-                snapshot: path.snapshot,
-            },
-            entries,
             payloads,
             limits,
         )
@@ -721,7 +755,12 @@ impl ArtifactChainJournal {
             CandidateBranchPathAnchor::NearestSelected,
             |block_id| self.branch_snapshot_at(block_id),
         )
-        .map_err(CandidateBranchRecoveryBundleExportError::from_path)?;
+        .map_err(|error| {
+            CandidateBranchRecoveryBundleExportError::from_path(
+                error,
+                CandidateBranchRecoveryBundleExportError::selected_state,
+            )
+        })?;
         let candidate_block_count = path.blocks.len();
         let max_selected_block_count = limits.max_blocks - candidate_block_count;
         let mut next_selected_block_id = path.anchor_block_id;
@@ -1035,6 +1074,10 @@ pub enum CandidateBranchRecoveryBundleExportError {
     SelectedState {
         source: Box<ArtifactChainJournalError>,
     },
+    /// A finality-backed selected history denied a required read.
+    SelectedHistoryState {
+        source: Box<SelectedArtifactHistoryError>,
+    },
     /// The exact caller target is already selected.
     TargetAlreadySelected { block_id: ArtifactBlockId },
     /// Reserving bounded candidate-suffix metadata failed.
@@ -1131,9 +1174,20 @@ impl CandidateBranchRecoveryBundleExportError {
         }
     }
 
-    fn from_path(error: CandidateBranchPathError<ArtifactChainJournalError>) -> Self {
+    fn selected_history_state(source: SelectedArtifactHistoryError) -> Self {
+        match source {
+            SelectedArtifactHistoryError::ArtifactChainJournal { source } => {
+                Self::SelectedState { source }
+            }
+            source => Self::SelectedHistoryState {
+                source: Box::new(source),
+            },
+        }
+    }
+
+    fn from_path<E>(error: CandidateBranchPathError<E>, selected_error: fn(E) -> Self) -> Self {
         match error {
-            CandidateBranchPathError::SelectedState { source } => Self::SelectedState { source },
+            CandidateBranchPathError::SelectedState { source } => selected_error(*source),
             CandidateBranchPathError::TargetAlreadySelected { block_id } => {
                 Self::TargetAlreadySelected { block_id }
             }
@@ -1193,6 +1247,10 @@ impl fmt::Display for CandidateBranchRecoveryBundleExportError {
             Self::SelectedState { source } => write!(
                 formatter,
                 "candidate recovery bundle cannot use selected state: {source}"
+            ),
+            Self::SelectedHistoryState { source } => write!(
+                formatter,
+                "candidate recovery bundle cannot use selected history: {source}"
             ),
             Self::TargetAlreadySelected { block_id } => write!(
                 formatter,
@@ -1327,6 +1385,7 @@ impl Error for CandidateBranchRecoveryBundleExportError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::SelectedState { source } => Some(source.as_ref()),
+            Self::SelectedHistoryState { source } => Some(source.as_ref()),
             Self::CandidateStoreRead { source, .. } => Some(source.as_ref()),
             Self::PayloadStoreRead { source, .. } => Some(source.as_ref()),
             Self::BlockValidation { source, .. } => Some(source.as_ref()),
