@@ -90,7 +90,7 @@ platform requirement are defined by `fixed-validator-external-anchor-v0.md`.
 
 ## Record framing
 
-Each committed record is:
+Each committed single-transition record is:
 
 ```text
 body_length_u32_be[4]
@@ -108,6 +108,39 @@ but not its own four bytes or the 32-byte footer. It is in
 `714..=4,219,498`; a complete framed record occupies `750..=4,219,534` bytes.
 The envelope and payload are the exact canonical bytes retained by the sealed
 verified transition. Both finalized and halt records retain both byte strings.
+
+The additive paired-preselection terminal record is:
+
+```text
+body_length_u32_be[4]
+record_tag_u8[1]                 # 03 paired preselection halt
+shared_round_u64_be[8]
+first_envelope_length_u32_be[4]
+first_payload_length_u32_be[4]
+second_envelope_length_u32_be[4]
+second_payload_length_u32_be[4]
+first_canonical_envelope[696..=25,176]
+first_canonical_artifact_payload[1..=4,194,305]
+second_canonical_envelope[696..=25,176]
+second_canonical_artifact_payload[1..=4,194,305]
+FixedValidatorFinalityJournalStateIdV0[32]
+```
+
+Its `body_length` covers the 25-byte fixed body header and both exact envelope
+and payload pairs. It is in `1,419..=8,438,987`; a complete framed record
+occupies `1,455..=8,439,023` bytes. All four component lengths are checked with
+bounded arithmetic before their slices are interpreted, and they must consume
+the body exactly. The two transitions share one round because both must occupy
+the same exact position. Height, parent, context, fixed set, proposal roots,
+ancestry identities, and envelope identities remain derived from the fully
+verified canonical inputs and journal header; the tag itself fixes the count at
+exactly two.
+
+The first and second pairs are strictly ordered by ascending
+`ProposalSigningRoot`. This order is only canonical serialization. It grants no
+selection, winner, priority, validity, or evidence-completeness authority.
+Readers that implement only tags `01` and `02` reject tag `03` rather than
+reinterpreting either embedded transition as a finalized prefix.
 
 Every field and trailing byte of every complete record is checked during replay.
 At most one incomplete final frame is handled only by the anchored recovery rule
@@ -388,6 +421,51 @@ halt, retained history, or external anchor. Content-equivalent replayed finality
 histories remain valid semantic sources; unique directory, device, evidence
 variant, and chronology provenance are not inferred.
 
+## Paired preselection conflict halt
+
+`FixedValidatorAnchoredFinalityJournalV0` may consume exactly two sealed owned
+transitions through its paired-preselection halt operation. Before any write it
+requires a healthy operable journal, rounds at or below the persisted ceiling,
+the same exact position and retained unselected direct parent, distinct exact
+values and proposal signing roots, and complete independent verification of
+both transitions. It canonicalizes the pair by ascending proposal signing root
+and rejects an already selected, nonconsecutive, same-root, same-value,
+cross-position, or cross-parent pair.
+
+The operation appends and synchronizes one complete tag-`03` body and its one
+chained footer, then advances the independent finality anchor exactly once from
+sequence `N` to `N + 1`. Only after the anchor replacement and parent-directory
+synchronization succeed does it publish a terminal halt. An append or anchor
+failure poisons the live pair and returns both envelope identities plus the
+proposed state identity only as ambiguity diagnostics. Strict reopen alone
+classifies the durable prefix.
+
+Neither transition is added to the selected branch vector, first-finality
+records, artifact-snapshot index, or signer-height lineage. No intermediate
+state identity exists between the two embedded transitions, and neither raw nor
+anchored replay can expose one as an operable head. The halt summary identifies
+its `Preselection` kind, positive height, canonical first and second ancestry
+and envelope identities, and final state identity. Those identities are
+diagnostic witnesses only; “first” and “second” never mean selected and
+conflicting.
+
+Replay derives one typed round from the current selected parent and the shared
+round field, fully decodes and verifies both canonical envelope/payload pairs
+against it, requires the exact next unselected height, distinct values and
+roots, and strict canonical root order, and then enters the same terminal
+operability state without installing either child. Any complete record after
+either terminal-halt kind fails closed.
+
+The existing exact-anchor signer-stop capability carries the halt kind and
+neutral pair without exposing either branch. A vote-safety journal records a
+preselection halt with its distinct tag `0b`; legacy selected-sibling halts
+continue to use tag `05`. The two terminal kinds are never interchangeable for
+idempotence.
+
+This operation does not claim exhaustive network observation, proof that no
+other root exists, peer or arrival preference, automatic evidence acquisition,
+rollback, reorganization, recovery, or fleet-wide signer coordination.
+
 ## Evidence variants and terminal conflict
 
 If a later sealed transition at an already selected height carries the exact
@@ -424,7 +502,8 @@ the operable chain.
 
 The anchored wrapper's `acknowledge_signer_stop()` accepts no caller identity;
 the halt frame and exact terminal anchor replacement must both have synchronized
-before `commit_verified` could have published the halt used by that method.
+before the applicable single-transition or paired terminal commit operation
+could have published the halt used by that method.
 
 ## Strict operational reopen
 
@@ -433,11 +512,13 @@ agreement entries, local round ceiling, and an exact separately trusted
 expected `FixedValidatorFinalityJournalStateIdV0`. There is no unverified or
 disk-self-authorizing operational open.
 
-Replay validates the exact header, bounded framing, chained footer, canonical
-envelope and payload, direct selected-parent sequence, fixed proposer state,
-first-value retention, conflict-halt terminality, and end of file. It returns a
-handle only if the final recomputed state ID equals the separately supplied
-expected ID. A complete mismatch or corruption exposes no state.
+Replay validates the exact header, tag-specific bounded framing, chained footer,
+every canonical envelope and payload, direct selected-parent sequence, fixed
+proposer state, first-value retention, both terminal-halt kinds, paired root
+order, and end of file. It returns a handle only if the final recomputed state
+ID equals the separately supplied expected ID. A complete mismatch or
+corruption exposes no state. A complete tag-`03` frame is one state step and
+cannot be reopened at an identity that exposes only one embedded transition.
 
 Because a successful strict reopen already proves equality to the separately
 supplied expected identity, the caller may acknowledge that exact current

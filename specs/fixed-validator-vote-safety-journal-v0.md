@@ -189,22 +189,26 @@ finality provenance, or cross-journal atomicity.
 
 ## Explicit proof-backed finality-conflict stop
 
-After a finality journal durably records distinct finalized siblings and the
-caller separately anchors its exact terminal state identity,
+After a finality journal durably records either a selected-sibling conflict or
+a neutral paired-preselection conflict and the caller separately anchors its
+exact terminal state identity,
 `acknowledge_signer_stop_is_externally_durable` may issue one non-clone
 `FixedValidatorDurableFinalityConflictV0`. Private fields bind the still-live
 halted journal, exact consensus context and fixed set, conflict height, both
-ancestry and envelope identities, and exact terminal finality state. The public
-copyable halt summary and raw constructible state IDs are diagnostics and cannot
-substitute for this capability.
+ancestry and envelope identities, halt kind, and exact terminal finality state.
+The public copyable halt summary and raw constructible state IDs are diagnostics
+and cannot substitute for this capability.
 
 The caller must explicitly consume one capability into every local signer that
 must stop. `stop_after_durable_finality_conflict` accepts it on either the
 key-owning journal or its already-issued live session, requires exact context and
-fixed-set equality, and appends and synchronizes a terminal `0x05` record before
-publishing the stop. The conflict applies at any height to every signer in that
-fixed set; the destination does not compare it with one signer height or bind it
-to one key. Equivalent strictly verified finality histories may supply the same
+fixed-set equality. A selected-sibling halt appends and synchronizes terminal
+tag `0x05`; a neutral paired-preselection halt appends and synchronizes terminal
+tag `0x0b`. Both use the same fixed-width evidence-address fields, but their
+distinct tags and halt kinds are never interchangeable for replay or exact-repeat
+idempotence. The conflict applies at any height to every signer in that fixed
+set; the destination does not compare it with one signer height or bind it to
+one key. Equivalent strictly verified finality histories may supply the same
 semantic authority. The handoff selects neither sibling and grants no rollback,
 fork-choice, peer, path, or device provenance authority.
 
@@ -471,17 +475,19 @@ The first body byte is the record tag and has exactly these meanings:
 | `0x02` | one exact canonical signed vote `[214]` | completed signature for the immediately pending prepared intent |
 | `0x03` | one exact canonical `FixedValidatorVoteIntentV0` | observed non-identical intent for an already retained vote slot; terminal local halt |
 | `0x04` | `signing_height_u64_be[8] || SigningLineageIdV0[32]` | exact initial or sequential child signing-lineage binding |
-| `0x05` | `finality_state_id[32] || conflict_height_u64_be[8] || selected_ancestry[32] || selected_envelope[32] || conflicting_ancestry[32] || conflicting_envelope[32]` | terminal local signer stop transferred from one exact externally anchored finality conflict |
+| `0x05` | `finality_state_id[32] || conflict_height_u64_be[8] || selected_ancestry[32] || selected_envelope[32] || conflicting_ancestry[32] || conflicting_envelope[32]` | terminal local signer stop transferred from one exact externally anchored selected-sibling finality conflict |
 | `0x06` | one exact canonical higher-round checkpoint `[606..=50,370]` | externally anchorable phase-only higher-round state |
 | `0x07` | positive proposal replay limit as `u64` big-endian | one-time proposal-authoring activation |
 | `0x08` | one exact canonical proposal intent `[629..=25,913]` | prepared complete Proposal-phase state and producer intent |
 | `0x09` | one exact producer authorization `[212]` | completed producer signature for the immediately pending proposal intent |
 | `0x0a` | one non-identical canonical proposal intent `[629..=25,913]` | terminal local halt for an occupied proposal position |
+| `0x0b` | `finality_state_id[32] || positive_conflict_height_u64_be[8] || first_ancestry[32] || first_envelope[32] || second_ancestry[32] || second_envelope[32]` | terminal local signer stop transferred from one exact externally anchored neutral paired-preselection halt |
 
 A completion body is exactly 215 bytes and its complete frame is 251 bytes.
 One signing-lineage body is exactly 41 bytes and its complete frame is 77 bytes.
-One finality-conflict stop body is exactly 169 bytes and its complete frame is
-205 bytes.
+Each selected-sibling or neutral paired-preselection finality-conflict stop body
+is exactly 169 bytes and its complete frame is 205 bytes. Equal-width tags
+retain distinct semantics and exact-repeat identities.
 Prepare and halt bodies are 392..=25,676 bytes and their complete frames are
 428..=25,712 bytes. Higher-round checkpoint bodies are 607..=50,371 bytes and
 their complete frames are 643..=50,407 bytes. Proposal activation body/frame is
@@ -571,15 +577,15 @@ previously completed slot. Replay rejects it while the other message kind or a
 different slot of the same kind is pending, preserving the live serial
 boundary.
 
-A finality-conflict stop is the sole record that may intentionally preempt an
-unrelated pending preparation. A same-slot conflict halt may instead follow
-only the matching pending proposal or vote. The finality stop's positive
-conflict height and exact fixed width are validated under the context and fixed
-set already bound by the journal header; the compact record is a durable
-enforcement and audit marker, not an independent reverification of both full
-finality envelopes. It invalidates any held live prepare, height, or higher-
-round authority and consumes no prepared-vote capacity. No record may follow
-it.
+A tag-`05` or tag-`0b` finality-conflict stop is the sole record that may
+intentionally preempt an unrelated pending preparation. A same-slot conflict
+halt may instead follow only the matching pending proposal or vote. The
+finality stop's kind, positive conflict height, and exact fixed width are
+validated under the context and fixed set already bound by the journal header;
+the compact record is a durable enforcement and audit marker, not an independent
+reverification of either full finality proof. It invalidates any held live
+prepare, height, or higher-round authority and consumes no prepared-vote
+capacity. No record may follow it.
 
 A completion is valid only when strict verification proves that its signer,
 context, position, role, target, and transcript exactly match the one pending
@@ -630,8 +636,9 @@ The resulting identity is stored as the record's 32-byte footer and becomes the
 prior identity for the next record. The footer is excluded from its own
 preimage. An exact repeated proposal activation, byte-identical idempotent
 preparation, completed proposal or vote replay, exact current-lineage binding,
-or exact repeated finality-conflict stop writes no record and leaves the state
-identity unchanged.
+or exact repeated same-kind finality-conflict stop writes no record and leaves
+the state identity unchanged. Equal fields under the other finality-stop tag are
+not interchangeable.
 
 This unkeyed digest detects history changes relative to an independently
 trusted expected identity; it is not a secret authenticator and cannot make the
@@ -924,8 +931,9 @@ current binding. For a legacy completed history, the supplied typed round must
 strictly replay its latest completed intent and the first binding height must
 equal that latest vote height. After the first lineage record, every later
 binding is sequential and the legacy no-lineage path is permanently closed.
-The additive `0x05` stop, `0x06` higher-round checkpoint, and `0x07` through
-`0x0a` proposal records are likewise readable by the current decoder but
+The additive `0x05` selected-sibling stop, `0x06` higher-round checkpoint,
+`0x07` through `0x0a` proposal records, and `0x0b` neutral paired-preselection
+stop are likewise readable by the current decoder but
 intentionally rejected by older binaries that do not recognize them. A healthy
 older journal must append and anchor `0x07` before any current implementation
 session or recovery issuance. Older binaries are not forward compatible with
