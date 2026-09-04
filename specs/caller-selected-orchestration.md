@@ -561,6 +561,41 @@ validators, or choose timeout, scheduling, custody, key-loading, retry, or
 production-runtime policy. Those remain separate component and product
 boundaries.
 
+### Driver-held selected-history composition
+
+A long-lived `FixedValidatorNodeDriverV0` retains the sole signing scope across
+round and height transitions, so it exposes one narrower acquisition capability:
+`selected_artifact_history` borrows only the sealed read-only selected-history
+trait from its anchored finality owner. It does not return the raw scope,
+branch, signing session, concrete journal, or a mutable handle. The reference
+composition retains that shared borrow across both fill phases, so it cannot
+consume the same driver through event admission or `step` until the composition
+returns. The lower-level progress values do not retain the history borrow or
+acquire driver-lifecycle authority. The driver itself does not start or drive
+network work, choose the target or peer, or mutate a candidate or payload store.
+
+After both explicit direct fills complete, the caller may integrity-read the
+exact retained target and its exact archived payload and submit the payload,
+together with separately supplied complete proposal-control bytes, through the
+ordinary `CurrentRoundProposal` event. Store membership and network arrival are
+not admission tokens: the driver fully verifies the raw proposal and payload,
+and tampered acquired bytes are returned as a rejected event without a signer
+write. A successful current proposal produces an anchored prevote only through
+the normal step and publication command. The driver does not self-observe that
+vote; a matching precommit requires the runtime to transfer publication custody,
+transfer the separately pending arm command, and explicitly re-admit the exact
+prevote through `CurrentRoundProposalPrevote` before another step can use the
+unchanged strict-supermajority and anchored precommit path.
+
+The Unix reference vector proves one caller-owned two-peer Noise session can
+complete both fills while the driver retains signing ownership, that selected
+finality and all source stores remain byte-identical throughout voting, and that
+strict restart recovers only the completed Precommit signer state. It is not an
+automatic acquisition loop, production runtime, multi-validator consensus, or
+non-Unix claim. It adds no proposal or vote transport, self-delivery, scheduling,
+retry, acknowledgement, peer or target selection, operation-bearing block, or
+dynamic-validator policy.
+
 ## Sequential ancestry import
 
 `ArtifactBlockAncestryImport` consumes one completed unselected ancestry so the
