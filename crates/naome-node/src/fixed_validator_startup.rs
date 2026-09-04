@@ -72,9 +72,11 @@ pub use driver::{
     FixedValidatorNodeDriverCreateErrorV0, FixedValidatorNodeDriverCurrentFinalityDrainV0,
     FixedValidatorNodeDriverCurrentNilPrecommitDrainV0,
     FixedValidatorNodeDriverCurrentRoundDrainV0, FixedValidatorNodeDriverDrainV0,
-    FixedValidatorNodeDriverEventV0, FixedValidatorNodeDriverStepErrorV0,
-    FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverStepRejectionV0,
-    FixedValidatorNodeDriverV0, FixedValidatorNodePhaseTimeoutV0,
+    FixedValidatorNodeDriverEventV0,
+    FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0,
+    FixedValidatorNodeDriverStepErrorV0, FixedValidatorNodeDriverStepOutcomeV0,
+    FixedValidatorNodeDriverStepRejectionV0, FixedValidatorNodeDriverV0,
+    FixedValidatorNodePhaseTimeoutV0,
 };
 pub use finality::{
     FixedValidatorNodeCandidateBackedFinalityErrorV0,

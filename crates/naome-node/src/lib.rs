@@ -44,7 +44,10 @@
 //! proposal and nil quorums fail closed until current-only drain; current
 //! proposal ambiguity remains round-local, current saturation requires the same
 //! drain, and the driver serializes every anchored vote-publication and timer-
-//! arm command. It deliberately leaves daemon scheduling, networking, timeout
+//! arm command. A separate explicit lower-round paired-conflict submission runs
+//! after command custody regardless of retained current-round evidence, with
+//! full independent verification before the neutral halt and signer stop.
+//! It deliberately leaves daemon scheduling, networking, timeout
 //! measurement and duration, key loading, automatic evidence acquisition,
 //! broader finality routing, and branch-selection policy to later components.
 
@@ -83,14 +86,15 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeDriverCreateErrorV0, FixedValidatorNodeDriverCurrentFinalityDrainV0,
     FixedValidatorNodeDriverCurrentNilPrecommitDrainV0,
     FixedValidatorNodeDriverCurrentRoundDrainV0, FixedValidatorNodeDriverDrainV0,
-    FixedValidatorNodeDriverEventV0, FixedValidatorNodeDriverStepErrorV0,
-    FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverStepRejectionV0,
-    FixedValidatorNodeDriverV0, FixedValidatorNodeFinalityErrorV0,
-    FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalityRoundRouteV0,
-    FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
-    FixedValidatorNodeHigherRoundInboxAccessErrorV0, FixedValidatorNodeHigherRoundInboxDrainItemV0,
-    FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodeHigherRoundInboxLimitsErrorV0,
-    FixedValidatorNodeHigherRoundInboxLimitsV0,
+    FixedValidatorNodeDriverEventV0,
+    FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0,
+    FixedValidatorNodeDriverStepErrorV0, FixedValidatorNodeDriverStepOutcomeV0,
+    FixedValidatorNodeDriverStepRejectionV0, FixedValidatorNodeDriverV0,
+    FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
+    FixedValidatorNodeFinalityRoundRouteV0, FixedValidatorNodeFinalitySelectionV0,
+    FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeHigherRoundInboxAccessErrorV0,
+    FixedValidatorNodeHigherRoundInboxDrainItemV0, FixedValidatorNodeHigherRoundInboxDrainV0,
+    FixedValidatorNodeHigherRoundInboxLimitsErrorV0, FixedValidatorNodeHigherRoundInboxLimitsV0,
     FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0,
     FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0,
     FixedValidatorNodeHigherRoundInboxProposalInsertErrorV0,
