@@ -54,6 +54,7 @@ use super::{
     FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0,
     FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
     FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0,
+    FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeFinalityOutcomeV0,
     FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
     FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodeHigherRoundInboxLimitsV0,
@@ -1197,6 +1198,17 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 canonical_artifact_bytes: _,
                 canonical_precommit_certificate: _,
             } => Ok(FixedValidatorNodeDriverCurrentFinalityClassificationV0::Ready(action)),
+            DriverCurrentFinalitySelectionV0::PreselectionConflict {
+                first_action,
+                second_action,
+                ..
+            } => Ok(
+                FixedValidatorNodeDriverCurrentFinalityClassificationV0::ConflictingRoots {
+                    position: first_action.position,
+                    first: first_action.proposal_signing_root,
+                    second: second_action.proposal_signing_root,
+                },
+            ),
             DriverCurrentFinalitySelectionV0::ConflictingRoots {
                 position,
                 first,
@@ -1414,6 +1426,81 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                     canonical_proposal_control_bytes,
                     canonical_artifact_bytes,
                     canonical_precommit_certificate,
+                );
+            }
+            DriverCurrentFinalitySelectionV0::PreselectionConflict {
+                first_action: _,
+                first_canonical_proposal_control_bytes,
+                first_canonical_artifact_bytes,
+                first_canonical_precommit_certificate,
+                second_action: _,
+                second_canonical_proposal_control_bytes,
+                second_canonical_artifact_bytes,
+                second_canonical_precommit_certificate,
+            } => {
+                let first_canonical_proposal_control_bytes =
+                    match try_copy_bytes(first_canonical_proposal_control_bytes) {
+                        Ok(bytes) => bytes,
+                        Err(source) => {
+                            return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                                driver: Box::new(self),
+                                rejection: Box::new(
+                                    FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(
+                                        source,
+                                    ),
+                                ),
+                            });
+                        }
+                    };
+                let first_canonical_artifact_bytes =
+                    match try_copy_bytes(first_canonical_artifact_bytes) {
+                        Ok(bytes) => bytes,
+                        Err(source) => {
+                            return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                                driver: Box::new(self),
+                                rejection: Box::new(
+                                    FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(
+                                        source,
+                                    ),
+                                ),
+                            });
+                        }
+                    };
+                let second_canonical_proposal_control_bytes =
+                    match try_copy_bytes(second_canonical_proposal_control_bytes) {
+                        Ok(bytes) => bytes,
+                        Err(source) => {
+                            return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                                driver: Box::new(self),
+                                rejection: Box::new(
+                                    FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(
+                                        source,
+                                    ),
+                                ),
+                            });
+                        }
+                    };
+                let second_canonical_artifact_bytes =
+                    match try_copy_bytes(second_canonical_artifact_bytes) {
+                        Ok(bytes) => bytes,
+                        Err(source) => {
+                            return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                                driver: Box::new(self),
+                                rejection: Box::new(
+                                    FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(
+                                        source,
+                                    ),
+                                ),
+                            });
+                        }
+                    };
+                return self.execute_current_preselection_conflict(
+                    first_canonical_proposal_control_bytes,
+                    first_canonical_artifact_bytes,
+                    first_canonical_precommit_certificate,
+                    second_canonical_proposal_control_bytes,
+                    second_canonical_artifact_bytes,
+                    second_canonical_precommit_certificate,
                 );
             }
             DriverCurrentFinalitySelectionV0::MissingProposal {
@@ -2684,6 +2771,25 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 canonical_artifact_bytes,
                 canonical_precommit_certificate,
             }),
+            Ok(CurrentRoundFinalityClassificationV0::Pair { first, second }) => {
+                Ok(DriverCurrentFinalitySelectionV0::PreselectionConflict {
+                    first_action: FixedValidatorNodeDriverFinalityActionV0 {
+                        position,
+                        proposal_signing_root: first.proposal_signing_root,
+                    },
+                    first_canonical_proposal_control_bytes: first.canonical_proposal_control_bytes,
+                    first_canonical_artifact_bytes: first.canonical_artifact_bytes,
+                    first_canonical_precommit_certificate: first.canonical_precommit_certificate,
+                    second_action: FixedValidatorNodeDriverFinalityActionV0 {
+                        position,
+                        proposal_signing_root: second.proposal_signing_root,
+                    },
+                    second_canonical_proposal_control_bytes: second
+                        .canonical_proposal_control_bytes,
+                    second_canonical_artifact_bytes: second.canonical_artifact_bytes,
+                    second_canonical_precommit_certificate: second.canonical_precommit_certificate,
+                })
+            }
             Ok(CurrentRoundFinalityClassificationV0::ConflictingRoots { first, second }) => {
                 Ok(DriverCurrentFinalitySelectionV0::ConflictingRoots {
                     position,
@@ -2733,6 +2839,48 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(stop),
             )) => Ok(FixedValidatorNodeDriverStepOutcomeV0::FinalityStopped(stop)),
             Ok(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Rejected { scope, rejection }) => {
+                self.scope = Some(*scope);
+                Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                    driver: Box::new(self),
+                    rejection: Box::new(FixedValidatorNodeDriverStepRejectionV0::CurrentFinality(
+                        rejection,
+                    )),
+                })
+            }
+            Err(source) => Err(FixedValidatorNodeDriverStepErrorV0::CurrentFinality(
+                Box::new(source),
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_current_preselection_conflict(
+        mut self,
+        first_canonical_proposal_control_bytes: Vec<u8>,
+        first_canonical_artifact_bytes: Vec<u8>,
+        first_canonical_precommit_certificate: Vec<u8>,
+        second_canonical_proposal_control_bytes: Vec<u8>,
+        second_canonical_artifact_bytes: Vec<u8>,
+        second_canonical_precommit_certificate: Vec<u8>,
+    ) -> Result<FixedValidatorNodeDriverStepOutcomeV0<'node>, FixedValidatorNodeDriverStepErrorV0>
+    {
+        let scope = self.take_scope();
+        match scope.commit_current_round_preselection_conflict(
+            &first_canonical_proposal_control_bytes,
+            first_canonical_artifact_bytes,
+            &first_canonical_precommit_certificate,
+            &second_canonical_proposal_control_bytes,
+            second_canonical_artifact_bytes,
+            &second_canonical_precommit_certificate,
+            self.inclusive_maximum_round,
+        ) {
+            Ok(FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::FinalityStopped(
+                stop,
+            )) => Ok(FixedValidatorNodeDriverStepOutcomeV0::FinalityStopped(stop)),
+            Ok(FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::Rejected {
+                scope,
+                rejection,
+            }) => {
                 self.scope = Some(*scope);
                 Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
                     driver: Box::new(self),
@@ -3225,6 +3373,11 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         )
     }
 
+    #[cfg(test)]
+    pub(super) fn set_timer_generation_for_test(&mut self, generation: u64) {
+        self.generation = generation;
+    }
+
     fn install_next_timeout(&mut self, generation: u64) -> FixedValidatorNodePhaseTimeoutV0 {
         self.generation = generation;
         self.due = false;
@@ -3315,6 +3468,16 @@ enum DriverCurrentFinalitySelectionV0<'inbox> {
         canonical_proposal_control_bytes: &'inbox [u8],
         canonical_artifact_bytes: &'inbox [u8],
         canonical_precommit_certificate: Vec<u8>,
+    },
+    PreselectionConflict {
+        first_action: FixedValidatorNodeDriverFinalityActionV0,
+        first_canonical_proposal_control_bytes: &'inbox [u8],
+        first_canonical_artifact_bytes: &'inbox [u8],
+        first_canonical_precommit_certificate: Vec<u8>,
+        second_action: FixedValidatorNodeDriverFinalityActionV0,
+        second_canonical_proposal_control_bytes: &'inbox [u8],
+        second_canonical_artifact_bytes: &'inbox [u8],
+        second_canonical_precommit_certificate: Vec<u8>,
     },
     ConflictingRoots {
         position: ConsensusPosition,

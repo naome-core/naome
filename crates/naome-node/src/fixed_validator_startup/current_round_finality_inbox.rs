@@ -165,10 +165,21 @@ pub(super) enum CurrentRoundFinalityClassificationV0<'inbox> {
         canonical_artifact_bytes: &'inbox [u8],
         canonical_precommit_certificate: Vec<u8>,
     },
+    Pair {
+        first: CurrentRoundFinalityReadyV0<'inbox>,
+        second: CurrentRoundFinalityReadyV0<'inbox>,
+    },
     ConflictingRoots {
         first: ProposalSigningRoot,
         second: ProposalSigningRoot,
     },
+}
+
+pub(super) struct CurrentRoundFinalityReadyV0<'inbox> {
+    pub(super) proposal_signing_root: ProposalSigningRoot,
+    pub(super) canonical_proposal_control_bytes: &'inbox [u8],
+    pub(super) canonical_artifact_bytes: &'inbox [u8],
+    pub(super) canonical_precommit_certificate: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -306,9 +317,12 @@ impl CurrentRoundFinalityInboxV0 {
         parent_coordinate: FixedConsensusBranchCoordinateV0,
         position: ConsensusPosition,
     ) -> CurrentRoundFinalityPreclassificationV0 {
-        if let Some((position, saturation)) = self.saturation {
+        if let Some((saturation_position, saturation)) = self.saturation {
+            if self.structurally_contains_conflict_pair(parent_coordinate, position) {
+                return CurrentRoundFinalityPreclassificationV0::NeedsRound;
+            }
             return CurrentRoundFinalityPreclassificationV0::Saturated {
-                position,
+                position: saturation_position,
                 saturation,
             };
         }
@@ -446,14 +460,16 @@ impl CurrentRoundFinalityInboxV0 {
         round: &FixedConsensusRoundV0<'_>,
     ) -> Result<CurrentRoundFinalityClassificationV0<'_>, CurrentRoundFinalityClassificationErrorV0>
     {
-        if let Some((position, saturation)) = self.saturation {
+        let parent_coordinate = round.parent_coordinate();
+        let position = round.position();
+        if let Some((saturation_position, saturation)) = self.saturation
+            && !self.structurally_contains_conflict_pair(parent_coordinate, position)
+        {
             return Ok(CurrentRoundFinalityClassificationV0::Saturated {
-                position,
+                position: saturation_position,
                 saturation,
             });
         }
-        let parent_coordinate = round.parent_coordinate();
-        let position = round.position();
         let mut candidates: Vec<&RetainedCurrentProposalPrecommitV0> = Vec::new();
         candidates
             .try_reserve_exact(self.precommits.len())
@@ -473,7 +489,10 @@ impl CurrentRoundFinalityInboxV0 {
             .try_reserve_exact(candidates.len())
             .map_err(CurrentRoundFinalityClassificationErrorV0::Reservation)?;
 
-        let mut selected: Option<(ProposalSigningRoot, Vec<u8>)> = None;
+        let mut first_quorate_root = None;
+        let mut second_quorate_root = None;
+        let mut lone_missing_certificate = None;
+        let mut first_complete = None;
         let mut start = 0;
         while start < candidates.len() {
             let proposal_signing_root = candidates[start].proposal_signing_root;
@@ -509,42 +528,105 @@ impl CurrentRoundFinalityInboxV0 {
                     return Err(CurrentRoundFinalityClassificationErrorV0::Invariant(source));
                 }
             };
-            if let Some((first, _)) = selected {
-                return Ok(CurrentRoundFinalityClassificationV0::ConflictingRoots {
-                    first,
-                    second: proposal_signing_root,
-                });
+            if first_quorate_root.is_none() {
+                first_quorate_root = Some(proposal_signing_root);
+            } else if second_quorate_root.is_none() {
+                second_quorate_root = Some(proposal_signing_root);
             }
-            selected = Some((proposal_signing_root, certificate));
+            let proposal =
+                self.proposal_for_root(parent_coordinate, position, proposal_signing_root);
+            if let Some(proposal) = proposal {
+                let ready = CurrentRoundFinalityReadyV0 {
+                    proposal_signing_root,
+                    canonical_proposal_control_bytes: proposal
+                        .proposal
+                        .canonical_proposal_control_bytes(),
+                    canonical_artifact_bytes: proposal.proposal.canonical_artifact_bytes(),
+                    canonical_precommit_certificate: certificate,
+                };
+                if let Some(first) = first_complete.take() {
+                    return Ok(CurrentRoundFinalityClassificationV0::Pair {
+                        first,
+                        second: ready,
+                    });
+                }
+                first_complete = Some(ready);
+            } else if second_quorate_root.is_none() {
+                lone_missing_certificate = Some(certificate);
+            }
             start = end;
         }
 
-        let Some((proposal_signing_root, canonical_precommit_certificate)) = selected else {
+        if let Some((saturation_position, saturation)) = self.saturation {
+            return Ok(CurrentRoundFinalityClassificationV0::Saturated {
+                position: saturation_position,
+                saturation,
+            });
+        }
+        if let (Some(first), Some(second)) = (first_quorate_root, second_quorate_root) {
+            return Ok(CurrentRoundFinalityClassificationV0::ConflictingRoots { first, second });
+        }
+        if let Some(ready) = first_complete {
+            return Ok(CurrentRoundFinalityClassificationV0::One {
+                proposal_signing_root: ready.proposal_signing_root,
+                canonical_proposal_control_bytes: ready.canonical_proposal_control_bytes,
+                canonical_artifact_bytes: ready.canonical_artifact_bytes,
+                canonical_precommit_certificate: ready.canonical_precommit_certificate,
+            });
+        }
+        let Some(proposal_signing_root) = first_quorate_root else {
             return Ok(CurrentRoundFinalityClassificationV0::None);
         };
-        let proposal = self
-            .proposals
+        Ok(
+            CurrentRoundFinalityClassificationV0::OneQuorumMissingProposal {
+                proposal_signing_root,
+                canonical_precommit_certificate: lone_missing_certificate
+                    .expect("one missing quorate root retains its certificate"),
+            },
+        )
+    }
+
+    fn proposal_for_root(
+        &self,
+        parent_coordinate: FixedConsensusBranchCoordinateV0,
+        position: ConsensusPosition,
+        proposal_signing_root: ProposalSigningRoot,
+    ) -> Option<&RetainedCurrentFinalityProposalV0> {
+        self.proposals
             .iter()
             .filter(|retained| {
                 retained.proposal.parent_coordinate() == parent_coordinate
                     && retained.proposal.position() == position
                     && retained.proposal.proposal_signing_root() == proposal_signing_root
             })
-            .min_by(|left, right| proposal_inputs_cmp(left, right));
-        Ok(match proposal {
-            Some(proposal) => CurrentRoundFinalityClassificationV0::One {
-                proposal_signing_root,
-                canonical_proposal_control_bytes: proposal
-                    .proposal
-                    .canonical_proposal_control_bytes(),
-                canonical_artifact_bytes: proposal.proposal.canonical_artifact_bytes(),
-                canonical_precommit_certificate,
-            },
-            None => CurrentRoundFinalityClassificationV0::OneQuorumMissingProposal {
-                proposal_signing_root,
-                canonical_precommit_certificate,
-            },
-        })
+            .min_by(|left, right| proposal_inputs_cmp(left, right))
+    }
+
+    fn structurally_contains_conflict_pair(
+        &self,
+        parent_coordinate: FixedConsensusBranchCoordinateV0,
+        position: ConsensusPosition,
+    ) -> bool {
+        let mut first = None;
+        for proposal in self.proposals.iter().filter(|retained| {
+            retained.proposal.parent_coordinate() == parent_coordinate
+                && retained.proposal.position() == position
+        }) {
+            let root = proposal.proposal.proposal_signing_root();
+            if !self.precommits.iter().any(|retained| {
+                retained.parent_coordinate == parent_coordinate
+                    && retained.position == position
+                    && retained.proposal_signing_root == root
+            }) {
+                continue;
+            }
+            match first {
+                None => first = Some(root),
+                Some(first_root) if first_root != root => return true,
+                Some(_) => {}
+            }
+        }
+        false
     }
 
     pub(super) fn drain_and_reset(&mut self) -> FixedValidatorNodeCurrentRoundFinalityInboxDrainV0 {

@@ -68,6 +68,7 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsErrorV0,
     FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
     FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0,
+    FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeDirectoriesV0,
     FixedValidatorNodeDriverActionV0, FixedValidatorNodeDriverAdmissionDispositionV0,
     FixedValidatorNodeDriverAdmissionErrorV0, FixedValidatorNodeDriverAdmissionOutcomeV0,

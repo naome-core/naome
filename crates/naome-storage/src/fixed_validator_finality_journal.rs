@@ -55,15 +55,25 @@ const JOURNAL_PREFIX_BYTES: usize = JOURNAL_HEADER.len() + HEADER_FIELDS_BYTES;
 
 const FINALIZE_RECORD: u8 = 1;
 const CONFLICT_HALT_RECORD: u8 = 2;
+const PRESELECTION_CONFLICT_HALT_RECORD: u8 = 3;
 const RECORD_HEADER_BYTES: usize = 1 + 8 + 4 + 4;
+const PRESELECTION_CONFLICT_RECORD_HEADER_BYTES: usize = 1 + 8 + 4 + 4 + 4 + 4;
 const RECORD_LENGTH_BYTES: u64 = 4;
 const STATE_ID_BYTES: u64 = FixedValidatorFinalityJournalStateIdV0::BYTE_LENGTH as u64;
 const ENTRY_FIXED_BYTES: u64 = RECORD_LENGTH_BYTES + STATE_ID_BYTES;
-const MIN_RECORD_BODY_BYTES: usize =
+const MIN_SINGLE_RECORD_BODY_BYTES: usize =
     RECORD_HEADER_BYTES + VerifiedFixedConsensusTransitionV0::MIN_BYTE_LENGTH + 1;
-const MAX_RECORD_BODY_BYTES: usize = RECORD_HEADER_BYTES
+const MAX_SINGLE_RECORD_BODY_BYTES: usize = RECORD_HEADER_BYTES
     + VerifiedFixedConsensusTransitionV0::MAX_BYTE_LENGTH
     + ARTIFACT_PAYLOAD_MAX_BYTES;
+const MIN_PRESELECTION_CONFLICT_RECORD_BODY_BYTES: usize = PRESELECTION_CONFLICT_RECORD_HEADER_BYTES
+    + (2 * VerifiedFixedConsensusTransitionV0::MIN_BYTE_LENGTH)
+    + 2;
+const MAX_PRESELECTION_CONFLICT_RECORD_BODY_BYTES: usize = PRESELECTION_CONFLICT_RECORD_HEADER_BYTES
+    + (2 * VerifiedFixedConsensusTransitionV0::MAX_BYTE_LENGTH)
+    + (2 * ARTIFACT_PAYLOAD_MAX_BYTES);
+const MIN_RECORD_BODY_BYTES: usize = MIN_SINGLE_RECORD_BODY_BYTES;
+const MAX_RECORD_BODY_BYTES: usize = MAX_PRESELECTION_CONFLICT_RECORD_BODY_BYTES;
 
 /// Positive caller-provisioned maximum persisted finality round.
 ///
@@ -175,46 +185,63 @@ impl FixedValidatorFinalityRecordV0 {
     }
 }
 
+/// The semantic class of one durable terminal safety failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum FixedValidatorFinalityHaltKindV0 {
+    /// One already selected value received a distinct verified sibling proof.
+    SelectedSibling,
+    /// Two distinct unselected direct children were verified as a neutral pair.
+    PreselectionPair,
+}
+
 /// Durable terminal safety-failure evidence summary.
 ///
-/// Both referenced envelopes were strictly verified against the same retained
-/// selected parent at the same height and carry distinct exact values. The
-/// summary grants diagnostic access only; no selected head remains operable.
+/// `first` and `second` are diagnostic evidence order only. For a selected-
+/// sibling halt they retain selected then conflicting evidence. For a paired
+/// preselection halt they retain ascending proposal-signing-root order. Neither
+/// order grants branch, winner, rollback, or finality-selection authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct FixedValidatorFinalityHaltV0 {
+    kind: FixedValidatorFinalityHaltKindV0,
     height: ConsensusHeight,
-    selected_ancestry: ConsensusAncestryId,
-    selected_envelope_id: ConsensusEnvelopeId,
-    conflicting_ancestry: ConsensusAncestryId,
-    conflicting_envelope_id: ConsensusEnvelopeId,
+    first_ancestry: ConsensusAncestryId,
+    first_envelope_id: ConsensusEnvelopeId,
+    second_ancestry: ConsensusAncestryId,
+    second_envelope_id: ConsensusEnvelopeId,
     state_id: FixedValidatorFinalityJournalStateIdV0,
 }
 
 impl FixedValidatorFinalityHaltV0 {
-    /// Returns the height at which distinct finalized values were observed.
+    /// Returns the terminal evidence class.
+    pub const fn kind(self) -> FixedValidatorFinalityHaltKindV0 {
+        self.kind
+    }
+
+    /// Returns the height at which the terminal conflict was established.
     pub const fn height(self) -> ConsensusHeight {
         self.height
     }
 
-    /// Returns the ancestry identity of the previously selected exact value.
-    pub const fn selected_ancestry(self) -> ConsensusAncestryId {
-        self.selected_ancestry
+    /// Returns the first ancestry in the halt's kind-specific canonical order.
+    pub const fn first_ancestry(self) -> ConsensusAncestryId {
+        self.first_ancestry
     }
 
-    /// Returns the retained first envelope identity.
-    pub const fn selected_envelope_id(self) -> ConsensusEnvelopeId {
-        self.selected_envelope_id
+    /// Returns the first envelope in the halt's kind-specific canonical order.
+    pub const fn first_envelope_id(self) -> ConsensusEnvelopeId {
+        self.first_envelope_id
     }
 
-    /// Returns the ancestry identity of the conflicting exact value.
-    pub const fn conflicting_ancestry(self) -> ConsensusAncestryId {
-        self.conflicting_ancestry
+    /// Returns the second ancestry in the halt's kind-specific canonical order.
+    pub const fn second_ancestry(self) -> ConsensusAncestryId {
+        self.second_ancestry
     }
 
-    /// Returns the conflicting envelope identity committed by the halt record.
-    pub const fn conflicting_envelope_id(self) -> ConsensusEnvelopeId {
-        self.conflicting_envelope_id
+    /// Returns the second envelope in the halt's kind-specific canonical order.
+    pub const fn second_envelope_id(self) -> ConsensusEnvelopeId {
+        self.second_envelope_id
     }
 
     /// Returns the terminal journal-state identity published by the halt.
@@ -1060,6 +1087,22 @@ impl FixedValidatorAnchoredFinalityJournalV0 {
     ) -> Result<FixedValidatorFinalityCommitOutcomeV0, FixedValidatorFinalityJournalErrorV0> {
         self.journal.commit_verified(transition)
     }
+
+    /// Commits two verified unselected direct children as one neutral halt.
+    ///
+    /// Both transitions must name the same exact next position and selected
+    /// parent and must have distinct proposal-signing roots. The journal orders
+    /// them canonically, appends one paired frame, advances the external anchor
+    /// once, and publishes no selected child.
+    pub fn commit_verified_preselection_conflict(
+        &mut self,
+        first: OwnedVerifiedFixedConsensusTransitionV0,
+        second: OwnedVerifiedFixedConsensusTransitionV0,
+    ) -> Result<FixedValidatorFinalityHaltV0, FixedValidatorFinalityJournalErrorV0> {
+        self.journal
+            .core
+            .commit_verified_preselection_conflict(first, second)
+    }
 }
 
 /// Strictly installs one exact retained candidate as the current head's next child.
@@ -1479,6 +1522,14 @@ impl SelectedArtifactHistory for FixedValidatorAnchoredFinalityJournalV0 {
     }
 }
 
+enum FinalityAppendEvidenceV0 {
+    Single(ConsensusEnvelopeId),
+    Pair {
+        first: ConsensusEnvelopeId,
+        second: ConsensusEnvelopeId,
+    },
+}
+
 struct FixedValidatorFinalityJournalCore<F> {
     file: F,
     context: ConsensusContextV0,
@@ -1722,105 +1773,186 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
         body: Vec<u8>,
         state_id: FixedValidatorFinalityJournalStateIdV0,
     ) -> Result<(), FixedValidatorFinalityJournalErrorV0> {
-        let (tag, height, parent_index, transition) = {
-            let parsed = parse_record(entry, offset, &body, self.replay_limit)?;
-            let height = parsed.height;
-            let height_index = height_index(height).map_err(|()| {
-                FixedValidatorFinalityJournalErrorV0::HeightIndexOverflow { entry, height }
-            })?;
-            match parsed.tag {
-                FINALIZE_RECORD if height_index != self.branches.len() => {
+        match parse_record(entry, offset, &body, self.replay_limit)? {
+            ParsedRecord::Single {
+                tag,
+                round,
+                transition: parsed,
+            } => {
+                let height = parsed.height;
+                let height_index = height_index(height).map_err(|()| {
+                    FixedValidatorFinalityJournalErrorV0::HeightIndexOverflow { entry, height }
+                })?;
+                match tag {
+                    FINALIZE_RECORD if height_index != self.branches.len() => {
+                        return Err(
+                            FixedValidatorFinalityJournalErrorV0::NonconsecutiveFinality {
+                                entry,
+                                height,
+                            },
+                        );
+                    }
+                    CONFLICT_HALT_RECORD if height_index >= self.branches.len() => {
+                        return Err(FixedValidatorFinalityJournalErrorV0::InvalidConflictHalt {
+                            entry,
+                            height,
+                        });
+                    }
+                    FINALIZE_RECORD | CONFLICT_HALT_RECORD => {}
+                    _ => unreachable!("record tag is parsed before classification"),
+                }
+                let parent_index = height_index
+                    .checked_sub(1)
+                    .expect("strict value decoding rejects height zero");
+                let parent = self.branches.get(parent_index).ok_or(
+                    FixedValidatorFinalityJournalErrorV0::InvalidSelectedParent { entry, height },
+                )?;
+                let mut typed_round = parent
+                    .begin_round_zero()
+                    .map_err(FixedValidatorFinalityJournalErrorV0::Proposer)?;
+                for _ in 0..round {
+                    typed_round = typed_round
+                        .advance_round()
+                        .map_err(FixedValidatorFinalityJournalErrorV0::Proposer)?;
+                }
+                let payload = clone_bytes(parsed.payload, entry)?;
+                let transition = typed_round
+                    .decode_and_verify(parsed.envelope, payload)
+                    .map_err(|source| FixedValidatorFinalityJournalErrorV0::Replay {
+                        entry,
+                        offset,
+                        source: Box::new(source),
+                    })?
+                    .into_owned();
+                match tag {
+                    FINALIZE_RECORD => {
+                        self.branches.try_reserve(1).map_err(|_| {
+                            FixedValidatorFinalityJournalErrorV0::Allocation {
+                                entry,
+                                bytes: std::mem::size_of::<FixedConsensusBranchV0>(),
+                            }
+                        })?;
+                        self.records.try_reserve(1).map_err(|_| {
+                            FixedValidatorFinalityJournalErrorV0::Allocation {
+                                entry,
+                                bytes: std::mem::size_of::<FixedValidatorFinalityRecordV0>(),
+                            }
+                        })?;
+                        self.snapshot_index.try_reserve(1).map_err(|_| {
+                            FixedValidatorFinalityJournalErrorV0::SnapshotIndexAllocation {
+                                entry,
+                                retained_snapshots: self.snapshot_index.len(),
+                            }
+                        })?;
+                        let record = record_from_transition(&transition, state_id, body);
+                        let branch = transition.into_branch();
+                        let artifact_head = branch.artifact_snapshot().head_block_id();
+                        self.records.push(record);
+                        let branch_index = self.branches.len();
+                        self.branches.push(branch);
+                        let replaced = self.snapshot_index.insert(artifact_head, branch_index);
+                        debug_assert!(replaced.is_none());
+                    }
+                    CONFLICT_HALT_RECORD => {
+                        let selected = self.records.get(parent_index).ok_or(
+                            FixedValidatorFinalityJournalErrorV0::InvalidConflictHalt {
+                                entry,
+                                height,
+                            },
+                        )?;
+                        if selected.value == transition.value() {
+                            return Err(
+                                FixedValidatorFinalityJournalErrorV0::InvalidConflictHalt {
+                                    entry,
+                                    height,
+                                },
+                            );
+                        }
+                        self.halt = Some(halt_from_transition(
+                            selected.value.ancestry_id(),
+                            selected.envelope_id,
+                            &transition,
+                            state_id,
+                        ));
+                    }
+                    _ => unreachable!("record tag was checked before verification"),
+                }
+                Ok(())
+            }
+            ParsedRecord::PreselectionConflict {
+                round,
+                first: first_parsed,
+                second: second_parsed,
+            } => {
+                let height = first_parsed.height;
+                if second_parsed.height != height {
                     return Err(
-                        FixedValidatorFinalityJournalErrorV0::NonconsecutiveFinality {
+                        FixedValidatorFinalityJournalErrorV0::InvalidPreselectionConflict {
                             entry,
                             height,
                         },
                     );
                 }
-                CONFLICT_HALT_RECORD if height_index >= self.branches.len() => {
-                    return Err(FixedValidatorFinalityJournalErrorV0::InvalidConflictHalt {
-                        entry,
-                        height,
-                    });
+                let height_index = height_index(height).map_err(|()| {
+                    FixedValidatorFinalityJournalErrorV0::HeightIndexOverflow { entry, height }
+                })?;
+                if height_index != self.branches.len() {
+                    return Err(
+                        FixedValidatorFinalityJournalErrorV0::InvalidPreselectionConflict {
+                            entry,
+                            height,
+                        },
+                    );
                 }
-                FINALIZE_RECORD | CONFLICT_HALT_RECORD => {}
-                _ => unreachable!("record tag is parsed before classification"),
-            }
-            let parent_index = height_index
-                .checked_sub(1)
-                .expect("strict value decoding rejects height zero");
-            let parent = self.branches.get(parent_index).ok_or(
-                FixedValidatorFinalityJournalErrorV0::InvalidSelectedParent { entry, height },
-            )?;
-            let mut round = parent
-                .begin_round_zero()
-                .map_err(FixedValidatorFinalityJournalErrorV0::Proposer)?;
-            for _ in 0..parsed.round {
-                round = round
-                    .advance_round()
-                    .map_err(FixedValidatorFinalityJournalErrorV0::Proposer)?;
-            }
-            let payload = clone_bytes(parsed.payload, entry)?;
-            let transition = round
-                .decode_and_verify(parsed.envelope, payload)
-                .map_err(|source| FixedValidatorFinalityJournalErrorV0::Replay {
-                    entry,
-                    offset,
-                    source: Box::new(source),
-                })?
-                .into_owned();
-            (parsed.tag, height, parent_index, transition)
-        };
-
-        match tag {
-            FINALIZE_RECORD => {
-                self.branches.try_reserve(1).map_err(|_| {
-                    FixedValidatorFinalityJournalErrorV0::Allocation {
-                        entry,
-                        bytes: std::mem::size_of::<FixedConsensusBranchV0>(),
-                    }
-                })?;
-                self.records.try_reserve(1).map_err(|_| {
-                    FixedValidatorFinalityJournalErrorV0::Allocation {
-                        entry,
-                        bytes: std::mem::size_of::<FixedValidatorFinalityRecordV0>(),
-                    }
-                })?;
-                self.snapshot_index.try_reserve(1).map_err(|_| {
-                    FixedValidatorFinalityJournalErrorV0::SnapshotIndexAllocation {
-                        entry,
-                        retained_snapshots: self.snapshot_index.len(),
-                    }
-                })?;
-                let record = record_from_transition(&transition, state_id, body);
-                let branch = transition.into_branch();
-                let artifact_head = branch.artifact_snapshot().head_block_id();
-                self.records.push(record);
-                let branch_index = self.branches.len();
-                self.branches.push(branch);
-                let replaced = self.snapshot_index.insert(artifact_head, branch_index);
-                debug_assert!(replaced.is_none());
-            }
-            CONFLICT_HALT_RECORD => {
-                let selected = self.records.get(parent_index).ok_or(
-                    FixedValidatorFinalityJournalErrorV0::InvalidConflictHalt { entry, height },
+                let parent_index = height_index
+                    .checked_sub(1)
+                    .expect("strict value decoding rejects height zero");
+                let parent = self.branches.get(parent_index).ok_or(
+                    FixedValidatorFinalityJournalErrorV0::InvalidSelectedParent { entry, height },
                 )?;
-                if selected.value == transition.value() {
-                    return Err(FixedValidatorFinalityJournalErrorV0::InvalidConflictHalt {
-                        entry,
-                        height,
-                    });
+                let mut typed_round = parent
+                    .begin_round_zero()
+                    .map_err(FixedValidatorFinalityJournalErrorV0::Proposer)?;
+                for _ in 0..round {
+                    typed_round = typed_round
+                        .advance_round()
+                        .map_err(FixedValidatorFinalityJournalErrorV0::Proposer)?;
                 }
-                self.halt = Some(halt_from_transition(
-                    selected.value.ancestry_id(),
-                    selected.envelope_id,
-                    &transition,
-                    state_id,
-                ));
+                let first_payload = clone_bytes(first_parsed.payload, entry)?;
+                let first = typed_round
+                    .decode_and_verify(first_parsed.envelope, first_payload)
+                    .map_err(|source| FixedValidatorFinalityJournalErrorV0::Replay {
+                        entry,
+                        offset,
+                        source: Box::new(source),
+                    })?
+                    .into_owned();
+                let second_payload = clone_bytes(second_parsed.payload, entry)?;
+                let second = typed_round
+                    .decode_and_verify(second_parsed.envelope, second_payload)
+                    .map_err(|source| FixedValidatorFinalityJournalErrorV0::Replay {
+                        entry,
+                        offset,
+                        source: Box::new(source),
+                    })?
+                    .into_owned();
+                if first.position() != second.position()
+                    || first.parent_coordinate() != second.parent_coordinate()
+                    || first.value() == second.value()
+                    || first.value().proposal_signing_root()
+                        >= second.value().proposal_signing_root()
+                {
+                    return Err(
+                        FixedValidatorFinalityJournalErrorV0::InvalidPreselectionConflict {
+                            entry,
+                            height,
+                        },
+                    );
+                }
+                self.halt = Some(halt_from_preselection_pair(&first, &second, state_id));
+                Ok(())
             }
-            _ => unreachable!("record tag was checked before verification"),
         }
-        Ok(())
     }
 
     fn commit_verified(
@@ -1877,7 +2009,12 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
                 &transition,
                 next_state_id,
             );
-            self.append_record(&body, next_state_id, transition.envelope_id(), entry)?;
+            self.append_record(
+                &body,
+                next_state_id,
+                FinalityAppendEvidenceV0::Single(transition.envelope_id()),
+                entry,
+            )?;
             self.halt = Some(halt);
             self.state_id = next_state_id;
             return Ok(FixedValidatorFinalityCommitOutcomeV0::Halted(halt));
@@ -1915,7 +2052,7 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
         self.append_record(
             record.canonical_record_body(),
             next_state_id,
-            envelope_id,
+            FinalityAppendEvidenceV0::Single(envelope_id),
             entry,
         )?;
         let branch = transition.into_branch();
@@ -1934,11 +2071,86 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
         })
     }
 
+    fn commit_verified_preselection_conflict(
+        &mut self,
+        first: OwnedVerifiedFixedConsensusTransitionV0,
+        second: OwnedVerifiedFixedConsensusTransitionV0,
+    ) -> Result<FixedValidatorFinalityHaltV0, FixedValidatorFinalityJournalErrorV0> {
+        self.ensure_operational()?;
+        let first_position = first.position();
+        let second_position = second.position();
+        if first_position != second_position {
+            return Err(
+                FixedValidatorFinalityJournalErrorV0::PreselectionConflictPositionMismatch {
+                    first: first_position,
+                    second: second_position,
+                },
+            );
+        }
+        let round = first_position.round().value();
+        if round > self.replay_limit.max_round() {
+            return Err(FixedValidatorFinalityJournalErrorV0::RoundLimitExceeded {
+                round,
+                maximum: self.replay_limit.max_round(),
+            });
+        }
+        let height = first_position.height();
+        let height_index = height_index(height).map_err(|()| {
+            FixedValidatorFinalityJournalErrorV0::CommitHeightIndexOverflow { height }
+        })?;
+        if height_index != self.branches.len() {
+            return Err(FixedValidatorFinalityJournalErrorV0::UnselectedParent { height });
+        }
+        let parent_index = height_index
+            .checked_sub(1)
+            .expect("a sealed transition always has positive height");
+        let parent = self
+            .branches
+            .get(parent_index)
+            .expect("the next unselected height has one selected parent");
+        if first.parent_coordinate() != second.parent_coordinate()
+            || first.parent_coordinate() != parent.coordinate()
+        {
+            return Err(FixedValidatorFinalityJournalErrorV0::UnselectedParent { height });
+        }
+
+        let first_root = first.value().proposal_signing_root();
+        let second_root = second.value().proposal_signing_root();
+        if first.value() == second.value() || first_root == second_root {
+            return Err(
+                FixedValidatorFinalityJournalErrorV0::PreselectionConflictNotDistinct { height },
+            );
+        }
+        let (first, second) = if first_root < second_root {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let entry = u64::try_from(self.records.len()).expect("record count fits u64");
+        let body = canonical_preselection_conflict_record_body(&first, &second, entry)?;
+        let body_length = u32::try_from(body.len())
+            .expect("bounded fixed-validator journal record length fits u32");
+        let next_state_id = step_state_id(self.state_id, body_length.to_be_bytes(), &body);
+        let halt = halt_from_preselection_pair(&first, &second, next_state_id);
+        self.append_record(
+            &body,
+            next_state_id,
+            FinalityAppendEvidenceV0::Pair {
+                first: first.envelope_id(),
+                second: second.envelope_id(),
+            },
+            entry,
+        )?;
+        self.halt = Some(halt);
+        self.state_id = next_state_id;
+        Ok(halt)
+    }
+
     fn append_record(
         &mut self,
         body: &[u8],
         next_state_id: FixedValidatorFinalityJournalStateIdV0,
-        envelope_id: ConsensusEnvelopeId,
+        evidence: FinalityAppendEvidenceV0,
         entry: u64,
     ) -> Result<(), FixedValidatorFinalityJournalErrorV0> {
         let body_length = u32::try_from(body.len())
@@ -1990,10 +2202,22 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
         })();
         if let Err(source) = commit_result {
             self.poisoned = true;
-            return Err(FixedValidatorFinalityJournalErrorV0::Commit {
-                envelope_id,
-                proposed_state_id: next_state_id,
-                source,
+            return Err(match evidence {
+                FinalityAppendEvidenceV0::Single(envelope_id) => {
+                    FixedValidatorFinalityJournalErrorV0::Commit {
+                        envelope_id,
+                        proposed_state_id: next_state_id,
+                        source,
+                    }
+                }
+                FinalityAppendEvidenceV0::Pair { first, second } => {
+                    FixedValidatorFinalityJournalErrorV0::PairedCommit {
+                        first_envelope_id: first,
+                        second_envelope_id: second,
+                        proposed_state_id: next_state_id,
+                        source,
+                    }
+                }
             });
         }
         self.committed_end = next_committed_end;
@@ -2085,28 +2309,30 @@ impl<F: StoreIo> FixedValidatorFinalityJournalCore<F> {
     }
 }
 
-struct ParsedRecord<'bytes> {
-    tag: u8,
-    round: u64,
+struct ParsedTransitionBytes<'bytes> {
     height: ConsensusHeight,
     envelope: &'bytes [u8],
     payload: &'bytes [u8],
 }
 
-fn parse_record<'bytes>(
+enum ParsedRecord<'bytes> {
+    Single {
+        tag: u8,
+        round: u64,
+        transition: ParsedTransitionBytes<'bytes>,
+    },
+    PreselectionConflict {
+        round: u64,
+        first: ParsedTransitionBytes<'bytes>,
+        second: ParsedTransitionBytes<'bytes>,
+    },
+}
+
+fn parse_round(
     entry: u64,
-    offset: u64,
-    body: &'bytes [u8],
+    body: &[u8],
     replay_limit: FixedValidatorFinalityReplayLimitV0,
-) -> Result<ParsedRecord<'bytes>, FixedValidatorFinalityJournalErrorV0> {
-    let tag = body[0];
-    if !matches!(tag, FINALIZE_RECORD | CONFLICT_HALT_RECORD) {
-        return Err(FixedValidatorFinalityJournalErrorV0::InvalidRecordTag {
-            entry,
-            offset,
-            actual: tag,
-        });
-    }
+) -> Result<u64, FixedValidatorFinalityJournalErrorV0> {
     let round = u64::from_be_bytes(
         body[1..9]
             .try_into()
@@ -2121,50 +2347,150 @@ fn parse_record<'bytes>(
             },
         );
     }
-    let envelope_length = usize::try_from(u32::from_be_bytes(
-        body[9..13]
-            .try_into()
-            .expect("the bounded record header has an envelope length"),
+    Ok(round)
+}
+
+fn parse_record<'bytes>(
+    entry: u64,
+    offset: u64,
+    body: &'bytes [u8],
+    replay_limit: FixedValidatorFinalityReplayLimitV0,
+) -> Result<ParsedRecord<'bytes>, FixedValidatorFinalityJournalErrorV0> {
+    let tag = body[0];
+    match tag {
+        FINALIZE_RECORD | CONFLICT_HALT_RECORD => {
+            if !(MIN_SINGLE_RECORD_BODY_BYTES..=MAX_SINGLE_RECORD_BODY_BYTES).contains(&body.len())
+            {
+                return Err(FixedValidatorFinalityJournalErrorV0::InvalidRecordLength {
+                    entry,
+                    offset,
+                    actual: u32::try_from(body.len()).expect("bounded record length fits u32"),
+                    minimum: u32::try_from(MIN_SINGLE_RECORD_BODY_BYTES)
+                        .expect("minimum single record length fits u32"),
+                    maximum: u32::try_from(MAX_SINGLE_RECORD_BODY_BYTES)
+                        .expect("maximum single record length fits u32"),
+                });
+            }
+            let round = parse_round(entry, body, replay_limit)?;
+            let envelope_length = parse_envelope_length(entry, &body[9..13])?;
+            let payload_length = parse_payload_length(entry, &body[13..17])?;
+            let expected_length = RECORD_HEADER_BYTES
+                .checked_add(envelope_length)
+                .and_then(|length| length.checked_add(payload_length))
+                .ok_or(FixedValidatorFinalityJournalErrorV0::InvalidRecordFraming { entry })?;
+            if expected_length != body.len() {
+                return Err(FixedValidatorFinalityJournalErrorV0::InvalidRecordFraming { entry });
+            }
+            let envelope_end = RECORD_HEADER_BYTES + envelope_length;
+            let transition = parsed_transition_bytes(
+                entry,
+                &body[RECORD_HEADER_BYTES..envelope_end],
+                &body[envelope_end..],
+            )?;
+            Ok(ParsedRecord::Single {
+                tag,
+                round,
+                transition,
+            })
+        }
+        PRESELECTION_CONFLICT_HALT_RECORD => {
+            if !(MIN_PRESELECTION_CONFLICT_RECORD_BODY_BYTES
+                ..=MAX_PRESELECTION_CONFLICT_RECORD_BODY_BYTES)
+                .contains(&body.len())
+            {
+                return Err(FixedValidatorFinalityJournalErrorV0::InvalidRecordLength {
+                    entry,
+                    offset,
+                    actual: u32::try_from(body.len()).expect("bounded record length fits u32"),
+                    minimum: u32::try_from(MIN_PRESELECTION_CONFLICT_RECORD_BODY_BYTES)
+                        .expect("minimum paired record length fits u32"),
+                    maximum: u32::try_from(MAX_PRESELECTION_CONFLICT_RECORD_BODY_BYTES)
+                        .expect("maximum paired record length fits u32"),
+                });
+            }
+            let round = parse_round(entry, body, replay_limit)?;
+            let first_envelope_length = parse_envelope_length(entry, &body[9..13])?;
+            let first_payload_length = parse_payload_length(entry, &body[13..17])?;
+            let second_envelope_length = parse_envelope_length(entry, &body[17..21])?;
+            let second_payload_length = parse_payload_length(entry, &body[21..25])?;
+            let first_envelope_end = PRESELECTION_CONFLICT_RECORD_HEADER_BYTES
+                .checked_add(first_envelope_length)
+                .ok_or(FixedValidatorFinalityJournalErrorV0::InvalidRecordFraming { entry })?;
+            let first_payload_end = first_envelope_end
+                .checked_add(first_payload_length)
+                .ok_or(FixedValidatorFinalityJournalErrorV0::InvalidRecordFraming { entry })?;
+            let second_envelope_end = first_payload_end
+                .checked_add(second_envelope_length)
+                .ok_or(FixedValidatorFinalityJournalErrorV0::InvalidRecordFraming { entry })?;
+            let expected_length = second_envelope_end
+                .checked_add(second_payload_length)
+                .ok_or(FixedValidatorFinalityJournalErrorV0::InvalidRecordFraming { entry })?;
+            if expected_length != body.len() {
+                return Err(FixedValidatorFinalityJournalErrorV0::InvalidRecordFraming { entry });
+            }
+            let first = parsed_transition_bytes(
+                entry,
+                &body[PRESELECTION_CONFLICT_RECORD_HEADER_BYTES..first_envelope_end],
+                &body[first_envelope_end..first_payload_end],
+            )?;
+            let second = parsed_transition_bytes(
+                entry,
+                &body[first_payload_end..second_envelope_end],
+                &body[second_envelope_end..],
+            )?;
+            Ok(ParsedRecord::PreselectionConflict {
+                round,
+                first,
+                second,
+            })
+        }
+        _ => Err(FixedValidatorFinalityJournalErrorV0::InvalidRecordTag {
+            entry,
+            offset,
+            actual: tag,
+        }),
+    }
+}
+
+fn parse_envelope_length(
+    entry: u64,
+    bytes: &[u8],
+) -> Result<usize, FixedValidatorFinalityJournalErrorV0> {
+    let actual = usize::try_from(u32::from_be_bytes(
+        bytes.try_into().expect("an envelope length has four bytes"),
     ))
     .expect("every u32 envelope length fits the supported Rust targets");
     if !(VerifiedFixedConsensusTransitionV0::MIN_BYTE_LENGTH
         ..=VerifiedFixedConsensusTransitionV0::MAX_BYTE_LENGTH)
-        .contains(&envelope_length)
+        .contains(&actual)
     {
-        return Err(
-            FixedValidatorFinalityJournalErrorV0::InvalidEnvelopeLength {
-                entry,
-                actual: envelope_length,
-            },
-        );
+        return Err(FixedValidatorFinalityJournalErrorV0::InvalidEnvelopeLength { entry, actual });
     }
-    let payload_length = usize::try_from(u32::from_be_bytes(
-        body[13..17]
-            .try_into()
-            .expect("the bounded record header has a payload length"),
+    Ok(actual)
+}
+
+fn parse_payload_length(
+    entry: u64,
+    bytes: &[u8],
+) -> Result<usize, FixedValidatorFinalityJournalErrorV0> {
+    let actual = usize::try_from(u32::from_be_bytes(
+        bytes.try_into().expect("a payload length has four bytes"),
     ))
     .expect("every u32 payload length fits the supported Rust targets");
-    if !(1..=ARTIFACT_PAYLOAD_MAX_BYTES).contains(&payload_length) {
-        return Err(FixedValidatorFinalityJournalErrorV0::InvalidPayloadLength {
-            entry,
-            actual: payload_length,
-        });
+    if !(1..=ARTIFACT_PAYLOAD_MAX_BYTES).contains(&actual) {
+        return Err(FixedValidatorFinalityJournalErrorV0::InvalidPayloadLength { entry, actual });
     }
-    let expected_length = RECORD_HEADER_BYTES
-        .checked_add(envelope_length)
-        .and_then(|length| length.checked_add(payload_length))
-        .ok_or(FixedValidatorFinalityJournalErrorV0::InvalidRecordFraming { entry })?;
-    if expected_length != body.len() {
-        return Err(FixedValidatorFinalityJournalErrorV0::InvalidRecordFraming { entry });
-    }
-    let envelope_end = RECORD_HEADER_BYTES + envelope_length;
-    let envelope = &body[RECORD_HEADER_BYTES..envelope_end];
-    let payload = &body[envelope_end..];
+    Ok(actual)
+}
+
+fn parsed_transition_bytes<'bytes>(
+    entry: u64,
+    envelope: &'bytes [u8],
+    payload: &'bytes [u8],
+) -> Result<ParsedTransitionBytes<'bytes>, FixedValidatorFinalityJournalErrorV0> {
     let value = ConsensusValueV0::from_canonical_bytes(&envelope[..ConsensusValueV0::BYTE_LENGTH])
         .map_err(|source| FixedValidatorFinalityJournalErrorV0::Value { entry, source })?;
-    Ok(ParsedRecord {
-        tag,
-        round,
+    Ok(ParsedTransitionBytes {
         height: value.height(),
         envelope,
         payload,
@@ -2204,6 +2530,57 @@ fn canonical_record_body(
     body.extend_from_slice(envelope);
     body.extend_from_slice(payload);
     debug_assert_eq!(body.len(), body_length);
+    Ok(body)
+}
+
+fn canonical_preselection_conflict_record_body(
+    first: &OwnedVerifiedFixedConsensusTransitionV0,
+    second: &OwnedVerifiedFixedConsensusTransitionV0,
+    entry: u64,
+) -> Result<Vec<u8>, FixedValidatorFinalityJournalErrorV0> {
+    debug_assert_eq!(first.position(), second.position());
+    debug_assert_eq!(first.parent_coordinate(), second.parent_coordinate());
+    debug_assert!(first.value().proposal_signing_root() < second.value().proposal_signing_root());
+    let first_envelope = first.canonical_envelope_bytes();
+    let first_payload = first.canonical_artifact_bytes();
+    let second_envelope = second.canonical_envelope_bytes();
+    let second_payload = second.canonical_artifact_bytes();
+    let body_length = PRESELECTION_CONFLICT_RECORD_HEADER_BYTES
+        .checked_add(first_envelope.len())
+        .and_then(|length| length.checked_add(first_payload.len()))
+        .and_then(|length| length.checked_add(second_envelope.len()))
+        .and_then(|length| length.checked_add(second_payload.len()))
+        .expect("sealed verified transitions retain bounded canonical bytes");
+    let mut body = Vec::new();
+    body.try_reserve_exact(body_length).map_err(|_| {
+        FixedValidatorFinalityJournalErrorV0::Allocation {
+            entry,
+            bytes: body_length,
+        }
+    })?;
+    body.push(PRESELECTION_CONFLICT_HALT_RECORD);
+    body.extend_from_slice(&first.position().round().value().to_be_bytes());
+    for length in [
+        first_envelope.len(),
+        first_payload.len(),
+        second_envelope.len(),
+        second_payload.len(),
+    ] {
+        body.extend_from_slice(
+            &u32::try_from(length)
+                .expect("bounded paired component length fits u32")
+                .to_be_bytes(),
+        );
+    }
+    body.extend_from_slice(first_envelope);
+    body.extend_from_slice(first_payload);
+    body.extend_from_slice(second_envelope);
+    body.extend_from_slice(second_payload);
+    debug_assert_eq!(body.len(), body_length);
+    debug_assert!(
+        (MIN_PRESELECTION_CONFLICT_RECORD_BODY_BYTES..=MAX_PRESELECTION_CONFLICT_RECORD_BODY_BYTES)
+            .contains(&body.len())
+    );
     Ok(body)
 }
 
@@ -2250,11 +2627,30 @@ fn halt_from_transition(
     state_id: FixedValidatorFinalityJournalStateIdV0,
 ) -> FixedValidatorFinalityHaltV0 {
     FixedValidatorFinalityHaltV0 {
+        kind: FixedValidatorFinalityHaltKindV0::SelectedSibling,
         height: conflicting.value().height(),
-        selected_ancestry,
-        selected_envelope_id,
-        conflicting_ancestry: conflicting.value().ancestry_id(),
-        conflicting_envelope_id: conflicting.envelope_id(),
+        first_ancestry: selected_ancestry,
+        first_envelope_id: selected_envelope_id,
+        second_ancestry: conflicting.value().ancestry_id(),
+        second_envelope_id: conflicting.envelope_id(),
+        state_id,
+    }
+}
+
+fn halt_from_preselection_pair(
+    first: &OwnedVerifiedFixedConsensusTransitionV0,
+    second: &OwnedVerifiedFixedConsensusTransitionV0,
+    state_id: FixedValidatorFinalityJournalStateIdV0,
+) -> FixedValidatorFinalityHaltV0 {
+    debug_assert_eq!(first.position(), second.position());
+    debug_assert!(first.value().proposal_signing_root() < second.value().proposal_signing_root());
+    FixedValidatorFinalityHaltV0 {
+        kind: FixedValidatorFinalityHaltKindV0::PreselectionPair,
+        height: first.position().height(),
+        first_ancestry: first.value().ancestry_id(),
+        first_envelope_id: first.envelope_id(),
+        second_ancestry: second.value().ancestry_id(),
+        second_envelope_id: second.envelope_id(),
         state_id,
     }
 }
@@ -2434,6 +2830,8 @@ pub enum FixedValidatorFinalityJournalErrorV0 {
     NonconsecutiveFinality { entry: u64, height: ConsensusHeight },
     /// A terminal-halt record did not name a distinct already-selected sibling.
     InvalidConflictHalt { entry: u64, height: ConsensusHeight },
+    /// A paired halt record did not contain two canonical next-child proofs.
+    InvalidPreselectionConflict { entry: u64, height: ConsensusHeight },
     /// A replayed record had no retained selected parent at its exact height.
     InvalidSelectedParent { entry: u64, height: ConsensusHeight },
     /// Strict envelope, evidence, or artifact replay rejected the record.
@@ -2471,6 +2869,13 @@ pub enum FixedValidatorFinalityJournalErrorV0 {
     RoundLimitExceeded { round: u64, maximum: u64 },
     /// A verified transition was not derived from the retained selected parent.
     UnselectedParent { height: ConsensusHeight },
+    /// The two verified paired-halt transitions name different positions.
+    PreselectionConflictPositionMismatch {
+        first: ConsensusPosition,
+        second: ConsensusPosition,
+    },
+    /// The two verified paired-halt transitions do not name distinct roots.
+    PreselectionConflictNotDistinct { height: ConsensusHeight },
     /// A verified transition height could not index this platform.
     CommitHeightIndexOverflow { height: ConsensusHeight },
     /// A requested signer-handoff height could not index this platform.
@@ -2500,6 +2905,13 @@ pub enum FixedValidatorFinalityJournalErrorV0 {
     /// An append failed after durability may have changed.
     Commit {
         envelope_id: ConsensusEnvelopeId,
+        proposed_state_id: FixedValidatorFinalityJournalStateIdV0,
+        source: io::Error,
+    },
+    /// A paired-halt append failed after durability may have changed.
+    PairedCommit {
+        first_envelope_id: ConsensusEnvelopeId,
+        second_envelope_id: ConsensusEnvelopeId,
         proposed_state_id: FixedValidatorFinalityJournalStateIdV0,
         source: io::Error,
     },
@@ -2590,6 +3002,11 @@ impl fmt::Display for FixedValidatorFinalityJournalErrorV0 {
                 "conflict record {entry} does not name a distinct finalized sibling at height {}",
                 height.value()
             ),
+            Self::InvalidPreselectionConflict { entry, height } => write!(
+                formatter,
+                "paired conflict record {entry} does not name two canonically ordered distinct unselected children at height {}",
+                height.value()
+            ),
             Self::InvalidSelectedParent { entry, height } => write!(
                 formatter,
                 "finality record {entry} has no selected parent for height {}",
@@ -2644,6 +3061,15 @@ impl fmt::Display for FixedValidatorFinalityJournalErrorV0 {
                 "verified transition parent is not selected for height {}",
                 height.value()
             ),
+            Self::PreselectionConflictPositionMismatch { first, second } => write!(
+                formatter,
+                "paired conflict positions differ: first {first:?}, second {second:?}"
+            ),
+            Self::PreselectionConflictNotDistinct { height } => write!(
+                formatter,
+                "paired conflict transitions do not have distinct proposal roots at height {}",
+                height.value()
+            ),
             Self::CommitHeightIndexOverflow { height } => write!(
                 formatter,
                 "verified transition height {} cannot index this platform",
@@ -2695,6 +3121,15 @@ impl fmt::Display for FixedValidatorFinalityJournalErrorV0 {
                 formatter,
                 "joint commit for envelope {envelope_id:?} and state {proposed_state_id:?} has unknown durability: {source}"
             ),
+            Self::PairedCommit {
+                first_envelope_id,
+                second_envelope_id,
+                proposed_state_id,
+                source,
+            } => write!(
+                formatter,
+                "paired halt commit for envelopes {first_envelope_id:?} and {second_envelope_id:?} and state {proposed_state_id:?} has unknown durability: {source}"
+            ),
             Self::Poisoned => formatter.write_str(
                 "joint journal is poisoned after an ambiguous commit; drop and reopen it with a trusted state ID",
             ),
@@ -2714,7 +3149,8 @@ impl Error for FixedValidatorFinalityJournalErrorV0 {
             | Self::Read { source, .. }
             | Self::Recovery { source, .. }
             | Self::Stabilize { source }
-            | Self::Commit { source, .. } => Some(source),
+            | Self::Commit { source, .. }
+            | Self::PairedCommit { source, .. } => Some(source),
             Self::Value { source, .. } => Some(source),
             Self::Replay { source, .. } => Some(source.as_ref()),
             Self::SignerHandoffReplay { source, .. } => Some(source.as_ref()),
@@ -2736,6 +3172,7 @@ impl Error for FixedValidatorFinalityJournalErrorV0 {
             | Self::HeightIndexOverflow { .. }
             | Self::NonconsecutiveFinality { .. }
             | Self::InvalidConflictHalt { .. }
+            | Self::InvalidPreselectionConflict { .. }
             | Self::InvalidSelectedParent { .. }
             | Self::RecordAfterHalt { .. }
             | Self::ExpectedStateIdMismatch { .. }
@@ -2745,6 +3182,8 @@ impl Error for FixedValidatorFinalityJournalErrorV0 {
             | Self::RecordSequenceExhausted
             | Self::RoundLimitExceeded { .. }
             | Self::UnselectedParent { .. }
+            | Self::PreselectionConflictPositionMismatch { .. }
+            | Self::PreselectionConflictNotDistinct { .. }
             | Self::CommitHeightIndexOverflow { .. }
             | Self::SignerHandoffHeightIndexOverflow { .. }
             | Self::SignerHandoffUnavailable { .. }
