@@ -84,6 +84,8 @@ pub use finality::{
     FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalityRoundRouteV0,
     FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeLowerRoundFinalityErrorV0,
     FixedValidatorNodeLowerRoundFinalityOutcomeV0, FixedValidatorNodeLowerRoundFinalityRejectionV0,
+    FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0,
+    FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0,
 };
 pub use higher_round_inbox::{
     FixedValidatorNodeHigherRoundInboxAccessErrorV0, FixedValidatorNodeHigherRoundInboxDrainItemV0,

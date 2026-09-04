@@ -5,7 +5,8 @@
 //! strict provisioning, restart ordering, and consuming sealed or
 //! candidate-backed finality-to-signer coupling plus bounded exact-current and
 //! strictly lower-round certificate or exact signed-precommit-batch finality
-//! admission, including caller-targeted candidate-backed batch admission;
+//! admission, certificate-only strictly lower-round paired-preselection halt,
+//! and caller-targeted candidate-backed batch admission;
 //! direct and exact-target fresh-only candidate-store-backed plus exact
 //! retained-value payload-store-backed current-round proposal authoring; direct
 //! plus exact-target candidate- and payload-store-backed proposal vote
@@ -94,7 +95,9 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeHigherRoundInboxSaturationV0, FixedValidatorNodeHigherRoundInboxV0,
     FixedValidatorNodeHigherRoundProposalRouteV0, FixedValidatorNodeHigherRoundVoteBatchRouteV0,
     FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
-    FixedValidatorNodeLowerRoundFinalityRejectionV0, FixedValidatorNodePhaseTimeoutV0,
+    FixedValidatorNodeLowerRoundFinalityRejectionV0,
+    FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0,
+    FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0, FixedValidatorNodePhaseTimeoutV0,
     FixedValidatorNodeProposalAuthoringErrorV0, FixedValidatorNodeProposalAuthoringOutcomeV0,
     FixedValidatorNodeProposalAuthoringRejectionV0, FixedValidatorNodeProposalBufferAccessErrorV0,
     FixedValidatorNodeProposalBufferDrainV0, FixedValidatorNodeProposalBufferInsertErrorV0,
