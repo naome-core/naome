@@ -599,6 +599,17 @@ payload fill may separately durably insert a strictly validated payload into
 the payload archive; neither flow changes this journal. This journal advances
 only through `commit_verified`.
 
+The same capability may supply the exact current selected artifact anchor to
+`export_candidate_branch_recovery_bundle_v0`. The caller chooses the unselected
+target and routes same-chain candidates, archived payloads, and positive local
+bounds. Export rejects a foreign candidate chain before selected-state health,
+then denies terminal or poisoned history before source entry reads. It repeats
+complete artifact validation from the current snapshot and returns only the
+unchanged canonical recovery-bundle format, without finality envelopes or any
+write to source stores, selected state, or the external anchor. Historical
+selected ancestors do not replace the current export anchor. This capability
+does not expose selected-prefix backup or selected-state import.
+
 The same capability may also be supplied to strict recovery-bundle staging.
 That operation requires one exact retained selected anchor and unselected
 target, repeats complete bundle validation from the returned immutable
