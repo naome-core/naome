@@ -77,6 +77,7 @@ pub use fixed_validator_startup::{
     FixedValidatorNodeDriverActionV0, FixedValidatorNodeDriverAdmissionDispositionV0,
     FixedValidatorNodeDriverAdmissionErrorV0, FixedValidatorNodeDriverAdmissionOutcomeV0,
     FixedValidatorNodeDriverAdmissionRejectionV0, FixedValidatorNodeDriverBlockReasonV0,
+    FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0,
     FixedValidatorNodeDriverCommandV0, FixedValidatorNodeDriverCreateErrorV0,
     FixedValidatorNodeDriverCurrentFinalityDrainV0,
     FixedValidatorNodeDriverCurrentNilPrecommitDrainV0,

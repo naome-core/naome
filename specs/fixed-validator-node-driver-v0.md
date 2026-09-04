@@ -31,6 +31,14 @@ one existing consuming node coordinator. It emits at most one timeout-arm or
 signed-vote command. It does not expose the owned signing scope as an
 alternative caller-controlled path.
 
+The sole caller-selected action exception is one deny-only terminal bridge for
+an exact candidate-backed historical selected-sibling conflict. It is available
+only after any pending outward command has transferred, retains no evidence,
+uses the driver's existing inclusive round-work ceiling, and delegates all
+proposal, source, positioned-fixed-set, batch, finality, and signer-stop checks
+to the existing consuming coordinator. It cannot return a driver after proof
+processing begins.
+
 This remains a partial driver boundary. Its input surface now covers current-
 and higher-round proposal/prevote evidence, current-round nil prevotes,
 current-round finality proposals, proposal precommits, exact-current nil
@@ -42,10 +50,10 @@ transition. One uniquely proposal-backed current-round precommit quorum runs
 through the existing fully verifying, anchored finality coordinator and may
 return the child-height driver with the existing typed finality selection. Two
 complete proposal-backed roots instead run through the neutral paired halt and
-return no driver or selected branch. Lower- or candidate-backed finality
-routing, broader or incomplete preselection conflict handling, proposal
-authoring, networking, and artifact-payload persistence remain outside this
-driver.
+return no driver or selected branch. Lower-round and candidate-backed
+direct-child finality routing, automatic candidate-backed evidence routing,
+broader or incomplete preselection conflict handling, proposal authoring,
+networking, and artifact-payload persistence remain outside this driver.
 
 This ownership moves event choice out of a caller that could otherwise select
 an inbox position or invoke a phase close directly. It does not make retained
@@ -65,7 +73,8 @@ phase, separate inbox accounting, timer identity, and pending-command state
 without granting transition authority. The standalone read-only finality
 classifier remains crate-private. The public `step` surface exposes only the
 typed operational block, finality, rejection, and stop outcomes described
-below.
+below. The separate historical-conflict bridge is not an alternative step or a
+way to recover the owned scope.
 
 `FixedValidatorNodeDriverV0::selected_artifact_history` is the sole public
 non-diagnostic projection from the privately owned scope. It returns only the
@@ -104,6 +113,39 @@ unreleased command, and a selected proposal token still held with that command.
 The durable signer and finality stores keep their existing strict-reopen
 classifications; closing this command-custody crash gap belongs to the later
 runtime boundary.
+
+## Explicit candidate-backed terminal bridge
+
+`FixedValidatorNodeDriverV0::commit_candidate_backed_finality_conflict_vote_batch`
+consumes the driver and accepts one caller-selected historical target, complete
+canonical proposal-control bytes, one exact signed-precommit batch, one
+evidence round, and borrowed candidate and Foundation payload stores. The
+caller supplies no separate work ceiling: the method routes the driver's
+construction-time inclusive ceiling unchanged alongside the evidence round.
+The downstream persisted finality ceiling remains independently authoritative.
+
+An already pending arm or vote-publication command is the first and only
+recoverable gate. `CommandPending` returns the exact unchanged driver before
+route, input, or source inspection, so the caller must transfer that existing
+command before retrying. Due state, phase, retained inbox state, saturation, or
+ambiguity creates no second driver-returning gate for this explicit terminal
+attempt.
+
+After command custody is clear, the method transfers the sole signing scope
+exactly once to the existing candidate-backed finalized-sibling batch
+coordinator. That coordinator reconstructs the replay-retained selected parent,
+integrity-reads the caller-borrowed stores, and completely verifies the target,
+proposal, producer, artifact transition, positioned fixed set, and every
+precommit before the existing anchored halt and signer stop. Success returns
+only `FinalityStopped`; every pre-append rejection, source failure, or durable
+failure returns the existing consuming finality error. No such outcome returns
+the driver, scope, timer, command, inbox custody, branch, or selected value, and
+strict anchored reopen is the only subsequent signer-state classifier.
+
+This bridge observes, discovers, acquires, buffers, groups, ranks, retries, or
+routes no event. Caller target and round choice, store membership, peer
+identity, provenance, or invocation timing grants no truth, preference,
+winner, branch-selection, rollback, repair, finality, or signing authority.
 
 ## Consuming event admission and bounded retention
 
@@ -707,13 +749,17 @@ This driver does not define or perform:
 - a complete or protocol-wide evidence view, durable inbox or timer encoding,
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
-- proposal authoring, higher-round nil-quorum collection, lower- or candidate-
-  backed finality routing, acquisition for a missing proposal, durable handling
-  of incomplete or broader multi-root cases beyond the exact retained
-  proposal-backed pair, caller-selected branch or sibling choice, rollback,
-  reorganization, candidate promotion, checkpoint synchronization, or store
-  repair;
-- artifact-payload persistence or candidate- or payload-store mutation;
+- proposal authoring, higher-round nil-quorum collection, lower-round or
+  candidate-backed direct-child finality routing, automatic acquisition or
+  routing for candidate-backed conflicts or a missing proposal, durable
+  handling of incomplete or broader multi-root cases beyond the exact retained
+  proposal-backed pair, caller-selected branch or winner choice beyond the one
+  deny-only terminal sibling submission, rollback, reorganization, candidate
+  promotion, checkpoint synchronization, or store repair;
+- artifact-payload persistence or candidate- or payload-store durable entry or
+  byte insertion, replacement, refresh, promotion, or deletion; an integrity-
+  read failure may still poison only its owning live source handle under that
+  store's existing reopen contract;
 - dynamic validator sets, multi-key coordination, key loading, rotation, remote
   signing, hardware monotonicity, slashing, economics, or production custody;
   or
