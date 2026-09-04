@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use naome_consensus::{
     ConsensusContextV0, ConsensusHeight, ConsensusPosition, ConsensusProposalVerifyError,
-    ConsensusRound, ConsensusVoteVerifyError, FixedConsensusNilPrecommitVerifyErrorV0,
-    FixedConsensusNilPrevoteVerifyErrorV0, FixedConsensusProposalPrecommitVerifyErrorV0,
-    FixedConsensusProposalPrevoteVerifyErrorV0, FixedConsensusRoundV0, FixedValidatorLockPhaseV0,
-    ProposalSigningRoot, ProposerSelectionError, QuorumCertificateBuildError,
-    VerifiedConsensusVoteV0,
+    ConsensusRound, ConsensusVoteRole, ConsensusVoteTarget, ConsensusVoteVerifyError,
+    FixedConsensusNilPrecommitVerifyErrorV0, FixedConsensusNilPrevoteVerifyErrorV0,
+    FixedConsensusProposalPrecommitVerifyErrorV0, FixedConsensusProposalPrevoteVerifyErrorV0,
+    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, ProposalSigningRoot, ProposerSelectionError,
+    QuorumCertificateBuildError, VerifiedConsensusVoteV0,
 };
 use naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
 use naome_storage::{
@@ -68,7 +68,8 @@ use super::{
     FixedValidatorNodeHigherRoundInboxProposalInsertErrorV0,
     FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0,
     FixedValidatorNodeHigherRoundInboxSaturationV0, FixedValidatorNodeHigherRoundInboxV0,
-    FixedValidatorNodeHigherRoundProposalRouteV0, FixedValidatorNodeLowerRoundFinalityErrorV0,
+    FixedValidatorNodeHigherRoundProposalRouteV0, FixedValidatorNodeHigherRoundVoteBatchRouteV0,
+    FixedValidatorNodeLowerRoundFinalityErrorV0,
     FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0,
     FixedValidatorNodeProposalDeferralErrorV0, FixedValidatorNodeProposalDeferralRejectionV0,
@@ -925,9 +926,41 @@ impl Error for FixedValidatorNodeDriverCandidateBackedFinalityErrorV0 {
     }
 }
 
-/// Fatal driver-step failure; no driver or signing scope is returned.
+/// Result of an explicitly supplied higher-round certificate or exact vote batch.
 ///
-/// On `Err`, consuming the step loses both volatile owners even when the failure
+/// Pending commands and retained higher-priority evidence return the unchanged
+/// driver before inspecting the supplied input. A typed coordinator rejection
+/// likewise returns the unchanged driver. Success durably checkpoints the new
+/// round and queues one phase-timer arm, without signing or changing finality.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0<'node> {
+    /// An outward command must transfer before catch-up can start.
+    CommandPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Retained exact-current finality must first be resolved by `step` or drain.
+    CurrentFinalityUnresolved {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Retained higher-round proposal work or a blocker must be resolved first.
+    HigherEvidenceUnresolved {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// The anchored destination is live and its replacement timer arm is pending.
+    Advanced {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Input was rejected before any volatile or durable transition.
+    Rejected {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        rejection: Box<FixedValidatorNodeRoundAdvanceRejectionV0>,
+    },
+}
+
+/// Fatal driver transition failure; no driver or signing scope is returned.
+///
+/// On `Err`, the consuming operation loses both volatile owners even when the failure
 /// occurs before a coordinator starts. Recover only through strict reopen into a
 /// fresh driver.
 #[derive(Debug)]
@@ -941,7 +974,7 @@ pub enum FixedValidatorNodeDriverStepErrorV0 {
     Evidence(Box<FixedValidatorNodeBufferedProposalPrecommitErrorV0>),
     /// Proposal- or Prevote-close voting failed after the consuming boundary began.
     Vote(Box<FixedValidatorNodeVoteExecutionErrorV0>),
-    /// Exact-current round progression failed after the consuming boundary began.
+    /// Node-owned round progression failed after the consuming boundary began.
     RoundAdvance(Box<FixedValidatorNodeRoundAdvanceErrorV0>),
     /// Current-round finality failed after the consuming boundary began.
     CurrentFinality(Box<FixedValidatorNodeCurrentRoundFinalityErrorV0>),
@@ -1113,6 +1146,16 @@ impl Error for FixedValidatorNodeDriverCreateErrorV0 {
             | Self::ProcessLineageExhausted => None,
         }
     }
+}
+
+enum DriverHigherRoundInputV0<'input> {
+    Certificate(&'input [u8]),
+    VoteBatch {
+        canonical_signed_votes: &'input [&'input [u8]],
+        evidence_round: ConsensusRound,
+        expected_role: ConsensusVoteRole,
+        expected_target: ConsensusVoteTarget,
+    },
 }
 
 enum PendingCommandV0 {
@@ -1359,6 +1402,146 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     /// Returns whether one outward command must be emitted before another transition.
     pub const fn has_pending_command(&self) -> bool {
         self.pending_command.is_some()
+    }
+
+    /// Checkpoints one explicitly supplied, fully verified higher-round quorum.
+    ///
+    /// Pending commands, non-fallthrough exact-current finality, and retained
+    /// actionable or blocked higher-round proposal evidence take precedence.
+    /// Those cases return the unchanged driver without inspecting the supplied
+    /// certificate; use `step` or the appropriate lossless drain first.
+    /// Otherwise the existing node coordinator enforces the construction-time
+    /// round ceiling, preserves lock and complete valid evidence, and persists
+    /// the checkpoint and independent anchor before returning continued authority.
+    /// Success replaces the old timer with one pending arm, clears due state,
+    /// and preserves all four inboxes. It neither signs nor changes finality.
+    /// Every fatal error consumes the driver and requires strict anchored reopen.
+    pub fn advance_to_higher_round_quorum(
+        self,
+        canonical_certificate: &[u8],
+    ) -> Result<
+        FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        self.advance_to_higher_round_input(DriverHigherRoundInputV0::Certificate(
+            canonical_certificate,
+        ))
+    }
+
+    /// Checkpoints one explicitly routed exact higher-round signed-vote batch.
+    ///
+    /// This has the same priority, timer, custody, and failure contract as
+    /// [`Self::advance_to_higher_round_quorum`]. Routing metadata grants no
+    /// authority: the existing coordinator authenticates every supplied vote
+    /// all-or-nothing at the exact round, role, and target under the driver's
+    /// construction-time ceiling. No input is retained or automatically chosen.
+    pub fn advance_to_higher_round_vote_batch(
+        self,
+        canonical_signed_votes: &[&[u8]],
+        evidence_round: ConsensusRound,
+        expected_role: ConsensusVoteRole,
+        expected_target: ConsensusVoteTarget,
+    ) -> Result<
+        FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        self.advance_to_higher_round_input(DriverHigherRoundInputV0::VoteBatch {
+            canonical_signed_votes,
+            evidence_round,
+            expected_role,
+            expected_target,
+        })
+    }
+
+    fn advance_to_higher_round_input(
+        mut self,
+        input: DriverHigherRoundInputV0<'_>,
+    ) -> Result<
+        FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        match self
+            .select_current_finality()
+            .map_err(FixedValidatorNodeDriverStepErrorV0::Round)?
+        {
+            DriverCurrentFinalitySelectionV0::None
+            | DriverCurrentFinalitySelectionV0::Saturated { .. } => {}
+            DriverCurrentFinalitySelectionV0::Ready { .. }
+            | DriverCurrentFinalitySelectionV0::PreselectionConflict { .. }
+            | DriverCurrentFinalitySelectionV0::MissingProposal { .. }
+            | DriverCurrentFinalitySelectionV0::ConflictingRoots { .. }
+            | DriverCurrentFinalitySelectionV0::Rejected(_)
+            | DriverCurrentFinalitySelectionV0::Reservation(_) => {
+                return Ok(FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0::CurrentFinalityUnresolved {
+                    driver: Box::new(self),
+                });
+            }
+        }
+        if self.higher_block_reason().is_some()
+            || !matches!(
+                self.select_actionable_higher_round()?,
+                DriverEvidenceSelectionV0::None
+            )
+        {
+            return Ok(
+                FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0::HigherEvidenceUnresolved {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        let next_generation = self.next_generation()?;
+        let maximum_round = self.inclusive_maximum_round;
+        let scope = self.take_scope();
+        let result = match input {
+            DriverHigherRoundInputV0::Certificate(bytes) => {
+                scope.advance_to_higher_round_quorum(bytes, maximum_round)
+            }
+            DriverHigherRoundInputV0::VoteBatch {
+                canonical_signed_votes,
+                evidence_round,
+                expected_role,
+                expected_target,
+            } => scope.advance_to_higher_round_vote_batch(
+                canonical_signed_votes,
+                FixedValidatorNodeHigherRoundVoteBatchRouteV0::new(
+                    evidence_round,
+                    expected_role,
+                    expected_target,
+                    maximum_round,
+                ),
+            ),
+        };
+        match result {
+            Ok(FixedValidatorNodeRoundAdvanceOutcomeV0::Advanced { scope, .. }) => {
+                self.scope = Some(*scope);
+                let timeout = self.install_next_timeout(next_generation);
+                self.pending_command = Some(PendingCommandV0::Arm(timeout));
+                Ok(
+                    FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0::Advanced {
+                        driver: Box::new(self),
+                    },
+                )
+            }
+            Ok(FixedValidatorNodeRoundAdvanceOutcomeV0::Rejected { scope, rejection }) => {
+                self.scope = Some(*scope);
+                Ok(
+                    FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection,
+                    },
+                )
+            }
+            Err(source) => Err(FixedValidatorNodeDriverStepErrorV0::RoundAdvance(Box::new(
+                source,
+            ))),
+        }
     }
 
     /// Routes one exact candidate-backed direct-child finality batch.

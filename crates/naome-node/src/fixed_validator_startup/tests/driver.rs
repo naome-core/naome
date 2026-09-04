@@ -29,6 +29,7 @@ use super::finality::{candidate_backed_batch_finality_inputs, expect_continuatio
 use super::*;
 
 mod candidate_backed;
+mod higher_round;
 mod lower_round_pair;
 
 type DrainedEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);

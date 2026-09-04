@@ -31,8 +31,9 @@ one existing consuming node coordinator. It emits at most one timeout-arm or
 signed-vote command. It does not expose the owned signing scope as an
 alternative caller-controlled path.
 
-The caller-selected action exceptions are two candidate-backed bridges and one
-strictly lower-round paired-conflict bridge outside ordinary `step` selection.
+The caller-selected action exceptions are the candidate-backed finality bridges,
+strictly lower-round paired-conflict bridge, and explicit higher-round quorum
+catch-up methods outside ordinary `step` selection.
 All are available only after any pending outward command has transferred,
 retain no evidence, use the driver's existing inclusive round-work ceiling,
 and delegate every applicable proposal, source, positioned-fixed-set, batch,
@@ -44,7 +45,9 @@ choice, and returns a driver after proof processing only for a typed pre-effect
 rejection or a completed child-height handoff. The lower-round paired bridge
 instead submits two complete proofs for a
 terminal neutral halt regardless of current-round inbox state, restoring the
-driver only on typed pre-effect rejection.
+driver only on typed pre-effect rejection. Explicit higher-round catch-up
+preserves command, current-finality, and retained higher-proposal priority before
+checkpointing a fully authenticated round and replacing the timer.
 
 This remains a partial driver boundary. Its input surface now covers current-
 and higher-round proposal/prevote evidence, current-round nil prevotes,
@@ -62,7 +65,10 @@ one exact candidate-backed direct-child proposal and precommit batch after
 command custody and only when current-finality classification would otherwise
 fall through. An explicit lower-round paired-conflict submission may instead
 enter the fully verifying neutral halt after command custody, without waiting
-for current-round finality classification. Separate non-candidate lower-round
+for current-round finality classification. An explicit canonical higher-round
+certificate or exact routed vote batch may separately advance to the evidence's
+authenticated phase under the priority and lifecycle contract below.
+Separate non-candidate lower-round
 single-proof finality routing, automatic candidate-backed evidence routing,
 broader or incomplete preselection conflict handling, proposal authoring,
 networking, and artifact-payload persistence remain outside this driver.
@@ -125,6 +131,67 @@ unreleased command, and a selected proposal token still held with that command.
 The durable signer and finality stores keep their existing strict-reopen
 classifications; closing this command-custody crash gap belongs to the later
 runtime boundary.
+
+## Explicit higher-round quorum catch-up
+
+`FixedValidatorNodeDriverV0::advance_to_higher_round_quorum` consumes the driver
+and borrows one complete canonical certificate.
+`FixedValidatorNodeDriverV0::advance_to_higher_round_vote_batch` instead borrows
+one exact canonical signed-vote batch and accepts its expected evidence round,
+prevote-or-precommit role, and nil-or-proposal target. Both use the driver's
+construction-time inclusive round-work ceiling; the persisted finality ceiling
+remains independently authoritative. The batch route is unauthenticated
+metadata, and neither method retains the submitted input.
+
+The recoverable gates precede supplied-input inspection in this exact order:
+
+1. A pending outward command returns `CommandPending`.
+2. Only `None` or non-pair `Saturated` exact-current finality classification
+   falls through. Ready finality, a complete paired conflict, a quorum missing
+   its proposal, conflicting roots, and classification reservation or invariant
+   rejection return `CurrentFinalityUnresolved`.
+3. Existing higher-round saturation or latched ambiguity, or any result other
+   than `None` from the complete retained higher-proposal selection, returns
+   `HigherEvidenceUnresolved`. This includes a unique actionable proposal quorum,
+   newly detected ambiguity, and reservation or invariant rejection.
+
+These outcomes return the unchanged driver: no input is retained, no timer or
+counter changes, and newly detected ambiguity does not create a latch. Ordinary
+`step` or the appropriate lossless drain resolves the retained work. A retained
+proposal quorum therefore runs its existing checkpoint, lock, and precommit
+behavior before an explicit catch-up may proceed, even when the submitted
+certificate names a later round. Current-voting and current-nil-precommit
+inboxes, their blockers, and due observations introduce no additional gate.
+
+After these gates, checked successor timer-generation reservation precedes the
+existing consuming node round-progression coordinator. It requires same-height
+strictly higher evidence within both ceilings and fully verifies the exact
+positioned fixed set, strict-supermajority weight, and every signature. The
+batch path applies its existing all-or-nothing role/target/position contract.
+Either prevote target reaches only the higher-round Prevote phase; either
+precommit target reaches only the higher-round Precommit phase. Lock and
+byte-identical complete valid-value evidence are preserved. The existing
+checkpoint, independent anchor, and live-session acknowledgement must complete
+before `Advanced` returns the driver.
+
+Success retains all four inboxes, charged accounting, saturation reasons, and
+ambiguity latches. It invalidates the old timer and due observation, increments
+the generation once, and queues exactly one arm for the destination phase.
+There is no `PublishVote`, proposal-token release, proposal admission, lock or
+valid-value update, finality write, selected-branch change, or lower-round
+signing permission. The new round/phase and preserved lock/valid evidence are
+recovered from the anchored checkpoint after owner loss; volatile inboxes and
+commands are not reconstructed.
+
+A typed coordinator rejection restores the unchanged driver, timer, due state,
+and all retained evidence for explicit retry. Fatal round derivation, timer
+generation, session, checkpoint, anchor, or acknowledgement failure uses the
+existing consuming driver error and returns no driver or scope, even if it
+occurs before durable work. Strict anchored reopen is the only continuation
+path, including the existing `AnchorBehind` outcome after a completed checkpoint
+journal append followed by anchor failure. The methods add no automatic general
+quorum observation, collection, arbitration, transport, timing, or branch-choice
+policy and do not change ordinary `step` selection.
 
 ## Explicit candidate-backed terminal bridge
 
@@ -851,7 +918,8 @@ This driver does not define or perform:
 - a complete or protocol-wide evidence view, durable inbox or timer encoding,
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
-- proposal authoring, higher-round nil-quorum collection, separate non-candidate
+- proposal authoring, automatic general higher-round quorum observation,
+  collection, routing, or arbitration, separate non-candidate
   lower-round single-proof finality routing, automatic acquisition or routing for
   candidate-backed direct-child or conflict evidence or a missing proposal, durable
   handling of incomplete or broader multi-root cases beyond the exact retained
