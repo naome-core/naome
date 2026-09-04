@@ -258,37 +258,48 @@ advances the paired anchor before the candidate-backed outcome is published.
 
 ## Candidate-backed finalized-sibling conflict
 
-`commit_candidate_backed_finality_conflict_v0` is a separate deny-only
-composition boundary for one caller-selected locally retained candidate at an
-already selected positive height. It accepts the same caller-routed candidate
-and Foundation payload stores, exact expected target, complete canonical
-finality envelope, and inclusive caller-local round-work ceiling as the
-direct-child boundary. These routing and availability inputs grant no validity,
-selection, preference, finality, or conflict authority.
+`commit_candidate_backed_finality_conflict_v0` and its exact signed-precommit-
+batch sibling are separate deny-only composition boundaries for one caller-
+selected locally retained candidate at an already selected positive height.
+Both accept the same caller-routed candidate and Foundation payload stores,
+exact expected target, and inclusive caller-local round-work ceiling. The
+envelope form accepts one complete canonical finality envelope. The batch form
+instead accepts complete canonical proposal-control bytes, one exact caller-
+routed signed-precommit batch, and an explicit evidence round. These routing and
+availability inputs grant no validity, selection, preference, finality, or
+conflict authority.
 
-The operation first requires a healthy operable journal and a work ceiling no
-greater than the persisted journal ceiling. It strictly bounds and decodes the
-evidence-free envelope value, requires the exact journal context and caller
-target, requires its height to be already selected, and obtains that height's
-exact replay-retained selected parent. An envelope value equal to the selected
-value is rejected as `SelectedValueNotDistinct` before either source is read.
-That rejection is an ineligible-path classification, not authentication or
-`AlreadyFinalized` replay authority. It returns no transition or conflict
-authority and leaves the borrowed storage journal unchanged and operable. The
-node composition boundary separately consumes its signing scope on this error
-and returns no continuation authority.
+Both forms first require a healthy operable journal and a work ceiling no
+greater than the persisted journal ceiling. The batch form additionally
+requires its evidence round not to exceed the caller-local ceiling before
+proposal work. Each strictly bounds and decodes only its evidence-free value,
+requires the exact journal context and caller target, requires its height to be
+already selected, and obtains that height's exact replay-retained selected
+parent. A value equal to the selected value is rejected as
+`SelectedValueNotDistinct` before either source is read. That rejection is an
+ineligible-path classification, not authentication or `AlreadyFinalized` replay
+authority. It returns no transition or conflict authority and leaves the
+borrowed storage journal unchanged and operable. The node composition boundary
+separately consumes its signing scope on this error and returns no continuation
+authority.
 
-Only a preliminarily distinct value reaches source access. The operation then
-requires the candidate store's exact chain, integrity-reads the exact candidate
-and payload without changing either source's durable entries or bytes, and
-completely verifies the envelope against the retained selected parent. A source
-integrity/read failure may poison only the owning live handle under that store's
-existing reopen contract. The envelope's canonically framed certificate position
-supplies only bounded proposer-work routing. Full verification still requires
-the exact parent and height, producer authorization, non-nil strict-supermajority
-precommit certificate, state commitment, artifact parent and roots, canonical
+Only a preliminarily distinct value reaches source access. Each form then
+requires the candidate store's exact chain and integrity-reads the exact
+candidate and payload without changing either source's durable entries or
+bytes. A source integrity/read failure may poison only the owning live handle
+under that store's existing reopen contract. The envelope's canonically framed
+certificate position supplies only bounded proposer-work routing. The batch
+form instead derives only the explicit round from the retained selected parent;
+it completely verifies the proposal, payload, producer, state transition, and
+positioned fixed set before applying the unchanged all-or-nothing exact-batch
+constructor for the matching non-nil precommit role and proposal root. For
+identical votes, that constructor supplies the same canonical certificate and
+complete-envelope identity as the envelope form. Full verification still
+requires the exact parent and height, producer authorization, non-nil strict-
+supermajority evidence, state commitment, artifact parent and roots, canonical
 payload, and caller target. Availability, peer identity, transport
-authentication, and the preliminary value are not accepted as conflict evidence.
+authentication, vote order, and the preliminary value are not accepted as
+conflict evidence.
 
 Only the resulting private-field `OwnedVerifiedFixedConsensusTransitionV0`
 reaches `commit_verified`. Because the height and distinctness were preflighted
@@ -304,9 +315,12 @@ and append ambiguity retains finality's exact-anchor restart classification.
 deny-only verification and source-store boundaries through
 `FixedValidatorAnchoredFinalityJournalV0`. It advances the independent finality
 anchor before returning the exact candidate target and durable halt. Neither
-function selects a branch, returns an operable head, rolls back history, mutates
-or prunes source data, discovers a candidate, trusts provenance, or performs
-networking, automatic promotion, repair, retry, or multi-height work.
+exact-batch function changes that ordering: its raw-journal and anchored entry
+points differ only in whether the terminal frame advances the independent
+anchor before publication. None of these functions selects a branch, returns an
+operable head, rolls back history, mutates or prunes source data, discovers a
+candidate, trusts provenance, or performs networking, automatic promotion,
+repair, retry, or multi-height work.
 
 ## Mandatory durable signer-height advancement
 

@@ -93,14 +93,17 @@ certificate. To preserve the existing envelope ingress contract, this path
 accepts a current, lower, or higher round relative to the signer when it fits
 both ceilings. That compatibility is not a preference or catch-up rule.
 
-The separate candidate-backed conflict ingress accepts the same explicit input
-shape only for a height already retained by finality. It rejects an
-evidence-free value equal to the selected value before source reads, fully
-verifies a preliminarily distinct value against that height's exact retained
-selected parent, and admits only the existing terminal sibling-conflict result.
-The stores supply availability bytes only and receive no durable mutation;
-source-integrity failures retain each store's existing poison-and-reopen
-boundary.
+The separate candidate-backed conflict ingress and its exact-batch sibling
+accept the same caller-selected target and stores only for a height already
+retained by finality. The envelope form accepts one complete canonical envelope;
+the batch form accepts separate proposal-control bytes, one exact caller-routed
+signed-precommit batch, and an explicit evidence round within the caller and
+persisted ceilings. Both reject an evidence-free value equal to the selected
+value before source reads, fully verify a preliminarily distinct value against
+that height's exact retained selected parent, and admit only the existing
+terminal sibling-conflict result. The stores supply availability bytes only and
+receive no durable mutation; source-integrity failures retain each store's
+existing poison-and-reopen boundary.
 
 For every ingress the caller explicitly chooses the one transition, exact input
 set, or target to submit. That choice does not grant peer evidence, candidate
@@ -123,8 +126,9 @@ stop authority for this scope. Only `commit_verified_finality`,
 `commit_candidate_backed_finality`, and their three height-advancing exact-
 precommit-batch siblings may couple its height capability into the signer.
 `commit_verified_finality` and the separate
-`commit_candidate_backed_finality_conflict` may instead couple an exact anchored
-selected-sibling stop capability into the signer, while
+`commit_candidate_backed_finality_conflict` plus its exact-precommit-batch
+sibling may instead couple an exact anchored selected-sibling stop capability
+into the signer, while
 `commit_current_round_preselection_conflict` plus its exact-precommit-batch
 sibling and
 `commit_lower_round_preselection_conflict` plus its exact-precommit-batch
@@ -314,6 +318,37 @@ candidate-envelope path is signer-independent and both explicit work ceilings
 bound reconstruction. It grants no automatic catch-up, evidence preference, or
 branch authority.
 
+## Candidate-backed finalized-sibling exact-batch admission
+
+`commit_candidate_backed_finality_conflict_vote_batch` is the exact-batch
+sibling of the existing deny-only candidate-backed finalized-sibling ingress.
+The caller supplies one exact target, proposal-control byte string, complete
+signed-precommit batch, `evidence_round`, inclusive work ceiling, and both source
+stores. The operation requires healthy finality, applies the persisted ceiling
+before the caller ceiling and the caller ceiling before proposal work, bounds
+and decodes only enough proposal value to authenticate the context and target,
+requires that value's positive height already to be selected, and rejects the
+selected value before reading either source.
+
+For a preliminarily distinct value, the anchored finality owner obtains that
+height's replay-retained selected parent rather than the live signing branch,
+derives only the explicit round, integrity-reads the exact candidate and
+Foundation payload, completely verifies the proposal, producer, state
+transition, and positioned fixed set, and applies the unchanged all-or-nothing
+batch constructor for the matching non-nil precommit role and proposal root.
+Only the resulting private-field owned transition may enter the existing
+selected-sibling terminal halt. Identical evidence produces the same canonical
+envelope and conflict identities as the envelope ingress.
+
+Unlike the direct-child candidate-backed batch adapter, every outcome consumes
+the signing scope to preserve the established candidate-conflict contract.
+Pre-append rejection changes no finality or signer authority file. Once the halt
+append begins, ambiguous durability remains strict-restart-only; success routes
+only the exact anchored halt capability into the independent signer stop and
+returns no branch or continuation scope. The target, route, source presence,
+vote order, and caller provenance grant no observation, preference, selection,
+winner, rollback, or reusable-proof authority.
+
 ## Ordered transitions
 
 `commit_verified_finality` applies exactly one sealed transition in this order:
@@ -403,6 +438,9 @@ error and no scope before source access. A distinct value can reach finality
 only after complete authentication; its anchored terminal halt then enters the
 same stop-capability and signer-stop sequence as the sealed-transition path.
 The method returns only the paired terminal evidence after both anchors advance.
+`commit_candidate_backed_finality_conflict_vote_batch` preserves that exact
+ordering and consuming outcome while replacing only the prebuilt envelope with
+the explicitly routed proposal and all-or-nothing signed-precommit batch.
 
 ## Nonterminal outcomes
 
@@ -495,14 +533,16 @@ already received before the stop.
 
 Every error after an owned transition or owned transition pair enters finality
 consumes the scope and returns no signing authority. Exact-current, paired
-exact-current, lower-round single or paired, and candidate-backed exact-batch
-pre-effect input failures are earlier typed rejection outcomes that return the
-unchanged scope.
+exact-current, lower-round single or paired, and candidate-backed direct-child
+exact-batch pre-effect input failures are earlier typed rejection outcomes that
+return the unchanged scope. The candidate-backed finalized-sibling envelope and
+exact-batch methods instead preserve their stricter consume-on-every-outcome
+contract even when a pre-append rejection changed no authority byte.
 Error stages distinguish:
 
 - finality commit rejection or ambiguous finality durability;
 - exact-current or lower-round node-coherence failure before finality admission;
-- candidate source, envelope, or exact-batch rejection, or ambiguous
+- candidate source, envelope, proposal, or exact-batch rejection, or ambiguous
   candidate-backed finality durability;
 - failure to issue height authority after known finality success;
 - signer child-lineage prepare or live acknowledgement failure after known

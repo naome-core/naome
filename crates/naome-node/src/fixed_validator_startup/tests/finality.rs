@@ -5256,6 +5256,177 @@ fn candidate_backed_historical_sibling_stops_finality_and_signer_without_mutatin
 }
 
 #[test]
+fn candidate_backed_historical_sibling_vote_batch_stops_both_anchors_and_strictly_reopens() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("candidate-backed-finality-conflict-batch");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut candidates = create_candidate_store(&layout, fixture.definition);
+    let mut payloads = create_payload_store(&layout);
+    let stopped = ready
+        .run_with_signing_session(|scope| {
+            let genesis = scope.branch().clone();
+            let mut selected = ArtifactChainState::new(fixture.definition);
+            let first = fixture.transition(&genesis, &selected, ZfcAxiom::Pairing, 0);
+            let first_block = first.value().artifact_block();
+            let first_payload = first.canonical_artifact_bytes().to_vec();
+            let selected_ancestry = first.value().ancestry_id();
+
+            let (sibling, sibling_control, sibling_precommit) =
+                candidate_backed_batch_finality_inputs(
+                    &fixture,
+                    &genesis,
+                    &selected,
+                    &mut candidates,
+                    &mut payloads,
+                    ZfcAxiom::Union,
+                    2,
+                );
+            let sibling_target = sibling.value().artifact_block().id();
+            let sibling_ancestry = sibling.value().ancestry_id();
+            let sibling_envelope_id = sibling.envelope_id();
+            let sibling_batch = [sibling_precommit.as_slice()];
+
+            let (scope, _) = expect_continuation(scope.commit_verified_finality(first).unwrap());
+            selected.apply_block(&first_block, first_payload).unwrap();
+            let second = fixture.transition(scope.branch(), &selected, ZfcAxiom::PowerSet, 0);
+            let (mut scope, _) =
+                expect_continuation(scope.commit_verified_finality(second).unwrap());
+
+            let branch = scope.branch().clone();
+            let round = branch.begin_round_zero().unwrap();
+            let effect = scope
+                .signing_session_mut()
+                .decide_prevote_without_proposal()
+                .unwrap();
+            assert!(matches!(
+                scope
+                    .signing_session_mut()
+                    .prepare_vote(&round, effect)
+                    .unwrap(),
+                FixedValidatorVotePrepareOutcomeV0::Prepared(_)
+            ));
+
+            let node_before = layout.images();
+            let sources_before = layout.source_images();
+            let stopped = scope
+                .commit_candidate_backed_finality_conflict_vote_batch(
+                    &mut candidates,
+                    &mut payloads,
+                    sibling_target,
+                    &sibling_control,
+                    &sibling_batch,
+                    FixedValidatorNodeFinalityRoundRouteV0::new(
+                        ConsensusRound::new(2),
+                        ConsensusRound::new(2),
+                    ),
+                )
+                .unwrap();
+            for (index, (before, after)) in node_before.iter().zip(layout.images()).enumerate() {
+                assert_ne!(
+                    before, &after,
+                    "node authority image {index} did not advance"
+                );
+            }
+            assert_eq!(layout.source_images(), sources_before);
+            assert_eq!(stopped.finality_halt().height().value(), 1);
+            assert_eq!(stopped.finality_halt().first_ancestry(), selected_ancestry);
+            assert_eq!(stopped.finality_halt().second_ancestry(), sibling_ancestry);
+            assert_eq!(
+                stopped.finality_halt().second_envelope_id(),
+                sibling_envelope_id
+            );
+            assert_eq!(
+                stopped.signer_stop().finality_state_id(),
+                stopped.finality_halt().state_id()
+            );
+            stopped
+        })
+        .unwrap();
+
+    drop(candidates);
+    drop(payloads);
+    match fixture
+        .provision(&layout, 8)
+        .open(fixture.signing_key())
+        .unwrap()
+    {
+        FixedValidatorNodeStartupV0::FinalityStopped(reopened) => {
+            assert_eq!(reopened, stopped);
+        }
+        _ => panic!("strict restart must preserve the batch-backed terminal state"),
+    }
+}
+
+#[test]
+fn candidate_backed_selected_value_vote_batch_error_consumes_scope_and_reopens_ready() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("candidate-backed-finality-conflict-batch-selected");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let mut candidates = create_candidate_store(&layout, fixture.definition);
+    let mut payloads = create_payload_store(&layout);
+    let (expected_coordinate, expected_position) = ready
+        .run_with_signing_session(|scope| {
+            let selected = ArtifactChainState::new(fixture.definition);
+            let transition = fixture.transition(scope.branch(), &selected, ZfcAxiom::Pairing, 0);
+            let target = transition.value().artifact_block().id();
+            let control = proposal_control_bytes(
+                transition.value(),
+                transition.position(),
+                &fixture.signing_key(),
+            );
+            let (mut scope, _) =
+                expect_continuation(scope.commit_verified_finality(transition).unwrap());
+            let expected = signing_scope_diagnostics(&mut scope);
+            let node_before = layout.images();
+            let sources_before = layout.source_images();
+            assert!(matches!(
+                scope.commit_candidate_backed_finality_conflict_vote_batch(
+                    &mut candidates,
+                    &mut payloads,
+                    target,
+                    &control,
+                    &[],
+                    FixedValidatorNodeFinalityRoundRouteV0::new(
+                        ConsensusRound::new(0),
+                        ConsensusRound::new(0),
+                    ),
+                ),
+                Err(FixedValidatorNodeFinalityErrorV0::CandidateBackedFinality(source))
+                    if matches!(
+                        source.as_ref(),
+                        CandidateBackedFinalityErrorV0::SelectedValueNotDistinct { height }
+                            if height.value() == 1
+                    )
+            ));
+            assert_eq!(layout.images(), node_before);
+            assert_eq!(layout.source_images(), sources_before);
+            (expected.branch_coordinate, expected.position)
+        })
+        .unwrap();
+
+    drop(candidates);
+    drop(payloads);
+    let reopened = expect_ready(
+        fixture
+            .provision_with_catch_up_limit(&layout, 8, 0)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|scope| {
+            assert_eq!(scope.branch().coordinate(), expected_coordinate);
+            assert_eq!(scope.signing_session.position(), expected_position);
+        })
+        .unwrap();
+}
+
+#[test]
 fn candidate_backed_same_selected_value_consumes_scope_without_source_or_node_writes() {
     let fixture = Fixture::new();
     let layout = TestLayout::new("candidate-backed-finality-conflict-same-value");
