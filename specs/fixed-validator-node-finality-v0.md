@@ -29,6 +29,14 @@ matching batch, and convert the result to the same private-field owned
 transition before finality begins. The caller supplies no round cursor,
 snapshot, parent, proposer, proposal root, or transition.
 
+The paired exact-current preselection-conflict ingress accepts two of those
+proposal-control, owned-payload, and canonical-certificate triples plus the same
+inclusive caller-local round ceiling. It derives one exact node-owned round,
+independently verifies and seals both triples against that same selected parent,
+requires distinct exact values and proposal roots, and only then consumes the
+two private-field transitions into the anchored neutral halt. Caller ordering is
+discarded; the finality journal derives canonical root order itself.
+
 The separate strictly lower-round certificate ingress accepts the same complete
 certificate input shape and caller-local work ceiling. It canonically frames
 the precommit certificate only to obtain an unauthenticated routing position,
@@ -97,13 +105,14 @@ node-owned finality journal is therefore the exclusive source of height and
 stop authority for this scope. Only `commit_verified_finality`,
 `commit_current_round_finality`, `commit_lower_round_finality`,
 `commit_candidate_backed_finality`, and the three exact-precommit-batch siblings
-may couple its height capability into the signer. `commit_verified_finality` and
-the separate
-`commit_candidate_backed_finality_conflict` may couple only an exact anchored
-sibling-conflict capability into the signer. There is no public mutable-journal
-or raw signing-session escape hatch. A continuation scope is returned only by a
-complete nonterminal outcome; the candidate conflict method has no continuation
-return type.
+may couple its height capability into the signer. `commit_verified_finality`
+and the separate `commit_candidate_backed_finality_conflict` may instead couple
+an exact anchored selected-sibling stop capability into the signer, while
+`commit_current_round_preselection_conflict` may couple only the neutral paired-
+preselection stop capability. There is no public mutable-journal or raw signing-
+session escape hatch. A continuation scope is returned only by a complete
+nonterminal outcome; neither conflict-specific method has a continuation
+success path.
 
 ## Exact-current-round admission
 
@@ -143,6 +152,30 @@ returns the same unchanged signing scope with a typed rejection. None of those
 paths changes volatile signer state or either journal or anchor. Submission,
 successful framing, explicit routing, or caller classification alone grants no
 proposal, certificate, or finality authority.
+
+## Paired exact-current preselection conflict
+
+`commit_current_round_preselection_conflict` repeats steps 1 and 2 once, then
+performs steps 3 and 4 independently for the first and second complete input
+triples while both borrow the same typed round. Failure of either proposal or
+certificate returns the unchanged scope with a side-specific typed rejection;
+neither verified half is reusable authority. Only after both proofs become
+owned sealed transitions does the method release the round borrow and consume
+the scope.
+
+The consuming stage asks only the anchored finality journal to verify their
+same position, exact unselected parent, distinct values and roots, canonicalize
+root order, and append one tag-`03` terminal frame. It never invokes the
+single-transition commit and never publishes a finality selection or signer-
+height capability. After the finality frame and anchor are durable, the existing
+opaque stop handoff carries the neutral halt kind into one tag-`0b` signer stop
+and vote-anchor update. Success returns the existing paired terminal result and
+no continuation scope.
+
+This method accepts no root, parent, position, ordering, or winner metadata from
+the caller. A classifier may supply the input bytes, but possession, inbox
+retention, saturation state, peer provenance, and caller ordering remain
+non-authoritative and are completely rechecked or discarded.
 
 ## Strictly lower-round admission
 
@@ -253,6 +286,15 @@ exact-current branch-relative construction names one unselected direct child,
 so neither ingress claims the sealed ingress's already-selected replay result
 nor either sibling-conflict path.
 
+`commit_current_round_preselection_conflict` completes both exact-current
+admissions before changing node state, then appends and anchors one paired
+finality halt without entering the ordinary single-transition commit. It issues
+no height capability and advances no branch. The coordinator obtains the exact
+anchored neutral stop capability, appends and anchors one tag-`0b` signer stop,
+and only then returns `FinalityStopped`. A failure at either durable stage
+returns no scope; strict restart alone classifies the finality and signer
+prefixes, and no earlier durable effect is rolled back or reinterpreted.
+
 `commit_lower_round_finality` and
 `commit_lower_round_finality_vote_batch` first complete every applicable
 strictly lower-round admission step above without changing node state. They
@@ -353,6 +395,14 @@ branch-relative verification is mandatory. The exact-current and lower-round
 direct-child ingresses are not sibling-conflict paths and make no such outcome
 claim.
 
+When the paired exact-current ingress independently verifies two distinct
+unselected direct-child transitions for the same exact position, the finality
+journal instead appends and anchors one neutral paired-preselection record. It
+does not install either value before stopping. The coordinator routes only that
+halt kind and canonical witness identities into the distinct neutral signer-
+stop tag. No root order, proposal representation, certificate representation,
+or retained-inbox state becomes a selected branch or reusable proof authority.
+
 Only after the signer-stop record and independent vote anchor synchronize does
 the coordinator return `FinalityStopped`, pairing the exact finality halt with
 the matching per-key stop. It never returns a branch or signing scope from this
@@ -362,10 +412,10 @@ already received before the stop.
 
 ## Failure and restart
 
-Every error after an owned transition enters finality consumes the scope and
-returns no signing authority. Exact-current, lower-round, and candidate-backed
-exact-batch pre-effect input failures are earlier typed rejection outcomes that
-return the unchanged scope.
+Every error after an owned transition or owned transition pair enters finality
+consumes the scope and returns no signing authority. Exact-current, paired
+exact-current, lower-round, and candidate-backed exact-batch pre-effect input
+failures are earlier typed rejection outcomes that return the unchanged scope.
 Error stages distinguish:
 
 - finality commit rejection or ambiguous finality durability;
@@ -423,9 +473,10 @@ this node's public voting facade.
 These are separate required product capabilities, not unnecessary work. The
 candidate-backed integration intentionally stops at the already decided
 caller-selected one-target direct-child or deny-only conflict boundary. Any
-automatic selection, peer-driven promotion, or conflict-triggering policy
-requires a separate explicit authority and policy decision. The exact-current,
-lower-round, and candidate-backed exact-batch integrations intentionally stop
-at separate complete caller-supplied bytes and do not observe or choose events.
-They neither replace the other finality ingresses nor infer that no other
-finality evidence exists.
+automatic candidate selection, peer-driven promotion, or conflict-triggering
+policy outside the exact driver-owned paired-preselection rule requires a
+separate explicit authority and policy decision. The exact-current single-
+proposal, lower-round, and candidate-backed exact-batch integrations
+intentionally stop at separate complete caller-supplied bytes and do not
+observe or choose events. They neither replace the paired driver ingress or the
+other finality ingresses nor infer that no other finality evidence exists.

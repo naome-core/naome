@@ -97,12 +97,16 @@ and does not protect against a party able to rewrite and rehash anchor bytes.
 
 Sequence zero names the synchronized journal header and genesis journal-state
 identity. Every complete state-changing journal frame increments the sequence
-exactly once. Finality frames include finalized children and conflict halts.
+exactly once. Finality frames include finalized children, selected-sibling
+conflict halts, and one-frame paired-preselection halts. A tag-`03` finality
+pair therefore advances `N` to `N + 1`; its two embedded transitions never
+name separate anchor positions.
 Vote-safety frames include lineage bindings, vote prepares, vote completions,
 same-slot conflict halts, proposal-authoring activation, proposal prepares,
 proposal completions, proposal same-slot conflict halts, higher-round
-checkpoints, and finality-conflict stops. No-write idempotence advances neither
-sequence nor state identity.
+checkpoints, selected-sibling finality-conflict stops, and neutral paired-
+preselection stops. No-write idempotence advances neither sequence nor state
+identity.
 
 The paired journal creates a private prior-to-next transition only after it has
 synchronized the complete frame body and chained state-ID footer. The transition

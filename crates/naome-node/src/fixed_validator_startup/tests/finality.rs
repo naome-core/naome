@@ -16,8 +16,10 @@ use naome_storage::{
 
 use super::super::finality::{
     FixedValidatorNodeCurrentRoundFinalityErrorV0, FixedValidatorNodeCurrentRoundFinalityOutcomeV0,
-    FixedValidatorNodeCurrentRoundFinalityRejectionV0, FixedValidatorNodeLowerRoundFinalityErrorV0,
-    FixedValidatorNodeLowerRoundFinalityOutcomeV0, FixedValidatorNodeLowerRoundFinalityRejectionV0,
+    FixedValidatorNodeCurrentRoundFinalityRejectionV0,
+    FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0,
+    FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityOutcomeV0,
+    FixedValidatorNodeLowerRoundFinalityRejectionV0,
 };
 use super::*;
 
@@ -63,6 +65,23 @@ fn expect_current_round_finality_rejection(
         }
         FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality(_) => {
             panic!("expected a no-effect current-round finality rejection")
+        }
+    }
+}
+
+fn expect_current_round_preselection_conflict_rejection(
+    outcome: FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0<'_>,
+) -> (
+    FixedValidatorNodeSigningScopeV0<'_>,
+    FixedValidatorNodeCurrentRoundFinalityRejectionV0,
+) {
+    match outcome {
+        FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::Rejected {
+            scope,
+            rejection,
+        } => (*scope, *rejection),
+        FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::FinalityStopped(_) => {
+            panic!("expected a no-effect paired-finality rejection")
         }
     }
 }
@@ -133,6 +152,7 @@ fn expect_candidate_backed_finality_rejection(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SigningScopeDiagnosticsV0 {
+    branch_coordinate: FixedConsensusBranchCoordinateV0,
     position: ConsensusPosition,
     phase: FixedValidatorLockPhaseV0,
     locked_value: Option<FixedValidatorLockedValueV0>,
@@ -142,8 +162,10 @@ struct SigningScopeDiagnosticsV0 {
 fn signing_scope_diagnostics(
     scope: &mut FixedValidatorNodeSigningScopeV0<'_>,
 ) -> SigningScopeDiagnosticsV0 {
+    let branch_coordinate = scope.branch().coordinate();
     let session = scope.signing_session();
     SigningScopeDiagnosticsV0 {
+        branch_coordinate,
         position: session.position(),
         phase: session.phase(),
         locked_value: session.locked_value(),
@@ -1185,6 +1207,166 @@ fn lower_round_finality_commits_before_a_pending_signer_handoff_fails() {
             assert_eq!(pending.state_id(), prepared_vote.state_id());
         }
         _ => panic!("strict restart must expose the durable pending signer state"),
+    }
+}
+
+#[test]
+fn paired_current_round_rejections_restore_the_exact_scope_and_all_files_before_retry() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("current-round-preselection-pair-rejections");
+    let proposer = fixture.signing_key();
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let selected = ArtifactChainState::new(fixture.definition);
+    let before = layout.images();
+
+    let stopped = ready
+        .run_with_signing_session(|mut scope| {
+            let branch = scope.branch().clone();
+            let (first_control, first_payload, first_certificate, first_position, _) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Pairing,
+                    0,
+                    &proposer,
+                    &[&proposer],
+                );
+            let (second_control, second_payload, second_certificate, second_position, _) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Union,
+                    0,
+                    &proposer,
+                    &[&proposer],
+                );
+            assert_eq!(first_position, second_position);
+            let diagnostics = signing_scope_diagnostics(&mut scope);
+
+            let mut invalid_first_control = first_control.clone();
+            invalid_first_control.pop();
+            let (mut next, rejection) = expect_current_round_preselection_conflict_rejection(
+                scope
+                    .commit_current_round_preselection_conflict(
+                        &invalid_first_control,
+                        first_payload.clone(),
+                        &first_certificate,
+                        &second_control,
+                        second_payload.clone(),
+                        &second_certificate,
+                        ConsensusRound::new(8),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCurrentRoundFinalityRejectionV0::FirstProposal(_)
+            ));
+            assert_eq!(signing_scope_diagnostics(&mut next), diagnostics);
+            assert_eq!(layout.images(), before);
+            scope = next;
+
+            let (mut next, rejection) = expect_current_round_preselection_conflict_rejection(
+                scope
+                    .commit_current_round_preselection_conflict(
+                        &first_control,
+                        first_payload.clone(),
+                        &[],
+                        &second_control,
+                        second_payload.clone(),
+                        &second_certificate,
+                        ConsensusRound::new(8),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCurrentRoundFinalityRejectionV0::FirstPrecommitCertificate(_)
+            ));
+            assert_eq!(signing_scope_diagnostics(&mut next), diagnostics);
+            assert_eq!(layout.images(), before);
+            scope = next;
+
+            let mut invalid_second_control = second_control.clone();
+            invalid_second_control.pop();
+            let (mut next, rejection) = expect_current_round_preselection_conflict_rejection(
+                scope
+                    .commit_current_round_preselection_conflict(
+                        &first_control,
+                        first_payload.clone(),
+                        &first_certificate,
+                        &invalid_second_control,
+                        second_payload.clone(),
+                        &second_certificate,
+                        ConsensusRound::new(8),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCurrentRoundFinalityRejectionV0::SecondProposal(_)
+            ));
+            assert_eq!(signing_scope_diagnostics(&mut next), diagnostics);
+            assert_eq!(layout.images(), before);
+            scope = next;
+
+            let (mut next, rejection) = expect_current_round_preselection_conflict_rejection(
+                scope
+                    .commit_current_round_preselection_conflict(
+                        &first_control,
+                        first_payload.clone(),
+                        &first_certificate,
+                        &second_control,
+                        second_payload.clone(),
+                        &[],
+                        ConsensusRound::new(8),
+                    )
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeCurrentRoundFinalityRejectionV0::SecondPrecommitCertificate(_)
+            ));
+            assert_eq!(signing_scope_diagnostics(&mut next), diagnostics);
+            assert_eq!(layout.images(), before);
+
+            match next
+                .commit_current_round_preselection_conflict(
+                    &first_control,
+                    first_payload,
+                    &first_certificate,
+                    &second_control,
+                    second_payload,
+                    &second_certificate,
+                    ConsensusRound::new(8),
+                )
+                .unwrap()
+            {
+                FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::FinalityStopped(
+                    stop,
+                ) => *stop,
+                FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::Rejected {
+                    ..
+                } => {
+                    panic!("the intact pair must succeed after no-effect rejections")
+                }
+            }
+        })
+        .unwrap();
+    assert_eq!(
+        stopped.finality_halt().kind(),
+        naome_storage::FixedValidatorFinalityHaltKindV0::PreselectionPair
+    );
+    assert_eq!(
+        stopped.signer_stop().kind(),
+        naome_storage::FixedValidatorFinalityHaltKindV0::PreselectionPair
+    );
+    let after = layout.images();
+    for index in 0..after.len() {
+        assert_ne!(after[index], before[index], "durable image index {index}");
     }
 }
 
@@ -3195,14 +3377,8 @@ fn candidate_backed_historical_sibling_stops_finality_and_signer_without_mutatin
             }
             assert_eq!(layout.source_images(), sources_before);
             assert_eq!(stopped.finality_halt().height().value(), 1);
-            assert_eq!(
-                stopped.finality_halt().selected_ancestry(),
-                selected_ancestry
-            );
-            assert_eq!(
-                stopped.finality_halt().conflicting_ancestry(),
-                sibling_ancestry
-            );
+            assert_eq!(stopped.finality_halt().first_ancestry(), selected_ancestry);
+            assert_eq!(stopped.finality_halt().second_ancestry(), sibling_ancestry);
             assert_eq!(
                 stopped.signer_stop().finality_state_id(),
                 stopped.finality_halt().state_id()
@@ -3477,6 +3653,165 @@ fn conflict_stop_anchor_failure_returns_no_scope_and_no_false_terminal_outcome()
     ));
     assert!(matches!(
         fixture.provision(&layout, 8).open(fixture.signing_key()),
+        Err(FixedValidatorNodeStartupErrorV0::VotePair(source))
+            if matches!(
+                source.as_ref(),
+                FixedValidatorAnchoredVoteSafetyJournalErrorV0::Journal(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind { .. }
+                    )
+            )
+    ));
+}
+
+#[test]
+fn paired_conflict_anchor_failures_return_no_scope_and_reopen_only_as_journal_ahead() {
+    let fixture = Fixture::new();
+    let selected = ArtifactChainState::new(fixture.definition);
+
+    let finality_layout = TestLayout::new("paired-finality-anchor-failure");
+    let ready = fixture
+        .provision(&finality_layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let finality_anchor_image = directory_image(&finality_layout.finality_anchor);
+    let finality_anchor_bytes = &finality_anchor_image
+        .iter()
+        .find(|(name, _)| name.ends_with(".anchor"))
+        .unwrap()
+        .1;
+    let finality_sequence = u64::from_be_bytes(finality_anchor_bytes[149..157].try_into().unwrap());
+    let collision = next_anchor_collision(&finality_layout.finality_anchor, finality_sequence + 1);
+    let error = ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let (first_control, first_payload, first_certificate, _, _) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Pairing,
+                    0,
+                    &fixture.signing_key(),
+                    &[&fixture.signing_key()],
+                );
+            let (second_control, second_payload, second_certificate, _, _) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Union,
+                    0,
+                    &fixture.signing_key(),
+                    &[&fixture.signing_key()],
+                );
+            match scope.commit_current_round_preselection_conflict(
+                &first_control,
+                first_payload,
+                &first_certificate,
+                &second_control,
+                second_payload,
+                &second_certificate,
+                ConsensusRound::new(8),
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("the paired finality anchor collision must fail closed"),
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        error,
+        FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(source)
+            if matches!(
+                source.as_ref(),
+                FixedValidatorNodeFinalityErrorV0::Commit(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorFinalityJournalErrorV0::PairedCommit { .. }
+                    )
+            )
+    ));
+    fs::remove_file(collision).unwrap();
+    assert!(matches!(
+        fixture
+            .provision(&finality_layout, 8)
+            .open(fixture.signing_key()),
+        Err(FixedValidatorNodeStartupErrorV0::FinalityPair(source))
+            if matches!(
+                source.as_ref(),
+                FixedValidatorAnchoredFinalityJournalErrorV0::Journal(
+                    FixedValidatorFinalityJournalErrorV0::AnchorBehind { .. }
+                )
+            )
+    ));
+
+    let signer_layout = TestLayout::new("paired-signer-stop-anchor-failure");
+    let ready = fixture
+        .provision(&signer_layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let vote_anchor_image = directory_image(&signer_layout.vote_anchor);
+    let vote_anchor_bytes = &vote_anchor_image
+        .iter()
+        .find(|(name, _)| name.ends_with(".anchor"))
+        .unwrap()
+        .1;
+    let vote_sequence = u64::from_be_bytes(vote_anchor_bytes[184..192].try_into().unwrap());
+    let collision = next_anchor_collision(&signer_layout.vote_anchor, vote_sequence + 1);
+    let error = ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let proposer = fixture.signing_key();
+            let (first_control, first_payload, first_certificate, _, _) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Pairing,
+                    0,
+                    &proposer,
+                    &[&proposer],
+                );
+            let (second_control, second_payload, second_certificate, _, _) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Union,
+                    0,
+                    &proposer,
+                    &[&proposer],
+                );
+            match scope.commit_current_round_preselection_conflict(
+                &first_control,
+                first_payload,
+                &first_certificate,
+                &second_control,
+                second_payload,
+                &second_certificate,
+                ConsensusRound::new(8),
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("the paired signer-stop anchor collision must fail closed"),
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        error,
+        FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(source)
+            if matches!(
+                source.as_ref(),
+                FixedValidatorNodeFinalityErrorV0::SignerStop { halt, source }
+                    if halt.kind()
+                        == naome_storage::FixedValidatorFinalityHaltKindV0::PreselectionPair
+                        && matches!(
+                            source.as_ref(),
+                            FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }
+                        )
+            )
+    ));
+    fs::remove_file(collision).unwrap();
+    assert!(matches!(
+        fixture
+            .provision(&signer_layout, 8)
+            .open(fixture.signing_key()),
         Err(FixedValidatorNodeStartupErrorV0::VotePair(source))
             if matches!(
                 source.as_ref(),

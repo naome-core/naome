@@ -33,7 +33,7 @@ use super::fixed_validator_anchor::{
 };
 use super::fixed_validator_finality_journal::{
     FixedValidatorDurableFinalityConflictV0, FixedValidatorDurableFinalityTransitionV0,
-    FixedValidatorFinalityJournalStateIdV0,
+    FixedValidatorFinalityHaltKindV0, FixedValidatorFinalityJournalStateIdV0,
 };
 use super::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
@@ -68,6 +68,7 @@ const PROPOSAL_ACTIVATION_RECORD: u8 = 7;
 const PROPOSAL_PREPARE_RECORD: u8 = 8;
 const PROPOSAL_COMPLETE_RECORD: u8 = 9;
 const PROPOSAL_CONFLICT_HALT_RECORD: u8 = 10;
+const PRESELECTION_CONFLICT_STOP_RECORD: u8 = 11;
 const SIGNING_LINEAGE_DOMAIN: &[u8] = b"naome:fixed-validator-vote-safety-signing-lineage:v0\0";
 const SIGNING_LINEAGE_ID_BYTES: usize = 32;
 const SIGNING_LINEAGE_PAYLOAD_BYTES: usize = 8 + SIGNING_LINEAGE_ID_BYTES;
@@ -517,44 +518,50 @@ impl FixedValidatorVoteSafetyHaltV0 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct FixedValidatorFinalityConflictSignerStopV0 {
+    kind: FixedValidatorFinalityHaltKindV0,
     finality_state_id: FixedValidatorFinalityJournalStateIdV0,
     height: ConsensusHeight,
-    selected_ancestry: ConsensusAncestryId,
-    selected_envelope_id: ConsensusEnvelopeId,
-    conflicting_ancestry: ConsensusAncestryId,
-    conflicting_envelope_id: ConsensusEnvelopeId,
+    first_ancestry: ConsensusAncestryId,
+    first_envelope_id: ConsensusEnvelopeId,
+    second_ancestry: ConsensusAncestryId,
+    second_envelope_id: ConsensusEnvelopeId,
     vote_state_id: FixedValidatorVoteSafetyJournalStateIdV0,
 }
 
 impl FixedValidatorFinalityConflictSignerStopV0 {
+    /// Returns the finality terminal class enforced by this stop.
+    pub const fn kind(self) -> FixedValidatorFinalityHaltKindV0 {
+        self.kind
+    }
+
     /// Returns the exact anchored finality state that authorized this stop.
     pub const fn finality_state_id(self) -> FixedValidatorFinalityJournalStateIdV0 {
         self.finality_state_id
     }
 
-    /// Returns the height at which finality selected distinct siblings.
+    /// Returns the height at which finality established the terminal conflict.
     pub const fn height(self) -> ConsensusHeight {
         self.height
     }
 
-    /// Returns the first selected value ancestry retained by finality.
-    pub const fn selected_ancestry(self) -> ConsensusAncestryId {
-        self.selected_ancestry
+    /// Returns the first ancestry in the halt's kind-specific canonical order.
+    pub const fn first_ancestry(self) -> ConsensusAncestryId {
+        self.first_ancestry
     }
 
-    /// Returns the retained first finality-envelope identity.
-    pub const fn selected_envelope_id(self) -> ConsensusEnvelopeId {
-        self.selected_envelope_id
+    /// Returns the first envelope in the halt's kind-specific canonical order.
+    pub const fn first_envelope_id(self) -> ConsensusEnvelopeId {
+        self.first_envelope_id
     }
 
-    /// Returns the conflicting finalized value ancestry.
-    pub const fn conflicting_ancestry(self) -> ConsensusAncestryId {
-        self.conflicting_ancestry
+    /// Returns the second ancestry in the halt's kind-specific canonical order.
+    pub const fn second_ancestry(self) -> ConsensusAncestryId {
+        self.second_ancestry
     }
 
-    /// Returns the conflicting finality-envelope identity.
-    pub const fn conflicting_envelope_id(self) -> ConsensusEnvelopeId {
-        self.conflicting_envelope_id
+    /// Returns the second envelope in the halt's kind-specific canonical order.
+    pub const fn second_envelope_id(self) -> ConsensusEnvelopeId {
+        self.second_envelope_id
     }
 
     /// Returns the terminal vote-journal state published by this stop.
@@ -563,12 +570,13 @@ impl FixedValidatorFinalityConflictSignerStopV0 {
     }
 
     fn same_conflict(self, other: Self) -> bool {
-        self.finality_state_id == other.finality_state_id
+        self.kind == other.kind
+            && self.finality_state_id == other.finality_state_id
             && self.height == other.height
-            && self.selected_ancestry == other.selected_ancestry
-            && self.selected_envelope_id == other.selected_envelope_id
-            && self.conflicting_ancestry == other.conflicting_ancestry
-            && self.conflicting_envelope_id == other.conflicting_envelope_id
+            && self.first_ancestry == other.first_ancestry
+            && self.first_envelope_id == other.first_envelope_id
+            && self.second_ancestry == other.second_ancestry
+            && self.second_envelope_id == other.second_envelope_id
     }
 }
 
@@ -2710,9 +2718,18 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             COMPLETE_RECORD => self.replay_completion(entry, offset, payload, state_id),
             CONFLICT_HALT_RECORD => self.replay_halt(entry, offset, payload, state_id),
             SIGNING_LINEAGE_RECORD => self.replay_signing_lineage(entry, payload, state_id),
-            FINALITY_CONFLICT_STOP_RECORD => {
-                self.replay_finality_conflict_stop(entry, payload, state_id)
-            }
+            FINALITY_CONFLICT_STOP_RECORD => self.replay_finality_conflict_stop(
+                entry,
+                payload,
+                state_id,
+                FixedValidatorFinalityHaltKindV0::SelectedSibling,
+            ),
+            PRESELECTION_CONFLICT_STOP_RECORD => self.replay_finality_conflict_stop(
+                entry,
+                payload,
+                state_id,
+                FixedValidatorFinalityHaltKindV0::PreselectionPair,
+            ),
             HIGHER_ROUND_CHECKPOINT_RECORD => {
                 self.replay_higher_round_checkpoint(entry, offset, payload, state_id)
             }
@@ -3265,6 +3282,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         entry: u64,
         payload: &[u8],
         state_id: FixedValidatorVoteSafetyJournalStateIdV0,
+        kind: FixedValidatorFinalityHaltKindV0,
     ) -> Result<(), FixedValidatorVoteSafetyJournalErrorV0> {
         if payload.len() != FINALITY_CONFLICT_STOP_PAYLOAD_BYTES {
             return Err(
@@ -3289,33 +3307,34 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 FixedValidatorVoteSafetyJournalErrorV0::InvalidFinalityConflictSignerStop { entry },
             );
         }
-        let selected_ancestry = ConsensusAncestryId::from_bytes(
+        let first_ancestry = ConsensusAncestryId::from_bytes(
             payload[40..72]
                 .try_into()
                 .expect("the selected ancestry has exact width"),
         );
-        let selected_envelope_id = ConsensusEnvelopeId::from_bytes(
+        let first_envelope_id = ConsensusEnvelopeId::from_bytes(
             payload[72..104]
                 .try_into()
                 .expect("the selected envelope identity has exact width"),
         );
-        let conflicting_ancestry = ConsensusAncestryId::from_bytes(
+        let second_ancestry = ConsensusAncestryId::from_bytes(
             payload[104..136]
                 .try_into()
                 .expect("the conflicting ancestry has exact width"),
         );
-        let conflicting_envelope_id = ConsensusEnvelopeId::from_bytes(
+        let second_envelope_id = ConsensusEnvelopeId::from_bytes(
             payload[136..168]
                 .try_into()
                 .expect("the conflicting envelope identity has exact width"),
         );
         self.finality_conflict_stop = Some(FixedValidatorFinalityConflictSignerStopV0 {
+            kind,
             finality_state_id,
             height,
-            selected_ancestry,
-            selected_envelope_id,
-            conflicting_ancestry,
-            conflicting_envelope_id,
+            first_ancestry,
+            first_envelope_id,
+            second_ancestry,
+            second_envelope_id,
             vote_state_id: state_id,
         });
         self.pending = None;
@@ -3339,12 +3358,13 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         }
         let halt = conflict.halt();
         let proposed = FixedValidatorFinalityConflictSignerStopV0 {
+            kind: halt.kind(),
             finality_state_id: halt.state_id(),
             height: halt.height(),
-            selected_ancestry: halt.selected_ancestry(),
-            selected_envelope_id: halt.selected_envelope_id(),
-            conflicting_ancestry: halt.conflicting_ancestry(),
-            conflicting_envelope_id: halt.conflicting_envelope_id(),
+            first_ancestry: halt.first_ancestry(),
+            first_envelope_id: halt.first_envelope_id(),
+            second_ancestry: halt.second_ancestry(),
+            second_envelope_id: halt.second_envelope_id(),
             vote_state_id: self.state_id,
         };
         if let Some(existing) = self.finality_conflict_stop {
@@ -4527,11 +4547,15 @@ fn finality_conflict_stop_record(
     let mut payload = [0_u8; FINALITY_CONFLICT_STOP_PAYLOAD_BYTES];
     payload[..32].copy_from_slice(stop.finality_state_id.as_bytes());
     payload[32..40].copy_from_slice(&stop.height.value().to_be_bytes());
-    payload[40..72].copy_from_slice(stop.selected_ancestry.as_bytes());
-    payload[72..104].copy_from_slice(stop.selected_envelope_id.as_bytes());
-    payload[104..136].copy_from_slice(stop.conflicting_ancestry.as_bytes());
-    payload[136..168].copy_from_slice(stop.conflicting_envelope_id.as_bytes());
-    tagged_record(FINALITY_CONFLICT_STOP_RECORD, &payload, entry)
+    payload[40..72].copy_from_slice(stop.first_ancestry.as_bytes());
+    payload[72..104].copy_from_slice(stop.first_envelope_id.as_bytes());
+    payload[104..136].copy_from_slice(stop.second_ancestry.as_bytes());
+    payload[136..168].copy_from_slice(stop.second_envelope_id.as_bytes());
+    let tag = match stop.kind {
+        FixedValidatorFinalityHaltKindV0::SelectedSibling => FINALITY_CONFLICT_STOP_RECORD,
+        FixedValidatorFinalityHaltKindV0::PreselectionPair => PRESELECTION_CONFLICT_STOP_RECORD,
+    };
+    tagged_record(tag, &payload, entry)
 }
 
 fn tagged_record(
