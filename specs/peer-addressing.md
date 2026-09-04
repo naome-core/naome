@@ -609,6 +609,46 @@ backlog, and timeout slots can still be exhausted; the responder makes no
 volumetric availability or fairness guarantee. Listener and timeout progress
 require continued polling.
 
+## Explicit two-hop reference composition
+
+One optional caller-owned composition configures multiple exact bootstrap
+identities and addresses, explicitly pulls one immutable publication from one
+chosen configured bootstrap, and atomically admits that batch into its local
+peer-address store. The caller then asks that store for its bounded diversified
+candidate set and passes one exact opaque `DialCandidate` unchanged to the
+learned-peer pull client. The candidate fixes the learned responder's signed
+IP/TCP address, Noise identity, and original configured-bootstrap provenance;
+the caller still chooses whether and when to start that exact pull.
+
+The learned responder may serve an immutable batch derived from its own healthy
+peer-address store and an exact caller-selected subject slice. A received batch
+remains bound to the immediate authenticated responder and its retained
+candidate until consuming admission. Admission rechecks that candidate's exact
+subject, signed address, original configured-bootstrap provenance, and local
+freshness before atomically applying the complete batch. Newly learned subjects
+inherit the candidate's original configured-bootstrap provenance rather than
+the responder's own upstream provenance. Strict reopen with the same local
+identity and bootstrap configuration reproduces the admitted records and their
+candidate provenance.
+
+A batch containing the destination's own signed record is rejected in full,
+even when it also contains an otherwise admissible subject. The rejection
+writes no snapshot prefix, retains the earlier bootstrap-derived candidate, and
+releases the learned pull slot. Responder identity, configured-bootstrap
+provenance, signed subject, wire order, arrival, and store presence remain
+separate facts and grant no reachability, truth, trust, artifact authorization,
+selection, consensus, or finality authority.
+
+The Unix reference vector uses real Noise-authenticated loopback responders for
+both hops. Because retained learned addresses must be globally routable while a
+portable local test cannot bind such an address, its crate-private harness keeps
+the real store-produced candidate intact for admission and substitutes only the
+socket dial endpoint. Separate learned-client vectors cover dialing the exact
+supplied candidate address and rejecting a different Noise identity. This is
+local protocol and strict-reopen evidence, not public-address reachability,
+automatic discovery, scheduling, retry, redial, responder replacement,
+operator independence, or Sybil or eclipse resistance.
+
 ## Resulting trust boundary
 
 This contract provides bounded canonical self-signed address claims, exact
