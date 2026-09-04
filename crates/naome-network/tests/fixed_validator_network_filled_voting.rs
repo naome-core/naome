@@ -22,15 +22,17 @@ use naome_network::{
     PeerSessionEvent, StaticArtifactNetwork, StaticPeer,
 };
 use naome_node::{
+    FixedValidatorNodeCandidateBackedFinalityRejectionV0,
     FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
     FixedValidatorNodeCurrentRoundInboxLimitsV0,
     FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0, FixedValidatorNodeDirectoriesV0,
     FixedValidatorNodeDriverAdmissionDispositionV0, FixedValidatorNodeDriverAdmissionOutcomeV0,
     FixedValidatorNodeDriverAdmissionRejectionV0,
     FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0,
-    FixedValidatorNodeDriverCommandV0, FixedValidatorNodeDriverEventV0,
-    FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverV0,
-    FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
+    FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0, FixedValidatorNodeDriverCommandV0,
+    FixedValidatorNodeDriverEventV0, FixedValidatorNodeDriverStepOutcomeV0,
+    FixedValidatorNodeDriverV0, FixedValidatorNodeFinalityErrorV0,
+    FixedValidatorNodeFinalityOutcomeV0, FixedValidatorNodeFinalitySelectionV0,
     FixedValidatorNodeHigherRoundInboxLimitsV0, FixedValidatorNodeProvisionV0,
     FixedValidatorNodeReadyV0, FixedValidatorNodeSigningScopeV0, FixedValidatorNodeStartupV0,
     FixedValidatorNodeVoteExecutionOutcomeV0, FixedValidatorNodeVoteRejectionV0,
@@ -1701,5 +1703,263 @@ fn network_filled_historical_sibling_needs_full_evidence_after_command_custody()
             }
         }
         assert_eq!(client_layout.authority_images(), terminal_authority);
+    }
+}
+
+#[test]
+fn network_filled_direct_child_requires_live_finality_checks_and_preserves_retry() {
+    for retain_other_finality in [false, true] {
+        let definition = ArtifactChainDefinition::new([0x91; 32]);
+        let context = ConsensusContextV0::new(
+            definition.id(),
+            ConsensusGenesisId::from_bytes([0xa2; 32]),
+            ConsensusProtocolVersion::new(7),
+        );
+        let signing_key = SigningKey::from_bytes(&[0xb3; 32]);
+        let entries = [ActiveAgreementEntry::new(
+            consensus_key(&signing_key),
+            AgreementWeight::new(1),
+        )];
+        let client_layout = TestLayout::new("direct-child-fill-client");
+        let server_layout = TestLayout::new("direct-child-fill-server");
+        let mut client_candidates = candidate_store(&client_layout.candidate_store, definition);
+        let mut client_payloads = payload_store(&client_layout.payload_store);
+        let mut server_candidates = candidate_store(&server_layout.candidate_store, definition);
+        let mut server_payloads = payload_store(&server_layout.payload_store);
+        let empty_sources = client_layout.source_images();
+        let ready = provision(definition, context, &entries, &client_layout)
+            .create(signing_key.clone())
+            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let (mut client, mut server, server_peer_id) = runtime.block_on(connected_pair());
+
+        let (selected_target, acquired_block, acquired_payload, completed_sources, final_authority) =
+            ready.run_with_signing_session(|scope| {
+                runtime.block_on(async {
+                    let selected = ArtifactChainState::new(definition);
+                    let (candidate, control, precommit, payload) = verified_transition_inputs(
+                        scope.branch(), &selected, ZfcAxiom::Pairing, 0, &signing_key,
+                    );
+                    let (other, other_control, other_precommit, other_payload) = verified_transition_inputs(
+                        scope.branch(), &selected, ZfcAxiom::Union, 0, &signing_key,
+                    );
+                    let acquired_block = candidate.value().artifact_block();
+                    let target = acquired_block.id();
+                    let other_target = other.value().artifact_block().id();
+                    assert_ne!(target, other_target);
+                    assert!(matches!(server_candidates.insert(&acquired_block).unwrap(),
+                        ArtifactBlockCandidateInsertOutcome::Inserted));
+                    assert!(matches!(server_payloads.validate_and_insert_branch_payload(
+                        &selected.branch_snapshot(), &acquired_block, payload.clone(),
+                    ).unwrap().insertion_outcome(), ArtifactPayloadInsertOutcome::Inserted));
+                    let server_sources = server_layout.source_images();
+                    assert!(!client_candidates.contains(target).unwrap());
+                    assert!(!client_payloads.contains(acquired_block.artifact_id()).unwrap());
+                    let driver = node_driver(scope);
+                    let parent_position = driver.position();
+                    let authority_before = client_layout.authority_images();
+                    assert_eq!(driver.selected_artifact_history().selected_head_block_id().unwrap(),
+                        definition.id().virtual_genesis_block_id());
+
+                    fill_candidate_and_payload(
+                        driver.selected_artifact_history(), &mut client, &mut server,
+                        &mut client_candidates, &mut client_payloads,
+                        &mut server_candidates, &mut server_payloads,
+                        server_peer_id, None, target,
+                    ).await;
+                    let completed_sources = client_layout.source_images();
+                    assert_ne!(completed_sources[0], empty_sources[0]);
+                    assert_ne!(completed_sources[1], empty_sources[1]);
+                    assert_eq!(client_candidates.get(target).unwrap(), Some(acquired_block));
+                    assert_eq!(client_payloads.get(acquired_block.artifact_id()).unwrap().unwrap()
+                        .canonical_artifact_bytes(), payload);
+                    assert_eq!(client_layout.authority_images(), authority_before);
+                    assert_eq!(server_layout.source_images(), server_sources);
+                    let driver = match driver.commit_candidate_backed_finality_vote_batch(
+                        &mut client_candidates, &mut client_payloads, target, &control,
+                        &[&precommit], ConsensusRound::new(0),
+                    ).unwrap() {
+                        FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::CommandPending { driver } => *driver,
+                        _ => panic!("acquisition cannot bypass pending command custody"),
+                    };
+                    assert_eq!(client_layout.authority_images(), authority_before);
+                    assert_eq!(client_layout.source_images(), completed_sources);
+                    let (mut driver, old_timeout) = match driver.step().unwrap() {
+                        FixedValidatorNodeDriverStepOutcomeV0::Command {
+                            driver, command: FixedValidatorNodeDriverCommandV0::ArmPhaseTimeout(timeout),
+                        } => (*driver, timeout),
+                        _ => panic!("the original arm must transfer first"),
+                    };
+                    // Invalid evidence must remain retryable after authenticated acquisition.
+                    let mut bad_signature = precommit.clone();
+                    *bad_signature.last_mut().unwrap() ^= 1;
+                    for batch in [Vec::new(), vec![bad_signature.as_slice()]] {
+                        driver = match driver.commit_candidate_backed_finality_vote_batch(
+                            &mut client_candidates, &mut client_payloads, target, &control,
+                            &batch, ConsensusRound::new(0),
+                        ).unwrap() {
+                            FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::Rejected { driver, rejection } => {
+                                assert!(matches!(*rejection, FixedValidatorNodeCandidateBackedFinalityRejectionV0::PrecommitBatch(_)));
+                                *driver
+                            }
+                            _ => panic!("source presence cannot authorize invalid consensus evidence"),
+                        };
+                        assert_eq!(driver.position(), parent_position);
+                        assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Proposal);
+                        assert!(!driver.has_pending_command());
+                        assert_eq!(client_layout.authority_images(), authority_before);
+                        assert_eq!(client_layout.source_images(), completed_sources);
+                    }
+
+                    let selected_target = if retain_other_finality {
+                        driver = admit_driver_event(driver, FixedValidatorNodeDriverEventV0::CurrentRoundFinalityProposal {
+                            canonical_proposal_control_bytes: other_control.into_boxed_slice(),
+                            canonical_artifact_bytes: other_payload.into_boxed_slice(),
+                        });
+                        driver = admit_driver_event(driver, FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrecommit {
+                            canonical_signed_precommit: other_precommit.into_boxed_slice(),
+                        });
+                        let retained_bytes = driver.current_finality_inbox_canonical_input_bytes();
+                        driver = match driver.commit_candidate_backed_finality_vote_batch(
+                            &mut client_candidates, &mut client_payloads, target, &control,
+                            &[&precommit], ConsensusRound::new(0),
+                        ).unwrap() {
+                            FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::CurrentFinalityUnresolved { driver } => *driver,
+                            _ => panic!("the acquired target cannot supersede retained current finality"),
+                        };
+                        assert_eq!(driver.current_finality_inbox_len(), 2);
+                        assert_eq!(driver.current_finality_inbox_canonical_input_bytes(), retained_bytes);
+                        assert_eq!(client_layout.authority_images(), authority_before);
+                        assert_eq!(client_layout.source_images(), completed_sources);
+                        driver = match driver.step().unwrap() {
+                            FixedValidatorNodeDriverStepOutcomeV0::Finality { driver, selection } => {
+                                assert!(matches!(selection, FixedValidatorNodeFinalitySelectionV0::Finalized {
+                                    position, ancestry_id, envelope_id, ..
+                                } if position == other.position() && ancestry_id == other.value().ancestry_id()
+                                    && envelope_id == other.envelope_id()));
+                                *driver
+                            }
+                            _ => panic!("step must finalize only the retained verified proposal"),
+                        };
+                        assert_eq!(driver.current_finality_inbox_len(), 2);
+                        assert_eq!(driver.current_finality_inbox_canonical_input_bytes(), retained_bytes);
+                        other_target
+                    } else {
+                        driver = match driver.commit_candidate_backed_finality_vote_batch(
+                            &mut client_candidates, &mut client_payloads, target, &control,
+                            &[&precommit], ConsensusRound::new(0),
+                        ).unwrap() {
+                            FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::Finality { driver, selection } => {
+                                assert!(matches!(selection, FixedValidatorNodeFinalitySelectionV0::CandidateBackedFinalized {
+                                    target: actual, position, ancestry_id, envelope_id, ..
+                                } if actual == target && position == candidate.position()
+                                    && ancestry_id == candidate.value().ancestry_id() && envelope_id == candidate.envelope_id()));
+                                *driver
+                            }
+                            _ => panic!("a fully verified acquired child must finalize"),
+                        };
+                        target
+                    };
+                    for (before, after) in authority_before.iter().zip(client_layout.authority_images()) {
+                        assert_ne!(before, &after, "every anchored authority image must advance");
+                    }
+                    assert_eq!(driver.position().height().value(), 2);
+                    assert_eq!(driver.position().round(), ConsensusRound::new(0));
+                    assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Proposal);
+                    assert_eq!(driver.selected_artifact_history().selected_head_block_id().unwrap(), selected_target);
+                    assert!(driver.has_pending_command());
+                    assert!(!driver.timeout_is_due());
+                    let (mut driver, child_timeout) = match driver.step().unwrap() {
+                        FixedValidatorNodeDriverStepOutcomeV0::Command {
+                            driver, command: FixedValidatorNodeDriverCommandV0::ArmPhaseTimeout(timeout),
+                        } => (*driver, timeout),
+                        _ => panic!("one child arm must transfer after finality"),
+                    };
+                    assert_eq!(child_timeout.generation(), old_timeout.generation() + 1);
+                    assert_eq!(child_timeout.position(), driver.position());
+                    assert_eq!(child_timeout.phase(), FixedValidatorLockPhaseV0::Proposal);
+                    assert!(!driver.has_pending_command());
+                    driver = match driver.admit_event(FixedValidatorNodeDriverEventV0::TimeoutDue(old_timeout)).unwrap() {
+                        FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected { driver, rejection, .. } => {
+                            assert!(matches!(*rejection, FixedValidatorNodeDriverAdmissionRejectionV0::TimeoutMismatch));
+                            *driver
+                        }
+                        _ => panic!("the old timer must be stale"),
+                    };
+                    let final_authority = client_layout.authority_images();
+                    if retain_other_finality {
+                        // Reusing the completed fill cannot authorize a sibling of the selected head.
+                        driver = match driver.commit_candidate_backed_finality_vote_batch(
+                            &mut client_candidates, &mut client_payloads, target, &control,
+                            &[&precommit], ConsensusRound::new(0),
+                        ).unwrap() {
+                            FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::Rejected { driver, rejection } => {
+                                assert!(matches!(*rejection, FixedValidatorNodeCandidateBackedFinalityRejectionV0::Proposal(_)));
+                                *driver
+                            }
+                            _ => panic!("the earlier acquisition snapshot cannot bypass the live selected parent"),
+                        };
+                        assert_eq!(driver.selected_artifact_history().selected_head_block_id().unwrap(), other_target);
+                        assert_eq!(driver.current_finality_inbox_len(), 2);
+                        assert_eq!(client_layout.authority_images(), final_authority);
+                    }
+                    assert_eq!(client_layout.source_images(), completed_sources);
+                    assert_eq!(server_layout.source_images(), server_sources);
+                    drop(driver);
+                    (selected_target, acquired_block, payload, completed_sources, final_authority)
+                })
+            }).unwrap();
+
+        drop(client_candidates);
+        drop(client_payloads);
+        let mut candidates = ArtifactBlockCandidateStore::open(
+            &client_layout.candidate_store,
+            definition,
+            ArtifactBlockCandidateStoreLimits::new(STORE_ENTRY_LIMIT).unwrap(),
+        )
+        .unwrap();
+        let mut payloads = CanonicalArtifactPayloadStore::open(
+            &client_layout.payload_store,
+            ArtifactPayloadStoreLimits::new(STORE_ENTRY_LIMIT, STORE_BYTE_LIMIT).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            candidates.get(acquired_block.id()).unwrap(),
+            Some(acquired_block)
+        );
+        assert_eq!(
+            payloads
+                .get(acquired_block.artifact_id())
+                .unwrap()
+                .unwrap()
+                .canonical_artifact_bytes(),
+            acquired_payload
+        );
+        assert_eq!(client_layout.source_images(), completed_sources);
+        let ready = expect_ready(
+            provision(definition, context, &entries, &client_layout)
+                .open(signing_key.clone())
+                .unwrap(),
+        );
+        ready
+            .run_with_signing_session(|mut scope| {
+                assert_eq!(
+                    scope.branch().artifact_snapshot().head_block_id(),
+                    selected_target
+                );
+                assert_eq!(scope.signing_session().position().height().value(), 2);
+                assert_eq!(
+                    scope.signing_session().position().round(),
+                    ConsensusRound::new(0)
+                );
+                assert_eq!(
+                    scope.signing_session().phase(),
+                    FixedValidatorLockPhaseV0::Proposal
+                );
+                let driver = node_driver(scope);
+                assert_eq!(driver.current_finality_inbox_len(), 0);
+            })
+            .unwrap();
+        assert_eq!(client_layout.authority_images(), final_authority);
     }
 }

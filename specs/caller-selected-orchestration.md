@@ -643,6 +643,43 @@ cross-store atomicity. Its Unix two-peer reference vector is local library
 runtime evidence only, not production liveness, multi-validator consensus, or a
 non-Unix guarantee.
 
+### Driver-held direct-child finality acquisition composition
+
+One explicit caller-owned composition may borrow the live driver's sealed
+selected-artifact history to fill one exact caller-selected direct-child
+candidate against the current selected head, then separately acquire and
+validate its payload. The caller chooses the target, configured peer, stores,
+positive reconstruction limit, complete proposal-control bytes, exact
+signed-precommit batch, evidence round, and invocation time. Candidate and
+payload acquisition may add only the corresponding source entries and cannot
+advance either anchored authority pair.
+
+After both fills complete and the shared history borrow ends, the caller may
+submit its separately supplied consensus evidence through
+`commit_candidate_backed_finality_vote_batch`. Successful acquisition does not
+skip any driver gate: pending outward commands transfer first, every
+non-fallthrough exact-current finality classification returns the unchanged
+driver for `step`, and only then may generation preflight and the existing
+coordinator's complete independent verification begin. Acquisition can already
+have written source entries when a later driver gate declines the attempt.
+
+Typed pre-effect rejection preserves the driver and completed source images
+for an explicit caller retry. Only a fully verified direct child advances the
+anchored finality and signer pairs; success returns the aligned child driver,
+preserves its volatile inbox custody, and queues the existing child round-zero
+Proposal arm. A later selected-head change makes the earlier acquisition
+snapshot nonauthoritative: an acquired candidate still must satisfy the live
+branch-relative finality checks. Fatal outcomes retain the existing consuming
+strict-reopen boundary. Neither finality success nor rejection mutates source
+entries, apart from existing live-handle poisoning on an integrity failure.
+
+This composition adds no automatic acquisition, retry, target or peer choice,
+proposal or vote transport, evidence preference, cached validity, branch
+selection, rollback, repair, cross-store atomicity, daemon scheduling, dynamic
+validators, or production-runtime policy. Its Unix two-peer reference vectors
+are local library integration and strict-reopen evidence, not production
+liveness, multi-validator consensus, or non-Unix guarantees.
+
 ## Sequential ancestry import
 
 `ArtifactBlockAncestryImport` consumes one completed unselected ancestry so the
