@@ -12,9 +12,11 @@ use naome_chain::{ArtifactBlockId, ArtifactChainDefinition, ArtifactChainState, 
 use naome_consensus::{
     ActiveAgreementEntry, AgreementWeight, ConsensusContextV0, ConsensusGenesisId, ConsensusKey,
     ConsensusPosition, ConsensusProtocolVersion, ConsensusRound, ConsensusValueV0,
-    ConsensusVoteRole, ConsensusVoteTarget, FixedValidatorLockPhaseV0, ProposalSigningRoot,
-    VerifiedFixedConsensusProposalV0, VerifiedProducerAuthorizationV0,
+    ConsensusVoteRole, ConsensusVoteTarget, FixedConsensusBranchV0, FixedValidatorLockPhaseV0,
+    OwnedVerifiedFixedConsensusTransitionV0, ProposalSigningRoot, VerifiedFixedConsensusProposalV0,
+    VerifiedProducerAuthorizationV0,
 };
+use naome_foundation::ZfcAxiom;
 use naome_network::{
     ArtifactBlockCandidateBranchPayloadFillProgress, Keypair, Multiaddr, NetworkEvent, PeerId,
     PeerSessionEvent, StaticArtifactNetwork, StaticPeer,
@@ -24,18 +26,22 @@ use naome_node::{
     FixedValidatorNodeCurrentRoundInboxLimitsV0,
     FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0, FixedValidatorNodeDirectoriesV0,
     FixedValidatorNodeDriverAdmissionDispositionV0, FixedValidatorNodeDriverAdmissionOutcomeV0,
-    FixedValidatorNodeDriverAdmissionRejectionV0, FixedValidatorNodeDriverCommandV0,
-    FixedValidatorNodeDriverEventV0, FixedValidatorNodeDriverStepOutcomeV0,
-    FixedValidatorNodeDriverV0, FixedValidatorNodeHigherRoundInboxLimitsV0,
-    FixedValidatorNodeProvisionV0, FixedValidatorNodeReadyV0, FixedValidatorNodeSigningScopeV0,
-    FixedValidatorNodeStartupV0, FixedValidatorNodeVoteExecutionOutcomeV0,
-    FixedValidatorNodeVoteRejectionV0, FixedValidatorSignerCatchUpHeightLimitV0,
+    FixedValidatorNodeDriverAdmissionRejectionV0,
+    FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0,
+    FixedValidatorNodeDriverCommandV0, FixedValidatorNodeDriverEventV0,
+    FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverV0,
+    FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
+    FixedValidatorNodeHigherRoundInboxLimitsV0, FixedValidatorNodeProvisionV0,
+    FixedValidatorNodeReadyV0, FixedValidatorNodeSigningScopeV0, FixedValidatorNodeStartupV0,
+    FixedValidatorNodeVoteExecutionOutcomeV0, FixedValidatorNodeVoteRejectionV0,
+    FixedValidatorSignerCatchUpHeightLimitV0,
 };
-use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate};
+use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 use naome_storage::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
     ArtifactBlockCandidateStoreLimits, ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits,
-    CandidateBranchReconstructionLimits, CanonicalArtifactPayloadStore,
+    CandidateBackedFinalityErrorV0, CandidateBranchReconstructionLimits,
+    CanonicalArtifactPayloadStore, FixedValidatorFinalityHaltKindV0,
     FixedValidatorFinalityReplayLimitV0, FixedValidatorProposalReplayLimitV0,
     FixedValidatorSignedVoteV0, FixedValidatorSignerRecoveryRoundLimitV0,
     FixedValidatorVoteSafetyReplayLimitV0, SelectedArtifactHistory,
@@ -44,6 +50,7 @@ use tokio::runtime::Builder;
 use tokio::time::timeout;
 
 const AUTHORIZATION_BODY_BYTES: usize = 116;
+const VOTE_BODY_BYTES: usize = 118;
 const STORE_ENTRY_LIMIT: usize = 16;
 const STORE_BYTE_LIMIT: u64 = 1024 * 1024;
 static DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -331,16 +338,28 @@ async fn fill_candidate_and_payload(
     server_candidates: &mut ArtifactBlockCandidateStore,
     server_payloads: &mut CanonicalArtifactPayloadStore,
     server_peer_id: PeerId,
+    selected_anchor_block_id: Option<ArtifactBlockId>,
     target: ArtifactBlockId,
 ) {
-    let mut ancestry = client
-        .start_artifact_block_candidate_ancestry_fill(
-            selected,
-            client_candidates,
-            server_peer_id,
-            target,
-        )
-        .unwrap();
+    let mut ancestry = match selected_anchor_block_id {
+        Some(selected_anchor_block_id) => client
+            .start_artifact_block_candidate_ancestry_fill_from_selected_anchor(
+                selected,
+                client_candidates,
+                server_peer_id,
+                selected_anchor_block_id,
+                target,
+            )
+            .unwrap(),
+        None => client
+            .start_artifact_block_candidate_ancestry_fill(
+                selected,
+                client_candidates,
+                server_peer_id,
+                target,
+            )
+            .unwrap(),
+    };
     let mut served_blocks = 0_usize;
     timeout(Duration::from_secs(20), async {
         while ancestry.is_some() {
@@ -462,11 +481,117 @@ fn pairing_payload() -> Vec<u8> {
     .to_canonical_bytes()
 }
 
+fn axiom_payload(axiom: ZfcAxiom) -> Vec<u8> {
+    let certificate = ProofCertificate::new(vec![ProofStep::ZfcAxiom(axiom)])
+        .unwrap()
+        .into_unchecked_normal_form()
+        .certificate()
+        .clone();
+    ArtifactPayload::Proof(certificate).to_canonical_bytes()
+}
+
 fn artifact_id(payload: &[u8]) -> ArtifactId {
     ArtifactDag::new()
         .apply_canonical_artifact_bytes(payload.to_vec())
         .unwrap()
         .artifact_id()
+}
+
+fn vote_body_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+) -> [u8; VOTE_BODY_BYTES] {
+    let mut body = [0_u8; VOTE_BODY_BYTES];
+    body[0] = match role {
+        ConsensusVoteRole::Prevote => 1,
+        ConsensusVoteRole::Precommit => 2,
+    };
+    body[1..33].copy_from_slice(context.chain_id().as_bytes());
+    body[33..65].copy_from_slice(context.genesis_id().as_bytes());
+    body[65..69].copy_from_slice(&context.protocol_version().value().to_be_bytes());
+    body[69..77].copy_from_slice(&position.height().value().to_be_bytes());
+    body[77..85].copy_from_slice(&position.round().value().to_be_bytes());
+    match target {
+        ConsensusVoteTarget::Nil => body[85] = 0,
+        ConsensusVoteTarget::Proposal(root) => {
+            body[85] = 1;
+            body[86..].copy_from_slice(root.as_bytes());
+        }
+    }
+    body
+}
+
+fn signed_vote_bytes(
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+    role: ConsensusVoteRole,
+    target: ConsensusVoteTarget,
+    signer: &SigningKey,
+) -> Vec<u8> {
+    let body = vote_body_bytes(context, position, role, target);
+    let domain: &[u8] = match role {
+        ConsensusVoteRole::Prevote => b"naome:consensus-prevote-signing:v0\0",
+        ConsensusVoteRole::Precommit => b"naome:consensus-precommit-signing:v0\0",
+    };
+    let key = consensus_key(signer);
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(domain);
+    transcript.extend_from_slice(&body);
+    transcript.extend_from_slice(key.as_bytes());
+
+    let mut bytes = body.to_vec();
+    bytes.extend_from_slice(key.as_bytes());
+    bytes.extend_from_slice(&signer.sign(&transcript).to_bytes());
+    bytes
+}
+
+fn verified_transition_inputs(
+    branch: &FixedConsensusBranchV0,
+    selected: &ArtifactChainState,
+    axiom: ZfcAxiom,
+    round_number: u64,
+    signer: &SigningKey,
+) -> (
+    OwnedVerifiedFixedConsensusTransitionV0,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+) {
+    let payload = axiom_payload(axiom);
+    let block = selected.prepare_block(artifact_id(&payload)).unwrap();
+    let mut round = branch.begin_round_zero().unwrap();
+    for _ in 0..round_number {
+        round = round.advance_round().unwrap();
+    }
+    let value = round.value_for_artifact_block(block);
+    let control = proposal_control_bytes(value, round.position(), signer);
+    let precommit = signed_vote_bytes(
+        value.context(),
+        round.position(),
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+        signer,
+    );
+    let transition = round
+        .decode_and_verify_proposal_control(&control, payload.clone())
+        .unwrap()
+        .seal_with_precommit_vote_batch(&[precommit.as_slice()])
+        .unwrap()
+        .into_owned();
+    (transition, control, precommit, payload)
+}
+
+fn expect_finality_continues<'node>(
+    outcome: FixedValidatorNodeFinalityOutcomeV0<'node>,
+) -> FixedValidatorNodeSigningScopeV0<'node> {
+    match outcome {
+        FixedValidatorNodeFinalityOutcomeV0::Continues { scope, .. } => *scope,
+        FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(_) => {
+            panic!("a new direct child must not stop finality")
+        }
+    }
 }
 
 fn proposal_control_bytes(
@@ -1086,6 +1211,7 @@ fn driver_owned_history_supports_caller_acquisition_and_explicit_vote_loopback()
                     &mut server_candidates,
                     &mut server_payloads,
                     server_peer_id,
+                    None,
                     target,
                 )
                 .await;
@@ -1244,4 +1370,336 @@ fn driver_owned_history_supports_caller_acquisition_and_explicit_vote_loopback()
             );
         })
         .unwrap();
+}
+
+#[test]
+fn network_filled_historical_sibling_needs_full_evidence_after_command_custody() {
+    for valid_terminal_evidence in [false, true] {
+        let case = if valid_terminal_evidence {
+            "valid-terminal"
+        } else {
+            "invalid-terminal"
+        };
+        let definition = ArtifactChainDefinition::new([0x71; 32]);
+        let context = ConsensusContextV0::new(
+            definition.id(),
+            ConsensusGenesisId::from_bytes([0x82; 32]),
+            ConsensusProtocolVersion::new(7),
+        );
+        let mut seed = [0_u8; 32];
+        seed[0] = 3;
+        seed[2] = 0xc7;
+        let signing_key = SigningKey::from_bytes(&seed);
+        let entries = [ActiveAgreementEntry::new(
+            consensus_key(&signing_key),
+            AgreementWeight::new(1),
+        )];
+        let client_layout = TestLayout::new(&format!(
+            "fixed-validator-network-filled-conflict-client-{case}"
+        ));
+        let server_layout = TestLayout::new(&format!(
+            "fixed-validator-network-filled-conflict-server-{case}"
+        ));
+        let mut client_candidates = candidate_store(&client_layout.candidate_store, definition);
+        let mut client_payloads = payload_store(&client_layout.payload_store);
+        let mut server_candidates = candidate_store(&server_layout.candidate_store, definition);
+        let mut server_payloads = payload_store(&server_layout.payload_store);
+        let empty_client_sources = client_layout.source_images();
+
+        let ready = provision(definition, context, &entries, &client_layout)
+            .create(signing_key.clone())
+            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let (mut client, mut server, server_peer_id) = runtime.block_on(connected_pair());
+        let client_layout_ref = &client_layout;
+        let server_layout_ref = &server_layout;
+        let empty_client_sources_in_session = empty_client_sources.clone();
+
+        let (
+            expected_position,
+            target,
+            sibling_block,
+            sibling_payload,
+            stopped,
+            terminal_authority,
+            completed_sources,
+        ) = ready
+            .run_with_signing_session(|scope| {
+                runtime.block_on(async move {
+                    let genesis_branch = scope.branch().clone();
+                    let mut selected = ArtifactChainState::new(definition);
+                    let (first, _, _, first_payload) = verified_transition_inputs(
+                        &genesis_branch,
+                        &selected,
+                        ZfcAxiom::Pairing,
+                        0,
+                        &signing_key,
+                    );
+                    let first_block = first.value().artifact_block();
+                    let selected_ancestry = first.value().ancestry_id();
+                    let (sibling, control, precommit, sibling_payload) =
+                        verified_transition_inputs(
+                            &genesis_branch,
+                            &selected,
+                            ZfcAxiom::Union,
+                            0,
+                            &signing_key,
+                        );
+                    let sibling_block = sibling.value().artifact_block();
+                    let target = sibling_block.id();
+                    let sibling_ancestry = sibling.value().ancestry_id();
+                    let sibling_envelope_id = sibling.envelope_id();
+                    let selected_anchor = definition.id().virtual_genesis_block_id();
+
+                    assert!(matches!(
+                        server_candidates.insert(&sibling_block).unwrap(),
+                        ArtifactBlockCandidateInsertOutcome::Inserted
+                    ));
+                    assert!(matches!(
+                        server_payloads
+                            .validate_and_insert_branch_payload(
+                                &selected.branch_snapshot(),
+                                &sibling_block,
+                                sibling_payload.clone(),
+                            )
+                            .unwrap()
+                            .insertion_outcome(),
+                        ArtifactPayloadInsertOutcome::Inserted
+                    ));
+                    let server_sources = server_layout_ref.source_images();
+
+                    let scope = expect_finality_continues(
+                        scope.commit_verified_finality(first).unwrap(),
+                    );
+                    selected.apply_block(&first_block, first_payload).unwrap();
+                    let (second, _, _, second_payload) = verified_transition_inputs(
+                        scope.branch(),
+                        &selected,
+                        ZfcAxiom::PowerSet,
+                        0,
+                        &signing_key,
+                    );
+                    let second_block = second.value().artifact_block();
+                    let scope = expect_finality_continues(
+                        scope.commit_verified_finality(second).unwrap(),
+                    );
+                    selected.apply_block(&second_block, second_payload).unwrap();
+
+                    let driver = node_driver(scope);
+                    let expected_position = driver.position();
+                    assert_eq!(expected_position.height().value(), 3);
+                    assert_eq!(expected_position.round(), ConsensusRound::new(0));
+                    assert_eq!(
+                        driver
+                            .selected_artifact_history()
+                            .selected_head_block_id()
+                            .unwrap(),
+                        second_block.id()
+                    );
+                    assert_ne!(second_block.id(), selected_anchor);
+                    assert!(driver.has_pending_command());
+                    let authority_before_fill = client_layout_ref.authority_images();
+
+                    fill_candidate_and_payload(
+                        driver.selected_artifact_history(),
+                        &mut client,
+                        &mut server,
+                        &mut client_candidates,
+                        &mut client_payloads,
+                        &mut server_candidates,
+                        &mut server_payloads,
+                        server_peer_id,
+                        Some(selected_anchor),
+                        target,
+                    )
+                    .await;
+                    assert_eq!(
+                        client_candidates.get(target).unwrap(),
+                        Some(sibling_block)
+                    );
+                    assert_eq!(
+                        client_payloads
+                            .get(sibling_block.artifact_id())
+                            .unwrap()
+                            .expect("the acquired sibling payload must be archived")
+                            .canonical_artifact_bytes(),
+                        sibling_payload.as_slice()
+                    );
+                    assert_eq!(
+                        client_layout_ref.authority_images(),
+                        authority_before_fill
+                    );
+                    assert_eq!(server_layout_ref.source_images(), server_sources);
+                    let completed_sources = client_layout_ref.source_images();
+                    assert_ne!(completed_sources[0], empty_client_sources_in_session[0]);
+                    assert_ne!(completed_sources[1], empty_client_sources_in_session[1]);
+
+                    let command_gate_batch = [precommit.as_slice()];
+                    let driver = match driver
+                        .commit_candidate_backed_finality_conflict_vote_batch(
+                            &mut client_candidates,
+                            &mut client_payloads,
+                            target,
+                            &control,
+                            &command_gate_batch,
+                            ConsensusRound::new(0),
+                        )
+                        .unwrap()
+                    {
+                        FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0::CommandPending {
+                            driver,
+                        } => *driver,
+                        FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0::FinalityStopped(
+                            _,
+                        ) => panic!("the initial arm command must retain custody"),
+                        _ => panic!("unexpected future candidate-conflict outcome"),
+                    };
+                    assert_eq!(
+                        client_layout_ref.authority_images(),
+                        authority_before_fill
+                    );
+                    assert_eq!(client_layout_ref.source_images(), completed_sources);
+
+                    let driver = transfer_arm(driver);
+                    let authority_before_terminal = client_layout_ref.authority_images();
+                    let stopped = if valid_terminal_evidence {
+                        let batch = [precommit.as_slice()];
+                        let stopped = match driver
+                            .commit_candidate_backed_finality_conflict_vote_batch(
+                                &mut client_candidates,
+                                &mut client_payloads,
+                                target,
+                                &control,
+                                &batch,
+                                ConsensusRound::new(0),
+                            )
+                            .unwrap()
+                        {
+                            FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0::FinalityStopped(
+                                stopped,
+                            ) => *stopped,
+                            FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0::CommandPending {
+                                ..
+                            } => panic!("the transferred arm must not block terminal evidence"),
+                            _ => panic!("unexpected future candidate-conflict outcome"),
+                        };
+                        let authority_after_terminal = client_layout_ref.authority_images();
+                        for (index, (before, after)) in authority_before_terminal
+                            .iter()
+                            .zip(&authority_after_terminal)
+                            .enumerate()
+                        {
+                            assert_ne!(before, after, "authority image {index} did not advance");
+                        }
+                        assert_eq!(
+                            stopped.finality_halt().kind(),
+                            FixedValidatorFinalityHaltKindV0::SelectedSibling
+                        );
+                        assert_eq!(stopped.finality_halt().height().value(), 1);
+                        assert_eq!(
+                            stopped.finality_halt().first_ancestry(),
+                            selected_ancestry
+                        );
+                        assert_eq!(
+                            stopped.finality_halt().second_ancestry(),
+                            sibling_ancestry
+                        );
+                        assert_eq!(
+                            stopped.finality_halt().second_envelope_id(),
+                            sibling_envelope_id
+                        );
+                        assert_eq!(
+                            stopped.signer_stop().finality_state_id(),
+                            stopped.finality_halt().state_id()
+                        );
+                        Some(stopped)
+                    } else {
+                        assert!(matches!(
+                            driver.commit_candidate_backed_finality_conflict_vote_batch(
+                                &mut client_candidates,
+                                &mut client_payloads,
+                                target,
+                                &control,
+                                &[],
+                                ConsensusRound::new(0),
+                            ),
+                            Err(FixedValidatorNodeFinalityErrorV0::CandidateBackedFinality(source))
+                                if matches!(
+                                    source.as_ref(),
+                                    CandidateBackedFinalityErrorV0::PrecommitBatch(_)
+                                )
+                        ));
+                        assert_eq!(
+                            client_layout_ref.authority_images(),
+                            authority_before_terminal
+                        );
+                        None
+                    };
+                    assert_eq!(client_layout_ref.source_images(), completed_sources);
+                    assert_eq!(server_layout_ref.source_images(), server_sources);
+                    (
+                        expected_position,
+                        target,
+                        sibling_block,
+                        sibling_payload,
+                        stopped,
+                        client_layout_ref.authority_images(),
+                        completed_sources,
+                    )
+                })
+            })
+            .unwrap();
+
+        let mut reopened_candidates = ArtifactBlockCandidateStore::open(
+            &client_layout.candidate_store,
+            definition,
+            ArtifactBlockCandidateStoreLimits::new(STORE_ENTRY_LIMIT).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened_candidates.get(target).unwrap(),
+            Some(sibling_block)
+        );
+        let mut reopened_payloads = CanonicalArtifactPayloadStore::open(
+            &client_layout.payload_store,
+            ArtifactPayloadStoreLimits::new(STORE_ENTRY_LIMIT, STORE_BYTE_LIMIT).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened_payloads
+                .get(sibling_block.artifact_id())
+                .unwrap()
+                .expect("the acquired sibling payload must survive strict reopen")
+                .canonical_artifact_bytes(),
+            sibling_payload.as_slice()
+        );
+        assert_eq!(client_layout.source_images(), completed_sources);
+        drop(reopened_candidates);
+        drop(reopened_payloads);
+
+        match stopped {
+            Some(stopped) => match provision(definition, context, &entries, &client_layout)
+                .open(SigningKey::from_bytes(&seed))
+                .unwrap()
+            {
+                FixedValidatorNodeStartupV0::FinalityStopped(reopened) => {
+                    assert_eq!(reopened, stopped);
+                }
+                _ => panic!("valid acquired conflict evidence must strictly reopen terminal"),
+            },
+            None => {
+                let reopened = expect_ready(
+                    provision(definition, context, &entries, &client_layout)
+                        .open(SigningKey::from_bytes(&seed))
+                        .unwrap(),
+                );
+                reopened
+                    .run_with_signing_session(|mut scope| {
+                        assert_eq!(scope.signing_session().position(), expected_position);
+                    })
+                    .unwrap();
+            }
+        }
+        assert_eq!(client_layout.authority_images(), terminal_authority);
+    }
 }
