@@ -31,13 +31,16 @@ one existing consuming node coordinator. It emits at most one timeout-arm or
 signed-vote command. It does not expose the owned signing scope as an
 alternative caller-controlled path.
 
-The sole caller-selected action exception is one deny-only terminal bridge for
-an exact candidate-backed historical selected-sibling conflict. It is available
-only after any pending outward command has transferred, retains no evidence,
-uses the driver's existing inclusive round-work ceiling, and delegates all
-proposal, source, positioned-fixed-set, batch, finality, and signer-stop checks
-to the existing consuming coordinator. It cannot return a driver after proof
-processing begins.
+The caller-selected action exceptions are two candidate-backed bridges outside
+ordinary `step` selection. Both are available only after any pending outward
+command has transferred, retain no evidence, use the driver's existing
+inclusive round-work ceiling, and delegate all proposal, source,
+positioned-fixed-set, batch, finality, and signer checks to existing consuming
+coordinators. The deny-only historical selected-sibling bridge cannot return a
+driver after proof processing begins. The direct-child bridge additionally
+preserves every non-fallthrough current-finality classification ahead of caller
+choice, and returns a driver after proof processing only for a typed pre-effect
+rejection or a completed child-height handoff.
 
 This remains a partial driver boundary. Its input surface now covers current-
 and higher-round proposal/prevote evidence, current-round nil prevotes,
@@ -50,10 +53,13 @@ transition. One uniquely proposal-backed current-round precommit quorum runs
 through the existing fully verifying, anchored finality coordinator and may
 return the child-height driver with the existing typed finality selection. Two
 complete proposal-backed roots instead run through the neutral paired halt and
-return no driver or selected branch. Lower-round and candidate-backed
-direct-child finality routing, automatic candidate-backed evidence routing,
-broader or incomplete preselection conflict handling, proposal authoring,
-networking, and artifact-payload persistence remain outside this driver.
+return no driver or selected branch. An explicit caller may separately submit
+one exact candidate-backed direct-child proposal and precommit batch after
+command custody and only when current-finality classification would otherwise
+fall through. Lower-round finality routing, automatic candidate-backed evidence
+routing, broader or incomplete preselection conflict handling, proposal
+authoring, networking, and artifact-payload persistence remain outside this
+driver.
 
 This ownership moves event choice out of a caller that could otherwise select
 an inbox position or invoke a phase close directly. It does not make retained
@@ -146,6 +152,59 @@ This bridge observes, discovers, acquires, buffers, groups, ranks, retries, or
 routes no event. Caller target and round choice, store membership, peer
 identity, provenance, or invocation timing grants no truth, preference,
 winner, branch-selection, rollback, repair, finality, or signing authority.
+
+## Explicit candidate-backed direct-child bridge
+
+`FixedValidatorNodeDriverV0::commit_candidate_backed_finality_vote_batch`
+consumes the driver and accepts one caller-selected direct-child target,
+complete canonical proposal-control bytes, one exact signed-precommit batch,
+one evidence round, and borrowed candidate and Foundation payload stores. The
+caller supplies no separate work ceiling: the method routes the driver's
+construction-time inclusive ceiling unchanged alongside the evidence round,
+while the downstream persisted finality ceiling remains independently
+authoritative.
+
+The bridge first preserves outward-command custody exactly as the terminal
+bridge does. `CommandPending` returns the exact unchanged driver before
+current-finality classification, timer-generation, route, input, or source
+inspection. With no pending command, the driver applies the same current-
+finality classification that begins `step`. Only `None` or finality-class
+`Saturated` may fall through to candidate processing. `Ready`,
+`PreselectionConflict`, `MissingProposal`, `ConflictingRoots`, classifier
+rejection, or classifier reservation returns `CurrentFinalityUnresolved` with
+the unchanged driver before candidate input or source work; the caller must use
+`step` to obtain the existing precise finality, block, rejection, or neutral
+no-winner halt result. Fatal round reconstruction returns no driver and requires
+strict reopen. Thus caller ordering cannot supersede retained exact-current
+finality or choose one root from known conflicting evidence.
+
+After current-finality fallthrough, the driver reserves the next checked timer
+generation before transferring its sole signing scope to the existing
+candidate-backed exact-batch coordinator. A typed caller-ceiling, route, source,
+proposal, or batch rejection precedes node effect and returns that unchanged
+scope to the same driver, preserving every inbox, counter, saturation and
+ambiguity latch, timer, and due observation. Candidate and payload stores
+receive no entry or byte mutation from the finality attempt; an integrity
+failure may poison only its owning live source handle under the existing reopen
+contract.
+
+Only a fully verified new direct child may enter the existing anchored finality
+and signer-height handoff. Success restores the returned child scope, preserves
+all four volatile inboxes and their accounting as stale process-local custody,
+invalidates the old timer and due observation, and queues exactly one arm
+command for child-height round-zero Proposal using the reserved generation. The
+returned typed selection names only the result authenticated by that existing
+coordinator. A defensive terminal conflict returns only the existing paired
+finality and signer-stop evidence. Checked generation exhaustion or any
+coordinator error that returns no scope returns no driver, command, timer, or
+inbox custody; strict anchored reopen is the sole continuation classifier and
+finalized history is never rolled back.
+
+This bridge observes, discovers, acquires, buffers, groups, ranks, retries, or
+routes no event. Caller target, round, invocation time, store membership, peer
+identity, or provenance grants no validity, preference, branch-selection,
+rollback, repair, finality, or signing authority. It does not alter ordinary
+`step` priority or make the direct method the node's sole finality policy.
 
 ## Consuming event admission and bounded retention
 
@@ -749,13 +808,15 @@ This driver does not define or perform:
 - a complete or protocol-wide evidence view, durable inbox or timer encoding,
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
-- proposal authoring, higher-round nil-quorum collection, lower-round or
-  candidate-backed direct-child finality routing, automatic acquisition or
-  routing for candidate-backed conflicts or a missing proposal, durable
+- proposal authoring, higher-round nil-quorum collection, lower-round finality
+  routing, automatic acquisition or routing for candidate-backed direct-child
+  or conflict evidence or a missing proposal, durable
   handling of incomplete or broader multi-root cases beyond the exact retained
   proposal-backed pair, caller-selected branch or winner choice beyond the one
   deny-only terminal sibling submission, rollback, reorganization, candidate
-  promotion, checkpoint synchronization, or store repair;
+  promotion, checkpoint synchronization, or store repair; the explicit
+  direct-child bridge adds only caller-ordered submission after current-finality
+  fallthrough and does not join the ordinary `step` selection order;
 - artifact-payload persistence or candidate- or payload-store durable entry or
   byte insertion, replacement, refresh, promotion, or deletion; an integrity-
   read failure may still poison only its owning live source handle under that
