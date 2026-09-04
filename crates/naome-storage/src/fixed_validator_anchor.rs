@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 
 use super::{ExclusiveLockError, open_exclusive_lock};
 
+#[cfg(all(test, unix))]
+pub(crate) mod faults;
+
 const FINALITY_HEADER: &[u8] = b"naome:fixed-validator-finality-anchor:v0\0";
 const FINALITY_CHECKSUM_DOMAIN: &[u8] = b"naome:fixed-validator-finality-anchor-checksum:v0\0";
 const VOTE_HEADER: &[u8] = b"naome:fixed-validator-vote-safety-anchor:v0\0";
@@ -280,9 +283,17 @@ impl FixedValidatorAnchorFileV0 {
         OpenOptions::new()
             .read(true)
             .write(true)
-            .open(path)
-            .and_then(|file| file.sync_all())
-            .and_then(|()| sync_directory_platform(&self.directory))
+            .open(&path)
+            .and_then(|file| {
+                #[cfg(all(test, unix))]
+                faults::check(&path, faults::Operation::StabilizeFile)?;
+                file.sync_all()
+            })
+            .and_then(|()| {
+                #[cfg(all(test, unix))]
+                faults::check(&path, faults::Operation::StabilizeDirectory)?;
+                sync_directory_platform(&self.directory)
+            })
             .map_err(|source| FixedValidatorAnchorErrorV0::Stabilize { source })
     }
 
@@ -505,17 +516,42 @@ fn replace_synced(
 ) -> Result<(), FixedValidatorAnchorErrorV0> {
     require_durable_directory_sync()?;
     let temporary_path = directory.join(temporary_file_name);
+    #[cfg(all(test, unix))]
+    faults::check(
+        &directory.join(file_name),
+        faults::Operation::CreateTemporary,
+    )
+    .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
     let mut temporary = OpenOptions::new()
         .create_new(true)
         .write(true)
         .open(&temporary_path)
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
+    #[cfg(all(test, unix))]
+    faults::check(
+        &directory.join(file_name),
+        faults::Operation::WriteTemporary,
+    )
+    .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
     temporary
         .write_all(bytes)
-        .and_then(|()| temporary.sync_all())
+        .and_then(|()| {
+            #[cfg(all(test, unix))]
+            faults::check(&directory.join(file_name), faults::Operation::SyncTemporary)?;
+            temporary.sync_all()
+        })
+        .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
+    #[cfg(all(test, unix))]
+    faults::check(&directory.join(file_name), faults::Operation::Rename)
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
     fs::rename(&temporary_path, directory.join(file_name))
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
+    #[cfg(all(test, unix))]
+    faults::check(
+        &directory.join(file_name),
+        faults::Operation::SyncReplacementDirectory,
+    )
+    .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
     sync_directory_platform(directory)
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })
 }
