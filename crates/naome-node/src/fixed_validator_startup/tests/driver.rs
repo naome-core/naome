@@ -28,6 +28,8 @@ use super::super::proposal_deferral::verify_deferred_proposal_at_round;
 use super::finality::{candidate_backed_batch_finality_inputs, expect_continuation};
 use super::*;
 
+mod candidate_backed;
+
 type DrainedEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
 type DrainedCurrentEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>, Vec<Vec<u8>>);
 type DrainedCurrentFinalityEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
