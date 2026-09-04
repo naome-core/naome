@@ -355,6 +355,165 @@ fn current_round_finality_inputs(
     (control, payload, certificate, position, value)
 }
 
+fn run_current_round_preselection_pair(
+    fixture: &Fixture,
+    label: &str,
+    reverse_inputs: bool,
+    use_vote_batches: bool,
+) -> FixedValidatorNodeFinalityStoppedV0 {
+    let layout = TestLayout::new(label);
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let selected = ArtifactChainState::new(fixture.definition);
+    let before = layout.images();
+    let stopped = ready
+        .run_with_signing_session(|scope| {
+            match commit_complete_current_round_preselection_pair(
+                scope,
+                fixture,
+                &selected,
+                reverse_inputs,
+                use_vote_batches,
+            )
+            .unwrap()
+            {
+                FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::FinalityStopped(
+                    stopped,
+                ) => *stopped,
+                FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::Rejected {
+                    ..
+                } => {
+                    panic!("the complete exact-current pair must halt")
+                }
+            }
+        })
+        .unwrap();
+
+    assert_eq!(
+        stopped.finality_halt().kind(),
+        naome_storage::FixedValidatorFinalityHaltKindV0::PreselectionPair
+    );
+    assert_eq!(
+        stopped.signer_stop().kind(),
+        naome_storage::FixedValidatorFinalityHaltKindV0::PreselectionPair
+    );
+    assert_eq!(stopped.finality_halt().height().value(), 1);
+    assert_eq!(
+        stopped.signer_stop().finality_state_id(),
+        stopped.finality_halt().state_id()
+    );
+    let after = layout.images();
+    for index in 0..after.len() {
+        assert_ne!(after[index], before[index], "durable image index {index}");
+    }
+    match fixture
+        .provision(&layout, 8)
+        .open(fixture.signing_key())
+        .unwrap()
+    {
+        FixedValidatorNodeStartupV0::FinalityStopped(reopened) => {
+            assert_eq!(reopened, stopped);
+        }
+        _ => panic!("strict restart must expose the exact-current terminal pair"),
+    }
+    stopped
+}
+
+fn commit_complete_current_round_preselection_pair<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+    fixture: &Fixture,
+    selected: &ArtifactChainState,
+    reverse_inputs: bool,
+    use_vote_batches: bool,
+) -> Result<
+    FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0<'node>,
+    FixedValidatorNodeCurrentRoundFinalityErrorV0,
+> {
+    let branch = scope.branch().clone();
+    let proposer = fixture.signing_key();
+    let (first_control, first_payload, first_certificate, first_position, first_value) =
+        current_round_finality_inputs(
+            &branch,
+            selected,
+            ZfcAxiom::Pairing,
+            0,
+            &proposer,
+            &[&proposer],
+        );
+    let (second_control, second_payload, second_certificate, second_position, second_value) =
+        current_round_finality_inputs(
+            &branch,
+            selected,
+            ZfcAxiom::Union,
+            0,
+            &proposer,
+            &[&proposer],
+        );
+    assert_eq!(second_position, first_position);
+    let first_precommit = signed_vote_bytes(
+        fixture.context,
+        first_position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(first_value.proposal_signing_root()),
+        &proposer,
+    );
+    let second_precommit = signed_vote_bytes(
+        fixture.context,
+        second_position,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(second_value.proposal_signing_root()),
+        &proposer,
+    );
+    let first_batch = [first_precommit.as_slice()];
+    let second_batch = [second_precommit.as_slice()];
+
+    if use_vote_batches {
+        if reverse_inputs {
+            scope.commit_current_round_preselection_conflict_vote_batches(
+                &second_control,
+                second_payload,
+                &second_batch,
+                &first_control,
+                first_payload,
+                &first_batch,
+                ConsensusRound::new(0),
+            )
+        } else {
+            scope.commit_current_round_preselection_conflict_vote_batches(
+                &first_control,
+                first_payload,
+                &first_batch,
+                &second_control,
+                second_payload,
+                &second_batch,
+                ConsensusRound::new(0),
+            )
+        }
+    } else if reverse_inputs {
+        scope.commit_current_round_preselection_conflict(
+            &second_control,
+            second_payload,
+            &second_certificate,
+            &first_control,
+            first_payload,
+            &first_certificate,
+            ConsensusRound::new(0),
+        )
+    } else {
+        scope.commit_current_round_preselection_conflict(
+            &first_control,
+            first_payload,
+            &first_certificate,
+            &second_control,
+            second_payload,
+            &second_certificate,
+            ConsensusRound::new(0),
+        )
+    }
+}
+
 fn run_lower_round_preselection_pair(
     fixture: &Fixture,
     label: &str,
@@ -1490,6 +1649,243 @@ fn lower_round_finality_commits_before_a_pending_signer_handoff_fails() {
 }
 
 #[test]
+fn current_round_preselection_batch_pair_matches_certificate_pair_in_both_orders() {
+    let fixture = Fixture::new();
+    let certificate = run_current_round_preselection_pair(
+        &fixture,
+        "current-round-preselection-batch-certificate",
+        false,
+        false,
+    );
+    let batch = run_current_round_preselection_pair(
+        &fixture,
+        "current-round-preselection-batch-forward",
+        false,
+        true,
+    );
+    let reversed = run_current_round_preselection_pair(
+        &fixture,
+        "current-round-preselection-batch-reversed",
+        true,
+        true,
+    );
+
+    assert_eq!(batch, certificate);
+    assert_eq!(reversed, certificate);
+}
+
+#[test]
+fn current_round_preselection_batch_pair_rejections_preserve_scope_files_and_retry() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("current-round-preselection-batch-rejections");
+    let proposer = fixture.signing_key();
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let selected = ArtifactChainState::new(fixture.definition);
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|mut scope| {
+            let branch = scope.branch().clone();
+            let round_one = round_at(&branch, 1);
+            advance_signer_round_without_writing(&mut scope, &round_one);
+            let (first_control, first_payload, _, position, first_value) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Pairing,
+                    1,
+                    &proposer,
+                    &[&proposer],
+                );
+            let (second_control, second_payload, _, second_position, second_value) =
+                current_round_finality_inputs(
+                    &branch,
+                    &selected,
+                    ZfcAxiom::Union,
+                    1,
+                    &proposer,
+                    &[&proposer],
+                );
+            assert_eq!(second_position, position);
+            let first_precommit = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(first_value.proposal_signing_root()),
+                &proposer,
+            );
+            let second_precommit = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(second_value.proposal_signing_root()),
+                &proposer,
+            );
+            let first_batch = [first_precommit.as_slice()];
+            let second_batch = [second_precommit.as_slice()];
+            let second_duplicate_batch = [second_precommit.as_slice(), second_precommit.as_slice()];
+            let empty_batch: [&[u8]; 0] = [];
+            let mut invalid_first_control = first_control.clone();
+            invalid_first_control.pop();
+            let mut invalid_second_control = second_control.clone();
+            invalid_second_control.pop();
+            let diagnostics = signing_scope_diagnostics(&mut scope);
+
+            macro_rules! reject_batch_pair {
+                (
+                    $first_control:expr,
+                    $first_payload:expr,
+                    $first_batch:expr,
+                    $second_control:expr,
+                    $second_payload:expr,
+                    $second_batch:expr,
+                    $maximum:expr,
+                    $check:expr
+                ) => {{
+                    let (mut next, rejection) =
+                        expect_current_round_preselection_conflict_rejection(
+                            scope
+                                .commit_current_round_preselection_conflict_vote_batches(
+                                    $first_control,
+                                    $first_payload,
+                                    $first_batch,
+                                    $second_control,
+                                    $second_payload,
+                                    $second_batch,
+                                    $maximum,
+                                )
+                                .unwrap(),
+                        );
+                    let check = $check;
+                    assert!(check(&rejection), "unexpected rejection: {rejection}");
+                    assert_eq!(signing_scope_diagnostics(&mut next), diagnostics);
+                    assert_eq!(layout.images(), before);
+                    scope = next;
+                }};
+            }
+
+            reject_batch_pair!(
+                &[0_u8],
+                Vec::new(),
+                &empty_batch,
+                &[0_u8],
+                Vec::new(),
+                &empty_batch,
+                ConsensusRound::new(0),
+                |rejection: &FixedValidatorNodeCurrentRoundFinalityRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeCurrentRoundFinalityRejectionV0::RoundWorkLimitExceeded {
+                            required,
+                            maximum,
+                        } if *required == ConsensusRound::new(1)
+                            && *maximum == ConsensusRound::new(0)
+                    )
+                }
+            );
+            reject_batch_pair!(
+                &invalid_first_control,
+                first_payload.clone(),
+                &first_batch,
+                &second_control,
+                second_payload.clone(),
+                &second_batch,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeCurrentRoundFinalityRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeCurrentRoundFinalityRejectionV0::FirstProposal(_)
+                    )
+                }
+            );
+            reject_batch_pair!(
+                &first_control,
+                first_payload.clone(),
+                &empty_batch,
+                &second_control,
+                second_payload.clone(),
+                &second_batch,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeCurrentRoundFinalityRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeCurrentRoundFinalityRejectionV0::FirstPrecommitBatch(
+                            source
+                        ) if matches!(
+                            source.as_ref(),
+                            FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                                QuorumCertificateBuildError::EmptyVoteBatch
+                            )
+                        )
+                    )
+                }
+            );
+            reject_batch_pair!(
+                &first_control,
+                first_payload.clone(),
+                &first_batch,
+                &invalid_second_control,
+                second_payload.clone(),
+                &second_batch,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeCurrentRoundFinalityRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeCurrentRoundFinalityRejectionV0::SecondProposal(_)
+                    )
+                }
+            );
+            reject_batch_pair!(
+                &first_control,
+                first_payload.clone(),
+                &first_batch,
+                &second_control,
+                second_payload.clone(),
+                &second_duplicate_batch,
+                ConsensusRound::new(1),
+                |rejection: &FixedValidatorNodeCurrentRoundFinalityRejectionV0| {
+                    matches!(
+                        rejection,
+                        FixedValidatorNodeCurrentRoundFinalityRejectionV0::SecondPrecommitBatch(
+                            source
+                        ) if matches!(
+                            source.as_ref(),
+                            FixedConsensusPrecommitBatchSealErrorV0::QuorumConstruction(
+                                QuorumCertificateBuildError::DuplicateSigner { .. }
+                            )
+                        )
+                    )
+                }
+            );
+
+            match scope
+                .commit_current_round_preselection_conflict_vote_batches(
+                    &first_control,
+                    first_payload,
+                    &first_batch,
+                    &second_control,
+                    second_payload,
+                    &second_batch,
+                    ConsensusRound::new(1),
+                )
+                .unwrap()
+            {
+                FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::FinalityStopped(_) => {
+                }
+                FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::Rejected {
+                    ..
+                } => {
+                    panic!("the intact exact-current batch pair must succeed after rejections")
+                }
+            }
+        })
+        .unwrap();
+}
+
+#[test]
 fn paired_current_round_rejections_restore_the_exact_scope_and_all_files_before_retry() {
     let fixture = Fixture::new();
     let layout = TestLayout::new("current-round-preselection-pair-rejections");
@@ -2437,6 +2833,82 @@ fn lower_round_preselection_pair_rejections_preserve_scope_files_and_retry() {
                     panic!("the intact lower-round pair must succeed after no-effect rejections")
                 }
             }
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_round_batch_pair_journal_rejection_consumes_scope_and_strictly_reopens_ready() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("current-round-batch-pair-not-distinct");
+    let proposer = fixture.signing_key();
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let selected = ArtifactChainState::new(fixture.definition);
+    let before = layout.images();
+
+    let error = ready
+        .run_with_signing_session(|scope| {
+            let branch = scope.branch().clone();
+            let (control, payload, _, position, value) = current_round_finality_inputs(
+                &branch,
+                &selected,
+                ZfcAxiom::Pairing,
+                0,
+                &proposer,
+                &[&proposer],
+            );
+            let precommit = signed_vote_bytes(
+                fixture.context,
+                position,
+                ConsensusVoteRole::Precommit,
+                ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+                &proposer,
+            );
+            let batch = [precommit.as_slice()];
+
+            match scope.commit_current_round_preselection_conflict_vote_batches(
+                &control,
+                payload.clone(),
+                &batch,
+                &control,
+                payload,
+                &batch,
+                ConsensusRound::new(0),
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("a same-transition exact-current batch pair must fail in finality"),
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        error,
+        FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(source)
+            if matches!(
+                source.as_ref(),
+                FixedValidatorNodeFinalityErrorV0::Commit(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        FixedValidatorFinalityJournalErrorV0::PreselectionConflictNotDistinct {
+                            height,
+                        } if *height == ConsensusHeight::new(1)
+                    )
+            )
+    ));
+    assert_eq!(layout.images(), before);
+
+    let reopened = expect_ready(
+        fixture
+            .provision(&layout, 8)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(scope.signing_session().position().round().value(), 0);
+            assert_eq!(layout.images(), before);
         })
         .unwrap();
 }
@@ -3596,6 +4068,57 @@ fn persisted_finality_round_ceiling_is_fatal_before_input_parsing() {
                     &[0_u8],
                     Vec::new(),
                     &[0_u8],
+                    ConsensusRound::new(0),
+                ),
+                Err(
+                    FixedValidatorNodeCurrentRoundFinalityErrorV0::FinalityRoundLimitExceeded {
+                        required,
+                        maximum,
+                    }
+                ) if required == ConsensusRound::new(2)
+                    && maximum == ConsensusRound::new(1)
+            ));
+            assert_eq!(layout.images(), before);
+        })
+        .unwrap();
+
+    let reopened = expect_ready(
+        provision_with_finality_round_limit(&fixture, &layout, 1, 8)
+            .open(fixture.signing_key())
+            .unwrap(),
+    );
+    reopened
+        .run_with_signing_session(|mut scope| {
+            assert_eq!(scope.signing_session().position().round().value(), 0);
+            assert_eq!(layout.images(), before);
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_round_batch_pair_checks_persisted_ceiling_before_input_work() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("current-round-batch-pair-persisted-ceiling");
+    let ready = provision_with_finality_round_limit(&fixture, &layout, 1, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+
+    ready
+        .run_with_signing_session(|mut scope| {
+            let branch = scope.branch().clone();
+            let round_one = round_at(&branch, 1);
+            let round_two = round_at(&branch, 2);
+            advance_signer_round_without_writing(&mut scope, &round_one);
+            advance_signer_round_without_writing(&mut scope, &round_two);
+            assert!(matches!(
+                scope.commit_current_round_preselection_conflict_vote_batches(
+                    &[0_u8],
+                    Vec::new(),
+                    &[],
+                    &[0_u8],
+                    Vec::new(),
+                    &[],
                     ConsensusRound::new(0),
                 ),
                 Err(

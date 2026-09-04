@@ -151,10 +151,14 @@ pub enum FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
     FirstProposal(Box<ConsensusProposalVerifyError>),
     /// The first paired precommit certificate was rejected.
     FirstPrecommitCertificate(Box<ConsensusEnvelopeVerifyError>),
+    /// The first paired exact signed-precommit batch was rejected.
+    FirstPrecommitBatch(Box<FixedConsensusPrecommitBatchSealErrorV0>),
     /// The second paired proposal-control or artifact payload was rejected.
     SecondProposal(Box<ConsensusProposalVerifyError>),
     /// The second paired precommit certificate was rejected.
     SecondPrecommitCertificate(Box<ConsensusEnvelopeVerifyError>),
+    /// The second paired exact signed-precommit batch was rejected.
+    SecondPrecommitBatch(Box<FixedConsensusPrecommitBatchSealErrorV0>),
 }
 
 impl fmt::Display for FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
@@ -186,6 +190,10 @@ impl fmt::Display for FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
                 formatter,
                 "first current-round paired precommit certificate was rejected: {source}"
             ),
+            Self::FirstPrecommitBatch(source) => write!(
+                formatter,
+                "first current-round paired precommit batch was rejected: {source}"
+            ),
             Self::SecondProposal(source) => write!(
                 formatter,
                 "second current-round paired proposal was rejected: {source}"
@@ -193,6 +201,10 @@ impl fmt::Display for FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
             Self::SecondPrecommitCertificate(source) => write!(
                 formatter,
                 "second current-round paired precommit certificate was rejected: {source}"
+            ),
+            Self::SecondPrecommitBatch(source) => write!(
+                formatter,
+                "second current-round paired precommit batch was rejected: {source}"
             ),
         }
     }
@@ -206,6 +218,9 @@ impl Error for FixedValidatorNodeCurrentRoundFinalityRejectionV0 {
             Self::PrecommitBatch(source) => Some(source.as_ref()),
             Self::FirstProposal(source) | Self::SecondProposal(source) => Some(source.as_ref()),
             Self::FirstPrecommitCertificate(source) | Self::SecondPrecommitCertificate(source) => {
+                Some(source.as_ref())
+            }
+            Self::FirstPrecommitBatch(source) | Self::SecondPrecommitBatch(source) => {
                 Some(source.as_ref())
             }
             Self::RoundWorkLimitExceeded { .. } => None,
@@ -779,102 +794,52 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0<'node>,
         FixedValidatorNodeCurrentRoundFinalityErrorV0,
     > {
-        let finality_maximum_round = ConsensusRound::new(self.finality.replay_limit().max_round());
-        let signer_position = self.signing_session.position();
-        let round = match current_round_for_finality(
-            &self.branch,
-            signer_position,
-            inclusive_maximum_round,
-            finality_maximum_round,
-        ) {
-            Ok(round) => round,
-            Err(CurrentRoundFinalityRoundErrorV0::Rejected(rejection)) => {
-                return Ok(current_round_preselection_conflict_rejected(
-                    self, rejection,
-                ));
-            }
-            Err(CurrentRoundFinalityRoundErrorV0::Fatal(error)) => return Err(error),
-        };
-        let first_proposal = match round.decode_and_verify_proposal_control(
+        commit_current_round_preselection_conflict_with_precommits(
+            self,
             first_canonical_proposal_control_bytes,
             first_canonical_artifact_bytes,
-        ) {
-            Ok(proposal) => proposal,
-            Err(source) => {
-                drop(round);
-                return Ok(current_round_preselection_conflict_rejected(
-                    self,
-                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::FirstProposal(Box::new(
-                        source,
-                    )),
-                ));
-            }
-        };
-        let first = match first_proposal
-            .seal_with_precommit_certificate(first_canonical_precommit_certificate)
-        {
-            Ok(transition) => transition.into_owned(),
-            Err(source) => {
-                drop(round);
-                return Ok(current_round_preselection_conflict_rejected(
-                    self,
-                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::FirstPrecommitCertificate(
-                        Box::new(source),
-                    ),
-                ));
-            }
-        };
-        let second_proposal = match round.decode_and_verify_proposal_control(
+            CurrentRoundPrecommitInputV0::CanonicalCertificate(
+                first_canonical_precommit_certificate,
+            ),
             second_canonical_proposal_control_bytes,
             second_canonical_artifact_bytes,
-        ) {
-            Ok(proposal) => proposal,
-            Err(source) => {
-                drop(round);
-                return Ok(current_round_preselection_conflict_rejected(
-                    self,
-                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::SecondProposal(Box::new(
-                        source,
-                    )),
-                ));
-            }
-        };
-        let second = match second_proposal
-            .seal_with_precommit_certificate(second_canonical_precommit_certificate)
-        {
-            Ok(transition) => transition.into_owned(),
-            Err(source) => {
-                drop(round);
-                return Ok(current_round_preselection_conflict_rejected(
-                    self,
-                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::SecondPrecommitCertificate(
-                        Box::new(source),
-                    ),
-                ));
-            }
-        };
-        drop(round);
+            CurrentRoundPrecommitInputV0::CanonicalCertificate(
+                second_canonical_precommit_certificate,
+            ),
+            inclusive_maximum_round,
+        )
+    }
 
-        let Self {
-            finality,
-            branch: _,
-            signing_session,
-        } = self;
-        let halt = finality
-            .commit_verified_preselection_conflict(first, second)
-            .map_err(|source| {
-                FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(Box::new(
-                    FixedValidatorNodeFinalityErrorV0::Commit(Box::new(source)),
-                ))
-            })?;
-        let stopped =
-            stop_after_finality_halt(finality, signing_session, halt).map_err(|source| {
-                FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(Box::new(source))
-            })?;
-        Ok(
-            FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::FinalityStopped(Box::new(
-                stopped,
-            )),
+    /// Commits two exact-current signed-precommit batches as one neutral halt.
+    ///
+    /// The node derives its current round once, then independently admits each
+    /// complete proposal, payload, and exact batch against that same position.
+    /// Either side's rejection returns the unchanged scope before a write. Only
+    /// both sealed transitions may enter the existing paired finality append and
+    /// signer-stop sequence; caller and vote order grant no winner preference.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_current_round_preselection_conflict_vote_batches(
+        self,
+        first_canonical_proposal_control_bytes: &[u8],
+        first_canonical_artifact_bytes: Vec<u8>,
+        first_canonical_signed_precommits: &[&[u8]],
+        second_canonical_proposal_control_bytes: &[u8],
+        second_canonical_artifact_bytes: Vec<u8>,
+        second_canonical_signed_precommits: &[&[u8]],
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0<'node>,
+        FixedValidatorNodeCurrentRoundFinalityErrorV0,
+    > {
+        commit_current_round_preselection_conflict_with_precommits(
+            self,
+            first_canonical_proposal_control_bytes,
+            first_canonical_artifact_bytes,
+            CurrentRoundPrecommitInputV0::ExactSignedVotes(first_canonical_signed_precommits),
+            second_canonical_proposal_control_bytes,
+            second_canonical_artifact_bytes,
+            CurrentRoundPrecommitInputV0::ExactSignedVotes(second_canonical_signed_precommits),
+            inclusive_maximum_round,
         )
     }
 
@@ -1500,6 +1465,12 @@ enum CurrentRoundPrecommitInputV0<'input> {
     ExactSignedVotes(&'input [&'input [u8]]),
 }
 
+#[derive(Clone, Copy)]
+enum CurrentRoundPreselectionConflictSideV0 {
+    First,
+    Second,
+}
+
 enum CurrentRoundFinalityRoundErrorV0 {
     Rejected(FixedValidatorNodeCurrentRoundFinalityRejectionV0),
     Fatal(FixedValidatorNodeCurrentRoundFinalityErrorV0),
@@ -1583,6 +1554,147 @@ fn commit_current_round_finality_with_precommits<'node>(
         .commit_verified_finality(transition)
         .map(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality)
         .map_err(|source| FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(Box::new(source)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_current_round_preselection_conflict_with_precommits<'node>(
+    scope: FixedValidatorNodeSigningScopeV0<'node>,
+    first_canonical_proposal_control_bytes: &[u8],
+    first_canonical_artifact_bytes: Vec<u8>,
+    first_precommits: CurrentRoundPrecommitInputV0<'_>,
+    second_canonical_proposal_control_bytes: &[u8],
+    second_canonical_artifact_bytes: Vec<u8>,
+    second_precommits: CurrentRoundPrecommitInputV0<'_>,
+    inclusive_maximum_round: ConsensusRound,
+) -> Result<
+    FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0<'node>,
+    FixedValidatorNodeCurrentRoundFinalityErrorV0,
+> {
+    let finality_maximum_round = ConsensusRound::new(scope.finality.replay_limit().max_round());
+    let signer_position = scope.signing_session.position();
+    let round = match current_round_for_finality(
+        &scope.branch,
+        signer_position,
+        inclusive_maximum_round,
+        finality_maximum_round,
+    ) {
+        Ok(round) => round,
+        Err(CurrentRoundFinalityRoundErrorV0::Rejected(rejection)) => {
+            return Ok(current_round_preselection_conflict_rejected(
+                scope, rejection,
+            ));
+        }
+        Err(CurrentRoundFinalityRoundErrorV0::Fatal(error)) => return Err(error),
+    };
+    let first = match verify_current_round_preselection_conflict_input(
+        &round,
+        first_canonical_proposal_control_bytes,
+        first_canonical_artifact_bytes,
+        first_precommits,
+        CurrentRoundPreselectionConflictSideV0::First,
+    ) {
+        Ok(transition) => transition,
+        Err(rejection) => {
+            drop(round);
+            return Ok(current_round_preselection_conflict_rejected(
+                scope, rejection,
+            ));
+        }
+    };
+    let second = match verify_current_round_preselection_conflict_input(
+        &round,
+        second_canonical_proposal_control_bytes,
+        second_canonical_artifact_bytes,
+        second_precommits,
+        CurrentRoundPreselectionConflictSideV0::Second,
+    ) {
+        Ok(transition) => transition,
+        Err(rejection) => {
+            drop(round);
+            return Ok(current_round_preselection_conflict_rejected(
+                scope, rejection,
+            ));
+        }
+    };
+    drop(round);
+
+    let FixedValidatorNodeSigningScopeV0 {
+        finality,
+        branch: _,
+        signing_session,
+    } = scope;
+    let halt = finality
+        .commit_verified_preselection_conflict(first, second)
+        .map_err(|source| {
+            FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(Box::new(
+                FixedValidatorNodeFinalityErrorV0::Commit(Box::new(source)),
+            ))
+        })?;
+    let stopped = stop_after_finality_halt(finality, signing_session, halt).map_err(|source| {
+        FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(Box::new(source))
+    })?;
+    Ok(
+        FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::FinalityStopped(Box::new(
+            stopped,
+        )),
+    )
+}
+
+fn verify_current_round_preselection_conflict_input(
+    round: &FixedConsensusRoundV0<'_>,
+    canonical_proposal_control_bytes: &[u8],
+    canonical_artifact_bytes: Vec<u8>,
+    precommits: CurrentRoundPrecommitInputV0<'_>,
+    side: CurrentRoundPreselectionConflictSideV0,
+) -> Result<
+    OwnedVerifiedFixedConsensusTransitionV0,
+    FixedValidatorNodeCurrentRoundFinalityRejectionV0,
+> {
+    let proposal = round
+        .decode_and_verify_proposal_control(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+        )
+        .map_err(|source| match side {
+            CurrentRoundPreselectionConflictSideV0::First => {
+                FixedValidatorNodeCurrentRoundFinalityRejectionV0::FirstProposal(Box::new(source))
+            }
+            CurrentRoundPreselectionConflictSideV0::Second => {
+                FixedValidatorNodeCurrentRoundFinalityRejectionV0::SecondProposal(Box::new(source))
+            }
+        })?;
+    match precommits {
+        CurrentRoundPrecommitInputV0::CanonicalCertificate(canonical_certificate) => proposal
+            .seal_with_precommit_certificate(canonical_certificate)
+            .map(|transition| transition.into_owned())
+            .map_err(|source| match side {
+                CurrentRoundPreselectionConflictSideV0::First => {
+                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::FirstPrecommitCertificate(
+                        Box::new(source),
+                    )
+                }
+                CurrentRoundPreselectionConflictSideV0::Second => {
+                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::SecondPrecommitCertificate(
+                        Box::new(source),
+                    )
+                }
+            }),
+        CurrentRoundPrecommitInputV0::ExactSignedVotes(canonical_signed_precommits) => proposal
+            .seal_with_precommit_vote_batch(canonical_signed_precommits)
+            .map(|transition| transition.into_owned())
+            .map_err(|source| match side {
+                CurrentRoundPreselectionConflictSideV0::First => {
+                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::FirstPrecommitBatch(
+                        Box::new(source),
+                    )
+                }
+                CurrentRoundPreselectionConflictSideV0::Second => {
+                    FixedValidatorNodeCurrentRoundFinalityRejectionV0::SecondPrecommitBatch(
+                        Box::new(source),
+                    )
+                }
+            }),
+    }
 }
 
 fn derive_finality_round(

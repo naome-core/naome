@@ -5,9 +5,9 @@
 //! strict provisioning, restart ordering, and consuming sealed or
 //! candidate-backed finality-to-signer coupling plus bounded exact-current and
 //! strictly lower-round certificate or exact signed-precommit-batch finality
-//! admission, certificate or exact signed-precommit-batch strictly lower-round
-//! paired-preselection halt, and caller-targeted candidate-backed batch
-//! admission;
+//! admission, certificate or exact signed-precommit-batch exact-current and
+//! strictly lower-round paired-preselection halt, and caller-targeted
+//! candidate-backed batch admission;
 //! direct and exact-target fresh-only candidate-store-backed plus exact
 //! retained-value payload-store-backed current-round proposal authoring; direct
 //! plus exact-target candidate- and payload-store-backed proposal vote
