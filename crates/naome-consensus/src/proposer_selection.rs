@@ -1,4 +1,5 @@
-//! Deterministic fixed-set proposer selection and canonical priority state.
+//! Deterministic proposer selection and canonical priority state across
+//! caller-preselected immutable agreement snapshots.
 
 use std::error::Error;
 use std::fmt;
@@ -61,14 +62,18 @@ impl FixedAgreementSetV0 {
             ConsensusPosition::new(ConsensusHeight::new(1), ConsensusRound::new(0)),
             entries,
         )?;
+        Ok(Self::from_active_snapshot(&snapshot))
+    }
+
+    fn from_active_snapshot(snapshot: &ActiveAgreementSnapshot) -> Self {
         let entries = snapshot.entries().to_vec().into_boxed_slice();
         let total_weight = snapshot.total_weight();
         let id = derive_fixed_set_id(&entries);
-        Ok(Self {
+        Self {
             entries,
             total_weight,
             id,
-        })
+        }
     }
 
     pub(crate) fn positioned_snapshot(
@@ -95,11 +100,12 @@ impl FixedAgreementSetV0 {
     }
 }
 
-/// One exact, internally reachable proposer-priority state for a fixed set.
+/// One exact, internally reachable proposer-priority state for one immutable set.
 ///
 /// Priorities have no public raw constructor. V0 starts at zero and publishes
-/// successors only through [`Self::select_next`], so callers cannot substitute
-/// a key or priority vector while retaining the same typed state.
+/// successors only through [`Self::select_next`] or the deterministic complete-
+/// snapshot transition, so callers cannot substitute a key or priority vector
+/// while retaining the same typed state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FixedProposerStateV0 {
     fixed_set: Arc<FixedAgreementSetV0>,
@@ -153,6 +159,76 @@ impl FixedProposerStateV0 {
                 id,
             },
         ))
+    }
+
+    /// Applies the exact transition to one complete caller-preselected snapshot.
+    ///
+    /// This arithmetic does not establish snapshot provenance, canonicality,
+    /// activation, branch selection, finality, persistence, or network trust.
+    #[allow(
+        dead_code,
+        reason = "canonical dynamic-snapshot integration is owned by later ledger work"
+    )]
+    fn transition_to_preselected_snapshot(
+        &self,
+        final_snapshot: &ActiveAgreementSnapshot,
+    ) -> Result<Self, ProposerSelectionError> {
+        for priority in &self.priorities {
+            encode_signed_i256(priority)?;
+        }
+
+        let fixed_set = Arc::new(FixedAgreementSetV0::from_active_snapshot(final_snapshot));
+        if fixed_set.entries().is_empty() {
+            let priorities = Vec::new().into_boxed_slice();
+            let id = derive_priority_state_id(fixed_set.id(), &priorities)?;
+            return Ok(Self {
+                fixed_set,
+                priorities,
+                id,
+            });
+        }
+
+        let removed_weight = self
+            .fixed_set
+            .entries()
+            .iter()
+            .filter(|old_entry| {
+                fixed_set
+                    .entries()
+                    .binary_search_by_key(&old_entry.consensus_key(), |entry| entry.consensus_key())
+                    .is_err()
+            })
+            .fold(BigInt::from(0_u8), |total, entry| {
+                total + BigInt::from(entry.agreement_weight().units())
+            });
+        let updated_total = BigInt::from(fixed_set.total_weight().units()) + removed_weight;
+        let new_priority = -(&updated_total + (&updated_total / 8_u8));
+        encode_signed_i256(&new_priority)?;
+
+        let mut priorities = fixed_set
+            .entries()
+            .iter()
+            .map(|final_entry| {
+                self.fixed_set
+                    .entries()
+                    .binary_search_by_key(&final_entry.consensus_key(), |entry| {
+                        entry.consensus_key()
+                    })
+                    .map_or_else(
+                        |_| new_priority.clone(),
+                        |old_index| self.priorities[old_index].clone(),
+                    )
+            })
+            .collect::<Vec<_>>();
+        normalize_priorities(&mut priorities, fixed_set.total_weight())?;
+
+        let priorities = priorities.into_boxed_slice();
+        let id = derive_priority_state_id(fixed_set.id(), &priorities)?;
+        Ok(Self {
+            fixed_set,
+            priorities,
+            id,
+        })
     }
 
     pub(crate) fn positioned_snapshot(
