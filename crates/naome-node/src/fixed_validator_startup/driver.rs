@@ -68,12 +68,14 @@ use super::{
     FixedValidatorNodeHigherRoundInboxProposalInsertErrorV0,
     FixedValidatorNodeHigherRoundInboxProposalInsertOutcomeV0,
     FixedValidatorNodeHigherRoundInboxSaturationV0, FixedValidatorNodeHigherRoundInboxV0,
-    FixedValidatorNodeHigherRoundProposalRouteV0, FixedValidatorNodeProposalDeferralErrorV0,
-    FixedValidatorNodeProposalDeferralRejectionV0, FixedValidatorNodeRoundAdvanceErrorV0,
-    FixedValidatorNodeRoundAdvanceOutcomeV0, FixedValidatorNodeRoundAdvanceRejectionV0,
-    FixedValidatorNodeSigningScopeV0, FixedValidatorNodeVoteExecutionErrorV0,
-    FixedValidatorNodeVoteExecutionOutcomeV0, FixedValidatorNodeVoteRejectionV0,
-    fixed_validator_node_current_round,
+    FixedValidatorNodeHigherRoundProposalRouteV0, FixedValidatorNodeLowerRoundFinalityErrorV0,
+    FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0,
+    FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0,
+    FixedValidatorNodeProposalDeferralErrorV0, FixedValidatorNodeProposalDeferralRejectionV0,
+    FixedValidatorNodeRoundAdvanceErrorV0, FixedValidatorNodeRoundAdvanceOutcomeV0,
+    FixedValidatorNodeRoundAdvanceRejectionV0, FixedValidatorNodeSigningScopeV0,
+    FixedValidatorNodeVoteExecutionErrorV0, FixedValidatorNodeVoteExecutionOutcomeV0,
+    FixedValidatorNodeVoteRejectionV0, fixed_validator_node_current_round,
 };
 
 static NEXT_DRIVER_LINEAGE: AtomicU64 = AtomicU64::new(1);
@@ -829,6 +831,28 @@ pub enum FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0<'node>
     FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
 }
 
+/// Result of one explicitly routed strictly lower-round paired-conflict attempt.
+///
+/// Pending command custody and typed pre-effect rejection return the unchanged
+/// driver. Owned payload inputs are consumed by every outcome; this does not
+/// retain or return caller evidence for retry. A verified pair stops finality
+/// and the signer without selecting either proposal.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0<'node> {
+    /// An already pending outward command must transfer before proof processing.
+    CommandPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Route or proof input was rejected before any node effect.
+    Rejected {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        rejection: Box<FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0>,
+    },
+    /// Both independently verified proofs durably stopped finality and the signer.
+    FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+}
+
 /// Result of one explicitly routed candidate-backed direct-child finality attempt.
 ///
 /// Pending command custody and every non-fallthrough current-finality
@@ -1104,9 +1128,10 @@ enum PendingCommandV0 {
 ///
 /// The driver privately owns the sole live signing scope. It exposes neither a
 /// mutable nor consuming escape hatch back to that scope. Its ordinary actions
-/// remain selected only by [`Self::step`]; the sole explicit terminal exception
-/// routes one caller-selected candidate-backed historical conflict after pending
-/// command custody transfers. Its only authority projection is the sealed
+/// remain selected only by [`Self::step`]. Separate explicit methods submit
+/// candidate-backed direct-child or historical-conflict evidence and complete
+/// strictly lower-round conflict pairs after pending command custody transfers.
+/// Its only authority projection is the sealed
 /// read-only selected artifact history required by caller-owned acquisition.
 /// Evidence and due timers become authoritative only through the existing fully
 /// checking consuming coordinators.
@@ -1490,6 +1515,74 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                     Box::new(stopped),
                 )
             })
+    }
+
+    /// Submits one explicitly routed strictly lower-round pair for a neutral halt.
+    ///
+    /// Pending outward command custody is the sole driver gate. After transfer,
+    /// current-round inbox state, phase, due state, and timer generation do not
+    /// delay complete independent verification by the existing lower-round
+    /// paired coordinator. The explicit round is bounded by this driver's
+    /// construction-time ceiling. Typed pre-effect rejection restores the
+    /// unchanged driver; success and every fatal error return no driver and
+    /// require strict anchored reopen for any later state classification.
+    ///
+    /// Owned payload arguments are consumed even on a driver-returning outcome.
+    /// This method retains no caller evidence and performs no acquisition,
+    /// automatic event selection, retry, or timer transition.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_lower_round_preselection_conflict_vote_batches(
+        mut self,
+        first_canonical_proposal_control_bytes: &[u8],
+        first_canonical_artifact_bytes: Vec<u8>,
+        first_canonical_signed_precommits: &[&[u8]],
+        second_canonical_proposal_control_bytes: &[u8],
+        second_canonical_artifact_bytes: Vec<u8>,
+        second_canonical_signed_precommits: &[&[u8]],
+        evidence_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0<'node>,
+        FixedValidatorNodeLowerRoundFinalityErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        let route = FixedValidatorNodeFinalityRoundRouteV0::new(
+            evidence_round,
+            self.inclusive_maximum_round,
+        );
+        let scope = self.take_scope();
+        match scope.commit_lower_round_preselection_conflict_vote_batches(
+            first_canonical_proposal_control_bytes,
+            first_canonical_artifact_bytes,
+            first_canonical_signed_precommits,
+            second_canonical_proposal_control_bytes,
+            second_canonical_artifact_bytes,
+            second_canonical_signed_precommits,
+            route,
+        )? {
+            FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::Rejected {
+                scope,
+                rejection,
+            } => {
+                self.scope = Some(*scope);
+                Ok(
+                    FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection,
+                    },
+                )
+            }
+            FixedValidatorNodeLowerRoundPreselectionConflictOutcomeV0::FinalityStopped(stopped) => {
+                Ok(
+                    FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0::FinalityStopped(stopped),
+                )
+            }
+        }
     }
 
     /// Admits one owned event without choosing or executing a consensus action.

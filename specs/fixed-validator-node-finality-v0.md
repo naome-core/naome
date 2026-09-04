@@ -618,8 +618,14 @@ These are separate required product capabilities, not unnecessary work. The
 candidate-backed integration intentionally stops at the already decided
 caller-selected one-target direct-child or deny-only conflict boundary. Any
 automatic candidate selection, peer-driven promotion, or conflict-triggering
-policy outside the exact driver-owned paired-preselection rule requires a
-separate explicit authority and policy decision. The exact-current single or
+policy outside the exact driver-owned paired-preselection rule and the explicit
+lower-round paired-conflict bridge requires a separate explicit authority and
+policy decision. The lower-round driver bridge submits two complete caller
+proofs after pending-command transfer regardless of current-round inbox state;
+it delegates all verification and the neutral anchored halt to the unchanged
+coordinator, restores the driver only on typed pre-effect rejection, and returns
+no driver after terminal success or fatal error. It does not acquire, retain,
+or select evidence automatically. The exact-current single or
 paired, lower-round single or paired, and candidate-backed exact-batch
 integrations intentionally stop at separate complete caller-supplied bytes and
 do not observe or choose events. They neither replace the paired driver ingress

@@ -31,16 +31,20 @@ one existing consuming node coordinator. It emits at most one timeout-arm or
 signed-vote command. It does not expose the owned signing scope as an
 alternative caller-controlled path.
 
-The caller-selected action exceptions are two candidate-backed bridges outside
-ordinary `step` selection. Both are available only after any pending outward
-command has transferred, retain no evidence, use the driver's existing
-inclusive round-work ceiling, and delegate all proposal, source,
-positioned-fixed-set, batch, finality, and signer checks to existing consuming
-coordinators. The deny-only historical selected-sibling bridge cannot return a
+The caller-selected action exceptions are two candidate-backed bridges and one
+strictly lower-round paired-conflict bridge outside ordinary `step` selection.
+All are available only after any pending outward command has transferred,
+retain no evidence, use the driver's existing inclusive round-work ceiling,
+and delegate every applicable proposal, source, positioned-fixed-set, batch,
+finality, and signer check to existing consuming coordinators. The deny-only
+historical selected-sibling bridge cannot return a
 driver after proof processing begins. The direct-child bridge additionally
 preserves every non-fallthrough current-finality classification ahead of caller
 choice, and returns a driver after proof processing only for a typed pre-effect
-rejection or a completed child-height handoff.
+rejection or a completed child-height handoff. The lower-round paired bridge
+instead submits two complete proofs for a
+terminal neutral halt regardless of current-round inbox state, restoring the
+driver only on typed pre-effect rejection.
 
 This remains a partial driver boundary. Its input surface now covers current-
 and higher-round proposal/prevote evidence, current-round nil prevotes,
@@ -56,10 +60,12 @@ complete proposal-backed roots instead run through the neutral paired halt and
 return no driver or selected branch. An explicit caller may separately submit
 one exact candidate-backed direct-child proposal and precommit batch after
 command custody and only when current-finality classification would otherwise
-fall through. Separate non-candidate lower-round finality routing, automatic
-candidate-backed evidence routing, broader or incomplete preselection conflict
-handling, proposal authoring, networking, and artifact-payload persistence remain outside this
-driver.
+fall through. An explicit lower-round paired-conflict submission may instead
+enter the fully verifying neutral halt after command custody, without waiting
+for current-round finality classification. Separate non-candidate lower-round
+single-proof finality routing, automatic candidate-backed evidence routing,
+broader or incomplete preselection conflict handling, proposal authoring,
+networking, and artifact-payload persistence remain outside this driver.
 
 This ownership moves event choice out of a caller that could otherwise select
 an inbox position or invoke a phase close directly. It does not make retained
@@ -205,6 +211,43 @@ routes no event. Caller target, round, invocation time, store membership, peer
 identity, or provenance grants no validity, preference, branch-selection,
 rollback, repair, finality, or signing authority. It does not alter ordinary
 `step` priority or make the direct method the node's sole finality policy.
+
+## Explicit strictly lower-round paired-conflict bridge
+
+`FixedValidatorNodeDriverV0::commit_lower_round_preselection_conflict_vote_batches`
+consumes the driver and accepts two complete proposal-control, owned artifact-
+payload, and exact signed-precommit-batch triples plus one shared evidence
+round. It supplies the driver's construction-time inclusive work ceiling to
+the existing lower-round paired coordinator. That coordinator independently
+enforces node coherence, the persisted ceiling, a strictly earlier evidence
+round, the caller work bound, and complete verification of both proposals,
+payloads, producers, positioned fixed set, and strict-supermajority batches.
+
+A pending outward command is the sole driver gate. `CommandPending` returns the
+unchanged driver before route or proof inspection. Once command custody is
+clear, this explicit terminal attempt proceeds regardless of phase, due state,
+any current-round ready proposal, missing proposal, conflicting roots, complete
+pair, saturation, or other retained inbox state. It does not classify current
+finality, reserve a successor timer generation, or run ordinary `step` work.
+The caller chooses the submission time, but only two fully verified distinct
+same-position proofs may reach the existing canonically ordered neutral halt;
+neither the caller nor this bridge chooses a winner.
+
+Typed route, first-proof, or second-proof pre-effect rejection restores the
+same scope to the unchanged driver, including every inbox, byte count, latch,
+timer, and due observation. Owned payload arguments are consumed by the call,
+including driver-returning outcomes; unlike event admission, this explicit
+method promises no lossless return of caller inputs. It retains no submission
+for retry. Success returns only the matching anchored finality halt and signer
+stop. A coordinator error, including a same-value journal rejection or a
+durability failure, returns no driver, scope, command, timer, or inbox custody;
+strict anchored reopen remains the sole later durable-state classifier.
+
+This bridge adds no automatic observation, collection, pairing, acquisition,
+routing, or retry; cross-round pairing; peer authority; branch selection;
+rollback; repair; atomicity across journals; daemon scheduling; or dynamic-
+validator policy. Ordinary `step` ordering and the two candidate-backed bridges
+retain their existing contracts.
 
 ## Consuming event admission and bounded retention
 
@@ -809,12 +852,12 @@ This driver does not define or perform:
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
 - proposal authoring, higher-round nil-quorum collection, separate non-candidate
-  lower-round finality routing, automatic acquisition or routing for
+  lower-round single-proof finality routing, automatic acquisition or routing for
   candidate-backed direct-child or conflict evidence or a missing proposal, durable
   handling of incomplete or broader multi-root cases beyond the exact retained
-  proposal-backed pair, caller-selected branch or winner choice beyond the one
-  deny-only terminal sibling submission, rollback, reorganization, candidate
-  promotion, checkpoint synchronization, or store repair; the explicit
+  proposal-backed pair and explicit lower-round paired submission, caller-selected
+  branch or winner choice, rollback, reorganization, candidate promotion,
+  checkpoint synchronization, or store repair; the explicit
   direct-child bridge adds only caller-ordered submission after current-finality
   fallthrough and does not join the ordinary `step` selection order;
 - artifact-payload persistence or candidate- or payload-store durable entry or
