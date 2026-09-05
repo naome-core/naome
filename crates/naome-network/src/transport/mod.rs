@@ -214,7 +214,8 @@ pub struct StaticArtifactNetwork {
 }
 
 impl StaticArtifactNetwork {
-    pub(crate) fn is_configured_peer(&self, peer_id: &PeerId) -> bool {
+    /// Reports static transport configuration, not connectivity or consensus trust.
+    pub fn is_configured_peer(&self, peer_id: &PeerId) -> bool {
         self.swarm
             .behaviour()
             .sessions

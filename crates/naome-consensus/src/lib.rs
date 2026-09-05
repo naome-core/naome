@@ -46,12 +46,13 @@ pub use agreement_evidence::{
     ConsensusSignature, ConsensusVoteDecodeError, ConsensusVoteId, ConsensusVoteRole,
     ConsensusVoteTarget, ConsensusVoteVerifyError, PrecommitCertificateId,
     PrecommitCertificateVerifyError, ProposalSigningRoot, QuorumCertificateBuildError,
-    QuorumCertificateId, QuorumCertificateVerifyError, VerifiedConsensusVoteV0,
-    VerifiedPrecommitCertificateV0, VerifiedQuorumCertificateV0,
+    QuorumCertificateId, QuorumCertificateVerifyError, UnverifiedConsensusVoteRouteV0,
+    VerifiedConsensusVoteV0, VerifiedPrecommitCertificateV0, VerifiedQuorumCertificateV0,
 };
 pub use consensus_value::{
     ConsensusAncestryId, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,
     ConsensusProposalVerifyError, ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0,
+    UnverifiedFixedConsensusProposalRouteV0,
 };
 pub use fixed_consensus_branch::{
     FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBoundedSeparateFinalityVerifyError,

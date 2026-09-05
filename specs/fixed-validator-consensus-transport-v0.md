@@ -25,6 +25,11 @@ by another identity. The caller must separately choose a descriptive driver
 event route; the driver's unchanged branch-relative decoding, signature,
 context, round, role, quorum, and artifact checks remain authoritative.
 
+The separate [bounded runtime](fixed-validator-runtime-v0.md) consumes driver
+publications and composes these transport operations with explicit local timing
+and ordinary strict admission. Those behaviors belong to that runtime, not to
+this byte-delivery component.
+
 This transport does not grant signing, consensus admission, branch selection,
 finality, persistence, forwarding, or peer-trust authority. It does not settle
 `NET-009` general gossip or `NET-021` reserved consensus capacity.

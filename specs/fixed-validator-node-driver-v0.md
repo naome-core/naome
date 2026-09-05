@@ -79,6 +79,11 @@ evidence routing, broader or incomplete preselection conflict handling,
 automatic proposal source selection, networking, and artifact-payload persistence
 remain outside this driver.
 
+The separate [bounded runtime](fixed-validator-runtime-v0.md) composes this
+synchronous driver with direct consensus delivery and explicit local timing.
+Its descriptive routing and ordinary local self-admission do not change this
+driver's authority, verification, command custody, or retained-work precedence.
+
 This ownership moves event choice out of a caller that could otherwise select
 an inbox position or invoke a phase close directly. It does not make retained
 evidence, a timeout ticket, a peer, or the driver itself a new source of
@@ -135,8 +140,8 @@ Dropping a driver neither rolls back a completed journal prefix nor proves that
 a returned command was delivered. It can lose volatile inbox evidence, an
 unreleased command, and a selected proposal token still held with that command.
 The durable signer and finality stores keep their existing strict-reopen
-classifications; closing this command-custody crash gap belongs to the later
-runtime boundary.
+classifications. The bounded runtime also retains publication custody only
+in memory; durable outbox and pending-command recovery remain unfinished.
 
 ## Explicit current-round proposal authoring
 
@@ -1080,7 +1085,7 @@ This driver does not define or perform:
 
 These exclusions are authority boundaries for this first node-owned driver,
 not claims that the broader product can omit the corresponding capabilities.
-In particular, later scheduler, transport, binary, finality-routing, and
-multi-node work may compose this driver, but may not turn timer receipt, peer
+In particular, the composing runtime, scheduler, transport, binary,
+finality-routing, and multi-node work may use this driver, but may not turn timer receipt, peer
 identity, network arrival order, retained-set order, or caller-selected
 positions into consensus validity or selection authority.

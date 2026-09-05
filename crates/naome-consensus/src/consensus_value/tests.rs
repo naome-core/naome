@@ -1450,6 +1450,10 @@ fn proposal_control_tag_zero_and_proof_derived_tag_one_are_exact() {
         PROPOSAL_CONTROL_PREFIX_BYTES + VerifiedQuorumCertificateV0::MIN_BYTE_LENGTH
     );
     assert_eq!(with_proof.len(), 697);
+    let route = UnverifiedFixedConsensusProposalRouteV0::inspect(&with_proof).unwrap();
+    assert_eq!(route.context(), fixture.context);
+    assert_eq!(route.position(), fixture.position);
+    assert_ne!(route.position().round(), valid_round);
     let admitted = verify_proposal_fixture(&fixture, &with_proof, fixture.payload.clone()).unwrap();
     let expected_id: [u8; QuorumCertificateId::BYTE_LENGTH] = Sha256::digest(&certificate).into();
     assert_eq!(admitted.valid_round(), Some(valid_round));

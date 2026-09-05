@@ -168,6 +168,19 @@ impl<'snapshot> VerifiedProducerAuthorizationV0<'snapshot> {
     }
 }
 
+pub(crate) fn inspect_authorization_route(
+    bytes: &[u8],
+) -> Result<(ConsensusContextV0, ConsensusPosition), ProducerAuthorizationVerifyError> {
+    if bytes.len() != PRODUCER_AUTHORIZATION_BYTES {
+        return Err(ProducerAuthorizationVerifyError::InvalidLength {
+            actual: bytes.len(),
+            expected: PRODUCER_AUTHORIZATION_BYTES,
+        });
+    }
+    let body = decode_authorization_body(&bytes[..AUTHORIZATION_BODY_BYTES])?;
+    Ok((body.context, body.position))
+}
+
 fn decode_authorization_body(
     bytes: &[u8],
 ) -> Result<AuthorizationBody, ProducerAuthorizationVerifyError> {

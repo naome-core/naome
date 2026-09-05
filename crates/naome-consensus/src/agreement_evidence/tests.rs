@@ -282,6 +282,54 @@ fn nil_prevote_has_one_canonical_representation() {
 }
 
 #[test]
+fn descriptive_vote_routes_reject_bad_shape_but_do_not_verify_signatures() {
+    let expected_context = context(1, 2, 3);
+    let expected_position = position(1, u64::from(u32::MAX) + 1);
+    let target = ConsensusVoteTarget::Proposal(root(4));
+    let mut bytes = signed_vote_bytes(
+        &signing_key(1),
+        manual_vote_body(
+            expected_context,
+            expected_position,
+            ConsensusVoteRole::Prevote,
+            target,
+        ),
+    );
+    let route = UnverifiedConsensusVoteRouteV0::inspect(&bytes).unwrap();
+    assert_eq!(route.context(), expected_context);
+    assert_eq!(route.position(), expected_position);
+    assert_eq!(route.role(), ConsensusVoteRole::Prevote);
+    assert_eq!(route.target(), target);
+    for length in 0..SIGNED_VOTE_BYTES {
+        assert!(matches!(
+            UnverifiedConsensusVoteRouteV0::inspect(&bytes[..length]),
+            Err(ConsensusVoteDecodeError::InvalidLength { .. })
+        ));
+    }
+    let mut trailing = bytes.to_vec();
+    trailing.push(0);
+    assert!(matches!(
+        UnverifiedConsensusVoteRouteV0::inspect(&trailing),
+        Err(ConsensusVoteDecodeError::InvalidLength { .. })
+    ));
+    let mut unknown_role = bytes;
+    unknown_role[ROLE_OFFSET] = 3;
+    assert_eq!(
+        UnverifiedConsensusVoteRouteV0::inspect(&unknown_role),
+        Err(ConsensusVoteDecodeError::UnknownRoleTag { actual: 3 })
+    );
+    bytes[SIGNED_VOTE_BYTES - 32..].fill(0xff);
+    assert_eq!(
+        UnverifiedConsensusVoteRouteV0::inspect(&bytes).unwrap(),
+        route
+    );
+    assert!(matches!(
+        VerifiedConsensusVoteV0::decode_and_verify(&bytes, expected_context),
+        Err(ConsensusVoteVerifyError::InvalidSignature { .. })
+    ));
+}
+
+#[test]
 fn signed_vote_rejects_every_nonexact_length_and_unknown_tags() {
     let expected_context = context(1, 2, 3);
     let signer = signing_key(1);

@@ -20,6 +20,7 @@ members = [
     "crates/naome-node",
     "crates/naome-proof",
     "crates/naome-protocol",
+    "crates/naome-runtime",
     "crates/naome-storage",
 ]
 resolver = "3"

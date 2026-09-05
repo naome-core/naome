@@ -1840,6 +1840,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-runtime"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "naome-chain",
+ "naome-consensus",
+ "naome-network",
+ "naome-node",
+ "naome-proof",
+ "naome-storage",
+ "tokio",
+]
+
+[[package]]
 name = "naome-storage"
 version = "0.1.0"
 dependencies = [
