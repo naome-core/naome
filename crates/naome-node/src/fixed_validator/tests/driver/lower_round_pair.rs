@@ -1,8 +1,8 @@
 use super::*;
 
-type ProofInput = (ConsensusValueV0, Vec<u8>, Vec<u8>, Vec<u8>);
+pub(super) type ProofInput = (ConsensusValueV0, Vec<u8>, Vec<u8>, Vec<u8>);
 
-fn proof_input(
+pub(super) fn proof_input(
     fixture: &Fixture,
     branch: &FixedConsensusBranchV0,
     round: u64,
@@ -38,7 +38,7 @@ fn submit_pair<'node>(
     )
 }
 
-fn round_two_driver(
+pub(super) fn round_two_driver(
     scope: FixedValidatorNodeSigningScopeV0<'_>,
     finality_limit: usize,
 ) -> (

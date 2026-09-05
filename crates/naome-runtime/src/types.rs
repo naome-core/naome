@@ -11,12 +11,15 @@ use naome_network::{
 };
 use naome_node::{
     FixedValidatorNodeCandidateBackedFinalityRejectionV0,
+    FixedValidatorNodeCurrentRoundFinalityErrorV0,
+    FixedValidatorNodeCurrentRoundFinalityRejectionV0,
     FixedValidatorNodeDriverAdmissionDispositionV0, FixedValidatorNodeDriverAdmissionErrorV0,
     FixedValidatorNodeDriverAdmissionOutcomeV0, FixedValidatorNodeDriverAdmissionRejectionV0,
     FixedValidatorNodeDriverBlockReasonV0,
     FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0,
     FixedValidatorNodeDriverCandidateBackedFinalityErrorV0,
     FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0, FixedValidatorNodeDriverCommandV0,
+    FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0,
     FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0,
     FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0,
@@ -139,6 +142,9 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     LowerRoundPreselectionConflictRejected(
         Box<FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0>,
     ),
+    CurrentRoundPreselectionConflictRejected(
+        Box<FixedValidatorNodeCurrentRoundFinalityRejectionV0>,
+    ),
     /// No driver survives. Only independently retained runtime custody remains.
     Fatal(Box<FixedValidatorRuntimeFailureV0>),
     DriverUnavailable,
@@ -158,6 +164,9 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     UnsupportedLowerRoundPreselectionConflict(
         Box<FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0<'node>>,
     ),
+    UnsupportedCurrentRoundPreselectionConflict(
+        Box<FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0<'node>>,
+    ),
 }
 
 #[derive(Debug)]
@@ -170,6 +179,7 @@ pub enum FixedValidatorRuntimeFailureV0 {
     CandidateBackedFinality(FixedValidatorNodeDriverCandidateBackedFinalityErrorV0),
     CandidateBackedConflict(FixedValidatorNodeFinalityErrorV0),
     LowerRoundPreselectionConflict(FixedValidatorNodeLowerRoundFinalityErrorV0),
+    CurrentRoundPreselectionConflict(FixedValidatorNodeCurrentRoundFinalityErrorV0),
 }
 
 impl fmt::Display for FixedValidatorRuntimeFailureV0 {

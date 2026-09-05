@@ -761,6 +761,27 @@ pub enum FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0<'node>
     FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
 }
 
+/// Result of one explicit exact-current paired-conflict attempt.
+///
+/// Pending command custody and typed pre-effect rejection return the unchanged
+/// driver. Every driver invocation consumes both owned payloads. A verified
+/// distinct pair stops finality and the signer without selecting either value.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0<'node> {
+    /// An already pending outward command must transfer before proof processing.
+    CommandPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Caller work bounds or either complete proof failed before any node effect.
+    Rejected {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        rejection: Box<FixedValidatorNodeCurrentRoundFinalityRejectionV0>,
+    },
+    /// Both independently verified proofs durably stopped finality and the signer.
+    FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+}
+
 /// Result of one explicitly routed strictly lower-round paired-conflict attempt.
 ///
 /// Pending command custody and typed pre-effect rejection return the unchanged

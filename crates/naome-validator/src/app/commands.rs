@@ -164,6 +164,25 @@ pub(super) fn execute(
                 .map_err(|(reason, _payload)| reason);
             return Ok(proof_outcome(outcome, runtime, 1));
         }
+        Command::HaltCurrentConflict { first, second, .. } => {
+            check_vote_count(&first.vote_files)?;
+            check_vote_count(&second.vote_files)?;
+            let first = read_proposal_votes(base, first)?;
+            let second = read_proposal_votes(base, second)?;
+            let first_refs = vote_refs(&first.votes);
+            let second_refs = vote_refs(&second.votes);
+            let outcome = runtime
+                .commit_current_round_preselection_conflict_vote_batches(
+                    &first.control,
+                    first.payload,
+                    &first_refs,
+                    &second.control,
+                    second.payload,
+                    &second_refs,
+                )
+                .map_err(|(reason, _first, _second)| reason);
+            return Ok(proof_outcome(outcome, runtime, 2));
+        }
         Command::HaltLowerConflict {
             evidence_round,
             first,

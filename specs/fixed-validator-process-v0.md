@@ -3,8 +3,9 @@
 ## Scope and authority
 
 `PROD-020-049` defines the Unix `naome-validator` executable,
-`PROD-020-050` adds explicit complete-proof commands, and `PROD-020-051`
-adds explicit class-selected inbox disposal. It owns one
+`PROD-020-050` adds explicit complete-proof commands, `PROD-020-051`
+adds explicit class-selected inbox disposal, and `PROD-020-052` adds explicit
+exact-current paired-conflict submission. It owns one
 explicitly configured local fixed-validator signer through
 `FixedValidatorNodeReadyV0::run_with_signing_session_async`, constructs the
 existing driver and runtime within that lifetime, and accepts explicit operator
@@ -149,6 +150,7 @@ they are never supplied as unbounded inline JSON arrays.
 | `finalize_lower_quorum` | `control_file`, `payload_file`, `certificate_file` | Submit one complete direct strictly lower-round finality proof |
 | `finalize_lower_votes` | `evidence_round`, `proof` | Submit the direct lower proof using exact signed precommit files |
 | `halt_lower_conflict` | `evidence_round`, `first`, `second` | Independently verify two explicit lower-round proofs for a neutral paired halt |
+| `halt_current_conflict` | `first`, `second` | Independently verify two exact-current proofs for a neutral paired halt |
 
 For example:
 
@@ -223,7 +225,7 @@ selection, or finality authority.
 
 ## Explicit complete proofs
 
-The five complete-proof commands call the corresponding existing
+The six complete-proof commands call the corresponding existing
 `FixedValidatorRuntimeV0` methods exactly once. They do not collect, group,
 rank, filter, deduplicate, sort, or infer evidence. A file path, caller-supplied
 route, successful read, or parsed command establishes no proof validity. Only
@@ -239,7 +241,12 @@ Each nested `proof`, `first`, or `second` object contains exactly
 `control_file`, `payload_file`, and `vote_files`. Unknown nested fields are
 rejected. Command, target, and nested proof arrays are rejected; parsing retains
 duplicate map entries so repeated fields are rejected rather than collapsed.
-Both proofs in a pair use the one explicit evidence round.
+Both proofs in a lower pair use the one explicit evidence round.
+`halt_current_conflict` instead accepts exactly `id`, `first`, and `second`
+beside its command name. It rejects `evidence_round`, including the actual
+current round, and accepts no root, parent, position, or winner metadata. The
+node derives the live owned round and independently verifies both complete
+proofs against it; the process does not extract a route from either proof.
 
 Every `vote_files` array has between 1 and `MAX_ACTIVE_VALIDATORS` (256) paths.
 Scalar parsing and both pair counts are checked before opening any proof source.
@@ -262,16 +269,20 @@ For example, explicitly submit a complete lower-round signed-precommit batch:
 
 The four positive commands preserve the runtime's publication, pending-arm,
 and pending-driver-command backpressure. They report `proof_refused` with
-`reason` `busy` or `driver_unavailable` before delegation. The paired-conflict
-command waits only for driver-command transfer: publication, an in-flight
+`reason` `busy` or `driver_unavailable` before delegation. Both paired-conflict
+commands wait only for driver-command transfer: publication, an in-flight
 send, a timer or due state, and buffered raw input add no conflict gate. All
-existing current-finality and higher-evidence priorities remain binding;
-the command does not implicitly step unresolved work. Current raw input
+existing current-finality and higher-evidence priorities remain binding for
+positive commands. Neither paired command classifies retained finality or runs
+ordinary work before jointly verifying its complete inputs; a uniquely ready
+retained first value cannot be selected by the explicit paired call. No complete-
+proof command implicitly steps unresolved work. Current raw input
 remains a separate admission path and never becomes an automatic proof call.
 
 Command results include the actual post-call runtime `state`. Outcomes remain
 distinct: `proof_refused`; continuing `higher_round_rejected`,
-`lower_round_finality_rejected`, or `lower_round_conflict_rejected`; existing
+`lower_round_finality_rejected`, `lower_round_conflict_rejected`, or
+`current_round_conflict_rejected`; existing
 unresolved-work outcomes; `transitioned`; and `finality`. A higher checkpoint
 supersedes the old deadline only under the runtime's existing advancement rule,
 and a successful lower-finality operation exposes the exact selected child and
@@ -285,7 +296,8 @@ kind, height, ordered ancestry IDs, anchored finality state ID, and that same
 ID from the signer stop. These identities are diagnostics of the returned
 terminal result, not an alternate authorization interface. No winner is
 selected. A same-proof pair reaches the existing consuming non-distinct error:
-it reports `proof_failed` with `strict_restart_required`, not a continuing
+it reports `proof_failed` with `strict_restart_required` and `operation`
+`lower_round_conflict` or `current_round_conflict`, not a continuing
 rejection or an anchored halt. Other consuming failures retain the existing
 fatal handling. Both terminal and consuming-error paths stop processing,
 dispose of surviving independent runtime custody, and release journals before
@@ -294,16 +306,18 @@ Strict open alone distinguishes a durable paired halt from a healthy or
 ambiguous persisted prefix; the command never retries, repairs, or rolls back.
 
 Candidate-backed proofs, historical-sibling source lookup, recovery-bundle
-installation, source-store ownership, inbox drains, acquisition, and serving
-remain outside this process profile. These commands grant no automatic proof
-collection, conflict invocation, evidence selection, or production-liveness
+installation, source-store ownership, acquisition, and serving remain outside
+this process profile. Complete-proof commands do not drain inboxes; the separate
+explicit `discard_inbox` command owns class-selected disposal. These proof
+commands grant no automatic proof collection, conflict invocation, evidence selection, or production-liveness
 authority.
 
 ## Events, shutdown, and restart
 
 The process fairly selects between commands, Unix SIGINT/SIGTERM, and runtime
 events. It preserves the runtime's own retained-work and due-before-input rules.
-It does not continuously retry blocked/rejected driver work or drain inboxes.
+It does not continuously retry blocked/rejected driver work or automatically
+drain inboxes.
 Unrelated network events are reported and dropped, without serving artifacts,
 accepting recovery bundles, or selecting additional evidence.
 
@@ -402,3 +416,19 @@ receipt and completion without local reinsertion; strict reopen retains the
 anchored higher checkpoint with empty inboxes. These are bounded local Unix
 process and loopback observations, without deployment or production-liveness
 evidence.
+
+`crates/naome-validator/tests/cases/current_pair.rs` checks exact-current pair
+schema and both batch-count preflights before any source read, including a
+caller-supplied current `evidence_round`. A saturated finality inbox retains
+only one incomplete proof; malformed first/second or valid noncurrent proofs
+preserve the complete reported state and authority images, and an explicit
+complete distinct pair halts in either input order without an intermediate
+selection. Reports name the exact canonically ordered ancestry identities and
+matching halt/stop state IDs; strict reopen refuses that anchored terminal
+state. Identical valid proofs instead consume the driver without authority
+writes and strictly reopen healthy. A real higher-round `Some` publication with
+a connected SIGSTOP peer remains in flight across typed pair rejection and
+terminal halt, with its reported custody preserved for disposal. These process
+observations establish reported state and event order; the driver and runtime
+tests separately check exact timeout and allocation identities. This adds no
+deployment, production timing, or general distributed-liveness evidence.

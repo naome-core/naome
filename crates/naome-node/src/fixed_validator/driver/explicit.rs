@@ -429,6 +429,68 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             })
     }
 
+    /// Submits two complete exact-current proof batches for one neutral halt.
+    ///
+    /// Pending outward command custody is the sole driver gate. No retained
+    /// evidence is classified or stepped first. The existing coordinator derives
+    /// the current round, applies this driver's construction-time work ceiling,
+    /// and independently verifies both proofs before any durable effect.
+    /// Typed pre-effect rejection restores the unchanged driver. A verified
+    /// distinct pair or any fatal error consumes it; strict anchored reopen is
+    /// the sole later durable-state classifier. Owned payloads are consumed on
+    /// every outcome, including pending-command and continuing rejection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_current_round_preselection_conflict_vote_batches(
+        mut self,
+        first_canonical_proposal_control_bytes: &[u8],
+        first_canonical_artifact_bytes: Vec<u8>,
+        first_canonical_signed_precommits: &[&[u8]],
+        second_canonical_proposal_control_bytes: &[u8],
+        second_canonical_artifact_bytes: Vec<u8>,
+        second_canonical_signed_precommits: &[&[u8]],
+    ) -> Result<
+        FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0<'node>,
+        FixedValidatorNodeCurrentRoundFinalityErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        let scope = self.take_scope();
+        match scope.commit_current_round_preselection_conflict_vote_batches(
+            first_canonical_proposal_control_bytes,
+            first_canonical_artifact_bytes,
+            first_canonical_signed_precommits,
+            second_canonical_proposal_control_bytes,
+            second_canonical_artifact_bytes,
+            second_canonical_signed_precommits,
+            self.inclusive_maximum_round,
+        )? {
+            FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::Rejected {
+                scope,
+                rejection,
+            } => {
+                self.scope = Some(*scope);
+                Ok(
+                    FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection,
+                    },
+                )
+            }
+            FixedValidatorNodeCurrentRoundPreselectionConflictOutcomeV0::FinalityStopped(
+                stopped,
+            ) => Ok(
+                FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0::FinalityStopped(
+                    stopped,
+                ),
+            ),
+        }
+    }
+
     /// Submits one explicitly routed strictly lower-round pair for a neutral halt.
     ///
     /// Pending outward command custody is the sole driver gate. After transfer,
