@@ -32,6 +32,7 @@ impl Proof {
     /// Every proposal and vote comes from a real anchored signer in a separate
     /// throwaway layout. Conflicting fixtures do not bypass one journal's guard.
     pub fn new(fixture: &Fixture, higher: bool, axiom: u8, role: ConsensusVoteRole) -> Self {
+        let _guard = PARENT_JOURNALS.read().unwrap();
         let layout = Layout::new();
         let selected = ArtifactChainState::new(fixture.definition);
         let branch = FixedConsensusBranchV0::try_from_virtual_genesis(

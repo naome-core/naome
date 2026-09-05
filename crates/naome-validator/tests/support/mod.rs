@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
+        RwLock,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -26,6 +27,16 @@ pub use proofs::Proof;
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub const BOUND: Duration = Duration::from_secs(15);
+
+// Keep process creation disjoint from parent-owned journal lifetimes so a
+// child cannot temporarily inherit their lock descriptors before exec.
+// The guard covers spawn only; child processes still execute concurrently.
+pub static PARENT_JOURNALS: RwLock<()> = RwLock::new(());
+
+pub fn spawn(command: &mut Command) -> Child {
+    let _guard = PARENT_JOURNALS.write().unwrap();
+    command.spawn().unwrap()
+}
 
 pub struct Layout {
     pub root: PathBuf,
@@ -302,13 +313,13 @@ impl Process {
         Self::start_path(&path)
     }
     pub fn start_path(path: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_naome-validator"))
-            .arg(path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
+        let mut child = spawn(
+            Command::new(env!("CARGO_BIN_EXE_naome-validator"))
+                .arg(path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit()),
+        );
         let stdout = child.stdout.take().unwrap();
         let (sender, receiver) = mpsc::sync_channel(256);
         std::thread::spawn(move || {
