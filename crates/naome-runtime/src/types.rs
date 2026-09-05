@@ -6,17 +6,27 @@ use naome_consensus::{
     ConsensusPosition, FixedValidatorLockPhaseV0, FixedValidatorProposalSourceV0,
 };
 use naome_network::{
-    ConsensusPushSize, InboundConsensusPush, NetworkEvent, PeerId, StaticArtifactNetwork,
+    ConsensusPushLengthError, ConsensusPushMessage, ConsensusPushSize, InboundConsensusPush,
+    NetworkEvent, PeerId, StaticArtifactNetwork,
 };
 use naome_node::{
+    FixedValidatorNodeCandidateBackedFinalityRejectionV0,
     FixedValidatorNodeDriverAdmissionDispositionV0, FixedValidatorNodeDriverAdmissionErrorV0,
     FixedValidatorNodeDriverAdmissionOutcomeV0, FixedValidatorNodeDriverAdmissionRejectionV0,
-    FixedValidatorNodeDriverBlockReasonV0, FixedValidatorNodeDriverCommandV0,
+    FixedValidatorNodeDriverBlockReasonV0,
+    FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0,
+    FixedValidatorNodeDriverCandidateBackedFinalityErrorV0,
+    FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0, FixedValidatorNodeDriverCommandV0,
+    FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0,
+    FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0,
+    FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeDriverProposalAuthoringOutcomeV0, FixedValidatorNodeDriverStepErrorV0,
     FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverStepRejectionV0,
-    FixedValidatorNodeDriverV0, FixedValidatorNodeFinalitySelectionV0,
-    FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodePhaseTimeoutV0,
-    FixedValidatorNodeProposalAuthoringRejectionV0,
+    FixedValidatorNodeDriverV0, FixedValidatorNodeFinalityErrorV0,
+    FixedValidatorNodeFinalitySelectionV0, FixedValidatorNodeFinalityStoppedV0,
+    FixedValidatorNodeLowerRoundFinalityErrorV0, FixedValidatorNodeLowerRoundFinalityRejectionV0,
+    FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0, FixedValidatorNodePhaseTimeoutV0,
+    FixedValidatorNodeProposalAuthoringRejectionV0, FixedValidatorNodeRoundAdvanceRejectionV0,
 };
 use naome_storage::{FixedValidatorProposalSafetyHaltV0, FixedValidatorVoteSafetyHaltV0};
 
@@ -32,6 +42,41 @@ pub enum FixedValidatorRuntimeTransportPollV0 {
     InputSlotOccupied,
     PolledPending,
     BufferedEvent,
+}
+
+/// A queue refusal performs no routing, admission, timer, or transport work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixedValidatorRuntimeQueueFailureV0 {
+    DriverUnavailable,
+    InputSlotOccupied,
+    Length(ConsensusPushLengthError),
+}
+
+/// The caller's original message, including its allocations, on queue refusal.
+#[derive(Debug)]
+pub struct FixedValidatorRuntimeQueueErrorV0 {
+    pub input: ConsensusPushMessage,
+    pub reason: FixedValidatorRuntimeQueueFailureV0,
+}
+
+impl fmt::Display for FixedValidatorRuntimeQueueErrorV0 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "fixed-validator runtime input queue refused: {:?}",
+            self.reason
+        )
+    }
+}
+
+impl Error for FixedValidatorRuntimeQueueErrorV0 {}
+
+/// No driver proof operation occurred. Borrowed inputs remain with the caller;
+/// methods with owned payloads return their exact allocations beside this value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixedValidatorRuntimeProofRefusalV0 {
+    DriverUnavailable,
+    Busy,
 }
 
 /// One bounded action or ownership transfer. No outcome is a liveness guarantee.
@@ -82,6 +127,18 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     /// Preflight did not consume the caller's proposal source.
     AuthoringBusy(FixedValidatorProposalSourceV0),
     AuthoringUnavailable(FixedValidatorProposalSourceV0),
+    /// Runtime preflight did not access either caller-borrowed source store.
+    StoreAuthoringBusy,
+    StoreAuthoringUnavailable,
+    ExplicitCommandPending,
+    CurrentFinalityUnresolved,
+    HigherEvidenceUnresolved,
+    HigherRoundAdvanceRejected(Box<FixedValidatorNodeRoundAdvanceRejectionV0>),
+    LowerRoundFinalityRejected(Box<FixedValidatorNodeLowerRoundFinalityRejectionV0>),
+    CandidateBackedFinalityRejected(Box<FixedValidatorNodeCandidateBackedFinalityRejectionV0>),
+    LowerRoundPreselectionConflictRejected(
+        Box<FixedValidatorNodeLowerRoundPreselectionConflictRejectionV0>,
+    ),
     /// No driver survives. Only independently retained runtime custody remains.
     Fatal(Box<FixedValidatorRuntimeFailureV0>),
     DriverUnavailable,
@@ -90,6 +147,17 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     UnsupportedStep(Box<FixedValidatorNodeDriverStepOutcomeV0<'node>>),
     UnsupportedAdmission(Box<FixedValidatorNodeDriverAdmissionOutcomeV0<'node>>),
     UnsupportedAuthoring(Box<FixedValidatorNodeDriverProposalAuthoringOutcomeV0<'node>>),
+    UnsupportedHigherRoundAdvance(Box<FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0<'node>>),
+    UnsupportedLowerRoundFinality(Box<FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0<'node>>),
+    UnsupportedCandidateBackedFinality(
+        Box<FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0<'node>>,
+    ),
+    UnsupportedCandidateBackedConflict(
+        Box<FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0<'node>>,
+    ),
+    UnsupportedLowerRoundPreselectionConflict(
+        Box<FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0<'node>>,
+    ),
 }
 
 #[derive(Debug)]
@@ -99,6 +167,9 @@ pub enum FixedValidatorRuntimeFailureV0 {
     VoteSignerStopped(FixedValidatorVoteSafetyHaltV0),
     ProposalSignerStopped(FixedValidatorProposalSafetyHaltV0),
     FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+    CandidateBackedFinality(FixedValidatorNodeDriverCandidateBackedFinalityErrorV0),
+    CandidateBackedConflict(FixedValidatorNodeFinalityErrorV0),
+    LowerRoundPreselectionConflict(FixedValidatorNodeLowerRoundFinalityErrorV0),
 }
 
 impl fmt::Display for FixedValidatorRuntimeFailureV0 {
@@ -124,9 +195,12 @@ pub struct FixedValidatorRuntimePartsV0<'node> {
     pub pending_arm: Option<FixedValidatorNodePhaseTimeoutV0>,
     pub publication: Option<FixedValidatorRuntimePublicationV0>,
     pub pending_network_event: Option<NetworkEvent>,
+    /// Shares one slot with `pending_network_event`; at most one is present.
+    pub pending_caller_input: Option<ConsensusPushMessage>,
     pub failed_admission: Option<FixedValidatorRuntimeAdmissionReportV0>,
     /// The last driver step yielded a blocker or rejection; strict input,
-    /// accepted due state, or an explicit drain re-enables classification.
+    /// accepted due state, an explicit drain, or proof advancement re-enables
+    /// classification.
     pub step_yielded: bool,
     /// An expired exact ticket rejected by the monotone higher-inbox block.
     pub rejected_due_ticket: Option<FixedValidatorNodePhaseTimeoutV0>,

@@ -82,7 +82,10 @@ pub enum ConsensusPushSize {
     },
 }
 impl ConsensusPushSize {
-    pub(super) fn validate(self) -> Result<(), ConsensusPushLengthError> {
+    /// Checks the existing body-length bounds without inspecting content or
+    /// establishing canonical encoding, signatures, or consensus validity.
+    /// These lengths do not measure caller-owned vector allocation capacity.
+    pub fn validate(self) -> Result<(), ConsensusPushLengthError> {
         let check = |field, actual, minimum, maximum| {
             if (minimum..=maximum).contains(&actual) {
                 Ok(())

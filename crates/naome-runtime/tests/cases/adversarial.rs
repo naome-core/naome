@@ -16,6 +16,13 @@ use naome_runtime::FixedValidatorRuntimeRouteV0 as Route;
 #[path = "recovery.rs"]
 mod recovery;
 
+#[path = "caller_input.rs"]
+mod caller_input;
+#[path = "explicit_proofs.rs"]
+mod explicit_proofs;
+#[path = "store_authoring.rs"]
+mod store_authoring;
+
 fn copy_message(message: &ConsensusPushMessage) -> ConsensusPushMessage {
     match message {
         ConsensusPushMessage::Proposal {
@@ -36,6 +43,10 @@ fn isolated_network() -> StaticArtifactNetwork {
 }
 
 fn source_messages(fixture: &Fixture) -> [ConsensusPushMessage; 3] {
+    source_messages_for_payload(fixture, pairing_payload())
+}
+
+fn source_messages_for_payload(fixture: &Fixture, payload: Vec<u8>) -> [ConsensusPushMessage; 3] {
     let layout = TestLayout::new("anchored-fixture");
     let ready = provision(
         fixture.definition,
@@ -57,7 +68,6 @@ fn source_messages(fixture: &Fixture) -> [ConsensusPushMessage; 3] {
                 )
                 .unwrap();
                 assert!(matches!(owner.next_event().await, Event::TimerArmed(_)));
-                let payload = pairing_payload();
                 let block = ArtifactChainState::new(fixture.definition)
                     .prepare_block(artifact_id(&payload))
                     .unwrap();
@@ -234,6 +244,15 @@ fn stream_receipt_does_not_make_corrupted_proposals_authoritative() {
 
 #[test]
 fn current_proposal_reports_each_partial_admission_without_rolling_back_or_dropping_input() {
+    partial_admission(false);
+}
+
+#[test]
+fn caller_proposal_preserves_each_partial_admission_and_original_allocations() {
+    partial_admission(true);
+}
+
+fn partial_admission(caller_input: bool) {
     let fixture = Fixture::new();
     let [proposal, prevote, precommit] = source_messages(&fixture);
     for full_finality in [false, true] {
@@ -280,16 +299,16 @@ fn current_proposal_reports_each_partial_admission_without_rolling_back_or_dropp
                         Runtime::new(driver, receiver, vec![], timeouts(Duration::from_secs(60)))
                             .unwrap();
                     let images = layout.authority_images();
-                    let report =
-                        raw_exchange(&mut sender, &mut owner, copy_message(&proposal), |event| {
-                            match event {
-                                Event::DriverBlocked(_)
-                                | Event::TimerArmed(_)
-                                | Event::Network(_) => {}
-                                _ => check_local(event),
-                            }
-                        })
-                        .await;
+                    let observe = |event| match event {
+                        Event::DriverBlocked(_) | Event::TimerArmed(_) | Event::Network(_) => {}
+                        event => check_local(event),
+                    };
+                    let report = if caller_input {
+                        caller_input::admit(&mut owner, copy_message(&proposal), observe).await
+                    } else {
+                        raw_exchange(&mut sender, &mut owner, copy_message(&proposal), observe)
+                            .await
+                    };
                     assert_eq!(report.input, Some(copy_message(&proposal)));
                     assert!(report.completed());
                     assert!(!report.all_admitted());
@@ -388,6 +407,9 @@ fn pending_publication_preserves_due_and_buffered_input_across_explicit_drains()
                 }
             }
         }).await.unwrap();
+        let refused = owner.queue_input(copy_message(&proposal)).unwrap_err();
+        assert_eq!(refused.reason, naome_runtime::FixedValidatorRuntimeQueueFailureV0::InputSlotOccupied);
+        assert_eq!(refused.input, proposal);
         tokio::time::sleep_until(timer.deadline()).await;
         let images = layout.authority_images();
         if drain {
@@ -605,6 +627,9 @@ fn fatal_anchored_vote_failure_returns_no_driver_and_strict_reopen_refuses_laggi
         assert!(matches!(owner.next_event().await, Event::TimerArmed(_)));
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(matches!(owner.next_event().await, Event::TimerDue { result: Ok(_), .. }));
+        let queued = vec![0; naome_network::CONSENSUS_PUSH_VOTE_BYTES];
+        let queued_original = (queued.as_ptr(), queued.len(), queued.capacity());
+        owner.queue_input(ConsensusPushMessage::Vote { canonical_vote: queued }).unwrap();
         assert!(matches!(owner.next_event().await, Event::Fatal(error) if matches!(*error, naome_runtime::FixedValidatorRuntimeFailureV0::Step(naome_node::FixedValidatorNodeDriverStepErrorV0::Vote(_)))));
         assert!(owner.driver().is_none());
         assert!(owner.pending_publication().is_none());
@@ -614,10 +639,17 @@ fn fatal_anchored_vote_failure_returns_no_driver_and_strict_reopen_refuses_laggi
         assert!(owner.drain_current_finality_inbox_and_reset().is_none());
         assert!(owner.drain_current_nil_precommit_inbox_and_reset().is_none());
         assert_eq!(owner.timer(), timer);
+        let input = ConsensusPushMessage::Vote { canonical_vote: Vec::with_capacity(19) };
+        let original = match &input { ConsensusPushMessage::Vote { canonical_vote } => (canonical_vote.as_ptr(), canonical_vote.capacity()), _ => unreachable!() };
+        let error = owner.queue_input(input).unwrap_err();
+        assert_eq!(error.reason, naome_runtime::FixedValidatorRuntimeQueueFailureV0::DriverUnavailable);
+        assert!(matches!(&error.input, ConsensusPushMessage::Vote { canonical_vote } if (canonical_vote.as_ptr(), canonical_vote.capacity()) == original));
         assert!(matches!(owner.next_event().await, Event::DriverUnavailable));
         let parts = owner.into_parts();
         assert!(parts.driver.is_none());
         assert!(parts.publication.is_none());
+        assert!(parts.pending_network_event.is_none());
+        assert!(matches!(parts.pending_caller_input, Some(ConsensusPushMessage::Vote { canonical_vote }) if (canonical_vote.as_ptr(), canonical_vote.len(), canonical_vote.capacity()) == queued_original));
     })).unwrap();
     std::fs::remove_file(collision).unwrap();
     assert!(
@@ -778,6 +810,10 @@ fn higher_round_publication_preserves_some_token_across_drains_cancel_and_delive
             assert!(owner.driver().unwrap().has_pending_command());
             let images = layout.authority_images();
             let higher_len = owner.driver().unwrap().inbox_len();
+            let queued = vec![0; naome_network::CONSENSUS_PUSH_VOTE_BYTES];
+            let queued_original = (queued.as_ptr(), queued.len(), queued.capacity());
+            owner.queue_input(ConsensusPushMessage::Vote { canonical_vote: queued }).unwrap();
+            assert_eq!(owner.poll_transport_once().await, naome_runtime::FixedValidatorRuntimeTransportPollV0::InputSlotOccupied);
             assert_eq!(owner.drain_inbox_and_reset().unwrap().count(), higher_len);
             assert!(owner.driver().unwrap().has_pending_command());
             assert_eq!(owner.driver().unwrap().active_timeout(), pending_ticket);
@@ -790,6 +826,18 @@ fn higher_round_publication_preserves_some_token_across_drains_cancel_and_delive
             assert_eq!(owner.driver().unwrap().current_inbox_len(), 0);
             assert_eq!(&layout.authority_images()[..2], &initial[..2]);
             assert_ne!(&layout.authority_images()[2..], &initial[2..]);
+            let timer = owner.timer();
+            let images = layout.authority_images();
+            let Event::Admission(report) = owner.next_event().await else { panic!("caller input precedes a new peer attempt") };
+            assert_eq!(report.source, InputSource::CallerInput);
+            assert_eq!(report.receipt_queued, None);
+            assert!(report.routing_error.is_some());
+            assert!(matches!(report.input, Some(ConsensusPushMessage::Vote { canonical_vote }) if (canonical_vote.as_ptr(), canonical_vote.len(), canonical_vote.capacity()) == queued_original));
+            assert_eq!(token_observation(owner.pending_publication().unwrap()), original);
+            assert_eq!(owner.timer(), timer);
+            assert!(owner.pending_publication().unwrap().local_admission_attempted());
+            assert!(owner.pending_publication().unwrap().deliveries().all(|d| matches!(d.state(), Delivery::NotAttempted)));
+            assert_eq!(layout.authority_images(), images);
             let mut attempted = Vec::new();
             while attempted.len() != 2 {
                 match owner.next_event().await {

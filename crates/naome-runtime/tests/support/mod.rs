@@ -22,6 +22,8 @@ pub struct TestLayout {
     finality_anchor: PathBuf,
     vote_journal: PathBuf,
     pub vote_anchor: PathBuf,
+    pub candidate_store: PathBuf,
+    pub payload_store: PathBuf,
 }
 
 impl TestLayout {
@@ -38,11 +40,15 @@ impl TestLayout {
                     let finality_anchor = root.join("finality-anchor");
                     let vote_journal = root.join("vote-journal");
                     let vote_anchor = root.join("vote-anchor");
+                    let candidate_store = root.join("candidate-store");
+                    let payload_store = root.join("payload-store");
                     for directory in [
                         &finality_journal,
                         &finality_anchor,
                         &vote_journal,
                         &vote_anchor,
+                        &candidate_store,
+                        &payload_store,
                     ] {
                         fs::create_dir(directory).unwrap();
                     }
@@ -52,6 +58,8 @@ impl TestLayout {
                         finality_anchor,
                         vote_journal,
                         vote_anchor,
+                        candidate_store,
+                        payload_store,
                     };
                 }
                 Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
@@ -75,6 +83,13 @@ impl TestLayout {
             directory_image(&self.finality_anchor),
             directory_image(&self.vote_journal),
             directory_image(&self.vote_anchor),
+        ]
+    }
+
+    pub fn source_images(&self) -> [Vec<(String, Vec<u8>)>; 2] {
+        [
+            directory_image(&self.candidate_store),
+            directory_image(&self.payload_store),
         ]
     }
 }

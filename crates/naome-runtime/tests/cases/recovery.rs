@@ -239,6 +239,15 @@ fn assert_finality_drain(
 
 #[test]
 fn explicit_stale_evidence_recovery_allows_a_second_height_with_two_entry_budgets() {
+    second_height_recovery(false);
+}
+
+#[test]
+fn caller_resupply_recovers_a_second_height_with_two_entry_budgets() {
+    second_height_recovery(true);
+}
+
+fn second_height_recovery(caller_input: bool) {
     let fixture = Fixture::new();
     let entries = [ActiveAgreementEntry::new(
         consensus_key(&fixture.keys[0]),
@@ -249,7 +258,12 @@ fn explicit_stale_evidence_recovery_allows_a_second_height_with_two_entry_budget
         .create(fixture.keys[0].clone())
         .unwrap();
     let executor = Builder::new_current_thread().enable_all().build().unwrap();
-    let (mut sender, network, _) = executor.block_on(connected_pair());
+    let (mut sender, network) = if caller_input {
+        (None, isolated_network())
+    } else {
+        let (sender, network, _) = executor.block_on(connected_pair());
+        (Some(sender), network)
+    };
     ready
         .run_with_signing_session(|scope| {
             executor.block_on(async {
@@ -330,17 +344,18 @@ fn explicit_stale_evidence_recovery_allows_a_second_height_with_two_entry_budget
                         assert_finality_drain(&mut owner, &first_messages[0], &first_messages[2]);
                         assert_eq!(owner.timer(), timer);
                         assert_eq!(layout.authority_images(), images);
-                        // The caller explicitly re-supplies the rejected proposal over
-                        // the real network. Neither drain silently re-admits it.
+                        // The caller explicitly re-supplies the rejected proposal.
+                        // Neither drain silently re-admits it; the caller-input
+                        // case has an isolated transport and uses no peer detour.
                         assert_eq!(owner.driver().unwrap().current_inbox_len(), 0);
                         assert_eq!(owner.driver().unwrap().current_finality_inbox_len(), 0);
-                        let report = raw_exchange(
-                            &mut sender,
-                            &mut owner,
-                            publication.message().copy_message().unwrap(),
-                            check_local,
-                        )
-                        .await;
+                        let input = publication.message().copy_message().unwrap();
+                        let report = if caller_input {
+                            super::caller_input::admit(&mut owner, input, check_local).await
+                        } else {
+                            raw_exchange(sender.as_mut().unwrap(), &mut owner, input, check_local)
+                                .await
+                        };
                         assert!(report.all_admitted());
                     }
                     let mut finalized = false;
