@@ -127,7 +127,7 @@ network observations, not implied by readiness.
 
 ## Operator commands
 
-Input is newline-terminated JSON. Each frame has at most 65,536 bytes excluding
+Input is a newline-terminated JSON object. Each frame has at most 65,536 bytes excluding
 the newline. All fields are required, unknown fields are rejected, and `id` is
 an unsigned `u64` JSON integer echoed unchanged in the command response. It is
 a correlation label, not a deduplication or replay-protection token. Reusing an
@@ -189,7 +189,9 @@ The route is passed literally to verification, including a full-width round;
 it is not reconstructed from a vote header or selected from multiple roots.
 Each nested `proof`, `first`, or `second` object contains exactly
 `control_file`, `payload_file`, and `vote_files`. Unknown nested fields are
-rejected. Both proofs in a pair use the one explicit evidence round.
+rejected. Command, target, and nested proof arrays are rejected; parsing retains
+duplicate map entries so repeated fields are rejected rather than collapsed.
+Both proofs in a pair use the one explicit evidence round.
 
 Every `vote_files` array has between 1 and `MAX_ACTIVE_VALIDATORS` (256) paths.
 Scalar parsing and both pair counts are checked before opening any proof source.
@@ -322,7 +324,9 @@ checkpoint/finality restart, bounded nested input and route refusals followed
 by an explicit valid resubmission, and current-finality precedence followed by
 ordinary exact-proposal completion. A process regression rejects nil-target
 extra fields and object-form roles before source reads while preserving the
-valid scalar-role/nil-target form. Separate throwaway anchored signers create
+valid scalar-role/nil-target form. Another rejects array forms at every command,
+target, and nested-proof boundary while preserving duplicate-field rejection.
+Separate throwaway anchored signers create
 the adversarial conflicting proof fixtures. A distinct pair produces terminal
 reopen refusal; an identical pair consumes the process's authority without
 changing its journals and strictly reopens healthy. A real connected peer

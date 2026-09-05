@@ -88,7 +88,7 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
                 _ = terminate.recv() => break ("sigterm", true),
                 input = input.recv() => match input {
                     Some(input::Input::Line(bytes)) => {
-                        let command = match serde_json::from_slice::<input::Command>(&bytes) {
+                        let command = match input::Command::parse(&bytes) {
                             Ok(command) => command,
                             Err(_) => { output.emit(json!({"event": "command_rejected", "id": null, "code": "command_schema"}))?; continue; },
                         };

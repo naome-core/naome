@@ -41,6 +41,59 @@ fn nil_target_extras_and_nonscalar_roles_fail_schema_before_any_source_read() {
     assert_eq!(observed, vec![json!("command_schema"); 4]);
 }
 
+#[test]
+fn command_target_and_nested_proofs_require_objects_and_keep_duplicate_field_rejection() {
+    let fixture = Fixture::new();
+    let layout = Layout::new();
+    let config = fixture.config(&layout, 1, "create", None, false);
+    let mut node = Process::start(&layout, &config);
+    node.ready();
+    node.event("timer_armed");
+    let before = layout.images();
+    let template = json!({"command":"advance_higher_votes", "id":5, "evidence_round":1,
+        "role":"prevote", "target":{"kind":"nil"}, "vote_files":["missing.vote"]});
+    let mut commands = vec![
+        json!(["status", 5]),
+        json!(["advance_higher_votes",5,1,"prevote",{"kind":"nil"},["missing.vote"]]),
+    ];
+    for target in [json!(["nil"]), json!(["proposal", "00".repeat(32)])] {
+        let mut command = template.clone();
+        command["target"] = target;
+        commands.push(command);
+    }
+    let array = json!(["missing.control", "missing.payload", ["missing.vote"]]);
+    commands
+        .push(json!({"command":"finalize_lower_votes", "id":5, "evidence_round":0, "proof":array}));
+    for field in ["first", "second"] {
+        let mut command = json!({"command":"halt_lower_conflict", "id":5, "evidence_round":0, "first":Proof::files("missing"), "second":Proof::files("missing")});
+        command[field] = array.clone();
+        commands.push(command);
+    }
+    let mut observed = Vec::new();
+    for command in commands {
+        node.send(command);
+        observed.push(node.until(|v| v["event"] == "command_rejected" || v["event"] == "command_result")["code"].clone());
+        assert_eq!(layout.images(), before);
+    }
+    // A JSON Value intermediate would erase these duplicate fields. Keep the
+    // streaming map entries intact so every boundary still rejects duplicates.
+    for command in [
+        r#"{"command":"status","id":5,"id":6}"#,
+        r#"{"command":"status","command":"shutdown","id":5}"#,
+        r#"{"command":"status","id":5}{"command":"shutdown","id":6}"#,
+        r#"{"command":"advance_higher_votes","id":5,"evidence_round":1,"role":"prevote","role":"precommit","target":{"kind":"nil"},"vote_files":["missing"]}"#,
+        r#"{"command":"advance_higher_votes","id":5,"evidence_round":1,"role":"prevote","target":{"kind":"nil","kind":"nil"},"vote_files":["missing"]}"#,
+        r#"{"command":"advance_higher_votes","id":5,"evidence_round":1,"role":"prevote","target":{"kind":"proposal","root":"bad","root":"bad"},"vote_files":["missing"]}"#,
+        r#"{"command":"finalize_lower_votes","id":5,"evidence_round":0,"proof":{"control_file":"missing","control_file":"missing","payload_file":"missing","vote_files":["missing"]}}"#,
+    ] {
+        node.write(format!("{command}\n").as_bytes());
+        assert_eq!(node.event("command_rejected")["code"], "command_schema");
+        assert_eq!(layout.images(), before);
+    }
+    node.shutdown();
+    assert_eq!(observed, vec![json!("command_schema"); 7]);
+}
+
 fn advance(node: &mut Process, proof: &Proof, batch: bool) -> Value {
     let outcome = result(node, proof.higher_command(1, "higher", batch));
     assert_eq!(outcome["event"], "transitioned");

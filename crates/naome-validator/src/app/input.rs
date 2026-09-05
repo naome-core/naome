@@ -45,6 +45,7 @@ pub(super) enum Command {
         id: u64,
         evidence_round: u64,
         role: VoteRole,
+        #[serde(deserialize_with = "object")]
         target: VoteTarget,
         vote_files: Vec<PathBuf>,
     },
@@ -57,12 +58,15 @@ pub(super) enum Command {
     FinalizeLowerVotes {
         id: u64,
         evidence_round: u64,
+        #[serde(deserialize_with = "object")]
         proof: ProposalVoteFiles,
     },
     HaltLowerConflict {
         id: u64,
         evidence_round: u64,
+        #[serde(deserialize_with = "object")]
         first: ProposalVoteFiles,
+        #[serde(deserialize_with = "object")]
         second: ProposalVoteFiles,
     },
 }
@@ -102,6 +106,13 @@ pub(super) enum VoteTarget {
 }
 
 impl Command {
+    pub fn parse(bytes: &[u8]) -> serde_json::Result<Self> {
+        let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+        let command = object(&mut deserializer)?;
+        deserializer.end()?;
+        Ok(command)
+    }
+
     pub fn id(&self) -> u64 {
         match self {
             Self::Status { id }
@@ -117,6 +128,32 @@ impl Command {
             | Self::HaltLowerConflict { id, .. } => *id,
         }
     }
+}
+
+/// Serde's derived enums/structs also accept sequences. Require an object at
+/// each JSON object boundary, forwarding the original map entries so duplicate
+/// fields still fail rather than being collapsed by a Value intermediate.
+fn object<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Object<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Object<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an object")
+        }
+
+        fn visit_map<M>(self, map: M) -> std::result::Result<T, M::Error>
+        where
+            M: serde::de::MapAccess<'de>,
+        {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(Object(std::marker::PhantomData))
 }
 
 pub(super) enum Input {
