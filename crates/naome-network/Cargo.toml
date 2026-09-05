@@ -21,6 +21,7 @@ libp2p = { version = "0.56.0", default-features = false, features = [
 ] }
 naome-protocol = { path = "../naome-protocol" }
 naome-chain = { path = "../naome-chain" }
+naome-consensus = { path = "../naome-consensus" }
 naome-proof = { path = "../naome-proof" }
 naome-storage = { path = "../naome-storage" }
 sha2.workspace = true
@@ -28,7 +29,6 @@ tokio = { version = "1", default-features = false, features = ["macros", "time"]
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
-naome-consensus = { path = "../naome-consensus" }
 naome-foundation = { path = "../naome-foundation" }
 naome-ledger = { path = "../naome-ledger" }
 naome-node = { path = "../naome-node" }

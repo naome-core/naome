@@ -1,4 +1,5 @@
 use super::*;
+use crate::transport::inbound_retention::InboundRetentionBudget;
 use crate::{AcknowledgedRecoveryBundleStageError, RecoveryBundleStageSelection};
 use libp2p::swarm::ConnectionId;
 use naome_chain::ArtifactBlockId;
@@ -169,13 +170,16 @@ fn inbound_capacity_preserves_one_full_size_slot_per_configured_peer() {
         RECOVERY_BUNDLE_PUSH_MAX_BYTES * MAX_STATIC_PEERS
     );
 
-    let budget = Arc::new(RecoveryBundlePushInboundBudget::default());
+    let budget = Arc::new(InboundRetentionBudget::new(
+        RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS,
+        RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
+    ));
     let first_peer = Keypair::generate_ed25519().public().to_peer_id();
-    let first_permit = RecoveryBundlePushInboundBudget::try_acquire(&budget, 0).unwrap();
+    let first_permit = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
     let mut first = RecoveryBundlePushRequest::from_inbound(Vec::new(), first_permit);
     assert!(first.bind_inbound_peer(first_peer));
 
-    let duplicate_permit = RecoveryBundlePushInboundBudget::try_acquire(&budget, 0).unwrap();
+    let duplicate_permit = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
     let mut duplicate = RecoveryBundlePushRequest::from_inbound(Vec::new(), duplicate_permit);
     assert!(!duplicate.bind_inbound_peer(first_peer));
     drop(duplicate);
@@ -183,15 +187,15 @@ fn inbound_capacity_preserves_one_full_size_slot_per_configured_peer() {
     let mut retained = vec![first];
     for _ in 1..MAX_STATIC_PEERS {
         let peer_id = Keypair::generate_ed25519().public().to_peer_id();
-        let permit = RecoveryBundlePushInboundBudget::try_acquire(&budget, 0).unwrap();
+        let permit = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
         let mut request = RecoveryBundlePushRequest::from_inbound(Vec::new(), permit);
         assert!(request.bind_inbound_peer(peer_id));
         retained.push(request);
     }
-    assert!(RecoveryBundlePushInboundBudget::try_acquire(&budget, 0).is_none());
+    assert!(InboundRetentionBudget::try_acquire(&budget, 0).is_none());
     drop(retained);
 
-    let released_permit = RecoveryBundlePushInboundBudget::try_acquire(&budget, 0).unwrap();
+    let released_permit = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
     let mut released = RecoveryBundlePushRequest::from_inbound(Vec::new(), released_permit);
     assert!(released.bind_inbound_peer(first_peer));
 }

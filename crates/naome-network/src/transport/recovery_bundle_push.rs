@@ -1,11 +1,12 @@
 //! Caller-selected authenticated delivery of one opaque recovery bundle.
 
-use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use libp2p::request_response;
+
+use super::inbound_retention::InboundRetentionPermit;
 
 use super::{
     ExchangeRequestId, MAX_STATIC_PEERS, NetworkEvent, PeerId, PendingBudget, PendingPermit,
@@ -24,7 +25,7 @@ pub const RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS: usize = MAX_STATIC_P
 #[must_use]
 pub struct RecoveryBundlePushRequest {
     bytes: Vec<u8>,
-    _inbound_permit: Option<RecoveryBundlePushInboundPermit>,
+    _inbound_permit: Option<InboundRetentionPermit>,
 }
 
 impl RecoveryBundlePushRequest {
@@ -42,7 +43,7 @@ impl RecoveryBundlePushRequest {
         })
     }
 
-    pub(super) fn from_inbound(bytes: Vec<u8>, permit: RecoveryBundlePushInboundPermit) -> Self {
+    pub(super) fn from_inbound(bytes: Vec<u8>, permit: InboundRetentionPermit) -> Self {
         debug_assert!(bytes.len() <= RECOVERY_BUNDLE_PUSH_MAX_BYTES);
         Self {
             bytes,
@@ -72,77 +73,6 @@ impl fmt::Debug for RecoveryBundlePushRequest {
     }
 }
 
-#[derive(Default)]
-pub(super) struct RecoveryBundlePushInboundBudget {
-    retained: Mutex<RecoveryBundlePushInboundBudgetState>,
-}
-
-#[derive(Default)]
-struct RecoveryBundlePushInboundBudgetState {
-    events: usize,
-    bytes: usize,
-    peers: HashSet<PeerId>,
-}
-
-impl RecoveryBundlePushInboundBudget {
-    pub(super) fn try_acquire(
-        budget: &Arc<Self>,
-        bytes: usize,
-    ) -> Option<RecoveryBundlePushInboundPermit> {
-        let mut retained = budget.retained.lock().ok()?;
-        let events = retained.events.checked_add(1)?;
-        let aggregate_bytes = retained.bytes.checked_add(bytes)?;
-        if events > RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS
-            || aggregate_bytes > RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES
-        {
-            return None;
-        }
-        retained.events = events;
-        retained.bytes = aggregate_bytes;
-        Some(RecoveryBundlePushInboundPermit {
-            budget: Arc::clone(budget),
-            bytes,
-            peer_id: None,
-        })
-    }
-}
-
-pub(super) struct RecoveryBundlePushInboundPermit {
-    budget: Arc<RecoveryBundlePushInboundBudget>,
-    bytes: usize,
-    peer_id: Option<PeerId>,
-}
-
-impl RecoveryBundlePushInboundPermit {
-    fn bind_peer(&mut self, peer_id: PeerId) -> bool {
-        if self.peer_id.is_some() {
-            return false;
-        }
-        let Ok(mut retained) = self.budget.retained.lock() else {
-            return false;
-        };
-        if !retained.peers.insert(peer_id) {
-            return false;
-        }
-        self.peer_id = Some(peer_id);
-        true
-    }
-}
-
-impl Drop for RecoveryBundlePushInboundPermit {
-    fn drop(&mut self) {
-        let mut retained = self
-            .budget
-            .retained
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        retained.events = retained.events.saturating_sub(1);
-        retained.bytes = retained.bytes.saturating_sub(self.bytes);
-        if let Some(peer_id) = self.peer_id {
-            retained.peers.remove(&peer_id);
-        }
-    }
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryBundlePushRequestError {
     TooLong { actual: usize, maximum: usize },

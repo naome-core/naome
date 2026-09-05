@@ -24,9 +24,9 @@ use crate::record_exchange::{
     MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
 };
 use crate::recovery_bundle_push::{
-    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RecoveryBundlePushInboundBudget, RecoveryBundlePushReceipt,
-    RecoveryBundlePushRequest,
+    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RecoveryBundlePushReceipt, RecoveryBundlePushRequest,
 };
+use crate::transport::inbound_retention::InboundRetentionBudget;
 
 pub(super) const ARTIFACT_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/artifact-exchange");
@@ -65,11 +65,11 @@ pub(crate) struct PeerRecordCodec;
 pub(crate) struct PeerRecordResponderCodec;
 #[derive(Clone)]
 pub(super) struct RecoveryBundlePushCodec {
-    inbound_budget: Arc<RecoveryBundlePushInboundBudget>,
+    inbound_budget: Arc<InboundRetentionBudget>,
 }
 
 impl RecoveryBundlePushCodec {
-    pub(super) const fn new(inbound_budget: Arc<RecoveryBundlePushInboundBudget>) -> Self {
+    pub(super) const fn new(inbound_budget: Arc<InboundRetentionBudget>) -> Self {
         Self { inbound_budget }
     }
 }
@@ -618,7 +618,7 @@ impl request_response::Codec for PeerRecordResponderCodec {
     }
 }
 
-async fn require_eof<T>(io: &mut T, message: &'static str) -> io::Result<()>
+pub(super) async fn require_eof<T>(io: &mut T, message: &'static str) -> io::Result<()>
 where
     T: AsyncRead + Unpin + Send,
 {
@@ -648,8 +648,8 @@ impl request_response::Codec for RecoveryBundlePushCodec {
                 "recovery-bundle request exceeds maximum",
             ));
         }
-        let permit = RecoveryBundlePushInboundBudget::try_acquire(&self.inbound_budget, length)
-            .ok_or_else(|| {
+        let permit =
+            InboundRetentionBudget::try_acquire(&self.inbound_budget, length).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::OutOfMemory,
                     "inbound recovery-bundle retention budget exhausted",

@@ -7,7 +7,10 @@ and artifact-chain-head exchanges; authenticated static-peer framing; head
 announcements; resource bounds; and caller-routed journal,
 candidate-block-store, or canonical-payload-archive serving. The
 [Caller-Selected Orchestration](caller-selected-orchestration.md) contract owns
-survey, broadcast, ancestry, import, and catch-up workflows.
+survey, broadcast, ancestry, import, and catch-up workflows. The
+[Fixed-Validator Consensus Transport V0](fixed-validator-consensus-transport-v0.md)
+contract owns explicit one-hop opaque proposal and vote delivery on the same
+static transport.
 
 `StaticArtifactNetwork` connects at most eight explicitly configured peers over
 TCP, authenticates libp2p identities with Noise, and multiplexes application
@@ -42,6 +45,8 @@ The exact application protocol identifiers are:
 /naome/artifact-block-exchange
 /naome/artifact-chain-head-exchange
 /naome/artifact-chain-head-announcement
+/naome/recovery-bundle-push-v0
+/naome/fixed-validator-consensus-push-v0
 ```
 
 Protocol-local request identifiers are namespaced and cannot alias across these
@@ -123,6 +128,7 @@ response readers require the exact accepted body followed by end-of-stream.
 | Head pull | `ArtifactChainId[32]` | `length u8`, then `head[length]` | 1 or 33 |
 | Head announcement | `chain[32]`, then `head[32]` | receipt `01` | 1 |
 | Recovery-bundle push | `length u32be`, then `bundle[length]` | receipt `01` | 1 |
+| Consensus push | `00`, two `u32be` lengths, control and payload; or `01`, signed vote[214] | receipt `01` | 1 |
 
 Artifact response length is `0..=4,194,305`. Zero is unavailable. The prefix is
 framing and is not part of canonical artifact bytes.
@@ -171,10 +177,14 @@ One network instance enforces:
 | Transport-retained inbound recovery-bundle events | 8 |
 | Transport-retained inbound recovery-bundle events per authenticated peer | 1 |
 | Aggregate transport-retained inbound recovery-bundle bytes | 134,217,728 |
+| Transport-retained inbound consensus events | 8 |
+| Transport-retained inbound consensus events per authenticated peer | 1 |
+| Aggregate transport-retained inbound consensus body bytes | 33,755,856 |
 | Pending outbound application requests per peer | 1 |
 | Streams per artifact, block, or head exchange per connection | 2 |
 | Head-announcement streams per connection | 1 |
 | Recovery-bundle push streams per connection | 1 |
+| Consensus push streams per connection, both directions combined | 1 |
 | Aggregate application streams per connection | 8 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
@@ -195,6 +205,11 @@ One network instance enforces:
 | Managed-session idle expiry | effectively disabled; at most 8 sessions |
 | Pre-Noise inbound authentication burst/refill | 8 / 1 per second |
 | Store- or journal-response attempt burst/refill | 8 / 1 per second |
+
+Per-exchange stream ceilings sum to nine and contend for the existing eight
+Yamux substreams, including negotiation and cleanup occupancy. No consensus
+capacity is reserved. Exhaustion can fail an exchange or the connection; it
+does not promise queued backpressure or fairness.
 
 Managed redial delays are `1, 2, 4, 8, 16, 32, 60` seconds and then remain at
 60. A connection stable for 60 seconds resets backoff. Idle expiry is
@@ -256,8 +271,8 @@ storage. A caller that needs any such policy must define it separately rather
 than infer it from transport acknowledgement or unselected retention.
 
 The eight shared application permits jointly bound outbound pending requests,
-quarantined artifact candidates, decoded blocks, heads, recovery-bundle pushes,
-and their terminal events. The separate inbound recovery-bundle envelope bounds
+quarantined artifact candidates, decoded blocks, heads, recovery-bundle and
+consensus pushes, and their terminal events. The separate inbound recovery-bundle envelope bounds
 only buffers retained by the transport; bytes returned to application ownership
 are outside that envelope. Each artifact response buffer is capped at 4,194,305
 body bytes, so eight caller-retained maximum responses can hold 33,554,440 body
