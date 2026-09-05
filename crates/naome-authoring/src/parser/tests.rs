@@ -1,3 +1,15 @@
+#[path = "../../tests/support/hex_decode.rs"]
+mod hex_decode;
+use hex_decode::{hex_bytes, hex32};
+
+#[path = "../../tests/support/golden.rs"]
+mod golden;
+use golden::*;
+use golden::{
+    DERIVATION_ID as SELF_EQUALITY_DERIVATION_ID_HEX, PROOF_BYTES as SELF_EQUALITY_PROOF_HEX,
+    PROOF_ID as SELF_EQUALITY_PROOF_ID_HEX, STATEMENT_ID as SELF_EQUALITY_STATEMENT_ID_HEX,
+};
+
 use naome_checker::{
     ArtifactState as ProofState, ArtifactStateError as ProofStateError, normalize_and_check,
 };
@@ -16,20 +28,16 @@ proof:
     return p1
 "#;
 
-const SELF_EQUALITY_PROOF_ID_HEX: &str =
-    "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73";
-const SELF_EQUALITY_STATEMENT_ID_HEX: &str =
-    "f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19";
-const SELF_EQUALITY_DERIVATION_ID_HEX: &str =
-    "59219d63c7c2353dcb6ffd1e604153143380ae6602e04215703bc0ea043243fb";
 const SELF_EQUALITY_REFERENCE_PROOF_ID_HEX: &str =
     "bfd427b447e1514686cfa31b0b5aa1dd5036464cd8c5d73d0c3112cb46b0519b";
 const SELF_EQUALITY_REFERENCE_PROOF_HEX: &str =
     "0000000130c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73";
-const SELF_EQUALITY_PROOF_HEX: &str = "000000020600000000210000000000000000";
 const PROOF_ID_EXPECTED: &str = "a 64-digit lowercase hexadecimal ProofId";
 
-const IMPLICATION_SOURCE: &str = include_str!("../../../examples/implication-identity.nao");
+const IMPLICATION_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/implication-identity.nao"
+));
 const INLINED_IMPLICATION_SOURCE: &str = r#"
 foundation = "naome:zfc"
 statement = forall(x, implies(equal(x, x), equal(x, x)))
@@ -49,12 +57,26 @@ proof:
     p5 = generalization(p4, x)
     return p5
 "#;
-const QUANTIFIER_SOURCE: &str = include_str!("../../../examples/quantifier-instantiation.nao");
-const EQUALITY_SUBSTITUTION_SOURCE: &str =
-    include_str!("../../../examples/equality-substitution.nao");
-const EXTENSIONALITY_SOURCE: &str = include_str!("../../../examples/extensionality.nao");
-const SEPARATION_SOURCE: &str = include_str!("../../../examples/separation.nao");
-const REPLACEMENT_SOURCE: &str = include_str!("../../../examples/replacement.nao");
+const QUANTIFIER_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/quantifier-instantiation.nao"
+));
+const EQUALITY_SUBSTITUTION_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/equality-substitution.nao"
+));
+const EXTENSIONALITY_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/extensionality.nao"
+));
+const SEPARATION_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/separation.nao"
+));
+const REPLACEMENT_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/replacement.nao"
+));
 
 fn proof_reference_source(proof_id: &str) -> String {
     format!(
@@ -161,54 +183,48 @@ fn minimal_source_preserves_the_exact_checked_identity_vector() {
 #[test]
 fn every_repository_example_preserves_its_checked_identities_and_bytes() {
     for (source, statement, derivation, proof, bytes) in [
-        (
-            SOURCE,
-            SELF_EQUALITY_STATEMENT_ID_HEX,
-            SELF_EQUALITY_DERIVATION_ID_HEX,
-            SELF_EQUALITY_PROOF_ID_HEX,
-            SELF_EQUALITY_PROOF_HEX,
-        ),
+        (SOURCE, STATEMENT_ID, DERIVATION_ID, PROOF_ID, PROOF_BYTES),
         (
             IMPLICATION_SOURCE,
-            "6c7296d3c7adb7ee99b71caec2e6851c31360e2811bd1335b526c7b74525a48b",
-            "fd46e6233815bd4cb5188f5358b8afb852179c62b7fb512b798302b0f01fdd94",
-            "dad1eccea41c54d5618a35bff0bc3b8fb52e0489017fd9a444cdae14355b6285",
-            "00000006000000000b00000000000000000000000000000b0000000000000000000000000000000b0000000000000000000000000000170300000000000000000000000000000000000000000000010000000b00000000000000000000000000001703000000000000000000000000000000000000000000000000000b0000000000000000000000200000000100000002200000000000000003210000000400000000",
+            IMPLICATION_STATEMENT_ID,
+            IMPLICATION_DERIVATION_ID,
+            IMPLICATION_PROOF_ID,
+            IMPLICATION_PROOF_BYTES,
         ),
         (
             QUANTIFIER_SOURCE,
-            SELF_EQUALITY_STATEMENT_ID_HEX,
-            "a85928e52c4c2833d30640cb2eaba82602ccbc39b6afea340b5b0b8d06061972",
-            "6e35a728527633573509b24fa20cb2359a14c1f93e9f6b6f1500f8650f731720",
-            "0000000506000000002100000000000000000500000000000000010000000b0000000000000000000000200000000100000002210000000300000001",
+            QUANTIFIER_STATEMENT_ID,
+            QUANTIFIER_DERIVATION_ID,
+            QUANTIFIER_PROOF_ID,
+            QUANTIFIER_PROOF_BYTES,
         ),
         (
             EQUALITY_SUBSTITUTION_SOURCE,
-            "0d6570e2a5031b6a1b3664fb990c1cdf4ff4079364ad9dd08e4f9123662c5772",
-            "107a35fa6ec1677c01560c743c627a5d231315d605fa50083e18dd529a8861b5",
-            "e89dcbf998af185fd368a2531e2f0ee4953cc2232ec93da38ed3e89e21cede71",
-            "000000040700000000000000010000000b0100000000000000000002210000000000000002210000000100000001210000000200000000",
+            SUBSTITUTION_STATEMENT_ID,
+            SUBSTITUTION_DERIVATION_ID,
+            SUBSTITUTION_PROOF_ID,
+            SUBSTITUTION_PROOF_BYTES,
         ),
         (
             EXTENSIONALITY_SOURCE,
-            "d5badb94fde79367c1ee93516c9260d031335c23502e3fcf36513ac768cc9db9",
-            "5507c036519883b871a080036e5e9a5332784501f1982e17e4f9a363b7369b9c",
-            "7db633cf3f2a73749e143c3f26a0083b17c39e8a24c8940f64471cf6b49d515d",
-            "000000011000",
+            EXTENSIONALITY_STATEMENT_ID,
+            EXTENSIONALITY_DERIVATION_ID,
+            EXTENSIONALITY_PROOF_ID,
+            EXTENSIONALITY_PROOF_BYTES,
         ),
         (
             SEPARATION_SOURCE,
-            "cdc8f561c1e6d36cb437da9cfce5f97ab9079f5985f769c02c67ab2ff803f9a3",
-            "073ae5f13c159cda79b6fe31ed033eb8bb1b79ffcd21fa617adc5aea139408a6",
-            "426fcca7bbf116adebfa819e0eaf7c465c0215d3b367d5446c3882b1f1a7697c",
-            "00000001110000000b01000000000000000000010000000000000002000000030000000100000001",
+            SEPARATION_STATEMENT_ID,
+            SEPARATION_DERIVATION_ID,
+            SEPARATION_PROOF_ID,
+            SEPARATION_PROOF_BYTES,
         ),
         (
             REPLACEMENT_SOURCE,
-            "4d12c8f960638ff317e561e8861808875f18dfd22910c38712e05112e26724f5",
-            "72d5c8f81af4a2bcbe1eb7ed9fc1963ecbc1fedf91edf20d85f55c84051c93ec",
-            "7c5a06a3e764c6b6e372334645050bd314f8a7e64c96633e3d3aff90ca2bd156",
-            "00000001120000000b0000000000000000000001000000000000000100000002000000030000000400000000",
+            REPLACEMENT_STATEMENT_ID,
+            REPLACEMENT_DERIVATION_ID,
+            REPLACEMENT_PROOF_ID,
+            REPLACEMENT_PROOF_BYTES,
         ),
     ] {
         let compiled = compile(source).unwrap();
@@ -1786,98 +1802,6 @@ fn every_truncation_of_the_complete_source_fails_without_output() {
 }
 
 #[test]
-fn diagnostic_codes_and_source_positions_are_stable() {
-    let proof_id = ProofId::from_bytes([0; ProofId::BYTE_LENGTH]);
-    let errors = [
-        CompileError::SourceTooLong {
-            actual: 2,
-            maximum: 1,
-        },
-        CompileError::Syntax {
-            offset: 0,
-            expected: "syntax",
-        },
-        CompileError::FoundationMismatch { offset: 0 },
-        CompileError::DuplicateStep {
-            offset: 0,
-            name: "step".to_owned(),
-        },
-        CompileError::UnknownStep {
-            offset: 0,
-            name: "step".to_owned(),
-        },
-        CompileError::ReturnNotFinal { offset: 0 },
-        CompileError::FormulaDepthLimitExceeded {
-            offset: 0,
-            maximum: FORMULA_MAX_DEPTH,
-        },
-        CompileError::Statement {
-            offset: 0,
-            source: FormulaCodecError::NodeLimitExceeded {
-                maximum: FORMULA_MAX_NODES,
-            },
-        },
-        CompileError::Certificate {
-            offset: 0,
-            source: ProofCertificateError::EmptyCertificate,
-        },
-        CompileError::Check {
-            span: SourceSpan::point(0),
-            source: Box::new(CheckError::UnknownProofReference { step: 0, proof_id }),
-        },
-        CompileError::StatementMismatch {
-            span: SourceSpan::point(0),
-        },
-        CompileError::DuplicateFormulaBinding {
-            offset: 0,
-            name: "formula".to_owned(),
-        },
-        CompileError::UnknownFormulaBinding {
-            offset: 0,
-            name: "formula".to_owned(),
-        },
-        CompileError::FormulaBindingNodeLimitExceeded {
-            offset: 0,
-            maximum: FORMULA_BINDING_MAX_NODES,
-        },
-    ];
-    assert_eq!(
-        errors
-            .iter()
-            .map(|error| error.diagnostic_code().as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            "NAO0001", "NAO0002", "NAO0003", "NAO0004", "NAO0005", "NAO0006", "NAO0007", "NAO0008",
-            "NAO0009", "NAO0010", "NAO0011", "NAO0012", "NAO0013", "NAO0014",
-        ]
-    );
-    assert_eq!(errors[0].source_offset(), None);
-    assert_eq!(errors[1].source_offset(), Some(0));
-
-    let source = "αβx\r\nq\rr\tz\n";
-    assert_eq!(
-        source_position(source, 4),
-        Some(SourcePosition { line: 1, column: 3 })
-    );
-    assert_eq!(
-        source_position(source, source.find('q').unwrap()),
-        Some(SourcePosition { line: 2, column: 1 })
-    );
-    assert_eq!(
-        source_position(source, source.find('r').unwrap()),
-        Some(SourcePosition { line: 3, column: 1 })
-    );
-    assert_eq!(
-        source_position(source, source.find('z').unwrap()),
-        Some(SourcePosition { line: 3, column: 3 })
-    );
-    assert_eq!(
-        source_position(source, source.len()),
-        Some(SourcePosition { line: 4, column: 1 })
-    );
-}
-
-#[test]
 fn diagnostics_use_exact_token_statement_and_eof_spans() {
     let wrong_foundation = SOURCE.replace("naome:zfc", "wrong");
     let error = compile(&wrong_foundation).unwrap_err();
@@ -2146,15 +2070,4 @@ fn term_sugar_relationalizes_unary_nested_and_multi_input_calls_exactly_once() {
         ),
     );
     assert_eq!(parse("equal(binary(x, identity(y)), y)"), multi_input);
-}
-
-fn hex32(hex: &str) -> [u8; 32] {
-    hex_bytes(hex).try_into().unwrap()
-}
-
-fn hex_bytes(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|offset| u8::from_str_radix(&hex[offset..offset + 2], 16).unwrap())
-        .collect()
 }

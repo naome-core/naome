@@ -1,3 +1,11 @@
+#[path = "support/hex_decode.rs"]
+mod hex_decode;
+use hex_decode::hex32;
+
+#[path = "support/hex_encode.rs"]
+mod hex_encode;
+use hex_encode::hex_string;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -6,54 +14,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use naome_authoring::{AUTHORING_SOURCE_MAX_BYTES, compile};
 use naome_proof::{ArtifactId, ProofId};
 
-const STATEMENT_ID: &str = "f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19";
-const DERIVATION_ID: &str = "59219d63c7c2353dcb6ffd1e604153143380ae6602e04215703bc0ea043243fb";
-const PROOF_ID: &str = "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73";
-const PROOF_BYTES: &str = "000000020600000000210000000000000000";
-const IMPLICATION_STATEMENT_ID: &str =
-    "6c7296d3c7adb7ee99b71caec2e6851c31360e2811bd1335b526c7b74525a48b";
-const IMPLICATION_DERIVATION_ID: &str =
-    "fd46e6233815bd4cb5188f5358b8afb852179c62b7fb512b798302b0f01fdd94";
-const IMPLICATION_PROOF_ID: &str =
-    "dad1eccea41c54d5618a35bff0bc3b8fb52e0489017fd9a444cdae14355b6285";
-const IMPLICATION_PROOF_BYTES: &str = "00000006000000000b00000000000000000000000000000b0000000000000000000000000000000b0000000000000000000000000000170300000000000000000000000000000000000000000000010000000b00000000000000000000000000001703000000000000000000000000000000000000000000000000000b0000000000000000000000200000000100000002200000000000000003210000000400000000";
-const QUANTIFIER_STATEMENT_ID: &str =
-    "f902f799c24f064ea98bf7fa33c12c5178f1722fdfd94b223c64ea1aa9ae3d19";
-const QUANTIFIER_DERIVATION_ID: &str =
-    "a85928e52c4c2833d30640cb2eaba82602ccbc39b6afea340b5b0b8d06061972";
-const QUANTIFIER_PROOF_ID: &str =
-    "6e35a728527633573509b24fa20cb2359a14c1f93e9f6b6f1500f8650f731720";
-const QUANTIFIER_PROOF_BYTES: &str = "0000000506000000002100000000000000000500000000000000010000000b0000000000000000000000200000000100000002210000000300000001";
-const SUBSTITUTION_STATEMENT_ID: &str =
-    "0d6570e2a5031b6a1b3664fb990c1cdf4ff4079364ad9dd08e4f9123662c5772";
-const SUBSTITUTION_DERIVATION_ID: &str =
-    "107a35fa6ec1677c01560c743c627a5d231315d605fa50083e18dd529a8861b5";
-const SUBSTITUTION_PROOF_ID: &str =
-    "e89dcbf998af185fd368a2531e2f0ee4953cc2232ec93da38ed3e89e21cede71";
-const SUBSTITUTION_PROOF_BYTES: &str = "000000040700000000000000010000000b0100000000000000000002210000000000000002210000000100000001210000000200000000";
-const EXTENSIONALITY_STATEMENT_ID: &str =
-    "d5badb94fde79367c1ee93516c9260d031335c23502e3fcf36513ac768cc9db9";
-const EXTENSIONALITY_DERIVATION_ID: &str =
-    "5507c036519883b871a080036e5e9a5332784501f1982e17e4f9a363b7369b9c";
-const EXTENSIONALITY_PROOF_ID: &str =
-    "7db633cf3f2a73749e143c3f26a0083b17c39e8a24c8940f64471cf6b49d515d";
-const EXTENSIONALITY_PROOF_BYTES: &str = "000000011000";
-const SEPARATION_STATEMENT_ID: &str =
-    "cdc8f561c1e6d36cb437da9cfce5f97ab9079f5985f769c02c67ab2ff803f9a3";
-const SEPARATION_DERIVATION_ID: &str =
-    "073ae5f13c159cda79b6fe31ed033eb8bb1b79ffcd21fa617adc5aea139408a6";
-const SEPARATION_PROOF_ID: &str =
-    "426fcca7bbf116adebfa819e0eaf7c465c0215d3b367d5446c3882b1f1a7697c";
-const SEPARATION_PROOF_BYTES: &str =
-    "00000001110000000b01000000000000000000010000000000000002000000030000000100000001";
-const REPLACEMENT_STATEMENT_ID: &str =
-    "4d12c8f960638ff317e561e8861808875f18dfd22910c38712e05112e26724f5";
-const REPLACEMENT_DERIVATION_ID: &str =
-    "72d5c8f81af4a2bcbe1eb7ed9fc1963ecbc1fedf91edf20d85f55c84051c93ec";
-const REPLACEMENT_PROOF_ID: &str =
-    "7c5a06a3e764c6b6e372334645050bd314f8a7e64c96633e3d3aff90ca2bd156";
-const REPLACEMENT_PROOF_BYTES: &str =
-    "00000001120000000b0000000000000000000001000000000000000100000002000000030000000400000000";
+#[path = "support/golden.rs"]
+mod golden;
+use golden::*;
+
 const SELF_EQUAL_DEFINITION_ID: &str =
     "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035";
 const SELF_EQUAL_ARTIFACT_ID: &str =
@@ -443,27 +407,6 @@ fn run_proof(path: &Path) -> std::process::Output {
 fn proof_artifact_id_hex(proof_id: &str) -> String {
     let proof_id = ProofId::from_bytes(hex32(proof_id));
     hex_string(ArtifactId::from_proof_id(proof_id).as_bytes())
-}
-
-fn hex32(encoded: &str) -> [u8; 32] {
-    assert_eq!(encoded.len(), 64);
-    let mut bytes = [0_u8; 32];
-    for (pair, byte) in encoded.as_bytes().chunks_exact(2).zip(&mut bytes) {
-        let high = char::from(pair[0]).to_digit(16).unwrap();
-        let low = char::from(pair[1]).to_digit(16).unwrap();
-        *byte = u8::try_from((high << 4) | low).unwrap();
-    }
-    bytes
-}
-
-fn hex_string(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut encoded, "{byte:02x}").unwrap();
-    }
-    encoded
 }
 
 impl TemporarySource {
