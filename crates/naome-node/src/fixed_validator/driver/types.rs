@@ -855,6 +855,36 @@ impl Error for FixedValidatorNodeDriverCandidateBackedFinalityErrorV0 {
     }
 }
 
+/// Result of explicit direct strictly lower-round finality through the driver.
+///
+/// Pending commands and non-fallthrough current-finality work retain priority.
+/// Typed pre-effect rejection restores the unchanged driver; supplied owned
+/// payloads are consumed on every outcome and are never retained by the driver.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0<'node> {
+    /// An already pending outward command must transfer first.
+    CommandPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Retained exact-current finality must be resolved through the ordinary step.
+    CurrentFinalityUnresolved {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Fully verified finality completed and the aligned driver survives.
+    Finality {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        selection: FixedValidatorNodeFinalitySelectionV0,
+    },
+    /// Caller evidence was rejected before any finality or signer effect.
+    Rejected {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        rejection: Box<FixedValidatorNodeLowerRoundFinalityRejectionV0>,
+    },
+    /// The existing coordinator returned defensive terminal conflict evidence.
+    FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+}
+
 /// Result of an explicitly supplied higher-round certificate or exact vote batch.
 ///
 /// Pending commands and retained higher-priority evidence return the unchanged
@@ -934,6 +964,8 @@ pub enum FixedValidatorNodeDriverStepErrorV0 {
     ProposalAuthoring(Box<FixedValidatorNodeProposalAuthoringErrorV0>),
     /// Current-round finality failed after the consuming boundary began.
     CurrentFinality(Box<FixedValidatorNodeCurrentRoundFinalityErrorV0>),
+    /// Explicit direct lower-round finality failed after the consuming boundary began.
+    LowerRoundFinality(Box<FixedValidatorNodeLowerRoundFinalityErrorV0>),
 }
 
 impl fmt::Display for FixedValidatorNodeDriverStepErrorV0 {
@@ -948,6 +980,7 @@ impl fmt::Display for FixedValidatorNodeDriverStepErrorV0 {
             Self::Vote(source) => source.fmt(formatter),
             Self::RoundAdvance(source) => source.fmt(formatter),
             Self::CurrentFinality(source) => source.fmt(formatter),
+            Self::LowerRoundFinality(source) => source.fmt(formatter),
             Self::ProposalAuthoring(source) => source.fmt(formatter),
         }
     }
@@ -961,6 +994,7 @@ impl Error for FixedValidatorNodeDriverStepErrorV0 {
             Self::Vote(source) => Some(source.as_ref()),
             Self::RoundAdvance(source) => Some(source.as_ref()),
             Self::CurrentFinality(source) => Some(source.as_ref()),
+            Self::LowerRoundFinality(source) => Some(source.as_ref()),
             Self::ProposalAuthoring(source) => Some(source.as_ref()),
             Self::TimeoutGenerationExhausted { .. } => None,
         }

@@ -208,6 +208,14 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         })
     }
 
+    pub(super) fn current_finality_is_unresolved(&self) -> Result<bool, ProposerSelectionError> {
+        Ok(!matches!(
+            self.select_current_finality()?,
+            DriverCurrentFinalitySelectionV0::None
+                | DriverCurrentFinalitySelectionV0::Saturated { .. }
+        ))
+    }
+
     pub(super) fn select_current_finality(
         &self,
     ) -> Result<DriverCurrentFinalitySelectionV0<'_>, ProposerSelectionError> {

@@ -30,6 +30,7 @@ use super::*;
 
 mod candidate_backed;
 mod higher_round;
+mod lower_round_finality;
 mod lower_round_pair;
 mod proposal_authoring;
 
