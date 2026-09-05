@@ -286,6 +286,14 @@ pub struct Process {
 }
 
 impl Process {
+    pub fn unobserved(child: Child) -> Self {
+        Self {
+            child,
+            observed: Vec::new(),
+            receiver: mpsc::channel().1,
+        }
+    }
+
     pub fn start(layout: &Layout, config: &str) -> Self {
         let path = layout.write("validator.toml", config);
         Self::start_path(&path)

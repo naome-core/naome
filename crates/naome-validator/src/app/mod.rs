@@ -24,7 +24,11 @@ pub(super) fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => {
             // Never format parsing errors or configuration/source bytes.
-            let _ = output.finish(json!({"event": "error", "code": code}));
+            // A stopped report already describes process_stopped. An output
+            // failure must not start a second bounded flush on the same sink.
+            if code != "process_stopped" && !code.starts_with("output_") {
+                let _ = output.finish(json!({"event": "error", "code": code}));
+            }
             ExitCode::FAILURE
         }
     }

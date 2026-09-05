@@ -229,5 +229,7 @@ full-width request across an actual runtime timeout, malformed/oversized input,
 raw queue acceptance followed by strict rejection, invalid source-file refusal,
 preflight refusals before create/healthy-open writes, explicit-mode refusal,
 pending vote/proposal and anchored terminal restart diagnostics, and stalled
-stdout followed by successful strict reopen. Foreign-user ownership is checked
+stdout followed by successful strict reopen, including a full output socket
+whose final-report timeout is not repeated as an error-report flush.
+Foreign-user ownership is checked
 in code but is not exercised through privileged ownership changes by these tests.

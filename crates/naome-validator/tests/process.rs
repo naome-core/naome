@@ -444,6 +444,53 @@ fn stalled_stdout_cannot_retain_journal_locks_or_hang_process_exit() {
 }
 
 #[test]
+fn final_report_timeout_is_not_repeated_as_a_second_error_flush() {
+    use std::{
+        io::ErrorKind,
+        os::{fd::OwnedFd, unix::net::UnixStream},
+        time::Duration,
+    };
+    let fixture = Fixture::new();
+    let layout = Layout::new();
+    let config = fixture.config(&layout, 0, "create", None, false);
+    let path = layout.write("validator.toml", &config);
+    let (mut output, _unread_receiver) = UnixStream::pair().unwrap();
+    output.set_nonblocking(true).unwrap();
+    let mut filled = 0;
+    loop {
+        match output.write(&[0; 8192]) {
+            Ok(count) => {
+                filled += count;
+                assert!(filled < 16 * 1024 * 1024);
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+            Err(error) => panic!("fill test stdout: {error}"),
+        }
+    }
+    output.set_nonblocking(false).unwrap();
+    // The first output write blocks, but the report queue has ample space for
+    // ready, shutdown and stopped. This reaches the flush timeout, not a full
+    // queue refusal, and used to perform two consecutive two-second waits.
+    let child = Command::new(env!("CARGO_BIN_EXE_naome-validator"))
+        .arg(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(OwnedFd::from(output)))
+        .spawn()
+        .unwrap();
+    let mut node = Process::unobserved(child);
+    let started = Instant::now();
+    node.send(json!({"command": "shutdown", "id": 1}));
+    assert!(!node.exit().success());
+    assert!(
+        started.elapsed() < Duration::from_millis(3500),
+        "final report timeout was repeated"
+    );
+    let mut reopened = Process::start(&layout, &config.replace("create", "open"));
+    reopened.ready();
+    reopened.shutdown();
+}
+
+#[test]
 fn shutdown_reports_in_flight_publication_and_discards_inboxes_before_strict_reopen() {
     let fixture = Fixture::new();
     let source_layout = Layout::new();
