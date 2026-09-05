@@ -37,6 +37,56 @@ pub(super) enum Command {
         control_file: PathBuf,
         payload_file: PathBuf,
     },
+    AdvanceHigherQuorum {
+        id: u64,
+        certificate_file: PathBuf,
+    },
+    AdvanceHigherVotes {
+        id: u64,
+        evidence_round: u64,
+        role: VoteRole,
+        target: VoteTarget,
+        vote_files: Vec<PathBuf>,
+    },
+    FinalizeLowerQuorum {
+        id: u64,
+        control_file: PathBuf,
+        payload_file: PathBuf,
+        certificate_file: PathBuf,
+    },
+    FinalizeLowerVotes {
+        id: u64,
+        evidence_round: u64,
+        proof: ProposalVoteFiles,
+    },
+    HaltLowerConflict {
+        id: u64,
+        evidence_round: u64,
+        first: ProposalVoteFiles,
+        second: ProposalVoteFiles,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProposalVoteFiles {
+    pub control_file: PathBuf,
+    pub payload_file: PathBuf,
+    pub vote_files: Vec<PathBuf>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum VoteRole {
+    Prevote,
+    Precommit,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum VoteTarget {
+    Nil,
+    Proposal { root: String },
 }
 
 impl Command {
@@ -47,7 +97,12 @@ impl Command {
             | Self::AuthorFresh { id, .. }
             | Self::AuthorRetained { id, .. }
             | Self::SubmitVote { id, .. }
-            | Self::SubmitProposal { id, .. } => *id,
+            | Self::SubmitProposal { id, .. }
+            | Self::AdvanceHigherQuorum { id, .. }
+            | Self::AdvanceHigherVotes { id, .. }
+            | Self::FinalizeLowerQuorum { id, .. }
+            | Self::FinalizeLowerVotes { id, .. }
+            | Self::HaltLowerConflict { id, .. } => *id,
         }
     }
 }

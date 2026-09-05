@@ -1,15 +1,26 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use naome_chain::{ARTIFACT_BLOCK_BYTES, ArtifactBlock};
-use naome_consensus::FixedValidatorProposalSourceV0 as Source;
+use naome_consensus::{
+    ConsensusRound, ConsensusVoteRole, ConsensusVoteTarget,
+    FixedValidatorProposalSourceV0 as Source, MAX_ACTIVE_VALIDATORS, ProposalSigningRoot,
+    VerifiedPrecommitCertificateV0, VerifiedQuorumCertificateV0,
+};
 use naome_network::{
     CONSENSUS_PUSH_MAX_PAYLOAD_BYTES, CONSENSUS_PUSH_MAX_PROPOSAL_BYTES, CONSENSUS_PUSH_VOTE_BYTES,
     ConsensusPushMessage,
 };
-use naome_runtime::FixedValidatorRuntimeV0 as Runtime;
+use naome_runtime::{
+    FixedValidatorRuntimeEventV0 as Event, FixedValidatorRuntimeProofRefusalV0 as Refusal,
+    FixedValidatorRuntimeV0 as Runtime,
+};
 use serde_json::{Value, json};
 
-use super::{Result, files, input::Command, report};
+use super::{
+    Result, config, files,
+    input::{Command, ProposalVoteFiles, VoteRole, VoteTarget},
+    report,
+};
 
 pub(super) fn execute(
     command: Command,
@@ -60,6 +71,107 @@ pub(super) fn execute(
                 CONSENSUS_PUSH_MAX_PAYLOAD_BYTES,
             )?,
         },
+        Command::AdvanceHigherQuorum {
+            certificate_file, ..
+        } => {
+            let certificate = files::bytes(
+                &base.join(certificate_file),
+                VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH,
+            )?;
+            let outcome = runtime.advance_to_higher_round_quorum(&certificate);
+            return Ok(proof_outcome(outcome, runtime, 0));
+        }
+        Command::AdvanceHigherVotes {
+            evidence_round,
+            role,
+            target,
+            vote_files,
+            ..
+        } => {
+            let role = match role {
+                VoteRole::Prevote => ConsensusVoteRole::Prevote,
+                VoteRole::Precommit => ConsensusVoteRole::Precommit,
+            };
+            let target = match target {
+                VoteTarget::Nil => ConsensusVoteTarget::Nil,
+                VoteTarget::Proposal { root } => {
+                    ConsensusVoteTarget::Proposal(ProposalSigningRoot::from_bytes(
+                        config::hex32(&root).map_err(|_| "proof_root")?,
+                    ))
+                }
+            };
+            let votes = read_votes(base, &vote_files)?;
+            let refs = vote_refs(&votes);
+            let outcome = runtime.advance_to_higher_round_vote_batch(
+                &refs,
+                ConsensusRound::new(evidence_round),
+                role,
+                target,
+            );
+            return Ok(proof_outcome(outcome, runtime, 0));
+        }
+        Command::FinalizeLowerQuorum {
+            control_file,
+            payload_file,
+            certificate_file,
+            ..
+        } => {
+            let control =
+                files::bytes(&base.join(control_file), CONSENSUS_PUSH_MAX_PROPOSAL_BYTES)?;
+            let payload = files::bytes(&base.join(payload_file), CONSENSUS_PUSH_MAX_PAYLOAD_BYTES)?;
+            let certificate = files::bytes(
+                &base.join(certificate_file),
+                VerifiedPrecommitCertificateV0::MAX_BYTE_LENGTH,
+            )?;
+            let outcome = runtime
+                .commit_lower_round_finality(&control, payload, &certificate)
+                .map_err(|(reason, _payload)| reason);
+            return Ok(proof_outcome(outcome, runtime, 1));
+        }
+        Command::FinalizeLowerVotes {
+            evidence_round,
+            proof,
+            ..
+        } => {
+            check_vote_count(&proof.vote_files)?;
+            let proof = read_proposal_votes(base, proof)?;
+            let refs = vote_refs(&proof.votes);
+            let outcome = runtime
+                .commit_lower_round_finality_vote_batch(
+                    &proof.control,
+                    proof.payload,
+                    &refs,
+                    ConsensusRound::new(evidence_round),
+                )
+                .map_err(|(reason, _payload)| reason);
+            return Ok(proof_outcome(outcome, runtime, 1));
+        }
+        Command::HaltLowerConflict {
+            evidence_round,
+            first,
+            second,
+            ..
+        } => {
+            // Bound both batches before opening either proof's source files.
+            check_vote_count(&first.vote_files)?;
+            check_vote_count(&second.vote_files)?;
+            let first = read_proposal_votes(base, first)?;
+            let second = read_proposal_votes(base, second)?;
+            let first_refs = vote_refs(&first.votes);
+            let second_refs = vote_refs(&second.votes);
+            let outcome = runtime
+                .commit_lower_round_preselection_conflict_vote_batches(
+                    &first.control,
+                    first.payload,
+                    &first_refs,
+                    &second.control,
+                    second.payload,
+                    &second_refs,
+                    ConsensusRound::new(evidence_round),
+                )
+                .map_err(|(reason, _first, _second)| reason);
+            return Ok(proof_outcome(outcome, runtime, 2));
+        }
         Command::Status { .. } => return Ok((report::status(runtime), false)),
         Command::Shutdown { .. } => return Ok((json!({"event": "shutdown_requested"}), false)),
     };
@@ -67,4 +179,68 @@ pub(super) fn execute(
         .queue_input(input)
         .map_err(|_| "input_queue_refused")?;
     Ok((json!({"event": "input_queued"}), false))
+}
+
+fn check_vote_count(paths: &[PathBuf]) -> Result<()> {
+    if paths.is_empty() || paths.len() > MAX_ACTIVE_VALIDATORS {
+        return Err("proof_vote_count");
+    }
+    Ok(())
+}
+
+fn read_votes(base: &Path, paths: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
+    check_vote_count(paths)?;
+    paths
+        .iter()
+        .map(|path| {
+            let bytes = files::bytes(&base.join(path), CONSENSUS_PUSH_VOTE_BYTES)?;
+            if bytes.len() != CONSENSUS_PUSH_VOTE_BYTES {
+                return Err("proof_vote_length");
+            }
+            Ok(bytes)
+        })
+        .collect()
+}
+
+fn vote_refs(votes: &[Vec<u8>]) -> Vec<&[u8]> {
+    votes.iter().map(Vec::as_slice).collect()
+}
+
+struct ProposalVotes {
+    control: Vec<u8>,
+    payload: Vec<u8>,
+    votes: Vec<Vec<u8>>,
+}
+
+fn read_proposal_votes(base: &Path, proof: ProposalVoteFiles) -> Result<ProposalVotes> {
+    Ok(ProposalVotes {
+        control: files::bytes(
+            &base.join(proof.control_file),
+            CONSENSUS_PUSH_MAX_PROPOSAL_BYTES,
+        )?,
+        payload: files::bytes(
+            &base.join(proof.payload_file),
+            CONSENSUS_PUSH_MAX_PAYLOAD_BYTES,
+        )?,
+        votes: read_votes(base, &proof.vote_files)?,
+    })
+}
+
+fn proof_outcome(
+    outcome: std::result::Result<Event<'_>, Refusal>,
+    runtime: &Runtime<'_>,
+    payloads: usize,
+) -> (Value, bool) {
+    let (mut value, fatal) = match outcome {
+        Ok(event) => report::event(event),
+        Err(reason) => (
+            json!({"event": "proof_refused", "refunded_payloads_discarded": payloads, "reason": match reason {
+                Refusal::Busy => "busy", Refusal::DriverUnavailable => "driver_unavailable",
+            }}),
+            matches!(reason, Refusal::DriverUnavailable),
+        ),
+    };
+    // A command is one attempt. Refunded payloads are discarded, never retried.
+    value["state"] = report::status(runtime);
+    (value, fatal)
 }

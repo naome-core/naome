@@ -21,6 +21,9 @@ use naome_network::{Keypair, PeerId};
 use naome_proof::{ArtifactPayload, ProofCertificate};
 use serde_json::{Value, json};
 
+mod proofs;
+pub use proofs::Proof;
+
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub const BOUND: Duration = Duration::from_secs(15);
 

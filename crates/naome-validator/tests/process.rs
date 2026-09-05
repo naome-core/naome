@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+#[path = "cases/explicit_proofs.rs"]
+mod explicit_proofs;
 mod support;
 
 use serde_json::json;
