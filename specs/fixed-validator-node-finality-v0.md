@@ -551,6 +551,14 @@ already received before the stop.
 
 ## Failure and restart
 
+The [direct lower-round driver bridge](fixed-validator-node-driver-v0.md#explicit-direct-strictly-lower-round-finality)
+owns the same certificate and exact-batch ingresses while the signing scope is
+private to a live driver. It preserves pending commands and non-fallthrough
+current-finality work before caller input, then applies the unchanged
+coordinator contracts here. Its additional timer and volatile-inbox lifecycle
+does not grant the caller a mutable scope or change verification, rejection,
+durable handoff, or strict-reopen authority.
+
 Every error after an owned transition or owned transition pair enters finality
 consumes the scope and returns no signing authority. Exact-current, paired
 exact-current, lower-round single or paired, and candidate-backed direct-child

@@ -2,6 +2,14 @@
 
 use super::*;
 
+enum DriverLowerRoundFinalityInputV0<'input> {
+    Certificate(&'input [u8]),
+    VoteBatch {
+        canonical_signed_precommits: &'input [&'input [u8]],
+        evidence_round: ConsensusRound,
+    },
+}
+
 impl<'node> FixedValidatorNodeDriverV0<'node> {
     /// Checkpoints one explicitly supplied, fully verified higher-round quorum.
     ///
@@ -66,22 +74,15 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 },
             );
         }
-        match self
-            .select_current_finality()
+        if self
+            .current_finality_is_unresolved()
             .map_err(FixedValidatorNodeDriverStepErrorV0::Round)?
         {
-            DriverCurrentFinalitySelectionV0::None
-            | DriverCurrentFinalitySelectionV0::Saturated { .. } => {}
-            DriverCurrentFinalitySelectionV0::Ready { .. }
-            | DriverCurrentFinalitySelectionV0::PreselectionConflict { .. }
-            | DriverCurrentFinalitySelectionV0::MissingProposal { .. }
-            | DriverCurrentFinalitySelectionV0::ConflictingRoots { .. }
-            | DriverCurrentFinalitySelectionV0::Rejected(_)
-            | DriverCurrentFinalitySelectionV0::Reservation(_) => {
-                return Ok(FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0::CurrentFinalityUnresolved {
+            return Ok(
+                FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0::CurrentFinalityUnresolved {
                     driver: Box::new(self),
-                });
-            }
+                },
+            );
         }
         if self.higher_block_reason().is_some()
             || !matches!(
@@ -175,24 +176,15 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             );
         }
 
-        match self
-            .select_current_finality()
+        if self
+            .current_finality_is_unresolved()
             .map_err(FixedValidatorNodeDriverCandidateBackedFinalityErrorV0::CurrentFinalityRound)?
         {
-            DriverCurrentFinalitySelectionV0::None
-            | DriverCurrentFinalitySelectionV0::Saturated { .. } => {}
-            DriverCurrentFinalitySelectionV0::Ready { .. }
-            | DriverCurrentFinalitySelectionV0::PreselectionConflict { .. }
-            | DriverCurrentFinalitySelectionV0::MissingProposal { .. }
-            | DriverCurrentFinalitySelectionV0::ConflictingRoots { .. }
-            | DriverCurrentFinalitySelectionV0::Rejected(_)
-            | DriverCurrentFinalitySelectionV0::Reservation(_) => {
-                return Ok(
-                    FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::CurrentFinalityUnresolved {
-                        driver: Box::new(self),
-                    },
-                );
-            }
+            return Ok(
+                FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0::CurrentFinalityUnresolved {
+                    driver: Box::new(self),
+                },
+            );
         }
 
         let next_generation = self.generation.checked_add(1).ok_or(
@@ -246,6 +238,144 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             Err(source) => Err(
                 FixedValidatorNodeDriverCandidateBackedFinalityErrorV0::Finality(Box::new(source)),
             ),
+        }
+    }
+
+    /// Finalizes one directly supplied strictly lower-round proposal and certificate.
+    ///
+    /// Pending commands and every non-fallthrough current-finality classification
+    /// return the unchanged driver before supplied-input inspection. Otherwise a
+    /// checked successor timer generation precedes the existing fully verifying
+    /// lower-round coordinator, using this driver's construction-time ceiling.
+    /// The certificate supplies only unauthenticated routing metadata until the
+    /// complete proposal, payload, producer, fixed set, and proof are verified.
+    ///
+    /// Typed pre-effect rejection restores the unchanged driver. A child-height
+    /// handoff preserves all four inboxes, replaces the old timer and due state,
+    /// and queues one round-zero Proposal arm. Every fatal error consumes the
+    /// driver and requires strict anchored reopen. The owned payload is consumed
+    /// on every outcome; the driver retains none of the submitted input.
+    pub fn commit_lower_round_finality(
+        self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_precommit_certificate: &[u8],
+    ) -> Result<
+        FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        self.commit_lower_round_finality_input(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+            DriverLowerRoundFinalityInputV0::Certificate(canonical_precommit_certificate),
+        )
+    }
+
+    /// Finalizes one directly supplied strictly lower-round exact precommit batch.
+    ///
+    /// This shares the priority, custody, timer, and failure contract of
+    /// [`Self::commit_lower_round_finality`]. The explicit round is bounded route
+    /// metadata only: the existing coordinator independently authenticates the
+    /// proposal and every vote at that exact round, without filtering or grouping.
+    pub fn commit_lower_round_finality_vote_batch(
+        self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_signed_precommits: &[&[u8]],
+        evidence_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        self.commit_lower_round_finality_input(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+            DriverLowerRoundFinalityInputV0::VoteBatch {
+                canonical_signed_precommits,
+                evidence_round,
+            },
+        )
+    }
+
+    fn commit_lower_round_finality_input(
+        mut self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        input: DriverLowerRoundFinalityInputV0<'_>,
+    ) -> Result<
+        FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        if self
+            .current_finality_is_unresolved()
+            .map_err(FixedValidatorNodeDriverStepErrorV0::Round)?
+        {
+            return Ok(
+                FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0::CurrentFinalityUnresolved {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        let next_generation = self.next_generation()?;
+        let previous_position = self.position();
+        let maximum_round = self.inclusive_maximum_round;
+        let scope = self.take_scope();
+        let result = match input {
+            DriverLowerRoundFinalityInputV0::Certificate(certificate) => scope
+                .commit_lower_round_finality(
+                    canonical_proposal_control_bytes,
+                    canonical_artifact_bytes,
+                    certificate,
+                    maximum_round,
+                ),
+            DriverLowerRoundFinalityInputV0::VoteBatch {
+                canonical_signed_precommits,
+                evidence_round,
+            } => scope.commit_lower_round_finality_vote_batch(
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+                canonical_signed_precommits,
+                FixedValidatorNodeFinalityRoundRouteV0::new(evidence_round, maximum_round),
+            ),
+        };
+        match result {
+            Ok(FixedValidatorNodeLowerRoundFinalityOutcomeV0::Finality(
+                FixedValidatorNodeFinalityOutcomeV0::Continues { scope, selection },
+            )) => {
+                self.scope = Some(*scope);
+                if self.position() != previous_position {
+                    let timeout = self.install_next_timeout(next_generation);
+                    self.pending_command = Some(PendingCommandV0::Arm(timeout));
+                }
+                Ok(
+                    FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0::Finality {
+                        driver: Box::new(self),
+                        selection,
+                    },
+                )
+            }
+            Ok(FixedValidatorNodeLowerRoundFinalityOutcomeV0::Finality(
+                FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(stopped),
+            )) => Ok(FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0::FinalityStopped(stopped)),
+            Ok(FixedValidatorNodeLowerRoundFinalityOutcomeV0::Rejected { scope, rejection }) => {
+                self.scope = Some(*scope);
+                Ok(
+                    FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection,
+                    },
+                )
+            }
+            Err(source) => Err(FixedValidatorNodeDriverStepErrorV0::LowerRoundFinality(
+                Box::new(source),
+            )),
         }
     }
 
