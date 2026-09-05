@@ -2,7 +2,8 @@
 
 ## Scope and authority
 
-`PROD-020-049` defines the Unix `naome-validator` executable. It owns one
+`PROD-020-049` defines the Unix `naome-validator` executable, and
+`PROD-020-050` adds explicit complete-proof commands. It owns one
 explicitly configured local fixed-validator signer through
 `FixedValidatorNodeReadyV0::run_with_signing_session_async`, constructs the
 existing driver and runtime within that lifetime, and accepts explicit operator
@@ -126,7 +127,7 @@ network observations, not implied by readiness.
 
 ## Operator commands
 
-Input is newline-terminated JSON. Each frame has at most 65,536 bytes excluding
+Input is a newline-terminated JSON object. Each frame has at most 65,536 bytes excluding
 the newline. All fields are required, unknown fields are rejected, and `id` is
 an unsigned `u64` JSON integer echoed unchanged in the command response. It is
 a correlation label, not a deduplication or replay-protection token. Reusing an
@@ -141,6 +142,11 @@ they are never supplied as unbounded inline JSON arrays.
 | `author_retained` | `payload_file` | Submit `RetainedValid`; the signer derives eligibility and retained value |
 | `submit_vote` | `vote_file` | Queue an exact raw vote for later runtime routing and strict admission |
 | `submit_proposal` | `control_file`, `payload_file` | Queue raw control and payload for later routing and both strict proposal routes |
+| `advance_higher_quorum` | `certificate_file` | Submit one exact complete higher-round quorum certificate |
+| `advance_higher_votes` | `evidence_round`, `role`, `target`, `vote_files` | Submit one complete signed-vote batch with the caller's exact route |
+| `finalize_lower_quorum` | `control_file`, `payload_file`, `certificate_file` | Submit one complete direct strictly lower-round finality proof |
+| `finalize_lower_votes` | `evidence_round`, `proof` | Submit the direct lower proof using exact signed precommit files |
+| `halt_lower_conflict` | `evidence_round`, `first`, `second` | Independently verify two explicit lower-round proofs for a neutral paired halt |
 
 For example:
 
@@ -166,6 +172,84 @@ or UTF-8 rejects only that framed command. Oversized input or EOF within an
 unterminated frame ends the process with failure and never reparses a suffix as
 a fresh command. Clean EOF requests shutdown. Bytes buffered in stdin or in the
 reader without a response are explicitly unacknowledged and discarded.
+
+## Explicit complete proofs
+
+The five complete-proof commands call the corresponding existing
+`FixedValidatorRuntimeV0` methods exactly once. They do not collect, group,
+rank, filter, deduplicate, sort, or infer evidence. A file path, caller-supplied
+route, successful read, or parsed command establishes no proof validity. Only
+the runtime's existing fully verifying driver coordinators can checkpoint,
+finalize, or halt. No new wire envelope or durable input queue is introduced.
+
+`evidence_round` is an unsigned `u64` JSON integer. The batch higher command
+requires `role` to be `"prevote"` or `"precommit"`, and `target` to be exactly
+`{"kind":"nil"}` or `{"kind":"proposal","root":"<64 lowercase hex>"}`.
+The route is passed literally to verification, including a full-width round;
+it is not reconstructed from a vote header or selected from multiple roots.
+Each nested `proof`, `first`, or `second` object contains exactly
+`control_file`, `payload_file`, and `vote_files`. Unknown nested fields are
+rejected. Command, target, and nested proof arrays are rejected; parsing retains
+duplicate map entries so repeated fields are rejected rather than collapsed.
+Both proofs in a pair use the one explicit evidence round.
+
+Every `vote_files` array has between 1 and `MAX_ACTIVE_VALIDATORS` (256) paths.
+Scalar parsing and both pair counts are checked before opening any proof source.
+Each vote file must contain exactly `CONSENSUS_PUSH_VOTE_BYTES` (214) bytes;
+all paths, duplicates, and vote order are retained. Quorum and precommit files
+use their existing `VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH` and
+`VerifiedPrecommitCertificateV0::MAX_BYTE_LENGTH` bounds (24,696 bytes each).
+Control and payload files retain their existing independent consensus-push
+caps, including independently for both members of a pair. All source reads
+use the existing bounded nonblocking, no-follow regular-file path. Every input
+file is fully read before the sole runtime call. A parse, count, route-format,
+or source-read refusal makes no proof call and changes no authority files as
+part of that command; the surrounding runtime retains ordinary scheduling.
+
+For example, explicitly submit a complete lower-round signed-precommit batch:
+
+```json
+{"command":"finalize_lower_votes","id":4,"evidence_round":0,"proof":{"control_file":"proposal.bin","payload_file":"payload.bin","vote_files":["a.precommit","b.precommit"]}}
+```
+
+The four positive commands preserve the runtime's publication, pending-arm,
+and pending-driver-command backpressure. They report `proof_refused` with
+`reason` `busy` or `driver_unavailable` before delegation. The paired-conflict
+command waits only for driver-command transfer: publication, an in-flight
+send, a timer or due state, and buffered raw input add no conflict gate. All
+existing current-finality and higher-evidence priorities remain binding;
+the command does not implicitly step unresolved work. Current raw input
+remains a separate admission path and never becomes an automatic proof call.
+
+Command results include the actual post-call runtime `state`. Outcomes remain
+distinct: `proof_refused`; continuing `higher_round_rejected`,
+`lower_round_finality_rejected`, or `lower_round_conflict_rejected`; existing
+unresolved-work outcomes; `transitioned`; and `finality`. A higher checkpoint
+supersedes the old deadline only under the runtime's existing advancement rule,
+and a successful lower-finality operation exposes the exact selected child and
+next height. Refunded payload allocations are discarded and counted in
+`refunded_payloads_discarded`; their source files remain untouched. Delegated
+inputs follow the existing consuming-input contract. No outcome schedules a
+retry or retains these proof inputs for restart.
+
+A verified distinct pair reports `finality_stopped`, including its typed halt
+kind, height, ordered ancestry IDs, anchored finality state ID, and that same
+ID from the signer stop. These identities are diagnostics of the returned
+terminal result, not an alternate authorization interface. No winner is
+selected. A same-proof pair reaches the existing consuming non-distinct error:
+it reports `proof_failed` with `strict_restart_required`, not a continuing
+rejection or an anchored halt. Other consuming failures retain the existing
+fatal handling. Both terminal and consuming-error paths stop processing,
+dispose of surviving independent runtime custody, and release journals before
+the final `stopped` report. Already queued network work cannot be recalled.
+Strict open alone distinguishes a durable paired halt from a healthy or
+ambiguous persisted prefix; the command never retries, repairs, or rolls back.
+
+Candidate-backed proofs, historical-sibling source lookup, recovery-bundle
+installation, source-store ownership, inbox drains, acquisition, and serving
+remain outside this process profile. These commands grant no automatic proof
+collection, conflict invocation, evidence selection, or production-liveness
+authority.
 
 ## Events, shutdown, and restart
 
@@ -233,3 +317,21 @@ stdout followed by successful strict reopen, including a full output socket
 whose final-report timeout is not repeated as an error-report flush.
 Foreign-user ownership is checked
 in code but is not exercised through privileged ownership changes by these tests.
+
+`crates/naome-validator/tests/cases/explicit_proofs.rs` additionally exercises
+both higher forms with both vote roles, both lower-finality forms, exact
+checkpoint/finality restart, bounded nested input and route refusals followed
+by an explicit valid resubmission, and current-finality precedence followed by
+ordinary exact-proposal completion. A process regression rejects nil-target
+extra fields, numeric target-kind tags, and object-form roles before source
+reads while preserving the valid scalar-role/nil-target form. Another rejects array forms at every command,
+target, and nested-proof boundary while preserving duplicate-field rejection.
+Separate throwaway anchored signers create
+the adversarial conflicting proof fixtures. A distinct pair produces terminal
+reopen refusal; an identical pair consumes the process's authority without
+changing its journals and strictly reopens healthy. A real connected peer
+paused with SIGSTOP holds a publication with a released proposal token in
+flight: all positive commands remain busy, malformed pair rejection preserves
+custody, and a valid pair durably halts while reporting that surviving custody
+for disposal. These are bounded local Unix process observations, not general
+multi-node liveness, production timing, or deployment evidence.

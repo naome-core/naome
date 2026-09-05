@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+#[path = "cases/explicit_proofs.rs"]
+mod explicit_proofs;
 mod support;
 
 use serde_json::json;
@@ -220,9 +222,8 @@ fn queued_raw_input_is_not_admission_and_source_refusals_do_not_retry() {
     node.send(json!({"command": "submit_vote", "id": 3, "vote_file": "vote.bin"}));
     assert_eq!(node.event("command_rejected")["code"], "file_too_large");
     assert!(
-        Command::new("mkfifo")
-            .arg(layout.root.join("fifo"))
-            .status()
+        spawn(Command::new("mkfifo").arg(layout.root.join("fifo")))
+            .wait()
             .unwrap()
             .success()
     );
@@ -362,9 +363,8 @@ fn invalid_config_and_seed_files_refuse_before_create_and_healthy_open_writes() 
         symlink("signing.seed", layout.root.join("link")).unwrap();
         symlink("missing", layout.root.join("dangling")).unwrap();
         assert!(
-            Command::new("mkfifo")
-                .arg(layout.root.join("fifo"))
-                .status()
+            spawn(Command::new("mkfifo").arg(layout.root.join("fifo")))
+                .wait()
                 .unwrap()
                 .success()
         );
@@ -408,12 +408,12 @@ fn stalled_stdout_cannot_retain_journal_locks_or_hang_process_exit() {
     let layout = Layout::new();
     let config = fixture.config(&layout, 0, "create", None, false);
     let path = layout.write("validator.toml", &config);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_naome-validator"))
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = spawn(
+        Command::new(env!("CARGO_BIN_EXE_naome-validator"))
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped()),
+    );
     // Hold stdout open without reading. Enough bounded status requests fill
     // both the pipe and the process's report queue; failure must drop owners.
     let mut stdin = child.stdin.take().unwrap();
@@ -471,12 +471,12 @@ fn final_report_timeout_is_not_repeated_as_a_second_error_flush() {
     // The first output write blocks, but the report queue has ample space for
     // ready, shutdown and stopped. This reaches the flush timeout, not a full
     // queue refusal, and used to perform two consecutive two-second waits.
-    let child = Command::new(env!("CARGO_BIN_EXE_naome-validator"))
-        .arg(path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(OwnedFd::from(output)))
-        .spawn()
-        .unwrap();
+    let child = spawn(
+        Command::new(env!("CARGO_BIN_EXE_naome-validator"))
+            .arg(path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::from(OwnedFd::from(output))),
+    );
     let mut node = Process::unobserved(child);
     let started = Instant::now();
     node.send(json!({"command": "shutdown", "id": 1}));
@@ -558,8 +558,9 @@ fn pending_vote_proposal_and_anchored_terminal_state_refuse_without_ready_or_rep
         let layout = Layout::new();
         let config = fixture.config(&layout, 0, "open", None, false);
         let block = fixture.proposal(&layout);
-        drop(fixture.create_node(&layout));
         (|| {
+            let _guard = PARENT_JOURNALS.read().unwrap();
+            drop(fixture.create_node(&layout));
             let branch = naome_consensus::FixedConsensusBranchV0::try_from_virtual_genesis(
                 fixture.context,
                 &fixture.entries,

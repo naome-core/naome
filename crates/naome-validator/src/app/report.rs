@@ -8,7 +8,7 @@ use naome_network::{NetworkEvent, PeerSessionEvent};
 use naome_node::FixedValidatorNodeDriverV0;
 use naome_runtime::{
     FixedValidatorRuntimeDeliveryStateV0 as Delivery, FixedValidatorRuntimeEventV0 as Event,
-    FixedValidatorRuntimeInputSourceV0 as InputSource,
+    FixedValidatorRuntimeFailureV0 as Failure, FixedValidatorRuntimeInputSourceV0 as InputSource,
     FixedValidatorRuntimePublicationMessageV0 as Message,
     FixedValidatorRuntimePublicationV0 as Publication, FixedValidatorRuntimeV0 as Runtime,
 };
@@ -193,8 +193,25 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
             fatal = true;
             json!({"event": "timing_failed"})
         }
-        Event::Fatal(_)
-        | Event::DriverUnavailable
+        Event::Fatal(error) => {
+            fatal = true;
+            match *error {
+                Failure::FinalityStopped(stopped) => {
+                    let halt = stopped.finality_halt();
+                    json!({"event": "finality_stopped", "kind": format!("{:?}", halt.kind()),
+                        "height": halt.height().value().to_string(),
+                        "first_ancestry": hex(halt.first_ancestry().as_bytes()),
+                        "second_ancestry": hex(halt.second_ancestry().as_bytes()),
+                        "finality_state_id": hex(halt.state_id().as_bytes()),
+                        "signer_finality_state_id": hex(stopped.signer_stop().finality_state_id().as_bytes())})
+                }
+                Failure::LowerRoundPreselectionConflict(_) => {
+                    json!({"event": "proof_failed", "operation": "lower_round_conflict", "strict_restart_required": true})
+                }
+                _ => json!({"event": "driver_unavailable"}),
+            }
+        }
+        Event::DriverUnavailable
         | Event::AuthoringUnavailable(_)
         | Event::StoreAuthoringUnavailable => {
             fatal = true;
