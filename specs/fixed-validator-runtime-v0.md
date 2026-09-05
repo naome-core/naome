@@ -23,6 +23,7 @@ configuration, operator input, and process shutdown around that lifetime.
 `PROD-020-052` adds the explicit exact-current paired-conflict batch operation
 through this same runtime and local process. `PROD-020-053` adds both direct
 exact-current single-finality proof forms through these same owners.
+`PROD-020-054` adds both direct historical selected-sibling proof forms.
 
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,
@@ -241,7 +242,7 @@ publication does not read a source store again.
 
 ## Explicit complete-proof operations
 
-All ten methods are synchronous caller selections. They neither observe a
+All twelve methods are synchronous caller selections. They neither observe a
 clock or network event nor call `step` before delegation. Controls, certificates,
 exact signed-vote batches, explicit routes, targets, and borrowed stores pass
 unchanged into the corresponding existing driver method. The runtime exposes no
@@ -254,6 +255,7 @@ mutable driver or general signing-scope callback.
 | `commit_lower_round_finality`, `commit_lower_round_finality_vote_batch` | Complete direct strictly lower-round finality |
 | `commit_candidate_backed_finality_vote_batch` | Exact candidate-backed direct-child finality |
 | `commit_candidate_backed_finality_conflict_vote_batch` | Historical selected-sibling conflict |
+| `commit_historical_finality_conflict`, `commit_historical_finality_conflict_vote_batch` | Complete direct historical selected-sibling proof against the owned retained parent, without source stores or caller target |
 | `commit_lower_round_preselection_conflict_vote_batches` | Independently verified lower-round pair and neutral halt |
 | `commit_current_round_preselection_conflict_vote_batches` | Independently verified exact-current pair and neutral halt, with no caller round |
 
@@ -271,11 +273,13 @@ step that work or consume the buffered input first.
 An explicit terminal conflict attempt waits only for pending driver commands to
 transfer. Once they have transferred, a publication, in-flight ticket, pending
 runtime arm, buffered input, phase, or expired/accepted due state does not delay
-the attempt. This exception applies only to the three explicitly called conflict
+the attempt. This exception applies only to the five explicitly called conflict
 methods; neither raw admission nor ordinary polling automatically invokes it.
 A runtime refusal of either pair returns both original owned payload allocations in
 argument order. After either positive or terminal delegation, the driver's
 existing consuming-input contract applies to every outcome.
+Either direct historical method similarly refunds its one original payload
+allocation and bytes on pre-invocation `Busy` or `DriverUnavailable` refusal.
 
 Every known continuing driver is restored. Typed rejections and unresolved-work
 outcomes preserve the exact runtime markers and custody. A higher checkpoint
@@ -291,9 +295,9 @@ promoted, discarded, nor reinterpreted as a complete proof.
 Either pair's pre-effect rejection restores the driver, including while a
 publication remains outstanding. A verified distinct pair records the existing
 neutral `PreselectionPair` halt; neither input becomes a selected winner. A
-verified historical candidate conflict records the existing `SelectedSibling`
+verified historical candidate or direct conflict records the existing `SelectedSibling`
 halt against the retained selected parent. Both preserve the exact paired
-finality-halt and signer-stop evidence. Candidate-conflict processing consumes
+finality-halt and signer-stop evidence. Candidate and direct historical-conflict processing consume
 the driver even on a pre-append error; either pair also consumes it once sealed
 evidence enters its finality coordinator. These existing error distinctions are
 returned without inventing recovery.
@@ -545,6 +549,17 @@ driver, preserves the independent timer and buffered allocation, and leaves
 strict reopen to refuse the lagging anchor. The shared positive-proof and terminal-custody
 vectors also check both forms' Busy and unavailable-driver refunds, including
 original payload allocation identity and a real in-flight publication.
+
+`tests/cases/historical_conflict.rs` checks both direct historical proof forms
+after two selected heights, before and after local admission of a real
+height-three `Some` publication. Pending-command and unavailable-driver refusals
+refund the original payload allocation. An expired unobserved deadline, exact
+buffer allocation, publication bytes/token, local-attempt marker, and in-flight
+and unattempted peer custody survive terminal sibling halt or consuming
+same-selected-value rejection for disposal. Strict reopen distinguishes the
+matching anchored halt from the exact healthy height-three signer position.
+These are local Unix runtime and loopback observations, without deployment or
+general distributed-liveness evidence.
 
 `tests/cases/artifact_exchange.rs` uses two intact Unix Noise runtime owners to
 fill initially empty candidate and payload stores through explicit source

@@ -31,7 +31,8 @@ one existing consuming node coordinator. It emits at most one timeout-arm or
 signed-vote or signed-proposal command. It does not expose the owned signing scope as an
 alternative caller-controlled path.
 
-The caller-selected action exceptions are the candidate-backed and direct
+The caller-selected action exceptions are direct historical-sibling proofs,
+the candidate-backed and direct
 exact-current or strictly lower-round single-proof finality bridges, paired-conflict bridges
 for exact-current and strictly lower rounds, explicit higher-round quorum
 catch-up methods, and explicit current-round proposal authoring outside ordinary
@@ -40,7 +41,7 @@ All are available only after any pending outward command has transferred,
 retain no evidence, use the driver's existing inclusive round-work ceiling,
 and delegate every applicable proposal, source, positioned-fixed-set, batch,
 finality, and signer check to existing consuming coordinators. The deny-only
-historical selected-sibling bridge cannot return a driver after proof processing
+historical selected-sibling bridges cannot return a driver after proof processing
 begins. The positive direct-child bridges additionally preserve every
 non-fallthrough current-finality classification ahead of caller choice, and
 return a driver after proof processing only for a typed pre-effect
@@ -102,7 +103,7 @@ phase, separate inbox accounting, timer identity, and pending-command state
 without granting transition authority. The standalone read-only finality
 classifier remains crate-private. The public `step` surface exposes only the
 typed operational block, finality, rejection, and stop outcomes described
-below. The separate historical-conflict bridge is not an alternative step or a
+below. The separate historical-conflict bridges are not an alternative step or a
 way to recover the owned scope.
 
 `FixedValidatorNodeDriverV0::selected_artifact_history` is the sole public
@@ -451,6 +452,32 @@ automatic routing, retry, competing-proof arbitration, cross-round conflict
 interpretation, source preference, networking, multi-height promotion, repair,
 or production runtime. They are separate complete-input ingresses and do not
 assert that no other finality evidence exists.
+
+## Explicit direct historical-sibling terminal bridge
+
+`commit_historical_finality_conflict` and
+`commit_historical_finality_conflict_vote_batch` accept one complete supplied
+envelope and owned payload, or proposal-control, owned payload, exact precommit
+batch, and explicit evidence round. The driver supplies its construction-time
+inclusive ceiling. No source stores or caller target, height, parent, or winner
+enter this path. The node-owned finality journal derives the already selected
+height from bounded proof bytes and fully verifies a distinct sibling against
+that height's exact retained selected parent.
+
+The existing pending outward command is the sole driver gate. It returns the
+unchanged driver before input inspection. Once that command has transferred,
+the operation consumes the scope without classifying retained current finality,
+observing a clock, stepping ordinary work, or reserving a successor generation.
+Empty, ready, and saturated inboxes, phase, accepted due state, and an exhausted
+timer generation add no gate. Complete historical evidence cannot select an
+unselected height or replay the selected value through this terminal interface.
+
+Success returns only `FinalityStopped` with matching anchored `SelectedSibling`
+halt and signer-stop evidence. Every delegated error consumes the driver, even
+when pre-append rejection leaves all authority images unchanged. Strict reopen
+alone may issue a fresh owner. The owned payload is consumed on every driver
+outcome, including pending-command refusal. No selected head, sibling winner,
+timer arm, publication, automatic evidence lookup, or retry is produced.
 
 ## Explicit exact-current paired-conflict bridge
 

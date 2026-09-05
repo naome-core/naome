@@ -83,6 +83,17 @@ pub(super) enum Command {
         #[serde(deserialize_with = "object")]
         second: ProposalVoteFiles,
     },
+    HaltHistoricalEnvelope {
+        id: u64,
+        envelope_file: PathBuf,
+        payload_file: PathBuf,
+    },
+    HaltHistoricalVotes {
+        id: u64,
+        evidence_round: u64,
+        #[serde(deserialize_with = "object")]
+        proof: ProposalVoteFiles,
+    },
     HaltCurrentConflict {
         id: u64,
         #[serde(deserialize_with = "object")]
@@ -211,6 +222,8 @@ impl Command {
             | Self::FinalizeLowerQuorum { id, .. }
             | Self::FinalizeLowerVotes { id, .. }
             | Self::HaltLowerConflict { id, .. }
+            | Self::HaltHistoricalEnvelope { id, .. }
+            | Self::HaltHistoricalVotes { id, .. }
             | Self::HaltCurrentConflict { id, .. } => *id,
         }
     }

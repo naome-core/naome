@@ -517,6 +517,80 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         }
     }
 
+    /// Submits a complete direct historical envelope and payload to the halt path.
+    ///
+    /// Pending outward command custody is the sole gate, before any proof work.
+    /// Retained evidence, phase, due state, and timer generation add no condition.
+    /// After transfer, all outcomes consume the scope; strict anchored reopen is
+    /// the sole later classifier. Owned payload bytes are consumed on every call.
+    pub fn commit_historical_finality_conflict(
+        mut self,
+        canonical_envelope_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+    ) -> Result<
+        FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0<'node>,
+        FixedValidatorNodeFinalityErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        let inclusive_maximum_round = self.inclusive_maximum_round;
+        self.take_scope()
+            .commit_historical_finality_conflict(
+                canonical_envelope_bytes,
+                canonical_artifact_bytes,
+                inclusive_maximum_round,
+            )
+            .map(|stopped| {
+                FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0::FinalityStopped(
+                    Box::new(stopped),
+                )
+            })
+    }
+
+    /// Submits an exact historical proposal, payload, precommit batch, and round.
+    /// Shares the complete-envelope terminal gate and consuming-error contract.
+    /// The construction-time ceiling bounds historical work without comparing
+    /// the evidence round to the current signer's round or selecting a branch.
+    pub fn commit_historical_finality_conflict_vote_batch(
+        mut self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_signed_precommits: &[&[u8]],
+        evidence_round: ConsensusRound,
+    ) -> Result<
+        FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0<'node>,
+        FixedValidatorNodeFinalityErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        let inclusive_maximum_round = self.inclusive_maximum_round;
+        self.take_scope()
+            .commit_historical_finality_conflict_vote_batch(
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+                canonical_signed_precommits,
+                FixedValidatorNodeFinalityRoundRouteV0::new(
+                    evidence_round,
+                    inclusive_maximum_round,
+                ),
+            )
+            .map(|stopped| {
+                FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0::FinalityStopped(
+                    Box::new(stopped),
+                )
+            })
+    }
+
     /// Routes one exact candidate-backed historical sibling conflict.
     ///
     /// An already pending outward command causes the unchanged driver to be

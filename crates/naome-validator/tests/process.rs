@@ -6,6 +6,8 @@ mod current_finality;
 mod current_pair;
 #[path = "cases/explicit_proofs.rs"]
 mod explicit_proofs;
+#[path = "cases/historical_conflict.rs"]
+mod historical_conflict;
 #[path = "cases/inbox_disposal.rs"]
 mod inbox_disposal;
 mod support;

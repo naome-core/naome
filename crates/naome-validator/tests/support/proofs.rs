@@ -24,6 +24,7 @@ pub struct Proof {
     pub payload: Vec<u8>,
     pub vote: Vec<u8>,
     pub certificate: Vec<u8>,
+    pub envelope: Option<Vec<u8>>,
     pub round: u64,
     pub role: ConsensusVoteRole,
 }
@@ -32,21 +33,43 @@ impl Proof {
     /// Every proposal and vote comes from a real anchored signer in a separate
     /// throwaway layout. Conflicting fixtures do not bypass one journal's guard.
     pub fn new(fixture: &Fixture, higher: bool, axiom: u8, role: ConsensusVoteRole) -> Self {
+        Self::after_prefix(fixture, &[], u64::from(higher), axiom, role)
+    }
+
+    pub fn after_prefix(
+        fixture: &Fixture,
+        prefix: &[&Proof],
+        minimum_round: u64,
+        axiom: u8,
+        role: ConsensusVoteRole,
+    ) -> Self {
         let _guard = PARENT_JOURNALS.read().unwrap();
         let layout = Layout::new();
-        let selected = ArtifactChainState::new(fixture.definition);
-        let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        let mut selected = ArtifactChainState::new(fixture.definition);
+        let mut branch = FixedConsensusBranchV0::try_from_virtual_genesis(
             fixture.context,
             &fixture.entries,
             selected.branch_snapshot(),
         )
         .unwrap();
+        for proof in prefix {
+            let transition = branch
+                .decode_and_verify_envelope_with_round_limit(
+                    proof.envelope.as_ref().unwrap(),
+                    proof.payload.clone(),
+                    ConsensusRound::new(4),
+                )
+                .unwrap();
+            selected
+                .apply_block(&transition.value().artifact_block(), proof.payload.clone())
+                .unwrap();
+            branch = transition.into_branch();
+        }
         let mut round = branch.begin_round_zero().unwrap();
-        if higher {
+        while round.position().round().value() < minimum_round
+            || round.proposer() != key(&fixture.keys[0])
+        {
             round = round.advance_round().unwrap();
-            while round.proposer() != key(&fixture.keys[0]) {
-                round = round.advance_round().unwrap();
-            }
         }
         assert!(round.position().round().value() <= 4);
         let payload = ArtifactPayload::Proof(
@@ -62,7 +85,12 @@ impl Proof {
             .enable_all()
             .build()
             .unwrap();
-        let (control, vote) = fixture.create_node(&layout).run_with_signing_session(|scope| {
+        let (control, vote) = fixture.create_node(&layout).run_with_signing_session(|mut scope| {
+            for proof in prefix {
+                let transition = scope.branch().decode_and_verify_envelope_with_round_limit(proof.envelope.as_ref().unwrap(), proof.payload.clone(), ConsensusRound::new(4)).unwrap();
+                let naome_node::FixedValidatorNodeFinalityOutcomeV0::Continues { scope: next, .. } = scope.commit_verified_finality(transition).unwrap() else { panic!("fixture selected prefix") };
+                scope = *next;
+            }
             let mut driver = arm(Driver::new(
                 scope,
                 FixedValidatorNodeHigherRoundInboxLimitsV0::new(8, 1_048_576).unwrap(),
@@ -110,12 +138,26 @@ impl Proof {
             )
             .unwrap()
             .to_canonical_bytes();
+        let value = admitted.value();
+        let envelope = if role == ConsensusVoteRole::Precommit {
+            Some(
+                admitted
+                    .seal_with_precommit_vote_batch(&[&vote])
+                    .unwrap()
+                    .into_owned()
+                    .canonical_envelope_bytes()
+                    .to_vec(),
+            )
+        } else {
+            None
+        };
         Self {
-            value: admitted.value(),
+            value,
             control,
             payload,
             vote,
             certificate,
+            envelope,
             round: round.position().round().value(),
             role,
         }
@@ -126,6 +168,9 @@ impl Proof {
         layout.write(&format!("{prefix}.payload"), &self.payload);
         layout.write(&format!("{prefix}.vote"), &self.vote);
         layout.write(&format!("{prefix}.certificate"), &self.certificate);
+        if let Some(envelope) = &self.envelope {
+            layout.write(&format!("{prefix}.envelope"), envelope);
+        }
     }
     pub fn files(prefix: &str) -> Value {
         json!({"control_file": format!("{prefix}.control"), "payload_file": format!("{prefix}.payload"), "vote_files": [format!("{prefix}.vote")]})

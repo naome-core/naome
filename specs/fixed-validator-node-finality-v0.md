@@ -369,6 +369,33 @@ or define priority among multiple caller-known conflicts. Caller selection and
 store or peer provenance grant no validity, finality, winner, rollback, or
 branch-selection authority.
 
+## Direct complete historical-sibling admission
+
+`commit_historical_finality_conflict` and
+`commit_historical_finality_conflict_vote_batch` consume the signing scope and
+submit one complete envelope plus owned payload, or proposal-control plus owned
+payload and exact precommit batch, to the node-owned anchored finality journal.
+The batch takes an explicit evidence round; both take an inclusive work ceiling.
+The caller supplies no source store, target, height, parent, or winner.
+
+The [storage historical-sibling contract](fixed-validator-finality-journal-v0.md#direct-complete-historical-sibling-proofs)
+requires an already selected positive height and a preliminarily distinct value
+before full verification against that exact retained parent. Its evidence round
+is independent of the current signer round. Successful admission records only
+the existing anchored `SelectedSibling` halt, then uses the unchanged ordered
+proof-backed signer stop. It returns the matching terminal evidence and no scope,
+height capability, selected child, or winner.
+
+Every delegated error also consumes the scope, including malformed proof,
+same-selected-value, and unselected-height rejection before authority-file writes.
+Strict reopen alone classifies the surviving durable prefix. A finality-anchor
+failure may leave only the finality journal advanced; a later signer-stop-anchor
+failure may leave an anchored finality halt and an unanchored signer stop. The
+existing stage-typed errors retain any already known halt and never roll back or
+repair either pair. The driver may invoke this path after pending-command
+transfer regardless of phase, retained current finality, due state, or timer
+generation; it neither runs ordinary work nor reserves a successor timer.
+
 ## Ordered transitions
 
 `commit_verified_finality` applies exactly one sealed transition in this order:

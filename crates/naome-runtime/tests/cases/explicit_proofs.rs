@@ -187,6 +187,21 @@ fn proof(
     vote: ConsensusPushMessage,
     role: ConsensusVoteRole,
 ) -> Proof {
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        fixture.context,
+        &fixture.entries,
+        ArtifactChainState::new(fixture.definition).branch_snapshot(),
+    )
+    .unwrap();
+    proof_at_branch(&branch, proposal, vote, role)
+}
+
+fn proof_at_branch(
+    branch: &FixedConsensusBranchV0,
+    proposal: ConsensusPushMessage,
+    vote: ConsensusPushMessage,
+    role: ConsensusVoteRole,
+) -> Proof {
     let ConsensusPushMessage::Proposal {
         canonical_proposal: control,
         canonical_artifact: payload,
@@ -204,12 +219,6 @@ fn proof(
         .unwrap()
         .position()
         .round();
-    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
-        fixture.context,
-        &fixture.entries,
-        ArtifactChainState::new(fixture.definition).branch_snapshot(),
-    )
-    .unwrap();
     let mut round = branch.begin_round_zero().unwrap();
     while round.position().round() != observed {
         round = round.advance_round().unwrap();

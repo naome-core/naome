@@ -32,6 +32,7 @@ mod candidate_backed;
 mod current_round_finality;
 mod current_round_pair;
 mod higher_round;
+mod historical_conflict;
 mod lower_round_finality;
 mod lower_round_pair;
 mod proposal_authoring;

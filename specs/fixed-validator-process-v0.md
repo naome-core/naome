@@ -6,7 +6,8 @@
 `PROD-020-050` adds explicit complete-proof commands, `PROD-020-051`
 adds explicit class-selected inbox disposal, `PROD-020-052` adds explicit
 exact-current paired-conflict submission, and `PROD-020-053` adds both direct
-exact-current single-finality proof forms. It owns one
+exact-current single-finality proof forms. `PROD-020-054` adds both direct
+historical selected-sibling proof forms. It owns one
 explicitly configured local fixed-validator signer through
 `FixedValidatorNodeReadyV0::run_with_signing_session_async`, constructs the
 existing driver and runtime within that lifetime, and accepts explicit operator
@@ -154,6 +155,8 @@ they are never supplied as unbounded inline JSON arrays.
 | `finalize_lower_votes` | `evidence_round`, `proof` | Submit the direct lower proof using exact signed precommit files |
 | `halt_lower_conflict` | `evidence_round`, `first`, `second` | Independently verify two explicit lower-round proofs for a neutral paired halt |
 | `halt_current_conflict` | `first`, `second` | Independently verify two exact-current proofs for a neutral paired halt |
+| `halt_historical_envelope` | `envelope_file`, `payload_file` | Verify one complete historical sibling against its retained selected parent and halt |
+| `halt_historical_votes` | `evidence_round`, `proof` | Verify a historical sibling using an exact signed-precommit batch and halt |
 
 For example:
 
@@ -228,7 +231,7 @@ selection, or finality authority.
 
 ## Explicit complete proofs
 
-The eight complete-proof commands call the corresponding existing
+The ten complete-proof commands call the corresponding existing
 `FixedValidatorRuntimeV0` methods exactly once. They do not collect, group,
 rank, filter, deduplicate, sort, or infer evidence. A file path, caller-supplied
 route, successful read, or parsed command establishes no proof validity. Only
@@ -261,12 +264,24 @@ configured capacity-one finality inbox cannot retain a proposal and quorum
 together, but a complete explicit proof can finalize without changing its budget,
 opening source stores, or advancing the round just to use lower-round finality.
 
+`halt_historical_envelope` accepts exactly `id`, `envelope_file`, and
+`payload_file` beside its command name. `halt_historical_votes` instead accepts
+exactly `id`, `evidence_round`, and `proof`. Neither accepts a height, parent,
+target, or winner; the envelope command also rejects `evidence_round`. Bounded
+proof bytes identify only a preliminary value at an already selected positive
+height. The node-owned journal rejects the selected value and an unselected
+height before any commit, then completely verifies a distinct sibling against
+the exact retained parent. Its evidence round need not match the later live
+signer round. No input source or unverified value grants conflict authority.
+
 Every `vote_files` array has between 1 and `MAX_ACTIVE_VALIDATORS` (256) paths.
 Scalar parsing and both pair counts are checked before opening any proof source.
 Each vote file must contain exactly `CONSENSUS_PUSH_VOTE_BYTES` (214) bytes;
 all paths, duplicates, and vote order are retained. Quorum and precommit files
 use their existing `VerifiedQuorumCertificateV0::MAX_BYTE_LENGTH` and
 `VerifiedPrecommitCertificateV0::MAX_BYTE_LENGTH` bounds (24,696 bytes each).
+Historical envelope files use the existing
+`VerifiedFixedConsensusTransitionV0::MAX_BYTE_LENGTH` cap.
 Control and payload files retain their existing independent consensus-push
 caps, including independently for both members of a pair. All source reads
 use the existing bounded nonblocking, no-follow regular-file path. Every input
@@ -283,7 +298,7 @@ For example, explicitly submit a complete lower-round signed-precommit batch:
 The six positive commands preserve the runtime's publication, pending-arm,
 and pending-driver-command backpressure. They report `proof_refused` with
 `reason` `busy` or `driver_unavailable` before delegation. Both paired-conflict
-commands wait only for driver-command transfer: publication, an in-flight
+and both historical-conflict commands wait only for driver-command transfer: publication, an in-flight
 send, a timer or due state, and buffered raw input add no conflict gate. All
 existing current-finality and higher-evidence priorities remain binding for
 positive commands. Neither paired command classifies retained finality or runs
@@ -319,7 +334,19 @@ the final `stopped` report. Already queued network work cannot be recalled.
 Strict open alone distinguishes a durable paired halt from a healthy or
 ambiguous persisted prefix; the command never retries, repairs, or rolls back.
 
-Candidate-backed proofs, historical-sibling source lookup, recovery-bundle
+A fully verified historical sibling instead reports the existing
+`finality_stopped` with halt kind `SelectedSibling`, its exact selected and
+conflicting ancestry IDs, and matching anchored halt/stop state IDs. Later
+selected history is retained only as pre-halt evidence; no sibling is installed
+or exposed as an operable head. Every delegated historical error, including
+malformed, same-selected-value, and next-height proof rejection before writes,
+reports `proof_failed`, `operation` `historical_finality_conflict`, and
+`strict_restart_required: true`. It consumes the driver and stops the process
+under the same disposal and lock-release contract. Pre-invocation refusal
+instead discards and counts its one refunded payload and permits continued
+operation. This error boundary does not introduce a continuing historical retry.
+
+Candidate-backed proofs, historical-sibling lookup in external source stores, recovery-bundle
 installation, source-store ownership, acquisition, and serving remain outside
 this process profile. Complete-proof commands do not drain inboxes; the separate
 explicit `discard_inbox` command owns class-selected disposal. These proof
@@ -459,3 +486,17 @@ changing the surviving prefix. The existing in-flight publication tests include
 both new positive forms and preserve their reported Busy state. These are local
 Unix process observations; deployment and general distributed liveness are
 unverified.
+
+`crates/naome-validator/tests/cases/historical_conflict.rs` checks both direct
+historical forms after two selected heights, exact height-one sibling halt and
+strict terminal restart, and consuming malformed, same-selected, and valid
+next-height rejection with byte-identical authority images and healthy height-three
+reopen. Object, duplicate-field, caller-selector, count, and independent file-cap
+refusals precede invocation and permit an explicit valid submission. A real
+height-three publication with a connected SIGSTOP peer remains in flight across
+historical halt or consuming rejection and is preserved in the disposal report.
+Finality-anchor and signer-stop-anchor collisions expose their exact partial
+authority images, release locks, and make strict reopen refuse the lagging pair.
+These are bounded local Unix process and loopback observations; allocation and
+timeout identity checks belong to the runtime tests, and deployment and general
+distributed liveness remain unverified.

@@ -153,7 +153,7 @@ fn candidate_backed_anchored_finality_keeps_the_safe_product_path_composable() {
 }
 
 #[cfg(unix)]
-fn candidate_backed_historical_sibling_terminal_case(
+pub(super) fn candidate_backed_historical_sibling_terminal_case(
     label: &str,
     use_vote_batch: bool,
 ) -> (FixedValidatorFinalityHaltV0, [Vec<u8>; 4]) {

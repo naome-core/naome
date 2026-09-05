@@ -761,6 +761,22 @@ pub enum FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0<'node>
     FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
 }
 
+/// Result of one complete direct historical-sibling proof attempt.
+///
+/// Pending command custody is the only outcome that returns the driver. Once
+/// proof processing starts, every success or error consumes the sole scope and
+/// all driver custody. Every invocation consumes the supplied owned payload.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0<'node> {
+    /// The unchanged pending command must transfer before proof processing.
+    CommandPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// The historical sibling stopped both anchored authority owners.
+    FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+}
+
 /// Result of one explicit exact-current paired-conflict attempt.
 ///
 /// Pending command custody and typed pre-effect rejection return the unchanged

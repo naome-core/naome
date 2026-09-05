@@ -436,6 +436,7 @@ fn single_entry_image(
 
 mod candidate_commit;
 mod faults;
+mod historical_conflict;
 mod preselection_conflict;
 mod recovery;
 mod replay;

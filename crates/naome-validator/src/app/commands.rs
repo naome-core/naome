@@ -4,7 +4,8 @@ use naome_chain::{ARTIFACT_BLOCK_BYTES, ArtifactBlock};
 use naome_consensus::{
     ConsensusRound, ConsensusVoteRole, ConsensusVoteTarget,
     FixedValidatorProposalSourceV0 as Source, MAX_ACTIVE_VALIDATORS, ProposalSigningRoot,
-    VerifiedPrecommitCertificateV0, VerifiedQuorumCertificateV0,
+    VerifiedFixedConsensusTransitionV0, VerifiedPrecommitCertificateV0,
+    VerifiedQuorumCertificateV0,
 };
 use naome_network::{
     CONSENSUS_PUSH_MAX_PAYLOAD_BYTES, CONSENSUS_PUSH_MAX_PROPOSAL_BYTES, CONSENSUS_PUSH_VOTE_BYTES,
@@ -127,6 +128,39 @@ pub(super) fn execute(
                 target,
             );
             return Ok(proof_outcome(outcome, runtime, 0));
+        }
+        Command::HaltHistoricalEnvelope {
+            envelope_file,
+            payload_file,
+            ..
+        } => {
+            let envelope = files::bytes(
+                &base.join(envelope_file),
+                VerifiedFixedConsensusTransitionV0::MAX_BYTE_LENGTH,
+            )?;
+            let payload = files::bytes(&base.join(payload_file), CONSENSUS_PUSH_MAX_PAYLOAD_BYTES)?;
+            let outcome = runtime
+                .commit_historical_finality_conflict(&envelope, payload)
+                .map_err(|(reason, _payload)| reason);
+            return Ok(proof_outcome(outcome, runtime, 1));
+        }
+        Command::HaltHistoricalVotes {
+            evidence_round,
+            proof,
+            ..
+        } => {
+            check_vote_count(&proof.vote_files)?;
+            let proof = read_proposal_votes(base, proof)?;
+            let refs = vote_refs(&proof.votes);
+            let outcome = runtime
+                .commit_historical_finality_conflict_vote_batch(
+                    &proof.control,
+                    proof.payload,
+                    &refs,
+                    ConsensusRound::new(evidence_round),
+                )
+                .map_err(|(reason, _payload)| reason);
+            return Ok(proof_outcome(outcome, runtime, 1));
         }
         Command::FinalizeCurrentQuorum {
             control_file,

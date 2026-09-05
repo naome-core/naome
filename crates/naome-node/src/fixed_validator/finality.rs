@@ -17,7 +17,8 @@ use naome_storage::{
     FixedValidatorAnchoredFinalityJournalV0, FixedValidatorFinalityCommitOutcomeV0,
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityHaltV0,
     FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
-    FixedValidatorVoteSafetyJournalErrorV0, commit_candidate_backed_anchored_finality_conflict_v0,
+    FixedValidatorHistoricalFinalityConflictErrorV0, FixedValidatorVoteSafetyJournalErrorV0,
+    commit_candidate_backed_anchored_finality_conflict_v0,
     commit_candidate_backed_anchored_finality_conflict_vote_batch_v0,
     commit_candidate_backed_anchored_finality_v0,
 };
@@ -671,6 +672,8 @@ pub enum FixedValidatorNodeFinalityErrorV0 {
     Commit(Box<FixedValidatorFinalityJournalErrorV0>),
     /// Candidate verification or its finality commit failed.
     CandidateBackedFinality(Box<CandidateBackedFinalityErrorV0>),
+    /// A complete direct historical sibling proof or its terminal commit failed.
+    HistoricalFinalityConflict(Box<FixedValidatorHistoricalFinalityConflictErrorV0>),
     /// Finality succeeded but could not issue its exact signer-height authority.
     SignerHeightAuthority {
         selection: Box<FixedValidatorNodeFinalitySelectionV0>,
@@ -708,6 +711,10 @@ impl fmt::Display for FixedValidatorNodeFinalityErrorV0 {
                     "node candidate-backed finality commit failed: {source}"
                 )
             }
+            Self::HistoricalFinalityConflict(source) => write!(
+                formatter,
+                "node historical finality conflict failed: {source}"
+            ),
             Self::SignerHeightAuthority { selection, source } => write!(
                 formatter,
                 "node finality result {selection:?} could not issue signer-height authority: {source}"
@@ -739,6 +746,7 @@ impl Error for FixedValidatorNodeFinalityErrorV0 {
             | Self::SignerHeightAuthority { source, .. }
             | Self::SignerStopAuthority { source, .. } => Some(source.as_ref()),
             Self::CandidateBackedFinality(source) => Some(source.as_ref()),
+            Self::HistoricalFinalityConflict(source) => Some(source.as_ref()),
             Self::SignerHeightPrepare { source, .. }
             | Self::SignerHeightAcknowledge { source, .. }
             | Self::SignerStop { source, .. } => Some(source.as_ref()),
@@ -1416,6 +1424,69 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
             state_id: commit.state_id(),
         };
         continue_after_finalized(finality, signing_session, commit.position(), selection)
+    }
+
+    /// Consumes a complete historical envelope and payload for a selected-sibling halt.
+    ///
+    /// The anchored finality owner derives the already selected height and exact
+    /// retained parent from bounded proof bytes, rejects the selected value, and
+    /// independently verifies the complete sibling. Only its anchored terminal
+    /// halt reaches the existing current-signer stop. Every outcome consumes the
+    /// scope; pre-append rejection grants no continuation and changes no authority
+    /// file. Strict anchored reopen alone classifies any later continuation.
+    pub fn commit_historical_finality_conflict(
+        self,
+        canonical_envelope_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        inclusive_maximum_round: ConsensusRound,
+    ) -> Result<FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeFinalityErrorV0> {
+        let Self {
+            finality,
+            signing_session,
+            ..
+        } = self;
+        let halt = finality
+            .commit_historical_finality_conflict(
+                canonical_envelope_bytes,
+                canonical_artifact_bytes,
+                inclusive_maximum_round,
+            )
+            .map_err(|source| {
+                FixedValidatorNodeFinalityErrorV0::HistoricalFinalityConflict(Box::new(source))
+            })?;
+        stop_after_finality_halt(finality, signing_session, halt)
+    }
+
+    /// Consumes a supplied historical proposal, payload, and exact precommit batch.
+    ///
+    /// The explicit evidence round is bounded by the supplied local ceiling and
+    /// persisted journal ceiling, independently of the current signer round.
+    /// This shares the envelope method's exact selected-parent verification,
+    /// anchored halt and signer-stop ordering, and consuming-error contract.
+    pub fn commit_historical_finality_conflict_vote_batch(
+        self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_signed_precommits: &[&[u8]],
+        route: FixedValidatorNodeFinalityRoundRouteV0,
+    ) -> Result<FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeFinalityErrorV0> {
+        let Self {
+            finality,
+            signing_session,
+            ..
+        } = self;
+        let halt = finality
+            .commit_historical_finality_conflict_vote_batch(
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+                canonical_signed_precommits,
+                route.evidence_round(),
+                route.inclusive_maximum_round(),
+            )
+            .map_err(|source| {
+                FixedValidatorNodeFinalityErrorV0::HistoricalFinalityConflict(Box::new(source))
+            })?;
+        stop_after_finality_halt(finality, signing_session, halt)
     }
 
     /// Consumes one exact retained candidate and stops on a finalized sibling.

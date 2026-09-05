@@ -322,6 +322,44 @@ operable head, rolls back history, mutates or prunes source data, discovers a
 candidate, trusts provenance, or performs networking, automatic promotion,
 repair, retry, or multi-height work.
 
+## Direct complete historical-sibling proofs
+
+`PROD-020-054` supplies the same selected-sibling terminal rule through
+`FixedValidatorAnchoredFinalityJournalV0::commit_historical_finality_conflict`
+and `commit_historical_finality_conflict_vote_batch`. The first accepts one
+complete canonical finality envelope and owned artifact payload. The second
+accepts canonical proposal-control bytes, an owned payload, the exact signed
+precommit batch, and an explicit evidence round. Both take an inclusive local
+round-work ceiling. Neither accepts a source store, target, height, parent, or
+winner selector.
+
+The journal must be healthy and operable, and the local ceiling must not exceed
+its persisted replay ceiling. The batch round must fit the local ceiling before
+proposal decoding. Bounded preliminary decoding checks context and obtains only
+the evidence-free value. Its positive height must already have a selected value,
+and it must differ from that value before any finality commit is possible. A
+next-height proof and a same-value proof, including a different-round certificate
+for that value, are ineligible. This preflight grants no authentication, replay,
+or conflict authority. The journal obtains only that height's exact retained
+selected parent; it does not use the later live signing branch or choose a parent.
+
+The envelope then undergoes complete bounded branch-relative verification. The
+batch derives its explicit round from the retained parent, completely verifies
+proposal, payload, producer, transition, and positioned fixed set, and seals only
+the exact all-or-nothing non-nil precommit batch. Only the resulting owned verified
+transition enters the existing `commit_verified` operation. Its sole successful
+outcome is the existing anchored `SelectedSibling` halt. Identical evidence
+produces byte-identical journal and anchor images to candidate-backed admission;
+the selected history, including later selected records, remains only as retained
+pre-halt evidence and supplies no operable head or winner.
+
+Pre-append errors leave the borrowed journal operable and its bytes unchanged.
+Append or anchor ambiguity retains the existing poison-and-strict-reopen rule.
+The node composition consumes its signing scope on every delegated outcome and
+routes only an anchored halt capability into its independently anchored signer
+stop. This path grants no new selection, rollback, source acquisition, automatic
+invocation, repair, or cross-file atomicity.
+
 ## Mandatory durable signer-height advancement
 
 After a finality footer synchronizes, the caller reads the healthy journal's
