@@ -13,6 +13,9 @@ use naome_node::{
 };
 use naome_runtime::FixedValidatorRuntimeRouteV0 as Route;
 
+#[path = "recovery.rs"]
+mod recovery;
+
 fn copy_message(message: &ConsensusPushMessage) -> ConsensusPushMessage {
     match message {
         ConsensusPushMessage::Proposal {
@@ -351,21 +354,22 @@ fn blocked_missing_finality_proposal_can_receive_the_proposal_and_select() {
 }
 
 #[test]
-fn pending_publication_observes_due_before_buffered_duplicate_voting_input() {
+fn pending_publication_preserves_due_and_buffered_input_across_explicit_drains() {
     let fixture = Fixture::new();
     let [proposal, _, _] = source_messages(&fixture);
-    let layout = TestLayout::new("publication-deadline");
-    let ready = provision(
-        fixture.definition,
-        fixture.context,
-        &fixture.entries,
-        &layout,
-    )
-    .create(fixture.keys[0].clone())
-    .unwrap();
-    let executor = Builder::new_current_thread().enable_all().build().unwrap();
-    let (network, mut peer, peer_id) = executor.block_on(connected_pair());
-    ready.run_with_signing_session(|scope| executor.block_on(async {
+    for drain in [false, true] {
+        let layout = TestLayout::new("publication-deadline");
+        let ready = provision(
+            fixture.definition,
+            fixture.context,
+            &fixture.entries,
+            &layout,
+        )
+        .create(fixture.keys[0].clone())
+        .unwrap();
+        let executor = Builder::new_current_thread().enable_all().build().unwrap();
+        let (network, mut peer, peer_id) = executor.block_on(connected_pair());
+        ready.run_with_signing_session(|scope| executor.block_on(async {
         let mut owner = Runtime::new(node_driver(scope), network, vec![peer_id], timeouts(Duration::from_millis(100))).unwrap();
         let Event::TimerArmed(timer) = owner.next_event().await else { panic!("arm missing") };
         let payload = pairing_payload();
@@ -386,11 +390,25 @@ fn pending_publication_observes_due_before_buffered_duplicate_voting_input() {
         }).await.unwrap();
         tokio::time::sleep_until(timer.deadline()).await;
         let images = layout.authority_images();
+        if drain {
+            assert_eq!(owner.drain_current_inbox_and_reset().unwrap().len(), 1);
+            assert_eq!(owner.driver().unwrap().current_finality_inbox_len(), 1);
+            assert_eq!(owner.drain_current_finality_inbox_and_reset().unwrap().len(), 1);
+            assert_eq!(owner.timer(), Some(timer));
+            assert_eq!(owner.pending_publication().unwrap().message().copy_message().unwrap(), proposal);
+            assert!(owner.pending_publication().unwrap().local_admission_attempted());
+            assert_eq!(owner.poll_transport_once().await, naome_runtime::FixedValidatorRuntimeTransportPollV0::InputSlotOccupied);
+            assert_eq!(layout.authority_images(), images);
+        }
         assert!(matches!(owner.next_event().await, Event::TimerDue { ticket, result: Ok(Disposition::TimeoutMarkedDue) } if ticket == timer.ticket()));
+        if drain {
+            assert_eq!(owner.drain_current_inbox_and_reset().unwrap().len(), 0);
+            assert!(owner.driver().unwrap().timeout_is_due());
+        }
         assert!(owner.pending_publication().unwrap().deliveries().all(|d| matches!(d.state(), Delivery::NotAttempted)));
         let Event::Admission(report) = owner.next_event().await else { panic!("buffered input missing") };
-        assert_eq!(report.input, Some(proposal));
-        assert_eq!(report.results[0].as_ref().unwrap().result.as_ref().unwrap(), &Disposition::AlreadyRetained);
+        assert_eq!(report.input.as_ref(), Some(&proposal));
+        assert_eq!(report.results[0].as_ref().unwrap().result.as_ref().unwrap(), if drain { &Disposition::Inserted } else { &Disposition::AlreadyRetained });
         assert!(matches!(report.results[1].as_ref().unwrap().result.as_ref().unwrap_err().as_ref(), Rejection::CurrentEvidenceAfterDue { .. }));
         assert!(!report.all_admitted());
         assert_eq!(owner.driver().unwrap().phase(), FixedValidatorLockPhaseV0::Proposal);
@@ -402,6 +420,7 @@ fn pending_publication_observes_due_before_buffered_duplicate_voting_input() {
         assert!(parts.driver.is_some());
         drop(ticket);
     })).unwrap();
+    }
 }
 
 #[test]
@@ -589,6 +608,12 @@ fn fatal_anchored_vote_failure_returns_no_driver_and_strict_reopen_refuses_laggi
         assert!(matches!(owner.next_event().await, Event::Fatal(error) if matches!(*error, naome_runtime::FixedValidatorRuntimeFailureV0::Step(naome_node::FixedValidatorNodeDriverStepErrorV0::Vote(_)))));
         assert!(owner.driver().is_none());
         assert!(owner.pending_publication().is_none());
+        let timer = owner.timer();
+        assert!(owner.drain_inbox_and_reset().is_none());
+        assert!(owner.drain_current_inbox_and_reset().is_none());
+        assert!(owner.drain_current_finality_inbox_and_reset().is_none());
+        assert!(owner.drain_current_nil_precommit_inbox_and_reset().is_none());
+        assert_eq!(owner.timer(), timer);
         assert!(matches!(owner.next_event().await, Event::DriverUnavailable));
         let parts = owner.into_parts();
         assert!(parts.driver.is_none());
@@ -716,7 +741,7 @@ fn token_observation(publication: &Publication) -> (Vec<u8>, Vec<u8>, usize, usi
 }
 
 #[test]
-fn higher_round_publication_preserves_some_token_across_cancel_receipt_refusal_and_failure() {
+fn higher_round_publication_preserves_some_token_across_drains_cancel_and_delivery_outcomes() {
     let fixture = Fixture::new();
     let [proposal, prevote] = higher_messages(&fixture);
     for asynchronous_failure in [false, true] {
@@ -749,6 +774,15 @@ fn higher_round_publication_preserves_some_token_across_cancel_receipt_refusal_a
             let ConsensusPushMessage::Proposal { canonical_proposal, canonical_artifact } = &proposal else { panic!("proposal") };
             assert_eq!(&original.0, canonical_proposal);
             assert_eq!(&original.1, canonical_artifact);
+            let pending_ticket = owner.driver().unwrap().active_timeout();
+            assert!(owner.driver().unwrap().has_pending_command());
+            let images = layout.authority_images();
+            let higher_len = owner.driver().unwrap().inbox_len();
+            assert_eq!(owner.drain_inbox_and_reset().unwrap().count(), higher_len);
+            assert!(owner.driver().unwrap().has_pending_command());
+            assert_eq!(owner.driver().unwrap().active_timeout(), pending_ticket);
+            assert_eq!(token_observation(owner.pending_publication().unwrap()), original);
+            assert_eq!(layout.authority_images(), images);
             assert!(matches!(owner.next_event().await, Event::TimerArmed(_)));
             check_local(owner.next_event().await);
             assert_eq!(owner.driver().unwrap().current_finality_inbox_len(), 1);
@@ -782,6 +816,19 @@ fn higher_round_publication_preserves_some_token_across_cancel_receipt_refusal_a
             assert!(cancelled);
             assert_eq!(token_observation(owner.pending_publication().unwrap()), original);
             assert!(owner.pending_publication().unwrap().deliveries().any(|d| matches!(d.state(), Delivery::InFlight(_))));
+            let timer = owner.timer();
+            let images = layout.authority_images();
+            let mut drained = owner.drain_current_finality_inbox_and_reset().unwrap();
+            assert!(matches!(drained.next(), Some(naome_node::FixedValidatorNodeCurrentRoundFinalityInboxDrainItemV0::ProposalPrecommit(bytes)) if bytes.as_slice() == original.4));
+            assert!(drained.next().is_none());
+            assert_eq!(owner.drain_current_inbox_and_reset().unwrap().len(), 0);
+            assert_eq!(owner.drain_current_nil_precommit_inbox_and_reset().unwrap().len(), 0);
+            assert_eq!(owner.timer(), timer);
+            assert_eq!(owner.driver().unwrap().current_finality_inbox_len(), 0);
+            assert_eq!(token_observation(owner.pending_publication().unwrap()), original);
+            assert!(owner.pending_publication().unwrap().local_admission_attempted());
+            assert!(owner.pending_publication().unwrap().deliveries().any(|d| matches!(d.state(), Delivery::InFlight(_))));
+            assert_eq!(layout.authority_images(), images);
             let mut sender = Some(sender);
             if asynchronous_failure { drop(sender.take()); }
             let mut received_bytes = false;
@@ -819,6 +866,7 @@ fn higher_round_publication_preserves_some_token_across_cancel_receipt_refusal_a
             if asynchronous_failure { assert!(matches!(states[1].state(), Delivery::Failed(_))); }
             else { assert!(matches!(states[1].state(), Delivery::Received(_))); }
             assert!(owner.pending_publication().is_none());
+            assert_eq!(owner.driver().unwrap().current_finality_inbox_len(), 0);
             let mut idle_again = false;
             for _ in 0..16 {
                 match timeout(Duration::from_millis(2), owner.next_event()).await {
@@ -839,28 +887,29 @@ fn higher_saturation_yields_one_rejected_deadline_and_keeps_strict_finality_esca
     let fixture = Fixture::new();
     let [higher_proposal, higher_prevote] = higher_messages(&fixture);
     let [proposal, _, precommit] = source_messages(&fixture);
-    let layout = TestLayout::new("higher-blocked-timer");
-    let ready = provision(
-        fixture.definition,
-        fixture.context,
-        &fixture.entries,
-        &layout,
-    )
-    .create(fixture.keys[1].clone())
-    .unwrap();
-    let executor = Builder::new_current_thread().enable_all().build().unwrap();
-    let (mut sender, network, _) = executor.block_on(connected_pair());
-    ready.run_with_signing_session(|scope| executor.block_on(async {
+    for drain in [false, true] {
+        let layout = TestLayout::new("higher-blocked-timer");
+        let ready = provision(
+            fixture.definition,
+            fixture.context,
+            &fixture.entries,
+            &layout,
+        )
+        .create(fixture.keys[1].clone())
+        .unwrap();
+        let executor = Builder::new_current_thread().enable_all().build().unwrap();
+        let (mut sender, network, _) = executor.block_on(connected_pair());
+        ready.run_with_signing_session(|scope| executor.block_on(async {
         let driver = Driver::new(scope,
             FixedValidatorNodeHigherRoundInboxLimitsV0::new(1, 1 << 20).unwrap(),
             FixedValidatorNodeCurrentRoundInboxLimitsV0::new(8, 1 << 20).unwrap(),
             FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0::new(8, 1 << 20).unwrap(),
             FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0::new(8, 1 << 20).unwrap(), ConsensusRound::new(4)).unwrap();
-        let ConsensusPushMessage::Proposal { canonical_proposal, canonical_artifact } = higher_proposal else { panic!("proposal") };
+        let ConsensusPushMessage::Proposal { canonical_proposal, canonical_artifact } = copy_message(&higher_proposal) else { panic!("proposal") };
         let round = naome_consensus::UnverifiedFixedConsensusProposalRouteV0::inspect(&canonical_proposal).unwrap().position().round();
         let driver = admit_driver(arm_driver(driver), Input::HigherRoundProposal { proposal_round: round,
             canonical_proposal_control_bytes: canonical_proposal.into_boxed_slice(), canonical_artifact_bytes: canonical_artifact.into_boxed_slice() });
-        let ConsensusPushMessage::Vote { canonical_vote } = higher_prevote else { panic!("prevote") };
+        let ConsensusPushMessage::Vote { canonical_vote } = copy_message(&higher_prevote) else { panic!("prevote") };
         let driver = match driver.admit_event(Input::HigherRoundProposalPrevote { canonical_signed_prevote: canonical_vote.into_boxed_slice() }).unwrap() {
             Admission::Rejected { driver, rejection, .. } => {
                 assert!(matches!(*rejection, Rejection::PrevoteInbox(ref error) if error.newly_saturated())); *driver
@@ -875,7 +924,7 @@ fn higher_saturation_yields_one_rejected_deadline_and_keeps_strict_finality_esca
             if ticket == timer.ticket() && matches!(*error, Rejection::Blocked(naome_node::FixedValidatorNodeDriverBlockReasonV0::Saturated(_)))));
         assert_eq!(owner.timer().unwrap(), timer);
         assert!(!owner.driver().unwrap().timeout_is_due());
-        let report = raw_exchange(&mut sender, &mut owner, proposal, |event| match event {
+        let report = raw_exchange(&mut sender, &mut owner, copy_message(&proposal), |event| match event {
             Event::Network(_) => {},
             _ => panic!("the rejected exact deadline must not spin or restart"),
         }).await;
@@ -884,20 +933,30 @@ fn higher_saturation_yields_one_rejected_deadline_and_keeps_strict_finality_esca
         assert_eq!(owner.driver().unwrap().current_inbox_len(), 0);
         assert_eq!(owner.driver().unwrap().inbox_len(), 1);
         let mut repeated_blockers = 0;
-        let report = raw_exchange(&mut sender, &mut owner, precommit, |event| match event {
+        let report = raw_exchange(&mut sender, &mut owner, copy_message(&precommit), |event| match event {
             Event::DriverBlocked(_) => repeated_blockers += 1,
             Event::Network(_) => {},
             _ => panic!("only strict input should re-enable one classification"),
         }).await;
         assert_eq!(repeated_blockers, 1);
         assert!(report.all_admitted());
+        if drain {
+            let images = layout.authority_images();
+            assert_eq!(owner.drain_inbox_and_reset().unwrap().len(), 1);
+            assert_eq!(owner.timer(), Some(timer));
+            assert_eq!(owner.driver().unwrap().current_finality_inbox_len(), 2);
+            assert_eq!(layout.authority_images(), images);
+        }
+        // A higher drain restores normal classification. Ready retained
+        // finality still precedes the original expired deadline.
         assert!(matches!(owner.next_event().await, Event::Finality(_)));
         let Event::TimerArmed(next) = owner.next_event().await else { panic!("child timer") };
         assert_ne!(next.ticket(), timer.ticket());
         let parts = owner.into_parts();
         assert!(parts.rejected_due_ticket.is_none());
-        assert_eq!(parts.driver.unwrap().inbox_len(), 1);
+        assert_eq!(parts.driver.unwrap().inbox_len(), usize::from(!drain));
     })).unwrap();
+    }
 }
 
 #[test]
