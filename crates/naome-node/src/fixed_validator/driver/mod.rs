@@ -211,6 +211,19 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         self.scope().signing_session.position()
     }
 
+    /// Returns the exact driver-owned context without exposing its signing scope.
+    pub fn context(&self) -> ConsensusContextV0 {
+        self.scope().branch.context()
+    }
+
+    /// Borrows the identity of the currently issued timer, if one is active.
+    ///
+    /// This diagnostic does not transfer a pending arm command, prove elapsed
+    /// time, clear an existing due fence, or authorize a transition by itself.
+    pub const fn active_timeout(&self) -> Option<FixedValidatorNodePhaseTimeoutV0> {
+        self.active_timeout
+    }
+
     /// Borrows only the sealed read-only selected artifact history.
     ///
     /// The borrow cannot expose the signing session or mutate selected finality.

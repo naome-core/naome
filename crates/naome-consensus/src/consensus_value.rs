@@ -328,6 +328,40 @@ struct VerifiedValidRoundProofV0 {
     id: QuorumCertificateId,
 }
 
+/// Bounded descriptive producer coordinates from a fixed-validator V0 proposal.
+///
+/// The existing proposal prefix/value and producer-body parsers are reused.
+/// Signatures, the value/producer relationship, prior-round proof, artifact
+/// payload, and live state are not verified. In particular the returned round
+/// comes from producer authorization, never the optional earlier-round proof.
+/// This value grants only an untrusted routing hint; strict admission must
+/// reverify the complete original proposal and payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct UnverifiedFixedConsensusProposalRouteV0 {
+    context: ConsensusContextV0,
+    position: ConsensusPosition,
+}
+
+impl UnverifiedFixedConsensusProposalRouteV0 {
+    pub fn inspect(bytes: &[u8]) -> Result<Self, ConsensusProposalVerifyError> {
+        let _ = VerifiedConsensusProposalV0::decode_value(bytes)?;
+        let (context, position) = super::producer_authorization::inspect_authorization_route(
+            &bytes[PRODUCER_AUTHORIZATION_OFFSET..VALID_ROUND_PROOF_TAG_OFFSET],
+        )
+        .map_err(ConsensusProposalVerifyError::ProducerAuthorization)?;
+        Ok(Self { context, position })
+    }
+
+    pub const fn context(self) -> ConsensusContextV0 {
+        self.context
+    }
+
+    pub const fn position(self) -> ConsensusPosition {
+        self.position
+    }
+}
+
 /// One proposal control whose value, current producer authorization, optional
 /// proof-derived valid round, and complete artifact child were verified
 /// together against branch-derived authority.

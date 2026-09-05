@@ -338,6 +338,47 @@ pub(crate) fn exact_vote_signing_transcript(
     )
 }
 
+/// Bounded descriptive vote fields, with no signature or membership authority.
+///
+/// This inspector checks the existing fixed width and vote-body encoding only.
+/// It does not verify the signature, signer, context, target, or position against
+/// any live state. A routing consumer must still submit the complete original
+/// bytes through ordinary strict admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnverifiedConsensusVoteRouteV0 {
+    body: VoteBody,
+}
+
+impl UnverifiedConsensusVoteRouteV0 {
+    pub fn inspect(bytes: &[u8]) -> Result<Self, ConsensusVoteDecodeError> {
+        if bytes.len() != SIGNED_VOTE_BYTES {
+            return Err(ConsensusVoteDecodeError::InvalidLength {
+                actual: bytes.len(),
+                expected: SIGNED_VOTE_BYTES,
+            });
+        }
+        Ok(Self {
+            body: decode_vote_body(&bytes[..VOTE_BODY_BYTES])?,
+        })
+    }
+
+    pub const fn context(self) -> ConsensusContextV0 {
+        self.body.context
+    }
+
+    pub const fn position(self) -> ConsensusPosition {
+        self.body.position
+    }
+
+    pub const fn role(self) -> ConsensusVoteRole {
+        self.body.role
+    }
+
+    pub const fn target(self) -> ConsensusVoteTarget {
+        self.body.target
+    }
+}
+
 /// One canonical signed vote whose Ed25519 signature has been verified.
 ///
 /// Verification binds the exact embedded role, context, position, signer, and
