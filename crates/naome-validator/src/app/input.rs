@@ -45,7 +45,6 @@ pub(super) enum Command {
         id: u64,
         evidence_round: u64,
         role: VoteRole,
-        #[serde(deserialize_with = "object")]
         target: VoteTarget,
         vote_files: Vec<PathBuf>,
     },
@@ -98,11 +97,49 @@ impl TryFrom<String> for VoteRole {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum VoteTarget {
     Nil {},
     Proposal { root: String },
+}
+
+impl<'de> Deserialize<'de> for VoteTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Target;
+        impl<'de> serde::de::Visitor<'de> for Target {
+            type Value = VoteTarget;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a vote target object")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> std::result::Result<VoteTarget, M::Error> {
+                let mut kind = None;
+                let mut root = None;
+                while let Some(field) = map.next_key::<String>()? {
+                    match field.as_str() {
+                        "kind" if kind.is_none() => kind = Some(map.next_value::<String>()?),
+                        "kind" => return Err(serde::de::Error::duplicate_field("kind")),
+                        "root" if root.is_none() => root = Some(map.next_value::<String>()?),
+                        "root" => return Err(serde::de::Error::duplicate_field("root")),
+                        _ => return Err(serde::de::Error::custom("unexpected vote target field")),
+                    }
+                }
+                // Decode the discriminator as a String, not a buffered enum
+                // identifier, which would also accept numeric variant indexes.
+                match (kind.as_deref(), root) {
+                    (Some("nil"), None) => Ok(VoteTarget::Nil {}),
+                    (Some("proposal"), Some(root)) => Ok(VoteTarget::Proposal { root }),
+                    _ => Err(serde::de::Error::custom("invalid vote target")),
+                }
+            }
+        }
+        deserializer.deserialize_map(Target)
+    }
 }
 
 impl Command {

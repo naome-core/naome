@@ -323,8 +323,8 @@ both higher forms with both vote roles, both lower-finality forms, exact
 checkpoint/finality restart, bounded nested input and route refusals followed
 by an explicit valid resubmission, and current-finality precedence followed by
 ordinary exact-proposal completion. A process regression rejects nil-target
-extra fields and object-form roles before source reads while preserving the
-valid scalar-role/nil-target form. Another rejects array forms at every command,
+extra fields, numeric target-kind tags, and object-form roles before source
+reads while preserving the valid scalar-role/nil-target form. Another rejects array forms at every command,
 target, and nested-proof boundary while preserving duplicate-field rejection.
 Separate throwaway anchored signers create
 the adversarial conflicting proof fixtures. A distinct pair produces terminal

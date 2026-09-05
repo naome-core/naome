@@ -9,7 +9,7 @@ fn result(node: &mut Process, command: Value) -> Value {
 }
 
 #[test]
-fn nil_target_extras_and_nonscalar_roles_fail_schema_before_any_source_read() {
+fn target_tags_extras_and_nonscalar_roles_fail_schema_before_any_source_read() {
     let fixture = Fixture::new();
     let layout = Layout::new();
     let config = fixture.config(&layout, 1, "create", None, false);
@@ -25,6 +25,16 @@ fn nil_target_extras_and_nonscalar_roles_fail_schema_before_any_source_read() {
         json!({"target":{"kind":"nil", "root":"00".repeat(32)}}),
         json!({"role":{"prevote":null}}),
         json!({"role":{"precommit":null}}),
+        json!({"target":{"kind":0}}),
+        json!({"target":{"kind":1,"root":"00".repeat(32)}}),
+        json!({"target":{"kind":true}}),
+        json!({"target":{"kind":null}}),
+        json!({"target":{"kind":"0"}}),
+        json!({"target":{"kind":"Nil"}}),
+        json!({"target":{}}),
+        json!({"target":{"kind":"proposal"}}),
+        json!({"target":{"kind":"nil","root":null}}),
+        json!({"target":{"kind":"proposal","root":null}}),
     ] {
         let mut command = template.clone();
         for (field, value) in changed.as_object().unwrap() {
@@ -38,7 +48,7 @@ fn nil_target_extras_and_nonscalar_roles_fail_schema_before_any_source_read() {
     node.send(template);
     assert_eq!(node.event("command_rejected")["code"], "file_open");
     node.shutdown();
-    assert_eq!(observed, vec![json!("command_schema"); 4]);
+    assert_eq!(observed, vec![json!("command_schema"); 14]);
 }
 
 #[test]
