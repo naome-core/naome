@@ -8,8 +8,8 @@
 [direct-delivery network](fixed-validator-consensus-transport-v0.md), and the
 bounded volatile custody described here. The caller supplies the already
 constructed driver and network, an ordered publication target list, and explicit
-phase-duration policies. The runtime spawns no task and advances only when
-polled or when the caller explicitly supplies a proposal source.
+phase-duration policies. The runtime spawns no task. The caller polls it,
+explicitly supplies a proposal source, or drains an inbox under `PROD-020-045`.
 
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,
@@ -57,6 +57,7 @@ A `DriverBlocked` or `DriverRejected` step yields once, then permits fresh stric
 input instead of repeating an unchanged step indefinitely. Every completed
 strict admission attempt, including rejection, re-enables one step because a
 rejection may latch capacity state. An accepted due event also re-enables it.
+Every successful explicit inbox drain re-enables ordinary step classification.
 Pending commands always take precedence over this suppression.
 
 The existing monotone higher-inbox block may reject `TimeoutDue`. In this case
@@ -67,6 +68,12 @@ proposal-precommit, and nil-precommit admission exceptions remain available;
 ready proposal finality can execute ahead of the block. A changed active ticket
 clears the suppression. Command-pending and timeout-mismatch rejections do not
 receive this exception or restart a deadline.
+
+An explicit higher-inbox drain also clears this rejected-ticket suppression,
+retaining the original ticket and expired deadline. Normal pending-command,
+publication, and retained-work ordering still applies before the next due
+observation; a drain does not itself accept due state or execute a transition.
+Draining another inbox does not clear higher-inbox rejected-ticket suppression.
 
 ## Descriptive routing and strict admission
 
@@ -173,7 +180,8 @@ at most eight ordered peer states, one timer/arm, one buffered `NetworkEvent`,
 and at most one interrupted admission report. A buffered unrelated event can
 carry that protocol's own bounded payload. Copies needed for strict admission
 and sending are additional bounded allocations. Caller-retained returned events
-and reports require a separate caller-owned memory bound.
+and reports, together with inbox drain iterators, require a separate caller-owned
+memory bound.
 
 Dropping a borrowed `next_event` future preserves stored driver, publication,
 ticket, and input custody; it does not cancel queued transport work. No await
@@ -189,6 +197,43 @@ The runtime adds no rollback, repair, durable outbox, recovered inbox, recovered
 pending command, inherited due event, or persistent timer lineage. Future
 unsupported dependency outcomes transfer intact, including any driver they own.
 
+## Explicit inbox recovery
+
+`PROD-020-045` exposes the driver's four existing full lossless drains without
+tearing down the runtime:
+
+| Runtime method | Returned existing driver inbox drain |
+| --- | --- |
+| `drain_inbox_and_reset` | Higher proposals and proposal prevotes |
+| `drain_current_inbox_and_reset` | Current proposals and proposal/nil prevotes |
+| `drain_current_finality_inbox_and_reset` | Current finality proposals and proposal precommits |
+| `drain_current_nil_precommit_inbox_and_reset` | Current nil precommits |
+
+The caller selects exactly one class per synchronous call. `Some(drain)`
+transfers the complete existing class-specific iterator, including stale charged
+evidence, exact canonical bytes, and any existing higher proposal token. An empty
+live inbox returns `Some(empty)`. Only that driver's existing class drain clears
+its accounting and blocking state. `None` means no driver survives and changes
+no runtime field; it cannot recover from a fatal operation.
+
+Each successful drain restores the same continuing driver and re-enables its
+ordinary step classification. Only the higher drain clears rejected-ticket
+suppression, as specified above. All other inboxes and their blocking, position,
+phase, accepted due state, active ticket, exact deadline, pending arm and driver
+command, publication bytes and released `Some` token, per-peer delivery state and
+in-flight tickets, buffered network input, failed-admission report, and durable
+authority remain unchanged. No network poll, send attempt, receipt completion,
+admission, signature, transition, or timer observation occurs during a drain.
+
+The publication's local-admission-attempt marker remains unchanged even when the
+caller drains bytes previously counted from that publication. Polling again does
+not silently reinsert them. The caller remains responsible for retained drain
+memory and any later explicit input submission, which must pass ordinary strict
+admission and its current context, phase, due, and capacity gates. No automatic
+eviction, filtering, reinsertion, evidence preference, or extra signing or
+finality authority is introduced. Recovery preserves volatile custody; it does
+not make it durable or reconstruct it after teardown.
+
 ## Verification and exclusions
 
 `crates/naome-runtime/tests/runtime.rs` drives two real Unix loopback Noise
@@ -202,6 +247,17 @@ higher-inbox blocked deadlines, injected signer-anchor failure, and original
 `Some` token custody through cancellation, refusal, receipt, and asynchronous
 failure. Consensus inspector tests distinguish descriptive routing from strict
 verification and earlier valid-round evidence.
+
+`tests/cases/recovery.rs` exercises original rejected deadlines after class
+drains, due precedence over a real buffered inbound proposal, explicit recovery
+from stale current/finality saturation followed by a second selected height,
+and exact class custody across two nil rounds with small inbox budgets. The
+second-height case has one consensus validator and a separate transport peer
+that explicitly re-supplies the rejected proposal; it is not multi-validator
+progress evidence. The adversarial publication vectors additionally drain with
+a pending successor arm and an in-flight `Some` publication, preserve buffered
+input and an accepted due fence across drains, retain finality priority after
+higher recovery, and return `None` after injected driver failure.
 
 These are bounded local tests, not deployment, multi-process/devnet,
 production-timeout calibration, latency benchmarks, general distributed

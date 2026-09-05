@@ -5,11 +5,13 @@ use naome_network::{
     MAX_STATIC_PEERS, NetworkEvent, OutboundConsensusPushEvent, PeerId, StaticArtifactNetwork,
 };
 use naome_node::{
+    FixedValidatorNodeCurrentRoundFinalityInboxDrainV0, FixedValidatorNodeCurrentRoundInboxDrainV0,
+    FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0,
     FixedValidatorNodeDriverAdmissionOutcomeV0 as AdmissionOutcome,
     FixedValidatorNodeDriverCommandV0 as Command, FixedValidatorNodeDriverEventV0 as DriverEvent,
     FixedValidatorNodeDriverProposalAuthoringOutcomeV0 as AuthoringOutcome,
     FixedValidatorNodeDriverStepOutcomeV0 as StepOutcome, FixedValidatorNodeDriverV0 as Driver,
-    FixedValidatorNodePhaseTimeoutV0,
+    FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodePhaseTimeoutV0,
 };
 use tokio::time::{Instant, sleep_until};
 
@@ -136,6 +138,70 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
     }
     pub fn failed_admission(&self) -> Option<&AdmissionReport> {
         self.failed_admission.as_ref()
+    }
+
+    /// Explicitly transfers every retained higher-round input and clears only
+    /// that inbox's blocking state. The same deadline becomes observable again
+    /// if the higher block previously rejected its due ticket; it is not reset.
+    /// All other driver and runtime custody stays owned here.
+    /// Returns `None` without mutation when no driver survives.
+    pub fn drain_inbox_and_reset(&mut self) -> Option<FixedValidatorNodeHigherRoundInboxDrainV0> {
+        let (driver, drained) = self.driver.take()?.drain_inbox_and_reset().into_parts();
+        self.driver = Some(*driver);
+        self.step_yielded = false;
+        self.rejected_due_ticket = None;
+        Some(drained)
+    }
+
+    /// Explicitly transfers every retained current proposal and prevote and
+    /// clears only current-voting blocking. Re-enables ordinary classification
+    /// without changing the due fence, deadline, other inboxes, or publication.
+    /// Returns `None` without mutation when no driver survives.
+    pub fn drain_current_inbox_and_reset(
+        &mut self,
+    ) -> Option<FixedValidatorNodeCurrentRoundInboxDrainV0> {
+        let (driver, drained) = self
+            .driver
+            .take()?
+            .drain_current_inbox_and_reset()
+            .into_parts();
+        self.driver = Some(*driver);
+        self.step_yielded = false;
+        Some(drained)
+    }
+
+    /// Explicitly transfers every retained current-finality input and clears
+    /// only its capacity state. Re-enables ordinary classification while all
+    /// other driver and runtime custody, including the deadline, stays intact.
+    /// Returns `None` without mutation when no driver survives.
+    pub fn drain_current_finality_inbox_and_reset(
+        &mut self,
+    ) -> Option<FixedValidatorNodeCurrentRoundFinalityInboxDrainV0> {
+        let (driver, drained) = self
+            .driver
+            .take()?
+            .drain_current_finality_inbox_and_reset()
+            .into_parts();
+        self.driver = Some(*driver);
+        self.step_yielded = false;
+        Some(drained)
+    }
+
+    /// Explicitly transfers every retained nil precommit and clears only that
+    /// inbox's capacity state. Re-enables ordinary classification while all
+    /// other driver and runtime custody, including the deadline, stays intact.
+    /// Returns `None` without mutation when no driver survives.
+    pub fn drain_current_nil_precommit_inbox_and_reset(
+        &mut self,
+    ) -> Option<FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0> {
+        let (driver, drained) = self
+            .driver
+            .take()?
+            .drain_current_nil_precommit_inbox_and_reset()
+            .into_parts();
+        self.driver = Some(*driver);
+        self.step_yielded = false;
+        Some(drained)
     }
 
     /// Polls transport once without admitting input, observing a timer, stepping

@@ -125,8 +125,8 @@ pub struct FixedValidatorRuntimePartsV0<'node> {
     pub publication: Option<FixedValidatorRuntimePublicationV0>,
     pub pending_network_event: Option<NetworkEvent>,
     pub failed_admission: Option<FixedValidatorRuntimeAdmissionReportV0>,
-    /// The last driver step yielded a blocker or rejection; new strict input may
-    /// change its classification without an implicit inbox drain.
+    /// The last driver step yielded a blocker or rejection; strict input,
+    /// accepted due state, or an explicit drain re-enables classification.
     pub step_yielded: bool,
     /// An expired exact ticket rejected by the monotone higher-inbox block.
     pub rejected_due_ticket: Option<FixedValidatorNodePhaseTimeoutV0>,
