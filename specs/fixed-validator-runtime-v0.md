@@ -16,6 +16,8 @@ this owner. The caller chooses every submission; none is automatically inferred
 from a raw message, inbox, publication, source store, or transport event.
 `PROD-020-047` also exposes explicit artifact acquisition and exact-source
 responses on this same network, with caller-owned lower workflow progress.
+`PROD-020-048` supplies the node's awaited signing lifetime for composing this
+runtime inside a native async callback.
 
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,
@@ -29,6 +31,32 @@ It checks timing arithmetic for all three phases through the driver's inclusive
 round ceiling before taking custody. Rejection returns the driver, network,
 targets, timing policy, and reason without stepping the driver or sending bytes.
 Empty target lists are permitted and still require ordinary local admission.
+
+## Awaited owner and teardown
+
+The caller may consume `FixedValidatorNodeReadyV0` through
+`run_with_signing_session_async`, construct the driver and runtime inside its
+async callback, and await normal runtime events and explicit artifact operations
+there. The startup owner keeps both anchored journals alive until that callback
+finishes or its outer future is actually dropped. The scope and any borrowing
+driver, runtime, parts, or future cannot escape the callback result. Independent
+owned evidence may return. The caller can poll multiple such owners concurrently
+on one executor; no internal executor, task spawn, `Send`/`'static` capture
+requirement, automatic shutdown, or new scheduling policy is added. Synchronous
+proof and persistence work still runs to completion within a poll and may block
+the executor thread, as specified by `fixed-validator-node-startup-v0.md`.
+
+Dropping a borrowed `next_event` future preserves runtime custody because its
+owner remains alive. Dropping the outer signing future tears down its pending
+callback and callback-owned runtime, including inboxes, publication, input slot,
+timers, and network. No lost volatile state is returned or reconstructed by
+strict reopen. Previously completed proposal or vote state, finality, signer
+handoffs, and caller-owned source writes retain their existing durable meaning.
+Already queued sends are not claimed to have been recalled, acknowledged, or
+delivered. Explicit `into_parts` is still required for a caller-chosen transfer
+before teardown and cannot extend borrowing signing authority beyond the
+callback. Restart builds a new runtime from a strictly reopened signing scope;
+it does not restore old runtime commands, input, deadlines, or receipt state.
 
 ## Exact local timing
 
@@ -436,6 +464,18 @@ not make it durable or reconstruct it after teardown.
 
 ## Verification and exclusions
 
+`tests/cases/async_lifecycle.rs` concurrently awaits two independent signing
+callbacks on a current-thread executor, drives three weighted-validator
+publications through real Unix loopback Noise admission and receipts, finalizes
+the same child, and strictly reopens both nodes through awaited callbacks.
+The receiver explicitly services transport after finality until the source
+observes the final receipt. A separate actual outer-future drop holds a local
+proposal publication, queued caller input, admitted proposal inboxes, and an
+armed timer; strict reopen constructs empty runtime custody and explicitly
+replays the exact anchored proposal bytes without another durable write. These
+are process-local teardown/reopen tests, not process-kill, power-loss,
+non-Unix anchor-runtime, production-deployment, or distributed-liveness evidence.
+
 `crates/naome-runtime/tests/runtime.rs` drives two real Unix loopback Noise
 networks through runtime-owned anchored proposals and votes to the same selected
 child. The equal-weight case needs both remote votes and serializes the five
@@ -487,6 +527,8 @@ responses, then separately author, deliver votes, finalize, and strictly reopen
 both nodes. Its direct and caller-ordered-fallback cases use one serving peer;
 they do not establish multi-peer fallback behavior. The weighted proposer owns
 quorum, while the other node still requires its remote publications.
+Both owners and their strict reopen now use awaited signing callbacks with the
+executor outside those callbacks.
 `artifact_interleaving.rs` holds real responses across a higher checkpoint or
 selection of a different child, checks current versus historical ancestry rules,
 and completes payload reconstruction from an older snapshot before separately

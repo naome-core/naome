@@ -151,6 +151,64 @@ operation specified by
 `fixed-validator-node-buffered-proposal-precommit-v0.md`; its exact lease,
 checkpoint, lock-effect, and vote stages likewise remain inaccessible.
 
+## Awaited signing lifetime
+
+`PROD-020-048` adds `run_with_signing_session_async` alongside the synchronous
+callback method. It consumes the same ready owner and awaits one higher-ranked
+`AsyncFnOnce` callback. The callback may retain its scope, a driver constructed
+from that scope, and a separately constructed runtime across suspension points.
+Its result is independent of the scope lifetime: neither the scope, a borrowing
+driver/runtime, nor an inner future retaining that authority may escape. Owned
+diagnostics and independently owned data may be returned. Captures may borrow
+caller data and need neither `Send` nor `'static`. This interface does not
+promise that the resulting future can be spawned onto an executor thread.
+
+Constructing the outer future moves the ready owner and callback into it but
+performs no session issuance or height handoff. Provisioning or strict open has
+already happened synchronously. On first poll, the same shared issuance path
+applies the recovery round ceiling, session latch, complete height-gap ceiling,
+and ordered anchored handoffs described above. Only success invokes the callback.
+Both journal owners remain alive while its future is pending, so exclusive
+locks and the sole session remain held. The caller chooses the executor, polls,
+and lifetime; startup spawns no task, chooses no deadline, and supplies no event
+or source-selection policy.
+
+Issuance, proof verification, signing, journal appends, anchor replacement, and
+height handoffs remain synchronous. There is no new suspension inside a
+prepare/acknowledge/sign/complete sequence or between a journal append and its
+anchor update. These operations may block an executor thread. Cancellation by
+dropping the outer future can occur between polls, not midway through one of
+these synchronous operations. A callback error is its ordinary result; startup
+does not catch callback panics, retry operations, or convert either into success.
+
+Actual outer-future drop destroys the pending callback future and its owned
+state before releasing the journal owners. A never-polled future releases its
+ready owner's locks without issuing a session. After polling, drop preserves all
+completed durable writes and cannot return callback-owned volatile commands,
+publications, inputs, timers, inboxes, or acquisition progress. It provides no
+rollback, durable reconstruction, queued-send recall, or success receipt. A
+caller needing volatile custody must explicitly transfer it while the owner is
+still alive and obey the same non-escaping authority lifetime. Forgetting a
+future is not drop and provides no lock-release guarantee. Strict anchored
+reopen remains the only classifier of the surviving durable prefix, including
+earlier completed catch-up handoffs and complete unanchored suffix rejection.
+
+## Verification
+
+Unix `tests/async_lifecycle.rs` polls actual pinned outer futures to exercise
+initial and recovered scopes with borrowed non-`Send` captures, no-write
+never-polled and pending drop, both journal locks, completed-vote cancellation
+and callback panic, no-write recovery ceiling rejection, and full height-gap
+catch-up before the callback can suspend. A deterministic catch-up anchor
+collision before first poll permits the first handoff to anchor, fails the
+second, returns no callback, and requires exact anchor-behind rejection without
+repair. The round-ceiling setup uses existing crate-private vote helpers; these
+node tests do not model an external signing
+service or interrupt synchronous persistence operations. Compile-fail
+documentation rejects both direct scope return and an inner future retaining it.
+Public runtime integration and its narrower network/restart evidence are
+specified in `fixed-validator-runtime-v0.md`.
+
 ## Failure and authority boundaries
 
 Startup may validate explicit configuration, own local handles, classify local

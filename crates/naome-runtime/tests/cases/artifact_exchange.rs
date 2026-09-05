@@ -126,8 +126,8 @@ fn two_runtimes_acquire_serve_author_finalize_and_strictly_reopen() {
         .unwrap();
         let executor = Builder::new_current_thread().enable_all().build().unwrap();
         let (client_network, server_network, peer) = executor.block_on(connected_pair());
-        client_ready.run_with_signing_session(|client_scope| {
-            server_ready.run_with_signing_session(|server_scope| executor.block_on(async {
+        executor.block_on(client_ready.run_with_signing_session_async(async |client_scope| {
+            server_ready.run_with_signing_session_async(async |server_scope| {
                 let mut client = Runtime::new(node_driver(client_scope), client_network, vec![peer], timeouts(Duration::from_secs(60))).unwrap();
                 let mut server = Runtime::new(node_driver(server_scope), server_network, vec![], timeouts(Duration::from_secs(60))).unwrap();
                 let authority = [client_layout.authority_images(), server_layout.authority_images()];
@@ -184,8 +184,8 @@ fn two_runtimes_acquire_serve_author_finalize_and_strictly_reopen() {
                 }
                 assert_eq!(client_layout.source_images(), acquired);
                 assert_eq!(server_layout.source_images(), server_sources);
-            })).unwrap();
-        }).unwrap();
+            }).await.unwrap();
+        })).unwrap();
         for (index, layout) in [&client_layout, &server_layout].into_iter().enumerate() {
             let images = layout.authority_images();
             let FixedValidatorNodeStartupV0::Ready(ready) = provision(
@@ -198,9 +198,10 @@ fn two_runtimes_acquire_serve_author_finalize_and_strictly_reopen() {
             .unwrap() else {
                 panic!("strict reopen")
             };
-            ready
-                .run_with_signing_session(|scope| {
+            executor
+                .block_on(ready.run_with_signing_session_async(async |scope| {
                     let driver = node_driver(scope);
+                    tokio::task::yield_now().await;
                     assert_eq!(
                         driver
                             .selected_artifact_history()
@@ -209,7 +210,7 @@ fn two_runtimes_acquire_serve_author_finalize_and_strictly_reopen() {
                         block.id()
                     );
                     assert_eq!(driver.position().height().value(), 2);
-                })
+                }))
                 .unwrap();
             assert_eq!(layout.authority_images(), images);
         }
