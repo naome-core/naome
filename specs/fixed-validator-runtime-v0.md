@@ -17,7 +17,9 @@ from a raw message, inbox, publication, source store, or transport event.
 `PROD-020-047` also exposes explicit artifact acquisition and exact-source
 responses on this same network, with caller-owned lower workflow progress.
 `PROD-020-048` supplies the node's awaited signing lifetime for composing this
-runtime inside a native async callback.
+runtime inside a native async callback. `PROD-020-049` supplies one separately
+specified [local Unix executable](fixed-validator-process-v0.md) with explicit
+configuration, operator input, and process shutdown around that lifetime.
 
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,
