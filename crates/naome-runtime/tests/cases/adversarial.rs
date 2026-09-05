@@ -16,6 +16,8 @@ use naome_runtime::FixedValidatorRuntimeRouteV0 as Route;
 #[path = "recovery.rs"]
 mod recovery;
 
+#[path = "async_lifecycle.rs"]
+mod async_lifecycle;
 #[path = "caller_input.rs"]
 mod caller_input;
 #[path = "explicit_proofs.rs"]

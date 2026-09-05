@@ -327,47 +327,115 @@ impl FixedValidatorNodeReadyV0 {
             signer_recovery_round_limit,
             signer_catch_up_height_limit,
         } = self;
-        let signer = vote.signer();
-        match session_plan {
-            FixedValidatorNodeSessionPlanV0::Initial(branch) => {
-                let round = branch
-                    .begin_round_zero()
-                    .map_err(FixedValidatorNodeStartupErrorV0::Consensus)?;
-                let signing_session = vote
-                    .issue_signing_session(&round)
-                    .map_err(FixedValidatorNodeStartupErrorV0::vote)?;
-                drop(round);
-                Ok(callback(FixedValidatorNodeSigningScopeV0 {
-                    finality: &mut finality,
-                    branch,
-                    signing_session: FixedValidatorNodeVotingSessionV0 {
-                        signer,
-                        signing_session,
-                    },
-                }))
-            }
-            FixedValidatorNodeSessionPlanV0::Recovered(recovered) => {
-                let recovered = vote
-                    .issue_recovered_signing_session(recovered, signer_recovery_round_limit)
-                    .map_err(FixedValidatorNodeStartupErrorV0::vote)?;
-                let (branch, mut signing_session) = recovered.into_parts();
-                let branch = catch_up_signer_to_finality(
-                    &finality,
-                    branch,
-                    &mut signing_session,
-                    signer_catch_up_height_limit,
-                )?;
-                Ok(callback(FixedValidatorNodeSigningScopeV0 {
-                    finality: &mut finality,
-                    branch,
-                    signing_session: FixedValidatorNodeVotingSessionV0 {
-                        signer,
-                        signing_session,
-                    },
-                }))
-            }
-        }
+        let scope = issue_signing_scope(
+            &mut finality,
+            &mut vote,
+            session_plan,
+            signer_recovery_round_limit,
+            signer_catch_up_height_limit,
+        )?;
+        Ok(callback(scope))
     }
+
+    /// Owns both anchored journals while awaiting one non-escaping callback.
+    ///
+    /// Constructing this future moves the ready owner but does not issue a
+    /// session. On its first poll, the same synchronous issuance and bounded
+    /// catch-up as [`Self::run_with_signing_session`] finish before the callback
+    /// runs. Journal and proof operations remain synchronous, with no internal
+    /// suspension or new persistence boundary.
+    ///
+    /// Dropping the outer future drops its callback and journals; it does not
+    /// return callback-owned volatile runtime state or undo durable writes.
+    /// Strict anchored reopen alone classifies the surviving durable prefix.
+    /// The caller chooses the executor and polling lifetime; this method spawns
+    /// no task and requires neither `Send` nor `'static` callback captures.
+    ///
+    /// The callback result cannot retain the scope:
+    ///
+    /// ```compile_fail
+    /// use naome_node::{FixedValidatorNodeReadyV0, FixedValidatorNodeSigningScopeV0};
+    ///
+    /// async fn escape(ready: FixedValidatorNodeReadyV0) -> FixedValidatorNodeSigningScopeV0<'static> {
+    ///     ready.run_with_signing_session_async(async |scope| scope).await.unwrap()
+    /// }
+    /// ```
+    ///
+    /// Nor can it return another future retaining the scope:
+    ///
+    /// ```compile_fail
+    /// use naome_node::FixedValidatorNodeReadyV0;
+    ///
+    /// async fn escape_future(ready: FixedValidatorNodeReadyV0) {
+    ///     let escaped = ready.run_with_signing_session_async(async |scope| {
+    ///         async move { drop(scope); }
+    ///     }).await.unwrap();
+    ///     escaped.await;
+    /// }
+    /// ```
+    pub async fn run_with_signing_session_async<R>(
+        self,
+        callback: impl for<'scope> AsyncFnOnce(FixedValidatorNodeSigningScopeV0<'scope>) -> R,
+    ) -> Result<R, FixedValidatorNodeStartupErrorV0> {
+        let Self {
+            mut finality,
+            mut vote,
+            session_plan,
+            signer_recovery_round_limit,
+            signer_catch_up_height_limit,
+        } = self;
+        let scope = issue_signing_scope(
+            &mut finality,
+            &mut vote,
+            session_plan,
+            signer_recovery_round_limit,
+            signer_catch_up_height_limit,
+        )?;
+        Ok(callback(scope).await)
+    }
+}
+
+fn issue_signing_scope<'node>(
+    finality: &'node mut FixedValidatorAnchoredFinalityJournalV0,
+    vote: &'node mut FixedValidatorAnchoredVoteSafetyJournalV0,
+    session_plan: FixedValidatorNodeSessionPlanV0,
+    signer_recovery_round_limit: FixedValidatorSignerRecoveryRoundLimitV0,
+    signer_catch_up_height_limit: FixedValidatorSignerCatchUpHeightLimitV0,
+) -> Result<FixedValidatorNodeSigningScopeV0<'node>, FixedValidatorNodeStartupErrorV0> {
+    let signer = vote.signer();
+    let (branch, signing_session) = match session_plan {
+        FixedValidatorNodeSessionPlanV0::Initial(branch) => {
+            let round = branch
+                .begin_round_zero()
+                .map_err(FixedValidatorNodeStartupErrorV0::Consensus)?;
+            let signing_session = vote
+                .issue_signing_session(&round)
+                .map_err(FixedValidatorNodeStartupErrorV0::vote)?;
+            drop(round);
+            (branch, signing_session)
+        }
+        FixedValidatorNodeSessionPlanV0::Recovered(recovered) => {
+            let recovered = vote
+                .issue_recovered_signing_session(recovered, signer_recovery_round_limit)
+                .map_err(FixedValidatorNodeStartupErrorV0::vote)?;
+            let (branch, mut signing_session) = recovered.into_parts();
+            let branch = catch_up_signer_to_finality(
+                finality,
+                branch,
+                &mut signing_session,
+                signer_catch_up_height_limit,
+            )?;
+            (branch, signing_session)
+        }
+    };
+    Ok(FixedValidatorNodeSigningScopeV0 {
+        finality,
+        branch,
+        signing_session: FixedValidatorNodeVotingSessionV0 {
+            signer,
+            signing_session,
+        },
+    })
 }
 
 pub(super) enum FixedValidatorNodeSessionPlanV0 {
