@@ -19,6 +19,10 @@ pub(super) enum Command {
     Shutdown {
         id: u64,
     },
+    DiscardInbox {
+        id: u64,
+        inbox: InboxClass,
+    },
     AuthorFresh {
         id: u64,
         block_file: PathBuf,
@@ -68,6 +72,29 @@ pub(super) enum Command {
         #[serde(deserialize_with = "object")]
         second: ProposalVoteFiles,
     },
+}
+
+#[derive(Clone, Copy, Deserialize, serde::Serialize)]
+#[serde(try_from = "String", rename_all = "snake_case")]
+pub(super) enum InboxClass {
+    Higher,
+    Current,
+    Finality,
+    NilPrecommit,
+}
+
+impl TryFrom<String> for InboxClass {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self> {
+        match value.as_str() {
+            "higher" => Ok(Self::Higher),
+            "current" => Ok(Self::Current),
+            "finality" => Ok(Self::Finality),
+            "nil_precommit" => Ok(Self::NilPrecommit),
+            _ => Err("inbox_class"),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -154,6 +181,7 @@ impl Command {
         match self {
             Self::Status { id }
             | Self::Shutdown { id }
+            | Self::DiscardInbox { id, .. }
             | Self::AuthorFresh { id, .. }
             | Self::AuthorRetained { id, .. }
             | Self::SubmitVote { id, .. }

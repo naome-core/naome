@@ -2,8 +2,9 @@
 
 ## Scope and authority
 
-`PROD-020-049` defines the Unix `naome-validator` executable, and
-`PROD-020-050` adds explicit complete-proof commands. It owns one
+`PROD-020-049` defines the Unix `naome-validator` executable,
+`PROD-020-050` adds explicit complete-proof commands, and `PROD-020-051`
+adds explicit class-selected inbox disposal. It owns one
 explicitly configured local fixed-validator signer through
 `FixedValidatorNodeReadyV0::run_with_signing_session_async`, constructs the
 existing driver and runtime within that lifetime, and accepts explicit operator
@@ -16,7 +17,7 @@ anchoring, finality selection, and strict restart remain defined by
 The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. It grants no automatic proposal
 source or evidence selection, certificate acquisition, artifact serving,
-fallback routing, inbox drain, delivery retry, repair, durable outbox, dynamic
+fallback routing, automatic inbox clearing, delivery retry, repair, durable outbox, dynamic
 validator, key rotation, production timeout calibration, hardware custody, or
 distributed-liveness authority. In accordance with `PROD-023`, no remote
 consensus-signer service or configuration is supported. This implements only
@@ -138,6 +139,7 @@ they are never supplied as unbounded inline JSON arrays.
 | --- | --- | --- |
 | `status` | None | Read driver position/head, inbox counts, timer and publication diagnostics |
 | `shutdown` | None | End ordinary processing and dispose of current volatile custody |
+| `discard_inbox` | `inbox` | Drain and discard exactly one explicitly selected inbox class |
 | `author_fresh` | `block_file`, `payload_file` | Decode the exact canonical block and submit `Fresh` with the exact payload |
 | `author_retained` | `payload_file` | Submit `RetainedValid`; the signer derives eligibility and retained value |
 | `submit_vote` | `vote_file` | Queue an exact raw vote for later runtime routing and strict admission |
@@ -172,6 +174,52 @@ or UTF-8 rejects only that framed command. Oversized input or EOF within an
 unterminated frame ends the process with failure and never reparses a suffix as
 a fresh command. Clean EOF requests shutdown. Bytes buffered in stdin or in the
 reader without a response are explicitly unacknowledged and discarded.
+
+## Explicit inbox disposal
+
+`discard_inbox` requires `inbox` to be exactly one JSON string: `higher`,
+`current`, `finality`, or `nil_precommit`. Numeric tags, enum-shaped objects,
+arrays, case variants, missing or duplicate fields, unknown fields, and an
+implicit all-class selection are rejected by the command schema. For example:
+
+```json
+{"command":"discard_inbox","id":5,"inbox":"finality"}
+```
+
+The command invokes exactly the corresponding existing runtime drain-and-reset
+operation, counts its complete class-specific iterator, and drops that iterator
+before reporting `inbox_discarded`, the selected `inbox`, `discarded_items`, and
+post-disposal `state` using the ordinary status shape. Empty classes return
+zero. An unavailable driver returns `driver_unavailable` without a drain;
+normal fatal process handling already stops the process before another command.
+
+This is explicit disposal of the selected volatile evidence, including any
+proposal payloads owned by that inbox. It creates no export, retry copy, durable
+recovery record, source-file write, or automatic resubmission. The report's
+count is diagnostic. A command may have taken effect before its output is lost;
+output failure uses the existing teardown path without rollback. Request IDs
+remain correlation labels: repeating an ID performs another disposal and may
+discard evidence admitted since the earlier command.
+
+The runtime clears only the selected class's accounting and blocking state and
+re-enables ordinary classification. It preserves other inboxes, selected head,
+live height/round/phase, accepted due state, active timer and deadline, pending
+arm and command, buffered input, publication bytes and released proposal token,
+local-admission-attempt marker, and per-peer delivery custody. No signature,
+transition, file read, transmission, timer restart, or runtime poll occurs
+inside the disposal command. Normal runtime scheduling resumes afterward and
+may perform already-authorized work. Only higher-class disposal reopens a
+higher-block-rejected due ticket, preserving its original expired deadline;
+clearing another class leaves that suppression in place.
+
+Capacity freed by disposal does not re-admit a previously rejected input or a
+publication whose local admission was already attempted. The operator must
+explicitly resubmit owned source bytes through an existing command. Completing
+an in-flight publication likewise does not reinsert disposed local evidence.
+Strict restart restores only underlying anchored signer/finality state; it
+reconstructs no discarded inbox, publication, or timer. This command adds no
+evidence preference, conflict resolution, consensus validity, signing,
+selection, or finality authority.
 
 ## Explicit complete proofs
 
@@ -335,3 +383,22 @@ flight: all positive commands remain busy, malformed pair rejection preserves
 custody, and a valid pair durably halts while reporting that surviving custody
 for disposal. These are bounded local Unix process observations, not general
 multi-node liveness, production timing, or deployment evidence.
+
+`crates/naome-validator/tests/cases/inbox_disposal.rs` exercises strict scalar
+class parsing with full-width IDs, all four class counts and empty repeats,
+class isolation with unchanged authority images, and retained nil evidence
+after actual round progress. A `4:1` process fixture fills current/finality
+budgets across height advancement, rejects the next proposal's two admission
+routes, clears each class explicitly, and finalizes the exact next child only
+after explicit identical-source replay; strict reopen reaches height 3. Higher
+saturation rejects a due timeout; clearing other classes preserves the block,
+and clearing higher yields admitted due work and progress before any replacement
+arm. This process observation checks event order and timer presence; exact
+ticket/deadline identity is covered by the existing runtime recovery tests.
+A real connected peer paused with SIGSTOP holds a publication and released
+proposal token in flight while individual class disposal preserves all other
+reported state and authority images. Resuming the peer produces a correlated
+receipt and completion without local reinsertion; strict reopen retains the
+anchored higher checkpoint with empty inboxes. These are bounded local Unix
+process and loopback observations, without deployment or production-liveness
+evidence.

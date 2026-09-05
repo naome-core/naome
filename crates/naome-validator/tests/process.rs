@@ -2,6 +2,8 @@
 
 #[path = "cases/explicit_proofs.rs"]
 mod explicit_proofs;
+#[path = "cases/inbox_disposal.rs"]
+mod inbox_disposal;
 mod support;
 
 use serde_json::json;

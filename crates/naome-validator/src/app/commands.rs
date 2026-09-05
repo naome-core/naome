@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use super::{
     Result, config, files,
-    input::{Command, ProposalVoteFiles, VoteRole, VoteTarget},
+    input::{Command, InboxClass, ProposalVoteFiles, VoteRole, VoteTarget},
     report,
 };
 
@@ -28,6 +28,24 @@ pub(super) fn execute(
     runtime: &mut Runtime<'_>,
 ) -> Result<(Value, bool)> {
     let input = match command {
+        Command::DiscardInbox { inbox, .. } => {
+            let discarded_items = match inbox {
+                InboxClass::Higher => runtime.drain_inbox_and_reset().map(discard),
+                InboxClass::Current => runtime.drain_current_inbox_and_reset().map(discard),
+                InboxClass::Finality => runtime
+                    .drain_current_finality_inbox_and_reset()
+                    .map(discard),
+                InboxClass::NilPrecommit => runtime
+                    .drain_current_nil_precommit_inbox_and_reset()
+                    .map(discard),
+            }
+            .ok_or("driver_unavailable")?;
+            return Ok((
+                json!({"event": "inbox_discarded", "inbox": inbox,
+                    "discarded_items": discarded_items, "state": report::status(runtime)}),
+                false,
+            ));
+        }
         Command::AuthorFresh {
             block_file,
             payload_file,
@@ -179,6 +197,12 @@ pub(super) fn execute(
         .queue_input(input)
         .map_err(|_| "input_queue_refused")?;
     Ok((json!({"event": "input_queued"}), false))
+}
+
+fn discard(inbox: impl ExactSizeIterator) -> usize {
+    let count = inbox.len();
+    drop(inbox);
+    count
 }
 
 fn check_vote_count(paths: &[PathBuf]) -> Result<()> {
