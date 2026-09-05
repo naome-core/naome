@@ -1,0 +1,29 @@
+[package]
+name = "naome-validator"
+version.workspace = true
+edition.workspace = true
+description = "Explicit local fixed-validator V0 process for NAOME."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+ed25519-dalek.workspace = true
+naome-chain = { path = "../naome-chain" }
+naome-consensus = { path = "../naome-consensus" }
+naome-network = { path = "../naome-network" }
+naome-node = { path = "../naome-node" }
+naome-runtime = { path = "../naome-runtime" }
+naome-storage = { path = "../naome-storage" }
+rustix = { version = "1.1", features = ["fs", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "signal", "sync", "time"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
+zeroize = "1"
+
+[target.'cfg(unix)'.dev-dependencies]
+naome-proof = { path = "../naome-proof" }
+
+[lints]
+workspace = true

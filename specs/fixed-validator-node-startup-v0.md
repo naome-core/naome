@@ -15,7 +15,9 @@ containing, recovering, clearing, or implicitly consulting that buffer. One
 separately specified consuming signing-scope operation may accept that exact
 caller-owned buffer explicitly and pair one exact entry with either one exact
 prebuilt certificate or one complete exact signed-prevote batch; this does not
-make the buffer part of startup state.
+make the buffer part of startup state. The separately specified
+[local Unix process](fixed-validator-process-v0.md) owns this startup boundary
+under `PROD-020-049`; it does not broaden the library's authority.
 
 The caller supplies the exact artifact-chain definition, consensus context,
 preselected fixed agreement entries, one in-memory Ed25519 signing key, four
