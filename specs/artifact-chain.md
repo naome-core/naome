@@ -147,9 +147,9 @@ Proof and definition resolution uses exactly one snapshot's ancestry. An
 artifact admitted only to one sibling cannot satisfy a dependency or function
 obligation in another sibling derived from the same predecessor. The selected
 state can advance after a snapshot is created without changing that snapshot.
-Authenticated-set roots and proof bytes remain the canonical values defined
-above; structural sharing is an in-memory representation and contributes no new
-identity bytes.
+Authenticated-set roots and proof bytes remain the canonical values defined in
+[Artifact Set](artifact-set.md) and [Proof Protocol](proof-protocol.md); structural
+sharing is an in-memory representation and contributes no new identity bytes.
 
 A Foundation-scoped payload archive may use
 `validate_and_insert_branch_payload` to validate and retain one exact child

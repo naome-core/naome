@@ -20,15 +20,6 @@ observations. No network exchange selects a block, supplies citation authority,
 creates a checkpoint, or establishes consensus, finality, proposer, validator,
 or economic authority.
 
-## Transport-neutral messages
-
-`naome-protocol` owns the four transport-neutral message contracts:
-`artifact_exchange`, `block_exchange`, `chain_head_exchange`, and
-`chain_head_announcement`. The workspace root reexports their existing module
-paths for compatibility. `naome-network` depends directly on `naome-protocol`;
-it owns authenticated sessions, framing, request custody, and resource limits.
-The message crate owns no runtime, socket, selected state, or economic authority.
-
 ## Static authenticated sessions
 
 A configured peer binds one expected `PeerId` and dial `Multiaddr`. Local and
@@ -57,6 +48,13 @@ Protocol-local request identifiers are namespaced and cannot alias across these
 behaviours.
 
 ## Transport-neutral messages
+
+`naome-protocol` owns the four transport-neutral message contracts:
+`artifact_exchange`, `block_exchange`, `chain_head_exchange`, and
+`chain_head_announcement`. The workspace root reexports their existing module
+paths for compatibility. `naome-network` depends directly on `naome-protocol`;
+it owns authenticated sessions, framing, request custody, and resource limits.
+The message crate owns no runtime, socket, selected state, or economic authority.
 
 The enclosing transport supplies one complete message boundary.
 

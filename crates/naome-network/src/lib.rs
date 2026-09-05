@@ -64,7 +64,7 @@
 //! announcements and every other event unchanged; it starts no background
 //! task.
 //! This crate starts no NAOME-owned background task and owns no
-//! [`ArtifactChainJournal`].
+//! [`naome_storage::ArtifactChainJournal`].
 
 mod acquisition;
 mod peer_records;
