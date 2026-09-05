@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::AppendPhase;
+
 use std::collections::{HashMap, TryReserveError};
 use std::error::Error;
 use std::fmt;
@@ -9,7 +12,7 @@ use naome_chain::{
     ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactChainId,
 };
 
-use crate::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
+use crate::{ExclusiveLockError, StoreIo, open_exclusive_lock};
 
 const LOCK_FILE_NAME: &str = "artifact-block-candidate-store.lock";
 const STORE_FILE_NAME: &str = "artifact-block-candidate-store.log";
@@ -590,12 +593,11 @@ impl<F: StoreIo> ArtifactBlockCandidateStoreCore<F> {
         }
 
         let commit_result = (|| -> io::Result<()> {
-            self.file
-                .append_write_all(AppendPhase::Body, &block_bytes)?;
-            self.file.append_sync_all(AppendPhase::Body)?;
-            self.file
-                .append_write_all(AppendPhase::Commit, block_id.as_bytes())?;
-            self.file.append_sync_all(AppendPhase::Commit)?;
+            crate::store_io::append_body_and_commit(
+                &mut self.file,
+                &[&block_bytes],
+                block_id.as_bytes(),
+            )?;
             Ok(())
         })();
 
