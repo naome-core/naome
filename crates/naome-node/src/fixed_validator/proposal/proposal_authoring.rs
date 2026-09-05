@@ -16,7 +16,7 @@ use naome_storage::{
     FixedValidatorVoteSafetyJournalErrorV0,
 };
 
-use super::{
+use crate::fixed_validator::{
     FixedValidatorNodeCurrentRoundErrorV0, FixedValidatorNodeSigningScopeV0,
     FixedValidatorNodeVotingSessionV0, fixed_validator_node_current_round,
 };
@@ -226,7 +226,7 @@ enum CurrentRoundErrorV0 {
     Fatal(FixedValidatorNodeProposalAuthoringErrorV0),
 }
 
-pub(super) enum NodeProposalInputV0<'input> {
+pub(in crate::fixed_validator) enum NodeProposalInputV0<'input> {
     Direct(FixedValidatorProposalSourceV0),
     CandidateFresh {
         candidates: &'input mut ArtifactBlockCandidateStore,
@@ -444,7 +444,7 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     }
 
     /// Captures the exact resolved payload before signer effects for one driver command.
-    pub(super) fn author_proposal_for_driver(
+    pub(in crate::fixed_validator) fn author_proposal_for_driver(
         self,
         input: NodeProposalInputV0<'_>,
         inclusive_maximum_round: ConsensusRound,

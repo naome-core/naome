@@ -1,3 +1,5 @@
+use crate::fixed_validator::round_context::derive_round;
+
 use std::borrow::Cow;
 use std::collections::TryReserveError;
 use std::error::Error;
@@ -15,9 +17,11 @@ use naome_storage::{
     FixedValidatorVoteSafetyJournalErrorV0,
 };
 
-use super::higher_round_inbox::FixedValidatorNodeRetainedProposalPrevoteV0;
-use super::voting::{FinishedVoteV0, FixedValidatorNodeVoteExecutionErrorV0, finish_vote};
-use super::{
+use crate::fixed_validator::higher_round_inbox::FixedValidatorNodeRetainedProposalPrevoteV0;
+use crate::fixed_validator::voting::{
+    FinishedVoteV0, FixedValidatorNodeVoteExecutionErrorV0, finish_vote,
+};
+use crate::fixed_validator::{
     FixedValidatorNodeCurrentRoundErrorV0, FixedValidatorNodeDeferredProposalV0,
     FixedValidatorNodeHigherRoundInboxAccessErrorV0, FixedValidatorNodeHigherRoundInboxV0,
     FixedValidatorNodeProposalBufferAccessErrorV0, FixedValidatorNodeProposalBufferV0,
@@ -561,7 +565,7 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     }
 }
 
-pub(super) enum ActionableInboxSelectionV0 {
+pub(in crate::fixed_validator) enum ActionableInboxSelectionV0 {
     None,
     One {
         proposal_signing_root: ProposalSigningRoot,
@@ -573,13 +577,13 @@ pub(super) enum ActionableInboxSelectionV0 {
     },
 }
 
-pub(super) struct ActionableInboxSnapshotV0<'inbox> {
+pub(in crate::fixed_validator) struct ActionableInboxSnapshotV0<'inbox> {
     votes: Vec<&'inbox FixedValidatorNodeRetainedProposalPrevoteV0>,
     proposal_identities: Vec<(ConsensusPosition, ProposalSigningRoot)>,
 }
 
 impl<'inbox> ActionableInboxSnapshotV0<'inbox> {
-    pub(super) fn try_new(
+    pub(in crate::fixed_validator) fn try_new(
         inbox: &'inbox FixedValidatorNodeHigherRoundInboxV0,
         parent_coordinate: FixedConsensusBranchCoordinateV0,
     ) -> Result<Self, FixedValidatorNodeBufferedProposalPrecommitRejectionV0> {
@@ -624,7 +628,7 @@ impl<'inbox> ActionableInboxSnapshotV0<'inbox> {
         })
     }
 
-    pub(super) fn select_position(
+    pub(in crate::fixed_validator) fn select_position(
         &self,
         target_round: &FixedConsensusRoundV0<'_>,
         position: ConsensusPosition,
@@ -644,7 +648,7 @@ impl<'inbox> ActionableInboxSnapshotV0<'inbox> {
     }
 }
 
-pub(super) fn select_actionable_inbox_root(
+pub(in crate::fixed_validator) fn select_actionable_inbox_root(
     inbox: &FixedValidatorNodeHigherRoundInboxV0,
     target_round: &FixedConsensusRoundV0<'_>,
     parent_coordinate: FixedConsensusBranchCoordinateV0,
@@ -1003,18 +1007,6 @@ fn try_copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, TryReserveError> {
     copied.try_reserve_exact(bytes.len())?;
     copied.extend_from_slice(bytes);
     Ok(copied)
-}
-
-fn derive_round(
-    branch: &FixedConsensusBranchV0,
-    required_round: ConsensusRound,
-) -> Result<FixedConsensusRoundV0<'_>, ProposerSelectionError> {
-    let mut round = branch.begin_round_zero()?;
-    for _ in 0..required_round.value() {
-        round = round.advance_round()?;
-    }
-    debug_assert_eq!(round.position().round(), required_round);
-    Ok(round)
 }
 
 fn current_round<'branch>(

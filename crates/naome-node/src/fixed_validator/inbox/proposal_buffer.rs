@@ -6,7 +6,7 @@ use std::mem;
 
 use naome_consensus::{ConsensusPosition, FixedConsensusBranchCoordinateV0, ProposalSigningRoot};
 
-use super::FixedValidatorNodeDeferredProposalV0;
+use crate::fixed_validator::FixedValidatorNodeDeferredProposalV0;
 
 /// Positive caller-local limits for one volatile deferred-proposal buffer.
 ///
@@ -308,14 +308,14 @@ struct FixedValidatorNodeBufferedProposalV0 {
     proposal: Box<FixedValidatorNodeDeferredProposalV0>,
 }
 
-pub(super) struct FixedValidatorNodeProposalBufferLeaseV0<'buffer> {
+pub(in crate::fixed_validator) struct FixedValidatorNodeProposalBufferLeaseV0<'buffer> {
     buffer: &'buffer mut FixedValidatorNodeProposalBufferV0,
     entry: Option<FixedValidatorNodeBufferedProposalV0>,
     original_index: usize,
 }
 
 impl FixedValidatorNodeProposalBufferLeaseV0<'_> {
-    pub(super) fn proposal(&self) -> &FixedValidatorNodeDeferredProposalV0 {
+    pub(in crate::fixed_validator) fn proposal(&self) -> &FixedValidatorNodeDeferredProposalV0 {
         self.entry
             .as_ref()
             .expect("proposal-buffer lease retains its entry until release")
@@ -323,7 +323,9 @@ impl FixedValidatorNodeProposalBufferLeaseV0<'_> {
             .as_ref()
     }
 
-    pub(super) fn release(mut self) -> Box<FixedValidatorNodeDeferredProposalV0> {
+    pub(in crate::fixed_validator) fn release(
+        mut self,
+    ) -> Box<FixedValidatorNodeDeferredProposalV0> {
         self.entry
             .take()
             .expect("proposal-buffer lease releases its entry at most once")
@@ -512,7 +514,7 @@ impl FixedValidatorNodeProposalBufferV0 {
         Ok(FixedValidatorNodeProposalBufferInsertOutcomeV0::Inserted)
     }
 
-    pub(super) fn contains_exact_proposal(
+    pub(in crate::fixed_validator) fn contains_exact_proposal(
         &self,
         proposal: &FixedValidatorNodeDeferredProposalV0,
     ) -> bool {
@@ -521,11 +523,13 @@ impl FixedValidatorNodeProposalBufferV0 {
             .any(|entry| exact_inputs_match(&entry.proposal, proposal))
     }
 
-    pub(super) fn retained_positions(&self) -> impl Iterator<Item = ConsensusPosition> + '_ {
+    pub(in crate::fixed_validator) fn retained_positions(
+        &self,
+    ) -> impl Iterator<Item = ConsensusPosition> + '_ {
         self.proposals.iter().map(|entry| entry.proposal.position())
     }
 
-    pub(super) fn retained_identities(
+    pub(in crate::fixed_validator) fn retained_identities(
         &self,
     ) -> impl Iterator<
         Item = (
@@ -543,7 +547,7 @@ impl FixedValidatorNodeProposalBufferV0 {
         })
     }
 
-    pub(super) fn preferred_proposal_inputs(
+    pub(in crate::fixed_validator) fn preferred_proposal_inputs(
         &self,
         parent_coordinate: FixedConsensusBranchCoordinateV0,
         position: ConsensusPosition,
@@ -595,7 +599,7 @@ impl FixedValidatorNodeProposalBufferV0 {
             .map(FixedValidatorNodeProposalBufferLeaseV0::release))
     }
 
-    pub(super) fn take_exact_lease(
+    pub(in crate::fixed_validator) fn take_exact_lease(
         &mut self,
         canonical_proposal_control_bytes: &[u8],
         canonical_artifact_bytes: &[u8],
@@ -701,29 +705,33 @@ fn checked_prospective_totals(
     inserted_canonical_input_bytes: u64,
     limits: FixedValidatorNodeProposalBufferLimitsV0,
 ) -> Result<(usize, u64), FixedValidatorNodeProposalBufferSaturationV0> {
-    let attempted_entries = current_entries.checked_add(1).ok_or(
-        FixedValidatorNodeProposalBufferSaturationV0::EntryCountOverflow {
-            maximum_entries: limits.max_entries,
-        },
-    )?;
-    let attempted_canonical_input_bytes = current_canonical_input_bytes
-        .checked_add(inserted_canonical_input_bytes)
-        .ok_or(
+    super::budget::checked_totals(
+        current_entries,
+        current_canonical_input_bytes,
+        inserted_canonical_input_bytes,
+        limits.max_entries,
+        limits.max_total_canonical_input_bytes,
+    )
+    .map_err(|error| match error {
+        super::budget::BudgetExceeded::EntriesOverflow => {
+            FixedValidatorNodeProposalBufferSaturationV0::EntryCountOverflow {
+                maximum_entries: limits.max_entries,
+            }
+        }
+        super::budget::BudgetExceeded::BytesOverflow => {
             FixedValidatorNodeProposalBufferSaturationV0::CanonicalInputByteCountOverflow {
                 maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-            },
-        )?;
-    if attempted_entries > limits.max_entries
-        || attempted_canonical_input_bytes > limits.max_total_canonical_input_bytes
-    {
-        return Err(FixedValidatorNodeProposalBufferSaturationV0::Capacity {
-            attempted_entries,
-            maximum_entries: limits.max_entries,
-            attempted_canonical_input_bytes,
-            maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-        });
-    }
-    Ok((attempted_entries, attempted_canonical_input_bytes))
+            }
+        }
+        super::budget::BudgetExceeded::Capacity { entries, bytes } => {
+            FixedValidatorNodeProposalBufferSaturationV0::Capacity {
+                attempted_entries: entries,
+                maximum_entries: limits.max_entries,
+                attempted_canonical_input_bytes: bytes,
+                maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
+            }
+        }
+    })
 }
 
 #[cfg(test)]

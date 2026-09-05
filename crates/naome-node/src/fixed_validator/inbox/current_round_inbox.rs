@@ -11,7 +11,7 @@ use naome_consensus::{
     QuorumCertificateBuildError, VerifiedConsensusVoteV0,
 };
 
-use super::FixedValidatorNodeDeferredProposalV0;
+use crate::fixed_validator::FixedValidatorNodeDeferredProposalV0;
 
 /// Positive caller-local limits for current proposal and proposal-or-nil prevote custody.
 ///
@@ -126,12 +126,12 @@ impl fmt::Display for FixedValidatorNodeCurrentRoundInboxSaturationV0 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CurrentRoundInboxInsertOutcomeV0 {
+pub(in crate::fixed_validator) enum CurrentRoundInboxInsertOutcomeV0 {
     Inserted,
     AlreadyRetained,
 }
 
-pub(super) enum CurrentRoundProposalInsertErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundProposalInsertErrorV0 {
     Saturated {
         position: ConsensusPosition,
         saturation: FixedValidatorNodeCurrentRoundInboxSaturationV0,
@@ -140,7 +140,7 @@ pub(super) enum CurrentRoundProposalInsertErrorV0 {
     Reservation(TryReserveError),
 }
 
-pub(super) enum CurrentRoundPrevoteInsertErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundPrevoteInsertErrorV0 {
     Saturated {
         position: ConsensusPosition,
         saturation: FixedValidatorNodeCurrentRoundInboxSaturationV0,
@@ -150,7 +150,7 @@ pub(super) enum CurrentRoundPrevoteInsertErrorV0 {
     Reservation(TryReserveError),
 }
 
-pub(super) enum CurrentRoundNilPrevoteInsertErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundNilPrevoteInsertErrorV0 {
     Saturated {
         position: ConsensusPosition,
         saturation: FixedValidatorNodeCurrentRoundInboxSaturationV0,
@@ -160,7 +160,7 @@ pub(super) enum CurrentRoundNilPrevoteInsertErrorV0 {
     Reservation(TryReserveError),
 }
 
-pub(super) enum CurrentRoundProposalSelectionV0<'inbox> {
+pub(in crate::fixed_validator) enum CurrentRoundProposalSelectionV0<'inbox> {
     None,
     One {
         proposal_signing_root: ProposalSigningRoot,
@@ -173,7 +173,7 @@ pub(super) enum CurrentRoundProposalSelectionV0<'inbox> {
     },
 }
 
-pub(super) enum CurrentRoundQuorumSelectionV0 {
+pub(in crate::fixed_validator) enum CurrentRoundQuorumSelectionV0 {
     None,
     One { canonical_certificate: Vec<u8> },
 }
@@ -260,7 +260,7 @@ impl ExactSizeIterator for FixedValidatorNodeCurrentRoundInboxDrainV0 {
 
 impl FusedIterator for FixedValidatorNodeCurrentRoundInboxDrainV0 {}
 
-pub(super) struct CurrentRoundInboxV0 {
+pub(in crate::fixed_validator) struct CurrentRoundInboxV0 {
     limits: FixedValidatorNodeCurrentRoundInboxLimitsV0,
     proposals: Vec<RetainedCurrentProposalV0>,
     prevotes: Vec<RetainedCurrentPrevoteV0>,
@@ -272,7 +272,9 @@ pub(super) struct CurrentRoundInboxV0 {
 }
 
 impl CurrentRoundInboxV0 {
-    pub(super) const fn new(limits: FixedValidatorNodeCurrentRoundInboxLimitsV0) -> Self {
+    pub(in crate::fixed_validator) const fn new(
+        limits: FixedValidatorNodeCurrentRoundInboxLimitsV0,
+    ) -> Self {
         Self {
             limits,
             proposals: Vec::new(),
@@ -282,18 +284,18 @@ impl CurrentRoundInboxV0 {
         }
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(in crate::fixed_validator) fn len(&self) -> usize {
         self.proposals
             .len()
             .checked_add(self.prevotes.len())
             .expect("retained current-round inbox length stayed representable at insertion")
     }
 
-    pub(super) const fn total_canonical_input_bytes(&self) -> u64 {
+    pub(in crate::fixed_validator) const fn total_canonical_input_bytes(&self) -> u64 {
         self.total_canonical_input_bytes
     }
 
-    pub(super) const fn saturation(
+    pub(in crate::fixed_validator) const fn saturation(
         &self,
     ) -> Option<(
         ConsensusPosition,
@@ -302,7 +304,7 @@ impl CurrentRoundInboxV0 {
         self.saturation
     }
 
-    pub(super) fn try_insert_proposal(
+    pub(in crate::fixed_validator) fn try_insert_proposal(
         &mut self,
         proposal: Box<FixedValidatorNodeDeferredProposalV0>,
     ) -> Result<CurrentRoundInboxInsertOutcomeV0, CurrentRoundProposalInsertErrorV0> {
@@ -358,7 +360,7 @@ impl CurrentRoundInboxV0 {
         Ok(CurrentRoundInboxInsertOutcomeV0::Inserted)
     }
 
-    pub(super) fn try_insert_prevote(
+    pub(in crate::fixed_validator) fn try_insert_prevote(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
         canonical_signed_prevote: &[u8],
@@ -420,7 +422,7 @@ impl CurrentRoundInboxV0 {
         Ok(CurrentRoundInboxInsertOutcomeV0::Inserted)
     }
 
-    pub(super) fn try_insert_nil_prevote(
+    pub(in crate::fixed_validator) fn try_insert_nil_prevote(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
         canonical_signed_prevote: &[u8],
@@ -476,7 +478,7 @@ impl CurrentRoundInboxV0 {
         Ok(CurrentRoundInboxInsertOutcomeV0::Inserted)
     }
 
-    pub(super) fn select_unique_proposal(
+    pub(in crate::fixed_validator) fn select_unique_proposal(
         &self,
         parent_coordinate: FixedConsensusBranchCoordinateV0,
         position: ConsensusPosition,
@@ -510,7 +512,7 @@ impl CurrentRoundInboxV0 {
         }
     }
 
-    pub(super) fn select_proposal_quorum(
+    pub(in crate::fixed_validator) fn select_proposal_quorum(
         &self,
         round: &FixedConsensusRoundV0<'_>,
         proposal_signing_root: ProposalSigningRoot,
@@ -518,7 +520,7 @@ impl CurrentRoundInboxV0 {
         self.select_quorum(round, ConsensusVoteTarget::Proposal(proposal_signing_root))
     }
 
-    pub(super) fn select_nil_quorum(
+    pub(in crate::fixed_validator) fn select_nil_quorum(
         &self,
         round: &FixedConsensusRoundV0<'_>,
     ) -> Result<CurrentRoundQuorumSelectionV0, CurrentRoundQuorumSelectionErrorV0> {
@@ -574,7 +576,9 @@ impl CurrentRoundInboxV0 {
         }
     }
 
-    pub(super) fn drain_and_reset(&mut self) -> FixedValidatorNodeCurrentRoundInboxDrainV0 {
+    pub(in crate::fixed_validator) fn drain_and_reset(
+        &mut self,
+    ) -> FixedValidatorNodeCurrentRoundInboxDrainV0 {
         self.total_canonical_input_bytes = 0;
         self.saturation = None;
         FixedValidatorNodeCurrentRoundInboxDrainV0 {
@@ -584,7 +588,7 @@ impl CurrentRoundInboxV0 {
     }
 }
 
-pub(super) enum CurrentRoundQuorumSelectionErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundQuorumSelectionErrorV0 {
     Reservation(TryReserveError),
     Invariant(QuorumCertificateBuildError),
 }
@@ -615,29 +619,33 @@ fn checked_prospective_totals(
     inserted_canonical_input_bytes: u64,
     limits: FixedValidatorNodeCurrentRoundInboxLimitsV0,
 ) -> Result<(usize, u64), FixedValidatorNodeCurrentRoundInboxSaturationV0> {
-    let attempted_entries = current_entries.checked_add(1).ok_or(
-        FixedValidatorNodeCurrentRoundInboxSaturationV0::EntryCountOverflow {
-            maximum_entries: limits.max_entries,
-        },
-    )?;
-    let attempted_canonical_input_bytes = current_canonical_input_bytes
-        .checked_add(inserted_canonical_input_bytes)
-        .ok_or(
+    super::budget::checked_totals(
+        current_entries,
+        current_canonical_input_bytes,
+        inserted_canonical_input_bytes,
+        limits.max_entries,
+        limits.max_total_canonical_input_bytes,
+    )
+    .map_err(|error| match error {
+        super::budget::BudgetExceeded::EntriesOverflow => {
+            FixedValidatorNodeCurrentRoundInboxSaturationV0::EntryCountOverflow {
+                maximum_entries: limits.max_entries,
+            }
+        }
+        super::budget::BudgetExceeded::BytesOverflow => {
             FixedValidatorNodeCurrentRoundInboxSaturationV0::CanonicalInputByteCountOverflow {
                 maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-            },
-        )?;
-    if attempted_entries > limits.max_entries
-        || attempted_canonical_input_bytes > limits.max_total_canonical_input_bytes
-    {
-        return Err(FixedValidatorNodeCurrentRoundInboxSaturationV0::Capacity {
-            attempted_entries,
-            maximum_entries: limits.max_entries,
-            attempted_canonical_input_bytes,
-            maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-        });
-    }
-    Ok((attempted_entries, attempted_canonical_input_bytes))
+            }
+        }
+        super::budget::BudgetExceeded::Capacity { entries, bytes } => {
+            FixedValidatorNodeCurrentRoundInboxSaturationV0::Capacity {
+                attempted_entries: entries,
+                maximum_entries: limits.max_entries,
+                attempted_canonical_input_bytes: bytes,
+                maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
+            }
+        }
+    })
 }
 
 #[cfg(test)]

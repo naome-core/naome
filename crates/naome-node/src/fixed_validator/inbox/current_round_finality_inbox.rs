@@ -11,7 +11,7 @@ use naome_consensus::{
     VerifiedConsensusVoteV0,
 };
 
-use super::FixedValidatorNodeDeferredProposalV0;
+use crate::fixed_validator::FixedValidatorNodeDeferredProposalV0;
 
 /// Positive process-local limits for current proposal-finality evidence.
 ///
@@ -125,12 +125,12 @@ impl fmt::Display for FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CurrentRoundFinalityInboxInsertOutcomeV0 {
+pub(in crate::fixed_validator) enum CurrentRoundFinalityInboxInsertOutcomeV0 {
     Inserted,
     AlreadyRetained,
 }
 
-pub(super) enum CurrentRoundFinalityProposalInsertErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundFinalityProposalInsertErrorV0 {
     Saturated {
         position: ConsensusPosition,
         saturation: FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
@@ -139,7 +139,7 @@ pub(super) enum CurrentRoundFinalityProposalInsertErrorV0 {
     Reservation(TryReserveError),
 }
 
-pub(super) enum CurrentRoundFinalityPrecommitInsertErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundFinalityPrecommitInsertErrorV0 {
     Saturated {
         position: ConsensusPosition,
         saturation: FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
@@ -149,7 +149,7 @@ pub(super) enum CurrentRoundFinalityPrecommitInsertErrorV0 {
     Reservation(TryReserveError),
 }
 
-pub(super) enum CurrentRoundFinalityClassificationV0<'inbox> {
+pub(in crate::fixed_validator) enum CurrentRoundFinalityClassificationV0<'inbox> {
     Saturated {
         position: ConsensusPosition,
         saturation: FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
@@ -175,15 +175,15 @@ pub(super) enum CurrentRoundFinalityClassificationV0<'inbox> {
     },
 }
 
-pub(super) struct CurrentRoundFinalityReadyV0<'inbox> {
-    pub(super) proposal_signing_root: ProposalSigningRoot,
-    pub(super) canonical_proposal_control_bytes: &'inbox [u8],
-    pub(super) canonical_artifact_bytes: &'inbox [u8],
-    pub(super) canonical_precommit_certificate: Vec<u8>,
+pub(in crate::fixed_validator) struct CurrentRoundFinalityReadyV0<'inbox> {
+    pub(in crate::fixed_validator) proposal_signing_root: ProposalSigningRoot,
+    pub(in crate::fixed_validator) canonical_proposal_control_bytes: &'inbox [u8],
+    pub(in crate::fixed_validator) canonical_artifact_bytes: &'inbox [u8],
+    pub(in crate::fixed_validator) canonical_precommit_certificate: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CurrentRoundFinalityPreclassificationV0 {
+pub(in crate::fixed_validator) enum CurrentRoundFinalityPreclassificationV0 {
     Saturated {
         position: ConsensusPosition,
         saturation: FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0,
@@ -192,7 +192,7 @@ pub(super) enum CurrentRoundFinalityPreclassificationV0 {
     NeedsRound,
 }
 
-pub(super) enum CurrentRoundFinalityClassificationErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundFinalityClassificationErrorV0 {
     Reservation(TryReserveError),
     Invariant(QuorumCertificateBuildError),
 }
@@ -270,7 +270,7 @@ impl ExactSizeIterator for FixedValidatorNodeCurrentRoundFinalityInboxDrainV0 {
 
 impl FusedIterator for FixedValidatorNodeCurrentRoundFinalityInboxDrainV0 {}
 
-pub(super) struct CurrentRoundFinalityInboxV0 {
+pub(in crate::fixed_validator) struct CurrentRoundFinalityInboxV0 {
     limits: FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
     proposals: Vec<RetainedCurrentFinalityProposalV0>,
     precommits: Vec<RetainedCurrentProposalPrecommitV0>,
@@ -282,7 +282,9 @@ pub(super) struct CurrentRoundFinalityInboxV0 {
 }
 
 impl CurrentRoundFinalityInboxV0 {
-    pub(super) const fn new(limits: FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0) -> Self {
+    pub(in crate::fixed_validator) const fn new(
+        limits: FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
+    ) -> Self {
         Self {
             limits,
             proposals: Vec::new(),
@@ -292,18 +294,18 @@ impl CurrentRoundFinalityInboxV0 {
         }
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(in crate::fixed_validator) fn len(&self) -> usize {
         self.proposals
             .len()
             .checked_add(self.precommits.len())
             .expect("retained current finality inbox length stayed representable at insertion")
     }
 
-    pub(super) const fn total_canonical_input_bytes(&self) -> u64 {
+    pub(in crate::fixed_validator) const fn total_canonical_input_bytes(&self) -> u64 {
         self.total_canonical_input_bytes
     }
 
-    pub(super) const fn saturation(
+    pub(in crate::fixed_validator) const fn saturation(
         &self,
     ) -> Option<(
         ConsensusPosition,
@@ -312,7 +314,7 @@ impl CurrentRoundFinalityInboxV0 {
         self.saturation
     }
 
-    pub(super) fn preclassify(
+    pub(in crate::fixed_validator) fn preclassify(
         &self,
         parent_coordinate: FixedConsensusBranchCoordinateV0,
         position: ConsensusPosition,
@@ -335,7 +337,7 @@ impl CurrentRoundFinalityInboxV0 {
         }
     }
 
-    pub(super) fn try_insert_proposal(
+    pub(in crate::fixed_validator) fn try_insert_proposal(
         &mut self,
         proposal: Box<FixedValidatorNodeDeferredProposalV0>,
     ) -> Result<CurrentRoundFinalityInboxInsertOutcomeV0, CurrentRoundFinalityProposalInsertErrorV0>
@@ -392,7 +394,7 @@ impl CurrentRoundFinalityInboxV0 {
         Ok(CurrentRoundFinalityInboxInsertOutcomeV0::Inserted)
     }
 
-    pub(super) fn try_insert_precommit(
+    pub(in crate::fixed_validator) fn try_insert_precommit(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
         canonical_signed_precommit: &[u8],
@@ -455,7 +457,7 @@ impl CurrentRoundFinalityInboxV0 {
         Ok(CurrentRoundFinalityInboxInsertOutcomeV0::Inserted)
     }
 
-    pub(super) fn classify(
+    pub(in crate::fixed_validator) fn classify(
         &self,
         round: &FixedConsensusRoundV0<'_>,
     ) -> Result<CurrentRoundFinalityClassificationV0<'_>, CurrentRoundFinalityClassificationErrorV0>
@@ -629,7 +631,9 @@ impl CurrentRoundFinalityInboxV0 {
         false
     }
 
-    pub(super) fn drain_and_reset(&mut self) -> FixedValidatorNodeCurrentRoundFinalityInboxDrainV0 {
+    pub(in crate::fixed_validator) fn drain_and_reset(
+        &mut self,
+    ) -> FixedValidatorNodeCurrentRoundFinalityInboxDrainV0 {
         self.total_canonical_input_bytes = 0;
         self.saturation = None;
         FixedValidatorNodeCurrentRoundFinalityInboxDrainV0 {
@@ -665,31 +669,22 @@ fn checked_prospective_totals(
     inserted_canonical_input_bytes: u64,
     limits: FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0,
 ) -> Result<(usize, u64), FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0> {
-    let attempted_entries = current_entries.checked_add(1).ok_or(
-        FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0::EntryCountOverflow {
+    super::budget::checked_totals(
+        current_entries,
+        current_canonical_input_bytes,
+        inserted_canonical_input_bytes,
+        limits.max_entries,
+        limits.max_total_canonical_input_bytes,
+    ).map_err(|error| match error {
+        super::budget::BudgetExceeded::EntriesOverflow => FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0::EntryCountOverflow { maximum_entries: limits.max_entries },
+        super::budget::BudgetExceeded::BytesOverflow => FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0::CanonicalInputByteCountOverflow { maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes },
+        super::budget::BudgetExceeded::Capacity { entries, bytes } => FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0::Capacity {
+            attempted_entries: entries,
             maximum_entries: limits.max_entries,
+            attempted_canonical_input_bytes: bytes,
+            maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
         },
-    )?;
-    let attempted_canonical_input_bytes = current_canonical_input_bytes
-        .checked_add(inserted_canonical_input_bytes)
-        .ok_or(
-            FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0::CanonicalInputByteCountOverflow {
-                maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-            },
-        )?;
-    if attempted_entries > limits.max_entries
-        || attempted_canonical_input_bytes > limits.max_total_canonical_input_bytes
-    {
-        return Err(
-            FixedValidatorNodeCurrentRoundFinalityInboxSaturationV0::Capacity {
-                attempted_entries,
-                maximum_entries: limits.max_entries,
-                attempted_canonical_input_bytes,
-                maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-            },
-        );
-    }
-    Ok((attempted_entries, attempted_canonical_input_bytes))
+    })
 }
 
 #[cfg(test)]

@@ -324,6 +324,61 @@ fn proposal_and_matching_prevote_quorum_release_only_anchored_votes() {
 }
 
 #[test]
+fn direct_certificate_proposal_validation_precedes_phase_rejection() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("node-voting-direct-certificate-precedence");
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let before = layout.images();
+    ready
+        .run_with_signing_session(|scope| {
+            let (scope, rejection) = expect_rejected(
+                scope
+                    .sign_precommit_for_proposal_quorum(&[0], vec![0], &[0], ConsensusRound::new(0))
+                    .unwrap(),
+            );
+            assert!(matches!(
+                rejection,
+                FixedValidatorNodeVoteRejectionV0::Proposal(_)
+            ));
+            assert_eq!(layout.images(), before);
+
+            let payload = proof_payload(ZfcAxiom::Pairing);
+            let branch = scope.branch().clone();
+            let round = branch.begin_round_zero().unwrap();
+            let block = ArtifactChainState::new(fixture.definition)
+                .prepare_block(artifact_id(&payload))
+                .unwrap();
+            let control = proposal_control_bytes(
+                round.value_for_artifact_block(block),
+                round.position(),
+                &fixture.signing_key(),
+            );
+            let (_, rejection) = expect_rejected(
+                scope
+                    .sign_precommit_for_proposal_quorum(
+                        &control,
+                        payload,
+                        &[0],
+                        ConsensusRound::new(0),
+                    )
+                    .unwrap(),
+            );
+            assert!(
+                matches!(rejection, FixedValidatorNodeVoteRejectionV0::Decision(source)
+                if matches!(source.as_ref(), FixedValidatorLockStateError::UnexpectedPhase {
+                    expected: FixedValidatorLockPhaseV0::Prevote,
+                    actual: FixedValidatorLockPhaseV0::Proposal,
+                }))
+            );
+            assert_eq!(layout.images(), before);
+        })
+        .unwrap();
+}
+
+#[test]
 fn proposal_vote_batch_wrong_phase_precedes_proposal_and_vote_reads() {
     let fixture = Fixture::new();
     let layout = TestLayout::new("node-voting-proposal-batch-wrong-phase");

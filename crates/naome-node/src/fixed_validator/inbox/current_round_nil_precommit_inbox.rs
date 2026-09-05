@@ -125,12 +125,12 @@ impl fmt::Display for FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CurrentRoundNilPrecommitInboxInsertOutcomeV0 {
+pub(in crate::fixed_validator) enum CurrentRoundNilPrecommitInboxInsertOutcomeV0 {
     Inserted,
     AlreadyRetained,
 }
 
-pub(super) enum CurrentRoundNilPrecommitInsertErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundNilPrecommitInsertErrorV0 {
     Saturated {
         position: ConsensusPosition,
         saturation: FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0,
@@ -140,7 +140,7 @@ pub(super) enum CurrentRoundNilPrecommitInsertErrorV0 {
     Reservation(TryReserveError),
 }
 
-pub(super) enum CurrentRoundNilPrecommitQuorumSelectionV0 {
+pub(in crate::fixed_validator) enum CurrentRoundNilPrecommitQuorumSelectionV0 {
     None,
     One {
         canonical_signed_precommits: Vec<[u8; VerifiedConsensusVoteV0::BYTE_LENGTH]>,
@@ -148,12 +148,12 @@ pub(super) enum CurrentRoundNilPrecommitQuorumSelectionV0 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CurrentRoundNilPrecommitPreclassificationV0 {
+pub(in crate::fixed_validator) enum CurrentRoundNilPrecommitPreclassificationV0 {
     NoMatchingPrecommit,
     NeedsRound,
 }
 
-pub(super) enum CurrentRoundNilPrecommitQuorumSelectionErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundNilPrecommitQuorumSelectionErrorV0 {
     Reservation(TryReserveError),
     Invariant(QuorumCertificateBuildError),
 }
@@ -191,7 +191,7 @@ impl ExactSizeIterator for FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV
 
 impl FusedIterator for FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0 {}
 
-pub(super) struct CurrentRoundNilPrecommitInboxV0 {
+pub(in crate::fixed_validator) struct CurrentRoundNilPrecommitInboxV0 {
     limits: FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
     precommits: Vec<RetainedCurrentNilPrecommitV0>,
     total_canonical_input_bytes: u64,
@@ -202,7 +202,7 @@ pub(super) struct CurrentRoundNilPrecommitInboxV0 {
 }
 
 impl CurrentRoundNilPrecommitInboxV0 {
-    pub(super) const fn new(
+    pub(in crate::fixed_validator) const fn new(
         limits: FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
     ) -> Self {
         Self {
@@ -213,15 +213,15 @@ impl CurrentRoundNilPrecommitInboxV0 {
         }
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(in crate::fixed_validator) fn len(&self) -> usize {
         self.precommits.len()
     }
 
-    pub(super) const fn total_canonical_input_bytes(&self) -> u64 {
+    pub(in crate::fixed_validator) const fn total_canonical_input_bytes(&self) -> u64 {
         self.total_canonical_input_bytes
     }
 
-    pub(super) const fn saturation(
+    pub(in crate::fixed_validator) const fn saturation(
         &self,
     ) -> Option<(
         ConsensusPosition,
@@ -231,7 +231,7 @@ impl CurrentRoundNilPrecommitInboxV0 {
     }
 
     /// Reports whether exact-position input exists before bounded round derivation.
-    pub(super) fn preclassify(
+    pub(in crate::fixed_validator) fn preclassify(
         &self,
         parent_coordinate: FixedConsensusBranchCoordinateV0,
         position: ConsensusPosition,
@@ -250,7 +250,7 @@ impl CurrentRoundNilPrecommitInboxV0 {
     /// The borrowed input remains caller-owned on every path. Exact canonical
     /// replay is no-growth; byte-distinct strict-valid signature variants remain
     /// distinct retained evidence.
-    pub(super) fn try_insert_nil_precommit(
+    pub(in crate::fixed_validator) fn try_insert_nil_precommit(
         &mut self,
         round: &FixedConsensusRoundV0<'_>,
         canonical_signed_precommit: &[u8],
@@ -314,7 +314,7 @@ impl CurrentRoundNilPrecommitInboxV0 {
     /// quorum already retained before the first denied insertion remains
     /// actionable. The existing exact certificate builder rechecks every
     /// selected vote and the unchanged active-set denominator.
-    pub(super) fn select_nil_quorum(
+    pub(in crate::fixed_validator) fn select_nil_quorum(
         &self,
         round: &FixedConsensusRoundV0<'_>,
     ) -> Result<
@@ -380,7 +380,7 @@ impl CurrentRoundNilPrecommitInboxV0 {
         }
     }
 
-    pub(super) fn drain_and_reset(
+    pub(in crate::fixed_validator) fn drain_and_reset(
         &mut self,
     ) -> FixedValidatorNodeCurrentRoundNilPrecommitInboxDrainV0 {
         self.total_canonical_input_bytes = 0;
@@ -397,31 +397,22 @@ fn checked_prospective_totals(
     inserted_canonical_input_bytes: u64,
     limits: FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
 ) -> Result<(usize, u64), FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0> {
-    let attempted_entries = current_entries.checked_add(1).ok_or(
-        FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0::EntryCountOverflow {
+    super::budget::checked_totals(
+        current_entries,
+        current_canonical_input_bytes,
+        inserted_canonical_input_bytes,
+        limits.max_entries,
+        limits.max_total_canonical_input_bytes,
+    ).map_err(|error| match error {
+        super::budget::BudgetExceeded::EntriesOverflow => FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0::EntryCountOverflow { maximum_entries: limits.max_entries },
+        super::budget::BudgetExceeded::BytesOverflow => FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0::CanonicalInputByteCountOverflow { maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes },
+        super::budget::BudgetExceeded::Capacity { entries, bytes } => FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0::Capacity {
+            attempted_entries: entries,
             maximum_entries: limits.max_entries,
+            attempted_canonical_input_bytes: bytes,
+            maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
         },
-    )?;
-    let attempted_canonical_input_bytes = current_canonical_input_bytes
-        .checked_add(inserted_canonical_input_bytes)
-        .ok_or(
-            FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0::CanonicalInputByteCountOverflow {
-                maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-            },
-        )?;
-    if attempted_entries > limits.max_entries
-        || attempted_canonical_input_bytes > limits.max_total_canonical_input_bytes
-    {
-        return Err(
-            FixedValidatorNodeCurrentRoundNilPrecommitInboxSaturationV0::Capacity {
-                attempted_entries,
-                maximum_entries: limits.max_entries,
-                attempted_canonical_input_bytes,
-                maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-            },
-        );
-    }
-    Ok((attempted_entries, attempted_canonical_input_bytes))
+    })
 }
 
 #[cfg(test)]

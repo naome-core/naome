@@ -1,3 +1,5 @@
+use crate::fixed_validator::round_context::derive_round;
+
 use std::error::Error;
 use std::fmt;
 
@@ -1051,7 +1053,7 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
                 )),
             ));
         }
-        let round = derive_finality_round(&self.branch, evidence_round)
+        let round = derive_round(&self.branch, evidence_round)
             .map_err(FixedValidatorNodeLowerRoundFinalityErrorV0::Round)?;
         let first = match verify_lower_round_finality_vote_batch_inputs(
             &round,
@@ -1165,7 +1167,7 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
                 },
             ));
         }
-        let round = derive_finality_round(&self.branch, evidence_round)
+        let round = derive_round(&self.branch, evidence_round)
             .map_err(FixedValidatorNodeLowerRoundFinalityErrorV0::Round)?;
         let transition = match verify_lower_round_finality_vote_batch_inputs(
             &round,
@@ -1315,7 +1317,7 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
                 },
             ));
         }
-        let round = derive_finality_round(&self.branch, evidence_round)
+        let round = derive_round(&self.branch, evidence_round)
             .map_err(FixedValidatorNodeCandidateBackedFinalityErrorV0::Round)?;
         let canonical_artifact_bytes = match load_candidate_backed_proposal_payload(
             &round,
@@ -1737,18 +1739,6 @@ fn verify_current_round_preselection_conflict_input(
                 }
             }),
     }
-}
-
-fn derive_finality_round(
-    branch: &FixedConsensusBranchV0,
-    required_round: ConsensusRound,
-) -> Result<FixedConsensusRoundV0<'_>, ProposerSelectionError> {
-    let mut round = branch.begin_round_zero()?;
-    for _ in 0..required_round.value() {
-        round = round.advance_round()?;
-    }
-    debug_assert_eq!(round.position().round(), required_round);
-    Ok(round)
 }
 
 fn candidate_backed_finality_source_rejection(

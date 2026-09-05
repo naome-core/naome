@@ -9,7 +9,7 @@ use naome_consensus::{
 };
 use naome_storage::FixedValidatorVoteSafetyJournalErrorV0;
 
-use super::{
+use crate::fixed_validator::{
     FixedValidatorNodeCurrentRoundErrorV0, FixedValidatorNodeSigningScopeV0,
     FixedValidatorNodeVotingSessionV0, fixed_validator_node_current_round,
 };
@@ -131,7 +131,7 @@ impl FixedValidatorNodeDeferredProposalV0 {
         )
     }
 
-    pub(super) fn into_unverified_boxed_inputs(self) -> (Box<[u8]>, Box<[u8]>) {
+    pub(in crate::fixed_validator) fn into_unverified_boxed_inputs(self) -> (Box<[u8]>, Box<[u8]>) {
         (
             self.canonical_proposal_control_bytes,
             self.canonical_artifact_bytes,
@@ -282,7 +282,7 @@ impl Error for FixedValidatorNodeProposalDeferralErrorV0 {
     }
 }
 
-pub(super) enum CurrentRoundErrorV0 {
+pub(in crate::fixed_validator) enum CurrentRoundErrorV0 {
     Rejected(FixedValidatorNodeProposalDeferralRejectionV0),
     Fatal(FixedValidatorNodeProposalDeferralErrorV0),
 }
@@ -351,7 +351,7 @@ fn defer_higher_round_proposal<'node>(
     })
 }
 
-pub(super) fn preflight_deferred_proposal_control_framing(
+pub(in crate::fixed_validator) fn preflight_deferred_proposal_control_framing(
     bytes: &[u8],
 ) -> Result<(), ConsensusProposalVerifyError> {
     if bytes.len() > VerifiedFixedConsensusProposalV0::MAX_BYTE_LENGTH {
@@ -385,7 +385,7 @@ pub(super) fn preflight_deferred_proposal_control_framing(
     }
 }
 
-pub(super) fn verify_deferred_proposal_at_round(
+pub(in crate::fixed_validator) fn verify_deferred_proposal_at_round(
     proposal_round: &FixedConsensusRoundV0<'_>,
     canonical_proposal_control_bytes: &[u8],
     canonical_artifact_bytes: Vec<u8>,
@@ -408,7 +408,7 @@ pub(super) fn verify_deferred_proposal_at_round(
     }))
 }
 
-pub(super) fn preflight_higher_round_proposal_route<'scope, 'node>(
+pub(in crate::fixed_validator) fn preflight_higher_round_proposal_route<'scope, 'node>(
     scope: &'scope FixedValidatorNodeSigningScopeV0<'node>,
     route: FixedValidatorNodeHigherRoundProposalRouteV0,
 ) -> Result<FixedConsensusRoundV0<'scope>, CurrentRoundErrorV0> {

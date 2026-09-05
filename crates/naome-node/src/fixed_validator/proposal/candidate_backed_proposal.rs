@@ -10,7 +10,7 @@ use naome_storage::{
 
 /// One pre-effect failure while loading an exact caller-selected proposal payload.
 #[derive(Debug)]
-pub(super) enum CandidateBackedProposalSourceErrorV0 {
+pub(in crate::fixed_validator) enum CandidateBackedProposalSourceErrorV0 {
     Proposal(Box<ConsensusProposalVerifyError>),
     CandidateChainMismatch {
         expected: ArtifactChainId,
@@ -39,7 +39,7 @@ pub(super) enum CandidateBackedProposalSourceErrorV0 {
 /// The stores are caller-routed availability sources only. This helper neither
 /// discovers nor selects a target, and it mutates no retained entry. Existing
 /// store integrity failures may still poison only their owning live handle.
-pub(super) fn load_candidate_backed_proposal_payload(
+pub(in crate::fixed_validator) fn load_candidate_backed_proposal_payload(
     round: &FixedConsensusRoundV0<'_>,
     candidates: &mut ArtifactBlockCandidateStore,
     payloads: &mut CanonicalArtifactPayloadStore,

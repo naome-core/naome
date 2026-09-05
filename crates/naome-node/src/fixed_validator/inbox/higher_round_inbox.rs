@@ -9,7 +9,7 @@ use naome_consensus::{
     VerifiedConsensusVoteV0,
 };
 
-use super::{
+use crate::fixed_validator::{
     FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeProposalBufferDrainV0,
     FixedValidatorNodeProposalBufferInsertErrorV0, FixedValidatorNodeProposalBufferInsertOutcomeV0,
     FixedValidatorNodeProposalBufferLimitsV0, FixedValidatorNodeProposalBufferV0,
@@ -372,7 +372,7 @@ impl Error for FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0 {
     }
 }
 
-pub(super) struct FixedValidatorNodeRetainedProposalPrevoteV0 {
+pub(in crate::fixed_validator) struct FixedValidatorNodeRetainedProposalPrevoteV0 {
     parent_coordinate: FixedConsensusBranchCoordinateV0,
     position: ConsensusPosition,
     proposal_signing_root: ProposalSigningRoot,
@@ -381,23 +381,25 @@ pub(super) struct FixedValidatorNodeRetainedProposalPrevoteV0 {
 }
 
 impl FixedValidatorNodeRetainedProposalPrevoteV0 {
-    pub(super) const fn parent_coordinate(&self) -> FixedConsensusBranchCoordinateV0 {
+    pub(in crate::fixed_validator) const fn parent_coordinate(
+        &self,
+    ) -> FixedConsensusBranchCoordinateV0 {
         self.parent_coordinate
     }
 
-    pub(super) const fn position(&self) -> ConsensusPosition {
+    pub(in crate::fixed_validator) const fn position(&self) -> ConsensusPosition {
         self.position
     }
 
-    pub(super) const fn proposal_signing_root(&self) -> ProposalSigningRoot {
+    pub(in crate::fixed_validator) const fn proposal_signing_root(&self) -> ProposalSigningRoot {
         self.proposal_signing_root
     }
 
-    pub(super) const fn signer(&self) -> ConsensusKey {
+    pub(in crate::fixed_validator) const fn signer(&self) -> ConsensusKey {
         self.signer
     }
 
-    pub(super) fn canonical_bytes(&self) -> &[u8] {
+    pub(in crate::fixed_validator) fn canonical_bytes(&self) -> &[u8] {
         &self.canonical_bytes
     }
 }
@@ -474,8 +476,8 @@ impl FusedIterator for FixedValidatorNodeHigherRoundInboxDrainV0 {}
 #[must_use]
 pub struct FixedValidatorNodeHigherRoundInboxV0 {
     limits: FixedValidatorNodeHigherRoundInboxLimitsV0,
-    pub(super) proposals: FixedValidatorNodeProposalBufferV0,
-    pub(super) prevotes: Vec<FixedValidatorNodeRetainedProposalPrevoteV0>,
+    pub(in crate::fixed_validator) proposals: FixedValidatorNodeProposalBufferV0,
+    pub(in crate::fixed_validator) prevotes: Vec<FixedValidatorNodeRetainedProposalPrevoteV0>,
     total_canonical_input_bytes: u64,
     saturation: Option<FixedValidatorNodeHigherRoundInboxSaturationV0>,
 }
@@ -686,7 +688,7 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
         }
     }
 
-    pub(super) fn ensure_access(
+    pub(in crate::fixed_validator) fn ensure_access(
         &self,
     ) -> Result<(), FixedValidatorNodeHigherRoundInboxAccessErrorV0> {
         match self.saturation {
@@ -695,13 +697,18 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
         }
     }
 
-    pub(super) fn retained_positions(&self) -> impl Iterator<Item = ConsensusPosition> + '_ {
+    pub(in crate::fixed_validator) fn retained_positions(
+        &self,
+    ) -> impl Iterator<Item = ConsensusPosition> + '_ {
         self.proposals
             .retained_positions()
             .chain(self.prevotes.iter().map(|vote| vote.position()))
     }
 
-    pub(super) fn note_selected_proposal_removed(&mut self, canonical_input_bytes: u64) {
+    pub(in crate::fixed_validator) fn note_selected_proposal_removed(
+        &mut self,
+        canonical_input_bytes: u64,
+    ) {
         self.total_canonical_input_bytes = self
             .total_canonical_input_bytes
             .checked_sub(canonical_input_bytes)
@@ -752,29 +759,33 @@ fn checked_prospective_totals(
     inserted_canonical_input_bytes: u64,
     limits: FixedValidatorNodeHigherRoundInboxLimitsV0,
 ) -> Result<(usize, u64), FixedValidatorNodeHigherRoundInboxSaturationV0> {
-    let attempted_entries = current_entries.checked_add(1).ok_or(
-        FixedValidatorNodeHigherRoundInboxSaturationV0::EntryCountOverflow {
-            maximum_entries: limits.max_entries,
-        },
-    )?;
-    let attempted_canonical_input_bytes = current_canonical_input_bytes
-        .checked_add(inserted_canonical_input_bytes)
-        .ok_or(
+    super::budget::checked_totals(
+        current_entries,
+        current_canonical_input_bytes,
+        inserted_canonical_input_bytes,
+        limits.max_entries,
+        limits.max_total_canonical_input_bytes,
+    )
+    .map_err(|error| match error {
+        super::budget::BudgetExceeded::EntriesOverflow => {
+            FixedValidatorNodeHigherRoundInboxSaturationV0::EntryCountOverflow {
+                maximum_entries: limits.max_entries,
+            }
+        }
+        super::budget::BudgetExceeded::BytesOverflow => {
             FixedValidatorNodeHigherRoundInboxSaturationV0::CanonicalInputByteCountOverflow {
                 maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-            },
-        )?;
-    if attempted_entries > limits.max_entries
-        || attempted_canonical_input_bytes > limits.max_total_canonical_input_bytes
-    {
-        return Err(FixedValidatorNodeHigherRoundInboxSaturationV0::Capacity {
-            attempted_entries,
-            maximum_entries: limits.max_entries,
-            attempted_canonical_input_bytes,
-            maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
-        });
-    }
-    Ok((attempted_entries, attempted_canonical_input_bytes))
+            }
+        }
+        super::budget::BudgetExceeded::Capacity { entries, bytes } => {
+            FixedValidatorNodeHigherRoundInboxSaturationV0::Capacity {
+                attempted_entries: entries,
+                maximum_entries: limits.max_entries,
+                attempted_canonical_input_bytes: bytes,
+                maximum_canonical_input_bytes: limits.max_total_canonical_input_bytes,
+            }
+        }
+    })
 }
 
 #[cfg(test)]

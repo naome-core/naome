@@ -1,3 +1,5 @@
+use crate::fixed_validator::round_context::derive_round;
+
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
@@ -715,18 +717,6 @@ fn advance_to_higher_round_input<'node>(
     drop(advanced);
     drop(current_round);
     Ok(advanced_outcome(scope, position, phase))
-}
-
-fn derive_round(
-    branch: &FixedConsensusBranchV0,
-    required_round: ConsensusRound,
-) -> Result<FixedConsensusRoundV0<'_>, ProposerSelectionError> {
-    let mut round = branch.begin_round_zero()?;
-    for _ in 0..required_round.value() {
-        round = round.advance_round()?;
-    }
-    debug_assert_eq!(round.position().round(), required_round);
-    Ok(round)
 }
 
 fn current_round<'branch>(

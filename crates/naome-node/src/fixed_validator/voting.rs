@@ -481,10 +481,10 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
         FixedValidatorNodeVoteExecutionErrorV0,
     > {
-        sign_precommit_for_direct_proposal(
+        sign_precommit_for_proposal(
             self,
             canonical_proposal_control_bytes,
-            canonical_artifact_bytes,
+            ProposalPrecommitSourceV0::Direct(canonical_artifact_bytes),
             PrevoteQuorumInputV0::CanonicalCertificate(canonical_prevote_certificate),
             inclusive_maximum_round,
         )
@@ -507,10 +507,10 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
         FixedValidatorNodeVoteExecutionErrorV0,
     > {
-        sign_precommit_for_direct_proposal(
+        sign_precommit_for_proposal(
             self,
             canonical_proposal_control_bytes,
-            canonical_artifact_bytes,
+            ProposalPrecommitSourceV0::Direct(canonical_artifact_bytes),
             PrevoteQuorumInputV0::ExactSignedVotes(canonical_signed_prevotes),
             inclusive_maximum_round,
         )
@@ -530,12 +530,14 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
         FixedValidatorNodeVoteExecutionErrorV0,
     > {
-        sign_candidate_backed_precommit_for_proposal(
+        sign_precommit_for_proposal(
             self,
-            candidates,
-            payloads,
-            expected_target,
             canonical_proposal_control_bytes,
+            ProposalPrecommitSourceV0::Candidate {
+                candidates,
+                payloads,
+                expected_target,
+            },
             PrevoteQuorumInputV0::CanonicalCertificate(canonical_prevote_certificate),
             inclusive_maximum_round,
         )
@@ -560,12 +562,14 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         FixedValidatorNodeVoteExecutionOutcomeV0<'node>,
         FixedValidatorNodeVoteExecutionErrorV0,
     > {
-        sign_candidate_backed_precommit_for_proposal(
+        sign_precommit_for_proposal(
             self,
-            candidates,
-            payloads,
-            expected_target,
             canonical_proposal_control_bytes,
+            ProposalPrecommitSourceV0::Candidate {
+                candidates,
+                payloads,
+                expected_target,
+            },
             PrevoteQuorumInputV0::ExactSignedVotes(canonical_signed_prevotes),
             inclusive_maximum_round,
         )
@@ -665,10 +669,19 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
     }
 }
 
-fn sign_precommit_for_direct_proposal<'node>(
+enum ProposalPrecommitSourceV0<'source> {
+    Direct(Vec<u8>),
+    Candidate {
+        candidates: &'source mut ArtifactBlockCandidateStore,
+        payloads: &'source mut CanonicalArtifactPayloadStore,
+        expected_target: ArtifactBlockId,
+    },
+}
+
+fn sign_precommit_for_proposal<'node>(
     mut scope: FixedValidatorNodeSigningScopeV0<'node>,
     canonical_proposal_control_bytes: &[u8],
-    canonical_artifact_bytes: Vec<u8>,
+    source: ProposalPrecommitSourceV0<'_>,
     quorum: PrevoteQuorumInputV0<'_>,
     inclusive_maximum_round: ConsensusRound,
 ) -> Result<FixedValidatorNodeVoteExecutionOutcomeV0<'node>, FixedValidatorNodeVoteExecutionErrorV0>
@@ -686,80 +699,37 @@ fn sign_precommit_for_direct_proposal<'node>(
         }
         Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
     };
-    if matches!(&quorum, PrevoteQuorumInputV0::ExactSignedVotes(_))
+    // Direct certificate input historically verifies the proposal before phase
+    // rejection. Batches and candidate sources reject the phase before source
+    // access; retain that observable ordering while sharing all later mechanics.
+    if (matches!(&source, ProposalPrecommitSourceV0::Candidate { .. })
+        || matches!(&quorum, PrevoteQuorumInputV0::ExactSignedVotes(_)))
         && let Err(rejection) =
             require_phase(&scope.signing_session, FixedValidatorLockPhaseV0::Prevote)
     {
         drop(round);
         return Ok(rejected(scope, rejection));
     }
-    let proposal = match round.decode_and_verify_proposal_control(
-        canonical_proposal_control_bytes,
-        canonical_artifact_bytes,
-    ) {
-        Ok(proposal) => proposal,
-        Err(source) => {
-            return Ok(rejected(
-                scope,
-                FixedValidatorNodeVoteRejectionV0::Proposal(Box::new(source)),
-            ));
-        }
-    };
-    let finished = match decide_and_finish_proposal_vote(
-        &mut scope.signing_session,
-        &round,
-        &proposal,
-        ProposalVoteKindV0::Precommit { quorum },
-    ) {
-        Ok(finished) => finished,
-        Err(ProposalVoteErrorV0::Rejected(rejection)) => {
-            return Ok(rejected(scope, rejection));
-        }
-        Err(ProposalVoteErrorV0::Fatal(error)) => return Err(error),
-    };
-    Ok(finished_outcome(scope, finished))
-}
-
-fn sign_candidate_backed_precommit_for_proposal<'node>(
-    mut scope: FixedValidatorNodeSigningScopeV0<'node>,
-    candidates: &mut ArtifactBlockCandidateStore,
-    payloads: &mut CanonicalArtifactPayloadStore,
-    expected_target: ArtifactBlockId,
-    canonical_proposal_control_bytes: &[u8],
-    quorum: PrevoteQuorumInputV0<'_>,
-    inclusive_maximum_round: ConsensusRound,
-) -> Result<FixedValidatorNodeVoteExecutionOutcomeV0<'node>, FixedValidatorNodeVoteExecutionErrorV0>
-{
-    let finality_maximum_round = scope.finality.replay_limit().max_round();
-    let round = match current_round(
-        &scope.branch,
-        &scope.signing_session,
-        inclusive_maximum_round,
-        finality_maximum_round,
-    ) {
-        Ok(round) => round,
-        Err(CurrentRoundErrorV0::Rejected(rejection)) => {
-            return Ok(rejected(scope, rejection));
-        }
-        Err(CurrentRoundErrorV0::Fatal(error)) => return Err(error),
-    };
-    if let Err(rejection) =
-        require_phase(&scope.signing_session, FixedValidatorLockPhaseV0::Prevote)
-    {
-        drop(round);
-        return Ok(rejected(scope, rejection));
-    }
-    let canonical_artifact_bytes = match load_candidate_backed_proposal_payload(
-        &round,
-        candidates,
-        payloads,
-        expected_target,
-        canonical_proposal_control_bytes,
-    ) {
-        Ok(bytes) => bytes,
-        Err(rejection) => {
-            drop(round);
-            return Ok(rejected(scope, rejection));
+    let canonical_artifact_bytes = match source {
+        ProposalPrecommitSourceV0::Direct(bytes) => bytes,
+        ProposalPrecommitSourceV0::Candidate {
+            candidates,
+            payloads,
+            expected_target,
+        } => {
+            match load_candidate_backed_proposal_payload(
+                &round,
+                candidates,
+                payloads,
+                expected_target,
+                canonical_proposal_control_bytes,
+            ) {
+                Ok(bytes) => bytes,
+                Err(rejection) => {
+                    drop(round);
+                    return Ok(rejected(scope, rejection));
+                }
+            }
         }
     };
     let proposal = match round.decode_and_verify_proposal_control(
