@@ -8,6 +8,39 @@ fn result(node: &mut Process, command: Value) -> Value {
     node.until(|value| value["event"] == "command_result" && value["id"] == id)["outcome"].clone()
 }
 
+#[test]
+fn nil_target_extras_and_nonscalar_roles_fail_schema_before_any_source_read() {
+    let fixture = Fixture::new();
+    let layout = Layout::new();
+    let config = fixture.config(&layout, 1, "create", None, false);
+    let mut node = Process::start(&layout, &config);
+    node.ready();
+    node.event("timer_armed");
+    let before = layout.images();
+    let template = json!({"command":"advance_higher_votes", "id":5, "evidence_round":1,
+        "role":"prevote", "target":{"kind":"nil"}, "vote_files":["missing.vote"]});
+    let mut observed = Vec::new();
+    for changed in [
+        json!({"target":{"kind":"nil", "unexpected":true}}),
+        json!({"target":{"kind":"nil", "root":"00".repeat(32)}}),
+        json!({"role":{"prevote":null}}),
+        json!({"role":{"precommit":null}}),
+    ] {
+        let mut command = template.clone();
+        for (field, value) in changed.as_object().unwrap() {
+            command[field] = value.clone();
+        }
+        node.send(command);
+        observed.push(node.event("command_rejected")["code"].clone());
+        assert_eq!(layout.images(), before);
+    }
+    // The valid scalar/nil representation passes schema and reaches source I/O.
+    node.send(template);
+    assert_eq!(node.event("command_rejected")["code"], "file_open");
+    node.shutdown();
+    assert_eq!(observed, vec![json!("command_schema"); 4]);
+}
+
 fn advance(node: &mut Process, proof: &Proof, batch: bool) -> Value {
     let outcome = result(node, proof.higher_command(1, "higher", batch));
     assert_eq!(outcome["event"], "transitioned");

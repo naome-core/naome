@@ -93,7 +93,7 @@ pub(super) fn execute(
                 VoteRole::Precommit => ConsensusVoteRole::Precommit,
             };
             let target = match target {
-                VoteTarget::Nil => ConsensusVoteTarget::Nil,
+                VoteTarget::Nil {} => ConsensusVoteTarget::Nil,
                 VoteTarget::Proposal { root } => {
                     ConsensusVoteTarget::Proposal(ProposalSigningRoot::from_bytes(
                         config::hex32(&root).map_err(|_| "proof_root")?,

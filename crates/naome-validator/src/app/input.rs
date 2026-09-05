@@ -76,16 +76,28 @@ pub(super) struct ProposalVoteFiles {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(try_from = "String")]
 pub(super) enum VoteRole {
     Prevote,
     Precommit,
 }
 
+impl TryFrom<String> for VoteRole {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self> {
+        match value.as_str() {
+            "prevote" => Ok(Self::Prevote),
+            "precommit" => Ok(Self::Precommit),
+            _ => Err("proof_role"),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum VoteTarget {
-    Nil,
+    Nil {},
     Proposal { root: String },
 }
 

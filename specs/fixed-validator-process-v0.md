@@ -320,7 +320,9 @@ in code but is not exercised through privileged ownership changes by these tests
 both higher forms with both vote roles, both lower-finality forms, exact
 checkpoint/finality restart, bounded nested input and route refusals followed
 by an explicit valid resubmission, and current-finality precedence followed by
-ordinary exact-proposal completion. Separate throwaway anchored signers create
+ordinary exact-proposal completion. A process regression rejects nil-target
+extra fields and object-form roles before source reads while preserving the
+valid scalar-role/nil-target form. Separate throwaway anchored signers create
 the adversarial conflicting proof fixtures. A distinct pair produces terminal
 reopen refusal; an identical pair consumes the process's authority without
 changing its journals and strictly reopens healthy. A real connected peer
