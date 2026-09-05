@@ -1,8 +1,12 @@
 //! Cancellation-safe ownership and deterministic event-loop ordering.
 
+#[path = "explicit.rs"]
+mod explicit;
+
 use naome_consensus::{FixedValidatorLockPhaseV0, FixedValidatorProposalSourceV0};
 use naome_network::{
-    MAX_STATIC_PEERS, NetworkEvent, OutboundConsensusPushEvent, PeerId, StaticArtifactNetwork,
+    ConsensusPushMessage, MAX_STATIC_PEERS, NetworkEvent, OutboundConsensusPushEvent, PeerId,
+    StaticArtifactNetwork,
 };
 use naome_node::{
     FixedValidatorNodeCurrentRoundFinalityInboxDrainV0, FixedValidatorNodeCurrentRoundInboxDrainV0,
@@ -13,6 +17,7 @@ use naome_node::{
     FixedValidatorNodeDriverStepOutcomeV0 as StepOutcome, FixedValidatorNodeDriverV0 as Driver,
     FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodePhaseTimeoutV0,
 };
+use naome_storage::{ArtifactBlockCandidateStore, CanonicalArtifactPayloadStore};
 use tokio::time::{Instant, sleep_until};
 
 use crate::routing::{MessageRef, PreparedAdmission};
@@ -24,9 +29,19 @@ use crate::{
     FixedValidatorRuntimeDeliveryStateV0 as DeliveryState, FixedValidatorRuntimeEventV0 as Event,
     FixedValidatorRuntimeFailureV0 as Failure, FixedValidatorRuntimeInputSourceV0 as InputSource,
     FixedValidatorRuntimePartsV0 as Parts, FixedValidatorRuntimePublicationV0 as Publication,
+    FixedValidatorRuntimeQueueErrorV0 as QueueError,
+    FixedValidatorRuntimeQueueFailureV0 as QueueFailure,
     FixedValidatorRuntimeRoutingErrorV0 as RoutingError,
     FixedValidatorRuntimeTimeoutsV0 as Timeouts, FixedValidatorRuntimeTimerV0 as Timer,
 };
+
+// Keep the existing network event inline: filling this single slot must not add
+// an infallible allocation or a new failure after transport ownership transfers.
+#[allow(clippy::large_enum_variant)]
+enum PendingInput {
+    Network(NetworkEvent),
+    Caller(ConsensusPushMessage),
+}
 
 /// One process-local driver/network owner with bounded publication backpressure.
 ///
@@ -44,7 +59,7 @@ pub struct FixedValidatorRuntimeV0<'node> {
     timer: Option<Timer>,
     pending_arm: Option<FixedValidatorNodePhaseTimeoutV0>,
     publication: Option<Publication>,
-    pending_network_event: Option<NetworkEvent>,
+    pending_input: Option<PendingInput>,
     failed_admission: Option<AdmissionReport>,
     step_yielded: bool,
     rejected_due_ticket: Option<FixedValidatorNodePhaseTimeoutV0>,
@@ -77,7 +92,7 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             timer: None,
             pending_arm: None,
             publication: None,
-            pending_network_event: None,
+            pending_input: None,
             failed_admission: None,
             step_yielded: false,
             rejected_due_ticket: None,
@@ -204,6 +219,25 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         Some(drained)
     }
 
+    /// Queues the caller's exact raw message in the single input slot. This
+    /// checks only message lengths; `next_event` later applies the same routing,
+    /// due precedence, and strict admission used for peer input. Refusal returns
+    /// the original allocations without performing any other runtime work.
+    pub fn queue_input(&mut self, input: ConsensusPushMessage) -> Result<(), QueueError> {
+        let reason = if self.driver.is_none() {
+            Some(QueueFailure::DriverUnavailable)
+        } else if self.pending_input.is_some() {
+            Some(QueueFailure::InputSlotOccupied)
+        } else {
+            input.size().validate().err().map(QueueFailure::Length)
+        };
+        if let Some(reason) = reason {
+            return Err(QueueError { input, reason });
+        }
+        self.pending_input = Some(PendingInput::Caller(input));
+        Ok(())
+    }
+
     /// Polls transport once without admitting input, observing a timer, stepping
     /// the driver, or starting a send. At most one returned network event is
     /// buffered. This can service queued receipts while the caller holds driver
@@ -211,7 +245,7 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
     pub async fn poll_transport_once(&mut self) -> crate::FixedValidatorRuntimeTransportPollV0 {
         use crate::FixedValidatorRuntimeTransportPollV0 as Outcome;
         use std::{future::Future, task::Poll};
-        if self.pending_network_event.is_some() {
+        if self.pending_input.is_some() {
             return Outcome::InputSlotOccupied;
         }
         let event = std::future::poll_fn(|cx| {
@@ -223,7 +257,7 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         })
         .await;
         if let Some(event) = event {
-            self.pending_network_event = Some(event);
+            self.pending_input = Some(PendingInput::Network(event));
             Outcome::BufferedEvent
         } else {
             Outcome::PolledPending
@@ -232,6 +266,11 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
 
     /// Explicitly transfers every surviving owner; queued sends are not cancelled.
     pub fn into_parts(self) -> Parts<'node> {
+        let (pending_network_event, pending_caller_input) = match self.pending_input {
+            Some(PendingInput::Network(event)) => (Some(event), None),
+            Some(PendingInput::Caller(input)) => (None, Some(input)),
+            None => (None, None),
+        };
         Parts {
             driver: self.driver,
             network: self.network,
@@ -240,7 +279,8 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             timer: self.timer,
             pending_arm: self.pending_arm,
             publication: self.publication,
-            pending_network_event: self.pending_network_event,
+            pending_network_event,
+            pending_caller_input,
             failed_admission: self.failed_admission,
             step_yielded: self.step_yielded,
             rejected_due_ticket: self.rejected_due_ticket,
@@ -281,20 +321,70 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         let Some(driver) = self.driver.as_ref() else {
             return Event::AuthoringUnavailable(source);
         };
-        if self.publication.is_some()
+        if self.authoring_busy(driver) {
+            return Event::AuthoringBusy(source);
+        }
+        let driver = self.driver.take().unwrap();
+        self.finish_authoring(driver.author_proposal(source))
+    }
+
+    /// Authors the caller's exact candidate through its availability stores.
+    /// Runtime backpressure precedes store access; the existing driver retains
+    /// all source, phase, proposer, verification, and signer checks.
+    pub fn author_candidate_backed_fresh_proposal(
+        &mut self,
+        candidates: &mut ArtifactBlockCandidateStore,
+        payloads: &mut CanonicalArtifactPayloadStore,
+        expected_target: naome_chain::ArtifactBlockId,
+    ) -> Event<'node> {
+        let Some(driver) = self.driver.as_ref() else {
+            return Event::StoreAuthoringUnavailable;
+        };
+        if self.authoring_busy(driver) {
+            return Event::StoreAuthoringBusy;
+        }
+        let driver = self.driver.take().unwrap();
+        self.finish_authoring(driver.author_candidate_backed_fresh_proposal(
+            candidates,
+            payloads,
+            expected_target,
+        ))
+    }
+
+    /// Re-authors the driver's retained value using the caller's payload store.
+    /// The retained certificate determines the value; the store supplies only
+    /// availability. Runtime backpressure precedes any source-store access.
+    pub fn author_payload_store_backed_retained_proposal(
+        &mut self,
+        payloads: &mut CanonicalArtifactPayloadStore,
+    ) -> Event<'node> {
+        let Some(driver) = self.driver.as_ref() else {
+            return Event::StoreAuthoringUnavailable;
+        };
+        if self.authoring_busy(driver) {
+            return Event::StoreAuthoringBusy;
+        }
+        let driver = self.driver.take().unwrap();
+        self.finish_authoring(driver.author_payload_store_backed_retained_proposal(payloads))
+    }
+
+    fn authoring_busy(&self, driver: &Driver<'_>) -> bool {
+        self.publication.is_some()
             || self.pending_arm.is_some()
-            || self.pending_network_event.is_some()
+            || self.pending_input.is_some()
             || self.timer.is_none()
             || driver.has_pending_command()
             || driver.timeout_is_due()
             || self
                 .timer
                 .is_some_and(|timer| Instant::now() >= timer.deadline())
-        {
-            return Event::AuthoringBusy(source);
-        }
-        let driver = self.driver.take().unwrap();
-        match driver.author_proposal(source) {
+    }
+
+    fn finish_authoring(
+        &mut self,
+        result: Result<AuthoringOutcome<'node>, naome_node::FixedValidatorNodeDriverStepErrorV0>,
+    ) -> Event<'node> {
+        match result {
             Ok(AuthoringOutcome::Authored { driver }) => {
                 self.driver = Some(*driver);
                 Event::ProposalAuthored
@@ -598,6 +688,30 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         }
     }
 
+    fn handle_input(&mut self, input: PendingInput) -> Event<'node> {
+        let input = match input {
+            PendingInput::Caller(input) => input,
+            PendingInput::Network(event) => return self.handle_network_event(event),
+        };
+        let driver = self.driver.as_ref().expect("input requires the live owner");
+        let prepared = MessageRef::from(&input).prepare(driver.context(), driver.position());
+        let mut report = AdmissionReport {
+            source: InputSource::CallerInput,
+            receipt_queued: None,
+            input: Some(input),
+            results: [None, None],
+            routing_error: None,
+            completed: false,
+        };
+        match prepared {
+            Ok(prepared) => self.apply_prepared(prepared, report),
+            Err(error) => {
+                report.routing_error = Some(error);
+                Event::Admission(Box::new(report))
+            }
+        }
+    }
+
     /// Advances pending commands and retained driver work before observing new
     /// input. A ready exact timer wins a tie with a newly obtained network event.
     /// One publication backpressures further driver transitions until its local
@@ -621,16 +735,16 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             if self.publication.as_ref().unwrap().is_complete() {
                 return Event::PublicationComplete(Box::new(self.publication.take().unwrap()));
             }
-            if self.pending_network_event.is_none()
+            if self.pending_input.is_none()
                 && let Some(event) = self.start_next_peer()
             {
                 return event;
             }
-            let event = match self.poll_network_or_due().await {
+            let event = match self.poll_input_or_due().await {
                 Ok(event) => event,
                 Err(event) => return event,
             };
-            return self.handle_network_event(event);
+            return self.handle_input(event);
         }
         if (self.driver.as_ref().unwrap().has_pending_command() || !self.step_yielded)
             && let Some(event) = self.step_driver()
@@ -645,8 +759,8 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             self.pending_arm = Some(ticket);
             return self.arm();
         }
-        match self.poll_network_or_due().await {
-            Ok(event) => self.handle_network_event(event),
+        match self.poll_input_or_due().await {
+            Ok(event) => self.handle_input(event),
             Err(event) => event,
         }
     }
@@ -656,30 +770,30 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             .filter(|timer| Some(timer.ticket()) != self.rejected_due_ticket)
     }
 
-    async fn poll_network_or_due(&mut self) -> Result<NetworkEvent, Event<'node>> {
+    async fn poll_input_or_due(&mut self) -> Result<PendingInput, Event<'node>> {
         if self
             .observable_timer()
             .is_some_and(|timer| Instant::now() >= timer.deadline())
         {
             return Err(self.observe_due());
         }
-        let event = if let Some(event) = self.pending_network_event.take() {
+        let event = if let Some(event) = self.pending_input.take() {
             event
         } else if let Some(timer) = self.observable_timer() {
             tokio::select! {
                 biased;
                 _ = sleep_until(timer.deadline()) => return Err(self.observe_due()),
-                event = self.network.next_event() => event,
+                event = self.network.next_event() => PendingInput::Network(event),
             }
         } else {
-            self.network.next_event().await
+            PendingInput::Network(self.network.next_event().await)
         };
         // The clock may have crossed its deadline during network polling.
         if self
             .observable_timer()
             .is_some_and(|timer| Instant::now() >= timer.deadline())
         {
-            self.pending_network_event = Some(event);
+            self.pending_input = Some(event);
             return Err(self.observe_due());
         }
         Ok(event)

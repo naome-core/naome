@@ -196,6 +196,7 @@ fn copy_box(bytes: &[u8]) -> Result<Box<[u8]>, TryReserveError> {
 pub enum FixedValidatorRuntimeInputSourceV0 {
     LocalPublication,
     Peer(PeerId),
+    CallerInput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -221,8 +222,8 @@ pub struct FixedValidatorRuntimeAdmissionResultV0 {
 
 /// Independent sequential results; success on one route is never rolled back.
 ///
-/// A remote message's original allocations transfer in `input`, even after
-/// partial admission. Local originals remain in the pending publication. A
+/// Peer and caller input allocations transfer in `input`, even after partial
+/// admission. Authored originals remain in the pending publication. A
 /// caller retaining reports must bound that memory separately from this runtime.
 #[must_use]
 pub struct FixedValidatorRuntimeAdmissionReportV0 {

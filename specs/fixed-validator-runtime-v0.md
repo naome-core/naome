@@ -10,6 +10,10 @@ bounded volatile custody described here. The caller supplies the already
 constructed driver and network, an ordered publication target list, and explicit
 phase-duration policies. The runtime spawns no task. The caller polls it,
 explicitly supplies a proposal source, or drains an inbox under `PROD-020-045`.
+`PROD-020-046` adds caller raw-input submission, both existing store-backed
+authoring forms, and explicit complete-proof operations without dismantling
+this owner. The caller chooses every submission; none is automatically inferred
+from a raw message, inbox, publication, source store, or transport event.
 
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,
@@ -42,11 +46,11 @@ production timing recommendation, or prove elapsed time to another node.
 
 `next_event` first transfers a pending arm or driver command. Without an owned
 publication, ordinary retained driver work is stepped before a new timeout or
-network observation. A transition that supersedes an active ticket discards
+input observation. A transition that supersedes an active ticket discards
 only its old runtime deadline. A newly installed ticket receives a new deadline;
 a stale lineage is never submitted as the fresh driver's due event.
 
-At network observation, an already due exact timer precedes any buffered or
+At input observation, an already due exact timer precedes any buffered or
 newly polled input. The timer branch also wins a ready `select` tie. If polling
 the network crosses the deadline, the complete event is stored in the single
 input slot before the due event is admitted. Acceptance uses the driver's
@@ -75,6 +79,33 @@ publication, and retained-work ordering still applies before the next due
 observation; a drain does not itself accept due state or execute a transition.
 Draining another inbox does not clear higher-inbox rejected-ticket suppression.
 
+## Caller input custody
+
+`queue_input` accepts one caller-owned `ConsensusPushMessage` in the same single
+slot used by buffered network events. It first refuses an unavailable driver,
+then an occupied slot, then a message outside the direct transport's existing
+body-length bounds. Every refusal returns the exact original message, including
+its allocation pointers, lengths, and capacities. No second slot, copy,
+reservation, routing, admission, timer observation, driver step, or transport
+work occurs. Length acceptance does not establish canonical validity and does
+not inspect spare allocation capacity.
+
+Successful queueing stores only the original raw message. Pending commands,
+publication handling, retained driver work, and exact due precedence still
+control its later observation through `next_event`. A caller input blocks
+another transport poll and precedes a new publication peer attempt, just as an
+already buffered network event does. Queueing does not clear a yielded-step
+marker, due fence, rejected-ticket marker, or inbox latch. A drain performs no
+automatic resubmission; a caller may explicitly queue bytes recovered from a
+report, publication, or drain for fresh admission against the then-current state.
+
+Caller admission uses the same descriptive routes, complete copy reservation,
+and independent strict driver checks below. Its report identifies `CallerInput`,
+has `receipt_queued = None`, and returns the exact original allocations even
+when routing, reservation, or either strict admission rejects. This establishes
+no peer provenance and queues no transport receipt. An interrupted fatal
+admission retains the report under the existing `failed_admission` boundary.
+
 ## Descriptive routing and strict admission
 
 The bounded unverified inspectors reuse existing canonical proposal-prefix,
@@ -95,8 +126,8 @@ still pass the selected driver admission path.
 | Higher proposal prevote | Higher proposal prevote |
 
 Wrong contexts, different heights, lower rounds, unsupported higher vote forms,
-and malformed descriptive headers yield a routing error with the exact remote
-input. Rejected headers establish no authoritative statement about consensus
+and malformed descriptive headers yield a routing error with the exact peer or
+caller input. Rejected headers establish no authoritative statement about consensus
 validity. This owner does not automatically invoke the driver's explicit
 lower-round finality, certificate catch-up, candidate-backed, or conflict APIs.
 
@@ -110,7 +141,8 @@ existing outcomes.
 
 A remote admission report returns authenticated transport source, whether a
 receipt was queued, the original input allocations, and independent route
-results. Local reports identify local publication and leave the original in
+results. Caller reports preserve the original input without transport provenance
+or receipt handling. Local reports identify local publication and leave the original in
 its publication owner. `completed` means every prepared route returned a normal
 admission result; `all_admitted` additionally requires at least one route and
 success on every result. A routing failure or interrupted fatal/future outcome
@@ -130,7 +162,7 @@ For an owned publication, `next_event` uses this order:
 1. Transfer any successor driver command, including the vote's next arm.
 2. Attempt ordinary strict local admission once, using bounded raw copies.
 3. Return a completed publication with all original custody and peer outcomes.
-4. Process one already buffered network event behind the due-timer gate.
+4. Process one already buffered network event or caller input behind the due-timer gate.
 5. Start the next unattempted peer delivery, in configured target order.
 6. When all peer attempts have started but some remain pending, observe the
    exact timer or network through the same due-first gate.
@@ -157,6 +189,87 @@ intact before invoking the driver. Once forwarded, the driver's consuming
 source contract applies, including rejection and retained-work outcomes. The
 runtime does not choose a source or grant a separate signing path.
 
+`author_candidate_backed_fresh_proposal` accepts the caller's exact target and
+borrowed candidate/payload stores. `author_payload_store_backed_retained_proposal`
+accepts a borrowed payload store and uses only the driver's private retained
+value to derive its address. Both share the direct authoring runtime gate and
+return `StoreAuthoringBusy` or `StoreAuthoringUnavailable` before source access.
+Once eligible, they invoke their existing driver methods unchanged, including
+ordinary retained-work priority, source/proposer/phase checks, full verification,
+and anchored signer effects. Store presence supplies availability only. Missing
+or rejected sources preserve the continuing driver for explicit insertion/retry
+or direct fallback. Integrity failure may poison the owning source handle under
+its existing contract; the runtime does not repair or retry it. Successful
+authoring queues the exact resolved payload with the signed control, so later
+publication does not read a source store again.
+
+## Explicit complete-proof operations
+
+All seven methods are synchronous caller selections. They neither observe a
+clock or network event nor call `step` before delegation. Controls, certificates,
+exact signed-vote batches, explicit routes, targets, and borrowed stores pass
+unchanged into the corresponding existing driver method. The runtime exposes no
+mutable driver or general signing-scope callback.
+
+| Runtime methods | Existing driver operation |
+| --- | --- |
+| `advance_to_higher_round_quorum`, `advance_to_higher_round_vote_batch` | Fully verified higher-round checkpoint under the construction-time ceiling |
+| `commit_lower_round_finality`, `commit_lower_round_finality_vote_batch` | Complete direct strictly lower-round finality |
+| `commit_candidate_backed_finality_vote_batch` | Exact candidate-backed direct-child finality |
+| `commit_candidate_backed_finality_conflict_vote_batch` | Historical selected-sibling conflict |
+| `commit_lower_round_preselection_conflict_vote_batches` | Independently verified lower-round pair and neutral halt |
+
+The five positive methods return runtime `Busy` while a publication, pending
+runtime arm, or pending driver command remains owned. An unavailable driver
+returns `DriverUnavailable`. These are pre-invocation refusals, distinct from a
+delegated driver rejection. Direct lower-finality methods return their original
+owned payload beside the refusal; borrowed inputs remain with the caller.
+Buffered input, phase, an absent runtime timer, an expired deadline, and accepted
+due state add no runtime gate. The existing driver still gives unresolved exact
+current finality priority over all five methods and retained actionable or
+blocked higher evidence priority over higher checkpoints. It does not silently
+step that work or consume the buffered input first.
+
+An explicit terminal conflict attempt waits only for pending driver commands to
+transfer. Once they have transferred, a publication, in-flight ticket, pending
+runtime arm, buffered input, phase, or expired/accepted due state does not delay
+the attempt. This exception applies only to the two explicitly called conflict
+methods; neither raw admission nor ordinary polling automatically invokes it.
+A runtime refusal of a lower pair returns both original owned payloads in
+argument order. After either positive or terminal delegation, the driver's
+existing consuming-input contract applies to every outcome.
+
+Every known continuing driver is restored. Typed rejections and unresolved-work
+outcomes preserve the exact runtime markers and custody. A higher checkpoint
+re-enables ordinary classification and discards its superseded deadline; its
+quorum role determines the existing destination Prevote or Precommit phase,
+without signing or setting a new lock/valid value. A finality result does this
+only when its returned position changed. No-write same-position results retain
+the exact deadline and markers. The next ordinary poll transfers the driver's
+queued destination arm. Buffered input remains raw across the operation and
+later receives ordinary admission against the resulting state; it is neither
+promoted, discarded, nor reinterpreted as a complete proof.
+
+A lower-pair pre-effect rejection restores the driver, including while a
+publication remains outstanding. A verified distinct pair records the existing
+neutral `PreselectionPair` halt; neither input becomes a selected winner. A
+verified historical candidate conflict records the existing `SelectedSibling`
+halt against the retained selected parent. Both preserve the exact paired
+finality-halt and signer-stop evidence. Candidate-conflict processing consumes
+the driver even on a pre-append error; a lower pair also consumes it once sealed
+evidence enters its finality coordinator. These existing error distinctions are
+returned without inventing recovery.
+
+Every terminal or fatal outcome leaves no runtime driver. `next_event` then
+returns `DriverUnavailable` without local admission, signing, timer observation,
+or another publication send attempt. Original publication bytes, any released
+`Some` token, local-attempt marker, per-peer outcomes/in-flight tickets, pending
+runtime arm, timer, buffered input, and failed-admission report remain available
+through `into_parts`. Already queued transport cannot be recalled; explicit
+transport service can still progress that existing work. Only strict anchored
+reopen classifies the durable prefix and may create a fresh owner. Unsupported
+future driver outcomes transfer intact with any driver they own.
+
 ## Transport service, bounds, and failure
 
 `poll_transport_once` polls the network once without observing a timer, admitting
@@ -176,17 +289,21 @@ fairness, reserved capacity, delivery completeness, or liveness is guaranteed.
 Bounds are compositional, not one total-memory ceiling: the existing transport
 owns its separate inbound budgets and shared outbound permits; the driver owns
 four separately bounded inboxes; the runtime owns one original publication with
-at most eight ordered peer states, one timer/arm, one buffered `NetworkEvent`,
-and at most one interrupted admission report. A buffered unrelated event can
+at most eight ordered peer states, one timer/arm, one shared slot containing
+either a `NetworkEvent` or a body-length-bounded caller message, and at most one
+interrupted admission report. A buffered unrelated event can
 carry that protocol's own bounded payload. Copies needed for strict admission
 and sending are additional bounded allocations. Caller-retained returned events
 and reports, together with inbox drain iterators, require a separate caller-owned
-memory bound.
+memory bound. These byte-length limits do not bound spare `Vec` capacity or
+total allocator use.
 
 Dropping a borrowed `next_event` future preserves stored driver, publication,
 ticket, and input custody; it does not cancel queued transport work. No await
 occurs after consuming the driver or removing an event for admission.
-`into_parts` explicitly transfers every surviving owner and marker. A route-copy
+`into_parts` explicitly transfers every surviving owner and marker. Its
+`pending_network_event` and `pending_caller_input` fields are mutually exclusive.
+A route-copy
 allocation error returns the original unacknowledged inbound handle, including its response path. Closed-channel acknowledgement
 still preserves original source and input, with `receipt_queued = false`.
 
@@ -221,7 +338,7 @@ ordinary step classification. Only the higher drain clears rejected-ticket
 suppression, as specified above. All other inboxes and their blocking, position,
 phase, accepted due state, active ticket, exact deadline, pending arm and driver
 command, publication bytes and released `Some` token, per-peer delivery state and
-in-flight tickets, buffered network input, failed-admission report, and durable
+in-flight tickets, buffered peer/caller input, failed-admission report, and durable
 authority remain unchanged. No network poll, send attempt, receipt completion,
 admission, signature, transition, or timer observation occurs during a drain.
 
@@ -252,12 +369,34 @@ verification and earlier valid-round evidence.
 drains, due precedence over a real buffered inbound proposal, explicit recovery
 from stale current/finality saturation followed by a second selected height,
 and exact class custody across two nil rounds with small inbox budgets. The
-second-height case has one consensus validator and a separate transport peer
-that explicitly re-supplies the rejected proposal; it is not multi-validator
-progress evidence. The adversarial publication vectors additionally drain with
+second-height cases have one consensus validator: one uses a separate transport
+peer to re-supply the rejected proposal, and the other uses caller queueing with
+an isolated transport. Neither is multi-validator progress evidence. The adversarial publication vectors additionally drain with
 a pending successor arm and an in-flight `Some` publication, preserve buffered
 input and an accepted due fence across drains, retain finality priority after
 higher recovery, and return `None` after injected driver failure.
+
+`tests/cases/caller_input.rs` checks lossless queue refusal, slot occupancy,
+strict corrupt-input rejection, and command/due precedence. Existing adversarial
+vectors also cover caller partial admission, a buffered-peer slot refusal,
+publication custody, and queued caller input surviving an injected fatal step.
+`tests/cases/store_authoring.rs` proves explicit missing-source insertion/retry,
+initial-command and caller-input backpressure before the first corrupt payload
+read, and actual round-one retained authoring with exact lock/valid certificate
+and byte-identical strict-reopen replay. The round continuation uses one
+consensus validator and explicit finality drain before advancing.
+
+`tests/cases/explicit_proofs.rs` checks both higher-proof forms with a real
+proposal-prevote quorum, expired or accepted due state, buffered caller input,
+rejection/retry and checkpoint reopen. Both direct lower forms finalize from
+all three due phases established through public driver calls. Candidate finality
+covers explicit source insertion/retry and strict child reopen. All five preserve
+retained-current-finality precedence without a hidden step and preserve owned
+payloads on runtime backpressure. `tests/cases/terminal_proofs.rs` uses separately
+anchored conflicting proposals and real in-flight Noise tickets to check both
+terminal paths, exact halt identities, consuming no-write errors, strict reopen,
+and independent input/publication custody; the lower pair also retains a real
+released `Some` token. Queued sends are not claimed to have been recalled.
 
 These are bounded local tests, not deployment, multi-process/devnet,
 production-timeout calibration, latency benchmarks, general distributed
