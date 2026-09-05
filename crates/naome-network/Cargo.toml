@@ -19,7 +19,7 @@ libp2p = { version = "0.56.0", default-features = false, features = [
     "tokio",
     "yamux",
 ] }
-naome = { path = "../.." }
+naome-protocol = { path = "../naome-protocol" }
 naome-chain = { path = "../naome-chain" }
 naome-proof = { path = "../naome-proof" }
 naome-storage = { path = "../naome-storage" }

@@ -1,0 +1,107 @@
+//! Caller-driven journal serving for one static artifact-network event loop.
+
+use naome_protocol::artifact_exchange::ArtifactRequest;
+use naome_protocol::block_exchange::ArtifactBlockRequest;
+use naome_protocol::chain_head_exchange::ArtifactChainHeadRequest;
+use naome_storage::ArtifactChainJournal;
+
+use super::{NetworkEvent, PeerId, RespondError, StaticArtifactNetwork};
+
+/// One authenticated journal-read request handled by the service boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum JournalServiceRequest {
+    /// One exact artifact request.
+    Artifact {
+        peer_id: PeerId,
+        request: ArtifactRequest,
+    },
+    /// One exact artifact-block request.
+    Block {
+        peer_id: PeerId,
+        request: ArtifactBlockRequest,
+    },
+    /// One exact artifact-chain-head request.
+    ChainHead {
+        peer_id: PeerId,
+        request: ArtifactChainHeadRequest,
+    },
+}
+
+/// One observable result from the caller-driven journal service.
+#[derive(Debug)]
+#[must_use]
+#[non_exhaustive]
+pub enum JournalServiceEvent {
+    /// The response was accepted by libp2p for asynchronous writing.
+    Served(JournalServiceRequest),
+    /// The journal read, response budget, or response-channel transfer failed.
+    ServeFailed {
+        request: JournalServiceRequest,
+        error: RespondError,
+    },
+    /// An event outside automatic journal serving remains caller-owned.
+    Network(NetworkEvent),
+}
+
+impl StaticArtifactNetwork {
+    /// Waits for and observably handles one journal-backed network event.
+    ///
+    /// Authenticated artifact, block, and chain-head requests are served through
+    /// their existing bounded response paths. Every other event, including a
+    /// chain-head announcement, is returned unchanged for explicit caller
+    /// policy. This method owns no task, queue, retry, or selected-state
+    /// mutation.
+    pub async fn next_journal_service_event(
+        &mut self,
+        journal: &ArtifactChainJournal,
+    ) -> JournalServiceEvent {
+        let event = self.next_event().await;
+        self.handle_journal_service_event(event, journal)
+    }
+
+    fn handle_journal_service_event(
+        &mut self,
+        event: NetworkEvent,
+        journal: &ArtifactChainJournal,
+    ) -> JournalServiceEvent {
+        let (request, result) = match event {
+            NetworkEvent::InboundArtifactRequest(inbound) => {
+                let request = JournalServiceRequest::Artifact {
+                    peer_id: inbound.peer_id(),
+                    request: inbound.request(),
+                };
+                (
+                    request,
+                    self.respond_artifact_from_journal(inbound, journal),
+                )
+            }
+            NetworkEvent::InboundBlockRequest(inbound) => {
+                let request = JournalServiceRequest::Block {
+                    peer_id: inbound.peer_id(),
+                    request: inbound.request(),
+                };
+                (request, self.respond_block_from_journal(inbound, journal))
+            }
+            NetworkEvent::InboundChainHeadRequest(inbound) => {
+                let request = JournalServiceRequest::ChainHead {
+                    peer_id: inbound.peer_id(),
+                    request: inbound.request(),
+                };
+                (
+                    request,
+                    self.respond_chain_head_from_journal(inbound, journal),
+                )
+            }
+            event => return JournalServiceEvent::Network(event),
+        };
+
+        match result {
+            Ok(()) => JournalServiceEvent::Served(request),
+            Err(error) => JournalServiceEvent::ServeFailed { request, error },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

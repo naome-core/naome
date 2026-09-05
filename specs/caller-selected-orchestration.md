@@ -532,17 +532,14 @@ response authenticate only the immediate transport endpoint and exact correlated
 exchange; they establish no provenance, truth, validity, selection, availability,
 consensus, or finality authority.
 
-Before the exact candidate path is retained, the existing candidate-backed
-prevote adapter returns its typed candidate-unavailable rejection with the
-unchanged signing scope. After block acquisition but before complete payload
-reconstruction, it likewise returns payload-unavailable. Even after both fills,
-store presence is not cached validation: the candidate-backed prevote path
-integrity-reads both stores and completely re-verifies the node-derived round,
-proposal control, producer authorization, block, payload, and lock effect before
-any signer write. Invalid proposal control therefore remains a no-signature
-rejection. The candidate-backed precommit path repeats the same source and
-proposal checks and additionally constructs and verifies the exact caller-routed
-prevote batch before signing.
+Voting follows the [exact input admission](fixed-validator-node-voting-v0.md#exact-round-and-input-admission)
+and [ordered execution](fixed-validator-node-voting-v0.md#ordered-vote-execution)
+contracts. Candidate-unavailable and payload-unavailable remain typed rejections
+with the unchanged signing scope; invalid proposal control releases no signature.
+Even after both fills, each vote operation integrity-reads its exact sources and
+repeats complete proposal, producer, artifact, lock-effect, and applicable
+caller-routed prevote-batch verification before any signer write. Store presence
+supplies no cached validity.
 
 The Unix reference vector uses a one-validator fixed set, passes the exact
 anchored prevote it just received as the complete precommit batch, and proves
@@ -563,29 +560,24 @@ boundaries.
 
 ### Driver-held selected-history composition
 
-A long-lived `FixedValidatorNodeDriverV0` retains the sole signing scope across
-round and height transitions, so it exposes one narrower acquisition capability:
-`selected_artifact_history` borrows only the sealed read-only selected-history
-trait from its anchored finality owner. It does not return the raw scope,
-branch, signing session, concrete journal, or a mutable handle. The reference
-composition retains that shared borrow across both fill phases, so it cannot
-consume the same driver through event admission or `step` until the composition
-returns. The lower-level progress values do not retain the history borrow or
-acquire driver-lifecycle authority. The driver itself does not start or drive
-network work, choose the target or peer, or mutate a candidate or payload store.
+The composition uses the driver's sealed read-only `selected_artifact_history`
+projection under the [driver lifecycle contract](fixed-validator-node-driver-v0.md#construction-and-process-local-lifecycle),
+retaining that shared borrow across both direct fills and releasing it before
+consuming the driver. The projection exposes no raw scope, branch, signing
+session, concrete journal, or mutable handle; lower-level progress values retain
+no history borrow and acquire no driver-lifecycle authority. The driver starts
+no network work, chooses no target or peer, and mutates neither source store.
 
-After both explicit direct fills complete, the caller may integrity-read the
-exact retained target and its exact archived payload and submit the payload,
-together with separately supplied complete proposal-control bytes, through the
-ordinary `CurrentRoundProposal` event. Store membership and network arrival are
-not admission tokens: the driver fully verifies the raw proposal and payload,
-and tampered acquired bytes are returned as a rejected event without a signer
-write. A successful current proposal produces an anchored prevote only through
-the normal step and publication command. The driver does not self-observe that
-vote; a matching precommit requires the runtime to transfer publication custody,
-transfer the separately pending arm command, and explicitly re-admit the exact
-prevote through `CurrentRoundProposalPrevote` before another step can use the
-unchanged strict-supermajority and anchored precommit path.
+After both fills, the caller integrity-reads the exact target and archived
+payload and submits raw `CurrentRoundProposal` inputs with separately supplied
+complete control bytes. [Event admission](fixed-validator-node-driver-v0.md#consuming-event-admission-and-bounded-retention)
+and [step execution](fixed-validator-node-driver-v0.md#deterministic-step-selection)
+fully reverify them; tampering returns a rejected event without a signer write.
+The ordinary anchored prevote publication and separately pending arm must both
+transfer before the caller explicitly re-admits that exact vote as
+`CurrentRoundProposalPrevote` for the unchanged strict-supermajority precommit
+path. Store membership and network arrival supply no admission token, and
+publication performs no self-observation.
 
 The Unix reference vector proves one caller-owned two-peer Noise session can
 complete both fills while the driver retains signing ownership, that selected
@@ -611,17 +603,14 @@ selected artifact snapshot and completely validates and archives every required
 payload. Neither successful phase supplies a proposal, vote, validity, or
 finality token to the next phase.
 
-The shared selected-history borrow ends before the driver can be consumed. Any
-pending arm or vote-publication command must then transfer before the terminal
-attempt may inspect the route, evidence, or source stores. After that custody
-gate, the existing
-`commit_candidate_backed_finality_conflict_vote_batch` method integrity-reads
-the exact acquired target and payload and repeats complete branch-relative
-proposal, producer, artifact transition, positioned fixed-set, and
-strict-supermajority batch verification against the replay-retained selected
-parent. Only the resulting owned sibling proof may enter the existing anchored
-selected-sibling halt and signer-stop sequence. Success returns only their exact
-paired terminal evidence, no driver, signing scope, selected branch, or winner.
+The shared selected-history borrow ends before driver consumption. After any
+pending arm or vote-publication command transfers, the [driver terminal bridge](fixed-validator-node-driver-v0.md#explicit-candidate-backed-terminal-bridge)
+applies the [candidate-backed finalized-sibling exact-batch contract](fixed-validator-node-finality-v0.md#candidate-backed-finalized-sibling-exact-batch-admission).
+It integrity-reads the acquired target and payload and independently verifies
+the complete proposal, producer, artifact transition, positioned fixed set, and
+strict-supermajority batch against the replay-retained parent before either
+anchored stop. Success returns only their exact paired terminal evidence, with
+no driver, signing scope, selected branch, or winner.
 
 Candidate acquisition may durably add exact entries only to the caller-routed
 candidate store, and payload reconstruction may durably add exact validated
@@ -654,24 +643,20 @@ signed-precommit batch, evidence round, and invocation time. Candidate and
 payload acquisition may add only the corresponding source entries and cannot
 advance either anchored authority pair.
 
-After both fills complete and the shared history borrow ends, the caller may
-submit its separately supplied consensus evidence through
-`commit_candidate_backed_finality_vote_batch`. Successful acquisition does not
-skip any driver gate: pending outward commands transfer first, every
-non-fallthrough exact-current finality classification returns the unchanged
-driver for `step`, and only then may generation preflight and the existing
-coordinator's complete independent verification begin. Acquisition can already
-have written source entries when a later driver gate declines the attempt.
+After both fills and the shared history borrow end, separately supplied
+consensus evidence enters the [direct-child driver bridge](fixed-validator-node-driver-v0.md#explicit-candidate-backed-direct-child-bridge).
+Pending outward commands transfer first; every non-fallthrough exact-current
+finality classification returns the unchanged driver for `step`; only then do
+generation preflight and complete independent live-branch verification begin.
+Source entries may already be durable when a later gate declines.
 
-Typed pre-effect rejection preserves the driver and completed source images
-for an explicit caller retry. Only a fully verified direct child advances the
-anchored finality and signer pairs; success returns the aligned child driver,
-preserves its volatile inbox custody, and queues the existing child round-zero
-Proposal arm. A later selected-head change makes the earlier acquisition
-snapshot nonauthoritative: an acquired candidate still must satisfy the live
-branch-relative finality checks. Fatal outcomes retain the existing consuming
-strict-reopen boundary. Neither finality success nor rejection mutates source
-entries, apart from existing live-handle poisoning on an integrity failure.
+The bridge preserves the unchanged driver on typed pre-effect rejection and
+consumes fatal outcomes under strict reopen. Only a verified direct child
+advances both anchored authority pairs, returns the aligned child driver with
+volatile inbox custody, and queues its child round-zero Proposal arm. A changed
+selected head invalidates reuse of the earlier acquisition snapshot. Success
+and rejection leave source entries unchanged, apart from existing live-handle
+poisoning on integrity failure.
 
 This composition adds no automatic acquisition, retry, target or peer choice,
 proposal or vote transport, evidence preference, cached validity, branch

@@ -51,9 +51,9 @@
 //! measurement and duration, key loading, automatic evidence acquisition,
 //! broader finality routing, and branch-selection policy to later components.
 
-mod fixed_validator_startup;
+mod fixed_validator;
 
-pub use fixed_validator_startup::{
+pub use fixed_validator::{
     FixedValidatorNodeBufferedProposalPrecommitErrorV0,
     FixedValidatorNodeBufferedProposalPrecommitOutcomeV0,
     FixedValidatorNodeBufferedProposalPrecommitRejectionV0,

@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::AppendPhase;
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -12,7 +15,7 @@ use naome_proof::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    AppendPhase, ArtifactChainJournal, ArtifactChainJournalError, ExclusiveLockError, StoreIo,
+    ArtifactChainJournal, ArtifactChainJournalError, ExclusiveLockError, StoreIo,
     open_exclusive_lock,
 };
 
@@ -790,14 +793,11 @@ impl<F: StoreIo> ArtifactPayloadStoreCore<F> {
 
         let commit_result = (|| -> io::Result<()> {
             self.file.seek(SeekFrom::Start(entry_offset))?;
-            self.file
-                .append_write_all(AppendPhase::Body, &payload_length_bytes)?;
-            self.file
-                .append_write_all(AppendPhase::Body, artifact_id.as_bytes())?;
-            self.file.append_write_all(AppendPhase::Body, payload)?;
-            self.file.append_sync_all(AppendPhase::Body)?;
-            self.file.append_write_all(AppendPhase::Commit, &digest)?;
-            self.file.append_sync_all(AppendPhase::Commit)?;
+            crate::store_io::append_body_and_commit(
+                &mut self.file,
+                &[&payload_length_bytes, artifact_id.as_bytes(), payload],
+                &digest,
+            )?;
             Ok(())
         })();
 

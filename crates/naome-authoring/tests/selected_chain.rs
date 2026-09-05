@@ -1,3 +1,11 @@
+#[path = "support/hex_decode.rs"]
+mod hex_decode;
+use hex_decode::hex32;
+
+#[path = "support/hex_encode.rs"]
+mod hex_encode;
+use hex_encode::hex_string;
+
 use std::env;
 use std::fs;
 use std::io;
@@ -212,17 +220,6 @@ fn assert_unknown_reference(
         )),
         other => panic!("expected unknown proof reference, got {other:?}"),
     }
-}
-
-fn hex32(encoded: &str) -> [u8; 32] {
-    assert_eq!(encoded.len(), 64);
-    let mut bytes = [0_u8; 32];
-    for (pair, byte) in encoded.as_bytes().chunks_exact(2).zip(&mut bytes) {
-        let high = char::from(pair[0]).to_digit(16).unwrap();
-        let low = char::from(pair[1]).to_digit(16).unwrap();
-        *byte = u8::try_from((high << 4) | low).unwrap();
-    }
-    bytes
 }
 
 #[test]
@@ -957,14 +954,4 @@ proof:
     );
     let replayed = compile_artifact_against_selected_chain(&cited_source, &reopened).unwrap();
     assert_eq!(replayed, cited);
-}
-
-fn hex_string(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut encoded, "{byte:02x}").unwrap();
-    }
-    encoded
 }

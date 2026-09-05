@@ -49,6 +49,13 @@ behaviours.
 
 ## Transport-neutral messages
 
+`naome-protocol` owns the four transport-neutral message contracts:
+`artifact_exchange`, `block_exchange`, `chain_head_exchange`, and
+`chain_head_announcement`. The workspace root reexports their existing module
+paths for compatibility. `naome-network` depends directly on `naome-protocol`;
+it owns authenticated sessions, framing, request custody, and resource limits.
+The message crate owns no runtime, socket, selected state, or economic authority.
+
 The enclosing transport supplies one complete message boundary.
 
 ### Artifact
@@ -125,7 +132,7 @@ The unavailable frame is exactly `00`; a found frame begins `80` and contains
 the 128 block bytes, for 129 bytes total. This one-byte prefix is not part of
 block identity.
 
-For the block golden in [Proof Protocol](proof-protocol.md), the request is:
+For the block golden in [Artifact Chain](artifact-chain.md#block-encoding-and-identity), the request is:
 
 ```text
 2d5b1570acc98fd873426f4f5148f8aa4c625997324c69cf96a108cc1b2e076d
