@@ -1,8 +1,8 @@
 # NAOME Artifact Chain Journal
 
 This document normatively defines local crash-consistent persistence for one
-selected linear artifact chain. The [Proof and Artifact Protocol](proof-protocol.md)
-owns block and artifact admission. The journal neither weakens those checks nor
+selected linear artifact chain. [Artifact Chain](artifact-chain.md) and
+[Artifact Admission](artifact-admission.md) own block and artifact admission. The journal neither weakens those checks nor
 defines fork choice, consensus, or finality.
 
 ## Ownership and authority
