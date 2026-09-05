@@ -176,6 +176,9 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
         Event::CurrentFinalityUnresolved => json!({"event": "current_finality_unresolved"}),
         Event::HigherEvidenceUnresolved => json!({"event": "higher_evidence_unresolved"}),
         Event::HigherRoundAdvanceRejected(_) => json!({"event": "higher_round_rejected"}),
+        Event::CurrentRoundFinalityRejected(_) => {
+            json!({"event": "current_round_finality_rejected"})
+        }
         Event::LowerRoundFinalityRejected(_) => json!({"event": "lower_round_finality_rejected"}),
         Event::CandidateBackedFinalityRejected(_) => {
             json!({"event": "candidate_finality_rejected"})

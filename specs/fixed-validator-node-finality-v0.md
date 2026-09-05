@@ -554,11 +554,12 @@ already received before the stop.
 
 ## Failure and restart
 
-The [direct lower-round driver bridge](fixed-validator-node-driver-v0.md#explicit-direct-strictly-lower-round-finality)
-owns the same certificate and exact-batch ingresses while the signing scope is
-private to a live driver. It preserves pending commands and non-fallthrough
+The [direct exact-current](fixed-validator-node-driver-v0.md#explicit-direct-exact-current-finality)
+and [lower-round driver bridges](fixed-validator-node-driver-v0.md#explicit-direct-strictly-lower-round-finality)
+own the same certificate and exact-batch ingresses while the signing scope is
+private to a live driver. Each preserves pending commands and non-fallthrough
 current-finality work before caller input, then applies the unchanged
-coordinator contracts here. Its additional timer and volatile-inbox lifecycle
+coordinator contracts here. Each additional timer and volatile-inbox lifecycle
 does not grant the caller a mutable scope or change verification, rejection,
 durable handoff, or strict-reopen authority.
 

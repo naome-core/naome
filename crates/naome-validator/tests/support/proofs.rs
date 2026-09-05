@@ -139,6 +139,14 @@ impl Proof {
             json!({"command": "advance_higher_quorum", "id": id, "certificate_file": format!("{prefix}.certificate")})
         }
     }
+    pub fn current_command(&self, id: u64, prefix: &str, batch: bool) -> Value {
+        if batch {
+            json!({"command": "finalize_current_votes", "id": id, "proof": Self::files(prefix)})
+        } else {
+            json!({"command": "finalize_current_quorum", "id": id, "control_file": format!("{prefix}.control"), "payload_file": format!("{prefix}.payload"), "certificate_file": format!("{prefix}.certificate")})
+        }
+    }
+
     pub fn lower_command(&self, id: u64, prefix: &str, batch: bool) -> Value {
         if batch {
             json!({"command": "finalize_lower_votes", "id": id, "evidence_round": self.round, "proof": Self::files(prefix)})

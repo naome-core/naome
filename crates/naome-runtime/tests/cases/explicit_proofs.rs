@@ -5,6 +5,9 @@ use naome_runtime::{
     FixedValidatorRuntimeRoutingErrorV0 as RoutingError,
 };
 
+#[path = "current_finality.rs"]
+mod current_finality;
+
 #[path = "terminal_proofs.rs"]
 mod terminal_proofs;
 
@@ -34,6 +37,21 @@ fn assert_positive_busy(
         ),
         Err(Refusal::Busy)
     ));
+    for batch in [false, true] {
+        let mut payload = vec![7; 13];
+        payload.reserve(23);
+        let original = allocations(&payload);
+        let outcome = if batch {
+            owner.commit_current_round_finality_vote_batch(&[0], payload, &[&[0]])
+        } else {
+            owner.commit_current_round_finality(&[0], payload, &[0])
+        };
+        let Err((Refusal::Busy, payload)) = outcome else {
+            panic!("preflight must return payload")
+        };
+        assert_eq!(allocations(&payload), original);
+        assert_eq!(payload, vec![7; 13]);
+    }
     for batch in [false, true] {
         let mut payload = vec![7; 13];
         payload.reserve(23);
@@ -440,7 +458,7 @@ fn direct_lower_proofs_select_from_each_due_phase_and_preserve_buffered_input() 
 }
 
 #[test]
-fn retained_current_finality_precedes_all_five_explicit_positive_proofs_without_a_step() {
+fn retained_current_finality_precedes_all_seven_explicit_positive_proofs_without_a_step() {
     let fixture = Fixture::new();
     let input = lower_proof(&fixture);
     let layout = TestLayout::new("runtime-proof-priority");
@@ -466,6 +484,8 @@ fn retained_current_finality_precedes_all_five_explicit_positive_proofs_without_
         let source_images = layout.source_images();
         assert!(matches!(owner.advance_to_higher_round_quorum(&[0]).unwrap(), Event::CurrentFinalityUnresolved));
         assert!(matches!(owner.advance_to_higher_round_vote_batch(&[&[0]], ConsensusRound::new(2), ConsensusVoteRole::Prevote, ConsensusVoteTarget::Nil).unwrap(), Event::CurrentFinalityUnresolved));
+        assert!(matches!(owner.commit_current_round_finality(&[0], vec![0], &[0]).unwrap(), Event::CurrentFinalityUnresolved));
+        assert!(matches!(owner.commit_current_round_finality_vote_batch(&[0], vec![0], &[&[0]]).unwrap(), Event::CurrentFinalityUnresolved));
         assert!(matches!(owner.commit_lower_round_finality(&[0], vec![0], &[0]).unwrap(), Event::CurrentFinalityUnresolved));
         assert!(matches!(owner.commit_lower_round_finality_vote_batch(&[0], vec![0], &[&[0]], ConsensusRound::new(0)).unwrap(), Event::CurrentFinalityUnresolved));
         assert!(matches!(owner.commit_candidate_backed_finality_vote_batch(&mut candidates, &mut payloads, block.id(), &[0], &[&[0]], ConsensusRound::new(0)).unwrap(), Event::CurrentFinalityUnresolved));

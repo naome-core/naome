@@ -128,6 +128,33 @@ pub(super) fn execute(
             );
             return Ok(proof_outcome(outcome, runtime, 0));
         }
+        Command::FinalizeCurrentQuorum {
+            control_file,
+            payload_file,
+            certificate_file,
+            ..
+        } => {
+            let control =
+                files::bytes(&base.join(control_file), CONSENSUS_PUSH_MAX_PROPOSAL_BYTES)?;
+            let payload = files::bytes(&base.join(payload_file), CONSENSUS_PUSH_MAX_PAYLOAD_BYTES)?;
+            let certificate = files::bytes(
+                &base.join(certificate_file),
+                VerifiedPrecommitCertificateV0::MAX_BYTE_LENGTH,
+            )?;
+            let outcome = runtime
+                .commit_current_round_finality(&control, payload, &certificate)
+                .map_err(|(reason, _payload)| reason);
+            return Ok(proof_outcome(outcome, runtime, 1));
+        }
+        Command::FinalizeCurrentVotes { proof, .. } => {
+            check_vote_count(&proof.vote_files)?;
+            let proof = read_proposal_votes(base, proof)?;
+            let refs = vote_refs(&proof.votes);
+            let outcome = runtime
+                .commit_current_round_finality_vote_batch(&proof.control, proof.payload, &refs)
+                .map_err(|(reason, _payload)| reason);
+            return Ok(proof_outcome(outcome, runtime, 1));
+        }
         Command::FinalizeLowerQuorum {
             control_file,
             payload_file,

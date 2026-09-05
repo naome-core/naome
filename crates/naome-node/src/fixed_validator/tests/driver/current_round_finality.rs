@@ -1,56 +1,23 @@
+use super::lower_round_finality::{Proof, drain_all, malformed, proof, retain_all, round_two};
 use super::*;
-
-#[derive(Clone)]
-pub(super) struct Proof {
-    pub(super) value: ConsensusValueV0,
-    pub(super) control: Vec<u8>,
-    pub(super) payload: Vec<u8>,
-    pub(super) certificate: Vec<u8>,
-    pub(super) votes: Vec<Vec<u8>>,
-    pub(super) round: u64,
-}
-
-pub(super) fn proof(
-    fixture: &Fixture,
-    branch: &FixedConsensusBranchV0,
-    round: u64,
-    axiom: ZfcAxiom,
-) -> Proof {
-    let (value, control, payload) = proposal_inputs(fixture, branch, round, axiom);
-    let (certificate, vote) = higher_round::quorum(
-        fixture,
-        round,
-        ConsensusVoteRole::Precommit,
-        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
-    );
-    Proof {
-        value,
-        control,
-        payload,
-        certificate,
-        votes: vec![vote],
-        round,
-    }
-}
 
 fn submit<'node>(
     driver: FixedValidatorNodeDriverV0<'node>,
     input: &Proof,
     batch: bool,
 ) -> Result<
-    FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0<'node>,
+    FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0<'node>,
     FixedValidatorNodeDriverStepErrorV0,
 > {
     if batch {
         let votes: Vec<&[u8]> = input.votes.iter().map(Vec::as_slice).collect();
-        driver.commit_lower_round_finality_vote_batch(
+        driver.commit_current_round_finality_vote_batch(
             &input.control,
             input.payload.clone(),
             &votes,
-            ConsensusRound::new(input.round),
         )
     } else {
-        driver.commit_lower_round_finality(
+        driver.commit_current_round_finality(
             &input.control,
             input.payload.clone(),
             &input.certificate,
@@ -58,106 +25,13 @@ fn submit<'node>(
     }
 }
 
-pub(super) fn malformed(input: &Proof) -> Proof {
-    let mut input = input.clone();
-    input.control = vec![0];
-    input.payload = vec![0];
-    input.certificate = vec![0];
-    input.votes = vec![vec![0]];
-    input.round = u64::MAX;
-    input
-}
-
-pub(super) struct RetainedInputs {
-    pub(super) higher: Proof,
-    pub(super) current: Proof,
-    pub(super) nil: Vec<u8>,
-}
-
-pub(super) fn retain_all<'node>(
-    mut driver: FixedValidatorNodeDriverV0<'node>,
-    fixture: &Fixture,
-    branch: &FixedConsensusBranchV0,
-) -> (FixedValidatorNodeDriverV0<'node>, RetainedInputs) {
-    let higher = proof(fixture, branch, 3, ZfcAxiom::PowerSet);
-    let current = proof(fixture, branch, 2, ZfcAxiom::Union);
-    let nil = signed_vote_bytes(
-        fixture.context,
-        driver.position(),
-        ConsensusVoteRole::Precommit,
-        ConsensusVoteTarget::Nil,
-        &fixture.signing_key(),
-    );
-    (driver, _) = admit(driver, proposal_event(3, &higher.control, &higher.payload));
-    (driver, _) = admit(
-        driver,
-        current_proposal_event(&current.control, &current.payload),
-    );
-    (driver, _) = admit(
-        driver,
-        current_finality_proposal_event(&current.control, &current.payload),
-    );
-    (driver, _) = admit(driver, current_nil_precommit_event(&nil));
-    (
-        driver,
-        RetainedInputs {
-            higher,
-            current,
-            nil,
-        },
-    )
-}
-
-pub(super) fn drain_all<'node>(
-    driver: FixedValidatorNodeDriverV0<'node>,
-    retained: RetainedInputs,
-) -> FixedValidatorNodeDriverV0<'node> {
-    let (driver, drained) = driver.drain_inbox_and_reset().into_parts();
-    assert_eq!(
-        drained_contents(drained),
-        (
-            vec![(retained.higher.control, retained.higher.payload)],
-            vec![]
-        )
-    );
-    let (driver, drained) = driver.drain_current_inbox_and_reset().into_parts();
-    assert_eq!(
-        drained_current_contents(drained),
-        (
-            vec![(
-                retained.current.control.clone(),
-                retained.current.payload.clone()
-            )],
-            vec![],
-            vec![]
-        )
-    );
-    let (driver, drained) = driver.drain_current_finality_inbox_and_reset().into_parts();
-    assert_eq!(
-        drained_current_finality_contents(drained),
-        (
-            vec![(retained.current.control, retained.current.payload)],
-            vec![]
-        )
-    );
-    let (driver, drained) = driver
-        .drain_current_nil_precommit_inbox_and_reset()
-        .into_parts();
-    assert_eq!(
-        drained_current_nil_precommit_contents(drained),
-        vec![retained.nil]
-    );
-    assert_eq!(candidate_backed::custody(&driver), ([0; 4], [0; 3]));
-    *driver
-}
-
 #[test]
-fn lower_finality_rejections_preserve_due_custody_and_allow_exact_retry() {
+fn current_finality_rejections_preserve_due_custody_and_allow_exact_retry() {
     let fixture = Fixture::new();
     let branch = fixed_branch(&fixture);
-    let valid = proof(&fixture, &branch, 1, ZfcAxiom::Pairing);
+    let valid = proof(&fixture, &branch, 2, ZfcAxiom::Pairing);
     for batch in [false, true] {
-        let layout = TestLayout::new("driver-lower-finality-retry");
+        let layout = TestLayout::new("driver-current-finality-retry");
         let ready = fixture
             .provision(&layout, 8)
             .create(fixture.signing_key())
@@ -168,28 +42,27 @@ fn lower_finality_rejections_preserve_due_custody_and_allow_exact_retry() {
             let (mut driver, _) = admit_due(driver, timeout);
             let images = layout.images();
             let custody = candidate_backed::custody(&driver);
-            for mode in ["proposal", "payload", "framing", "signature", "equal", "future", "route-mismatch", "duplicate"] {
-                if !batch && matches!(mode, "route-mismatch" | "duplicate") { continue; }
+            for mode in ["proposal", "payload", "framing", "signature", "older", "future", "wrong-role", "duplicate", "empty"] {
+                if !batch && matches!(mode, "duplicate" | "empty") { continue; }
                 let mut input = valid.clone();
                 match mode {
                     "proposal" => input.control = vec![0],
                     "payload" => input.payload = vec![0],
                     "framing" => { input.certificate = vec![0]; input.votes = vec![vec![0]]; }
                     "signature" => { *input.certificate.last_mut().unwrap() ^= 1; *input.votes[0].last_mut().unwrap() ^= 1; }
-                    "equal" => input = proof(&fixture, &branch, 2, ZfcAxiom::Pairing),
+                    "older" => input = proof(&fixture, &branch, 1, ZfcAxiom::Pairing),
                     "future" => input = proof(&fixture, &branch, 3, ZfcAxiom::Pairing),
-                    "route-mismatch" => input.round = 0,
+                    "wrong-role" => { let (certificate, vote) = higher_round::quorum(&fixture, 2, ConsensusVoteRole::Prevote,
+                        ConsensusVoteTarget::Proposal(valid.value.proposal_signing_root())); input.certificate = certificate; input.votes = vec![vote]; },
+                    "empty" => input.votes.clear(),
                     "duplicate" => input.votes.push(input.votes[0].clone()),
                     _ => unreachable!(),
                 }
                 driver = match submit(driver, &input, batch).unwrap() {
-                    FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0::Rejected { driver, rejection } => {
-                        if matches!(mode, "equal" | "future") {
-                            assert!(matches!(*rejection, FixedValidatorNodeLowerRoundFinalityRejectionV0::NotEarlierThanSigner { .. }));
-                        } else {
-                            assert!(matches!(*rejection, FixedValidatorNodeLowerRoundFinalityRejectionV0::Evidence(_)
-                                | FixedValidatorNodeLowerRoundFinalityRejectionV0::PrecommitBatch(_)));
-                        }
+                    FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0::Rejected { driver, rejection } => {
+                        assert!(matches!(*rejection, FixedValidatorNodeCurrentRoundFinalityRejectionV0::Proposal(_)
+                            | FixedValidatorNodeCurrentRoundFinalityRejectionV0::PrecommitCertificate(_)
+                            | FixedValidatorNodeCurrentRoundFinalityRejectionV0::PrecommitBatch(_)));
                         *driver
                     }
                     _ => panic!("invalid {mode} must return the driver before effects"),
@@ -214,12 +87,12 @@ fn lower_finality_rejections_preserve_due_custody_and_allow_exact_retry() {
 }
 
 #[test]
-fn lower_finality_preserves_four_saturated_inboxes_and_their_exact_bytes() {
+fn current_finality_preserves_four_saturated_inboxes_and_their_exact_bytes() {
     let fixture = Fixture::new();
     let branch = fixed_branch(&fixture);
-    let input = proof(&fixture, &branch, 1, ZfcAxiom::Pairing);
+    let input = proof(&fixture, &branch, 2, ZfcAxiom::Pairing);
     for batch in [false, true] {
-        let layout = TestLayout::new("driver-lower-finality-saturation");
+        let layout = TestLayout::new("driver-current-finality-saturation");
         let ready = fixture
             .provision(&layout, 8)
             .create(fixture.signing_key())
@@ -296,12 +169,12 @@ fn lower_finality_preserves_four_saturated_inboxes_and_their_exact_bytes() {
 }
 
 #[test]
-fn lower_finality_generation_exhaustion_consumes_before_input_or_writes() {
+fn current_finality_generation_exhaustion_consumes_before_input_or_writes() {
     let fixture = Fixture::new();
     let branch = fixed_branch(&fixture);
-    let invalid = malformed(&proof(&fixture, &branch, 1, ZfcAxiom::Pairing));
+    let invalid = malformed(&proof(&fixture, &branch, 2, ZfcAxiom::Pairing));
     for batch in [false, true] {
-        let layout = TestLayout::new("driver-lower-finality-generation");
+        let layout = TestLayout::new("driver-current-finality-generation");
         let ready = fixture
             .provision(&layout, 8)
             .create(fixture.signing_key())
@@ -340,13 +213,13 @@ fn lower_finality_generation_exhaustion_consumes_before_input_or_writes() {
 }
 
 #[test]
-fn lower_finality_anchor_failures_preserve_stage_evidence_and_require_strict_reopen() {
+fn current_finality_anchor_failures_preserve_stage_evidence_and_require_strict_reopen() {
     let fixture = Fixture::new();
     let branch = fixed_branch(&fixture);
-    let input = proof(&fixture, &branch, 1, ZfcAxiom::Pairing);
+    let input = proof(&fixture, &branch, 2, ZfcAxiom::Pairing);
     for batch in [false, true] {
         for fail_finality in [false, true] {
-            let layout = TestLayout::new("driver-lower-finality-anchor");
+            let layout = TestLayout::new("driver-current-finality-anchor");
             let ready = fixture
                 .provision(&layout, 8)
                 .create(fixture.signing_key())
@@ -364,8 +237,8 @@ fn lower_finality_anchor_failures_preserve_stage_evidence_and_require_strict_reo
                 let sequence = u64::from_be_bytes(bytes[offset..offset + 8].try_into().unwrap());
                 let collision = next_anchor_collision(directory, sequence + 1);
                 let error = match submit(driver, &input, batch) {
-                    Err(FixedValidatorNodeDriverStepErrorV0::LowerRoundFinality(source)) => match *source {
-                        FixedValidatorNodeLowerRoundFinalityErrorV0::Finality(source) => source,
+                    Err(FixedValidatorNodeDriverStepErrorV0::CurrentFinality(source)) => match *source {
+                        FixedValidatorNodeCurrentRoundFinalityErrorV0::Finality(source) => source,
                         other => panic!("expected finality-stage failure: {other:?}"),
                     },
                     _ => panic!("anchor failure must return neither driver nor success command"),
@@ -377,7 +250,7 @@ fn lower_finality_anchor_failures_preserve_stage_evidence_and_require_strict_reo
                     (false, FixedValidatorNodeFinalityErrorV0::SignerHeightPrepare { selection, source }) => {
                         assert!(matches!(*selection, FixedValidatorNodeFinalitySelectionV0::Finalized {
                             position, ancestry_id, ..
-                        } if position == round_at(&branch, 1).position() && ancestry_id == input.value.ancestry_id()));
+                        } if position == round_at(&branch, 2).position() && ancestry_id == input.value.ancestry_id()));
                         assert!(matches!(*source, FixedValidatorVoteSafetyJournalErrorV0::Commit { .. }));
                     }
                     (_, other) => panic!("wrong durable failure stage: {other:?}"),
@@ -414,38 +287,13 @@ fn lower_finality_anchor_failures_preserve_stage_evidence_and_require_strict_reo
     }
 }
 
-pub(super) fn round_two<'node>(
-    scope: FixedValidatorNodeSigningScopeV0<'node>,
-    limit: usize,
-) -> (
-    FixedValidatorNodeDriverV0<'node>,
-    FixedValidatorNodePhaseTimeoutV0,
-) {
-    let (driver, timeout) = step_arm(driver_with_all_limits(
-        scope,
-        limit,
-        1 << 20,
-        limit,
-        1 << 20,
-        limit,
-        1 << 20,
-        limit,
-        1 << 20,
-        4,
-    ));
-    let (driver, timeout) = close_empty_round(driver, timeout);
-    let (driver, timeout) = close_empty_round(driver, timeout);
-    assert_eq!(driver.position().round(), ConsensusRound::new(2));
-    (driver, timeout)
-}
-
 fn finalized<'node>(
-    result: FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0<'node>,
+    result: FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0<'node>,
     branch: &FixedConsensusBranchV0,
     input: &Proof,
 ) -> FixedValidatorNodeDriverV0<'node> {
     match result {
-        FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0::Finality { driver, selection } => {
+        FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0::Finality { driver, selection } => {
             let round = round_at(branch, input.round);
             let expected = round
                 .decode_and_verify_proposal_control(&input.control, input.payload.clone())
@@ -460,20 +308,20 @@ fn finalized<'node>(
             );
             *driver
         }
-        _ => panic!("complete direct lower-round proof must finalize"),
+        _ => panic!("complete direct current-round proof must finalize"),
     }
 }
 
 #[test]
-fn lower_finality_forms_match_from_every_phase_and_due_state_and_reopen() {
+fn current_finality_forms_match_from_every_phase_and_due_state_and_reopen() {
     let fixture = Fixture::new();
     let branch = fixed_branch(&fixture);
-    let input = proof(&fixture, &branch, 1, ZfcAxiom::Pairing);
+    let input = proof(&fixture, &branch, 2, ZfcAxiom::Pairing);
     for phase_steps in 0..=2 {
         for due in [false, true] {
             let mut reference_images = None;
             for batch in [false, true] {
-                let layout = TestLayout::new("driver-lower-finality-handoff");
+                let layout = TestLayout::new("driver-current-finality-handoff");
                 let ready = fixture
                     .provision(&layout, 8)
                     .create(fixture.signing_key())
@@ -569,10 +417,10 @@ fn lower_finality_forms_match_from_every_phase_and_due_state_and_reopen() {
 }
 
 #[test]
-fn lower_finality_waits_for_every_pending_command_without_losing_publication() {
+fn current_finality_waits_for_every_pending_command_without_losing_publication() {
     let fixture = Fixture::new();
     let branch = fixed_branch(&fixture);
-    let invalid = malformed(&proof(&fixture, &branch, 1, ZfcAxiom::Pairing));
+    let invalid = malformed(&proof(&fixture, &branch, 2, ZfcAxiom::Pairing));
     let proposal = proof(&fixture, &branch, 0, ZfcAxiom::Union);
     let higher = proof(&fixture, &branch, 2, ZfcAxiom::PowerSet);
     let (_, higher_prevote) = higher_round::quorum(
@@ -583,7 +431,7 @@ fn lower_finality_waits_for_every_pending_command_without_losing_publication() {
     );
     for batch in [false, true] {
         for mode in ["arm", "prevote", "precommit", "higher", "proposal"] {
-            let layout = TestLayout::new("driver-lower-finality-pending");
+            let layout = TestLayout::new("driver-current-finality-pending");
             let ready = fixture
                 .provision(&layout, 8)
                 .create(fixture.signing_key())
@@ -633,7 +481,7 @@ fn lower_finality_waits_for_every_pending_command_without_losing_publication() {
                     let due = driver.timeout_is_due();
                     driver.set_timer_generation_for_test(u64::MAX);
                     driver = match submit(driver, &invalid, batch).unwrap() {
-                        FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0::CommandPending {
+                        FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0::CommandPending {
                             driver,
                         } => *driver,
                         _ => panic!("pending {mode} must precede generation and malformed input"),
@@ -710,7 +558,7 @@ fn lower_finality_waits_for_every_pending_command_without_losing_publication() {
 }
 
 #[test]
-fn lower_finality_preserves_every_non_fallthrough_current_finality_class() {
+fn current_finality_preserves_retained_missing_ready_conflicting_and_pair_priority() {
     let fixture = Fixture::new();
     let branch = fixed_branch(&fixture);
     let left = proof(&fixture, &branch, 2, ZfcAxiom::Pairing);
@@ -718,7 +566,7 @@ fn lower_finality_preserves_every_non_fallthrough_current_finality_class() {
     let invalid = malformed(&proof(&fixture, &branch, 1, ZfcAxiom::PowerSet));
     for batch in [false, true] {
         for mode in ["missing", "ready", "conflicting", "pair", "saturated-pair"] {
-            let layout = TestLayout::new("driver-lower-finality-retained");
+            let layout = TestLayout::new("driver-current-finality-retained");
             let ready = fixture
                 .provision(&layout, 8)
                 .create(fixture.signing_key())
@@ -751,7 +599,7 @@ fn lower_finality_preserves_every_non_fallthrough_current_finality_class() {
                 let classification = driver.classify_current_finality_evidence().unwrap();
                 driver.set_timer_generation_for_test(u64::MAX);
                 driver = match submit(driver, &invalid, batch).unwrap() {
-                    FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0::CurrentFinalityUnresolved { driver } => *driver,
+                    FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0::CurrentFinalityUnresolved { driver } => *driver,
                     _ => panic!("retained {mode} must precede generation and input inspection"),
                 };
                 assert_eq!(driver.position(), timeout.position());
@@ -777,5 +625,35 @@ fn lower_finality_preserves_every_non_fallthrough_current_finality_class() {
                 }
             }).unwrap();
         }
+    }
+}
+
+#[test]
+fn saturated_unique_retained_proof_falls_through_without_granting_pair_priority() {
+    let fixture = Fixture::new();
+    let branch = fixed_branch(&fixture);
+    let retained = proof(&fixture, &branch, 2, ZfcAxiom::Pairing);
+    let explicit = proof(&fixture, &branch, 2, ZfcAxiom::Union);
+    for batch in [false, true] {
+        let layout = TestLayout::new("driver-current-finality-saturated-unique");
+        let ready = fixture
+            .provision(&layout, 8)
+            .create(fixture.signing_key())
+            .unwrap();
+        ready.run_with_signing_session(|scope| {
+            let (mut driver, _) = round_two(scope, 2);
+            (driver, _) = admit(driver, current_finality_proposal_event(&retained.control, &retained.payload));
+            (driver, _) = admit(driver, current_finality_precommit_event(&retained.votes[0]));
+            assert!(matches!(driver.classify_current_finality_evidence().unwrap(), FixedValidatorNodeDriverCurrentFinalityClassificationV0::Ready { .. }));
+            driver = reject_current_finality_precommit(driver, &explicit.votes[0], |rejection| {
+                assert!(matches!(rejection, FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityInboxSaturated { newly_saturated: true, .. }));
+            });
+            let custody = candidate_backed::custody(&driver);
+            assert!(matches!(driver.classify_current_finality_evidence().unwrap(), FixedValidatorNodeDriverCurrentFinalityClassificationV0::Saturated { .. }));
+            let driver = finalized(submit(driver, &explicit, batch).unwrap(), &branch, &explicit);
+            assert_eq!(candidate_backed::custody(&driver), custody);
+            let (_, drained) = driver.drain_current_finality_inbox_and_reset().into_parts();
+            assert_eq!(drained_current_finality_contents(drained), (vec![(retained.control.clone(), retained.payload.clone())], retained.votes.clone()));
+        }).unwrap();
     }
 }

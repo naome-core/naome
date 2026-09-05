@@ -29,6 +29,7 @@ use super::finality::{candidate_backed_batch_finality_inputs, expect_continuatio
 use super::*;
 
 mod candidate_backed;
+mod current_round_finality;
 mod current_round_pair;
 mod higher_round;
 mod lower_round_finality;

@@ -253,6 +253,8 @@ fn in_flight_current_publication_preserves_custody_through_pair_rejection_and_ha
         higher.higher_command(6, "higher", true),
         first.lower_command(7, "first", false),
         first.lower_command(8, "first", true),
+        first.current_command(80, "first", false),
+        first.current_command(81, "first", true),
     ] {
         let outcome = result(&mut node, command);
         assert_eq!(outcome["event"], "proof_refused");
