@@ -7,6 +7,7 @@ use naome_node::{
     FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0 as CandidateConflict,
     FixedValidatorNodeDriverCandidateBackedFinalityErrorV0,
     FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0 as CandidateFinality,
+    FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0 as CurrentConflict,
     FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0 as HigherAdvance,
     FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0 as LowerFinality,
     FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0 as LowerConflict,
@@ -165,6 +166,57 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
                 }
                 Ok(other) => Event::UnsupportedCandidateBackedConflict(Box::new(other)),
                 Err(error) => Event::Fatal(Box::new(Failure::CandidateBackedConflict(error))),
+            },
+        )
+    }
+
+    /// Checks two complete proofs against the driver-derived exact current round.
+    /// Pending driver commands are the sole gate; publication, pending arm,
+    /// buffered input and due state cannot suppress joint verification. Refusal
+    /// refunds both original payload allocations in order. After invocation the
+    /// driver consumes them, restoring itself only on typed pre-effect rejection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_current_round_preselection_conflict_vote_batches(
+        &mut self,
+        first_canonical_proposal_control_bytes: &[u8],
+        first_canonical_artifact_bytes: Vec<u8>,
+        first_canonical_signed_precommits: &[&[u8]],
+        second_canonical_proposal_control_bytes: &[u8],
+        second_canonical_artifact_bytes: Vec<u8>,
+        second_canonical_signed_precommits: &[&[u8]],
+    ) -> Result<Event<'node>, (ProofRefusal, Vec<u8>, Vec<u8>)> {
+        if let Err(reason) = self.proof_command_gate() {
+            return Err((
+                reason,
+                first_canonical_artifact_bytes,
+                second_canonical_artifact_bytes,
+            ));
+        }
+        let driver = self.driver.take().unwrap();
+        Ok(
+            match driver.commit_current_round_preselection_conflict_vote_batches(
+                first_canonical_proposal_control_bytes,
+                first_canonical_artifact_bytes,
+                first_canonical_signed_precommits,
+                second_canonical_proposal_control_bytes,
+                second_canonical_artifact_bytes,
+                second_canonical_signed_precommits,
+            ) {
+                Ok(CurrentConflict::CommandPending { driver }) => {
+                    self.driver = Some(*driver);
+                    Event::ExplicitCommandPending
+                }
+                Ok(CurrentConflict::Rejected { driver, rejection }) => {
+                    self.driver = Some(*driver);
+                    Event::CurrentRoundPreselectionConflictRejected(rejection)
+                }
+                Ok(CurrentConflict::FinalityStopped(halt)) => {
+                    Event::Fatal(Box::new(Failure::FinalityStopped(halt)))
+                }
+                Ok(other) => Event::UnsupportedCurrentRoundPreselectionConflict(Box::new(other)),
+                Err(error) => {
+                    Event::Fatal(Box::new(Failure::CurrentRoundPreselectionConflict(error)))
+                }
             },
         )
     }

@@ -1,6 +1,9 @@
 use super::*;
 use naome_runtime::FixedValidatorRuntimeFailureV0 as Failure;
 
+#[path = "current_pair.rs"]
+mod current_pair;
+
 fn conflicting_proofs(fixture: &Fixture) -> [Proof; 2] {
     [1, 2].map(|axiom| {
         let payload = naome_proof::ArtifactPayload::Proof(

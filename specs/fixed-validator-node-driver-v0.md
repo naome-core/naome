@@ -32,9 +32,10 @@ signed-vote or signed-proposal command. It does not expose the owned signing sco
 alternative caller-controlled path.
 
 The caller-selected action exceptions are the candidate-backed and direct
-strictly lower-round single-proof finality bridges, strictly lower-round
-paired-conflict bridge, explicit higher-round quorum catch-up methods, and
-explicit current-round proposal authoring outside ordinary `step` selection.
+strictly lower-round single-proof finality bridges, paired-conflict bridges
+for exact-current and strictly lower rounds, explicit higher-round quorum
+catch-up methods, and explicit current-round proposal authoring outside ordinary
+`step` selection.
 All are available only after any pending outward command has transferred,
 retain no evidence, use the driver's existing inclusive round-work ceiling,
 and delegate every applicable proposal, source, positioned-fixed-set, batch,
@@ -43,9 +44,8 @@ historical selected-sibling bridge cannot return a driver after proof processing
 begins. The positive direct-child bridges additionally preserve every
 non-fallthrough current-finality classification ahead of caller choice, and
 return a driver after proof processing only for a typed pre-effect
-rejection or a completed child-height handoff. The lower-round paired bridge
-instead submits two complete proofs for a
-terminal neutral halt regardless of current-round inbox state, restoring the
+rejection or a completed child-height handoff. Both explicit paired bridges
+instead submit two complete proofs for a terminal neutral halt regardless of current-round inbox state, restoring the
 driver only on typed pre-effect rejection. Explicit higher-round catch-up
 preserves command, current-finality, and retained higher-proposal priority before
 checkpointing a fully authenticated round and replacing the timer.
@@ -64,8 +64,8 @@ complete proposal-backed roots instead run through the neutral paired halt and
 return no driver or selected branch. An explicit caller may separately submit
 one exact candidate-backed direct-child proposal and precommit batch after
 command custody and only when current-finality classification would otherwise
-fall through. An explicit lower-round paired-conflict submission may instead
-enter the fully verifying neutral halt after command custody, without waiting
+fall through. An explicit exact-current or lower-round paired-conflict
+submission may instead enter the fully verifying neutral halt after command custody, without waiting
 for current-round finality classification. An explicit canonical higher-round
 certificate or exact routed vote batch may separately advance to the evidence's
 authenticated phase under the priority and lifecycle contract below. Explicit
@@ -411,6 +411,38 @@ automatic routing, retry, competing-proof arbitration, cross-round conflict
 interpretation, source preference, networking, multi-height promotion, repair,
 or production runtime. They are separate complete-input ingresses and do not
 assert that no other finality evidence exists.
+
+## Explicit exact-current paired-conflict bridge
+
+`PROD-020-052` adds
+`FixedValidatorNodeDriverV0::commit_current_round_preselection_conflict_vote_batches`.
+It consumes the driver and accepts two complete proposal-control, owned artifact-
+payload, and exact signed-precommit-batch triples. It accepts no caller round,
+root, parent, or winner. The existing exact-current paired coordinator derives
+one live owned round under the driver's construction-time inclusive work ceiling
+and independently verifies both complete proofs against that same round.
+
+A pending outward command is the sole gate and returns `CommandPending` before
+proof inspection. Otherwise this terminal attempt proceeds in every phase and
+due state, including empty, missing-proposal, uniquely ready, paired, saturated,
+or other retained inbox states. It does not classify retained current finality,
+run `step`, or reserve a successor timer generation. In particular, it never
+commits a verified first half before verifying the second half.
+
+A typed first- or second-proof pre-effect rejection restores the exact driver,
+including all inbox contents, accounting, latches, phase, timer, and accepted due
+state. Owned payload arguments are consumed on every driver outcome. Two fully
+verified distinct proofs enter the existing canonically ordered neutral paired
+halt and signer stop without selecting either value. Identical valid proofs
+instead reach the existing consuming non-distinct error with unchanged authority
+files; that error still returns no live driver. Other coordinator or durability
+errors likewise consume the driver. Strict anchored reopen classifies the
+surviving durable prefix, including incomplete finality-to-signer anchor handoff.
+
+This bridge adds no proof collection, inbox insertion or disposal, automatic
+invocation, acquisition, routing, retry, cross-round pairing, evidence preference,
+selection, repair, or dynamic-validator authority. Ordinary `step` priority is
+unchanged. The runtime and local process expose this same explicit batch contract.
 
 ## Explicit strictly lower-round paired-conflict bridge
 
@@ -1068,8 +1100,8 @@ This driver does not define or perform:
   finality acquisition or routing, automatic acquisition or routing for
   candidate-backed direct-child or conflict evidence or a missing proposal, durable
   handling of incomplete or broader multi-root cases beyond the exact retained
-  proposal-backed pair and explicit lower-round paired submission, caller-selected
-  branch or winner choice, rollback, reorganization, candidate promotion,
+  proposal-backed pair and explicit exact-current or lower-round paired submissions,
+  caller-selected branch or winner choice, rollback, reorganization, candidate promotion,
   checkpoint synchronization, or store repair; the explicit
   direct-child bridges add only caller-ordered submission after current-finality
   fallthrough and do not join the ordinary `step` selection order;

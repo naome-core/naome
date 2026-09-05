@@ -2,7 +2,7 @@ use super::*;
 use naome_consensus::{ConsensusVoteRole as Role, VerifiedQuorumCertificateV0};
 use serde_json::Value;
 
-fn result(node: &mut Process, command: Value) -> Value {
+pub(super) fn result(node: &mut Process, command: Value) -> Value {
     let id = command["id"].clone();
     node.send(command);
     node.until(|value| value["event"] == "command_result" && value["id"] == id)["outcome"].clone()

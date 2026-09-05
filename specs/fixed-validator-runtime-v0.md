@@ -20,6 +20,8 @@ responses on this same network, with caller-owned lower workflow progress.
 runtime inside a native async callback. `PROD-020-049` supplies one separately
 specified [local Unix executable](fixed-validator-process-v0.md) with explicit
 configuration, operator input, and process shutdown around that lifetime.
+`PROD-020-052` adds the explicit exact-current paired-conflict batch operation
+through this same runtime and local process.
 
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,
@@ -237,7 +239,7 @@ publication does not read a source store again.
 
 ## Explicit complete-proof operations
 
-All seven methods are synchronous caller selections. They neither observe a
+All eight methods are synchronous caller selections. They neither observe a
 clock or network event nor call `step` before delegation. Controls, certificates,
 exact signed-vote batches, explicit routes, targets, and borrowed stores pass
 unchanged into the corresponding existing driver method. The runtime exposes no
@@ -250,6 +252,7 @@ mutable driver or general signing-scope callback.
 | `commit_candidate_backed_finality_vote_batch` | Exact candidate-backed direct-child finality |
 | `commit_candidate_backed_finality_conflict_vote_batch` | Historical selected-sibling conflict |
 | `commit_lower_round_preselection_conflict_vote_batches` | Independently verified lower-round pair and neutral halt |
+| `commit_current_round_preselection_conflict_vote_batches` | Independently verified exact-current pair and neutral halt, with no caller round |
 
 The five positive methods return runtime `Busy` while a publication, pending
 runtime arm, or pending driver command remains owned. An unavailable driver
@@ -265,9 +268,9 @@ step that work or consume the buffered input first.
 An explicit terminal conflict attempt waits only for pending driver commands to
 transfer. Once they have transferred, a publication, in-flight ticket, pending
 runtime arm, buffered input, phase, or expired/accepted due state does not delay
-the attempt. This exception applies only to the two explicitly called conflict
+the attempt. This exception applies only to the three explicitly called conflict
 methods; neither raw admission nor ordinary polling automatically invokes it.
-A runtime refusal of a lower pair returns both original owned payloads in
+A runtime refusal of either pair returns both original owned payload allocations in
 argument order. After either positive or terminal delegation, the driver's
 existing consuming-input contract applies to every outcome.
 
@@ -282,13 +285,13 @@ queued destination arm. Buffered input remains raw across the operation and
 later receives ordinary admission against the resulting state; it is neither
 promoted, discarded, nor reinterpreted as a complete proof.
 
-A lower-pair pre-effect rejection restores the driver, including while a
+Either pair's pre-effect rejection restores the driver, including while a
 publication remains outstanding. A verified distinct pair records the existing
 neutral `PreselectionPair` halt; neither input becomes a selected winner. A
 verified historical candidate conflict records the existing `SelectedSibling`
 halt against the retained selected parent. Both preserve the exact paired
 finality-halt and signer-stop evidence. Candidate-conflict processing consumes
-the driver even on a pre-append error; a lower pair also consumes it once sealed
+the driver even on a pre-append error; either pair also consumes it once sealed
 evidence enters its finality coordinator. These existing error distinctions are
 returned without inventing recovery.
 
@@ -521,7 +524,15 @@ payloads on runtime backpressure. `tests/cases/terminal_proofs.rs` uses separate
 anchored conflicting proposals and real in-flight Noise tickets to check both
 terminal paths, exact halt identities, consuming no-write errors, strict reopen,
 and independent input/publication custody; the lower pair also retains a real
-released `Some` token. Queued sends are not claimed to have been recalled.
+released `Some` token. `tests/cases/current_pair.rs` checks exact-current pair
+refusals with both original payload allocation identities, typed rejection before
+and after local publication admission, and neutral halt versus consuming
+non-distinct failure. The real higher-round publication carries a released
+`Some` token, one in-flight peer and one unattempted peer. Rejection and terminal
+custody checks preserve the timer, buffered-input allocation, publication bytes
+and token, local-attempt marker, and peer states; strict reopen distinguishes
+the exact anchored halt from a healthy unchanged prefix. Queued sends are not
+claimed to have been recalled.
 
 `tests/cases/artifact_exchange.rs` uses two intact Unix Noise runtime owners to
 fill initially empty candidate and payload stores through explicit source

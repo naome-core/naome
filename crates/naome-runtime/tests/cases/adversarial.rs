@@ -693,6 +693,16 @@ fn empty_round(mut driver: Driver<'_>) -> Driver<'_> {
 }
 
 fn higher_messages(fixture: &Fixture) -> [ConsensusPushMessage; 2] {
+    higher_messages_for_payload(fixture, pairing_payload(), 2)
+        .try_into()
+        .unwrap()
+}
+
+fn higher_messages_for_payload(
+    fixture: &Fixture,
+    payload: Vec<u8>,
+    message_count: usize,
+) -> Vec<ConsensusPushMessage> {
     let layout = TestLayout::new("higher-fixture");
     let ready = provision(
         fixture.definition,
@@ -730,7 +740,6 @@ fn higher_messages(fixture: &Fixture) -> [ConsensusPushMessage; 2] {
                 )
                 .unwrap();
                 assert!(matches!(owner.next_event().await, Event::TimerArmed(_)));
-                let payload = pairing_payload();
                 let block = selected.prepare_block(artifact_id(&payload)).unwrap();
                 assert!(matches!(
                     owner.author_proposal(FixedValidatorProposalSourceV0::Fresh {
@@ -744,8 +753,8 @@ fn higher_messages(fixture: &Fixture) -> [ConsensusPushMessage; 2] {
                     match owner.next_event().await {
                         Event::PublicationComplete(publication) => {
                             messages.push(publication.message().copy_message().unwrap());
-                            if messages.len() == 2 {
-                                return messages.try_into().unwrap();
+                            if messages.len() == message_count {
+                                return messages;
                             }
                         }
                         event => check_local(event),

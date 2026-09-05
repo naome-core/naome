@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+#[path = "cases/current_pair.rs"]
+mod current_pair;
 #[path = "cases/explicit_proofs.rs"]
 mod explicit_proofs;
 #[path = "cases/inbox_disposal.rs"]

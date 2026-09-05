@@ -72,6 +72,13 @@ pub(super) enum Command {
         #[serde(deserialize_with = "object")]
         second: ProposalVoteFiles,
     },
+    HaltCurrentConflict {
+        id: u64,
+        #[serde(deserialize_with = "object")]
+        first: ProposalVoteFiles,
+        #[serde(deserialize_with = "object")]
+        second: ProposalVoteFiles,
+    },
 }
 
 #[derive(Clone, Copy, Deserialize, serde::Serialize)]
@@ -190,7 +197,8 @@ impl Command {
             | Self::AdvanceHigherVotes { id, .. }
             | Self::FinalizeLowerQuorum { id, .. }
             | Self::FinalizeLowerVotes { id, .. }
-            | Self::HaltLowerConflict { id, .. } => *id,
+            | Self::HaltLowerConflict { id, .. }
+            | Self::HaltCurrentConflict { id, .. } => *id,
         }
     }
 }

@@ -204,7 +204,10 @@ the caller. A classifier may supply the input bytes, but possession, inbox
 retention, saturation state, peer provenance, caller ordering, and vote ordering
 remain non-authoritative. Successful inputs are completely rechecked and
 canonicalized, while rejection diagnostics may preserve applicable side or
-input-order detail.
+input-order detail. `PROD-020-052` composes the exact-batch method through the
+[explicit driver bridge](fixed-validator-node-driver-v0.md#explicit-exact-current-paired-conflict-bridge),
+runtime, and local process without changing this verification or persistence
+contract.
 
 ## Strictly lower-round admission
 
@@ -472,7 +475,7 @@ beside this metadata after the ordered signer handoff completes.
 An exact-current caller-cap, proposal, certificate, or exact-batch rejection
 returns a typed reason together with the unchanged signing scope. It is a
 pre-effect outcome, not a finality-commit error, and therefore carries no
-finality selection metadata. Exact-current success uses the ordinary
+finality selection metadata. Exact-current single-proof success uses the ordinary
 `Finalized` result; it does not introduce another finality identity or authority
 source.
 
@@ -627,9 +630,9 @@ candidate-backed integration intentionally stops at the already decided
 caller-selected one-target direct-child or deny-only conflict boundary. Any
 automatic candidate selection, peer-driven promotion, or conflict-triggering
 policy outside the exact driver-owned paired-preselection rule and the explicit
-lower-round paired-conflict bridge requires a separate explicit authority and
-policy decision. The lower-round driver bridge submits two complete caller
-proofs after pending-command transfer regardless of current-round inbox state;
+exact-current and lower-round paired-conflict bridges requires a separate
+explicit authority and policy decision. Each explicit paired driver bridge
+submits two complete caller proofs after pending-command transfer regardless of current-round inbox state;
 it delegates all verification and the neutral anchored halt to the unchanged
 coordinator, restores the driver only on typed pre-effect rejection, and returns
 no driver after terminal success or fatal error. It does not acquire, retain,

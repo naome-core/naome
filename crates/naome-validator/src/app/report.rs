@@ -183,6 +183,9 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
         Event::LowerRoundPreselectionConflictRejected(_) => {
             json!({"event": "lower_round_conflict_rejected"})
         }
+        Event::CurrentRoundPreselectionConflictRejected(_) => {
+            json!({"event": "current_round_conflict_rejected"})
+        }
         // Fail closed on lost driver, allocation/timing failure or future
         // authority-bearing variants. No implicit replay, drain or repair.
         Event::UnacknowledgedInput { .. } | Event::ReservationFailed(_) => {
@@ -207,6 +210,9 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
                 }
                 Failure::LowerRoundPreselectionConflict(_) => {
                     json!({"event": "proof_failed", "operation": "lower_round_conflict", "strict_restart_required": true})
+                }
+                Failure::CurrentRoundPreselectionConflict(_) => {
+                    json!({"event": "proof_failed", "operation": "current_round_conflict", "strict_restart_required": true})
                 }
                 _ => json!({"event": "driver_unavailable"}),
             }
