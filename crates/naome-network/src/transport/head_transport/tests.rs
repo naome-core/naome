@@ -106,7 +106,8 @@ fn tagged_request_ids_isolate_head_block_and_artifact_namespaces() {
             ExchangeRequestId::Artifact(_)
             | ExchangeRequestId::Head(_)
             | ExchangeRequestId::Announcement(_)
-            | ExchangeRequestId::RecoveryBundlePush(_) => None,
+            | ExchangeRequestId::RecoveryBundlePush(_)
+            | ExchangeRequestId::ConsensusPush(_) => None,
         })
         .unwrap();
     let request = ArtifactChainHeadRequest::new(chain_id(0x33));

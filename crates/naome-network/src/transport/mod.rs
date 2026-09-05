@@ -5,8 +5,10 @@ use crate::*;
 pub(crate) mod batch;
 pub(crate) mod block_transport;
 pub(crate) mod codec;
+pub(crate) mod consensus_push;
 pub(crate) mod head_announcement;
 pub(crate) mod head_transport;
+mod inbound_retention;
 pub(crate) mod payload_request;
 pub(crate) mod rate_limit;
 pub(crate) mod recovery_bundle_push;
@@ -29,6 +31,7 @@ use codec::{
     ArtifactChainHeadAnnouncementCodec, ArtifactChainHeadCodec, ArtifactCodec,
     RECOVERY_BUNDLE_PUSH_PROTOCOL, RecoveryBundlePushCodec,
 };
+use consensus_push::codec::{CONSENSUS_PUSH_PROTOCOL, ConsensusPushCodec};
 use head_announcement::PendingArtifactChainHeadAnnouncement;
 use head_transport::PendingArtifactChainHeadRequest;
 use libp2p::futures::StreamExt;
@@ -59,7 +62,7 @@ const DIAL_RETRY_DELAYS: [Duration; 7] = [
 pub const MAX_STATIC_PEERS: usize = 8;
 /// Maximum established connections with one authenticated peer.
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
-/// Maximum pending or caller-retained outbound artifact, block, head, and announcement requests.
+/// Maximum pending or caller-retained outbound requests across all application exchanges.
 pub const MAX_PENDING_REQUESTS: usize = 8;
 /// Maximum concurrent streams for each artifact, block, or head-pull exchange.
 pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
@@ -67,10 +70,13 @@ pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
 pub const MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION: usize = 1;
 /// Maximum concurrent recovery-bundle push streams on one connection.
 pub const MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION: usize = 1;
-/// Maximum concurrent application-exchange streams on one connection.
-pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION * 3
-    + MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION
-    + MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION;
+/// Maximum concurrent consensus push streams on one connection, shared by both directions.
+pub const MAX_CONSENSUS_PUSH_STREAMS_PER_CONNECTION: usize = 1;
+/// Aggregate application-stream ceiling imposed by Yamux.
+/// Per-exchange limits sum to nine; they contend for eight total substreams,
+/// with negotiation and transient streams also consuming capacity. Exhaustion
+/// may fail exchanges or the connection.
+pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_YAMUX_STREAMS_PER_CONNECTION;
 /// Maximum total Yamux substreams on one connection.
 pub const MAX_YAMUX_STREAMS_PER_CONNECTION: usize = 8;
 /// Configured TCP listen backlog.
@@ -133,6 +139,7 @@ struct Behaviour {
     head_exchange: request_response::Behaviour<ArtifactChainHeadCodec>,
     head_announcement: request_response::Behaviour<ArtifactChainHeadAnnouncementCodec>,
     recovery_bundle_push: request_response::Behaviour<RecoveryBundlePushCodec>,
+    consensus_push: request_response::Behaviour<ConsensusPushCodec>,
 }
 
 struct PendingArtifactRequest {
@@ -149,6 +156,7 @@ enum ExchangeRequestId {
     Head(request_response::OutboundRequestId),
     Announcement(request_response::OutboundRequestId),
     RecoveryBundlePush(request_response::OutboundRequestId),
+    ConsensusPush(request_response::OutboundRequestId),
 }
 
 enum PendingRequest {
@@ -157,6 +165,7 @@ enum PendingRequest {
     Head(PendingArtifactChainHeadRequest),
     Announcement(PendingArtifactChainHeadAnnouncement),
     RecoveryBundlePush(recovery_bundle_push::PendingRecoveryBundlePush),
+    ConsensusPush(consensus_push::PendingConsensusPush),
 }
 
 impl PendingRequest {
@@ -167,6 +176,7 @@ impl PendingRequest {
             Self::Head(pending) => pending.peer_index,
             Self::Announcement(pending) => pending.peer_index,
             Self::RecoveryBundlePush(pending) => pending.peer_index,
+            Self::ConsensusPush(pending) => pending.peer_index,
         }
     }
 }
@@ -293,9 +303,10 @@ impl StaticArtifactNetwork {
             announcement_config,
         );
         let recovery_bundle_push = request_response::Behaviour::with_codec(
-            RecoveryBundlePushCodec::new(Arc::new(
-                recovery_bundle_push::RecoveryBundlePushInboundBudget::default(),
-            )),
+            RecoveryBundlePushCodec::new(Arc::new(inbound_retention::InboundRetentionBudget::new(
+                RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS,
+                RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
+            ))),
             [(
                 RECOVERY_BUNDLE_PUSH_PROTOCOL,
                 request_response::ProtocolSupport::Full,
@@ -305,6 +316,19 @@ impl StaticArtifactNetwork {
                 .with_max_concurrent_streams(MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION),
         );
 
+        let consensus_push = request_response::Behaviour::with_codec(
+            ConsensusPushCodec::new(Arc::new(inbound_retention::InboundRetentionBudget::new(
+                CONSENSUS_PUSH_MAX_RETAINED_INBOUND_EVENTS,
+                CONSENSUS_PUSH_MAX_RETAINED_INBOUND_BYTES,
+            ))),
+            [(
+                CONSENSUS_PUSH_PROTOCOL,
+                request_response::ProtocolSupport::Full,
+            )],
+            request_response::Config::default()
+                .with_request_timeout(REQUEST_TIMEOUT)
+                .with_max_concurrent_streams(MAX_CONSENSUS_PUSH_STREAMS_PER_CONNECTION),
+        );
         let behaviour = Behaviour {
             limits,
             allowed,
@@ -314,6 +338,7 @@ impl StaticArtifactNetwork {
             head_exchange,
             head_announcement,
             recovery_bundle_push,
+            consensus_push,
         };
         let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
@@ -440,6 +465,10 @@ impl StaticArtifactNetwork {
                     ExchangeRequestId::RecoveryBundlePush(_),
                     PendingRequest::RecoveryBundlePush(_)
                 )
+                | (
+                    ExchangeRequestId::ConsensusPush(_),
+                    PendingRequest::ConsensusPush(_)
+                )
         ));
         let replaced = self.pending.insert(key, pending);
         debug_assert!(replaced.is_none());
@@ -512,6 +541,11 @@ impl StaticArtifactNetwork {
                         return event;
                     }
                 }
+                SwarmEvent::Behaviour(BehaviourEvent::ConsensusPush(event)) => {
+                    if let Some(event) = self.handle_consensus_push_event(event) {
+                        return event;
+                    }
+                }
                 SwarmEvent::Behaviour(BehaviourEvent::Sessions(event)) => {
                     return NetworkEvent::PeerSession(event);
                 }
@@ -548,7 +582,8 @@ impl StaticArtifactNetwork {
                 | PendingRequest::Block(_)
                 | PendingRequest::Head(_)
                 | PendingRequest::Announcement(_)
-                | PendingRequest::RecoveryBundlePush(_) => None,
+                | PendingRequest::RecoveryBundlePush(_)
+                | PendingRequest::ConsensusPush(_) => None,
             })
             .min()
     }
@@ -948,6 +983,8 @@ pub enum NetworkEvent {
     OutboundChainHeadAnnouncement(OutboundArtifactChainHeadAnnouncementEvent),
     InboundRecoveryBundlePush(InboundRecoveryBundlePush),
     OutboundRecoveryBundlePush(OutboundRecoveryBundlePushEvent),
+    InboundConsensusPush(InboundConsensusPush),
+    OutboundConsensusPush(OutboundConsensusPushEvent),
     ArtifactCancellationDrained {
         peer_id: PeerId,
         request: ArtifactRequest,
@@ -969,6 +1006,11 @@ pub enum NetworkEvent {
         error: request_response::InboundFailure,
     },
     InboundChainHeadAnnouncementFailure {
+        peer_id: PeerId,
+        request_id: request_response::InboundRequestId,
+        error: request_response::InboundFailure,
+    },
+    InboundConsensusPushFailure {
         peer_id: PeerId,
         request_id: request_response::InboundRequestId,
         error: request_response::InboundFailure,

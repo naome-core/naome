@@ -1,3 +1,4 @@
+use crate::transport::inbound_retention::InboundRetentionBudget;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -24,8 +25,9 @@ use naome_protocol::chain_head_exchange::{
 };
 
 use crate::recovery_bundle_push::{
-    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS,
-    RecoveryBundlePushInboundBudget, RecoveryBundlePushReceipt, RecoveryBundlePushRequest,
+    RECOVERY_BUNDLE_PUSH_MAX_BYTES, RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
+    RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS, RecoveryBundlePushReceipt,
+    RecoveryBundlePushRequest,
 };
 use crate::{MAX_PEER_RECORDS_PER_BATCH, MAX_SIGNED_PEER_RECORD_BYTES, PeerRecordBatch};
 
@@ -39,7 +41,10 @@ use super::{
 };
 
 fn recovery_bundle_push_codec() -> RecoveryBundlePushCodec {
-    RecoveryBundlePushCodec::new(Arc::new(RecoveryBundlePushInboundBudget::default()))
+    RecoveryBundlePushCodec::new(Arc::new(InboundRetentionBudget::new(
+        RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS,
+        RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
+    )))
 }
 
 struct PendingReader;
@@ -788,11 +793,13 @@ fn recovery_bundle_push_rejects_noncanonical_receipts() {
 
 #[test]
 fn recovery_bundle_push_retention_budget_precedes_body_allocation() {
-    let budget = Arc::new(RecoveryBundlePushInboundBudget::default());
+    let budget = Arc::new(InboundRetentionBudget::new(
+        RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS,
+        RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
+    ));
     let retained_peer_slots: Vec<_> = (1..RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS)
         .map(|_| {
-            RecoveryBundlePushInboundBudget::try_acquire(&budget, RECOVERY_BUNDLE_PUSH_MAX_BYTES)
-                .unwrap()
+            InboundRetentionBudget::try_acquire(&budget, RECOVERY_BUNDLE_PUSH_MAX_BYTES).unwrap()
         })
         .collect();
     let mut codec = RecoveryBundlePushCodec::new(Arc::clone(&budget));

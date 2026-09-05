@@ -81,8 +81,8 @@ use peer_records::{
 };
 use serving::journal_service;
 use transport::{
-    block_transport, codec, head_announcement, head_transport, rate_limit, recovery_bundle_push,
-    request_correlation,
+    block_transport, codec, consensus_push, head_announcement, head_transport, rate_limit,
+    recovery_bundle_push, request_correlation,
 };
 
 pub use address_store::{
@@ -125,6 +125,15 @@ pub use block_transport::{
 pub use bootstrap::{
     AuthenticatedPeerRecordBatch, PeerRecordBootstrapBuildError, PeerRecordBootstrapClient,
     PeerRecordBootstrapEvent, PeerRecordPullFailure, PeerRecordPullStartError,
+};
+pub use consensus_push::{
+    AuthenticatedConsensusPushReceipt, CONSENSUS_PUSH_MAX_PAYLOAD_BYTES,
+    CONSENSUS_PUSH_MAX_PROPOSAL_BYTES, CONSENSUS_PUSH_MAX_RETAINED_INBOUND_BYTES,
+    CONSENSUS_PUSH_MAX_RETAINED_INBOUND_EVENTS, CONSENSUS_PUSH_MIN_PROPOSAL_BYTES,
+    CONSENSUS_PUSH_VOTE_BYTES, ConsensusPushAcknowledgeError, ConsensusPushEventMismatch,
+    ConsensusPushField, ConsensusPushLengthError, ConsensusPushMessage, ConsensusPushSize,
+    ConsensusPushStartError, ConsensusPushStartFailure, ConsensusPushTicket, InboundConsensusPush,
+    OutboundConsensusPushEvent, OutboundConsensusPushFailure, ReceivedConsensusPush,
 };
 pub use head_announcement::{
     ArtifactChainHeadAnnouncementEventMismatch, AuthenticatedArtifactChainHeadAnnouncementReceipt,
@@ -179,8 +188,9 @@ pub use transport::{
     DIAL_RETRY_BASE, DIAL_RETRY_MAX, INBOUND_APPLICATION_REQUEST_BURST,
     INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL, INBOUND_AUTH_BURST, INBOUND_AUTH_REFILL_INTERVAL,
     InboundArtifactRequest, ListenError, MAX_CONNECTIONS_PER_PEER,
-    MAX_EXCHANGE_STREAMS_PER_CONNECTION, MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION,
-    MAX_PENDING_REQUESTS, MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION, MAX_STATIC_PEERS,
+    MAX_CONSENSUS_PUSH_STREAMS_PER_CONNECTION, MAX_EXCHANGE_STREAMS_PER_CONNECTION,
+    MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION, MAX_PENDING_REQUESTS,
+    MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION, MAX_STATIC_PEERS,
     MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION, MAX_YAMUX_STREAMS_PER_CONNECTION, NetworkEvent,
     OutboundArtifactEvent, OutboundArtifactFailure, PeerSessionEvent, REQUEST_TIMEOUT,
     RequestStartError, RespondError, STABLE_SESSION_DURATION, StaticArtifactNetwork, StaticPeer,

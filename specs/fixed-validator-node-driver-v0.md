@@ -1031,7 +1031,15 @@ for a later step, so no hidden multi-command queue can overwrite or reorder
 either action. Once a command is returned, the driver does not know whether the
 vote was queued, scheduled, sent, delivered, accepted, or lost, nor whether the
 token was retained or archived; command, proposal, delivery, and replay custody
-belong to the later runtime and transport boundary.
+belong to the explicit caller and transport boundary.
+
+[Fixed-Validator Consensus Transport V0](fixed-validator-consensus-transport-v0.md)
+allows that caller to supply the publication bytes to one configured
+authenticated peer. Its API takes raw owned messages, never this command or the
+driver. The caller retains `released_proposal` separately, including `Some`,
+and chooses any later strict admission explicitly. Transport receipts do not
+admit a local or remote proposal or vote and do not acknowledge consensus or
+durable storage.
 
 ## Exclusions
 
