@@ -22,6 +22,7 @@ use naome_node::{
     FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0,
     FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0,
+    FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0,
     FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0,
     FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeDriverProposalAuthoringOutcomeV0, FixedValidatorNodeDriverStepErrorV0,
@@ -163,6 +164,9 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     UnsupportedCandidateBackedFinality(
         Box<FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0<'node>>,
     ),
+    UnsupportedHistoricalFinalityConflict(
+        Box<FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0<'node>>,
+    ),
     UnsupportedCandidateBackedConflict(
         Box<FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0<'node>>,
     ),
@@ -183,6 +187,7 @@ pub enum FixedValidatorRuntimeFailureV0 {
     FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
     CandidateBackedFinality(FixedValidatorNodeDriverCandidateBackedFinalityErrorV0),
     CandidateBackedConflict(FixedValidatorNodeFinalityErrorV0),
+    HistoricalFinalityConflict(FixedValidatorNodeFinalityErrorV0),
     LowerRoundPreselectionConflict(FixedValidatorNodeLowerRoundFinalityErrorV0),
     CurrentRoundPreselectionConflict(FixedValidatorNodeCurrentRoundFinalityErrorV0),
 }

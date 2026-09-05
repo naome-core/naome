@@ -49,52 +49,8 @@ fn source_messages(fixture: &Fixture) -> [ConsensusPushMessage; 3] {
 }
 
 fn source_messages_for_payload(fixture: &Fixture, payload: Vec<u8>) -> [ConsensusPushMessage; 3] {
-    let layout = TestLayout::new("anchored-fixture");
-    let ready = provision(
-        fixture.definition,
-        fixture.context,
-        &fixture.entries,
-        &layout,
-    )
-    .create(fixture.keys[0].clone())
-    .unwrap();
-    let executor = Builder::new_current_thread().enable_all().build().unwrap();
-    ready
-        .run_with_signing_session(|scope| {
-            executor.block_on(async {
-                let mut owner = Runtime::new(
-                    node_driver(scope),
-                    isolated_network(),
-                    vec![],
-                    timeouts(Duration::from_secs(60)),
-                )
-                .unwrap();
-                assert!(matches!(owner.next_event().await, Event::TimerArmed(_)));
-                let block = ArtifactChainState::new(fixture.definition)
-                    .prepare_block(artifact_id(&payload))
-                    .unwrap();
-                assert!(matches!(
-                    owner.author_proposal(FixedValidatorProposalSourceV0::Fresh {
-                        artifact_block: block,
-                        canonical_artifact_bytes: payload
-                    }),
-                    Event::ProposalAuthored
-                ));
-                let mut messages = Vec::new();
-                for _ in 0..20 {
-                    match owner.next_event().await {
-                        Event::PublicationComplete(publication) => {
-                            messages.push(publication.message().copy_message().unwrap());
-                            if messages.len() == 3 {
-                                return messages.try_into().unwrap();
-                            }
-                        }
-                        event => check_local(event),
-                    }
-                }
-                panic!("three real anchored publications missing")
-            })
-        })
+    source_messages_after_prefix(fixture, payload, &[], 0, 3)
+        .try_into()
         .unwrap()
 }
 
@@ -703,6 +659,16 @@ fn higher_messages_for_payload(
     payload: Vec<u8>,
     message_count: usize,
 ) -> Vec<ConsensusPushMessage> {
+    source_messages_after_prefix(fixture, payload, &[], 1, message_count)
+}
+
+fn source_messages_after_prefix(
+    fixture: &Fixture,
+    payload: Vec<u8>,
+    prefix: &[(&[u8], &[u8])],
+    minimum_round: u64,
+    message_count: usize,
+) -> Vec<ConsensusPushMessage> {
     let layout = TestLayout::new("higher-fixture");
     let ready = provision(
         fixture.definition,
@@ -714,17 +680,35 @@ fn higher_messages_for_payload(
     .unwrap();
     let executor = Builder::new_current_thread().enable_all().build().unwrap();
     ready
-        .run_with_signing_session(|scope| {
+        .run_with_signing_session(|mut scope| {
             executor.block_on(async {
-                let selected = ArtifactChainState::new(fixture.definition);
-                let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
-                    fixture.context,
-                    &fixture.entries,
-                    selected.branch_snapshot(),
-                )
-                .unwrap();
-                let mut round = branch.begin_round_zero().unwrap().advance_round().unwrap();
-                while round.proposer() != consensus_key(&fixture.keys[0]) {
+                let mut selected = ArtifactChainState::new(fixture.definition);
+                for (envelope, payload) in prefix {
+                    let transition = scope
+                        .branch()
+                        .decode_and_verify_envelope_with_round_limit(
+                            envelope,
+                            payload.to_vec(),
+                            ConsensusRound::new(4),
+                        )
+                        .unwrap();
+                    selected
+                        .apply_block(&transition.value().artifact_block(), payload.to_vec())
+                        .unwrap();
+                    let naome_node::FixedValidatorNodeFinalityOutcomeV0::Continues {
+                        scope: next,
+                        ..
+                    } = scope.commit_verified_finality(transition).unwrap()
+                    else {
+                        panic!("fixture prefix must select one child")
+                    };
+                    scope = *next;
+                }
+                let branch = scope.branch().clone();
+                let mut round = branch.begin_round_zero().unwrap();
+                while round.position().round().value() < minimum_round
+                    || round.proposer() != consensus_key(&fixture.keys[0])
+                {
                     round = round.advance_round().unwrap();
                 }
                 assert!(round.position().round().value() <= 4);

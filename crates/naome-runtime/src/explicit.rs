@@ -10,9 +10,10 @@ use naome_node::{
     FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0 as CurrentFinality,
     FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0 as CurrentConflict,
     FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0 as HigherAdvance,
+    FixedValidatorNodeDriverHistoricalFinalityConflictOutcomeV0 as HistoricalConflict,
     FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0 as LowerFinality,
     FixedValidatorNodeDriverLowerRoundPreselectionConflictOutcomeV0 as LowerConflict,
-    FixedValidatorNodeDriverStepErrorV0,
+    FixedValidatorNodeDriverStepErrorV0, FixedValidatorNodeFinalityErrorV0,
 };
 
 impl<'node> FixedValidatorRuntimeV0<'node> {
@@ -179,6 +180,68 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             ),
             previous_position,
         ))
+    }
+
+    /// Checks a complete historical sibling envelope despite independent publication.
+    /// Only driver availability and pending driver-command custody gate invocation;
+    /// refusal refunds the exact original payload allocation. After delegation every
+    /// outcome consumes the driver, preserving independent runtime custody only for
+    /// disposal. No timer, buffered input, retained evidence, or ordinary work runs.
+    pub fn commit_historical_finality_conflict(
+        &mut self,
+        canonical_envelope_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+    ) -> Result<Event<'node>, (ProofRefusal, Vec<u8>)> {
+        if let Err(reason) = self.proof_command_gate() {
+            return Err((reason, canonical_artifact_bytes));
+        }
+        let driver = self.driver.take().unwrap();
+        Ok(
+            self.finish_historical_conflict(driver.commit_historical_finality_conflict(
+                canonical_envelope_bytes,
+                canonical_artifact_bytes,
+            )),
+        )
+    }
+
+    /// Checks one exact supplied historical proposal, payload, and precommit batch.
+    /// Shares complete-envelope custody, refusal, and consuming terminal semantics.
+    pub fn commit_historical_finality_conflict_vote_batch(
+        &mut self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_signed_precommits: &[&[u8]],
+        evidence_round: ConsensusRound,
+    ) -> Result<Event<'node>, (ProofRefusal, Vec<u8>)> {
+        if let Err(reason) = self.proof_command_gate() {
+            return Err((reason, canonical_artifact_bytes));
+        }
+        let driver = self.driver.take().unwrap();
+        Ok(
+            self.finish_historical_conflict(driver.commit_historical_finality_conflict_vote_batch(
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+                canonical_signed_precommits,
+                evidence_round,
+            )),
+        )
+    }
+
+    fn finish_historical_conflict(
+        &mut self,
+        outcome: Result<HistoricalConflict<'node>, FixedValidatorNodeFinalityErrorV0>,
+    ) -> Event<'node> {
+        match outcome {
+            Ok(HistoricalConflict::CommandPending { driver }) => {
+                self.driver = Some(*driver);
+                Event::ExplicitCommandPending
+            }
+            Ok(HistoricalConflict::FinalityStopped(stopped)) => {
+                Event::Fatal(Box::new(Failure::FinalityStopped(stopped)))
+            }
+            Ok(other) => Event::UnsupportedHistoricalFinalityConflict(Box::new(other)),
+            Err(error) => Event::Fatal(Box::new(Failure::HistoricalFinalityConflict(error))),
+        }
     }
 
     /// Checks one explicitly routed historical sibling conflict as soon as

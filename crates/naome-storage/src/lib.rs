@@ -149,6 +149,7 @@ pub use fixed_validator_finality_journal::{
     FixedValidatorFinalityJournalErrorV0, FixedValidatorFinalityJournalStateIdV0,
     FixedValidatorFinalityJournalV0, FixedValidatorFinalityRecordV0,
     FixedValidatorFinalityReplayLimitErrorV0, FixedValidatorFinalityReplayLimitV0,
+    FixedValidatorHistoricalFinalityConflictErrorV0,
     commit_candidate_backed_anchored_finality_conflict_v0,
     commit_candidate_backed_anchored_finality_conflict_vote_batch_v0,
     commit_candidate_backed_anchored_finality_v0, commit_candidate_backed_finality_conflict_v0,

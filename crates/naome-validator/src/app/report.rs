@@ -211,6 +211,9 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
                         "finality_state_id": hex(halt.state_id().as_bytes()),
                         "signer_finality_state_id": hex(stopped.signer_stop().finality_state_id().as_bytes())})
                 }
+                Failure::HistoricalFinalityConflict(_) => {
+                    json!({"event": "proof_failed", "operation": "historical_finality_conflict", "strict_restart_required": true})
+                }
                 Failure::LowerRoundPreselectionConflict(_) => {
                     json!({"event": "proof_failed", "operation": "lower_round_conflict", "strict_restart_required": true})
                 }
