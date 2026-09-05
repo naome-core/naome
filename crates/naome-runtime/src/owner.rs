@@ -3,6 +3,9 @@
 #[path = "explicit.rs"]
 mod explicit;
 
+#[path = "artifact_exchange.rs"]
+pub(crate) mod artifact_exchange;
+
 use naome_consensus::{FixedValidatorLockPhaseV0, FixedValidatorProposalSourceV0};
 use naome_network::{
     ConsensusPushMessage, MAX_STATIC_PEERS, NetworkEvent, OutboundConsensusPushEvent, PeerId,

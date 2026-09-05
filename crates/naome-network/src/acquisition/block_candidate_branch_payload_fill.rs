@@ -355,6 +355,13 @@ impl<'store> ArtifactBlockCandidateBranchPayloadFill<'store> {
         matches!(event, NetworkEvent::OutboundArtifact(event) if self.request.accepts_event(event))
     }
 
+    /// Tests the original network identity without advancing or consuming work.
+    ///
+    /// A matching event must still be advanced on its original network owner.
+    pub fn belongs_to_network(&self, network: &StaticArtifactNetwork) -> bool {
+        self.request.belongs_to_network(network)
+    }
+
     /// Cancels the active request and releases the exclusive payload-store borrow.
     ///
     /// Already acknowledged archives remain durable. The physical libp2p

@@ -8,6 +8,9 @@ use naome_runtime::{
 #[path = "terminal_proofs.rs"]
 mod terminal_proofs;
 
+#[path = "artifact_exchange.rs"]
+mod artifact_exchange;
+
 fn allocations(bytes: &Vec<u8>) -> (usize, usize, usize) {
     (bytes.as_ptr() as usize, bytes.len(), bytes.capacity())
 }

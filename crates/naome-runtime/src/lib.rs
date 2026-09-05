@@ -12,6 +12,11 @@ mod timer;
 mod types;
 
 pub use owner::FixedValidatorRuntimeV0;
+pub use owner::artifact_exchange::{
+    FixedValidatorRuntimeAcquisitionRefusalV0, FixedValidatorRuntimeAcquisitionStartErrorV0,
+    FixedValidatorRuntimeAncestryFillAdvanceErrorV0,
+    FixedValidatorRuntimePayloadFillAdvanceErrorV0,
+};
 pub use publication::{
     FixedValidatorRuntimeDeliveryStateV0, FixedValidatorRuntimePeerDeliveryV0,
     FixedValidatorRuntimePublicationMessageV0, FixedValidatorRuntimePublicationV0,
