@@ -554,6 +554,14 @@ impl<'store> ArtifactBlockCandidateAncestryFill<'store> {
         matches!(event, NetworkEvent::OutboundBlock(event) if self.ticket.accepts_event(event))
     }
 
+    /// Tests the original network identity without advancing or consuming work.
+    ///
+    /// Event correlation alone does not establish that the caller is supplying
+    /// the network which owns this fill's pending request.
+    pub fn belongs_to_network(&self, network: &StaticArtifactNetwork) -> bool {
+        self.ticket.belongs_to_network(network)
+    }
+
     /// Cancels the fill and releases its exclusive candidate-store borrow.
     ///
     /// Every previously acknowledged insertion remains durable. Dropping the

@@ -14,6 +14,8 @@ explicitly supplies a proposal source, or drains an inbox under `PROD-020-045`.
 authoring forms, and explicit complete-proof operations without dismantling
 this owner. The caller chooses every submission; none is automatically inferred
 from a raw message, inbox, publication, source store, or transport event.
+`PROD-020-047` also exposes explicit artifact acquisition and exact-source
+responses on this same network, with caller-owned lower workflow progress.
 
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,
@@ -270,6 +272,87 @@ transport service can still progress that existing work. Only strict anchored
 reopen classifies the durable prefix and may create a fresh owner. Unsupported
 future driver outcomes transfer intact with any driver they own.
 
+## Explicit artifact exchange
+
+The runtime provides the existing current-head and explicit-selected-anchor
+candidate ancestry starts, each with its direct-peer and caller-ordered-fallback
+form, and both existing branch-payload starts. The caller chooses the exact
+target, anchor when applicable, peers, source stores, positive reconstruction
+limits, and every invocation. These operations use the existing
+[caller-selected acquisition contracts](caller-selected-orchestration.md#durable-candidate-store-ancestry-fill).
+Ancestry and payload acquisition remain two separately started phases, with no
+combined coordinator or automatic transition to admission, authoring, or finality.
+
+Each start first refuses an unavailable driver, before source or network access.
+Otherwise it borrows the driver's sealed selected-artifact history only for
+that call and delegates unchanged. Pending commands, runtime arms, publications,
+buffered input, retained evidence, phase, and accepted or expired due state do
+not add an artifact-service gate. The call neither steps the driver nor observes
+a consensus timer, and changes no runtime custody or scheduling marker. Lower
+source integrity, chain, anchor, work, peer, and capacity checks still apply in
+their existing order. Fully retained sources still undergo the existing
+verification and may complete without peer access.
+
+The caller owns each returned ancestry or payload progress value, including its
+existing exclusive source-store borrow. Normal `next_event` scheduling continues
+between explicit acquisition calls. It returns the lower workflows' outbound
+block and payload terminals as `Event::Network`; it never advances those
+workflows automatically. The caller may use their nonconsuming `accepts_event`
+predicate, then select the corresponding runtime `advance` method. That method
+first checks driver availability, then the workflow's original network identity,
+then exact event correlation. These checks use the existing opaque request and
+network identities, never peer equality alone. Refusal returns the exact
+workflow and event together, before either is consumed or any source is read or
+written. After delegation, all existing consuming errors and acknowledged
+durable prefixes remain unchanged. Payload advancement also requires a live
+driver at this adapter boundary; a refusal does not revoke or invalidate the
+caller's independently owned lower reconstruction progress.
+
+No selected context is frozen between calls. Current-head ancestry rejects a
+changed selected head before inserting returned blocks. Explicit-anchor ancestry
+rechecks its retained anchor and unselected path under the existing contract.
+A separately started payload phase repeats its own selected-context and path
+checks; once started, it may complete from its captured immutable artifact
+snapshot after the live selected head advances. Completion establishes neither
+that its target remains unselected nor that it is a valid current proposal.
+Every subsequent authoring or proof-continuation call must independently pass
+its existing complete live-state verification. This per-call composition does
+not change `NET-020-004`'s separate reference composition, which retains a shared
+history borrow across both fills.
+
+Explicit `respond_block_from_candidate_store` and
+`respond_artifact_from_payload_store` calls make returned inbound request handles
+usable without dismantling the runtime. The caller selects one exact source
+store for each request. Both delegate their existing integrity reads, response
+resource gates, typed errors, and consuming-input behavior; no source is chosen
+automatically and no journal import or head service is added.
+`acknowledge_consensus_push` separately queues only the existing transport receipt
+for a caller-held inbound handle and returns its exact source and byte allocations
+on success or closed-channel failure. It performs no admission. Any subsequent
+`queue_input` is a fresh explicit `CallerInput` submission with ordinary strict
+verification; it does not inherit a peer-admission result. These three response
+operations remain available independently of driver survival and change no
+driver, timer, publication, or input marker. Queueing a response is not proof of
+its transmission, receipt, admission, validity, or finality.
+
+Artifact requests and publications continue to share the existing per-peer slot
+and aggregate permits. A pending publication may refuse a missing-source request,
+and a pending artifact request may refuse the publication's one-shot peer attempt.
+Completing the artifact request does not retry that publication. Only the lower
+workflow's explicitly selected fallback mode may advance through its supplied
+peer order under its existing bounds and deadlines. No new retry or priority
+policy is introduced.
+
+The runtime owns no additional acquisition queue or task. Dropping a runtime
+poll future preserves the caller's separate workflow; cancelling or dropping
+that workflow preserves previously acknowledged source writes and leaves its
+physical request to drain through transport. No late terminal by itself writes
+a source store, and another workflow requires another explicit start. The
+caller must bound retained workflow/event memory and handle or drop unrelated
+events explicitly. Source acquisition grants no signing, branch-selection,
+finality, repair, rollback, durable runtime recovery, or consensus-liveness
+authority.
+
 ## Transport service, bounds, and failure
 
 `poll_transport_once` polls the network once without observing a timer, admitting
@@ -397,6 +480,31 @@ anchored conflicting proposals and real in-flight Noise tickets to check both
 terminal paths, exact halt identities, consuming no-write errors, strict reopen,
 and independent input/publication custody; the lower pair also retains a real
 released `Some` token. Queued sends are not claimed to have been recalled.
+
+`tests/cases/artifact_exchange.rs` uses two intact Unix Noise runtime owners to
+fill initially empty candidate and payload stores through explicit source
+responses, then separately author, deliver votes, finalize, and strictly reopen
+both nodes. Its direct and caller-ordered-fallback cases use one serving peer;
+they do not establish multi-peer fallback behavior. The weighted proposer owns
+quorum, while the other node still requires its remote publications.
+`artifact_interleaving.rs` holds real responses across a higher checkpoint or
+selection of a different child, checks current versus historical ancestry rules,
+and completes payload reconstruction from an older snapshot before separately
+testing stale direct-finality rejection and verified historical-conflict halt.
+`artifact_custody.rs` refunds real mismatched request handles and foreign-network
+terminals for successful reuse, and preserves original consensus input allocations
+through explicit acknowledgement on open and closed channels; the handles are
+obtained before runtime construction, without claiming allocation-fault injection.
+`artifact_unavailable.rs` refunds both acquisition kinds after a verified paired
+terminal halt and strictly reopens that stop. `artifact_lifecycle.rs` actually
+polls and drops a pending runtime future, explicitly cancels ancestry work and
+drains its physical terminal before a fresh start, and preserves due/command
+precedence over a real buffered acquisition response. `artifact_contention.rs`
+checks both directions of shared per-peer contention with an original `Some`
+publication token, caller input, typed refusal, and no implicit publication retry.
+Existing lower workflow tests retain the broader source-fault, partial-prefix,
+fallback, and payload-cancellation matrices; these runtime tests do not repeat
+or extend those matrices into an exhaustive runtime fault claim.
 
 These are bounded local tests, not deployment, multi-process/devnet,
 production-timeout calibration, latency benchmarks, general distributed
