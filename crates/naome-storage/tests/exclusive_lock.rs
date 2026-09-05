@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use naome_chain::ArtifactChainDefinition;
@@ -17,6 +18,11 @@ const PAYLOAD_LOCK_PROBE_ENV: &str = "NAOME_ARTIFACT_PAYLOAD_STORE_LOCK_PROBE";
 const CANDIDATE_LOCK_PROBE_ENV: &str = "NAOME_ARTIFACT_BLOCK_CANDIDATE_STORE_LOCK_PROBE";
 const CHAIN_ID_BYTE: u8 = 0x11;
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+// Isolate complete parent lifetimes: a peer test's child spawn must not
+// overlap another test's open/drop/reopen boundary. The child probes remain
+// separate processes and still require Locked while their parent owns storage.
+static PARENT_LOCK_TESTS: Mutex<()> = Mutex::new(());
 
 struct TestDirectory {
     path: PathBuf,
@@ -71,6 +77,7 @@ fn exclusive_lock_child_probe() {
 
 #[test]
 fn exclusive_lock_is_enforced_across_processes() {
+    let _parent_test = PARENT_LOCK_TESTS.lock().unwrap();
     let directory = TestDirectory::new();
     let journal = ArtifactChainJournal::create(&directory.path, chain_definition()).unwrap();
     let output = Command::new(env::current_exe().unwrap())
@@ -94,9 +101,9 @@ fn exclusive_lock_is_enforced_across_processes() {
         String::from_utf8_lossy(&output.stderr)
     );
     drop(journal);
-    assert!(
+    drop(
         ArtifactChainJournal::open_recovering_unverified(&directory.path, chain_definition())
-            .is_ok()
+            .expect("journal lock must be released after its owner drops"),
     );
 }
 
@@ -114,6 +121,7 @@ fn payload_store_lock_child_probe() {
 
 #[test]
 fn payload_store_lock_is_enforced_across_processes() {
+    let _parent_test = PARENT_LOCK_TESTS.lock().unwrap();
     let directory = TestDirectory::new();
     let store = CanonicalArtifactPayloadStore::create(&directory.path, payload_limits()).unwrap();
     let output = Command::new(env::current_exe().unwrap())
@@ -137,7 +145,10 @@ fn payload_store_lock_is_enforced_across_processes() {
         String::from_utf8_lossy(&output.stderr)
     );
     drop(store);
-    assert!(CanonicalArtifactPayloadStore::open(&directory.path, payload_limits()).is_ok());
+    drop(
+        CanonicalArtifactPayloadStore::open(&directory.path, payload_limits())
+            .expect("payload-store lock must be released after its owner drops"),
+    );
 }
 
 #[test]
@@ -158,6 +169,7 @@ fn candidate_store_lock_child_probe() {
 
 #[test]
 fn candidate_store_lock_is_enforced_across_processes() {
+    let _parent_test = PARENT_LOCK_TESTS.lock().unwrap();
     let directory = TestDirectory::new();
     let store = ArtifactBlockCandidateStore::create(
         &directory.path,
@@ -186,8 +198,8 @@ fn candidate_store_lock_is_enforced_across_processes() {
         String::from_utf8_lossy(&output.stderr)
     );
     drop(store);
-    assert!(
-        ArtifactBlockCandidateStore::open(&directory.path, chain_definition(), candidate_limits(),)
-            .is_ok()
+    drop(
+        ArtifactBlockCandidateStore::open(&directory.path, chain_definition(), candidate_limits())
+            .expect("candidate-store lock must be released after its owner drops"),
     );
 }
