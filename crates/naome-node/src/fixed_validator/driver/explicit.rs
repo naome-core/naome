@@ -2,6 +2,11 @@
 
 use super::*;
 
+enum DriverCurrentRoundFinalityInputV0<'input> {
+    Certificate(&'input [u8]),
+    VoteBatch(&'input [&'input [u8]]),
+}
+
 enum DriverLowerRoundFinalityInputV0<'input> {
     Certificate(&'input [u8]),
     VoteBatch {
@@ -238,6 +243,139 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             Err(source) => Err(
                 FixedValidatorNodeDriverCandidateBackedFinalityErrorV0::Finality(Box::new(source)),
             ),
+        }
+    }
+
+    /// Finalizes one complete proof at the driver's own exact current round.
+    ///
+    /// Pending commands and non-fallthrough retained current-finality evidence
+    /// take precedence before input inspection. Otherwise a checked successor
+    /// timer generation precedes the existing node coordinator, which derives
+    /// the live round and independently verifies the complete proposal, payload,
+    /// producer and certificate under the construction-time round ceiling.
+    ///
+    /// Typed pre-effect rejection restores the unchanged driver. A child-height
+    /// handoff preserves all four inboxes, invalidates the old timer and due
+    /// state, and queues one round-zero Proposal arm. Fatal errors consume the
+    /// driver and require strict anchored reopen. The payload is consumed on
+    /// every outcome; none of the supplied input is retained.
+    pub fn commit_current_round_finality(
+        self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_precommit_certificate: &[u8],
+    ) -> Result<
+        FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        self.commit_current_round_finality_input(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+            DriverCurrentRoundFinalityInputV0::Certificate(canonical_precommit_certificate),
+        )
+    }
+
+    /// Finalizes one complete proposal and exact current-round precommit batch.
+    ///
+    /// This shares `commit_current_round_finality` priority, custody, timer and
+    /// failure behavior. The node derives the round from its owned position and
+    /// authenticates every vote at that round, role and proposal root, without
+    /// filtering, grouping, retaining, or accepting caller routing authority.
+    pub fn commit_current_round_finality_vote_batch(
+        self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_signed_precommits: &[&[u8]],
+    ) -> Result<
+        FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        self.commit_current_round_finality_input(
+            canonical_proposal_control_bytes,
+            canonical_artifact_bytes,
+            DriverCurrentRoundFinalityInputV0::VoteBatch(canonical_signed_precommits),
+        )
+    }
+
+    fn commit_current_round_finality_input(
+        mut self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        input: DriverCurrentRoundFinalityInputV0<'_>,
+    ) -> Result<
+        FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0<'node>,
+        FixedValidatorNodeDriverStepErrorV0,
+    > {
+        if self.pending_command.is_some() {
+            return Ok(
+                FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0::CommandPending {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        if self
+            .current_finality_is_unresolved()
+            .map_err(FixedValidatorNodeDriverStepErrorV0::Round)?
+        {
+            return Ok(
+                FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0::CurrentFinalityUnresolved {
+                    driver: Box::new(self),
+                },
+            );
+        }
+        let next_generation = self.next_generation()?;
+        let previous_position = self.position();
+        let maximum_round = self.inclusive_maximum_round;
+        let scope = self.take_scope();
+        let result = match input {
+            DriverCurrentRoundFinalityInputV0::Certificate(certificate) => scope
+                .commit_current_round_finality(
+                    canonical_proposal_control_bytes,
+                    canonical_artifact_bytes,
+                    certificate,
+                    maximum_round,
+                ),
+            DriverCurrentRoundFinalityInputV0::VoteBatch(canonical_signed_precommits) => scope
+                .commit_current_round_finality_vote_batch(
+                    canonical_proposal_control_bytes,
+                    canonical_artifact_bytes,
+                    canonical_signed_precommits,
+                    maximum_round,
+                ),
+        };
+        match result {
+            Ok(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality(
+                FixedValidatorNodeFinalityOutcomeV0::Continues { scope, selection },
+            )) => {
+                self.scope = Some(*scope);
+                if self.position() != previous_position {
+                    let timeout = self.install_next_timeout(next_generation);
+                    self.pending_command = Some(PendingCommandV0::Arm(timeout));
+                }
+                Ok(
+                    FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0::Finality {
+                        driver: Box::new(self),
+                        selection,
+                    },
+                )
+            }
+            Ok(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Finality(
+                FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(stopped),
+            )) => {
+                Ok(FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0::FinalityStopped(stopped))
+            }
+            Ok(FixedValidatorNodeCurrentRoundFinalityOutcomeV0::Rejected { scope, rejection }) => {
+                self.scope = Some(*scope);
+                Ok(
+                    FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection,
+                    },
+                )
+            }
+            Err(source) => Err(FixedValidatorNodeDriverStepErrorV0::CurrentFinality(
+                Box::new(source),
+            )),
         }
     }
 

@@ -166,6 +166,15 @@ fn lower_pair_halt_or_consuming_error_preserves_some_publication_and_inflight_cu
             let payload = first.payload.clone(); let allocation = allocations(&payload);
             let Err((Refusal::DriverUnavailable, payload)) = owner.commit_lower_round_finality(&first.control, payload, &first.certificate) else { panic!("no driver") };
             assert_eq!(allocations(&payload), allocation);
+            for batch in [false, true] {
+                let mut payload = first.payload.clone(); payload.reserve(19);
+                let original = allocations(&payload);
+                let outcome = if batch { owner.commit_current_round_finality_vote_batch(&first.control, payload, &[&first.vote]) }
+                    else { owner.commit_current_round_finality(&first.control, payload, &first.certificate) };
+                let Err((Refusal::DriverUnavailable, payload)) = outcome else { panic!("current proof must refund before invocation") };
+                assert_eq!(allocations(&payload), original);
+                assert_eq!(payload, first.payload);
+            }
             assert!(matches!(owner.advance_to_higher_round_quorum(&[0]), Err(Refusal::DriverUnavailable)));
             assert!(matches!(owner.author_payload_store_backed_retained_proposal(&mut payloads), Event::StoreAuthoringUnavailable));
             let parts = owner.into_parts();

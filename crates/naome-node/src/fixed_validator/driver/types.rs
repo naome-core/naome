@@ -876,6 +876,36 @@ impl Error for FixedValidatorNodeDriverCandidateBackedFinalityErrorV0 {
     }
 }
 
+/// Result of explicit direct exact current-round finality through the driver.
+///
+/// Pending commands and non-fallthrough current-finality work retain priority.
+/// Typed pre-effect rejection restores the unchanged driver; supplied owned
+/// payloads are consumed on every outcome and are never retained by the driver.
+#[must_use]
+#[non_exhaustive]
+pub enum FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0<'node> {
+    /// An already pending outward command must transfer first.
+    CommandPending {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Retained exact-current finality must be resolved through the ordinary step.
+    CurrentFinalityUnresolved {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+    },
+    /// Fully verified finality completed and the aligned driver survives.
+    Finality {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        selection: FixedValidatorNodeFinalitySelectionV0,
+    },
+    /// Caller evidence was rejected before any finality or signer effect.
+    Rejected {
+        driver: Box<FixedValidatorNodeDriverV0<'node>>,
+        rejection: Box<FixedValidatorNodeCurrentRoundFinalityRejectionV0>,
+    },
+    /// The existing coordinator returned defensive terminal conflict evidence.
+    FinalityStopped(Box<FixedValidatorNodeFinalityStoppedV0>),
+}
+
 /// Result of explicit direct strictly lower-round finality through the driver.
 ///
 /// Pending commands and non-fallthrough current-finality work retain priority.

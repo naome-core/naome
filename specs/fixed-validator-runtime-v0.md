@@ -21,7 +21,8 @@ runtime inside a native async callback. `PROD-020-049` supplies one separately
 specified [local Unix executable](fixed-validator-process-v0.md) with explicit
 configuration, operator input, and process shutdown around that lifetime.
 `PROD-020-052` adds the explicit exact-current paired-conflict batch operation
-through this same runtime and local process.
+through this same runtime and local process. `PROD-020-053` adds both direct
+exact-current single-finality proof forms through these same owners.
 
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,
@@ -163,7 +164,8 @@ Wrong contexts, different heights, lower rounds, unsupported higher vote forms,
 and malformed descriptive headers yield a routing error with the exact peer or
 caller input. Rejected headers establish no authoritative statement about consensus
 validity. This owner does not automatically invoke the driver's explicit
-lower-round finality, certificate catch-up, candidate-backed, or conflict APIs.
+exact-current or lower-round finality, certificate catch-up, candidate-backed,
+or conflict APIs.
 
 A current proposal needs two independent complete raw copies. All route copies
 are reserved before the receipt is queued or either admission starts. The two
@@ -239,7 +241,7 @@ publication does not read a source store again.
 
 ## Explicit complete-proof operations
 
-All eight methods are synchronous caller selections. They neither observe a
+All ten methods are synchronous caller selections. They neither observe a
 clock or network event nor call `step` before delegation. Controls, certificates,
 exact signed-vote batches, explicit routes, targets, and borrowed stores pass
 unchanged into the corresponding existing driver method. The runtime exposes no
@@ -248,20 +250,21 @@ mutable driver or general signing-scope callback.
 | Runtime methods | Existing driver operation |
 | --- | --- |
 | `advance_to_higher_round_quorum`, `advance_to_higher_round_vote_batch` | Fully verified higher-round checkpoint under the construction-time ceiling |
+| `commit_current_round_finality`, `commit_current_round_finality_vote_batch` | Complete direct finality at the driver-owned current round, with no caller round or source stores |
 | `commit_lower_round_finality`, `commit_lower_round_finality_vote_batch` | Complete direct strictly lower-round finality |
 | `commit_candidate_backed_finality_vote_batch` | Exact candidate-backed direct-child finality |
 | `commit_candidate_backed_finality_conflict_vote_batch` | Historical selected-sibling conflict |
 | `commit_lower_round_preselection_conflict_vote_batches` | Independently verified lower-round pair and neutral halt |
 | `commit_current_round_preselection_conflict_vote_batches` | Independently verified exact-current pair and neutral halt, with no caller round |
 
-The five positive methods return runtime `Busy` while a publication, pending
+The seven positive methods return runtime `Busy` while a publication, pending
 runtime arm, or pending driver command remains owned. An unavailable driver
 returns `DriverUnavailable`. These are pre-invocation refusals, distinct from a
-delegated driver rejection. Direct lower-finality methods return their original
+delegated driver rejection. Direct current- and lower-finality methods return their original
 owned payload beside the refusal; borrowed inputs remain with the caller.
 Buffered input, phase, an absent runtime timer, an expired deadline, and accepted
 due state add no runtime gate. The existing driver still gives unresolved exact
-current finality priority over all five methods and retained actionable or
+current finality priority over all seven methods and retained actionable or
 blocked higher evidence priority over higher checkpoints. It does not silently
 step that work or consume the buffered input first.
 
@@ -518,7 +521,7 @@ consensus validator and explicit finality drain before advancing.
 proposal-prevote quorum, expired or accepted due state, buffered caller input,
 rejection/retry and checkpoint reopen. Both direct lower forms finalize from
 all three due phases established through public driver calls. Candidate finality
-covers explicit source insertion/retry and strict child reopen. All five preserve
+covers explicit source insertion/retry and strict child reopen. All seven preserve
 retained-current-finality precedence without a hidden step and preserve owned
 payloads on runtime backpressure. `tests/cases/terminal_proofs.rs` uses separately
 anchored conflicting proposals and real in-flight Noise tickets to check both
@@ -533,6 +536,15 @@ custody checks preserve the timer, buffered-input allocation, publication bytes
 and token, local-attempt marker, and peer states; strict reopen distinguishes
 the exact anchored halt from a healthy unchanged prefix. Queued sends are not
 claimed to have been recalled.
+
+`tests/cases/current_finality.rs` checks both direct exact-current forms from all
+three due phases, typed payload rejection followed by valid retry, exact buffered
+input allocation custody, one child arm, superseded deadline removal, and strict
+reopen of the selected child. An injected signer-anchor failure consumes the
+driver, preserves the independent timer and buffered allocation, and leaves
+strict reopen to refuse the lagging anchor. The shared positive-proof and terminal-custody
+vectors also check both forms' Busy and unavailable-driver refunds, including
+original payload allocation identity and a real in-flight publication.
 
 `tests/cases/artifact_exchange.rs` uses two intact Unix Noise runtime owners to
 fill initially empty candidate and payload stores through explicit source

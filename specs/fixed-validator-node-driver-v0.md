@@ -32,7 +32,7 @@ signed-vote or signed-proposal command. It does not expose the owned signing sco
 alternative caller-controlled path.
 
 The caller-selected action exceptions are the candidate-backed and direct
-strictly lower-round single-proof finality bridges, paired-conflict bridges
+exact-current or strictly lower-round single-proof finality bridges, paired-conflict bridges
 for exact-current and strictly lower rounds, explicit higher-round quorum
 catch-up methods, and explicit current-round proposal authoring outside ordinary
 `step` selection.
@@ -72,7 +72,7 @@ authenticated phase under the priority and lifecycle contract below. Explicit
 proposal authoring may sign fresh or retained-valid input only after existing
 step work is resolved and queues one proposal with its exact payload for
 publication, without changing the phase, timer, or local voting inbox.
-An explicit direct lower-round certificate or exact precommit batch may also
+An explicit direct exact-current or lower-round certificate or exact precommit batch may also
 finalize under the same command and current-finality priority as the
 candidate-backed direct-child bridge. Automatic lower-round or candidate-backed
 evidence routing, broader or incomplete preselection conflict handling,
@@ -357,6 +357,46 @@ routes no event. Caller target, round, invocation time, store membership, peer
 identity, or provenance grants no validity, preference, branch-selection,
 rollback, repair, finality, or signing authority. It does not alter ordinary
 `step` priority or make the direct method the node's sole finality policy.
+
+## Explicit direct exact-current finality
+
+`PROD-020-053` adds `commit_current_round_finality` and
+`commit_current_round_finality_vote_batch`. Each consumes the driver and accepts
+complete canonical proposal-control bytes, an owned canonical payload, and
+respectively one canonical precommit certificate or one exact signed-precommit
+batch. Neither accepts an evidence round, target, parent, or winner. The existing
+node coordinator derives its exact round from the owned signer position under
+the driver's construction-time work ceiling and independently verifies the
+proposal, payload, producer, positioned fixed set, and every supplied proof byte.
+The persisted finality ceiling remains independently authoritative.
+
+These methods share the positive lifecycle described for direct lower-round
+finality below. Pending command custody precedes classification. Every
+non-fallthrough current-finality classification returns the unchanged driver;
+only `None` or saturation without a complete retained conflict pair permits the
+explicit call. In particular, healthy unique ready finality blocks the call,
+while a saturated unique proof follows the existing saturation fallthrough rule.
+A complete retained pair keeps priority even after saturation. No current-voting,
+higher, nil-precommit, phase, or due-state gate is added.
+
+Checked successor generation precedes transferring the sole scope or inspecting
+the submitted proof. Typed pre-effect rejection restores the exact driver,
+inbox bytes, accounting, latches, timer and due state. The owned payload is
+consumed on every driver outcome. Only a completed changed-position handoff
+invalidates the old timer, clears due state, and queues one child-height
+round-zero Proposal arm; all four inboxes retain their charged stale custody.
+Fatal failures consume the driver and require strict anchored reopen. There is
+no automatic acquisition, evidence selection, source-store ownership, retry,
+conflict resolution, or relaxation of the existing finality coordinator.
+
+`tests/driver/current_round_finality.rs` covers both forms in all three phases
+with and without due state, exact rejection/retry custody, all four saturated
+inboxes and byte-exact drains, pending command variants, retained missing/ready/
+conflicting/pair priority, saturated unique versus complete-pair behavior,
+generation exhaustion, finality and signer anchor failures, matching selection
+metadata and authority images, old-ticket rejection, and strict child reopen.
+Allocation and invariant classifier failures retain their existing static mapping;
+these tests do not claim injected allocator-failure coverage.
 
 ## Explicit direct strictly lower-round finality
 
@@ -1096,7 +1136,7 @@ This driver does not define or perform:
   evidence preference, automatic eviction, or protocol-wide resource limits;
 - automatic proposal source selection, proposal self-admission, general
   higher-round quorum observation,
-  collection, routing, or arbitration, automatic lower-round single-proof
+  collection, routing, or arbitration, automatic exact-current or lower-round single-proof
   finality acquisition or routing, automatic acquisition or routing for
   candidate-backed direct-child or conflict evidence or a missing proposal, durable
   handling of incomplete or broader multi-root cases beyond the exact retained

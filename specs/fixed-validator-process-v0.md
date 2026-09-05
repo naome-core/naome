@@ -4,8 +4,9 @@
 
 `PROD-020-049` defines the Unix `naome-validator` executable,
 `PROD-020-050` adds explicit complete-proof commands, `PROD-020-051`
-adds explicit class-selected inbox disposal, and `PROD-020-052` adds explicit
-exact-current paired-conflict submission. It owns one
+adds explicit class-selected inbox disposal, `PROD-020-052` adds explicit
+exact-current paired-conflict submission, and `PROD-020-053` adds both direct
+exact-current single-finality proof forms. It owns one
 explicitly configured local fixed-validator signer through
 `FixedValidatorNodeReadyV0::run_with_signing_session_async`, constructs the
 existing driver and runtime within that lifetime, and accepts explicit operator
@@ -147,6 +148,8 @@ they are never supplied as unbounded inline JSON arrays.
 | `submit_proposal` | `control_file`, `payload_file` | Queue raw control and payload for later routing and both strict proposal routes |
 | `advance_higher_quorum` | `certificate_file` | Submit one exact complete higher-round quorum certificate |
 | `advance_higher_votes` | `evidence_round`, `role`, `target`, `vote_files` | Submit one complete signed-vote batch with the caller's exact route |
+| `finalize_current_quorum` | `control_file`, `payload_file`, `certificate_file` | Submit one complete finality proof at the owned current round |
+| `finalize_current_votes` | `proof` | Submit the exact-current proof using exact signed precommit files |
 | `finalize_lower_quorum` | `control_file`, `payload_file`, `certificate_file` | Submit one complete direct strictly lower-round finality proof |
 | `finalize_lower_votes` | `evidence_round`, `proof` | Submit the direct lower proof using exact signed precommit files |
 | `halt_lower_conflict` | `evidence_round`, `first`, `second` | Independently verify two explicit lower-round proofs for a neutral paired halt |
@@ -225,7 +228,7 @@ selection, or finality authority.
 
 ## Explicit complete proofs
 
-The six complete-proof commands call the corresponding existing
+The eight complete-proof commands call the corresponding existing
 `FixedValidatorRuntimeV0` methods exactly once. They do not collect, group,
 rank, filter, deduplicate, sort, or infer evidence. A file path, caller-supplied
 route, successful read, or parsed command establishes no proof validity. Only
@@ -248,6 +251,16 @@ current round, and accepts no root, parent, position, or winner metadata. The
 node derives the live owned round and independently verifies both complete
 proofs against it; the process does not extract a route from either proof.
 
+`finalize_current_quorum` and `finalize_current_votes` likewise reject
+`evidence_round`, even when it equals the live round, and accept no root, parent,
+position, or winner. The node derives the owned round for complete verification.
+These are positive proof submissions: retained healthy ready/missing/conflicting
+current finality or a complete pair keeps priority; saturation without a complete
+pair follows the existing positive-proof fallthrough rule. Thus an explicitly
+configured capacity-one finality inbox cannot retain a proposal and quorum
+together, but a complete explicit proof can finalize without changing its budget,
+opening source stores, or advancing the round just to use lower-round finality.
+
 Every `vote_files` array has between 1 and `MAX_ACTIVE_VALIDATORS` (256) paths.
 Scalar parsing and both pair counts are checked before opening any proof source.
 Each vote file must contain exactly `CONSENSUS_PUSH_VOTE_BYTES` (214) bytes;
@@ -267,7 +280,7 @@ For example, explicitly submit a complete lower-round signed-precommit batch:
 {"command":"finalize_lower_votes","id":4,"evidence_round":0,"proof":{"control_file":"proposal.bin","payload_file":"payload.bin","vote_files":["a.precommit","b.precommit"]}}
 ```
 
-The four positive commands preserve the runtime's publication, pending-arm,
+The six positive commands preserve the runtime's publication, pending-arm,
 and pending-driver-command backpressure. They report `proof_refused` with
 `reason` `busy` or `driver_unavailable` before delegation. Both paired-conflict
 commands wait only for driver-command transfer: publication, an in-flight
@@ -281,11 +294,12 @@ remains a separate admission path and never becomes an automatic proof call.
 
 Command results include the actual post-call runtime `state`. Outcomes remain
 distinct: `proof_refused`; continuing `higher_round_rejected`,
-`lower_round_finality_rejected`, `lower_round_conflict_rejected`, or
+`current_round_finality_rejected`, `lower_round_finality_rejected`,
+`lower_round_conflict_rejected`, or
 `current_round_conflict_rejected`; existing
 unresolved-work outcomes; `transitioned`; and `finality`. A higher checkpoint
 supersedes the old deadline only under the runtime's existing advancement rule,
-and a successful lower-finality operation exposes the exact selected child and
+and a successful current- or lower-finality operation exposes the exact selected child and
 next height. Refunded payload allocations are discarded and counted in
 `refunded_payloads_discarded`; their source files remain untouched. Delegated
 inputs follow the existing consuming-input contract. No outcome schedules a
@@ -432,3 +446,16 @@ terminal halt, with its reported custody preserved for disposal. These process
 observations establish reported state and event order; the driver and runtime
 tests separately check exact timeout and allocation identities. This adds no
 deployment, production timing, or general distributed-liveness evidence.
+
+`crates/naome-validator/tests/cases/current_finality.rs` checks both exact-current
+forms with empty and saturated capacity-one finality inboxes, retained healthy
+missing-proposal priority, a real higher-round checkpoint followed by exact-current
+finality, noncurrent and malformed input rejection with explicit valid retry,
+object/duplicate/unknown-field and batch-count refusals before source access,
+independent file bounds, exact reported child head/height/round, and strict
+unchanged-image child reopen. Injected finality and signer anchor failures
+consume authority, release journal locks, and refuse strict reopen without
+changing the surviving prefix. The existing in-flight publication tests include
+both new positive forms and preserve their reported Busy state. These are local
+Unix process observations; deployment and general distributed liveness are
+unverified.

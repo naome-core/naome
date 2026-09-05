@@ -52,6 +52,17 @@ pub(super) enum Command {
         target: VoteTarget,
         vote_files: Vec<PathBuf>,
     },
+    FinalizeCurrentQuorum {
+        id: u64,
+        control_file: PathBuf,
+        payload_file: PathBuf,
+        certificate_file: PathBuf,
+    },
+    FinalizeCurrentVotes {
+        id: u64,
+        #[serde(deserialize_with = "object")]
+        proof: ProposalVoteFiles,
+    },
     FinalizeLowerQuorum {
         id: u64,
         control_file: PathBuf,
@@ -195,6 +206,8 @@ impl Command {
             | Self::SubmitProposal { id, .. }
             | Self::AdvanceHigherQuorum { id, .. }
             | Self::AdvanceHigherVotes { id, .. }
+            | Self::FinalizeCurrentQuorum { id, .. }
+            | Self::FinalizeCurrentVotes { id, .. }
             | Self::FinalizeLowerQuorum { id, .. }
             | Self::FinalizeLowerVotes { id, .. }
             | Self::HaltLowerConflict { id, .. }

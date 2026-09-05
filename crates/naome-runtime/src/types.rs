@@ -19,6 +19,7 @@ use naome_node::{
     FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0,
     FixedValidatorNodeDriverCandidateBackedFinalityErrorV0,
     FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0, FixedValidatorNodeDriverCommandV0,
+    FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0,
     FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0,
     FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0,
@@ -137,6 +138,7 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     CurrentFinalityUnresolved,
     HigherEvidenceUnresolved,
     HigherRoundAdvanceRejected(Box<FixedValidatorNodeRoundAdvanceRejectionV0>),
+    CurrentRoundFinalityRejected(Box<FixedValidatorNodeCurrentRoundFinalityRejectionV0>),
     LowerRoundFinalityRejected(Box<FixedValidatorNodeLowerRoundFinalityRejectionV0>),
     CandidateBackedFinalityRejected(Box<FixedValidatorNodeCandidateBackedFinalityRejectionV0>),
     LowerRoundPreselectionConflictRejected(
@@ -154,6 +156,9 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     UnsupportedAdmission(Box<FixedValidatorNodeDriverAdmissionOutcomeV0<'node>>),
     UnsupportedAuthoring(Box<FixedValidatorNodeDriverProposalAuthoringOutcomeV0<'node>>),
     UnsupportedHigherRoundAdvance(Box<FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0<'node>>),
+    UnsupportedCurrentRoundFinality(
+        Box<FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0<'node>>,
+    ),
     UnsupportedLowerRoundFinality(Box<FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0<'node>>),
     UnsupportedCandidateBackedFinality(
         Box<FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0<'node>>,

@@ -7,6 +7,7 @@ use naome_node::{
     FixedValidatorNodeDriverCandidateBackedFinalityConflictOutcomeV0 as CandidateConflict,
     FixedValidatorNodeDriverCandidateBackedFinalityErrorV0,
     FixedValidatorNodeDriverCandidateBackedFinalityOutcomeV0 as CandidateFinality,
+    FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0 as CurrentFinality,
     FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0 as CurrentConflict,
     FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0 as HigherAdvance,
     FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0 as LowerFinality,
@@ -51,6 +52,55 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
                 expected_target,
             )),
         )
+    }
+
+    /// Finalizes the caller's exact current-round proposal and certificate through
+    /// the existing driver. Runtime refusal returns the original payload before
+    /// invocation; after invocation every outcome consumes it as in the driver.
+    /// The driver derives the current round from its owned position. Buffered
+    /// input stays raw and receives no new admission authority.
+    pub fn commit_current_round_finality(
+        &mut self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_precommit_certificate: &[u8],
+    ) -> Result<Event<'node>, (ProofRefusal, Vec<u8>)> {
+        if let Err(reason) = self.proof_gate() {
+            return Err((reason, canonical_artifact_bytes));
+        }
+        let driver = self.driver.take().unwrap();
+        let previous_position = driver.position();
+        Ok(self.finish_current_finality(
+            driver.commit_current_round_finality(
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+                canonical_precommit_certificate,
+            ),
+            previous_position,
+        ))
+    }
+
+    /// Finalizes the caller's exact current-round proposal and signed-precommit batch.
+    /// Shares `commit_current_round_finality` custody, refusal, and driver priorities.
+    pub fn commit_current_round_finality_vote_batch(
+        &mut self,
+        canonical_proposal_control_bytes: &[u8],
+        canonical_artifact_bytes: Vec<u8>,
+        canonical_signed_precommits: &[&[u8]],
+    ) -> Result<Event<'node>, (ProofRefusal, Vec<u8>)> {
+        if let Err(reason) = self.proof_gate() {
+            return Err((reason, canonical_artifact_bytes));
+        }
+        let driver = self.driver.take().unwrap();
+        let previous_position = driver.position();
+        Ok(self.finish_current_finality(
+            driver.commit_current_round_finality_vote_batch(
+                canonical_proposal_control_bytes,
+                canonical_artifact_bytes,
+                canonical_signed_precommits,
+            ),
+            previous_position,
+        ))
     }
 
     /// Finalizes the caller's exact lower-round proposal and certificate through
@@ -321,6 +371,37 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
                 (driver, event, true)
             }
             Ok(other) => return Event::UnsupportedHigherRoundAdvance(Box::new(other)),
+            Err(error) => return Event::Fatal(Box::new(Failure::Step(error))),
+        };
+        self.restore_proof_driver(*driver, advanced);
+        event
+    }
+
+    fn finish_current_finality(
+        &mut self,
+        result: Result<CurrentFinality<'node>, FixedValidatorNodeDriverStepErrorV0>,
+        previous_position: ConsensusPosition,
+    ) -> Event<'node> {
+        let (driver, event, advanced) = match result {
+            Ok(CurrentFinality::CommandPending { driver }) => {
+                (driver, Event::ExplicitCommandPending, false)
+            }
+            Ok(CurrentFinality::CurrentFinalityUnresolved { driver }) => {
+                (driver, Event::CurrentFinalityUnresolved, false)
+            }
+            Ok(CurrentFinality::Rejected { driver, rejection }) => (
+                driver,
+                Event::CurrentRoundFinalityRejected(rejection),
+                false,
+            ),
+            Ok(CurrentFinality::Finality { driver, selection }) => {
+                let advanced = driver.position() != previous_position;
+                (driver, Event::Finality(selection), advanced)
+            }
+            Ok(CurrentFinality::FinalityStopped(halt)) => {
+                return Event::Fatal(Box::new(Failure::FinalityStopped(halt)));
+            }
+            Ok(other) => return Event::UnsupportedCurrentRoundFinality(Box::new(other)),
             Err(error) => return Event::Fatal(Box::new(Failure::Step(error))),
         };
         self.restore_proof_driver(*driver, advanced);

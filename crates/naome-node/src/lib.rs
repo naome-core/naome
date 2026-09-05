@@ -86,6 +86,7 @@ pub use fixed_validator::{
     FixedValidatorNodeDriverCreateErrorV0, FixedValidatorNodeDriverCurrentFinalityDrainV0,
     FixedValidatorNodeDriverCurrentNilPrecommitDrainV0,
     FixedValidatorNodeDriverCurrentRoundDrainV0,
+    FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0,
     FixedValidatorNodeDriverCurrentRoundPreselectionConflictOutcomeV0,
     FixedValidatorNodeDriverDrainV0, FixedValidatorNodeDriverEventV0,
     FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0,

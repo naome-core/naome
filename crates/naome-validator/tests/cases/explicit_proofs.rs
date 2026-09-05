@@ -388,6 +388,8 @@ fn retained_current_finality_precedes_every_positive_proof_then_exact_proposal_c
         higher.higher_command(4, "higher", true),
         lower.lower_command(5, "lower", false),
         lower.lower_command(6, "lower", true),
+        lower.current_command(60, "lower", false),
+        lower.current_command(61, "lower", true),
     ] {
         let outcome = result(&mut node, command);
         assert_eq!(outcome["event"], "current_finality_unresolved");
@@ -472,6 +474,8 @@ fn in_flight_publication_blocks_positive_proofs_but_not_pair_verification_or_hal
         higher.higher_command(6, "higher", true),
         first.lower_command(7, "first", false),
         first.lower_command(8, "first", true),
+        first.current_command(80, "first", false),
+        first.current_command(81, "first", true),
     ] {
         let outcome = result(&mut node, command);
         assert_eq!(outcome["event"], "proof_refused");
