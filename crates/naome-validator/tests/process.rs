@@ -10,6 +10,8 @@ mod explicit_proofs;
 mod historical_conflict;
 #[path = "cases/inbox_disposal.rs"]
 mod inbox_disposal;
+#[path = "cases/partition.rs"]
+mod partition;
 mod support;
 
 use serde_json::json;

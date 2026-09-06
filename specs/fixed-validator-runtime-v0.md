@@ -403,11 +403,14 @@ is not proof that a receipt was flushed. Only the peer's correlated successful
 receipt proves transport completion. No implicit incoming-message forwarding,
 outbound retry, silent inbox drain, or eviction occurs.
 
-The direct transport's one shared inbound/outbound consensus stream per
-connection, eight shared outbound permits, ingress budgets, and connection
-limits remain unchanged. Crossed sends can fail. A caller can explicitly
-serialize exchanges using bounded transport service and buffered admission; no
-fairness, reserved capacity, delivery completeness, or liveness is guaranteed.
+The direct transport permits two consensus streams per connection shared by
+inbound and outbound directions. Its eight shared outbound permits, per-peer
+outbound limit, ingress budgets, connection limits, and total Yamux ceiling
+remain unchanged. Shared capacity permits ordinary reciprocal publication but
+reserves no worker for either direction. A caller can still explicitly
+serialize exchanges using bounded transport service and buffered admission;
+exhaustion can fail delivery, and no fairness, reserved capacity, delivery
+completeness, or liveness is guaranteed.
 
 Bounds are compositional, not one total-memory ceiling: the existing transport
 owns its separate inbound budgets and shared outbound permits; the driver owns
@@ -587,6 +590,16 @@ publication token, caller input, typed refusal, and no implicit publication retr
 Existing lower workflow tests retain the broader source-fault, partial-prefix,
 fallback, and payload-cancellation matrices; these runtime tests do not repeat
 or extend those matrices into an exhaustive runtime fault claim.
+
+`crates/naome-runtime/tests/cases/duplex.rs` drives two equal-weight owners
+through ordinary `next_event` with real reciprocal Noise publications. Each
+owner must admit one actual local and one peer precommit, select the exact
+round-zero value, and complete all intended publications and correlated
+receipts. It uses the two shared consensus workers described above, with no
+transport-only polling, publication retry, reserved direction, or external
+consensus-proof injection. The separate actual process partition corpus and
+its narrower evidence limits are defined in
+`specs/fixed-validator-process-partition-v0.md`.
 
 These are bounded local tests, not deployment, multi-process/devnet,
 production-timeout calibration, latency benchmarks, general distributed

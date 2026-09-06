@@ -115,13 +115,15 @@ received, that bytes were persisted, or that consensus admission succeeded.
 
 ## Scheduling and failure boundary
 
-The consensus request-response handler permits one concurrent stream per
-connection shared between inbound and outbound directions. A held inbound
-response channel occupies that worker until acknowledgement, drop, or timeout.
-Simultaneous opposite-direction requests can fail; callers seeking an ordinary
-request/receipt round trip complete one direction before starting the other.
+The consensus request-response handler permits two concurrent streams per
+connection, shared between inbound and outbound directions. This allows an
+ordinary outbound publication to overlap an inbound request and its receipt.
+A held inbound response channel occupies one worker until acknowledgement,
+drop, or timeout. The two workers are shared capacity, not one reserved worker
+per direction. Existing per-peer outbound, retained inbound event, and byte
+budgets remain unchanged. No automatic retry or send arbitration is added.
 
-Per-exchange limits now sum to nine, while the existing total Yamux ceiling
+Per-exchange limits now sum to ten, while the existing total Yamux ceiling
 remains eight. Streams under negotiation or awaiting cleanup also consume
 capacity. Limits provide no reserved consensus slot, fairness, queueing, or
 progress guarantee. Exhaustion can fail a request or close the connection and
@@ -140,6 +142,13 @@ pre-allocation rejection, event and combined byte limits, malformed receipts,
 permit release, duplicate-peer custody, shared outbound preflight, dropped
 tickets, terminal correlation, authenticated opaque delivery, and exact owned
 message recovery after a closed response channel.
+
+The reciprocal-push regression starts both outbound requests before polling,
+retains both inbound request bodies before either receipt is acknowledged,
+and rejects another public outbound request to the same peer while preserving
+its exact allocation. Both original correlated receipts must then complete and
+release their permits. This exercises the two shared workers without granting
+one reserved worker per direction or weakening the independent ingress bounds.
 
 The Unix integration test uses two independently provisioned fixed-validator
 drivers with distinct consensus keys and independently generated Noise keys.
