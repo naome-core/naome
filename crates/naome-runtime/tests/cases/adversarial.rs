@@ -22,6 +22,8 @@ mod async_lifecycle;
 mod caller_input;
 #[path = "explicit_proofs.rs"]
 mod explicit_proofs;
+#[path = "partition.rs"]
+mod partition;
 #[path = "store_authoring.rs"]
 mod store_authoring;
 
