@@ -1,4 +1,4 @@
-//! Keyless ownership of an independently verified, anchored finality history.
+//! Independently verified, anchored finality history without consensus signing.
 
 #[cfg(unix)]
 mod app;

@@ -8,7 +8,7 @@ use naome_consensus::{
 use naome_storage::{FixedValidatorAnchoredFinalityJournalV0, FixedValidatorFinalityReplayLimitV0};
 use serde::Deserialize;
 
-use super::{Result, files};
+use super::{Result, archive, files};
 
 const CONFIG_MAX_BYTES: usize = 65_536;
 
@@ -23,6 +23,7 @@ struct Config {
     validators: Vec<Validator>,
     directories: Directories,
     finality_max_round: String,
+    network: Option<archive::Config>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -48,6 +49,7 @@ struct Directories {
 
 pub(super) struct Prepared {
     pub base: PathBuf,
+    pub network: Option<archive::Prepared>,
     mode: Mode,
     definition: ArtifactChainDefinition,
     context: ConsensusContextV0,
@@ -102,8 +104,13 @@ impl Prepared {
                 return Err("authority_directory");
             }
         }
+        let network = config
+            .network
+            .map(|network| network.prepare(&base, &entries))
+            .transpose()?;
         Ok(Self {
             base,
+            network,
             mode: config.mode,
             definition,
             context,
