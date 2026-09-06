@@ -20,6 +20,9 @@ use std::{
 mod gated_tcp;
 use gated_tcp::Gate;
 
+#[path = "partition_process_restart.rs"]
+mod restart;
+
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 const MILESTONE_BOUND: Duration = Duration::from_secs(45);
 type Images = Vec<(PathBuf, Vec<u8>)>;
@@ -112,7 +115,13 @@ impl Corpus {
         }
     }
 
-    fn config(&self, layout: &Layout, actor: usize, gates: &[Gate; 6]) -> String {
+    fn config(
+        &self,
+        layout: &Layout,
+        actor: usize,
+        gates: &[Gate; 6],
+        phase_millis: u64,
+    ) -> String {
         layout.seed("signing.seed", &self.keys[actor].to_bytes());
         layout.seed("noise.seed", &self.noise[actor]);
         let validators = self
@@ -188,13 +197,13 @@ bytes = "1048576"
 entries = "128"
 bytes = "1048576"
 [timeouts.proposal]
-base_millis = "5000"
+base_millis = "{phase_millis}"
 round_increment_millis = "1"
 [timeouts.prevote]
-base_millis = "5000"
+base_millis = "{phase_millis}"
 round_increment_millis = "1"
 [timeouts.precommit]
-base_millis = "5000"
+base_millis = "{phase_millis}"
 round_increment_millis = "1"
 "#,
             deployment = hex(self.definition.deployment_discriminator()),
@@ -365,24 +374,16 @@ fn finality_images(layout: &Layout) -> Images {
     images
 }
 
-fn run_partition(weights: [u16; 4], groups: [u8; 4], winners: [bool; 4]) {
-    let corpus = Corpus::new(weights);
-    let total: u32 = weights.iter().map(|&weight| u32::from(weight)).sum();
-    for actor in 0..4 {
-        let available: u32 = (0..4)
-            .filter(|&other| groups[actor] == groups[other])
-            .map(|other| u32::from(weights[other]))
-            .sum();
-        assert_eq!(3 * available > 2 * total, winners[actor]);
-    }
-    assert!(winners.iter().all(|winner| !winner) || winners[corpus.proposers[1]]);
-    // Children drop before gates and directories, including assertion unwinding.
-    let layouts = std::array::from_fn(|_| Layout::new());
-    let mut gates = std::array::from_fn(|_| Gate::bind());
+fn start_on_h1(
+    corpus: &Corpus,
+    layouts: &[Layout; 4],
+    gates: &mut [Gate; 6],
+    phase_millis: u64,
+) -> ([Process; 4], [Images; 4]) {
     let mut nodes = std::array::from_fn(|actor| {
         Process::start(
             &layouts[actor],
-            &corpus.config(&layouts[actor], actor, &gates),
+            &corpus.config(&layouts[actor], actor, gates, phase_millis),
         )
     });
     let addresses = nodes.each_mut().map(|node| {
@@ -413,7 +414,7 @@ fn run_partition(weights: [u16; 4], groups: [u8; 4], winners: [bool; 4]) {
         })
     });
     assert!(gates.iter().all(|gate| gate.counts() == (1, 0)));
-    corpus.author(&mut nodes, &layouts, 0);
+    corpus.author(&mut nodes, layouts, 0);
     pump_until(&mut nodes, "common H1 and drained publications", |nodes| {
         nodes.iter().all(|node| {
             finality(node, &corpus.blocks[0], "2")
@@ -488,6 +489,24 @@ fn run_partition(weights: [u16; 4], groups: [u8; 4], winners: [bool; 4]) {
         );
     }
     let baseline = layouts.each_ref().map(finality_images);
+    (nodes, baseline)
+}
+
+fn run_partition(weights: [u16; 4], groups: [u8; 4], winners: [bool; 4]) {
+    let corpus = Corpus::new(weights);
+    let total: u32 = weights.iter().map(|&weight| u32::from(weight)).sum();
+    for actor in 0..4 {
+        let available: u32 = (0..4)
+            .filter(|&other| groups[actor] == groups[other])
+            .map(|other| u32::from(weights[other]))
+            .sum();
+        assert_eq!(3 * available > 2 * total, winners[actor]);
+    }
+    assert!(winners.iter().all(|winner| !winner) || winners[corpus.proposers[1]]);
+    // Children drop before gates and directories, including assertion unwinding.
+    let layouts = std::array::from_fn(|_| Layout::new());
+    let mut gates = std::array::from_fn(|_| Gate::bind());
+    let (mut nodes, baseline) = start_on_h1(&corpus, &layouts, &mut gates, 5000);
     let cut_start = nodes.each_ref().map(|node| node.observed.len());
     for (gate, &(a, b)) in gates.iter().zip(&PAIRS) {
         if groups[a] != groups[b] {

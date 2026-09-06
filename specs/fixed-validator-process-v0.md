@@ -511,3 +511,9 @@ and healthy strict finality-journal replay with shared consensus ancestry.
 Its complete bounds and evidence limits are defined in
 `specs/fixed-validator-process-partition-v0.md`; it does not establish process
 restart, arbitrary partition safety, deployment, or general liveness.
+
+`SEC-012-005` adds one [process kill under partition](fixed-validator-process-partition-restart-v0.md)
+execution using the existing executable and explicit open configuration. It
+checks a distributed non-nil lock, strict process restart, subsequent locked
+voting under real deadlines, and unchanged shared finality while three other
+original processes remain alive. It adds no production process behavior.
