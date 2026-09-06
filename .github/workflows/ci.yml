@@ -58,7 +58,7 @@ jobs:
   platform:
     name: Rust platform (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

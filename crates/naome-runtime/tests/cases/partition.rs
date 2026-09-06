@@ -13,8 +13,13 @@ use std::future::{Future, poll_fn};
 use std::task::Poll;
 use tokio::time::Instant;
 
+#[path = "partition_restart.rs"]
+mod restart;
+
 type DirectoryImage = Vec<(String, Vec<u8>)>;
 type AuthorityImages = [DirectoryImage; 4];
+type VoteCoordinate = (u64, u64, ProposalSigningRoot);
+type RecipientPrevotes = BTreeMap<VoteCoordinate, BTreeMap<ConsensusKey, Vec<u8>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cut {
@@ -75,8 +80,14 @@ fn same_bytes(left: &ConsensusPushMessage, right: &ConsensusPushMessage) -> bool
     }
 }
 
-struct Simulation<'node, 'layout> {
-    owners: [Runtime<'node>; 4],
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedVote {
+    target: ConsensusVoteTarget,
+    canonical_vote: Vec<u8>,
+    generation: u8,
+}
+
+struct Simulation<'layout> {
     layouts: &'layout [TestLayout; 4],
     scenario: Scenario,
     reverse: bool,
@@ -93,8 +104,11 @@ struct Simulation<'node, 'layout> {
     queued: [Option<Envelope>; 4],
     local: [Option<Envelope>; 4],
     produced: Vec<Envelope>,
-    intents: BTreeMap<(usize, u64, u64, u8), ConsensusVoteTarget>,
-    received: [BTreeMap<(u64, u64, ProposalSigningRoot), u8>; 4],
+    intents: BTreeMap<(ConsensusKey, u64, u64, u8), RecordedVote>,
+    generations: [u8; 4],
+    received: [BTreeMap<VoteCoordinate, u8>; 4],
+    prevotes: [RecipientPrevotes; 4],
+    precommit_inputs: [RecipientPrevotes; 4],
     events: usize,
     deliveries: usize,
     dropped: usize,
@@ -106,9 +120,9 @@ struct Simulation<'node, 'layout> {
     race: bool,
 }
 
-impl Simulation<'_, '_> {
-    fn accounting(&self, actor: usize) -> ([usize; 4], [u64; 3]) {
-        let driver = self.owners[actor].driver().unwrap();
+impl Simulation<'_> {
+    fn accounting(owner: &Runtime<'_>) -> ([usize; 4], [u64; 3]) {
+        let driver = owner.driver().unwrap();
         (
             [
                 driver.inbox_len(),
@@ -124,23 +138,27 @@ impl Simulation<'_, '_> {
         )
     }
 
+    fn history_owner(&self, actor: usize, owner: &Runtime<'_>) {
+        let driver = owner.driver().unwrap();
+        let height = self.finalized[actor];
+        assert_eq!(driver.position().height().value(), height + 1);
+        let expected = if height == 0 {
+            self.genesis
+        } else {
+            self.blocks[height as usize - 1].id()
+        };
+        assert_eq!(
+            driver
+                .selected_artifact_history()
+                .selected_head_block_id()
+                .unwrap(),
+            expected
+        );
+    }
+
     fn history(&self) {
         for actor in 0..4 {
-            let driver = self.owners[actor].driver().unwrap();
             let height = self.finalized[actor];
-            assert_eq!(driver.position().height().value(), height + 1);
-            let expected = if height == 0 {
-                self.genesis
-            } else {
-                self.blocks[height as usize - 1].id()
-            };
-            assert_eq!(
-                driver
-                    .selected_artifact_history()
-                    .selected_head_block_id()
-                    .unwrap(),
-                expected
-            );
             let images = self.layouts[actor].authority_images();
             if height == self.baseline_height {
                 assert_eq!(
@@ -164,8 +182,8 @@ impl Simulation<'_, '_> {
         }
     }
 
-    fn publication(&self, actor: usize) -> Envelope {
-        let message = self.owners[actor].pending_publication().unwrap().message();
+    fn publication(&self, actor: usize, owner: &Runtime<'_>) -> Envelope {
+        let message = owner.pending_publication().unwrap().message();
         let (position, kind) = match message {
             Message::Proposal {
                 proposal,
@@ -240,7 +258,12 @@ impl Simulation<'_, '_> {
         }
     }
 
-    fn admit(&mut self, actor: usize, report: &FixedValidatorRuntimeAdmissionReportV0) {
+    fn admit(
+        &mut self,
+        actor: usize,
+        owner: &Runtime<'_>,
+        report: &FixedValidatorRuntimeAdmissionReportV0,
+    ) {
         let envelope = match report.source {
             InputSource::LocalPublication => {
                 assert!(report.input.is_none());
@@ -255,7 +278,7 @@ impl Simulation<'_, '_> {
             _ => panic!("isolated transport must not supply peer input"),
         };
         assert_eq!(report.receipt_queued, None);
-        let driver = self.owners[actor].driver().unwrap();
+        let driver = owner.driver().unwrap();
         if let Some(error) = &report.routing_error {
             assert_eq!(report.source, InputSource::CallerInput);
             assert!(
@@ -290,6 +313,29 @@ impl Simulation<'_, '_> {
                 Ok(disposition) => {
                     if *disposition == Disposition::AlreadyRetained {
                         self.duplicates += 1;
+                    }
+                    if result.route == Route::CurrentProposalPrevote {
+                        let Kind::Vote(
+                            ConsensusVoteRole::Prevote,
+                            ConsensusVoteTarget::Proposal(root),
+                        ) = envelope.kind
+                        else {
+                            panic!("prevote route changed target")
+                        };
+                        let ConsensusPushMessage::Vote { canonical_vote } = &envelope.input else {
+                            unreachable!()
+                        };
+                        let coordinate = (
+                            envelope.position.height().value(),
+                            envelope.position.round().value(),
+                            root,
+                        );
+                        let retained = self.prevotes[actor].entry(coordinate).or_default();
+                        if let Some(previous) =
+                            retained.insert(self.keys[envelope.from], canonical_vote.clone())
+                        {
+                            assert_eq!(previous, *canonical_vote);
+                        }
                     }
                     if result.route == Route::CurrentProposalPrecommit {
                         let Kind::Vote(
@@ -333,13 +379,13 @@ impl Simulation<'_, '_> {
         }
     }
 
-    async fn poll(&mut self, actor: usize) -> bool {
+    async fn poll(&mut self, actor: usize, owner: &mut Runtime<'_>) -> bool {
         let now = Instant::now();
-        let timer = self.owners[actor].timer();
-        let accounting = self.accounting(actor);
+        let timer = owner.timer();
+        let accounting = Self::accounting(owner);
         let images = self.layouts[actor].authority_images();
         let event = poll_fn(|cx| {
-            let mut future = std::pin::pin!(self.owners[actor].next_event());
+            let mut future = std::pin::pin!(owner.next_event());
             Poll::Ready(match future.as_mut().poll(cx) {
                 Poll::Ready(event) => Some(event),
                 Poll::Pending => None,
@@ -352,6 +398,7 @@ impl Simulation<'_, '_> {
             "polling must not auto-advance virtual time"
         );
         let Some(event) = event else {
+            self.history_owner(actor, owner);
             self.history();
             return false;
         };
@@ -361,7 +408,7 @@ impl Simulation<'_, '_> {
             Event::TimerArmed(timer) => {
                 assert_eq!(
                     timer.ticket().position(),
-                    self.owners[actor].driver().unwrap().position()
+                    owner.driver().unwrap().position()
                 );
                 assert!(timer.deadline() > Instant::now());
             }
@@ -371,33 +418,55 @@ impl Simulation<'_, '_> {
             } => {
                 assert_eq!(Some(ticket), timer.map(|timer| timer.ticket()));
                 assert!(timer.unwrap().deadline() <= now);
-                assert_eq!(
-                    ticket.position(),
-                    self.owners[actor].driver().unwrap().position()
-                );
+                assert_eq!(ticket.position(), owner.driver().unwrap().position());
                 assert_eq!(self.layouts[actor].authority_images(), images);
                 self.due += 1;
             }
-            Event::Transitioned { .. } => {}
+            Event::Transitioned { phase, .. } => {
+                if phase == FixedValidatorLockPhaseV0::Precommit {
+                    // Capture recipient inputs at the consuming transition,
+                    // before any later admission or publication can add a vote.
+                    self.precommit_inputs[actor] = self.prevotes[actor].clone();
+                }
+            }
             Event::PublicationPrepared(_) => {
                 assert!(self.local[actor].is_none());
-                let envelope = self.publication(actor);
+                let envelope = self.publication(actor, owner);
                 if let Kind::Vote(role, target) = envelope.kind {
                     let role = u8::from(role == ConsensusVoteRole::Precommit);
-                    assert!(
-                        self.intents
-                            .insert(
-                                (
-                                    actor,
-                                    envelope.position.height().value(),
-                                    envelope.position.round().value(),
-                                    role
-                                ),
-                                target
-                            )
-                            .is_none(),
-                        "honest signing intent repeated"
+                    let key = (
+                        self.keys[actor],
+                        envelope.position.height().value(),
+                        envelope.position.round().value(),
+                        role,
                     );
+                    let ConsensusPushMessage::Vote { canonical_vote } = &envelope.input else {
+                        unreachable!()
+                    };
+                    // The fixed context and actual signer were strictly verified above.
+                    // This map outlives any owner generation; only exact completed-byte replay is allowed.
+                    let generation = self.generations[actor];
+                    if let Some(previous) = self.intents.get_mut(&key) {
+                        assert_eq!(previous.target, target, "honest signing intent changed");
+                        assert_eq!(
+                            &previous.canonical_vote, canonical_vote,
+                            "completed vote replay changed bytes"
+                        );
+                        assert_ne!(
+                            previous.generation, generation,
+                            "one owner emitted the same vote twice"
+                        );
+                        previous.generation = generation;
+                    } else {
+                        self.intents.insert(
+                            key,
+                            RecordedVote {
+                                target,
+                                canonical_vote: canonical_vote.clone(),
+                                generation,
+                            },
+                        );
+                    }
                 }
                 self.produced.push(envelope.copy());
                 self.local[actor] = Some(envelope);
@@ -415,12 +484,12 @@ impl Simulation<'_, '_> {
                     .all(|result| !matches!(result.result, Ok(Disposition::Inserted)))
                 {
                     assert_eq!(
-                        self.accounting(actor),
+                        Self::accounting(owner),
                         accounting,
                         "duplicates and stale input changed inbox accounting"
                     );
                 }
-                self.admit(actor, &report);
+                self.admit(actor, owner, &report);
             }
             Event::PublicationComplete(publication) => {
                 assert!(publication.is_complete());
@@ -475,33 +544,53 @@ impl Simulation<'_, '_> {
             Event::Network(event) => panic!("isolated network event: {event:?}"),
             _ => panic!("unexpected runtime event"),
         }
+        self.history_owner(actor, owner);
         self.history();
         true
     }
 
-    async fn pump(&mut self) {
+    async fn visit(&mut self, actor: usize, owner: &mut Runtime<'_>) -> bool {
+        let mut progress = false;
+        if self.queued[actor].is_none() {
+            let envelope = if self.reverse {
+                self.queues[actor].pop_back()
+            } else {
+                self.queues[actor].pop_front()
+            };
+            if let Some(envelope) = envelope {
+                let images = self.layouts[actor].authority_images();
+                owner.queue_input(copy_message(&envelope.input)).unwrap();
+                self.queued[actor] = Some(envelope);
+                assert_eq!(self.layouts[actor].authority_images(), images);
+                self.history_owner(actor, owner);
+                self.history();
+                progress = true;
+            }
+        }
+        progress | self.poll(actor, owner).await
+    }
+
+    async fn pump(
+        &mut self,
+        first: &mut Runtime<'_>,
+        second: &mut Runtime<'_>,
+        third: &mut Runtime<'_>,
+        fourth: &mut Runtime<'_>,
+    ) {
+        // Separate arguments retain each journal's lifetime, allowing one owner
+        // to restart while the other three stay in their original scopes.
         loop {
             let mut progress = false;
-            for offset in 0..4 {
-                let actor = if self.reverse { 3 - offset } else { offset };
-                if self.queued[actor].is_none() {
-                    let envelope = if self.reverse {
-                        self.queues[actor].pop_back()
-                    } else {
-                        self.queues[actor].pop_front()
-                    };
-                    if let Some(envelope) = envelope {
-                        let images = self.layouts[actor].authority_images();
-                        self.owners[actor]
-                            .queue_input(copy_message(&envelope.input))
-                            .unwrap();
-                        self.queued[actor] = Some(envelope);
-                        assert_eq!(self.layouts[actor].authority_images(), images);
-                        self.history();
-                        progress = true;
-                    }
-                }
-                progress |= self.poll(actor).await;
+            if self.reverse {
+                progress |= self.visit(3, fourth).await;
+                progress |= self.visit(2, third).await;
+                progress |= self.visit(1, second).await;
+                progress |= self.visit(0, first).await;
+            } else {
+                progress |= self.visit(0, first).await;
+                progress |= self.visit(1, second).await;
+                progress |= self.visit(2, third).await;
+                progress |= self.visit(3, fourth).await;
             }
             if !progress {
                 break;
@@ -512,22 +601,44 @@ impl Simulation<'_, '_> {
         assert!(self.local.iter().all(Option::is_none));
     }
 
-    fn author(&mut self, height: usize) {
-        let round = self.branch.begin_round_zero().unwrap();
-        let actor = self
-            .keys
-            .iter()
-            .position(|key| *key == round.proposer())
-            .unwrap();
-        assert_eq!(round.position().height().value(), height as u64);
+    fn author_at(&mut self, actor: usize, height: usize, owner: &mut Runtime<'_>) {
+        assert_eq!(
+            self.branch
+                .begin_round_zero()
+                .unwrap()
+                .position()
+                .height()
+                .value(),
+            height as u64
+        );
         assert!(matches!(
-            self.owners[actor].author_proposal(FixedValidatorProposalSourceV0::Fresh {
+            owner.author_proposal(FixedValidatorProposalSourceV0::Fresh {
                 artifact_block: self.blocks[height - 1],
                 canonical_artifact_bytes: self.payloads[height - 1].clone()
             }),
             Event::ProposalAuthored
         ));
+        self.history_owner(actor, owner);
         self.history();
+    }
+
+    fn author(
+        &mut self,
+        height: usize,
+        first: &mut Runtime<'_>,
+        second: &mut Runtime<'_>,
+        third: &mut Runtime<'_>,
+        fourth: &mut Runtime<'_>,
+    ) {
+        let proposer = self.branch.begin_round_zero().unwrap().proposer();
+        let actor = self.keys.iter().position(|key| *key == proposer).unwrap();
+        match actor {
+            0 => self.author_at(actor, height, first),
+            1 => self.author_at(actor, height, second),
+            2 => self.author_at(actor, height, third),
+            3 => self.author_at(actor, height, fourth),
+            _ => unreachable!(),
+        }
     }
 
     fn prepare_second_height(&mut self) {
@@ -578,22 +689,27 @@ impl Simulation<'_, '_> {
         self.history();
     }
 
-    async fn advance_deadline(&mut self) {
-        let deadline = self
-            .owners
-            .iter()
-            .filter_map(Runtime::timer)
+    async fn advance_deadline(
+        &mut self,
+        first: &mut Runtime<'_>,
+        second: &mut Runtime<'_>,
+        third: &mut Runtime<'_>,
+        fourth: &mut Runtime<'_>,
+    ) {
+        let deadline = [first.timer(), second.timer(), third.timer(), fourth.timer()]
+            .into_iter()
+            .flatten()
             .map(|timer| timer.deadline())
             .min()
             .unwrap();
         assert!(deadline > Instant::now());
         tokio::time::advance(deadline - Instant::now()).await;
         self.history();
-        self.pump().await;
+        self.pump(first, second, third, fourth).await;
     }
 
-    async fn queued_deadline_race(&mut self, actor: usize) {
-        let timer = self.owners[actor].timer().unwrap();
+    async fn queued_deadline_race(&mut self, actor: usize, owner: &mut Runtime<'_>) {
+        let timer = owner.timer().unwrap();
         assert_eq!(timer.ticket().phase(), FixedValidatorLockPhaseV0::Precommit);
         let input = self
             .produced
@@ -606,14 +722,12 @@ impl Simulation<'_, '_> {
             .unwrap()
             .copy();
         let images = self.layouts[actor].authority_images();
-        self.owners[actor]
-            .queue_input(copy_message(&input.input))
-            .unwrap();
+        owner.queue_input(copy_message(&input.input)).unwrap();
         self.queued[actor] = Some(input);
         assert_eq!(self.layouts[actor].authority_images(), images);
         tokio::time::advance(timer.deadline().saturating_duration_since(Instant::now())).await;
         let before = self.due;
-        assert!(self.poll(actor).await);
+        assert!(self.poll(actor, owner).await);
         assert_eq!(
             self.due,
             before + 1,
@@ -621,12 +735,97 @@ impl Simulation<'_, '_> {
         );
         assert!(self.queued[actor].is_some());
         assert_eq!(
-            self.owners[actor].poll_transport_once().await,
+            owner.poll_transport_once().await,
             FixedValidatorRuntimeTransportPollV0::InputSlotOccupied
         );
         assert_eq!(self.layouts[actor].authority_images(), images);
         self.race = true;
-        self.pump().await;
+    }
+}
+
+fn runtime_owner(scope: FixedValidatorNodeSigningScopeV0<'_>) -> Runtime<'_> {
+    let driver = Driver::new(
+        scope,
+        FixedValidatorNodeHigherRoundInboxLimitsV0::new(128, 1 << 20).unwrap(),
+        FixedValidatorNodeCurrentRoundInboxLimitsV0::new(128, 1 << 20).unwrap(),
+        FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0::new(128, 1 << 20).unwrap(),
+        FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0::new(128, 1 << 20).unwrap(),
+        ConsensusRound::new(4),
+    )
+    .unwrap();
+    Runtime::new(
+        driver,
+        isolated_network(),
+        vec![],
+        timeouts(Duration::from_secs(1)),
+    )
+    .unwrap()
+}
+
+fn simulation<'layout>(
+    layouts: &'layout [TestLayout; 4],
+    scenario: Scenario,
+    reverse: bool,
+    definition: ArtifactChainDefinition,
+    context: ConsensusContextV0,
+    keys: [ConsensusKey; 4],
+    entries: &[ActiveAgreementEntry],
+) -> Simulation<'layout> {
+    let mut selected = ArtifactChainState::new(definition);
+    let genesis = selected.head_block_id();
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        context,
+        entries,
+        selected.branch_snapshot(),
+    )
+    .unwrap();
+    let payloads = [
+        pairing_payload(),
+        naome_proof::ArtifactPayload::Proof(
+            naome_proof::ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, 0x10, 2]).unwrap(),
+        )
+        .to_canonical_bytes(),
+    ];
+    let blocks = payloads.each_ref().map(|payload| {
+        let block = selected.prepare_block(artifact_id(payload)).unwrap();
+        selected.apply_block(&block, payload.clone()).unwrap();
+        block
+    });
+    let value = branch
+        .begin_round_zero()
+        .unwrap()
+        .value_for_artifact_block(blocks[0]);
+    Simulation {
+        layouts,
+        scenario,
+        reverse,
+        keys,
+        branch,
+        blocks,
+        payloads,
+        values: vec![value],
+        genesis,
+        finalized: [0; 4],
+        baseline_height: 0,
+        baseline: layouts.each_ref().map(TestLayout::authority_images),
+        queues: std::array::from_fn(|_| VecDeque::new()),
+        queued: std::array::from_fn(|_| None),
+        local: std::array::from_fn(|_| None),
+        produced: vec![],
+        intents: BTreeMap::new(),
+        generations: [0; 4],
+        received: std::array::from_fn(|_| BTreeMap::new()),
+        prevotes: std::array::from_fn(|_| BTreeMap::new()),
+        precommit_inputs: std::array::from_fn(|_| BTreeMap::new()),
+        events: 0,
+        deliveries: 0,
+        dropped: 0,
+        duplicates: 0,
+        local_precommits: 0,
+        caller_precommits: 0,
+        late: 0,
+        due: 0,
+        race: false,
     }
 }
 
@@ -670,88 +869,20 @@ fn run(scenario: Scenario, reverse: bool) {
     let execute = |scopes: [FixedValidatorNodeSigningScopeV0<'_>; 4]| {
         executor.block_on(async {
             tokio::time::pause();
-            let mut selected = ArtifactChainState::new(definition);
-            let genesis = selected.head_block_id();
-            let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
-                context,
-                &entries,
-                selected.branch_snapshot(),
-            )
-            .unwrap();
-            let payloads = [
-                pairing_payload(),
-                naome_proof::ArtifactPayload::Proof(
-                    naome_proof::ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, 0x10, 2]).unwrap(),
-                )
-                .to_canonical_bytes(),
-            ];
-            let blocks = payloads.each_ref().map(|payload| {
-                let block = selected.prepare_block(artifact_id(payload)).unwrap();
-                selected.apply_block(&block, payload.clone()).unwrap();
-                block
-            });
-            let value = branch
-                .begin_round_zero()
-                .unwrap()
-                .value_for_artifact_block(blocks[0]);
-            let mut sim = Simulation {
-                owners: scopes.map(|scope| {
-                    let driver = Driver::new(
-                        scope,
-                        FixedValidatorNodeHigherRoundInboxLimitsV0::new(128, 1 << 20).unwrap(),
-                        FixedValidatorNodeCurrentRoundInboxLimitsV0::new(128, 1 << 20).unwrap(),
-                        FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0::new(128, 1 << 20).unwrap(),
-                        FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0::new(128, 1 << 20).unwrap(),
-                        ConsensusRound::new(4),
-                    )
-                    .unwrap();
-                    Runtime::new(
-                        driver,
-                        isolated_network(),
-                        vec![],
-                        timeouts(Duration::from_secs(1)),
-                    )
-                    .unwrap()
-                }),
-                layouts: &layouts,
-                scenario,
-                reverse,
-                keys: public_keys,
-                branch,
-                blocks,
-                payloads,
-                values: vec![value],
-                genesis,
-                finalized: [0; 4],
-                baseline_height: 0,
-                baseline: layouts.each_ref().map(TestLayout::authority_images),
-                queues: std::array::from_fn(|_| VecDeque::new()),
-                queued: std::array::from_fn(|_| None),
-                local: std::array::from_fn(|_| None),
-                produced: vec![],
-                intents: BTreeMap::new(),
-                received: std::array::from_fn(|_| BTreeMap::new()),
-                events: 0,
-                deliveries: 0,
-                dropped: 0,
-                duplicates: 0,
-                local_precommits: 0,
-                caller_precommits: 0,
-                late: 0,
-                due: 0,
-                race: false,
-            };
-            sim.pump().await;
-            sim.author(1);
-            sim.pump().await;
+            let mut owners = scopes.map(runtime_owner);
+            let [first_owner, second_owner, third_owner, fourth_owner] = &mut owners;
+            let mut sim = simulation(&layouts, scenario, reverse, definition, context, public_keys, &entries);
+            sim.pump(first_owner, second_owner, third_owner, fourth_owner).await;
+            sim.author(1, first_owner, second_owner, third_owner, fourth_owner);
+            sim.pump(first_owner, second_owner, third_owner, fourth_owner).await;
             sim.prepare_second_height();
-            sim.author(2);
-            sim.pump().await;
+            sim.author(2, first_owner, second_owner, third_owner, fourth_owner);
+            sim.pump(first_owner, second_owner, third_owner, fourth_owner).await;
             if scenario.winners == 0 {
                 if scenario.cut == Cut::Precommit {
-                    for actor in 0..4 {
+                    for (actor, key) in public_keys.iter().copied().enumerate() {
                         assert_eq!(
-                            sim.intents[&(actor, 2, 0, 1)],
+                            sim.intents[&(key, 2, 0, 1)].target,
                             ConsensusVoteTarget::Proposal(sim.values[1].proposal_signing_root())
                         );
                         let expected = (0..4)
@@ -765,33 +896,35 @@ fn run(scenario: Scenario, reverse: bool) {
                 }
                 for _ in 0..20 {
                     if !sim.race
-                        && let Some(actor) = (0..4).find(|&actor| {
-                            sim.owners[actor].driver().unwrap().phase()
-                                == FixedValidatorLockPhaseV0::Precommit
-                        })
+                        && let Some(actor) = [&*first_owner, &*second_owner, &*third_owner, &*fourth_owner].iter()
+                        .position(|owner| owner.driver().unwrap().phase() == FixedValidatorLockPhaseV0::Precommit)
                     {
-                        sim.queued_deadline_race(actor).await;
+                        match actor {
+                            0 => sim.queued_deadline_race(actor, first_owner).await,
+                            1 => sim.queued_deadline_race(actor, second_owner).await,
+                            2 => sim.queued_deadline_race(actor, third_owner).await,
+                            3 => sim.queued_deadline_race(actor, fourth_owner).await,
+                            _ => unreachable!(),
+                        }
+                        sim.pump(first_owner, second_owner, third_owner, fourth_owner).await;
                         continue;
                     }
-                    if sim
-                        .owners
-                        .iter()
+                    if [&*first_owner, &*second_owner, &*third_owner, &*fourth_owner].iter()
                         .all(|owner| owner.driver().unwrap().position().round().value() >= 2)
                     {
                         break;
                     }
-                    sim.advance_deadline().await;
+                    sim.advance_deadline(first_owner, second_owner, third_owner, fourth_owner).await;
                 }
                 assert!(sim.race && sim.due > 0);
                 assert!(
-                    sim.owners
-                        .iter()
+                    [&*first_owner, &*second_owner, &*third_owner, &*fourth_owner].iter()
                         .all(|owner| owner.driver().unwrap().position().round().value() >= 2)
                 );
                 assert_eq!(sim.finalized, [1; 4]);
-                for actor in 0..4 {
+                for key in public_keys {
                     for role in 0..2 {
-                        assert!(sim.intents.contains_key(&(actor, 2, 0, role)));
+                        assert!(sim.intents.contains_key(&(key, 2, 0, role)));
                     }
                 }
             } else {

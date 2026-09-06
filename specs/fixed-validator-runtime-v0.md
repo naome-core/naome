@@ -608,3 +608,10 @@ evidence. Automatic artifact acquisition, broader finality routing, automatic
 source selection, general gossip, durable delivery, reserved control capacity,
 node binaries, key loading/rotation, remote signing, and dynamic validators
 remain outside this slice.
+
+`SEC-012-004` adds one [partitioned owner restart](fixed-validator-partition-restart-v0.md)
+execution with a real distributed non-nil lock, exact anchored reopening of one
+owner while three remain live, and newly observed isolated votes under a
+persistent signing oracle. Its final reopen verifies the subsequent durable
+nil-precommit state and unchanged lock/valid proof. This is local runtime
+teardown/reopen evidence, not process termination or general crash safety.

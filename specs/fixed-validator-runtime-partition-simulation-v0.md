@@ -120,3 +120,8 @@ Byzantine coalitions, dynamic validators, crash/restart behavior, I/O-fault
 coverage, general partition safety, eventual liveness, healed convergence,
 multi-region timing, deployment, or production readiness. The separate driver
 corpus remains specified in `fixed-validator-partition-simulation-v0.md`.
+
+The separate [owner-restart corpus](fixed-validator-partition-restart-v0.md)
+reuses the observer and caller scheduler while allowing one signing lifetime to
+end independently. It adds one continued-voting lifecycle execution; it does not
+change the fourteen scenarios or their original no-restart evidence boundary.
