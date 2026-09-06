@@ -84,7 +84,7 @@ impl<'node> Session<'_, 'node> {
                     });
                     self.authoring_result(id, event)?
                 }
-                Poll::Command(command) => self.command(command)?,
+                Poll::Command(command) => self.command(command, sources.as_mut())?,
                 Poll::Runtime(event) => self.event(event)?,
                 Poll::Stop(stop) => Some(stop),
             };
@@ -151,7 +151,7 @@ impl<'node> Session<'_, 'node> {
                     self.rejected(command.id(), "sources_busy")?;
                     None
                 }
-                Poll::Command(command) => self.command(command)?,
+                Poll::Command(command) => self.command(command, None)?,
                 Poll::Runtime(event) => self.event(event)?,
                 Poll::Stop(stop) => Some(stop),
             };
@@ -186,10 +186,10 @@ impl<'node> Session<'_, 'node> {
         }
     }
 
-    fn command(&mut self, command: Command) -> Result<Option<Stop>> {
+    fn command(&mut self, command: Command, sources: Option<&mut Sources>) -> Result<Option<Stop>> {
         let id = command.id();
         let shutdown = matches!(command, Command::Shutdown { .. });
-        match commands::execute(command, self.base, &mut self.runtime) {
+        match commands::execute(command, self.base, &mut self.runtime, sources) {
             Ok((outcome, fatal)) => {
                 self.result(id, outcome)?;
                 if fatal {
