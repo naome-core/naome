@@ -375,6 +375,17 @@ operations remain available independently of driver survival and change no
 driver, timer, publication, or input marker. Queueing a response is not proof of
 its transmission, receipt, admission, validity, or finality.
 
+`SEC-003-003` separately adds
+`respond_finality_proof_from_selected_history`. This operation requires a
+surviving driver and borrows only its sealed retained-proof reader. Driver
+absence refunds the original inbound handle before channel/rate admission or
+history access; delegated responses retain the lower operation's consuming
+errors. It changes no driver, timer, input, command or publication marker and
+does not poll ordinary work. The runtime still transfers such inbound events
+to its caller; only the explicitly enabled
+[validator provider](fixed-validator-proof-provider-v0.md) routes them to this
+operation. A raw transport response remains separate from provider authority.
+
 Artifact requests and publications continue to share the existing per-peer slot
 and aggregate permits. A pending publication may refuse a missing-source request,
 and a pending artifact request may refuse the publication's one-shot peer attempt.

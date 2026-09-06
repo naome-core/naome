@@ -19,6 +19,7 @@ use naome_storage::{
     ArtifactBlockCandidateStore, CanonicalArtifactPayloadStore, FixedValidatorProposalSafetyHaltV0,
     FixedValidatorSignedProposalV0, FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyHaltV0,
     FixedValidatorVoteSafetyJournalErrorV0, SelectedArtifactHistory,
+    SelectedFinalityProofHistoryV0,
 };
 
 use super::current_round_finality_inbox::{
@@ -129,8 +130,9 @@ enum PendingCommandV0 {
 /// strictly lower-round conflict pairs after pending command custody transfers.
 /// Explicit proposal authoring waits for ordinary step work, then queues the
 /// completed proposal and exact payload without local admission or timer change.
-/// Its only authority projection is the sealed
-/// read-only selected artifact history required by caller-owned acquisition.
+/// Its sealed read-only projections expose selected artifact history for
+/// acquisition and retained finality proofs for explicit serving, without
+/// journal acknowledgement or signing capabilities.
 /// Evidence and due timers become authoritative only through the existing fully
 /// checking consuming coordinators.
 #[must_use]
@@ -231,6 +233,13 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     /// acquisition workflow retains it. Target and peer choice, persistence,
     /// proposal admission, voting, and finality remain separate explicit steps.
     pub fn selected_artifact_history(&self) -> &dyn SelectedArtifactHistory {
+        self.scope().finality()
+    }
+
+    /// Borrows only healthy retained proof reading, without exposing the journal
+    /// or its signer-height and signer-stop acknowledgement capabilities.
+    /// The borrow prevents consuming driver work until the caller releases it.
+    pub fn selected_finality_proof_history(&self) -> &dyn SelectedFinalityProofHistoryV0 {
         self.scope().finality()
     }
 

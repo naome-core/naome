@@ -190,8 +190,12 @@ impl Process {
     }
 
     pub fn start_path(path: &Path) -> Self {
+        Self::start_executable(Path::new(env!("CARGO_BIN_EXE_naome-verifier")), path)
+    }
+
+    pub fn start_executable(executable: &Path, path: &Path) -> Self {
         let mut child = spawn(
-            Command::new(env!("CARGO_BIN_EXE_naome-verifier"))
+            Command::new(executable)
                 .arg(path)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())

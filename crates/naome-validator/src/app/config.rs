@@ -67,6 +67,8 @@ struct Network {
     listen: String,
     peers: Vec<Peer>,
     publication_targets: Vec<String>,
+    #[serde(default)]
+    serve_finality_proofs: bool,
 }
 
 #[derive(Deserialize)]
@@ -124,6 +126,7 @@ pub(super) struct Prepared {
     pub network: StaticArtifactNetwork,
     pub listen: Multiaddr,
     pub targets: Vec<PeerId>,
+    pub serve_finality_proofs: bool,
     pub timeouts: FixedValidatorRuntimeTimeoutsV0,
     pub driver_max_round: ConsensusRound,
     pub higher: FixedValidatorNodeHigherRoundInboxLimitsV0,
@@ -281,6 +284,7 @@ impl Config {
             network,
             listen,
             targets,
+            serve_finality_proofs: self.network.serve_finality_proofs,
             timeouts,
             driver_max_round,
             higher: FixedValidatorNodeHigherRoundInboxLimitsV0::new(

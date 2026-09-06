@@ -28,6 +28,9 @@ use naome_storage::{
 };
 use tokio::time::{Instant, timeout};
 
+#[cfg(unix)]
+use naome_storage::FixedValidatorAnchoredFinalityJournalV0;
+
 use super::{
     BuildError, INBOUND_APPLICATION_REQUEST_BURST, INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL,
     MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent, OutboundArtifactEvent, PeerId,
@@ -114,6 +117,34 @@ pub(crate) fn assert_finality_snapshot(
 }
 
 impl FinalityFixture {
+    #[cfg(unix)]
+    pub(crate) fn halted_anchored(
+        &self,
+        directory: &TestDirectory,
+        anchor: &TestDirectory,
+    ) -> FixedValidatorAnchoredFinalityJournalV0 {
+        let mut journal = FixedValidatorAnchoredFinalityJournalV0::create(
+            directory.path(),
+            anchor.path(),
+            self.definition,
+            self.context,
+            &self.entries,
+            self.replay_limit,
+        )
+        .unwrap();
+        let first = self.transition_at(journal.head().unwrap(), pairing_bytes(), 0);
+        let sibling = self.transition_at(journal.head().unwrap(), union_bytes(), 1);
+        assert!(matches!(
+            journal.commit_verified(first).unwrap(),
+            FixedValidatorFinalityCommitOutcomeV0::Finalized { .. }
+        ));
+        assert!(matches!(
+            journal.commit_verified(sibling).unwrap(),
+            FixedValidatorFinalityCommitOutcomeV0::Halted(_)
+        ));
+        journal
+    }
+
     pub(crate) fn new() -> Self {
         let definition = test_chain_definition();
         let context = ConsensusContextV0::new(
@@ -193,12 +224,21 @@ impl FinalityFixture {
         payload: Vec<u8>,
         round: u64,
     ) -> OwnedVerifiedFixedConsensusTransitionV0 {
+        self.transition_at(journal.head().unwrap(), payload, round)
+    }
+
+    fn transition_at(
+        &self,
+        parent: &naome_consensus::FixedConsensusBranchV0,
+        payload: Vec<u8>,
+        round: u64,
+    ) -> OwnedVerifiedFixedConsensusTransitionV0 {
         let artifact_id = ArtifactDag::new()
             .apply_canonical_artifact_bytes(payload.clone())
             .unwrap()
             .artifact_id();
         let block = self.selected.prepare_block(artifact_id).unwrap();
-        let mut cursor = journal.head().unwrap().begin_round_zero().unwrap();
+        let mut cursor = parent.begin_round_zero().unwrap();
         for _ in 0..round {
             cursor = cursor.advance_round().unwrap();
         }

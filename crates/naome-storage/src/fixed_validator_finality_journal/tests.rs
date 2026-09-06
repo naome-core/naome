@@ -33,6 +33,23 @@ const AUTHORIZATION_BODY_BYTES: usize = 116;
 const VOTE_BODY_BYTES: usize = 118;
 static DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(unix)]
+fn proof_lookup_addresses(
+    context: ConsensusContextV0,
+) -> [(ConsensusContextV0, ConsensusHeight); 6] {
+    let foreign = ConsensusContextV0::new(
+        context.chain_id(),
+        ConsensusGenesisId::from_bytes([0xff; 32]),
+        context.protocol_version(),
+    );
+    std::array::from_fn(|index| {
+        (
+            [context, foreign][index / 3],
+            ConsensusHeight::new([0, 1, u64::MAX][index % 3]),
+        )
+    })
+}
+
 struct TestDirectory(PathBuf);
 
 impl TestDirectory {

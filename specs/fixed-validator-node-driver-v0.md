@@ -106,8 +106,8 @@ typed operational block, finality, rejection, and stop outcomes described
 below. The separate historical-conflict bridges are not an alternative step or a
 way to recover the owned scope.
 
-`FixedValidatorNodeDriverV0::selected_artifact_history` is the sole public
-non-diagnostic projection from the privately owned scope. It returns only the
+`FixedValidatorNodeDriverV0::selected_artifact_history` is the artifact-history
+projection from the privately owned scope. It returns only the
 sealed read-only `SelectedArtifactHistory` trait implemented by the anchored
 finality owner; it cannot expose the branch, signing session, raw scope, or any
 mutable finality operation. The reference composition retains this shared
@@ -120,6 +120,14 @@ limits, and event routing, and the later driver event must pass the ordinary
 complete proposal verification. The projection establishes no availability,
 provenance, validity, vote-target, branch-selection, rollback, consensus, or
 finality authority.
+
+`SEC-003-003` adds `selected_finality_proof_history`, returning only the sealed
+`SelectedFinalityProofHistoryV0` interface for healthy exact-context/height
+retained-proof lookup. It exposes no concrete journal or signer-height/stop
+acknowledgement. Its shared borrow likewise prevents consuming driver work
+until released. The [proof provider](fixed-validator-proof-provider-v0.md)
+composes this projection without changing `step`, inbox, timer or signing
+semantics.
 
 Construction is consuming. If construction fails, it returns neither a driver
 nor the supplied signing scope. The caller must strictly reopen the anchored

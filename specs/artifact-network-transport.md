@@ -277,6 +277,13 @@ bytes after response-custody admission. Serving makes no authority-file write,
 re-verification, state selection, or provenance claim. Queueing a response
 establishes no remote receipt or retention.
 
+`SEC-003-003` exposes the same responder through the sealed
+`SelectedFinalityProofHistoryV0` reader used by the live validator driver. The
+anchored-journal helper delegates to this operation. Admission, health, exact
+lookup and response-copy ordering are identical; no framing, capacity or
+retry rule changes. Process opt-in and signer ownership are specified by the
+[proof-provider profile](fixed-validator-proof-provider-v0.md).
+
 ## Recovery-bundle push V0
 
 One caller-selected authenticated peer may receive one caller-owned canonical
