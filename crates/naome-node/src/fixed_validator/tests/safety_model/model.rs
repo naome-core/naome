@@ -98,11 +98,69 @@ pub(super) enum Rules {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Model {
     pub faulty: u8,
+    pub proposers: [u8; 3],
+    // Bit s says whether distinct signer subset s has a quorum. The model
+    // always makes the faulty signature available, including for nil.
+    pub quorums: u16,
     pub rules: Rules,
 }
 
+#[derive(Clone, Copy)]
+struct Facts([u8; 6]);
+
+impl Facts {
+    fn quorum(self, round: u8, role: u8, target: u8) -> bool {
+        self.0[usize::from(2 * round + role)] & (1 << (target - 1)) != 0
+    }
+}
+
 impl Model {
-    fn key(self, state: State) -> u128 {
+    pub fn unit(faulty: u8, rules: Rules) -> Self {
+        let mut quorums = 0;
+        for signers in 0_u16..16 {
+            let signed = signers.count_ones();
+            let quorum = match rules {
+                Rules::WeakQuorum => 2 * signed >= 4,
+                _ => 3 * signed > 2 * 4,
+            };
+            quorums |= u16::from(quorum) << signers;
+        }
+        Self {
+            faulty,
+            proposers: [0, 1, 2],
+            quorums,
+            rules,
+        }
+    }
+
+    fn position_facts(self, state: State, round: u8, role: u8) -> u8 {
+        let mut signers = [1 << self.faulty; 3];
+        for actor in 0..VALIDATORS {
+            let target = state.vote(actor, round, role);
+            if actor != self.faulty && target != 0 {
+                signers[usize::from(target - 1)] |= 1 << actor;
+            }
+        }
+        let mut targets = 0;
+        for (target, mask) in signers.into_iter().enumerate() {
+            targets |= u8::from(self.quorums & (1 << mask) != 0) << target;
+        }
+        targets
+    }
+
+    fn facts(self, state: State) -> Facts {
+        Facts(std::array::from_fn(|slot| {
+            self.position_facts(state, slot as u8 / 2, slot as u8 % 2)
+        }))
+    }
+
+    fn key(self, state: State, facts: Facts) -> u128 {
+        let closed: [bool; 3] = std::array::from_fn(|round| {
+            (0..VALIDATORS).all(|actor| {
+                actor == self.faulty
+                    || usize::from(state.nodes[usize::from(actor)].cursor / 3) > round
+            })
+        });
         let encode = |swap: bool| {
             let target = |value| {
                 if swap && (value == 1 || value == 2) {
@@ -144,27 +202,34 @@ impl Model {
                     2,
                 );
             }
-            for round in 0..ROUNDS {
-                let closed = (0..VALIDATORS).all(|actor| {
-                    actor == self.faulty || state.nodes[usize::from(actor)].cursor / 3 > round
-                });
+            // Each round/role contributes the same eight vote bits followed
+            // by three frozen-quorum bits. Pack whole bytes instead of
+            // re-encoding every two-bit vote twice on every generated edge.
+            for (round, &closed) in closed.iter().enumerate() {
                 for role in 0..=1 {
-                    for actor in 0..VALIDATORS {
-                        push(
-                            if closed {
-                                0
-                            } else {
-                                target(state.vote(actor, round, role))
-                            },
-                            2,
-                        );
-                    }
-                    for value in 1..=NIL {
-                        push(
-                            u8::from(closed && self.quorum(state, round, role, target(value))),
-                            1,
-                        );
-                    }
+                    let position = 2 * round + role;
+                    let votes = if closed {
+                        0
+                    } else {
+                        (state.votes >> (8 * position)) as u8
+                    };
+                    let quorums = if closed { facts.0[position] } else { 0 };
+                    push(
+                        if swap {
+                            ((votes & 0x55) << 1) | ((votes & 0xaa) >> 1)
+                        } else {
+                            votes
+                        },
+                        8,
+                    );
+                    push(
+                        if swap {
+                            ((quorums & 1) << 1) | ((quorums & 2) >> 1) | (quorums & 4)
+                        } else {
+                            quorums
+                        },
+                        3,
+                    );
                 }
             }
             key
@@ -178,19 +243,34 @@ impl Model {
     pub fn quorum(self, state: State, round: u8, role: u8, target: u8) -> bool {
         // The faulty validator may sign every target at every position. Honest
         // votes must come from this execution. Withholding is always permitted.
-        let signed = 1
-            + (0..VALIDATORS)
-                .filter(|&actor| actor != self.faulty && state.vote(actor, round, role) == target)
-                .count();
-        match self.rules {
-            Rules::WeakQuorum => 2 * signed >= usize::from(VALIDATORS),
-            _ => 3 * signed > 2 * usize::from(VALIDATORS),
+        let mut signers = 1 << self.faulty;
+        for actor in 0..VALIDATORS {
+            if actor != self.faulty && state.vote(actor, round, role) == target {
+                signers |= 1 << actor;
+            }
         }
+        self.quorums & (1 << signers) != 0
     }
 
     pub fn proposals(self, state: State, round: u8) -> Vec<u8> {
-        // Equal weights and initially zero priorities select sorted keys 0,1,2.
-        let mut proposals = if round == self.faulty {
+        self.proposals_with_facts(state, round, self.facts(state))
+    }
+
+    fn roots(self, state: State, round: u8) -> u8 {
+        if self.proposers[usize::from(round)] == self.faulty {
+            3
+        } else {
+            let proposal = state.proposals[usize::from(round)];
+            if proposal == 0 {
+                0
+            } else {
+                1 << (proposal_value(proposal) - 1)
+            }
+        }
+    }
+
+    fn proposals_with_facts(self, state: State, round: u8, facts: Facts) -> Vec<u8> {
+        let mut proposals = if self.proposers[usize::from(round)] == self.faulty {
             vec![1, 2]
         } else {
             match state.proposals[usize::from(round)] {
@@ -204,7 +284,7 @@ impl Model {
         let roots = proposals.clone();
         for earlier in 0..round {
             for &value in &roots {
-                if self.quorum(state, earlier, 0, value) {
+                if facts.quorum(earlier, 0, value) {
                     proposals.push(proof(earlier, value) + 2);
                 }
             }
@@ -213,23 +293,22 @@ impl Model {
     }
 
     pub fn certified_values(self, state: State) -> u8 {
+        self.certified_with_facts(state, self.facts(state))
+    }
+
+    fn certified_with_facts(self, state: State, facts: Facts) -> u8 {
         let mut values = 0;
         for round in 0..ROUNDS {
-            for value in 1..=2 {
-                if self.quorum(state, round, 1, value)
-                    && self
-                        .proposals(state, round)
-                        .iter()
-                        .any(|&p| proposal_value(p) == value)
-                {
-                    values |= 1 << (value - 1);
-                }
-            }
+            values |= facts.0[usize::from(2 * round + 1)] & self.roots(state, round);
         }
         values
     }
 
     pub fn actions(self, state: State) -> Vec<Action> {
+        self.actions_with_facts(state, self.facts(state))
+    }
+
+    fn actions_with_facts(self, state: State, facts: Facts) -> Vec<Action> {
         let mut actions = Vec::new();
         for actor in 0..VALIDATORS {
             let local = state.nodes[usize::from(actor)];
@@ -239,7 +318,9 @@ impl Model {
                 continue;
             }
             if phase == 0 {
-                if actor == round && state.proposals[usize::from(round)] == 0 {
+                if actor == self.proposers[usize::from(round)]
+                    && state.proposals[usize::from(round)] == 0
+                {
                     if local.valid == 0 {
                         for proposal in 1..=2 {
                             actions.push(Action::Author { actor, proposal });
@@ -251,18 +332,14 @@ impl Model {
                         });
                     }
                 }
-                for proposal in self.proposals(state, round) {
+                for proposal in self.proposals_with_facts(state, round, facts) {
                     actions.push(Action::Prevote { actor, proposal });
                 }
                 actions.push(Action::Prevote { actor, proposal: 0 });
             } else if phase == 1 {
                 for target in 1..=NIL {
-                    if self.quorum(state, round, 0, target)
-                        && (target == NIL
-                            || self
-                                .proposals(state, round)
-                                .iter()
-                                .any(|&p| proposal_value(p) == target))
+                    if facts.quorum(round, 0, target)
+                        && (target == NIL || self.roots(state, round) & (1 << (target - 1)) != 0)
                     {
                         actions.push(Action::Precommit { actor, target });
                     }
@@ -274,7 +351,7 @@ impl Model {
                     nil_quorum: false,
                 });
             }
-            if self.quorum(state, round, 1, NIL) {
+            if facts.quorum(round, 1, NIL) {
                 actions.push(Action::Advance {
                     actor,
                     nil_quorum: true,
@@ -285,7 +362,7 @@ impl Model {
                     // Target changes no checkpoint state; one witness suffices
                     // for each equivalent phase-only successor.
                     if let Some(target) =
-                        (1..=NIL).find(|&target| self.quorum(state, higher, role, target))
+                        (1..=NIL).find(|&target| facts.quorum(higher, role, target))
                     {
                         actions.push(Action::Higher {
                             actor,
@@ -364,19 +441,40 @@ impl Model {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Exploration {
     pub states: usize,
     pub transitions: usize,
     pub witnesses: BTreeMap<&'static str, Vec<Action>>,
     pub counterexample: Option<Vec<Action>>,
+    witness_limit: usize,
 }
 
-fn observe(model: Model, before: State, after: State, action: Action) -> Vec<&'static str> {
+fn observe(
+    model: Model,
+    before: State,
+    after: State,
+    action: Action,
+    certificates: u8,
+) -> Vec<&'static str> {
     let mut labels = Vec::new();
     let old = before.nodes[usize::from(action.actor())];
     let new = after.nodes[usize::from(action.actor())];
     match action {
+        Action::Author { actor, .. } => {
+            let prior = (0..old.cursor / 3)
+                .filter(|&round| {
+                    model.proposers[usize::from(round)] == actor
+                        && before.proposals[usize::from(round)] != 0
+                })
+                .count();
+            if prior > 0 {
+                labels.push("repeated_proposer_authors");
+            }
+            if prior == 2 {
+                labels.push("three_round_proposer_authors");
+            }
+        }
         Action::Prevote { proposal, .. } => {
             if old.locked > 0 && new.locked == 0 {
                 labels.push("proof_unlock");
@@ -413,7 +511,7 @@ fn observe(model: Model, before: State, after: State, action: Action) -> Vec<&'s
         } if old.cursor % 3 != 2 => labels.push("nil_precommit_preempts"),
         _ => {}
     }
-    match model.certified_values(after) {
+    match certificates {
         1 => labels.push("certificate_a"),
         2 => labels.push("certificate_b"),
         _ => {}
@@ -422,36 +520,66 @@ fn observe(model: Model, before: State, after: State, action: Action) -> Vec<&'s
 }
 
 pub(super) fn explore(model: Model) -> Exploration {
+    explore_with_limit(model, STATE_LIMIT)
+}
+
+pub(super) fn explore_with_limit(model: Model, state_limit: usize) -> Exploration {
     fn visit(
         model: Model,
         state: State,
+        facts: Facts,
         seen: &mut HashSet<u128>,
         path: &mut Vec<Action>,
         report: &mut Exploration,
+        state_limit: usize,
     ) -> bool {
-        if !seen.insert(model.key(state)) {
+        if !seen.insert(model.key(state, facts)) {
             return false;
         }
         assert!(
-            seen.len() <= STATE_LIMIT,
-            "incomplete model exploration: state limit {STATE_LIMIT} exceeded, model={model:?}"
+            seen.len() <= state_limit,
+            "incomplete model exploration: state limit {state_limit} exceeded, model={model:?}"
         );
         report.states += 1;
-        if model.certified_values(state) == 3 {
+        if model.certified_with_facts(state, facts) == 3 {
             report.counterexample = Some(path.clone());
             return true;
         }
-        for action in model.actions(state) {
+        for action in model.actions_with_facts(state, facts) {
             if let Some(next) = model.apply(state, action) {
+                let mut next_facts = facts;
+                // Only a vote changes quorum availability, and only at its
+                // exact round/role. Authoring and checkpointing reuse facts.
+                let role = match action {
+                    Action::Prevote { .. } => Some(0),
+                    Action::Precommit { .. } => Some(1),
+                    _ => None,
+                };
+                if let Some(role) = role {
+                    let round = state.nodes[usize::from(action.actor())].cursor / 3;
+                    next_facts.0[usize::from(2 * round + role)] =
+                        model.position_facts(next, round, role);
+                }
                 report.transitions += 1;
                 path.push(action);
-                for label in observe(model, state, next, action) {
-                    report
-                        .witnesses
-                        .entry(label)
-                        .or_insert_with(|| path.clone());
+                // Observe actual edges before quotient deduplication: an A/B
+                // equivalent successor can still supply the B witness.
+                if report.witnesses.len() < report.witness_limit {
+                    let certificates = if report.witnesses.contains_key("certificate_a")
+                        && report.witnesses.contains_key("certificate_b")
+                    {
+                        0
+                    } else {
+                        model.certified_with_facts(next, next_facts)
+                    };
+                    for label in observe(model, state, next, action, certificates) {
+                        report
+                            .witnesses
+                            .entry(label)
+                            .or_insert_with(|| path.clone());
+                    }
                 }
-                if visit(model, next, seen, path, report) {
+                if visit(model, next, next_facts, seen, path, report, state_limit) {
                     return true;
                 }
                 path.pop();
@@ -464,25 +592,51 @@ pub(super) fn explore(model: Model) -> Exploration {
         transitions: 0,
         witnesses: BTreeMap::new(),
         counterexample: None,
+        witness_limit: WITNESS_LABELS.len()
+            + (0..VALIDATORS)
+                .filter(|&actor| actor != model.faulty)
+                .map(|actor| {
+                    model
+                        .proposers
+                        .iter()
+                        .filter(|&&proposer| proposer == actor)
+                        .count()
+                        .saturating_sub(1)
+                })
+                .sum::<usize>(),
     };
     visit(
         model,
         State::default(),
+        model.facts(State::default()),
         &mut HashSet::new(),
         &mut Vec::new(),
         &mut report,
+        state_limit,
     );
     report
 }
+
+pub(super) const WITNESS_LABELS: [&str; 12] = [
+    "certificate_a",
+    "certificate_b",
+    "proof_unlock",
+    "conflicting_proposal_keeps_lock",
+    "newer_valid_proof",
+    "nil_quorum_clears_lock",
+    "close_preserves_lock",
+    "precommit_differs_from_own_prevote",
+    "precommit_after_nil_prevote",
+    "higher_prevote",
+    "higher_precommit",
+    "nil_precommit_preempts",
+];
 
 #[test]
 fn bounded_safety_exploration() {
     for (faulty, report) in protocol_explorations().iter().enumerate() {
         let faulty = faulty as u8;
-        let model = Model {
-            faulty,
-            rules: Rules::Protocol,
-        };
+        let model = Model::unit(faulty, Rules::Protocol);
         eprintln!(
             "{model:?}: states={}, transitions={}, coverage={:?}",
             report.states,
@@ -494,20 +648,7 @@ fn bounded_safety_exploration() {
             "model safety counterexample: {model:?} {:?}",
             report.counterexample
         );
-        for label in [
-            "certificate_a",
-            "certificate_b",
-            "proof_unlock",
-            "conflicting_proposal_keeps_lock",
-            "newer_valid_proof",
-            "nil_quorum_clears_lock",
-            "close_preserves_lock",
-            "precommit_differs_from_own_prevote",
-            "precommit_after_nil_prevote",
-            "higher_prevote",
-            "higher_precommit",
-            "nil_precommit_preempts",
-        ] {
+        for label in WITNESS_LABELS {
             assert!(
                 report.witnesses.contains_key(label),
                 "vacuous coverage: {model:?} missing {label}"
@@ -519,19 +660,14 @@ fn bounded_safety_exploration() {
 pub(super) fn protocol_explorations() -> &'static [Exploration; 4] {
     static REPORTS: OnceLock<[Exploration; 4]> = OnceLock::new();
     REPORTS.get_or_init(|| {
-        std::array::from_fn(|faulty| {
-            explore(Model {
-                faulty: faulty as u8,
-                rules: Rules::Protocol,
-            })
-        })
+        std::array::from_fn(|faulty| explore(Model::unit(faulty as u8, Rules::Protocol)))
     })
 }
 
 #[test]
 fn weakened_models_have_counterexamples() {
     for rules in [Rules::WeakQuorum, Rules::ForgetLockOnRoundClose] {
-        let model = Model { faulty: 0, rules };
+        let model = Model::unit(0, rules);
         let report = explore(model);
         assert!(
             report.counterexample.is_some(),
