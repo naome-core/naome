@@ -1,7 +1,7 @@
 use std::collections::TryReserveError;
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -16,7 +16,8 @@ use crate::address_store::{
     SignedPeerRecordConstructionError, SignedPeerRecordError, encode_peer_id,
 };
 use crate::snapshot_io::{
-    BoundedReadError, ExclusiveLockError, open_exclusive, read_bounded, replace_synced,
+    BoundedReadError, ExclusiveLock, ExclusiveLockError, open_exclusive, read_bounded,
+    replace_synced,
 };
 
 const SNAPSHOT_HEADER: &[u8] = b"naome:local-peer-record-issuer\0";
@@ -40,12 +41,13 @@ const MAX_SNAPSHOT_BYTES: usize =
 /// no handle when its initial commit fails.
 pub struct LocalPeerRecordIssuer {
     directory: PathBuf,
-    _lock: File,
     peer_id: PeerId,
     last_issued_sequence: u64,
     poisoned: bool,
     #[cfg(test)]
     commit_fault: Option<TestCommitFault>,
+    // Declared last so owned state and data files drop before the lock releases.
+    _lock: ExclusiveLock,
 }
 
 impl LocalPeerRecordIssuer {
@@ -320,7 +322,7 @@ fn snapshot_checksum(bytes: &[u8]) -> [u8; CHECKSUM_BYTES] {
     hasher.finalize().into()
 }
 
-fn open_lock(directory: &Path) -> Result<File, LocalPeerRecordIssuerError> {
+fn open_lock(directory: &Path) -> Result<ExclusiveLock, LocalPeerRecordIssuerError> {
     match open_exclusive(directory, LOCK_FILE_NAME) {
         Ok(lock) => Ok(lock),
         Err(ExclusiveLockError::Locked) => Err(LocalPeerRecordIssuerError::Locked),

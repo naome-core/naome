@@ -183,7 +183,7 @@ pub(super) fn write_stored_record(bytes: &mut Vec<u8>, record: &StoredRecord) {
 pub(super) fn stored_record_encoded_length(record: &StoredRecord) -> usize {
     1 + record.source_peer_id.as_ref().encoded_len() + 8 + 2 + record.record.envelope_bytes.len()
 }
-pub(super) fn open_lock(directory: &Path) -> Result<File, PeerAddressStoreError> {
+pub(super) fn open_lock(directory: &Path) -> Result<ExclusiveLock, PeerAddressStoreError> {
     match open_exclusive(directory, LOCK_FILE_NAME) {
         Ok(lock) => Ok(lock),
         Err(ExclusiveLockError::Locked) => Err(PeerAddressStoreError::Locked),

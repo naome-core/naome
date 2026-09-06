@@ -275,7 +275,9 @@ pub(super) fn keyed_paths(
     Ok((directory.join(lock_name), directory.join(journal_name)))
 }
 
-pub(super) fn open_key_lock(path: &Path) -> Result<File, FixedValidatorVoteSafetyJournalErrorV0> {
+pub(super) fn open_key_lock(
+    path: &Path,
+) -> Result<ExclusiveLock, FixedValidatorVoteSafetyJournalErrorV0> {
     let directory = path.parent().expect("keyed lock path always has a parent");
     let file_name = path
         .file_name()

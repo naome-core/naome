@@ -36,6 +36,12 @@ open concurrently. The same anchor file cannot be paired with two live journal
 handles, including handles whose journals are in different directories. Paired
 construction and open always acquire the journal lock before the anchor lock.
 
+The private lock guard explicitly unlocks before closing its file when dropped,
+including on failed construction or unwinding. Fully constructed owners drop
+their data and state before this guard. If the OS rejects explicit unlock,
+closing remains the fallback; no immediate-release guarantee is made for OS
+errors or process termination.
+
 ## Canonical finality anchor
 
 The finality anchor is exactly 221 bytes:

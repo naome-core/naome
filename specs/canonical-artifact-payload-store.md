@@ -86,6 +86,12 @@ Creation uses create-new semantics and synchronizes the prefix. Every handle
 holds a nonblocking exclusive lock. Portable parent-directory-entry durability
 remains the caller's responsibility.
 
+The private lock guard explicitly unlocks before closing its file when dropped,
+including on failed construction or unwinding. Fully constructed owners drop
+their data and state before this guard. If the OS rejects explicit unlock,
+closing remains the fallback; no immediate-release guarantee is made for OS
+errors or process termination.
+
 The exact prefix is:
 
 ```text

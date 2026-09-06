@@ -10,7 +10,7 @@ use std::sync::Arc;
 use naome_consensus::{ConsensusContextV0, ConsensusKey, FixedAgreementSetId};
 use sha2::{Digest, Sha256};
 
-use super::{ExclusiveLockError, open_exclusive_lock};
+use super::{ExclusiveLock, ExclusiveLockError, open_exclusive_lock};
 
 #[cfg(all(test, unix))]
 pub(crate) mod faults;
@@ -97,7 +97,6 @@ enum AnchorKindV0 {
 
 #[derive(Debug)]
 pub(crate) struct FixedValidatorAnchorFileV0 {
-    _lock: File,
     directory: PathBuf,
     file_name: String,
     temporary_stem: String,
@@ -108,6 +107,8 @@ pub(crate) struct FixedValidatorAnchorFileV0 {
     position: AnchorPositionV0,
     pairing_seal: Arc<()>,
     poisoned: bool,
+    // Declared last so owned state and data files drop before the lock releases.
+    _lock: ExclusiveLock,
 }
 
 impl FixedValidatorAnchorFileV0 {
@@ -467,7 +468,7 @@ fn temporary_name(stem: &str, sequence: u64) -> String {
 fn open_anchor_lock(
     directory: &Path,
     file_name: &str,
-) -> Result<File, FixedValidatorAnchorErrorV0> {
+) -> Result<ExclusiveLock, FixedValidatorAnchorErrorV0> {
     let mut lock_file_name = String::new();
     lock_file_name
         .try_reserve_exact(file_name.len() + ".lock".len())

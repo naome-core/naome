@@ -35,7 +35,7 @@ use super::fixed_validator_finality_journal::{
     FixedValidatorDurableFinalityConflictV0, FixedValidatorDurableFinalityTransitionV0,
     FixedValidatorFinalityHaltKindV0, FixedValidatorFinalityJournalStateIdV0,
 };
-use super::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
+use super::{AppendPhase, ExclusiveLock, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
 const JOURNAL_HEADER: &[u8] = b"naome:fixed-validator-vote-safety-journal:v0\0";
 const GENESIS_STATE_DOMAIN: &[u8] = b"naome:fixed-validator-vote-safety-state-genesis:v0\0";
@@ -114,11 +114,12 @@ const MAX_BOUNDED_RECORD_BODY_BYTES: usize =
 /// trust, validator selection, branch choice, or finality authority.
 #[must_use]
 pub struct FixedValidatorVoteSafetyJournalV0 {
-    _lock: File,
     signing_key: SigningKey,
     core: FixedValidatorVoteSafetyJournalCore<File>,
     session_issued: bool,
     session_seal: Arc<()>,
+    // Declared last so owned state and data files drop before the lock releases.
+    _lock: ExclusiveLock,
 }
 
 /// A per-key vote-safety journal paired with one independent crash-safe anchor.

@@ -15,7 +15,7 @@ use naome_proof::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactId};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ArtifactChainJournal, ArtifactChainJournalError, ExclusiveLockError, StoreIo,
+    ArtifactChainJournal, ArtifactChainJournalError, ExclusiveLock, ExclusiveLockError, StoreIo,
     open_exclusive_lock,
 };
 
@@ -311,8 +311,9 @@ impl Error for CandidateBranchPayloadArchiveError {
 /// recovery path.
 #[must_use]
 pub struct CanonicalArtifactPayloadStore {
-    _lock: File,
     core: ArtifactPayloadStoreCore<File>,
+    // Declared last so owned state and data files drop before the lock releases.
+    _lock: ExclusiveLock,
 }
 
 impl CanonicalArtifactPayloadStore {
@@ -515,7 +516,7 @@ impl CanonicalArtifactPayloadStore {
     }
 }
 
-fn open_and_lock(directory: &Path) -> Result<File, CanonicalArtifactPayloadStoreError> {
+fn open_and_lock(directory: &Path) -> Result<ExclusiveLock, CanonicalArtifactPayloadStoreError> {
     open_exclusive_lock(directory, LOCK_FILE_NAME).map_err(|error| match error {
         ExclusiveLockError::LockFile(source) => {
             CanonicalArtifactPayloadStoreError::LockFile { source }

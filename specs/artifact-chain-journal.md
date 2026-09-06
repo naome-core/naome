@@ -50,6 +50,12 @@ a second concurrent handle fails. The journal and lock are not process-wide
 global files, and a caller must not place unrelated chain journals in one
 directory.
 
+The private lock guard explicitly unlocks before closing its file when dropped,
+including on failed construction or unwinding. Fully constructed owners drop
+their data and state before this guard. If the OS rejects explicit unlock,
+closing remains the fallback; no immediate-release guarantee is made for OS
+errors or process termination.
+
 Creation synchronizes the complete prefix before success. Portable durability
 of the parent directory entry remains the caller's provisioning responsibility.
 

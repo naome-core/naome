@@ -32,9 +32,9 @@ use super::fixed_validator_vote_safety_journal::{
 };
 use super::{
     AppendPhase, ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError,
-    CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError, ExclusiveLockError,
-    JOURNAL_FILE_NAME, LOCK_FILE_NAME, SelectedArtifactHistory, SelectedArtifactHistoryError,
-    StoreIo, open_exclusive_lock, selected_artifact_history_sealed,
+    CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError, ExclusiveLock,
+    ExclusiveLockError, JOURNAL_FILE_NAME, LOCK_FILE_NAME, SelectedArtifactHistory,
+    SelectedArtifactHistoryError, StoreIo, open_exclusive_lock, selected_artifact_history_sealed,
 };
 
 const JOURNAL_HEADER: &[u8] = b"naome:fixed-validator-finality-journal:v0\0";
@@ -83,8 +83,9 @@ const MAX_RECORD_BODY_BYTES: usize = MAX_PRESELECTION_CONFLICT_RECORD_BODY_BYTES
 /// publishes the child only after the chained state-ID footer is durable.
 #[must_use]
 pub struct FixedValidatorFinalityJournalV0 {
-    _lock: File,
     core: FixedValidatorFinalityJournalCore<File>,
+    // Declared last so owned state and data files drop before the lock releases.
+    _lock: ExclusiveLock,
 }
 
 /// A finality journal whose every state-changing frame is synchronously copied

@@ -107,7 +107,7 @@ mod fixed_validator_finality_journal;
 mod fixed_validator_vote_safety_journal;
 mod payload_store;
 mod store_io;
-use store_io::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
+use store_io::{AppendPhase, ExclusiveLock, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
 pub use block_candidate_store::{
     ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateInventory,

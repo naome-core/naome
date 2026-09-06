@@ -49,6 +49,12 @@ format. The exclusive nonblocking lock prevents simultaneous old and new
 owners. An artifact-only journal remains usable only in a separately
 provisioned directory and grants no consensus or finality authority.
 
+The private lock guard explicitly unlocks before closing its file when dropped,
+including on failed construction or unwinding. Fully constructed owners drop
+their data and state before this guard. If the OS rejects explicit unlock,
+closing remains the fallback; no immediate-release guarantee is made for OS
+errors or process termination.
+
 This prerelease cutover has no legacy reader, migration, parallel journal, or
 automatic upgrade. Old artifact-only bytes fail the joint header check. Local
 data that must move to the joint format is recreated or explicitly reimported

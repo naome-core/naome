@@ -412,7 +412,7 @@ pub(super) fn height_index(height: ConsensusHeight) -> Result<usize, ()> {
 
 pub(super) fn open_shared_lock(
     directory: &Path,
-) -> Result<File, FixedValidatorFinalityJournalErrorV0> {
+) -> Result<ExclusiveLock, FixedValidatorFinalityJournalErrorV0> {
     open_exclusive_lock(directory, LOCK_FILE_NAME).map_err(|error| match error {
         ExclusiveLockError::LockFile(source) => {
             FixedValidatorFinalityJournalErrorV0::LockFile { source }
