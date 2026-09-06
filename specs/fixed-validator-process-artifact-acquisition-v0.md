@@ -97,10 +97,12 @@ hexadecimal characters. `peer_id` is a parseable peer-ID string. `peer_ids` is a
 caller-ordered list of one through eight such strings. `max_blocks` is a JSON
 unsigned integer that must fit positive `usize`.
 
-Schema validation comes first. Disabled sources reject starts and store-backed
-authoring with `sources_disabled`. While an acquisition owns the source borrow,
-all six starts and both store-backed authoring commands reject with
-`sources_busy`, before their typed input or source access. With idle sources,
+Schema validation comes first. Disabled sources reject starts, store-backed
+authoring, and the separate [source-backed proof commands](fixed-validator-process-source-proofs-v0.md)
+with `sources_disabled`. While an acquisition owns the source borrow,
+all six starts, both store-backed authoring commands, and both source-backed
+proof commands reject with `sources_busy`, before their typed input, proof-file
+loading, or source access. With idle sources,
 the process eagerly parses peer strings, fallback list counts, block IDs and
 the positive payload reconstruction limit, including for cached completion.
 Anchored forms parse the anchor before peers and target; other starts parse

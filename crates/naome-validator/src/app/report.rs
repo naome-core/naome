@@ -228,6 +228,12 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
                 Failure::HistoricalFinalityConflict(_) => {
                     json!({"event": "proof_failed", "operation": "historical_finality_conflict", "strict_restart_required": true})
                 }
+                Failure::CandidateBackedFinality(_) => {
+                    json!({"event": "proof_failed", "operation": "candidate_finality", "strict_restart_required": true})
+                }
+                Failure::CandidateBackedConflict(_) => {
+                    json!({"event": "proof_failed", "operation": "candidate_finality_conflict", "strict_restart_required": true})
+                }
                 Failure::LowerRoundPreselectionConflict(_) => {
                     json!({"event": "proof_failed", "operation": "lower_round_conflict", "strict_restart_required": true})
                 }

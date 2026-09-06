@@ -18,17 +18,65 @@ use naome_runtime::{
 use serde_json::{Value, json};
 
 use super::{
-    Result, config, files,
+    Result, acquisition, config, files,
     input::{Command, InboxClass, ProposalVoteFiles, VoteRole, VoteTarget},
     report,
+    sources::Sources,
 };
 
 pub(super) fn execute(
     command: Command,
     base: &Path,
     runtime: &mut Runtime<'_>,
+    sources: Option<&mut Sources>,
 ) -> Result<(Value, bool)> {
+    let candidate_conflict = matches!(command, Command::HaltCandidateConflictVotes { .. });
     let input = match command {
+        Command::FinalizeCandidateVotes {
+            target,
+            evidence_round,
+            control_file,
+            vote_files,
+            ..
+        }
+        | Command::HaltCandidateConflictVotes {
+            target,
+            evidence_round,
+            control_file,
+            vote_files,
+            ..
+        } => {
+            // The session admits these commands only while its source handles
+            // are idle. Availability precedes typed input and proof-file reads.
+            let sources = sources.ok_or("sources_disabled")?;
+            let target = acquisition::block(&target)?;
+            check_vote_count(&vote_files)?;
+            let control =
+                files::bytes(&base.join(control_file), CONSENSUS_PUSH_MAX_PROPOSAL_BYTES)?;
+            let votes = read_votes(base, &vote_files)?;
+            let refs = vote_refs(&votes);
+            let round = ConsensusRound::new(evidence_round);
+            let outcome = if candidate_conflict {
+                runtime.commit_candidate_backed_finality_conflict_vote_batch(
+                    &mut sources.candidates,
+                    &mut sources.payloads,
+                    target,
+                    &control,
+                    &refs,
+                    round,
+                )
+            } else {
+                runtime.commit_candidate_backed_finality_vote_batch(
+                    &mut sources.candidates,
+                    &mut sources.payloads,
+                    target,
+                    &control,
+                    &refs,
+                    round,
+                )
+            };
+            return Ok(proof_outcome(outcome, runtime, 0));
+        }
         Command::SourcesStatus { .. }
         | Command::CancelAcquisition { .. }
         | Command::AcquireAncestry { .. }

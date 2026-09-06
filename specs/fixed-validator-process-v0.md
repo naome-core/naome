@@ -26,6 +26,8 @@ signer's authority or the ordinary runtime schedule.
 [artifact-source consumer](fixed-validator-process-artifact-acquisition-v0.md):
 explicit source-store ownership, six bounded acquisition forms, cancellation
 and status, and separate live-checked store-backed fresh/retained authoring.
+`PROD-020-056` adds two explicit [source-backed proof commands](fixed-validator-process-source-proofs-v0.md)
+for candidate finality and a historical selected-sibling halt using those stores.
 
 The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. It grants no automatic proposal
@@ -359,8 +361,9 @@ under the same disposal and lock-release contract. Pre-invocation refusal
 instead discards and counts its one refunded payload and permits continued
 operation. This error boundary does not introduce a continuing historical retry.
 
-Candidate-backed proofs, historical-sibling lookup in external source stores and
-recovery-bundle installation remain outside these complete-proof commands.
+Candidate-backed proofs and historical-sibling source lookup use the separate
+[source-backed proof commands](fixed-validator-process-source-proofs-v0.md).
+Recovery-bundle installation remains outside these complete-proof commands.
 Optional source ownership and acquisition are defined by the separate
 [artifact-source profile](fixed-validator-process-artifact-acquisition-v0.md).
 Complete-proof commands do not drain inboxes; the separate

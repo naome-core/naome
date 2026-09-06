@@ -79,6 +79,20 @@ pub(super) enum Command {
     AuthorStoredRetained {
         id: u64,
     },
+    FinalizeCandidateVotes {
+        id: u64,
+        target: String,
+        evidence_round: u64,
+        control_file: PathBuf,
+        vote_files: Vec<PathBuf>,
+    },
+    HaltCandidateConflictVotes {
+        id: u64,
+        target: String,
+        evidence_round: u64,
+        control_file: PathBuf,
+        vote_files: Vec<PathBuf>,
+    },
     SubmitVote {
         id: u64,
         vote_file: PathBuf,
@@ -262,7 +276,10 @@ impl Command {
         self.starts_acquisition()
             || matches!(
                 self,
-                Self::AuthorCandidate { .. } | Self::AuthorStoredRetained { .. }
+                Self::AuthorCandidate { .. }
+                    | Self::AuthorStoredRetained { .. }
+                    | Self::FinalizeCandidateVotes { .. }
+                    | Self::HaltCandidateConflictVotes { .. }
             )
     }
 
@@ -290,6 +307,8 @@ impl Command {
             | Self::AcquirePayloadsFallback { id, .. }
             | Self::AuthorCandidate { id, .. }
             | Self::AuthorStoredRetained { id }
+            | Self::FinalizeCandidateVotes { id, .. }
+            | Self::HaltCandidateConflictVotes { id, .. }
             | Self::SubmitVote { id, .. }
             | Self::SubmitProposal { id, .. }
             | Self::AdvanceHigherQuorum { id, .. }
