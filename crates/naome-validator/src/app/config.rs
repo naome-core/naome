@@ -17,7 +17,7 @@ use naome_runtime::{FixedValidatorPhaseDurationV0, FixedValidatorRuntimeTimeouts
 use naome_storage::*;
 use serde::Deserialize;
 
-use super::{Result, files};
+use super::{Result, files, sources};
 
 pub(super) const CONFIG_MAX_BYTES: usize = 65_536;
 
@@ -35,6 +35,7 @@ pub(super) struct Config {
     network: Network,
     limits: Limits,
     timeouts: Timeouts,
+    sources: Option<sources::Config>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -127,6 +128,7 @@ pub(super) struct Prepared {
     pub listen: Multiaddr,
     pub targets: Vec<PeerId>,
     pub serve_finality_proofs: bool,
+    pub sources: Option<sources::Prepared>,
     pub timeouts: FixedValidatorRuntimeTimeoutsV0,
     pub driver_max_round: ConsensusRound,
     pub higher: FixedValidatorNodeHigherRoundInboxLimitsV0,
@@ -273,6 +275,10 @@ impl Config {
                 return Err("authority_directory");
             }
         }
+        let sources = self
+            .sources
+            .map(|sources| sources.prepare(&base))
+            .transpose()?;
         Ok(Prepared {
             base,
             mode: self.mode,
@@ -285,6 +291,7 @@ impl Config {
             listen,
             targets,
             serve_finality_proofs: self.network.serve_finality_proofs,
+            sources,
             timeouts,
             driver_max_round,
             higher: FixedValidatorNodeHigherRoundInboxLimitsV0::new(
@@ -339,7 +346,7 @@ impl Phase {
     }
 }
 
-fn decimal<T: std::str::FromStr>(value: &str) -> Result<T> {
+pub(super) fn decimal<T: std::str::FromStr>(value: &str) -> Result<T> {
     if value.is_empty()
         || !value.bytes().all(|byte| byte.is_ascii_digit())
         || (value.len() > 1 && value.starts_with('0'))

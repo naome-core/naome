@@ -32,6 +32,53 @@ pub(super) enum Command {
         id: u64,
         payload_file: PathBuf,
     },
+    SourcesStatus {
+        id: u64,
+    },
+    CancelAcquisition {
+        id: u64,
+    },
+    AcquireAncestry {
+        id: u64,
+        target: String,
+        peer_id: String,
+    },
+    AcquireAncestryFallback {
+        id: u64,
+        target: String,
+        peer_ids: Vec<String>,
+    },
+    AcquireAnchoredAncestry {
+        id: u64,
+        target: String,
+        anchor: String,
+        peer_id: String,
+    },
+    AcquireAnchoredAncestryFallback {
+        id: u64,
+        target: String,
+        anchor: String,
+        peer_ids: Vec<String>,
+    },
+    AcquirePayloads {
+        id: u64,
+        target: String,
+        peer_id: String,
+        max_blocks: u64,
+    },
+    AcquirePayloadsFallback {
+        id: u64,
+        target: String,
+        peer_ids: Vec<String>,
+        max_blocks: u64,
+    },
+    AuthorCandidate {
+        id: u64,
+        target: String,
+    },
+    AuthorStoredRetained {
+        id: u64,
+    },
     SubmitVote {
         id: u64,
         vote_file: PathBuf,
@@ -199,6 +246,26 @@ impl<'de> Deserialize<'de> for VoteTarget {
 }
 
 impl Command {
+    pub fn starts_acquisition(&self) -> bool {
+        matches!(
+            self,
+            Self::AcquireAncestry { .. }
+                | Self::AcquireAncestryFallback { .. }
+                | Self::AcquireAnchoredAncestry { .. }
+                | Self::AcquireAnchoredAncestryFallback { .. }
+                | Self::AcquirePayloads { .. }
+                | Self::AcquirePayloadsFallback { .. }
+        )
+    }
+
+    pub fn needs_idle_sources(&self) -> bool {
+        self.starts_acquisition()
+            || matches!(
+                self,
+                Self::AuthorCandidate { .. } | Self::AuthorStoredRetained { .. }
+            )
+    }
+
     pub fn parse(bytes: &[u8]) -> serde_json::Result<Self> {
         let mut deserializer = serde_json::Deserializer::from_slice(bytes);
         let command = object(&mut deserializer)?;
@@ -213,6 +280,16 @@ impl Command {
             | Self::DiscardInbox { id, .. }
             | Self::AuthorFresh { id, .. }
             | Self::AuthorRetained { id, .. }
+            | Self::SourcesStatus { id }
+            | Self::CancelAcquisition { id }
+            | Self::AcquireAncestry { id, .. }
+            | Self::AcquireAncestryFallback { id, .. }
+            | Self::AcquireAnchoredAncestry { id, .. }
+            | Self::AcquireAnchoredAncestryFallback { id, .. }
+            | Self::AcquirePayloads { id, .. }
+            | Self::AcquirePayloadsFallback { id, .. }
+            | Self::AuthorCandidate { id, .. }
+            | Self::AuthorStoredRetained { id }
             | Self::SubmitVote { id, .. }
             | Self::SubmitProposal { id, .. }
             | Self::AdvanceHigherQuorum { id, .. }

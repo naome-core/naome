@@ -22,11 +22,16 @@ anchoring, finality selection, and strict restart remain defined by
 already committed complete proofs to configured peers without changing the
 signer's authority or the ordinary runtime schedule.
 
+`PROD-020-055` separately adds the optional
+[artifact-source consumer](fixed-validator-process-artifact-acquisition-v0.md):
+explicit source-store ownership, six bounded acquisition forms, cancellation
+and status, and separate live-checked store-backed fresh/retained authoring.
+
 The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. It grants no automatic proposal
 source or evidence selection, certificate acquisition, artifact serving beyond
 the separately opted-in retained complete-proof response,
-fallback routing, automatic inbox clearing, delivery retry, repair, durable outbox, dynamic
+automatic fallback policy, automatic inbox clearing, delivery retry, repair, durable outbox, dynamic
 validator, key rotation, production timeout calibration, hardware custody, or
 distributed-liveness authority. In accordance with `PROD-023`, no remote
 consensus-signer service or configuration is supported. This implements only
@@ -354,9 +359,11 @@ under the same disposal and lock-release contract. Pre-invocation refusal
 instead discards and counts its one refunded payload and permits continued
 operation. This error boundary does not introduce a continuing historical retry.
 
-Candidate-backed proofs, historical-sibling lookup in external source stores, recovery-bundle
-installation, source-store ownership, acquisition, and serving remain outside
-this process profile. Complete-proof commands do not drain inboxes; the separate
+Candidate-backed proofs, historical-sibling lookup in external source stores and
+recovery-bundle installation remain outside these complete-proof commands.
+Optional source ownership and acquisition are defined by the separate
+[artifact-source profile](fixed-validator-process-artifact-acquisition-v0.md).
+Complete-proof commands do not drain inboxes; the separate
 explicit `discard_inbox` command owns class-selected disposal. These proof
 commands grant no automatic proof collection, conflict invocation, evidence selection, or production-liveness
 authority.
@@ -365,10 +372,14 @@ authority.
 
 The process fairly selects between commands, Unix SIGINT/SIGTERM, and runtime
 events. It preserves the runtime's own retained-work and due-before-input rules.
+An output-writer failure wakes this owner, including with idle open stdin and
+a pending source acquisition, to release its source and authority ownership.
 It does not continuously retry blocked/rejected driver work or automatically
 drain inboxes.
-Unrelated network events are reported and dropped, without serving artifacts,
-accepting recovery bundles, or selecting additional evidence.
+The optional source profile routes only its active cursor's exact correlated
+terminals, and the optional proof provider routes its selected-history responses.
+Other unrelated network events are reported and dropped, without serving source
+artifacts, accepting recovery bundles, or selecting additional evidence.
 
 Reports are bounded JSONL. They distinguish `proposal_authored` (anchored signing
 completion), `publication_prepared` (runtime custody), `peer_completed` with

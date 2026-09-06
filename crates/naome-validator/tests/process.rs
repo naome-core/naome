@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+#[path = "cases/artifact_acquisition/mod.rs"]
+mod artifact_acquisition;
 #[path = "cases/current_finality.rs"]
 mod current_finality;
 #[path = "cases/current_pair.rs"]
@@ -416,7 +418,10 @@ fn explicit_modes_never_fall_back_between_create_and_open() {
 fn stalled_stdout_cannot_retain_journal_locks_or_hang_process_exit() {
     let fixture = Fixture::new();
     let layout = Layout::new();
-    let config = fixture.config(&layout, 0, "create", None, false);
+    let config = artifact_acquisition::source_config(
+        &layout,
+        fixture.config(&layout, 0, "create", None, false),
+    );
     let path = layout.write("validator.toml", &config);
     let mut child = spawn(
         Command::new(env!("CARGO_BIN_EXE_naome-validator"))
@@ -462,7 +467,10 @@ fn final_report_timeout_is_not_repeated_as_a_second_error_flush() {
     };
     let fixture = Fixture::new();
     let layout = Layout::new();
-    let config = fixture.config(&layout, 0, "create", None, false);
+    let config = artifact_acquisition::source_config(
+        &layout,
+        fixture.config(&layout, 0, "create", None, false),
+    );
     let path = layout.write("validator.toml", &config);
     let (mut output, _unread_receiver) = UnixStream::pair().unwrap();
     output.set_nonblocking(true).unwrap();

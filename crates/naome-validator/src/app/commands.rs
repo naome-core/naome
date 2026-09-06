@@ -29,6 +29,18 @@ pub(super) fn execute(
     runtime: &mut Runtime<'_>,
 ) -> Result<(Value, bool)> {
     let input = match command {
+        Command::SourcesStatus { .. }
+        | Command::CancelAcquisition { .. }
+        | Command::AcquireAncestry { .. }
+        | Command::AcquireAncestryFallback { .. }
+        | Command::AcquireAnchoredAncestry { .. }
+        | Command::AcquireAnchoredAncestryFallback { .. }
+        | Command::AcquirePayloads { .. }
+        | Command::AcquirePayloadsFallback { .. }
+        | Command::AuthorCandidate { .. }
+        | Command::AuthorStoredRetained { .. } => {
+            return Err("source_command_requires_session");
+        }
         Command::DiscardInbox { inbox, .. } => {
             let discarded_items = match inbox {
                 InboxClass::Higher => runtime.drain_inbox_and_reset().map(discard),
