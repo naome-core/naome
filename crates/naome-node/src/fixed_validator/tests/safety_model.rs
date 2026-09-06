@@ -5,14 +5,16 @@ use std::collections::BTreeMap;
 
 use naome_chain::ArtifactBlock;
 use naome_consensus::{
-    ConsensusHeight, ConsensusVoteRole, ConsensusVoteTarget, FixedConsensusRoundV0,
-    FixedValidatorLockPhaseV0, FixedValidatorProposalSourceV0,
+    ConsensusAncestryId, ConsensusHeight, ConsensusVoteRole, ConsensusVoteTarget,
+    FixedConsensusRoundV0, FixedValidatorLockPhaseV0, FixedValidatorProposalSourceV0,
 };
 
 use super::*;
 
 mod model;
-use model::{Action, Local, Model, Rules, State, proof, proof_round, proposal_value};
+mod profiles;
+mod weighted;
+use model::{Action, Local, Model, State, proof, proof_round, proposal_value};
 
 const MAX_ROUND: ConsensusRound = ConsensusRound::new(3);
 
@@ -95,14 +97,13 @@ impl Replay {
                 batch.push(self.votes[&(actor, round, role)].clone());
             }
         }
-        assert!(3 * batch.len() > 2 * 4);
         batch
     }
 
     fn proposal(&self, round: u8, encoded: u8) -> Vec<u8> {
         assert!(self.model.proposals(self.state, round).contains(&encoded));
         let value = self.values[usize::from(proposal_value(encoded) - 1)];
-        let mut bytes = if round == self.model.faulty {
+        let mut bytes = if self.model.proposers[usize::from(round)] == self.model.faulty {
             let mut bytes = value.to_canonical_bytes().to_vec();
             bytes.extend_from_slice(&authorization_bytes(
                 self.context,
@@ -346,62 +347,13 @@ impl Replay {
                 else {
                     continue;
                 };
-                let bytes = self.proposal(round, proposal);
                 let batch = self.batch(round, 1, value);
                 let refs = batch.iter().map(Vec::as_slice).collect::<Vec<_>>();
-                let cursor = self.cursor(round);
-                for (actor, slot) in scopes.iter_mut().enumerate() {
-                    if actor == usize::from(self.model.faulty) {
-                        continue;
-                    }
-                    let scope = slot.take().unwrap();
-                    let transition = cursor
-                        .decode_and_verify_proposal_control(
-                            &bytes,
-                            self.payloads[usize::from(value - 1)].clone(),
-                        )
-                        .unwrap()
-                        .seal_with_precommit_vote_batch(&refs)
-                        .unwrap()
-                        .into_owned();
-                    let (mut scope, selection) =
-                        match scope.commit_verified_finality(transition).unwrap() {
-                            FixedValidatorNodeFinalityOutcomeV0::Continues { scope, selection } => {
-                                (*scope, selection)
-                            }
-                            FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(_) => {
-                                panic!("conflicting model-supported finality")
-                            }
-                        };
-                    let ancestry = match selection {
-                        FixedValidatorNodeFinalitySelectionV0::Finalized {
-                            ancestry_id, ..
-                        }
-                        | FixedValidatorNodeFinalitySelectionV0::AlreadyFinalized {
-                            ancestry_id,
-                            ..
-                        } => ancestry_id,
-                        _ => panic!("unexpected candidate-backed selection"),
-                    };
-                    let record = scope
-                        .finality()
-                        .finality_record(ConsensusHeight::new(1))
-                        .unwrap()
-                        .unwrap();
-                    assert_eq!(record.value(), self.values[usize::from(value - 1)]);
-                    observations.push((record.value(), ancestry));
-                    assert!(
-                        observations.iter().all(|seen| seen == &observations[0]),
-                        "append-only honest finalizations disagree"
-                    );
-                    assert_eq!(scope.signing_session().position().height().value(), 2);
-                    assert_eq!(scope.signing_session().position().round().value(), 0);
-                    assert_eq!(
-                        scope.signing_session().phase(),
-                        FixedValidatorLockPhaseV0::Proposal
-                    );
-                    *slot = Some(scope);
-                }
+                observations.extend(self.finalize_batch(round, proposal, &refs, scopes));
+                assert!(
+                    observations.iter().all(|seen| seen == &observations[0]),
+                    "append-only honest finalizations disagree across proofs"
+                );
             }
         }
         assert_eq!(
@@ -409,17 +361,88 @@ impl Replay {
             self.model.certified_values(self.state) != 0
         );
     }
+
+    fn finalize_batch(
+        &self,
+        round: u8,
+        proposal: u8,
+        refs: &[&[u8]],
+        scopes: &mut [Option<FixedValidatorNodeSigningScopeV0<'_>>; 4],
+    ) -> Vec<(ConsensusValueV0, ConsensusAncestryId)> {
+        let value = proposal_value(proposal);
+        let bytes = self.proposal(round, proposal);
+        let cursor = self.cursor(round);
+        let mut observations = Vec::new();
+        for (actor, slot) in scopes.iter_mut().enumerate() {
+            if actor == usize::from(self.model.faulty) {
+                continue;
+            }
+            let scope = slot.take().unwrap();
+            let transition = cursor
+                .decode_and_verify_proposal_control(
+                    &bytes,
+                    self.payloads[usize::from(value - 1)].clone(),
+                )
+                .unwrap()
+                .seal_with_precommit_vote_batch(refs)
+                .unwrap()
+                .into_owned();
+            let (mut scope, selection) = match scope.commit_verified_finality(transition).unwrap() {
+                FixedValidatorNodeFinalityOutcomeV0::Continues { scope, selection } => {
+                    (*scope, selection)
+                }
+                FixedValidatorNodeFinalityOutcomeV0::FinalityStopped(_) => {
+                    panic!("conflicting model-supported finality")
+                }
+            };
+            let ancestry = match selection {
+                FixedValidatorNodeFinalitySelectionV0::Finalized { ancestry_id, .. }
+                | FixedValidatorNodeFinalitySelectionV0::AlreadyFinalized { ancestry_id, .. } => {
+                    ancestry_id
+                }
+                _ => panic!("unexpected candidate-backed selection"),
+            };
+            let record = scope
+                .finality()
+                .finality_record(ConsensusHeight::new(1))
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.value(), self.values[usize::from(value - 1)]);
+            observations.push((record.value(), ancestry));
+            assert!(
+                observations.iter().all(|seen| seen == &observations[0]),
+                "append-only honest finalizations disagree"
+            );
+            assert_eq!(scope.signing_session().position().height().value(), 2);
+            assert_eq!(scope.signing_session().position().round().value(), 0);
+            assert_eq!(
+                scope.signing_session().phase(),
+                FixedValidatorLockPhaseV0::Proposal
+            );
+            *slot = Some(scope);
+        }
+        assert_eq!(observations.len(), 3);
+        observations
+    }
 }
 
-fn replay_witness(faulty: u8, label: &str, trace: &[Action]) {
+fn with_replay(
+    profile: profiles::Profile,
+    label: &str,
+    run: impl FnOnce(&mut Replay, &mut [Option<FixedValidatorNodeSigningScopeV0<'_>>; 4]),
+) {
+    let faulty = profile.faulty;
     let fixture = Fixture::new();
     let mut keys = std::array::from_fn::<_, 4, _>(|index| {
         SigningKey::from_bytes(&signing_seed(index as u16 + 71))
     });
     keys.sort_by_key(consensus_key);
-    let entries = keys
-        .each_ref()
-        .map(|key| ActiveAgreementEntry::new(consensus_key(key), AgreementWeight::new(1)));
+    let entries = std::array::from_fn::<_, 4, _>(|actor| {
+        ActiveAgreementEntry::new(
+            consensus_key(&keys[actor]),
+            AgreementWeight::new(profile.weights[actor]),
+        )
+    });
     let honest = (0..4).filter(|&actor| actor != faulty).collect::<Vec<_>>();
     let layouts = std::array::from_fn::<_, 3, _>(|index| {
         TestLayout::new(&format!("safety-model-{faulty}-{label}-{index}"))
@@ -439,41 +462,88 @@ fn replay_witness(faulty: u8, label: &str, trace: &[Action]) {
         .create(keys[usize::from(honest[index])].clone())
         .unwrap()
     });
-    first.run_with_signing_session(|first| {
-        second.run_with_signing_session(|second| {
-            third.run_with_signing_session(|third| {
-                let branch = first.branch().clone();
-                let mut cursor = branch.begin_round_zero().unwrap();
-                for key in keys.iter().take(3) {
-                    assert_eq!(cursor.proposer(), consensus_key(key), "independent sorted-key schedule differs");
-                    cursor = cursor.advance_round().unwrap();
-                }
-                drop(cursor);
-                let selected = ArtifactChainState::new(fixture.definition);
-                let payloads = [proof_payload(ZfcAxiom::Pairing), proof_payload(ZfcAxiom::Union)];
-                let blocks = payloads.each_ref().map(|payload| selected.prepare_block(artifact_id(payload)).unwrap());
-                let values = blocks.map(|block| branch.begin_round_zero().unwrap().value_for_artifact_block(block));
-                assert_ne!(values[0], values[1]);
-                for round in 1..model::ROUNDS {
-                    let mut cursor = branch.begin_round_zero().unwrap();
-                    for _ in 0..round { cursor = cursor.advance_round().unwrap(); }
-                    assert_eq!(blocks.map(|block| cursor.value_for_artifact_block(block)), values);
-                }
-                let mut replay = Replay { model: Model { faulty, rules: Rules::Protocol }, state: State::default(), context: fixture.context, branch, faulty_key: keys[usize::from(faulty)].clone(), values, blocks, payloads, proposals: BTreeMap::new(), votes: BTreeMap::new() };
-                let mut scopes = [None, None, None, None];
-                for (actor, scope) in honest.iter().copied().zip([first, second, third]) { scopes[usize::from(actor)] = Some(scope); }
-                for (index, &action) in trace.iter().enumerate() {
-                    let actor = usize::from(action.actor());
-                    let scope = scopes[actor].take().unwrap();
-                    // Include deterministic provenance and the whole schedule
-                    // prefix if a real coordinator differs from the model.
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| replay.step(scope, action)));
-                    scopes[actor] = Some(result.unwrap_or_else(|_| panic!("real coordinator differential mismatch: faulty={faulty}, witness={label}, prefix={:?}", &trace[..=index])));
-                }
-                replay.finalize_available(&mut scopes);
-            }).unwrap();
-        }).unwrap();
-    }).unwrap();
+    first
+        .run_with_signing_session(|first| {
+            second
+                .run_with_signing_session(|second| {
+                    third
+                        .run_with_signing_session(|third| {
+                            let branch = first.branch().clone();
+                            let mut cursor = branch.begin_round_zero().unwrap();
+                            for actor in profile.proposers {
+                                assert_eq!(
+                                    cursor.proposer(),
+                                    consensus_key(&keys[usize::from(actor)]),
+                                    "independent weighted schedule differs: {profile:?}"
+                                );
+                                cursor = cursor.advance_round().unwrap();
+                            }
+                            drop(cursor);
+                            let selected = ArtifactChainState::new(fixture.definition);
+                            let payloads = [
+                                proof_payload(ZfcAxiom::Pairing),
+                                proof_payload(ZfcAxiom::Union),
+                            ];
+                            let blocks = payloads.each_ref().map(|payload| {
+                                selected.prepare_block(artifact_id(payload)).unwrap()
+                            });
+                            let values = blocks.map(|block| {
+                                branch
+                                    .begin_round_zero()
+                                    .unwrap()
+                                    .value_for_artifact_block(block)
+                            });
+                            assert_ne!(values[0], values[1]);
+                            for round in 1..model::ROUNDS {
+                                let mut cursor = branch.begin_round_zero().unwrap();
+                                for _ in 0..round {
+                                    cursor = cursor.advance_round().unwrap();
+                                }
+                                assert_eq!(
+                                    blocks.map(|block| cursor.value_for_artifact_block(block)),
+                                    values
+                                );
+                            }
+                            let mut replay = Replay {
+                                model: profile.model(),
+                                state: State::default(),
+                                context: fixture.context,
+                                branch,
+                                faulty_key: keys[usize::from(faulty)].clone(),
+                                values,
+                                blocks,
+                                payloads,
+                                proposals: BTreeMap::new(),
+                                votes: BTreeMap::new(),
+                            };
+                            let mut scopes = [None, None, None, None];
+                            for (actor, scope) in honest.iter().copied().zip([first, second, third])
+                            {
+                                scopes[usize::from(actor)] = Some(scope);
+                            }
+                            run(&mut replay, &mut scopes);
+                        })
+                        .unwrap();
+                })
+                .unwrap();
+        })
+        .unwrap();
+}
+
+fn replay_witness(profile: profiles::Profile, label: &str, trace: &[Action]) {
+    with_replay(profile, label, |replay, scopes| {
+        for (index, &action) in trace.iter().enumerate() {
+            let actor = usize::from(action.actor());
+            let scope = scopes[actor].take().unwrap();
+            // Include deterministic provenance and the whole schedule prefix
+            // if a real coordinator differs from the model.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                replay.step(scope, action)
+            }));
+            scopes[actor] = Some(result.unwrap_or_else(|_| panic!("real coordinator differential mismatch: profile={profile:?}, witness={label}, prefix={:?}", &trace[..=index])));
+        }
+        replay.finalize_available(scopes);
+    });
 }
 
 #[test]
@@ -481,7 +551,7 @@ fn model_witnesses_match_real_anchored_coordinators() {
     for (faulty, report) in model::protocol_explorations().iter().enumerate() {
         assert!(report.counterexample.is_none());
         for (&label, trace) in &report.witnesses {
-            replay_witness(faulty as u8, label, trace);
+            replay_witness(profiles::Profile::small([1; 4], faulty as u8), label, trace);
         }
     }
 }
