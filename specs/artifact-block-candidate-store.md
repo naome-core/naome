@@ -29,6 +29,12 @@ artifact-block-candidate-store.log
 Creation uses create-new semantics, never replaces an existing store, and
 synchronizes its prefix. Every handle holds a nonblocking exclusive lock.
 
+The private lock guard explicitly unlocks before closing its file when dropped,
+including on failed construction or unwinding. Fully constructed owners drop
+their data and state before this guard. If the OS rejects explicit unlock,
+closing remains the fallback; no immediate-release guarantee is made for OS
+errors or process termination.
+
 The prefix is:
 
 ```text

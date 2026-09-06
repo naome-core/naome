@@ -20,7 +20,7 @@ pub use peer_record::{
 use std::collections::TryReserveError;
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
@@ -34,7 +34,8 @@ use crate::record_exchange::{
     MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch, PeerRecordExchangeWireError,
 };
 use crate::snapshot_io::{
-    BoundedReadError, ExclusiveLockError, open_exclusive, read_bounded, replace_synced,
+    BoundedReadError, ExclusiveLock, ExclusiveLockError, open_exclusive, read_bounded,
+    replace_synced,
 };
 
 const STORE_HEADER: &[u8] = b"naome:peer-address-store\0";
@@ -224,7 +225,6 @@ impl PeerRecordBatchAdmission {
 /// Exclusive bounded local store for self-signed peer-address candidates.
 pub struct PeerAddressStore {
     directory: PathBuf,
-    _lock: File,
     local_peer_id: PeerId,
     bootstraps: Vec<BootstrapPeer>,
     bootstrap_digest: [u8; CHECKSUM_BYTES],
@@ -233,6 +233,8 @@ pub struct PeerAddressStore {
     poisoned: bool,
     #[cfg(test)]
     commit_attempts: usize,
+    // Declared last so owned state and data files drop before the lock releases.
+    _lock: ExclusiveLock,
 }
 
 impl PeerAddressStore {

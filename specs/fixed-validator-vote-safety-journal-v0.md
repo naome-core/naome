@@ -452,6 +452,12 @@ platform durability requirement are defined by
 `fixed-validator-external-anchor-v0.md`. Paired construction and open acquire
 the journal lock before the anchor lock.
 
+The private lock guard explicitly unlocks before closing its file when dropped,
+including on failed construction or unwinding. Fully constructed owners drop
+their data and state before this guard. If the OS rejects explicit unlock,
+closing remains the fallback; no immediate-release guarantee is made for OS
+errors or process termination.
+
 Strict reopen requires the same key-owning `SigningKey`, context, fixed set,
 and local preparation ceiling. A wrong key selects a different filename and
 cannot acquire signing authority from another key's file; any mismatch in a

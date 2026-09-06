@@ -2,8 +2,9 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use naome_network::{
     Keypair, LocalPeerRecordIssuer, LocalPeerRecordIssuerError, PeerAddressStore,
@@ -43,94 +44,130 @@ impl Drop for TestDirectory {
     }
 }
 
+const PROBE_PHASE_ENV: &str = "NAOME_LOCK_PROBE_PHASE";
+const PROBE_CYCLES: usize = 8;
+
+fn probe_command(test: &str) -> Command {
+    let mut command = Command::new(env::current_exe().unwrap());
+    command.arg("--exact").arg(test).arg("--nocapture");
+    command
+}
+
+fn run_probe(command: &mut Command, phase: &str) {
+    let mut child = command
+        .env(PROBE_PHASE_ENV, phase)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let timed_out = loop {
+        if child.try_wait().unwrap().is_some() {
+            break false;
+        }
+        if Instant::now() >= deadline {
+            // Always reap the child before its parent's temporary directory drops.
+            let _ = child.kill();
+            break true;
+        }
+        // Poll only for process completion; storage acquisition is never retried.
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !timed_out && output.status.success(),
+        "{phase} child timed_out={timed_out} status={} stdout={stdout} stderr={stderr}",
+        output.status
+    );
+    let marker = format!("NAOME_LOCK_PROBE_{phase}_OK");
+    assert!(
+        stdout.lines().any(|line| line == marker),
+        "{phase} probe did not execute: stdout={stdout} stderr={stderr}"
+    );
+}
+
 #[test]
 fn peer_address_store_lock_child_probe() {
-    let (Some(path), Some(peer_id)) = (
-        env::var_os(LOCK_PROBE_PATH_ENV),
-        env::var_os(LOCK_PROBE_PEER_ENV),
-    ) else {
+    let Some(path) = env::var_os(LOCK_PROBE_PATH_ENV) else {
         return;
     };
+    let peer_id = env::var_os(LOCK_PROBE_PEER_ENV).expect("lock probe identity is required");
     let peer_id: PeerId = peer_id.to_str().unwrap().parse().unwrap();
-    assert!(matches!(
-        PeerAddressStore::open(PathBuf::from(path), peer_id, []),
-        Err(PeerAddressStoreError::Locked)
-    ));
-    println!("NAOME_ADDRESS_STORE_LOCK_PROBE_OK");
+    let phase = env::var(PROBE_PHASE_ENV).expect("lock probe phase is required");
+    let result = PeerAddressStore::open(PathBuf::from(path), peer_id, []).map(drop);
+    match phase.as_str() {
+        "locked" => assert!(
+            matches!(result, Err(PeerAddressStoreError::Locked)),
+            "expected Locked, got {result:?}"
+        ),
+        "released" => result.expect("released owner must permit first-attempt child acquisition"),
+        other => panic!("unknown lock probe phase: {other}"),
+    }
+    // Serial libtest prints its test-name prefix without a trailing newline.
+    println!("\nNAOME_LOCK_PROBE_{phase}_OK");
 }
 
 #[test]
 fn peer_address_store_lock_is_enforced_across_processes() {
-    let directory = TestDirectory::new();
-    let local_peer_id = Keypair::generate_ed25519().public().to_peer_id();
-    let store = PeerAddressStore::create(&directory.path, local_peer_id, []).unwrap();
-    let output = Command::new(env::current_exe().unwrap())
-        .arg("--exact")
-        .arg("peer_address_store_lock_child_probe")
-        .arg("--nocapture")
-        .env(LOCK_PROBE_PATH_ENV, &directory.path)
-        .env(LOCK_PROBE_PEER_ENV, local_peer_id.to_string())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "child stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("NAOME_ADDRESS_STORE_LOCK_PROBE_OK"),
-        "child lock probe did not execute: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    drop(store);
-    assert!(PeerAddressStore::open(&directory.path, local_peer_id, []).is_ok());
+    for _ in 0..PROBE_CYCLES {
+        let directory = TestDirectory::new();
+        let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+        let owner = PeerAddressStore::create(&directory.path, peer_id, []).unwrap();
+        let mut command = probe_command("peer_address_store_lock_child_probe");
+        command
+            .env(LOCK_PROBE_PATH_ENV, &directory.path)
+            .env(LOCK_PROBE_PEER_ENV, peer_id.to_string());
+        run_probe(&mut command, "locked");
+        drop(owner);
+        drop(
+            PeerAddressStore::open(&directory.path, peer_id, [])
+                .expect("owner drop must permit immediate parent reopen"),
+        );
+        run_probe(&mut command, "released");
+    }
 }
 
 #[test]
 fn local_peer_record_issuer_lock_child_probe() {
-    let (Some(path), Some(seed)) = (
-        env::var_os(ISSUER_LOCK_PROBE_PATH_ENV),
-        env::var_os(ISSUER_LOCK_PROBE_SEED_ENV),
-    ) else {
+    let Some(path) = env::var_os(ISSUER_LOCK_PROBE_PATH_ENV) else {
         return;
     };
+    let seed = env::var_os(ISSUER_LOCK_PROBE_SEED_ENV).expect("lock probe identity is required");
     let seed: u8 = seed.to_str().unwrap().parse().unwrap();
     let identity = Keypair::ed25519_from_bytes([seed; 32]).unwrap();
-    assert!(matches!(
-        LocalPeerRecordIssuer::open(PathBuf::from(path), &identity),
-        Err(LocalPeerRecordIssuerError::Locked)
-    ));
-    println!("NAOME_ISSUER_LOCK_PROBE_OK");
+    let phase = env::var(PROBE_PHASE_ENV).expect("lock probe phase is required");
+    let result = LocalPeerRecordIssuer::open(PathBuf::from(path), &identity).map(drop);
+    match phase.as_str() {
+        "locked" => assert!(
+            matches!(result, Err(LocalPeerRecordIssuerError::Locked)),
+            "expected Locked, got {result:?}"
+        ),
+        "released" => result.expect("released owner must permit first-attempt child acquisition"),
+        other => panic!("unknown lock probe phase: {other}"),
+    }
+    // Serial libtest prints its test-name prefix without a trailing newline.
+    println!("\nNAOME_LOCK_PROBE_{phase}_OK");
 }
 
 #[test]
 fn local_peer_record_issuer_lock_is_enforced_across_processes() {
-    let directory = TestDirectory::new();
-    let seed = 77_u8;
-    let identity = Keypair::ed25519_from_bytes([seed; 32]).unwrap();
-    let issuer = LocalPeerRecordIssuer::create(&directory.path, &identity, 0).unwrap();
-    let output = Command::new(env::current_exe().unwrap())
-        .arg("--exact")
-        .arg("local_peer_record_issuer_lock_child_probe")
-        .arg("--nocapture")
-        .env(ISSUER_LOCK_PROBE_PATH_ENV, &directory.path)
-        .env(ISSUER_LOCK_PROBE_SEED_ENV, seed.to_string())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "child stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("NAOME_ISSUER_LOCK_PROBE_OK"),
-        "child lock probe did not execute: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    drop(issuer);
-    assert!(LocalPeerRecordIssuer::open(&directory.path, &identity).is_ok());
+    for _ in 0..PROBE_CYCLES {
+        let directory = TestDirectory::new();
+        let seed = 77_u8;
+        let identity = Keypair::ed25519_from_bytes([seed; 32]).unwrap();
+        let owner = LocalPeerRecordIssuer::create(&directory.path, &identity, 0).unwrap();
+        let mut command = probe_command("local_peer_record_issuer_lock_child_probe");
+        command
+            .env(ISSUER_LOCK_PROBE_PATH_ENV, &directory.path)
+            .env(ISSUER_LOCK_PROBE_SEED_ENV, seed.to_string());
+        run_probe(&mut command, "locked");
+        drop(owner);
+        drop(
+            LocalPeerRecordIssuer::open(&directory.path, &identity)
+                .expect("owner drop must permit immediate parent reopen"),
+        );
+        run_probe(&mut command, "released");
+    }
 }

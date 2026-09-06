@@ -25,8 +25,9 @@ const ENTRY_MAX_BODY_BYTES: u32 = (ARTIFACT_BLOCK_BYTES + ARTIFACT_PAYLOAD_MAX_B
 /// of durable storage. Dropping and reopening is the only recovery path.
 #[must_use]
 pub struct ArtifactChainJournal {
-    _lock: File,
     core: JournalCore<File>,
+    // Declared last so owned state and data files drop before the lock releases.
+    _lock: ExclusiveLock,
 }
 
 impl ArtifactChainJournal {
@@ -262,7 +263,7 @@ impl SelectedArtifactHistory for ArtifactChainJournal {
     }
 }
 
-fn open_and_lock(directory: &Path) -> Result<File, ArtifactChainJournalError> {
+fn open_and_lock(directory: &Path) -> Result<ExclusiveLock, ArtifactChainJournalError> {
     open_exclusive_lock(directory, LOCK_FILE_NAME).map_err(|error| match error {
         ExclusiveLockError::LockFile(source) => ArtifactChainJournalError::LockFile { source },
         ExclusiveLockError::Locked => ArtifactChainJournalError::Locked,

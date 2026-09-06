@@ -12,7 +12,7 @@ use naome_chain::{
     ARTIFACT_BLOCK_BYTES, ArtifactBlock, ArtifactBlockId, ArtifactChainDefinition, ArtifactChainId,
 };
 
-use crate::{ExclusiveLockError, StoreIo, open_exclusive_lock};
+use crate::{ExclusiveLock, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
 const LOCK_FILE_NAME: &str = "artifact-block-candidate-store.lock";
 const STORE_FILE_NAME: &str = "artifact-block-candidate-store.log";
@@ -226,8 +226,9 @@ pub enum ArtifactBlockCandidateInsertOutcome {
 /// the only recovery path.
 #[must_use]
 pub struct ArtifactBlockCandidateStore {
-    _lock: File,
     core: ArtifactBlockCandidateStoreCore<File>,
+    // Declared last so owned state and data files drop before the lock releases.
+    _lock: ExclusiveLock,
 }
 
 impl ArtifactBlockCandidateStore {
@@ -364,7 +365,7 @@ impl ArtifactBlockCandidateStore {
     }
 }
 
-fn open_and_lock(directory: &Path) -> Result<File, ArtifactBlockCandidateStoreError> {
+fn open_and_lock(directory: &Path) -> Result<ExclusiveLock, ArtifactBlockCandidateStoreError> {
     open_exclusive_lock(directory, LOCK_FILE_NAME).map_err(|error| match error {
         ExclusiveLockError::LockFile(source) => {
             ArtifactBlockCandidateStoreError::LockFile { source }

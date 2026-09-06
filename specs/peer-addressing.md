@@ -257,6 +257,12 @@ before acknowledging success. The store makes no sudden-power-loss guarantee
 for the renamed directory entry on platforms without a safe parent-directory
 sync.
 
+The private lock guard explicitly unlocks before closing its file when dropped,
+including on failed construction or unwinding. Fully constructed owners drop
+their data and state before this guard. If the OS rejects explicit unlock,
+closing remains the fallback; no immediate-release guarantee is made for OS
+errors or process termination.
+
 Any commit I/O error poisons all later reads, selection, and mutation. A
 temporary file is never authoritative. Drop and strict reopen is the only
 recovery from ambiguity.
@@ -400,6 +406,9 @@ The issuer uses exactly:
 - `local-peer-record-issuer.lock`, held exclusively for the handle lifetime;
 - `local-peer-record-issuer.bin`, the authoritative snapshot; and
 - `local-peer-record-issuer.tmp`, a non-authoritative same-directory temporary.
+
+The issuer uses the same explicit-unlock guard and release-error boundary as
+the address store above. Its state drops before its lock guard.
 
 `create` refuses to replace an existing snapshot and commits the supplied floor
 before returning. `open` requires a snapshot, reads at most one sentinel byte
