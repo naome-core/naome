@@ -6,6 +6,7 @@ use libp2p::request_response;
 use naome_consensus::{ConsensusContextV0, ConsensusHeight};
 use naome_storage::{
     FixedValidatorAnchoredFinalityJournalV0, FixedValidatorFinalityJournalErrorV0,
+    SelectedFinalityProofHistoryV0,
 };
 
 use super::inbound_retention::{InboundRetentionBudget, InboundRetentionPermit};
@@ -363,21 +364,27 @@ impl StaticArtifactNetwork {
         inbound: InboundFinalityProofRequest,
         journal: &FixedValidatorAnchoredFinalityJournalV0,
     ) -> Result<(), FinalityProofRespondError> {
+        self.respond_finality_proof_from_selected_history(inbound, journal)
+    }
+
+    /// Serves the same exact proof through the sealed projection available to a
+    /// live driver. Channel/rate admission precedes all selected-history reads;
+    /// shared response reservation precedes copying either body.
+    pub fn respond_finality_proof_from_selected_history(
+        &mut self,
+        inbound: InboundFinalityProofRequest,
+        history: &dyn SelectedFinalityProofHistoryV0,
+    ) -> Result<(), FinalityProofRespondError> {
         self.preflight_finality_response(&inbound)?;
-        journal.head().map_err(FinalityProofRespondError::Journal)?;
-        let proof = if inbound.request().context() == journal.context() {
-            journal
-                .finality_record(inbound.request().height())
-                .map_err(FinalityProofRespondError::Journal)?
-                .map(|record| {
-                    (
-                        record.canonical_envelope_bytes(),
-                        record.canonical_artifact_bytes(),
-                    )
-                })
-        } else {
-            None
-        };
+        let proof = history
+            .selected_finality_proof(inbound.request().context(), inbound.request().height())
+            .map_err(FinalityProofRespondError::Journal)?
+            .map(|record| {
+                (
+                    record.canonical_envelope_bytes(),
+                    record.canonical_artifact_bytes(),
+                )
+            });
         self.send_finality_response(inbound, proof)
     }
 

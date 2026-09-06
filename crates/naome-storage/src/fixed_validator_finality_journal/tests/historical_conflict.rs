@@ -203,6 +203,12 @@ fn historical_direct_forms_match_stored_proof_halt_and_retain_the_entire_selecte
             journal.head(),
             Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
         ));
+        for (context, height) in proof_lookup_addresses(fixture.context) {
+            assert!(matches!(
+                journal.selected_finality_proof(context, height),
+                Err(FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. })
+            ));
+        }
         let mut malformed = sibling.clone();
         malformed.control.clear();
         malformed.envelope.clear();

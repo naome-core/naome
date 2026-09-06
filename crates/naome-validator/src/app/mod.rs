@@ -1,7 +1,8 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
+use naome_network::NetworkEvent;
 use naome_node::{FixedValidatorNodeDriverV0, FixedValidatorNodeStartupV0};
-use naome_runtime::FixedValidatorRuntimeV0;
+use naome_runtime::{FixedValidatorRuntimeEventV0, FixedValidatorRuntimeV0};
 use serde_json::json;
 use tokio::{
     runtime::Builder,
@@ -12,6 +13,7 @@ mod commands;
 mod config;
 mod files;
 mod input;
+mod provider;
 mod report;
 
 type Result<T> = std::result::Result<T, &'static str>;
@@ -107,7 +109,11 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
                     None => break ("input_closed", false),
                 },
                 event = runtime.next_event() => {
-                    let (mut event, fatal) = report::event(event);
+                    let (mut event, fatal) = match event {
+                        FixedValidatorRuntimeEventV0::Network(NetworkEvent::InboundFinalityProof(inbound))
+                            if config.serve_finality_proofs => provider::respond(&mut runtime, inbound),
+                        event => report::event(event),
+                    };
                     if event["event"] == "finality" { event["state"] = report::status(&runtime); }
                     output.emit(event)?;
                     if fatal { break ("runtime_fatal", false); }

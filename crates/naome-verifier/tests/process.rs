@@ -12,3 +12,5 @@ mod lifecycle;
 mod rejections;
 #[path = "cases/restart.rs"]
 mod restart;
+#[path = "cases/validator_provider.rs"]
+mod validator_provider;

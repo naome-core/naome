@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "finality_provider.rs"]
+mod finality_provider;
+
 struct HistoricalProof {
     proof: Proof,
     envelope: Vec<u8>,

@@ -415,32 +415,35 @@ async fn finality_transport_preserves_exact_opaque_bytes_and_bounded_serving() {
     drop((ticket, occupied));
 }
 
+async fn short_timeout_pair() -> (StaticArtifactNetwork, StaticArtifactNetwork, PeerId, PeerId) {
+    use libp2p::request_response::ProtocolSupport;
+    crate::tests::connected_pair_with_server(|server| {
+        // Install before connecting: libp2p uses a real futures_timer timeout,
+        // independent of Tokio virtual time. The client retains its 30s bound.
+        server.swarm.behaviour_mut().finality_exchange = request_response::Behaviour::with_codec(
+            FinalityProofCodec::new(
+                budget(
+                    MAX_STATIC_PEERS,
+                    MAX_STATIC_PEERS * FINALITY_PROOF_REQUEST_BYTES,
+                ),
+                Arc::clone(&server.finality_response_budget),
+            ),
+            [(FINALITY_PROOF_PROTOCOL, ProtocolSupport::Full)],
+            request_response::Config::default()
+                .with_request_timeout(Duration::from_secs(2))
+                .with_max_concurrent_streams(
+                    crate::transport::MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION,
+                ),
+        );
+    })
+    .await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn finality_retained_request_survives_actual_timeout_and_reconnect_until_consumed() {
     use crate::PeerSessionEvent;
-    use libp2p::request_response::{InboundFailure, ProtocolSupport};
-    let (mut client, mut server, client_id, server_id) =
-        crate::tests::connected_pair_with_server(|server| {
-            // Install before connecting: libp2p uses a real futures_timer timeout,
-            // independent of Tokio virtual time. The client retains its 30s bound.
-            server.swarm.behaviour_mut().finality_exchange =
-                request_response::Behaviour::with_codec(
-                    FinalityProofCodec::new(
-                        budget(
-                            MAX_STATIC_PEERS,
-                            MAX_STATIC_PEERS * FINALITY_PROOF_REQUEST_BYTES,
-                        ),
-                        Arc::clone(&server.finality_response_budget),
-                    ),
-                    [(FINALITY_PROOF_PROTOCOL, ProtocolSupport::Full)],
-                    request_response::Config::default()
-                        .with_request_timeout(Duration::from_secs(2))
-                        .with_max_concurrent_streams(
-                            crate::transport::MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION,
-                        ),
-                );
-        })
-        .await;
+    use libp2p::request_response::InboundFailure;
+    let (mut client, mut server, client_id, server_id) = short_timeout_pair().await;
     let ticket = client
         .request_finality_proof(server_id, request(1))
         .unwrap();
@@ -537,4 +540,87 @@ async fn finality_retained_request_survives_actual_timeout_and_reconnect_until_c
         ticket.complete(terminal).unwrap().unwrap().into_response(),
         FinalityProofResponse::Unavailable
     ));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn finality_provider_admission_precedes_unhealthy_history_even_for_foreign_or_missing_requests()
+ {
+    use crate::tests::{FinalityFixture, TestDirectory};
+    use naome_storage::FixedValidatorFinalityJournalErrorV0;
+    let fixture = FinalityFixture::new();
+    let directory = TestDirectory::new("proof-provider-halted");
+    let anchor = TestDirectory::new("proof-provider-halted-anchor");
+    let journal = fixture.halted_anchored(&directory, &anchor);
+    let images = || {
+        (
+            directory.journal_bytes(),
+            std::fs::read(anchor.path().join("fixed-validator-finality.anchor")).unwrap(),
+        )
+    };
+    let before = images();
+    for address in [
+        FinalityProofRequest::new(journal.context(), ConsensusHeight::new(1)).unwrap(),
+        request(99),
+    ] {
+        for gate in 0..3 {
+            let (mut client, mut server, _, server_id) = short_timeout_pair().await;
+            let ticket = client.request_finality_proof(server_id, address).unwrap();
+            let inbound = timeout(Duration::from_secs(10), async {
+                loop {
+                    tokio::select! {
+                        _ = client.next_event() => {},
+                        event = server.next_event() => if let NetworkEvent::InboundFinalityProof(inbound) = event { break inbound; },
+                    }
+                }
+            }).await.unwrap();
+            if gate == 0 {
+                let mut terminal = None;
+                timeout(Duration::from_secs(10), async {
+                    while terminal.is_none() || inbound.channel.is_open() {
+                        tokio::select! {
+                            event = client.next_event() => if let NetworkEvent::OutboundFinalityProof(event) = event { terminal = Some(event); },
+                            _ = server.next_event() => {},
+                        }
+                    }
+                }).await.unwrap();
+                let tokens = server.application_tokens_for_test();
+                assert!(matches!(
+                    server.respond_finality_proof_from_selected_history(inbound, &journal),
+                    Err(FinalityProofRespondError::Transport(
+                        RespondError::ChannelClosed
+                    ))
+                ));
+                assert_eq!(server.application_tokens_for_test(), tokens);
+                assert!(ticket.complete(terminal.unwrap()).unwrap().is_err());
+            } else {
+                tokio::time::pause();
+                if gate == 1 {
+                    server.exhaust_application_budget_for_test(tokio::time::Instant::now());
+                }
+                let tokens = server.application_tokens_for_test();
+                let result = server.respond_finality_proof_from_selected_history(inbound, &journal);
+                if gate == 1 {
+                    assert!(matches!(
+                        result,
+                        Err(FinalityProofRespondError::Transport(
+                            RespondError::RateLimited
+                        ))
+                    ));
+                    assert_eq!(server.application_tokens_for_test(), 0);
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(FinalityProofRespondError::Journal(
+                            FixedValidatorFinalityJournalErrorV0::TerminalHalt { .. }
+                        ))
+                    ));
+                    assert_eq!(server.application_tokens_for_test(), tokens - 1);
+                }
+                tokio::time::resume();
+                drop(ticket);
+            }
+            assert_eq!(images(), before);
+        }
+    }
 }

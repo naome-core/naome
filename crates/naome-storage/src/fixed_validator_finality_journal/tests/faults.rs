@@ -64,6 +64,12 @@ fn anchor_operation_failures_withhold_finality_until_exact_stabilized_reopen() {
             journal.state_id(),
             Err(FixedValidatorFinalityJournalErrorV0::Poisoned)
         ));
+        for (context, height) in proof_lookup_addresses(fixture.context) {
+            assert!(matches!(
+                journal.selected_finality_proof(context, height),
+                Err(FixedValidatorFinalityJournalErrorV0::Poisoned)
+            ));
+        }
         let after = images();
         assert_eq!(after.0, expected_images.0, "{operation:?}");
         assert_ne!(after.0, before.0);

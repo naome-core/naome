@@ -614,6 +614,15 @@ directory before publishing the wrapper.
 
 ## Read-only selected-artifact history
 
+The additional `SEC-003-003` proof-serving projection is defined in
+[Fixed-Validator Proof Provider V0](fixed-validator-proof-provider-v0.md).
+`SelectedFinalityProofHistoryV0` is sealed to the independently anchored
+wrapper and offers only one healthy exact-context/height retained-record read.
+It does not expose the concrete journal or its immutable methods that issue
+signer-height/stop acknowledgements. Halt and poison take precedence over all
+missing, foreign-context and zero-height requests. The first retained envelope
+and payload remain unchanged by a later same-value evidence variant.
+
 The journal retains the immutable artifact snapshot coupled to virtual genesis
 and to every locally finalized fixed-validator V0 branch. Creation, strict
 replay, and each successful `commit_verified` step maintain an in-memory exact

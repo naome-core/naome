@@ -17,9 +17,15 @@ anchoring, finality selection, and strict restart remain defined by
 [driver](fixed-validator-node-driver-v0.md), and
 [runtime](fixed-validator-runtime-v0.md).
 
+`SEC-003-003` adds the explicit opt-in
+[retained-proof provider](fixed-validator-proof-provider-v0.md). It serves
+already committed complete proofs to configured peers without changing the
+signer's authority or the ordinary runtime schedule.
+
 The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. It grants no automatic proposal
-source or evidence selection, certificate acquisition, artifact serving,
+source or evidence selection, certificate acquisition, artifact serving beyond
+the separately opted-in retained complete-proof response,
 fallback routing, automatic inbox clearing, delivery retry, repair, durable outbox, dynamic
 validator, key rotation, production timeout calibration, hardware custody, or
 distributed-liveness authority. In accordance with `PROD-023`, no remote
@@ -35,8 +41,10 @@ configuration path is required. Non-Unix builds return an unsupported-platform
 failure before opening configuration or authority files. There is no daemon
 fork, service installation, configuration reload, or hidden environment override.
 
-The UTF-8 TOML file is at most 65,536 bytes. Every field is required; unknown
-fields and tables, including remote-signer configuration, are rejected. Version
+The UTF-8 TOML file is at most 65,536 bytes. Every field listed below is required;
+the additional `[network].serve_finality_proofs` boolean is optional and defaults
+to `false`. Unknown fields and tables, including remote-signer configuration,
+are rejected. Version
 is the integer `0`, and mode is exactly `"create"` or `"open"`. Relative paths
 in configuration and commands resolve against the configuration file's parent
 directory, not against a source file or an inferred data directory. Directories

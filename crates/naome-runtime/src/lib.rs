@@ -15,6 +15,7 @@ pub use owner::FixedValidatorRuntimeV0;
 pub use owner::artifact_exchange::{
     FixedValidatorRuntimeAcquisitionRefusalV0, FixedValidatorRuntimeAcquisitionStartErrorV0,
     FixedValidatorRuntimeAncestryFillAdvanceErrorV0,
+    FixedValidatorRuntimeFinalityProofResponseErrorV0,
     FixedValidatorRuntimePayloadFillAdvanceErrorV0,
 };
 pub use publication::{

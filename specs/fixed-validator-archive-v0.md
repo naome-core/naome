@@ -18,7 +18,12 @@ archive seeded through local complete-proof imports can therefore supply
 another archive, which can strictly reopen and serve the same first evidence
 to a third archive without the original source files.
 
-This profile does not define live-validator proof serving, continuous following,
+The separate `SEC-003-003` [validator provider](fixed-validator-proof-provider-v0.md)
+can supply the same complete proofs from its live selected history when
+explicitly enabled. The archive requires no new peer-role field or consensus
+observation to use that source.
+
+This archive profile does not itself own live-validator proof serving, continuous following,
 proposal/vote observation or assembly, automatic peer/source choice, head or
 checkpoint discovery, branch selection, data retries, persistent sync intent,
 automatic repair, dynamic validators, economics, or general full-node

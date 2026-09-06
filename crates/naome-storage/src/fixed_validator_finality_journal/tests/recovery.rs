@@ -40,7 +40,14 @@ fn anchored_finality_advances_before_publication_and_reopens_exactly() {
     let mut selected = ArtifactChainState::new(fixture.definition);
     let parent = journal.head().unwrap().clone();
     let first = fixture.transition(&parent, &mut selected, ZfcAxiom::Pairing, 0);
-    let duplicate = fixture.transition(&parent, &mut selected, ZfcAxiom::Pairing, 0);
+    let duplicate = fixture.transition(&parent, &mut selected, ZfcAxiom::Pairing, 1);
+    assert_eq!(first.value(), duplicate.value());
+    assert_ne!(
+        first.canonical_envelope_bytes(),
+        duplicate.canonical_envelope_bytes()
+    );
+    let first_envelope = first.canonical_envelope_bytes().to_vec();
+    let first_payload = first.canonical_artifact_bytes().to_vec();
     let expected_head = first.value().artifact_block().id();
     let expected_state = match journal.commit_verified(first).unwrap() {
         FixedValidatorFinalityCommitOutcomeV0::Finalized { state_id, .. } => state_id,
@@ -66,12 +73,39 @@ fn anchored_finality_advances_before_publication_and_reopens_exactly() {
         committed_anchor
     );
 
+    let committed_journal = fs::read(journal_directory.journal()).unwrap();
+    let history: &dyn SelectedFinalityProofHistoryV0 = &journal;
+    for (context, height) in proof_lookup_addresses(fixture.context) {
+        let record = history.selected_finality_proof(context, height).unwrap();
+        if context == fixture.context && height.value() == 1 {
+            let record = record.unwrap();
+            assert_eq!(record.canonical_envelope_bytes(), first_envelope);
+            assert_eq!(record.canonical_artifact_bytes(), first_payload);
+        } else {
+            assert!(record.is_none());
+        }
+    }
+    assert_eq!(
+        fs::read(journal_directory.journal()).unwrap(),
+        committed_journal
+    );
+    assert_eq!(
+        fs::read(anchor_directory.finality_anchor()).unwrap(),
+        committed_anchor
+    );
+
     drop(journal);
     let reopened = fixture
         .open_anchored(&journal_directory, &anchor_directory)
         .unwrap();
     assert_eq!(reopened.journal.core.record_sequence, 1);
     assert_eq!(reopened.state_id().unwrap(), expected_state);
+    let record = reopened
+        .selected_finality_proof(fixture.context, ConsensusHeight::new(1))
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.canonical_envelope_bytes(), first_envelope);
+    assert_eq!(record.canonical_artifact_bytes(), first_payload);
     assert_eq!(
         reopened.head().unwrap().artifact_snapshot().head_block_id(),
         expected_head

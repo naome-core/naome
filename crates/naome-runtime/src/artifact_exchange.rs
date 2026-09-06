@@ -10,9 +10,9 @@ use naome_network::{
     ArtifactBlockCandidateBranchPayloadFill as Payload,
     ArtifactBlockCandidateBranchPayloadFillError as PayloadError,
     ArtifactBlockCandidateBranchPayloadFillProgress as PayloadProgress,
-    ConsensusPushAcknowledgeError, InboundArtifactBlockRequest, InboundArtifactRequest,
-    InboundConsensusPush, NetworkEvent, PeerId, ReceivedConsensusPush, RespondError,
-    StaticArtifactNetwork,
+    ConsensusPushAcknowledgeError, FinalityProofRespondError, InboundArtifactBlockRequest,
+    InboundArtifactRequest, InboundConsensusPush, InboundFinalityProofRequest, NetworkEvent,
+    PeerId, ReceivedConsensusPush, RespondError, StaticArtifactNetwork,
 };
 use naome_storage::{
     ArtifactBlockCandidateStore, CandidateBranchReconstructionLimits,
@@ -84,7 +84,48 @@ type Refusal = FixedValidatorRuntimeAcquisitionRefusalV0;
 type AncestryAdvanceError<'store> = FixedValidatorRuntimeAncestryFillAdvanceErrorV0<'store>;
 type PayloadAdvanceError<'store> = FixedValidatorRuntimePayloadFillAdvanceErrorV0<'store>;
 
+/// An unavailable driver refunds the exact request without reading history or
+/// consuming network rate admission. A delegated response keeps its existing
+/// consuming failure semantics.
+#[derive(Debug)]
+pub enum FixedValidatorRuntimeFinalityProofResponseErrorV0 {
+    DriverUnavailable(InboundFinalityProofRequest),
+    Response(FinalityProofRespondError),
+}
+
+impl fmt::Display for FixedValidatorRuntimeFinalityProofResponseErrorV0 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "runtime retained-proof response failed: {self:?}")
+    }
+}
+
+impl Error for FixedValidatorRuntimeFinalityProofResponseErrorV0 {}
+
 impl FixedValidatorRuntimeV0<'_> {
+    /// Explicitly responds from the live driver's narrow selected-proof reader.
+    /// This performs no driver step or mutation of timer, inbox, input, pending
+    /// command, or publication custody. It creates no signer acknowledgement.
+    #[allow(
+        clippy::result_large_err,
+        reason = "refund the original request without adding an allocation to the driver-unavailable path"
+    )]
+    pub fn respond_finality_proof_from_selected_history(
+        &mut self,
+        inbound: InboundFinalityProofRequest,
+    ) -> Result<(), FixedValidatorRuntimeFinalityProofResponseErrorV0> {
+        let Some(driver) = self.driver.as_ref() else {
+            return Err(
+                FixedValidatorRuntimeFinalityProofResponseErrorV0::DriverUnavailable(inbound),
+            );
+        };
+        self.network
+            .respond_finality_proof_from_selected_history(
+                inbound,
+                driver.selected_finality_proof_history(),
+            )
+            .map_err(FixedValidatorRuntimeFinalityProofResponseErrorV0::Response)
+    }
+
     fn acquisition_parts(
         &mut self,
     ) -> Result<(&mut StaticArtifactNetwork, &dyn SelectedArtifactHistory), StartError> {

@@ -88,8 +88,8 @@ impl Proof {
 }
 
 /// Independent test encoding with real Ed25519 signatures, including malicious
-/// producer/quorum fixtures. Consensus keys exist only in this test process;
-/// target layouts contain no consensus secrets, signer journals, or signer API owners.
+/// producer/quorum fixtures. This helper signs directly in the test process;
+/// its output is never evidence that an honest validator produced the bytes.
 pub fn envelope(
     proof: &Proof,
     proposer: &SigningKey,
