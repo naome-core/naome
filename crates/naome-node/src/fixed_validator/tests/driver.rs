@@ -35,6 +35,7 @@ mod higher_round;
 mod historical_conflict;
 mod lower_round_finality;
 mod lower_round_pair;
+mod partition;
 mod proposal_authoring;
 
 type DrainedEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);

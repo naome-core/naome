@@ -5,7 +5,8 @@
 `TEST-005-001` and `TEST-005-002` supply finite, independent model checking and selected real
 coordinator trace replay for the existing artifact-only fixed-validator V0
 rules. It grants no new production authority and changes no protocol behavior.
-`TEST-005` remains `IN_PROGRESS`; the general `SEC-007` safety requirement remains
+`TEST-005` is `IMPLEMENTED` for its selected safety property within these
+documented bounds; the general `SEC-007` safety requirement remains
 `NOT_IMPLEMENTED`.
 
 The independent oracle requires that no reachable state make complete,
