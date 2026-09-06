@@ -120,3 +120,8 @@ precommit cuts, healing, crash faults, dynamic validators, general partition
 safety or liveness, deployment, or production readiness. `SEC-012` remains
 `IN_PROGRESS`. The independent driver and caller-input runtime corpora retain
 their separately documented evidence boundaries.
+
+The separate [process-kill restart corpus](fixed-validator-process-partition-restart-v0.md)
+adds a proposer-centered star, a non-nil lock, and continued isolated voting
+after one actual process kill and strict restart. Its bounded evidence does
+not widen the three cold-partition cases above.
