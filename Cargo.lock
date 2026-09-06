@@ -1888,6 +1888,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-verifier"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "naome-chain",
+ "naome-consensus",
+ "naome-foundation",
+ "naome-ledger",
+ "naome-proof",
+ "naome-storage",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "netlink-packet-core"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
