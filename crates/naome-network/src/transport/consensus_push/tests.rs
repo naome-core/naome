@@ -307,6 +307,95 @@ async fn authenticated_delivery_preserves_both_opaque_variants_and_exact_allocat
 }
 
 #[tokio::test]
+async fn reciprocal_pushes_keep_both_inbound_requests_until_explicit_receipts() {
+    let (mut first, mut second, first_peer, second_peer) = crate::tests::connected_pair().await;
+    let first_message = vote();
+    let second_message = ConsensusPushMessage::Vote {
+        canonical_vote: vec![0x5a; CONSENSUS_PUSH_VOTE_BYTES],
+    };
+    let first_ticket = first.push_consensus(second_peer, first_message).unwrap();
+    let second_ticket = second
+        .push_consensus(
+            first_peer,
+            ConsensusPushMessage::Vote {
+                canonical_vote: vec![0x5a; CONSENSUS_PUSH_VOTE_BYTES],
+            },
+        )
+        .unwrap();
+    let mut first_inbound = None;
+    let mut second_inbound = None;
+    timeout(Duration::from_secs(10), async {
+        while first_inbound.is_none() || second_inbound.is_none() {
+            tokio::select! {
+                event = first.next_event() => match event {
+                    NetworkEvent::InboundConsensusPush(inbound) => {
+                        assert!(first_inbound.is_none());
+                        assert_eq!(inbound.peer_id(), second_peer);
+                        assert_eq!(inbound.message(), &second_message);
+                        first_inbound = Some(inbound);
+                    }
+                    NetworkEvent::OutboundConsensusPush(event) => panic!("terminal before acknowledgement: {event:?}"),
+                    _ => {},
+                },
+                event = second.next_event() => match event {
+                    NetworkEvent::InboundConsensusPush(inbound) => {
+                        assert!(second_inbound.is_none());
+                        assert_eq!(inbound.peer_id(), first_peer);
+                        assert_eq!(inbound.message(), &vote());
+                        second_inbound = Some(inbound);
+                    }
+                    NetworkEvent::OutboundConsensusPush(event) => panic!("terminal before acknowledgement: {event:?}"),
+                    _ => {},
+                },
+            }
+        }
+    })
+    .await
+    .expect("both opposite-direction requests must arrive while receipts are held");
+    for (network, peer) in [(&mut first, second_peer), (&mut second, first_peer)] {
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+        let extra = vote();
+        let allocation = pointers(&extra);
+        let error = network.push_consensus(peer, extra).unwrap_err();
+        assert_eq!(pointers(error.message()), allocation);
+        assert!(
+            matches!(error.reason(), ConsensusPushStartFailure::RequestStart(RequestStartError::AlreadyPending(actual)) if *actual == peer)
+        );
+        assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+    }
+    let first_inbound = first_inbound.unwrap();
+    let second_inbound = second_inbound.unwrap();
+    let first_allocation = pointers(first_inbound.message());
+    let second_allocation = pointers(second_inbound.message());
+    let first_received = first.acknowledge_consensus_push(first_inbound).unwrap();
+    let second_received = second.acknowledge_consensus_push(second_inbound).unwrap();
+    assert_eq!(pointers(first_received.message()), first_allocation);
+    assert_eq!(pointers(second_received.message()), second_allocation);
+    let mut first_ticket = Some(first_ticket);
+    let mut second_ticket = Some(second_ticket);
+    timeout(Duration::from_secs(10), async {
+        while first_ticket.is_some() || second_ticket.is_some() {
+            tokio::select! {
+                event = first.next_event() => if let NetworkEvent::OutboundConsensusPush(event) = event {
+                    let receipt = first_ticket.take().unwrap().complete(event).unwrap().unwrap();
+                    assert_eq!(receipt.peer_id(), second_peer);
+                    assert_eq!(receipt.size(), vote().size());
+                },
+                event = second.next_event() => if let NetworkEvent::OutboundConsensusPush(event) = event {
+                    let receipt = second_ticket.take().unwrap().complete(event).unwrap().unwrap();
+                    assert_eq!(receipt.peer_id(), first_peer);
+                    assert_eq!(receipt.size(), second_message.size());
+                },
+            }
+        }
+    })
+    .await
+    .expect("both explicit receipts must complete their original tickets");
+    assert_eq!(first.pending_budget.active.load(Ordering::Relaxed), 0);
+    assert_eq!(second.pending_budget.active.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 async fn closed_response_channel_returns_the_same_owned_bytes() {
     let (mut sender, mut receiver, sender_peer, receiver_peer) =
         crate::tests::connected_pair().await;

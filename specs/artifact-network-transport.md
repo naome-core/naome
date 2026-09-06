@@ -184,7 +184,7 @@ One network instance enforces:
 | Streams per artifact, block, or head exchange per connection | 2 |
 | Head-announcement streams per connection | 1 |
 | Recovery-bundle push streams per connection | 1 |
-| Consensus push streams per connection, both directions combined | 1 |
+| Consensus push streams per connection, both directions combined | 2 |
 | Aggregate application streams per connection | 8 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
@@ -206,7 +206,7 @@ One network instance enforces:
 | Pre-Noise inbound authentication burst/refill | 8 / 1 per second |
 | Store- or journal-response attempt burst/refill | 8 / 1 per second |
 
-Per-exchange stream ceilings sum to nine and contend for the existing eight
+Per-exchange stream ceilings sum to ten and contend for the existing eight
 Yamux substreams, including negotiation and cleanup occupancy. No consensus
 capacity is reserved. Exhaustion can fail an exchange or the connection; it
 does not promise queued backpressure or fairness.

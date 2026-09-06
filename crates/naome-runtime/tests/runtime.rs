@@ -2,6 +2,8 @@
 
 #[path = "cases/adversarial.rs"]
 mod adversarial;
+#[path = "cases/duplex.rs"]
+mod duplex;
 mod support;
 
 use ed25519_dalek::SigningKey;

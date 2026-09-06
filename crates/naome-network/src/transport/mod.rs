@@ -71,9 +71,9 @@ pub const MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION: usize = 1;
 /// Maximum concurrent recovery-bundle push streams on one connection.
 pub const MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION: usize = 1;
 /// Maximum concurrent consensus push streams on one connection, shared by both directions.
-pub const MAX_CONSENSUS_PUSH_STREAMS_PER_CONNECTION: usize = 1;
+pub const MAX_CONSENSUS_PUSH_STREAMS_PER_CONNECTION: usize = 2;
 /// Aggregate application-stream ceiling imposed by Yamux.
-/// Per-exchange limits sum to nine; they contend for eight total substreams,
+/// Per-exchange limits sum to ten; they contend for eight total substreams,
 /// with negotiation and transient streams also consuming capacity. Exhaustion
 /// may fail exchanges or the connection.
 pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_YAMUX_STREAMS_PER_CONNECTION;

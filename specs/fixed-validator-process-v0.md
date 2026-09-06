@@ -500,3 +500,14 @@ authority images, release locks, and make strict reopen refuse the lagging pair.
 These are bounded local Unix process and loopback observations; allocation and
 timeout identity checks belong to the runtime tests, and deployment and general
 distributed liveness remain unverified.
+
+`SEC-012-003` adds three actual four-process cold-partition cases after a common
+H1 prefix, using opaque TCP gates and unmodified process authoring, runtime
+admission, and finality paths. Equal halves and a three-key exact two-thirds
+component retain H1 through real timeout progression; a two-key 5/7 component
+finalizes H2. The corpus requires internal voting traffic and receipts,
+cross-link disconnection and rejected redials, exact minority finality images,
+and healthy strict finality-journal replay with shared consensus ancestry.
+Its complete bounds and evidence limits are defined in
+`specs/fixed-validator-process-partition-v0.md`; it does not establish process
+restart, arbitrary partition safety, deployment, or general liveness.

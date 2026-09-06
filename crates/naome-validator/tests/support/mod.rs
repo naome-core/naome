@@ -367,6 +367,17 @@ impl Process {
     pub fn event(&mut self, event: &str) -> Value {
         self.until(|value| value["event"] == event)
     }
+    pub fn observe(&mut self, wait: Duration) -> Option<Value> {
+        match self.receiver.recv_timeout(wait) {
+            Ok(value) => {
+                self.observed.push(value.clone());
+                assert!(self.observed.len() < 4096, "bounded test transcript");
+                Some(value)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("process output closed"),
+        }
+    }
     pub fn ready(&mut self) -> Value {
         self.event("ready")["state"].clone()
     }
