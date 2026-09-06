@@ -1,20 +1,22 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
-use naome_network::NetworkEvent;
 use naome_node::{FixedValidatorNodeDriverV0, FixedValidatorNodeStartupV0};
-use naome_runtime::{FixedValidatorRuntimeEventV0, FixedValidatorRuntimeV0};
+use naome_runtime::FixedValidatorRuntimeV0;
 use serde_json::json;
 use tokio::{
     runtime::Builder,
     signal::unix::{SignalKind, signal},
 };
 
+mod acquisition;
 mod commands;
 mod config;
 mod files;
 mod input;
 mod provider;
 mod report;
+mod session;
+mod sources;
 
 type Result<T> = std::result::Result<T, &'static str>;
 
@@ -51,9 +53,14 @@ fn run(output: &report::Output) -> Result<()> {
 
 async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
     let mut config = config::Config::load(&path)?;
-    let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| "signal_registration")?;
-    let mut terminate = signal(SignalKind::terminate()).map_err(|_| "signal_registration")?;
-    let mut input = input::start()?;
+    let interrupt = signal(SignalKind::interrupt()).map_err(|_| "signal_registration")?;
+    let terminate = signal(SignalKind::terminate()).map_err(|_| "signal_registration")?;
+    let input = input::start()?;
+    let sources = config
+        .sources
+        .take()
+        .map(|sources| sources.open(config.definition))
+        .transpose()?;
     let signing_key = config.signing_key.take().ok_or("signing_key_missing")?;
     let ready = match config.mode {
         config::Mode::Create => config
@@ -78,52 +85,40 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
             }
         },
     };
-    let (summary, success) = ready.run_with_signing_session_async(async move |scope| {
-        let driver = FixedValidatorNodeDriverV0::new(scope, config.higher, config.current, config.finality, config.nil_precommit, config.driver_max_round).map_err(|_| "driver_create")?;
-        let mut network = config.network;
-        network.listen_on(config.listen).map_err(|_| "listen_start")?;
-        let mut runtime = FixedValidatorRuntimeV0::new(driver, network, config.targets, config.timeouts).map_err(|_| "runtime_create")?;
-        output.emit(json!({"event": "ready", "state": report::status(&runtime)}))?;
-        let (reason, success) = loop {
-            tokio::select! {
-                _ = interrupt.recv() => break ("sigint", true),
-                _ = terminate.recv() => break ("sigterm", true),
-                input = input.recv() => match input {
-                    Some(input::Input::Line(bytes)) => {
-                        let command = match input::Command::parse(&bytes) {
-                            Ok(command) => command,
-                            Err(_) => { output.emit(json!({"event": "command_rejected", "id": null, "code": "command_schema"}))?; continue; },
-                        };
-                        let id = command.id();
-                        let shutdown = matches!(command, input::Command::Shutdown { .. });
-                        match commands::execute(command, &config.base, &mut runtime) {
-                            Ok((outcome, fatal)) => {
-                                output.emit(json!({"event": "command_result", "id": id, "outcome": outcome}))?;
-                                if fatal { break ("command_fatal", false); }
-                            },
-                            Err(code) => output.emit(json!({"event": "command_rejected", "id": id, "code": code}))?,
-                        }
-                        if shutdown { break ("shutdown", true); }
-                    },
-                    Some(input::Input::End(reason)) => break (reason, reason == "eof"),
-                    None => break ("input_closed", false),
-                },
-                event = runtime.next_event() => {
-                    let (mut event, fatal) = match event {
-                        FixedValidatorRuntimeEventV0::Network(NetworkEvent::InboundFinalityProof(inbound))
-                            if config.serve_finality_proofs => provider::respond(&mut runtime, inbound),
-                        event => report::event(event),
-                    };
-                    if event["event"] == "finality" { event["state"] = report::status(&runtime); }
-                    output.emit(event)?;
-                    if fatal { break ("runtime_fatal", false); }
-                },
+    let (summary, success) = ready
+        .run_with_signing_session_async(async move |scope| {
+            let driver = FixedValidatorNodeDriverV0::new(
+                scope,
+                config.higher,
+                config.current,
+                config.finality,
+                config.nil_precommit,
+                config.driver_max_round,
+            )
+            .map_err(|_| "driver_create")?;
+            let mut network = config.network;
+            network
+                .listen_on(config.listen)
+                .map_err(|_| "listen_start")?;
+            let runtime =
+                FixedValidatorRuntimeV0::new(driver, network, config.targets, config.timeouts)
+                    .map_err(|_| "runtime_create")?;
+            output.emit(json!({"event": "ready", "state": report::status(&runtime)}))?;
+            session::Session {
+                runtime,
+                base: &config.base,
+                output,
+                input,
+                interrupt,
+                terminate,
+                serve_finality_proofs: config.serve_finality_proofs,
             }
-        };
-        input.close();
-        Ok::<_, &'static str>((report::stopped(runtime, reason, input.len()), success))
-    }).await.map_err(|_| "signing_session")??;
-    // The outer future has finished: both anchored journal owners are dropped.
+            .run(sources)
+            .await
+        })
+        .await
+        .map_err(|_| "signing_session")??;
+    // The outer future has finished: source and authority owners are dropped.
     output.finish(summary)?;
     if success {
         Ok(())

@@ -1,6 +1,6 @@
 use std::{
     io::{self, Write},
-    sync::mpsc,
+    sync::{Arc, mpsc},
     time::Duration,
 };
 
@@ -13,6 +13,7 @@ use naome_runtime::{
     FixedValidatorRuntimePublicationV0 as Publication, FixedValidatorRuntimeV0 as Runtime,
 };
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 
 use super::Result;
 
@@ -21,11 +22,16 @@ struct Frame {
     acknowledged: Option<mpsc::SyncSender<()>>,
 }
 
-pub(super) struct Output(mpsc::SyncSender<Frame>);
+pub(super) struct Output {
+    sender: mpsc::SyncSender<Frame>,
+    failed: Arc<Notify>,
+}
 
 impl Output {
     pub fn start() -> Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<Frame>(32);
+        let failed = Arc::new(Notify::new());
+        let writer_failed = Arc::clone(&failed);
         // This thread owns only bounded report bytes. A stalled stdout reader
         // cannot block the signing executor or prevent journal-owner drop.
         std::thread::Builder::new()
@@ -38,6 +44,10 @@ impl Output {
                         .and_then(|()| stdout.flush())
                         .is_err()
                     {
+                        // Retain one wakeup even if failure precedes the next
+                        // owner poll. Idle stdin and acquisition must release
+                        // ownership without waiting for another runtime event.
+                        writer_failed.notify_one();
                         break;
                     }
                     if let Some(ack) = frame.acknowledged {
@@ -46,7 +56,11 @@ impl Output {
                 }
             })
             .map_err(|_| "output_thread")?;
-        Ok(Self(sender))
+        Ok(Self { sender, failed })
+    }
+
+    pub async fn failed(&self) {
+        self.failed.notified().await;
     }
 
     pub fn emit(&self, value: Value) -> Result<()> {
@@ -59,7 +73,7 @@ impl Output {
             return Err("output_limit");
         }
         bytes.push(b'\n');
-        self.0
+        self.sender
             .try_send(Frame {
                 bytes,
                 acknowledged,
