@@ -23,6 +23,7 @@ members = [
     "crates/naome-runtime",
     "crates/naome-storage",
     "crates/naome-validator",
+    "crates/naome-verifier",
 ]
 resolver = "3"
 
