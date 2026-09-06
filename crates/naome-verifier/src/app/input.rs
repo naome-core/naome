@@ -25,6 +25,14 @@ pub(super) enum Command {
         id: u64,
         height: u64,
     },
+    Sync {
+        id: u64,
+        peer_id: String,
+        count: u64,
+    },
+    CancelSync {
+        id: u64,
+    },
     Shutdown {
         id: u64,
     },
@@ -60,6 +68,8 @@ impl Command {
             Self::Import { id, .. }
             | Self::Status { id }
             | Self::Record { id, .. }
+            | Self::Sync { id, .. }
+            | Self::CancelSync { id }
             | Self::Shutdown { id } => *id,
         }
     }

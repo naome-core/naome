@@ -63,6 +63,11 @@
 //! artifact, block, and head pulls from one borrowed journal while returning
 //! announcements and every other event unchanged; it starts no background
 //! task.
+//! Exact-height [`FinalityProofTicket`] exchanges carry bounded opaque complete
+//! finality envelopes and artifact payloads on those same static sessions.
+//! Explicit serving borrows a healthy anchored finality journal and copies its
+//! first retained evidence. Only a separate caller's complete proof verification
+//! and sealed commit can advance its history; transport owns no signer or journal.
 //! This crate starts no NAOME-owned background task and owns no
 //! [`naome_storage::ArtifactChainJournal`].
 
@@ -81,8 +86,8 @@ use peer_records::{
 };
 use serving::journal_service;
 use transport::{
-    block_transport, codec, consensus_push, head_announcement, head_transport, rate_limit,
-    recovery_bundle_push, request_correlation,
+    block_transport, codec, consensus_push, finality_exchange, head_announcement, head_transport,
+    rate_limit, recovery_bundle_push, request_correlation,
 };
 
 pub use address_store::{
@@ -134,6 +139,13 @@ pub use consensus_push::{
     ConsensusPushField, ConsensusPushLengthError, ConsensusPushMessage, ConsensusPushSize,
     ConsensusPushStartError, ConsensusPushStartFailure, ConsensusPushTicket, InboundConsensusPush,
     OutboundConsensusPushEvent, OutboundConsensusPushFailure, ReceivedConsensusPush,
+};
+pub use finality_exchange::{
+    AuthenticatedFinalityProofResponse, FINALITY_PROOF_MAX_ENVELOPE_BYTES,
+    FINALITY_PROOF_MAX_PAYLOAD_BYTES, FINALITY_PROOF_MAX_RETAINED_BYTES,
+    FINALITY_PROOF_MIN_ENVELOPE_BYTES, FINALITY_PROOF_REQUEST_BYTES, FinalityProofEventMismatch,
+    FinalityProofRequest, FinalityProofRespondError, FinalityProofResponse, FinalityProofTicket,
+    InboundFinalityProofRequest, OutboundFinalityProofEvent, OutboundFinalityProofFailure,
 };
 pub use head_announcement::{
     ArtifactChainHeadAnnouncementEventMismatch, AuthenticatedArtifactChainHeadAnnouncementReceipt,

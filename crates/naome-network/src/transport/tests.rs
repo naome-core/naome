@@ -495,6 +495,12 @@ async fn await_session(
 
 pub(crate) async fn connected_pair()
 -> (StaticArtifactNetwork, StaticArtifactNetwork, PeerId, PeerId) {
+    connected_pair_with_server(|_| {}).await
+}
+
+pub(crate) async fn connected_pair_with_server(
+    configure: impl FnOnce(&mut StaticArtifactNetwork),
+) -> (StaticArtifactNetwork, StaticArtifactNetwork, PeerId, PeerId) {
     let (owner_identity, passive_identity) = ordered_identities();
     let owner_peer_id = owner_identity.public().to_peer_id();
     let passive_peer_id = passive_identity.public().to_peer_id();
@@ -503,6 +509,7 @@ pub(crate) async fn connected_pair()
         [StaticPeer::new(owner_peer_id, address(1))],
     )
     .unwrap();
+    configure(&mut passive);
     let passive_address = listening_address(&mut passive).await;
     let mut owner = StaticArtifactNetwork::new(
         owner_identity,

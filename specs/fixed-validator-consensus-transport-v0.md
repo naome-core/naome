@@ -123,7 +123,8 @@ drop, or timeout. The two workers are shared capacity, not one reserved worker
 per direction. Existing per-peer outbound, retained inbound event, and byte
 budgets remain unchanged. No automatic retry or send arbitration is added.
 
-Per-exchange limits now sum to ten, while the existing total Yamux ceiling
+Including the [complete-finality-proof exchange](artifact-network-transport.md),
+per-exchange limits sum to twelve, while the existing total Yamux ceiling
 remains eight. Streams under negotiation or awaiting cleanup also consume
 capacity. Limits provide no reserved consensus slot, fairness, queueing, or
 progress guarantee. Exhaustion can fail a request or close the connection and

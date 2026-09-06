@@ -233,6 +233,18 @@ impl Process {
         self.write(format!("{value}\n").as_bytes());
     }
 
+    pub fn observe(&mut self) -> Option<Value> {
+        match self.receiver.try_recv() {
+            Ok(value) => {
+                self.observed.push(value.clone());
+                assert!(self.observed.len() < 4096, "bounded transcript");
+                Some(value)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(error) => panic!("process report channel ended: {error}; {:?}", self.observed),
+        }
+    }
+
     pub fn until(&mut self, predicate: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + BOUND;
         loop {

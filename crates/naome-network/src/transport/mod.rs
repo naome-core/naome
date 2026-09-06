@@ -6,6 +6,7 @@ pub(crate) mod batch;
 pub(crate) mod block_transport;
 pub(crate) mod codec;
 pub(crate) mod consensus_push;
+pub(crate) mod finality_exchange;
 pub(crate) mod head_announcement;
 pub(crate) mod head_transport;
 mod inbound_retention;
@@ -32,6 +33,7 @@ use codec::{
     RECOVERY_BUNDLE_PUSH_PROTOCOL, RecoveryBundlePushCodec,
 };
 use consensus_push::codec::{CONSENSUS_PUSH_PROTOCOL, ConsensusPushCodec};
+use finality_exchange::codec::{FINALITY_PROOF_PROTOCOL, FinalityProofCodec};
 use head_announcement::PendingArtifactChainHeadAnnouncement;
 use head_transport::PendingArtifactChainHeadRequest;
 use libp2p::futures::StreamExt;
@@ -64,7 +66,7 @@ pub const MAX_STATIC_PEERS: usize = 8;
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
 /// Maximum pending or caller-retained outbound requests across all application exchanges.
 pub const MAX_PENDING_REQUESTS: usize = 8;
-/// Maximum concurrent streams for each artifact, block, or head-pull exchange.
+/// Maximum concurrent streams for each artifact, block, head-pull, or finality-proof exchange.
 pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
 /// Maximum concurrent head-announcement streams on one connection.
 pub const MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION: usize = 1;
@@ -73,7 +75,7 @@ pub const MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION: usize = 1;
 /// Maximum concurrent consensus push streams on one connection, shared by both directions.
 pub const MAX_CONSENSUS_PUSH_STREAMS_PER_CONNECTION: usize = 2;
 /// Aggregate application-stream ceiling imposed by Yamux.
-/// Per-exchange limits sum to ten; they contend for eight total substreams,
+/// Per-exchange limits sum to twelve; they contend for eight total substreams,
 /// with negotiation and transient streams also consuming capacity. Exhaustion
 /// may fail exchanges or the connection.
 pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_YAMUX_STREAMS_PER_CONNECTION;
@@ -140,6 +142,7 @@ struct Behaviour {
     head_announcement: request_response::Behaviour<ArtifactChainHeadAnnouncementCodec>,
     recovery_bundle_push: request_response::Behaviour<RecoveryBundlePushCodec>,
     consensus_push: request_response::Behaviour<ConsensusPushCodec>,
+    finality_exchange: request_response::Behaviour<FinalityProofCodec>,
 }
 
 struct PendingArtifactRequest {
@@ -157,6 +160,7 @@ enum ExchangeRequestId {
     Announcement(request_response::OutboundRequestId),
     RecoveryBundlePush(request_response::OutboundRequestId),
     ConsensusPush(request_response::OutboundRequestId),
+    Finality(request_response::OutboundRequestId),
 }
 
 enum PendingRequest {
@@ -166,6 +170,7 @@ enum PendingRequest {
     Announcement(PendingArtifactChainHeadAnnouncement),
     RecoveryBundlePush(recovery_bundle_push::PendingRecoveryBundlePush),
     ConsensusPush(consensus_push::PendingConsensusPush),
+    Finality(finality_exchange::PendingFinalityProof),
 }
 
 impl PendingRequest {
@@ -177,6 +182,7 @@ impl PendingRequest {
             Self::Announcement(pending) => pending.peer_index,
             Self::RecoveryBundlePush(pending) => pending.peer_index,
             Self::ConsensusPush(pending) => pending.peer_index,
+            Self::Finality(pending) => pending.peer_index,
         }
     }
 }
@@ -208,6 +214,7 @@ impl ArtifactRequestControl {
 /// Authenticated artifact transport over a fixed set of authorized peers.
 pub struct StaticArtifactNetwork {
     swarm: Swarm<Behaviour>,
+    finality_response_budget: Arc<inbound_retention::InboundRetentionBudget>,
     pending: HashMap<ExchangeRequestId, PendingRequest>,
     pending_budget: Arc<PendingBudget>,
     inbound_application_request_budget: rate_limit::TokenBucket,
@@ -330,6 +337,26 @@ impl StaticArtifactNetwork {
                 .with_request_timeout(REQUEST_TIMEOUT)
                 .with_max_concurrent_streams(MAX_CONSENSUS_PUSH_STREAMS_PER_CONNECTION),
         );
+        let finality_response_budget = Arc::new(inbound_retention::InboundRetentionBudget::new(
+            MAX_STATIC_PEERS,
+            FINALITY_PROOF_MAX_RETAINED_BYTES,
+        ));
+        let finality_exchange = request_response::Behaviour::with_codec(
+            FinalityProofCodec::new(
+                Arc::new(inbound_retention::InboundRetentionBudget::new(
+                    MAX_STATIC_PEERS,
+                    MAX_STATIC_PEERS * FINALITY_PROOF_REQUEST_BYTES,
+                )),
+                Arc::clone(&finality_response_budget),
+            ),
+            [(
+                FINALITY_PROOF_PROTOCOL,
+                request_response::ProtocolSupport::Full,
+            )],
+            request_response::Config::default()
+                .with_request_timeout(REQUEST_TIMEOUT)
+                .with_max_concurrent_streams(MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION),
+        );
         let behaviour = Behaviour {
             limits,
             allowed,
@@ -340,6 +367,7 @@ impl StaticArtifactNetwork {
             head_announcement,
             recovery_bundle_push,
             consensus_push,
+            finality_exchange,
         };
         let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
@@ -363,6 +391,7 @@ impl StaticArtifactNetwork {
 
         Ok(Self {
             swarm,
+            finality_response_budget,
             pending: HashMap::new(),
             pending_budget: Arc::new(PendingBudget::default()),
             inbound_application_request_budget: rate_limit::TokenBucket::new(
@@ -470,6 +499,7 @@ impl StaticArtifactNetwork {
                     ExchangeRequestId::ConsensusPush(_),
                     PendingRequest::ConsensusPush(_)
                 )
+                | (ExchangeRequestId::Finality(_), PendingRequest::Finality(_))
         ));
         let replaced = self.pending.insert(key, pending);
         debug_assert!(replaced.is_none());
@@ -547,6 +577,11 @@ impl StaticArtifactNetwork {
                         return event;
                     }
                 }
+                SwarmEvent::Behaviour(BehaviourEvent::FinalityExchange(event)) => {
+                    if let Some(event) = self.handle_finality_exchange_event(event) {
+                        return event;
+                    }
+                }
                 SwarmEvent::Behaviour(BehaviourEvent::Sessions(event)) => {
                     return NetworkEvent::PeerSession(event);
                 }
@@ -584,7 +619,8 @@ impl StaticArtifactNetwork {
                 | PendingRequest::Head(_)
                 | PendingRequest::Announcement(_)
                 | PendingRequest::RecoveryBundlePush(_)
-                | PendingRequest::ConsensusPush(_) => None,
+                | PendingRequest::ConsensusPush(_)
+                | PendingRequest::Finality(_) => None,
             })
             .min()
     }
@@ -986,6 +1022,13 @@ pub enum NetworkEvent {
     OutboundRecoveryBundlePush(OutboundRecoveryBundlePushEvent),
     InboundConsensusPush(InboundConsensusPush),
     OutboundConsensusPush(OutboundConsensusPushEvent),
+    InboundFinalityProof(InboundFinalityProofRequest),
+    OutboundFinalityProof(OutboundFinalityProofEvent),
+    InboundFinalityProofFailure {
+        peer_id: PeerId,
+        request_id: request_response::InboundRequestId,
+        error: request_response::InboundFailure,
+    },
     ArtifactCancellationDrained {
         peer_id: PeerId,
         request: ArtifactRequest,

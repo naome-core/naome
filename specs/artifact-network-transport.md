@@ -11,6 +11,8 @@ survey, broadcast, ancestry, import, and catch-up workflows. The
 [Fixed-Validator Consensus Transport V0](fixed-validator-consensus-transport-v0.md)
 contract owns explicit one-hop opaque proposal and vote delivery on the same
 static transport.
+The [Fixed-Validator Archive V0](fixed-validator-archive-v0.md) profile composes
+the complete-finality-proof exchange defined here with full local verification.
 
 `StaticArtifactNetwork` connects at most eight explicitly configured peers over
 TCP, authenticates libp2p identities with Noise, and multiplexes application
@@ -47,6 +49,7 @@ The exact application protocol identifiers are:
 /naome/artifact-chain-head-announcement
 /naome/recovery-bundle-push-v0
 /naome/fixed-validator-consensus-push-v0
+/naome/fixed-validator-finality-proof-v0
 ```
 
 Protocol-local request identifiers are namespaced and cannot alias across these
@@ -129,6 +132,7 @@ response readers require the exact accepted body followed by end-of-stream.
 | Head announcement | `chain[32]`, then `head[32]` | receipt `01` | 1 |
 | Recovery-bundle push | `length u32be`, then `bundle[length]` | receipt `01` | 1 |
 | Consensus push | `00`, two `u32be` lengths, control and payload; or `01`, signed vote[214] | receipt `01` | 1 |
+| Complete finality proof | context[68], positive height `u64be` | `00`; or `01`, two `u32be` lengths, envelope and artifact | 1 or 706..=4,219,490 |
 
 Artifact response length is `0..=4,194,305`. Zero is unavailable. The prefix is
 framing and is not part of canonical artifact bytes.
@@ -180,11 +184,17 @@ One network instance enforces:
 | Transport-retained inbound consensus events | 8 |
 | Transport-retained inbound consensus events per authenticated peer | 1 |
 | Aggregate transport-retained inbound consensus body bytes | 33,755,856 |
+| Retained inbound complete-proof requests | 8 |
+| Retained inbound complete-proof requests per authenticated peer | 1 |
+| Aggregate retained complete-proof request bytes | 608 |
+| Incoming and outgoing complete-proof responses in shared custody | 8 |
+| Aggregate complete-proof response body bytes in shared custody | 33,755,848 |
 | Pending outbound application requests per peer | 1 |
 | Streams per artifact, block, or head exchange per connection | 2 |
 | Head-announcement streams per connection | 1 |
 | Recovery-bundle push streams per connection | 1 |
 | Consensus push streams per connection, both directions combined | 2 |
+| Complete-finality-proof streams per connection, both directions combined | 2 |
 | Aggregate application streams per connection | 8 |
 | Negotiating inbound streams per connection | 2 |
 | Yamux substreams per connection | 8 |
@@ -206,7 +216,7 @@ One network instance enforces:
 | Pre-Noise inbound authentication burst/refill | 8 / 1 per second |
 | Store- or journal-response attempt burst/refill | 8 / 1 per second |
 
-Per-exchange stream ceilings sum to ten and contend for the existing eight
+Per-exchange stream ceilings sum to twelve and contend for the existing eight
 Yamux substreams, including negotiation and cleanup occupancy. No consensus
 capacity is reserved. Exhaustion can fail an exchange or the connection; it
 does not promise queued backpressure or fairness.
@@ -215,6 +225,57 @@ Managed redial delays are `1, 2, 4, 8, 16, 32, 60` seconds and then remain at
 60. A connection stable for 60 seconds resets backoff. Idle expiry is
 effectively disabled; static peer and connection caps bound retained sessions.
 Every timer requires continued caller polling.
+
+## Complete finality proof V0
+
+`naome-network` owns this additional bounded exchange on the same managed
+sessions. It does not change the four `naome-protocol` message contracts.
+The exact request is `ArtifactChainId[32] || ConsensusGenesisId[32] ||
+ConsensusProtocolVersion u32be || ConsensusHeight u64be`, totaling 76 bytes.
+Height must be positive: virtual genesis has no complete finality proof.
+
+The response is exactly `00` followed by EOF for `Unavailable`, or
+`01 || envelope_length u32be || payload_length u32be || envelope || payload`
+followed by EOF. The envelope is 696..=25,176 bytes and the canonical artifact
+payload is 1..=4,194,305 bytes, using the existing consensus/proof limits.
+The maximum combined body is 4,219,481 bytes. Both declared lengths must pass
+before either body allocation or read. Unknown tags, zero request height,
+impossible lengths, truncation, or trailing bytes are transport failures.
+
+The envelope and payload remain opaque even after successful transport.
+An exact ticket binds network instance, authenticated immediate peer, request
+generation, full context and height. A matched response establishes neither
+that its embedded address matches nor that the complete proof is valid. Its
+consumer must check the exact address and perform full proof verification.
+There is no head discovery, certificate assembly, request retry, source
+selection, peer provenance, or consensus authority at this boundary.
+
+Before decoding an inbound request, reserve one request slot and 76 bytes.
+After decoding, bind that reservation to the authenticated peer. A second
+same-peer request is omitted while the first remains held, including after
+timeout and reconnect. Consumption or drop releases that binding.
+
+One separate response budget jointly covers decoded incoming responses and
+copies queued for outgoing responses: eight slots and 33,755,848 combined
+body bytes. Even `Unavailable` holds one zero-byte slot. Both incoming lengths
+and combined capacity are admitted before fallible exact-capacity body
+allocation; serving reserves before either copy. The reservation remains with
+partial reads, retained responses and asynchronous writes until completion,
+failure, cancellation or drop. `into_response` transfers the original vectors
+to caller ownership and releases transport custody without copying. This is
+not a per-peer response reservation or a bound on caller, verifier or retained
+journal memory.
+
+The explicit anchored-journal responder checks an open channel, consumes the
+shared inbound response-rate token, checks journal health, and then compares
+the exact context and reads the exact retained positive height. A foreign
+context or absent record becomes `Unavailable` only from a healthy owner.
+A halted or poisoned owner remains a journal error, including for a foreign
+context, and is never translated into network content. A found result copies
+the first retained canonical envelope variant and its exact canonical artifact
+bytes after response-custody admission. Serving makes no authority-file write,
+re-verification, state selection, or provenance claim. Queueing a response
+establishes no remote receipt or retention.
 
 ## Recovery-bundle push V0
 
@@ -272,7 +333,7 @@ than infer it from transport acknowledgement or unselected retention.
 
 The eight shared application permits jointly bound outbound pending requests,
 quarantined artifact candidates, decoded blocks, heads, recovery-bundle and
-consensus pushes, and their terminal events. The separate inbound recovery-bundle envelope bounds
+consensus pushes, complete-proof requests, and their terminal events. The separate inbound recovery-bundle envelope bounds
 only buffers retained by the transport; bytes returned to application ownership
 are outside that envelope. Each artifact response buffer is capped at 4,194,305
 body bytes, so eight caller-retained maximum responses can hold 33,554,440 body
@@ -288,8 +349,8 @@ protocol-wide branch work limit.
 
 Pending connection limits precede the global pre-Noise token bucket. The bucket
 starts with eight and refills one per monotonic second to eight. The inbound
-response bucket is shared across artifact, block, and head serving from a
-journal, candidate block store, or canonical payload archive. It is not
+response bucket is shared across artifact, block, head, and complete-proof
+serving from a journal, candidate block store, or canonical payload archive. It is not
 per-source fairness, DDoS protection, or Sybil resistance.
 
 ## Outbound correlation and tickets
@@ -299,7 +360,8 @@ peer, connected managed session, then one shared permit. It then queues the
 immutable request and records protocol, peer, generation, request, and network
 instance.
 
-Opaque non-cloneable tickets for blocks, heads, and announcements must match all
+Opaque non-cloneable tickets for blocks, heads, announcements, and complete
+finality proofs must match all
 of those facts before transport or response content is interpreted. Peer and
 ticket mismatch precede transport and object validation. Mismatch preserves the
 values for correct routing. A successful event retains its permit until the

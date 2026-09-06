@@ -19,7 +19,8 @@ neither direction has a reservation. Per-peer outbound application requests
 remain limited to one, retained inbound consensus events remain limited to one
 per peer and eight globally, aggregate retained consensus body bytes remain
 33,755,856, and total Yamux substreams remain eight. The individual exchange
-limits sum to ten and cannot all be saturated concurrently. This change adds
+limits, including the separately specified complete-finality-proof exchange,
+sum to twelve and cannot all be saturated concurrently. This change adds
 no retry, arbitration, fairness, reserved control capacity, or general progress
 guarantee. The framing, signatures, receipts, ingress allocation checks, strict
 quorum denominator, and durable formats are unchanged.

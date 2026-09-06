@@ -1,4 +1,4 @@
-# Keyless Fixed-Validator Verifier Process V0
+# Fixed-Validator Verifier Process V0
 
 ## Authority and scope
 
@@ -6,9 +6,12 @@
 `FixedValidatorAnchoredFinalityJournalV0` and accepts complete caller-supplied
 fixed-validator artifact-only V0 finality envelopes and artifact payloads.
 It verifies every imported proof independently, retains successful finality,
-and strictly reconstructs that history on restart. It loads no private key,
-creates no vote journal, and constructs no signer, validator driver, consensus
-runtime, or network transport.
+and strictly reconstructs that history on restart. Its offline configuration
+loads no private key or network transport. Every configuration creates no vote
+journal and constructs no consensus signer, validator driver, or consensus
+runtime. The optional `SEC-003-002`
+[archive profile](fixed-validator-archive-v0.md) adds a separate Noise identity,
+explicit bounded complete-proof synchronization, and healthy-history serving.
 
 The caller selects the exact chain definition, consensus context, fixed public
 keys and agreement weights, finality directories, and local replay-round
@@ -19,7 +22,8 @@ existing [bounded envelope verifier](fixed-validator-artifact-consensus-envelope
 [independent anchor](fixed-validator-external-anchor-v0.md) contracts; it adds
 no quorum, signature, consensus-value, journal, or anchor encoding.
 
-This is the approved offline complete-proof consumer profile. It grants no
+Without a `network` table this is the approved offline complete-proof consumer
+profile. That configuration grants no
 signing, automatic proof acquisition or assembly, peer trust, network
 participation, history serving, checkpoint selection, dynamic validator,
 economics, or automatic recovery authority. `SEC-003` remains `IN_PROGRESS`:
@@ -34,7 +38,7 @@ The program takes exactly one configuration-file argument:
 naome-verifier /absolute/path/verifier.toml
 ```
 
-The configuration is UTF-8 TOML with exactly these fields. Example identity
+The offline configuration is UTF-8 TOML with exactly these fields. Example identity
 strings below are placeholders to be replaced with the caller's public values;
 the executable chooses no deployment, validator set, or weight defaults.
 
@@ -61,7 +65,9 @@ fallback. `protocol_version` is a TOML unsigned value fitting `u32`.
 without signs, whitespace, or leading zeroes except the single string `0`.
 Weights must fit `u128`; the positive replay-round ceiling must fit `u64`.
 All 32-byte public identities use exactly 64 lowercase hexadecimal characters.
-Unknown fields, including private-key or vote-journal fields, are rejected.
+Unknown fields, including consensus-private-key or vote-journal fields, are
+rejected. The archive profile specifies the sole optional `network` table;
+omitting it preserves offline behavior.
 
 Before opening any authority file, configuration reconstructs the exact
 virtual-genesis branch and preflights round zero. This rejects an empty set as
@@ -209,7 +215,7 @@ policy. Total replay time and retained-history memory still grow with history.
 
 ## Verification evidence and limits
 
-The actual Unix process tests in `crates/naome-verifier/tests/process.rs` cover
+The offline Unix process tests in `crates/naome-verifier/tests/process.rs` cover
 keyless two-height imports, first-evidence retention under valid certificate
 and round variants, exact strict reopen without source files, and a process
 kill after acknowledged durable finality. Test keys remain outside the target

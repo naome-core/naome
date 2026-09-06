@@ -1896,6 +1896,7 @@ dependencies = [
  "naome-consensus",
  "naome-foundation",
  "naome-ledger",
+ "naome-network",
  "naome-proof",
  "naome-storage",
  "rustix",
@@ -1903,6 +1904,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+ "zeroize",
 ]
 
 [[package]]
