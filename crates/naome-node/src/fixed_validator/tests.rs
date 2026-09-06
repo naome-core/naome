@@ -974,4 +974,5 @@ mod proposal_authoring;
 mod proposal_buffer;
 mod proposal_deferral;
 mod round_progression;
+mod safety_model;
 mod voting;
