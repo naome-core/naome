@@ -79,6 +79,23 @@ pub(super) enum Command {
     AuthorStoredRetained {
         id: u64,
     },
+    ExportCandidateBundle {
+        id: u64,
+        target: String,
+        bundle_file: PathBuf,
+        max_blocks: u64,
+        max_payload_bytes: u64,
+        max_bundle_bytes: u64,
+    },
+    StageCandidateBundle {
+        id: u64,
+        target: String,
+        anchor: String,
+        bundle_file: PathBuf,
+        max_blocks: u64,
+        max_payload_bytes: u64,
+        max_bundle_bytes: u64,
+    },
     FinalizeCandidateVotes {
         id: u64,
         target: String,
@@ -280,6 +297,8 @@ impl Command {
                     | Self::AuthorStoredRetained { .. }
                     | Self::FinalizeCandidateVotes { .. }
                     | Self::HaltCandidateConflictVotes { .. }
+                    | Self::ExportCandidateBundle { .. }
+                    | Self::StageCandidateBundle { .. }
             )
     }
 
@@ -307,6 +326,8 @@ impl Command {
             | Self::AcquirePayloadsFallback { id, .. }
             | Self::AuthorCandidate { id, .. }
             | Self::AuthorStoredRetained { id }
+            | Self::ExportCandidateBundle { id, .. }
+            | Self::StageCandidateBundle { id, .. }
             | Self::FinalizeCandidateVotes { id, .. }
             | Self::HaltCandidateConflictVotes { id, .. }
             | Self::SubmitVote { id, .. }

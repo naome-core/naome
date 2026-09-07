@@ -18,7 +18,7 @@ use naome_runtime::{
 use serde_json::{Value, json};
 
 use super::{
-    Result, acquisition, config, files,
+    Result, acquisition, bundles, config, files,
     input::{Command, InboxClass, ProposalVoteFiles, VoteRole, VoteTarget},
     report,
     sources::Sources,
@@ -32,6 +32,56 @@ pub(super) fn execute(
 ) -> Result<(Value, bool)> {
     let candidate_conflict = matches!(command, Command::HaltCandidateConflictVotes { .. });
     let input = match command {
+        Command::ExportCandidateBundle {
+            target,
+            bundle_file,
+            max_blocks,
+            max_payload_bytes,
+            max_bundle_bytes,
+            ..
+        } => {
+            let sources = sources.ok_or("sources_disabled")?;
+            let driver = runtime.driver().ok_or("driver_unavailable")?;
+            let target = acquisition::block(&target)?;
+            let limits = bundles::limits(max_blocks, max_payload_bytes, max_bundle_bytes)?;
+            let mut outcome = bundles::export(
+                &base.join(bundle_file),
+                driver.selected_artifact_history(),
+                sources,
+                target,
+                limits,
+            );
+            outcome["sources"] = sources.status();
+            outcome["state"] = report::status(runtime);
+            return Ok((outcome, false));
+        }
+        Command::StageCandidateBundle {
+            target,
+            anchor,
+            bundle_file,
+            max_blocks,
+            max_payload_bytes,
+            max_bundle_bytes,
+            ..
+        } => {
+            let sources = sources.ok_or("sources_disabled")?;
+            let driver = runtime.driver().ok_or("driver_unavailable")?;
+            let target = acquisition::block(&target)?;
+            let anchor = acquisition::block(&anchor)?;
+            let limits = bundles::limits(max_blocks, max_payload_bytes, max_bundle_bytes)?;
+            let bytes = files::bytes_u64(&base.join(bundle_file), max_bundle_bytes)?;
+            let mut outcome = bundles::stage(
+                bytes,
+                driver.selected_artifact_history(),
+                sources,
+                anchor,
+                target,
+                limits,
+            );
+            outcome["sources"] = sources.status();
+            outcome["state"] = report::status(runtime);
+            return Ok((outcome, false));
+        }
         Command::FinalizeCandidateVotes {
             target,
             evidence_round,

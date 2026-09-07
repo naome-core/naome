@@ -4,6 +4,7 @@ mod integrity;
 mod lifecycle;
 mod provider;
 mod retained;
+mod source_bundles;
 mod source_proofs;
 
 use std::{fs, path::PathBuf};

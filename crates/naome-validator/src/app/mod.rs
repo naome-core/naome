@@ -9,6 +9,7 @@ use tokio::{
 };
 
 mod acquisition;
+mod bundles;
 mod commands;
 mod config;
 mod files;
