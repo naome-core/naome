@@ -3,6 +3,9 @@
 #[path = "explicit.rs"]
 mod explicit;
 
+#[path = "retry.rs"]
+mod retry;
+
 #[path = "artifact_exchange.rs"]
 pub(crate) mod artifact_exchange;
 
@@ -25,7 +28,7 @@ use naome_node::{
 use naome_storage::FixedValidatorVoteSafetyJournalStateIdV0;
 use naome_storage::{ArtifactBlockCandidateStore, CanonicalArtifactPayloadStore};
 use std::{collections::VecDeque, path::Path};
-use tokio::time::{Instant, sleep_until};
+use tokio::time::Instant;
 
 use crate::routing::{MessageRef, PreparedAdmission};
 use crate::{
@@ -56,7 +59,8 @@ enum PendingInput {
 /// future preserves all stored custody; it does not cancel a transport request.
 /// Only the caller may dispose of returned events or tear down this owner. No
 /// inbox is silently drained. The durable profile resends unacknowledged bytes
-/// on strict restart and peer reconnection; publication waits prevent a second
+/// on strict restart, peer reconnection, and an explicitly enabled retry interval;
+/// publication waits prevent a second
 /// signed publication from being released by this owner.
 #[must_use]
 pub struct FixedValidatorRuntimeV0<'node> {
@@ -73,6 +77,8 @@ pub struct FixedValidatorRuntimeV0<'node> {
     rejected_due_ticket: Option<FixedValidatorNodePhaseTimeoutV0>,
     publication_journal: Option<PublicationJournal>,
     recovery: VecDeque<(FixedValidatorVoteSafetyJournalStateIdV0, bool)>,
+    retry: Option<retry::PublicationRetry>,
+    reconnected_peers: u8,
 }
 
 impl<'node> FixedValidatorRuntimeV0<'node> {
@@ -108,6 +114,8 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             rejected_due_ticket: None,
             publication_journal: None,
             recovery: VecDeque::new(),
+            retry: None,
+            reconnected_peers: 0,
         })
     }
 
@@ -745,7 +753,7 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         if let Err(RoutingError::Reservation(error)) = prepared {
             return Event::ReservationFailed(error);
         }
-        publication.locally_admitted = true;
+        publication.local_admission = crate::publication::LocalAdmission::Attempted;
         let mut report = AdmissionReport {
             source: InputSource::LocalPublication,
             receipt_queued: None,
@@ -767,43 +775,11 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         if let NetworkEvent::PeerSession(naome_network::PeerSessionEvent::Established { peer_id }) =
             &event
             && let Some(peer) = self.peers.iter().position(|peer| peer == peer_id)
-            && let Some(journal) = &self.publication_journal
+            && self.publication_journal.is_some()
         {
-            let queued = (|| -> Result<(), PublicationError> {
-                let history = self.driver.as_ref().unwrap().publication_history()?;
-                let mut entries = Vec::new();
-                for entry in history.entries() {
-                    if !journal.received(entry.state_id(), peer)
-                        && !self
-                            .recovery
-                            .iter()
-                            .any(|queued| queued.0 == entry.state_id())
-                    {
-                        entries.try_reserve(1)?;
-                        let phase = match entry.phase() {
-                            FixedValidatorLockPhaseV0::Proposal => 0,
-                            FixedValidatorLockPhaseV0::Prevote => 1,
-                            FixedValidatorLockPhaseV0::Precommit => 2,
-                        };
-                        entries.push((
-                            (
-                                entry.position().height().value(),
-                                entry.position().round().value(),
-                                phase,
-                            ),
-                            entry.state_id(),
-                        ));
-                    }
-                }
-                entries.sort_unstable_by_key(|entry| entry.0);
-                self.recovery.try_reserve(entries.len())?;
-                self.recovery
-                    .extend(entries.into_iter().map(|entry| (entry.1, false)));
-                Ok(())
-            })();
-            if let Err(error) = queued {
-                return self.publication_failure(error);
-            }
+            // Coalesce reconnections until the active publication releases its
+            // tickets. Its failed peers must remain eligible for that retry.
+            self.reconnected_peers |= 1 << peer;
         }
         let inbound = match event {
             NetworkEvent::InboundConsensusPush(inbound) => inbound,
@@ -878,32 +854,11 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         if self.pending_arm.is_some() {
             return self.arm();
         }
-        if self.publication.is_none()
-            && let Some((state_id, admit_locally)) = self.recovery.front().copied()
-        {
-            let recovered = (|| {
-                let history = self.driver.as_ref().unwrap().publication_history()?;
-                let entry = history
-                    .entries()
-                    .find(|entry| entry.state_id() == state_id)
-                    .ok_or(PublicationError::Invalid)?;
-                let mut publication = Publication::from_history(
-                    entry,
-                    &self.peers,
-                    self.publication_journal.as_ref().unwrap(),
-                )?;
-                publication.locally_admitted = !admit_locally;
-                Ok::<_, PublicationError>(publication)
-            })();
-            match recovered {
-                Ok(publication) => {
-                    self.recovery.pop_front();
-                    let size = publication.message().size();
-                    self.publication = Some(publication);
-                    return Event::PublicationRecovered { state_id, size };
-                }
-                Err(error) => return self.publication_failure(error),
-            }
+        if let Err(error) = self.finish_retry_pass() {
+            return self.publication_failure(error);
+        }
+        if let Some(event) = self.recover_next_publication() {
+            return event;
         }
         if self.publication.is_some() {
             if self.driver.as_ref().unwrap().has_pending_command() {
@@ -911,7 +866,9 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
                     .step_driver()
                     .expect("a pending command transfers without an idle step");
             }
-            if !self.publication.as_ref().unwrap().locally_admitted {
+            if self.publication.as_ref().unwrap().local_admission
+                == crate::publication::LocalAdmission::Pending
+            {
                 return self.admit_local_publication();
             }
             if self.publication.as_ref().unwrap().is_complete() {
@@ -941,6 +898,20 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             self.pending_arm = Some(ticket);
             return self.arm();
         }
+        // A new reconnect pass follows ordinary driver work and exact due
+        // observation; it never extends the currently draining pass.
+        if self
+            .observable_timer()
+            .is_some_and(|timer| Instant::now() >= timer.deadline())
+        {
+            return self.observe_due();
+        }
+        if let Err(error) = self.queue_reconnected_debt() {
+            return self.publication_failure(error);
+        }
+        if let Some(event) = self.recover_next_publication() {
+            return event;
+        }
         match self.poll_input_or_due().await {
             Ok(event) => self.handle_input(event),
             Err(event) => event,
@@ -961,14 +932,15 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         }
         let event = if let Some(event) = self.pending_input.take() {
             event
-        } else if let Some(timer) = self.observable_timer() {
+        } else {
+            let consensus_deadline = self.observable_timer().map(|timer| timer.deadline());
+            let retry_deadline = self.retry_deadline();
             tokio::select! {
                 biased;
-                _ = sleep_until(timer.deadline()) => return Err(self.observe_due()),
+                _ = retry::wait_until(consensus_deadline) => return Err(self.observe_due()),
+                _ = retry::wait_until(retry_deadline) => return self.retry_or_input().await,
                 event = self.network.next_event() => PendingInput::Network(event),
             }
-        } else {
-            PendingInput::Network(self.network.next_event().await)
         };
         // The clock may have crossed its deadline during network polling.
         if self

@@ -6,6 +6,31 @@ use naome_consensus::{ConsensusRound, FixedValidatorLockPhaseV0};
 use naome_node::FixedValidatorNodePhaseTimeoutV0;
 use tokio::time::Instant;
 
+/// Explicit positive local delivery interval, unrelated to consensus validity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FixedValidatorPublicationRetryIntervalV0(Duration);
+
+impl FixedValidatorPublicationRetryIntervalV0 {
+    pub fn new(duration: Duration) -> Result<Self, FixedValidatorRuntimeTimingErrorV0> {
+        if duration.is_zero() {
+            return Err(FixedValidatorRuntimeTimingErrorV0::ZeroRetryInterval);
+        }
+        let interval = Self(duration);
+        interval.deadline()?;
+        Ok(interval)
+    }
+
+    pub const fn duration(self) -> Duration {
+        self.0
+    }
+
+    pub(crate) fn deadline(self) -> Result<Instant, FixedValidatorRuntimeTimingErrorV0> {
+        Instant::now()
+            .checked_add(self.0)
+            .ok_or(FixedValidatorRuntimeTimingErrorV0::DeadlineOverflow)
+    }
+}
+
 /// One positive phase base and positive per-round increment, with no defaults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FixedValidatorPhaseDurationV0 {
@@ -117,6 +142,7 @@ impl FixedValidatorRuntimeTimerV0 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FixedValidatorRuntimeTimingErrorV0 {
+    ZeroRetryInterval,
     ZeroBase,
     ZeroRoundIncrement,
     DurationOverflow { round: ConsensusRound },
@@ -134,6 +160,28 @@ impl Error for FixedValidatorRuntimeTimingErrorV0 {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_retry_interval_rejects_zero_and_deadline_overflow_without_narrowing() {
+        assert_eq!(
+            FixedValidatorPublicationRetryIntervalV0::new(Duration::ZERO),
+            Err(FixedValidatorRuntimeTimingErrorV0::ZeroRetryInterval)
+        );
+        assert_eq!(
+            FixedValidatorPublicationRetryIntervalV0::new(Duration::MAX),
+            Err(FixedValidatorRuntimeTimingErrorV0::DeadlineOverflow)
+        );
+        for millis in [1, u64::from(u32::MAX) + 1, u64::MAX] {
+            let duration = Duration::from_millis(millis);
+            match FixedValidatorPublicationRetryIntervalV0::new(duration) {
+                Ok(interval) => assert_eq!(interval.duration(), duration),
+                Err(error) => {
+                    assert_eq!(error, FixedValidatorRuntimeTimingErrorV0::DeadlineOverflow);
+                    assert!(Instant::now().checked_add(duration).is_none());
+                }
+            }
+        }
+    }
 
     #[test]
     fn phase_duration_is_positive_exact_and_does_not_narrow_rounds() {

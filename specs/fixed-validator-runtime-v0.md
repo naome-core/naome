@@ -32,6 +32,11 @@ recovers exact anchored signed messages and separate durable peer receipts,
 retries outstanding debt on strict restart and peer reconnection, and reserves
 consensus capacity above background requests. References below to volatile-only
 custody and one-shot delivery describe the base constructor unless qualified.
+`PROD-020-059` optionally enables an explicit positive periodic retry interval
+over the same durable debt. Each finite pass reuses original bytes, skips local
+admission, preserves exact consensus-deadline priority and starts a fresh interval
+after draining. Its detailed scheduling and restart boundaries are specified in
+the publication lifecycle; this grants no signing or consensus authority.
 
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,

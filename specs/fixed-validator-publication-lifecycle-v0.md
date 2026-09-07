@@ -9,6 +9,12 @@ progress. The library's `FixedValidatorRuntimeV0::new` retains its volatile
 profile; `with_publication_journal` enables this profile before runtime polling.
 The executable always enables it before reporting ready.
 
+`PROD-020-059` adds optional, explicitly configured periodic retries through
+`with_publication_retry_interval`. It requires the durable profile and must be
+enabled before runtime polling. The positive interval is caller-local scheduling
+configuration; it does not change consensus timeouts or validity. Omitting it
+retains restart/reconnection-triggered retries.
+
 The outbox source is the existing externally anchored signer journal. There is
 no second signing transaction or post-signing payload dependency: each new
 proposal completion contains every byte needed to reconstruct its original
@@ -115,10 +121,60 @@ is volatile and independently reverified; it is not restored as trusted evidence
 One publication still backpressures normal driver transitions until local
 admission and its bounded attempt pass complete. Refusal or asynchronous failure
 finishes that pass but leaves durable resend debt. A managed peer `Established`
-event queues outstanding debt for that recipient again, with queue deduplication,
-without repeating local admission. Strict restart also retries this debt. There
-is no periodic delivery retry timer, retry limit policy, automatic source job,
-new proposal selection, or signing-based reconstruction.
+event coalesces outstanding debt for that recipient. Once the current pass and
+active publication release their tickets, ordinary driver work and any exact due
+consensus timeout precede a new reconnect pass. Queued and active completion IDs
+are deduplicated; reconnection during an active failed attempt still leaves that
+completion eligible after its pass finishes. No reconnect retry repeats local
+admission. Strict restart also retries this debt.
+
+### Explicit periodic retry policy
+
+The optional interval has no default. The library accepts a positive `Duration`
+whose addition to the current monotonic Tokio `Instant` succeeds; the process
+accepts `[network].publication_retry_millis` as a canonical positive unsigned
+decimal `u64` string. Values are never narrowed to `u32`. Zero, malformed or
+unrepresentable values fail before process authority provisioning. Library
+installation rechecks deadline addition; later deadline overflow consumes the
+runtime signing owner through the existing fatal publication path.
+
+The first interval begins at policy installation. A due interval is observed
+only outside an active publication or recovery pass, after ordinary retained
+driver work, pending commands and timer arms. An exact due consensus timeout
+wins a tie, including when transport polling crosses its deadline. Buffered
+input remains owned. Each new periodic pass gives transport one nonblocking
+poll opportunity, so even a very short interval cannot bypass every ready
+network event; a continuous stream of network events cannot by itself prevent
+the next retry pass. Caller-supplied input retains its existing precedence.
+
+An observed expiration snapshots the currently unacknowledged completion IDs
+from sealed anchored history, ordered by height, round and role. This finite
+queue is bounded by the existing signer-history replay limits. It adds no
+unbounded timer-tick queue, new stored message copy or configurable history
+retention limit. Each message gets one existing ordered per-peer attempt pass;
+only unacknowledged targets are attempted and original signed bytes are reused.
+Periodic delivery skips local admission; diagnostics distinguish that skip from
+an attempted admission. In-flight ticket custody, aggregate-capacity waits,
+persist-before-attempt and receipt-before-success ordering remain unchanged.
+
+The periodic timer is suspended while its pass drains. Afterward the next
+deadline is the current monotonic time plus the full configured interval.
+An empty pass also starts a fresh interval and reports zero queued messages.
+Missed intervals coalesce into one observation, including across long caller
+pauses; there is no catch-up burst. Reconnect triggers coalesce separately and
+cannot append indefinitely to the currently draining pass. Ordinary driver work
+and exact due observation occur before another reconnect or periodic pass.
+These bounded opportunities do not guarantee fairness against arbitrary caller
+actions, connection churn, unavailable peers or remote worker saturation.
+
+Dropping a borrowed runtime future preserves the timer, pass and pending input.
+`into_parts` and process teardown discard this volatile schedule. Strict restart
+retains original completion IDs, bytes, attempts and acknowledged peers, performs
+its existing startup recovery, and creates a fresh interval if configured.
+Changing or omitting the retry interval on strict restart does not change receipt
+identity binding. There is no persisted timer, retry-count cap, debt expiration,
+exactly-once delivery, new proposal selection, signing-based reconstruction,
+source job, proof acquisition or general distributed-liveness guarantee.
 
 The network profile reserves one of the existing eight aggregate outbound
 permits for consensus: background archive/acquisition work can occupy at most
@@ -167,6 +223,23 @@ receiver admission. Only the previously unacknowledged peer is retried. All four
 then finalize H2 and H3 and strictly reopen at next height four; a persistent
 signing oracle checks pre-crash slots remain exact and all retained signatures
 verify. Quorum progress need not require every validator to sign every role.
+The restarted sender enables periodic retries, retains the exact partial peer
+acknowledgements through managed reconnection, and observes an empty periodic
+pass after H2 before the existing H3 progression and strict signing-history check.
+
+`crates/naome-runtime/tests/cases/publication_retry.rs` refuses the initial
+proposal, prevote and precommit transport receipts on one continuously connected
+authenticated peer, then accepts byte-identical periodic retries. It checks
+unchanged authority images during retry, skipped local admission, receipt-based
+suppression, strict acknowledged reopen, cancelled polls, missed-tick
+coalescing, consensus-deadline precedence and intervening ordinary transitions.
+A real receipt-file replacement failure during a periodic attempt consumes
+signing authority without a successful receipt event; strict reopen retains the
+exact original unacknowledged message. `timer.rs` checks zero, overflow and
+full-width interval boundaries. The executable's `publication_retry.rs` covers
+repeated unavailable-peer attempts, strict reopen without source files, exact
+original fingerprints, unchanged stopped-owner authority images and configuration
+rejection before provisioning. These tests do not simulate power loss.
 
 These are bounded local runtime and actual Unix process regressions. They do
 not establish deployment readiness, non-Unix executable support, power-loss

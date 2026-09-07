@@ -125,6 +125,7 @@ pub(super) fn publication(publication: &Publication) -> Value {
         "recovered": publication.recovered(),
         "message_sha256": digests,
         "local_admission_attempted": publication.local_admission_attempted(),
+        "local_admission_skipped": publication.local_admission_skipped(),
         "released_proposal": matches!(publication.message(), Message::Vote { released_proposal: Some(_), .. }),
         "deliveries": publication.deliveries().map(|delivery| json!({
             "peer": delivery.peer_id().to_string(),
@@ -169,6 +170,9 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
         Event::Finality(_) => json!({"event": "finality"}),
         Event::PublicationPrepared(size) => {
             json!({"event": "publication_prepared", "size": format!("{size:?}")})
+        }
+        Event::PublicationRetryScheduled { queued } => {
+            json!({"event": "publication_retry_scheduled", "queued": queued.to_string()})
         }
         Event::PublicationRecovered { state_id, size } => {
             json!({"event": "publication_recovered", "signer_state": hex(state_id.as_bytes()), "size": format!("{size:?}")})

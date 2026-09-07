@@ -32,7 +32,8 @@ pub use routing::{
 };
 
 pub use timer::{
-    FixedValidatorPhaseDurationV0, FixedValidatorRuntimeTimeoutsV0, FixedValidatorRuntimeTimerV0,
+    FixedValidatorPhaseDurationV0, FixedValidatorPublicationRetryIntervalV0,
+    FixedValidatorRuntimeTimeoutsV0, FixedValidatorRuntimeTimerV0,
     FixedValidatorRuntimeTimingErrorV0,
 };
 pub use types::{
