@@ -14,6 +14,8 @@ mod historical_conflict;
 mod inbox_disposal;
 #[path = "cases/partition.rs"]
 mod partition;
+#[path = "cases/proof_sync.rs"]
+mod proof_sync;
 #[path = "cases/publication_retry.rs"]
 mod publication_retry;
 mod support;

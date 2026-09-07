@@ -41,9 +41,16 @@ explicit positive periodic delivery interval. Omitting it preserves the
 restart/reconnection-only profile; configuring it retries exact original
 unacknowledged messages through the same durable delivery lifecycle.
 
+`PROD-020-060` adds explicit [bounded validator proof catch-up](fixed-validator-process-proof-catch-up-v0.md)
+from one caller-selected configured peer. Each downloaded direct-child proof
+passes complete live-branch verification and the existing anchored signer
+handoff; the finite job stops on drift, refusal or failure and never resumes
+automatically after restart.
+
 The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. It grants no automatic proposal
-source or evidence selection, certificate acquisition, artifact serving beyond
+source or evidence selection, certificate acquisition beyond the explicit
+bounded catch-up job, artifact serving beyond
 the separately opted-in retained complete-proof response,
 automatic source fallback policy, automatic inbox clearing, repair, dynamic
 validator, key rotation, production timeout calibration, hardware custody, or
@@ -172,6 +179,9 @@ they are never supplied as unbounded inline JSON arrays.
 | --- | --- | --- |
 | `status` | None | Read driver position/head, inbox counts, timer and publication diagnostics |
 | `shutdown` | None | End ordinary processing and dispose of current volatile custody |
+| `sync_finality` | `peer_id`, `count` | Fetch and commit 1–16 successive complete direct-child proofs |
+| `sync_status` | None | Read the current volatile proof catch-up job |
+| `cancel_sync` | None | End the current proof job without undoing its anchored prefix |
 | `discard_inbox` | `inbox` | Drain and discard exactly one explicitly selected inbox class |
 | `author_fresh` | `block_file`, `payload_file` | Decode the exact canonical block and submit `Fresh` with the exact payload |
 | `author_retained` | `payload_file` | Submit `RetainedValid`; the signer derives eligibility and retained value |

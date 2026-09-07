@@ -38,7 +38,8 @@ pub use timer::{
 };
 pub use types::{
     FixedValidatorRuntimeCreateErrorV0, FixedValidatorRuntimeCreateFailureV0,
-    FixedValidatorRuntimeEventV0, FixedValidatorRuntimeFailureV0, FixedValidatorRuntimePartsV0,
+    FixedValidatorRuntimeEventV0, FixedValidatorRuntimeFailureV0,
+    FixedValidatorRuntimeFinalityProofRequestErrorV0, FixedValidatorRuntimePartsV0,
     FixedValidatorRuntimeProofRefusalV0, FixedValidatorRuntimeQueueErrorV0,
     FixedValidatorRuntimeQueueFailureV0, FixedValidatorRuntimeTransportPollV0,
 };

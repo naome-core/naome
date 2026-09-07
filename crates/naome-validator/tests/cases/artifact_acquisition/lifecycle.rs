@@ -163,6 +163,8 @@ fn durable_prefixes_survive_cancel_late_response_shutdown_signals_and_eof_withou
                 node.send(command);
                 assert_eq!(node.event("command_rejected")["code"], "sources_busy");
             }
+            node.send(json!({"command":"sync_finality", "id":12, "peer_id":"invalid", "count":0}));
+            assert_eq!(node.event("command_rejected")["code"], "sync_busy");
             node.write(b"{\"command\":\"sources_status\",\"id\":12,\"extra\":true}\n");
             assert_eq!(node.event("command_rejected")["code"], "command_schema");
             let status = result(&mut node, json!({"command":"status", "id":13}));

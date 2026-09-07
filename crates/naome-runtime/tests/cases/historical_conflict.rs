@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "envelope.rs"]
+mod envelope;
 #[path = "finality_provider.rs"]
 mod finality_provider;
 

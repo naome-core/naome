@@ -147,6 +147,7 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     CurrentFinalityUnresolved,
     HigherEvidenceUnresolved,
     HigherRoundAdvanceRejected(Box<FixedValidatorNodeRoundAdvanceRejectionV0>),
+    FinalityEnvelopeRejected(Box<naome_node::FixedValidatorNodeEnvelopeRejectionV0>),
     CurrentRoundFinalityRejected(Box<FixedValidatorNodeCurrentRoundFinalityRejectionV0>),
     LowerRoundFinalityRejected(Box<FixedValidatorNodeLowerRoundFinalityRejectionV0>),
     CandidateBackedFinalityRejected(Box<FixedValidatorNodeCandidateBackedFinalityRejectionV0>),
@@ -262,3 +263,16 @@ impl fmt::Debug for FixedValidatorRuntimeCreateErrorV0<'_> {
             .finish_non_exhaustive()
     }
 }
+
+/// A proof request rejected before any finality or signing effect.
+#[derive(Debug)]
+pub enum FixedValidatorRuntimeFinalityProofRequestErrorV0 {
+    Refused(FixedValidatorRuntimeProofRefusalV0),
+    Network(naome_network::RequestStartError),
+}
+impl std::fmt::Display for FixedValidatorRuntimeFinalityProofRequestErrorV0 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "proof request did not start: {self:?}")
+    }
+}
+impl std::error::Error for FixedValidatorRuntimeFinalityProofRequestErrorV0 {}

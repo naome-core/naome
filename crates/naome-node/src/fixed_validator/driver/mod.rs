@@ -87,6 +87,10 @@ use super::{
     fixed_validator_node_current_round,
 };
 
+mod envelope;
+pub use envelope::{
+    FixedValidatorNodeDriverEnvelopeOutcomeV0, FixedValidatorNodeEnvelopeRejectionV0,
+};
 mod admission;
 mod classification;
 mod execution;
