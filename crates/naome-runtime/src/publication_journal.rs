@@ -417,7 +417,7 @@ fn checksum(bytes: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn regular_options(read: bool, write: bool) -> OpenOptions {
+pub(crate) fn regular_options(read: bool, write: bool) -> OpenOptions {
     let mut options = OpenOptions::new();
     options.read(read).write(write);
     #[cfg(unix)]
@@ -429,7 +429,7 @@ fn regular_options(read: bool, write: bool) -> OpenOptions {
     options
 }
 
-fn sync_directory(directory: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory(directory: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         File::open(directory)?.sync_all()

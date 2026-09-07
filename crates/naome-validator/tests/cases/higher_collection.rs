@@ -11,7 +11,7 @@ fn result(node: &mut Process, command: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
-fn raw_higher_votes_checkpoint_through_process_runtime_and_survive_sigkill_without_publication() {
+fn raw_higher_votes_checkpoint_and_nil_quorums_are_reused_before_strict_sigkill_restart() {
     let fixture = Fixture::new();
     for role in [Role::Prevote, Role::Precommit] {
         let proof = Proof::new(&fixture, true, 1, role);
@@ -49,10 +49,27 @@ fn raw_higher_votes_checkpoint_through_process_runtime_and_survive_sigkill_witho
                 }
             );
             node.event("timer_armed");
-            assert!(!node.observed.iter().any(|value| matches!(
-                value["event"].as_str(),
-                Some("publication_prepared" | "publication_complete" | "finality")
-            )));
+            if nil {
+                node.event("transitioned");
+                node.event("timer_armed");
+                if role == Role::Prevote {
+                    node.event("publication_complete");
+                }
+            }
+            // A nil-precommit quorum's next-round close remains volatile.
+            // Strict reopen returns its preceding anchored checkpoint.
+            let expected_round = proof.round;
+            let expected_phase = if role == Role::Prevote && !nil {
+                "Prevote"
+            } else {
+                "Precommit"
+            };
+            assert!(
+                !node
+                    .observed
+                    .iter()
+                    .any(|value| matches!(value["event"].as_str(), Some("finality")))
+            );
             assert_eq!(layout.finality_images(), finality);
             node.child.kill().unwrap();
             assert_eq!(node.exit().signal(), Some(9));
@@ -61,15 +78,8 @@ fn raw_higher_votes_checkpoint_through_process_runtime_and_survive_sigkill_witho
             let state = reopened.ready();
             assert_eq!(state["driver"]["height"], initial["driver"]["height"]);
             assert_eq!(state["driver"]["head"], initial["driver"]["head"]);
-            assert_eq!(state["driver"]["round"], proof.round.to_string());
-            assert_eq!(
-                state["driver"]["phase"],
-                if role == Role::Prevote {
-                    "Prevote"
-                } else {
-                    "Precommit"
-                }
-            );
+            assert_eq!(state["driver"]["round"], expected_round.to_string());
+            assert_eq!(state["driver"]["phase"], expected_phase);
             assert_eq!(state["driver"]["higher_inbox"], 0);
             reopened.event("timer_armed");
             reopened.shutdown();

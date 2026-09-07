@@ -54,7 +54,9 @@ fn collected_higher_quorums_checkpoint_all_roles_targets_phases_and_restart_with
                             assert_eq!(layout.images()[0..2], before[0..2]);
                             let (driver, replacement) = step_arm(driver);
                             assert_eq!(replacement.generation(), ticket.generation() + 1);
-                            drop(step_idle(driver));
+                            // Compare exactly the checkpoint boundary. The next
+                            // step may now reuse the collected raw quorum.
+                            drop(driver);
                         }).unwrap();
                         let images = layout.images();
                         if collected {

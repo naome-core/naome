@@ -611,11 +611,9 @@ fn current_proposal_and_nil_quorums_fail_closed_with_higher_escape() {
                     FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
                         assert!(matches!(
                             reason,
-                            FixedValidatorNodeDriverBlockReasonV0::CurrentPrevoteQuorumAmbiguous {
-                                position,
-                                proposal_signing_root,
-                            } if position == current_position
-                                && proposal_signing_root == current_root
+                            FixedValidatorNodeDriverBlockReasonV0::RetainedEvidenceRequiresDisposal {
+                                class: FixedValidatorNodeEvidenceClassV0::Current
+                            }
                         ));
                         *driver
                     }

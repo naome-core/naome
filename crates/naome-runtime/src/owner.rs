@@ -9,6 +9,9 @@ mod retry;
 #[path = "artifact_exchange.rs"]
 pub(crate) mod artifact_exchange;
 
+#[path = "evidence.rs"]
+mod evidence;
+
 use crate::FixedValidatorPublicationJournalErrorV0 as PublicationError;
 use crate::publication_journal::PublicationJournal;
 use naome_consensus::{FixedValidatorLockPhaseV0, FixedValidatorProposalSourceV0};
@@ -76,6 +79,8 @@ pub struct FixedValidatorRuntimeV0<'node> {
     step_yielded: bool,
     rejected_due_ticket: Option<FixedValidatorNodePhaseTimeoutV0>,
     publication_journal: Option<PublicationJournal>,
+    evidence_journal: Option<crate::evidence_journal::EvidenceJournal>,
+    evidence_failure: Option<crate::FixedValidatorEvidenceJournalErrorV0>,
     recovery: VecDeque<(FixedValidatorVoteSafetyJournalStateIdV0, bool)>,
     retry: Option<retry::PublicationRetry>,
     reconnected_peers: u8,
@@ -113,6 +118,8 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             step_yielded: false,
             rejected_due_ticket: None,
             publication_journal: None,
+            evidence_journal: None,
+            evidence_failure: None,
             recovery: VecDeque::new(),
             retry: None,
             reconnected_peers: 0,
@@ -255,6 +262,9 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         self.driver = Some(*driver);
         self.step_yielded = false;
         self.rejected_due_ticket = None;
+        if !self.persist_disposal() {
+            return None;
+        }
         Some(drained)
     }
 
@@ -272,6 +282,9 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             .into_parts();
         self.driver = Some(*driver);
         self.step_yielded = false;
+        if !self.persist_disposal() {
+            return None;
+        }
         Some(drained)
     }
 
@@ -289,6 +302,9 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             .into_parts();
         self.driver = Some(*driver);
         self.step_yielded = false;
+        if !self.persist_disposal() {
+            return None;
+        }
         Some(drained)
     }
 
@@ -306,6 +322,9 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             .into_parts();
         self.driver = Some(*driver);
         self.step_yielded = false;
+        if !self.persist_disposal() {
+            return None;
+        }
         Some(drained)
     }
 
@@ -374,6 +393,7 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             pending_network_event,
             pending_caller_input,
             failed_admission: self.failed_admission,
+            evidence_failure: self.evidence_failure,
             step_yielded: self.step_yielded,
             rejected_due_ticket: self.rejected_due_ticket,
         }
@@ -548,6 +568,9 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             }
             StepOutcome::Idle { driver } => {
                 self.driver = Some(*driver);
+                if let Err(error) = self.persist_evidence() {
+                    return Some(self.fail_evidence(error));
+                }
                 return None;
             }
             StepOutcome::Blocked { driver, reason } => {
@@ -569,6 +592,11 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             other => Event::UnsupportedStep(Box::new(other)),
         };
         self.discard_superseded_deadline();
+        if self.driver.is_some()
+            && let Err(error) = self.persist_evidence()
+        {
+            return Some(self.fail_evidence(error));
+        }
         Some(event)
     }
 
@@ -744,6 +772,10 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             report.results[index] = Some(AdmissionResult { route, result });
             // No step or timer observation occurs between the two admissions.
         }
+        if let Err(error) = self.persist_evidence() {
+            self.failed_admission = Some(report);
+            return self.fail_evidence(error);
+        }
         report.completed = true;
         Event::Admission(Box::new(report))
     }
@@ -853,6 +885,9 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
     /// One publication backpressures further driver transitions until its local
     /// admission and each one-shot peer attempt have completed and transferred.
     pub async fn next_event(&mut self) -> Event<'node> {
+        if let Some(error) = self.evidence_failure.take() {
+            return self.fail_evidence(error);
+        }
         if self.driver.is_none() {
             return Event::DriverUnavailable;
         }

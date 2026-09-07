@@ -22,6 +22,29 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 FixedValidatorNodeDriverAdmissionRejectionV0::CommandPending,
             ));
         }
+        let class = match &event {
+            FixedValidatorNodeDriverEventV0::CurrentRoundFinalityProposal { .. }
+            | FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrecommit { .. } => {
+                Some(FixedValidatorNodeEvidenceClassV0::Finality)
+            }
+            FixedValidatorNodeDriverEventV0::CurrentRoundNilPrecommit { .. } => {
+                Some(FixedValidatorNodeEvidenceClassV0::NilPrecommit)
+            }
+            _ => None,
+        };
+        if let Some(class) = class
+            && self.evidence_refused(class)
+        {
+            return Ok(admission_rejected(
+                self,
+                event,
+                FixedValidatorNodeDriverAdmissionRejectionV0::Blocked(
+                    FixedValidatorNodeDriverBlockReasonV0::RetainedEvidenceRequiresDisposal {
+                        class,
+                    },
+                ),
+            ));
+        }
         let bypasses_higher_block = matches!(
             &event,
             FixedValidatorNodeDriverEventV0::CurrentRoundFinalityProposal { .. }
@@ -118,6 +141,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     /// Losslessly drains only higher-round evidence and clears its blocking.
     pub fn drain_inbox_and_reset(mut self) -> FixedValidatorNodeDriverDrainV0<'node> {
         let drained = self.inbox.drain_and_reset();
+        self.evidence_refusals &= !FixedValidatorNodeEvidenceClassV0::Higher.bit();
         self.ambiguity = None;
         FixedValidatorNodeDriverDrainV0 {
             driver: Box::new(self),
@@ -132,6 +156,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         mut self,
     ) -> FixedValidatorNodeDriverCurrentRoundDrainV0<'node> {
         let drained = self.current_inbox.drain_and_reset();
+        self.evidence_refusals &= !FixedValidatorNodeEvidenceClassV0::Current.bit();
         self.current_ambiguity = None;
         FixedValidatorNodeDriverCurrentRoundDrainV0 {
             driver: Box::new(self),
@@ -147,6 +172,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         mut self,
     ) -> FixedValidatorNodeDriverCurrentFinalityDrainV0<'node> {
         let drained = self.current_finality_inbox.drain_and_reset();
+        self.evidence_refusals &= !FixedValidatorNodeEvidenceClassV0::Finality.bit();
         FixedValidatorNodeDriverCurrentFinalityDrainV0 {
             driver: Box::new(self),
             drained,
@@ -161,6 +187,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         mut self,
     ) -> FixedValidatorNodeDriverCurrentNilPrecommitDrainV0<'node> {
         let drained = self.current_nil_precommit_inbox.drain_and_reset();
+        self.evidence_refusals &= !FixedValidatorNodeEvidenceClassV0::NilPrecommit.bit();
         FixedValidatorNodeDriverCurrentNilPrecommitDrainV0 {
             driver: Box::new(self),
             drained,

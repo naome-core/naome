@@ -1064,7 +1064,9 @@ fn current_saturation_uses_a_separate_budget_and_preserves_higher_escape() {
                 FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
                     assert!(matches!(
                         reason,
-                        FixedValidatorNodeDriverBlockReasonV0::CurrentSaturated { .. }
+                        FixedValidatorNodeDriverBlockReasonV0::RetainedEvidenceRequiresDisposal {
+                            class: FixedValidatorNodeEvidenceClassV0::Current
+                        }
                     ));
                     *driver
                 }

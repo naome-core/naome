@@ -6,6 +6,8 @@ mod artifact_acquisition;
 mod current_finality;
 #[path = "cases/current_pair.rs"]
 mod current_pair;
+#[path = "cases/evidence_recovery.rs"]
+mod evidence_recovery;
 #[path = "cases/explicit_proofs.rs"]
 mod explicit_proofs;
 #[path = "cases/higher_collection.rs"]
@@ -37,12 +39,15 @@ fn two_actual_processes_exchange_noise_receipts_finalize_and_strictly_restart() 
     let fixture = Fixture::new();
     let source_layout = Layout::new();
     let receiver_layout = Layout::new();
-    let receiver_config = fixture.config(
+    let receiver_config = evidence_recovery::enable(
         &receiver_layout,
-        1,
-        "create",
-        Some("/ip4/127.0.0.1/tcp/1"),
-        false,
+        &fixture.config(
+            &receiver_layout,
+            1,
+            "create",
+            Some("/ip4/127.0.0.1/tcp/1"),
+            false,
+        ),
     );
     let mut receiver = Process::start(&receiver_layout, &receiver_config);
     let initial = receiver.ready();
@@ -51,7 +56,10 @@ fn two_actual_processes_exchange_noise_receipts_finalize_and_strictly_restart() 
         .as_str()
         .unwrap()
         .to_owned();
-    let source_config = fixture.config(&source_layout, 0, "create", Some(&address), true);
+    let source_config = evidence_recovery::enable(
+        &source_layout,
+        &fixture.config(&source_layout, 0, "create", Some(&address), true),
+    );
     let mut source = Process::start(&source_layout, &source_config);
     source.ready();
     source.until(|value| value["event"] == "peer_session" && value["state"] == "established");
@@ -286,6 +294,12 @@ fn invalid_config_and_seed_files_refuse_before_create_and_healthy_open_writes() 
         let original = original.replace("mode = \"create\"", &format!("mode = \"{mode}\""));
         let durable = layout.images();
         let invalid = [
+            format!("{original}\n[evidence]\ndirectory = ''\nmode = 'open'\n"),
+            format!("{original}\n[evidence]\ndirectory = 'evidence'\nmode = 'repair'\n"),
+            format!(
+                "{original}\n[evidence]\ndirectory = 'evidence'\nmode = 'open'\nextra = true\n"
+            ),
+            format!("{original}\n[evidence]\ndirectory = 'evidence'\n"),
             original.replacen("version = 0", "version = 1", 1),
             format!("{original}\n[remote_signer]\nurl = 'http://invalid'\n"),
             original.replace(&format!("mode = \"{mode}\""), "mode = \"repair\""),

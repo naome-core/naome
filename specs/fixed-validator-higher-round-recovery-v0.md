@@ -89,11 +89,13 @@ phase; a precommit quorum installs its Precommit phase. Neither means the next
 phase or the next height. Success clears the old due observation and queues one
 replacement phase arm without publishing a proposal or vote.
 
-The operation retains all inbox inputs and accounting. It does not migrate
-higher evidence into a current inbox after checkpointing. A caller or peer may
-re-deliver exact votes through ordinary current admission, or use existing
-explicit proof operations. Such a later action independently reverifies its
-inputs and applies its existing signing or finality contract.
+The checkpoint operation retains all inbox inputs and accounting. Under
+`PROD-020-065`, a later driver step may atomically re-verify and move newly
+exact-current higher evidence into the existing current resource classes,
+subject to their independent budgets and explicit refusal/disposal policy.
+That later ordinary action independently applies the existing signing or
+finality contract. Caller redelivery and explicit proof operations remain
+available; neither is required for already retained reusable evidence.
 
 Higher ambiguity and saturation require the existing explicit full higher
 inbox drain/disposal. The drain returns proposal tokens, the existing
@@ -104,9 +106,11 @@ that custody and its deny-only latch; it grants no evidence preference.
 Pre-effect rejection preserves the returned driver. Fatal derivation,
 generation, checkpoint, or anchor failure returns no driver and requires strict
 reopen. Restart reconstructs the anchored signer state, including lock and
-complete valid proof, but starts with empty volatile inboxes. It does not
-restore selection intent or resurrect a signed publication command. Existing
-publication-journal recovery, when explicitly configured, remains separate.
+complete valid proof. By default it starts with empty volatile inboxes. The
+explicit `PROD-020-065` evidence journal can reconstruct bounded raw custody
+through full re-verification; it cannot restore selection intent or resurrect a
+signed publication command. Existing publication-journal recovery, when
+explicitly configured, remains separate.
 
 The runtime routes higher proposal prevotes through their existing event and
 higher nil prevotes and both precommit forms through `HigherRoundVote`. Routing
@@ -123,8 +127,10 @@ byte-distinct valid signature variants, malformed/stale/inactive input,
 current-finality priority, preserved nonempty lock/valid proof, and anchor
 failure. Runtime regression tests retain malformed-header rejection after the
 new route becomes supported. Unix process tests submit all four vote forms,
-SIGKILL after checkpointing, strictly reopen without publication, and retry a
-quorum after explicit shared-inbox disposal.
+SIGKILL after checkpointing, strictly reopen, and retry a quorum after explicit
+shared-inbox disposal. With `PROD-020-065`, nil evidence may continue through
+ordinary current gates after the checkpoint; checkpoint parity is measured at
+the successor-arm boundary, before that reuse.
 
 The expanded deterministic multi-actor, delivery-fault, corruption, and signer
 fault evidence is specified separately in

@@ -32,6 +32,7 @@ mod candidate_backed;
 mod current_round_finality;
 mod current_round_pair;
 mod envelope;
+mod evidence_recovery;
 mod higher_collection;
 mod higher_round;
 mod historical_conflict;

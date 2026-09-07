@@ -6,6 +6,8 @@
 //! timing, general gossip, or distributed liveness. The optional publication
 //! journal recovers exact signed bytes and durable per-peer transport receipts.
 
+mod evidence_journal;
+pub use evidence_journal::FixedValidatorEvidenceJournalErrorV0;
 mod owner;
 mod publication_journal;
 pub use publication_journal::FixedValidatorPublicationJournalErrorV0;
