@@ -1005,7 +1005,7 @@ fn higher_saturation_yields_one_rejected_deadline_and_keeps_strict_finality_esca
 }
 
 #[test]
-fn unsupported_untrusted_headers_return_original_bytes_without_admission() {
+fn untrusted_headers_preserve_bytes_and_supported_higher_roles_still_require_signatures() {
     let fixture = Fixture::new();
     let [_, current_prevote, current_precommit] = source_messages(&fixture);
     let [_, higher_prevote] = higher_messages(&fixture);
@@ -1035,12 +1035,20 @@ fn unsupported_untrusted_headers_return_original_bytes_without_admission() {
             let report = raw_exchange(&mut sender, &mut owner, copy_message(&message), check_local).await;
             assert_eq!(report.input, Some(message));
             assert!(!report.all_admitted());
-            assert!(!report.completed());
-            assert!(report.results.iter().all(Option::is_none));
-            assert!(matches!((variant, report.routing_error),
-                (0, Some(naome_runtime::FixedValidatorRuntimeRoutingErrorV0::OtherContext { .. })) |
-                (1, Some(naome_runtime::FixedValidatorRuntimeRoutingErrorV0::UnsupportedHigherVote { role: ConsensusVoteRole::Precommit, .. })) |
-                (2, Some(naome_runtime::FixedValidatorRuntimeRoutingErrorV0::Vote(naome_consensus::ConsensusVoteDecodeError::UnknownRoleTag { actual: 0xff })))));
+            if variant == 1 {
+                assert!(report.completed());
+                assert!(report.routing_error.is_none());
+                let result = report.results[0].as_ref().unwrap();
+                assert_eq!(result.route, Route::HigherQuorumVote);
+                assert!(matches!(&result.result, Err(rejection) if matches!(rejection.as_ref(), naome_node::FixedValidatorNodeDriverAdmissionRejectionV0::HigherVote(_))));
+                assert!(report.results[1].is_none());
+            } else {
+                assert!(!report.completed());
+                assert!(report.results.iter().all(Option::is_none));
+                assert!(matches!((variant, report.routing_error),
+                    (0, Some(naome_runtime::FixedValidatorRuntimeRoutingErrorV0::OtherContext { .. })) |
+                    (2, Some(naome_runtime::FixedValidatorRuntimeRoutingErrorV0::Vote(naome_consensus::ConsensusVoteDecodeError::UnknownRoleTag { actual: 0xff })))));
+            }
             assert_eq!(owner.driver().unwrap().inbox_len(), 0);
             assert_eq!(owner.driver().unwrap().current_inbox_len(), 0);
             assert_eq!(owner.driver().unwrap().current_finality_inbox_len(), 0);

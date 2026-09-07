@@ -45,6 +45,7 @@ fn artifact_requests_share_publication_permits_without_retries_or_token_loss() {
                 assert!(matches!(owner.next_event().await, Event::PublicationPrepared(_)));
                 let original = token_observation(owner.pending_publication().unwrap());
                 let authority = layout.authority_images();
+                let server_authority = server_layout.authority_images();
                 let source_images = layout.source_images();
                 let mut raw = vec![0; naome_network::CONSENSUS_PUSH_VOTE_BYTES];
                 raw.reserve(13);
@@ -91,7 +92,10 @@ fn artifact_requests_share_publication_permits_without_retries_or_token_loss() {
                                     Event::Admission(report) => {
                                         assert_eq!(report.source, InputSource::Peer(owner.local_peer_id()));
                                         assert_eq!(report.receipt_queued, Some(true));
-                                        assert!(report.routing_error.is_some());
+                                        assert!(report.all_admitted());
+                                        assert_eq!(report.results.iter().flatten().count(), 1);
+                                        assert_eq!(report.results[0].as_ref().unwrap().route, Route::HigherQuorumVote);
+                                        assert_eq!(server_layout.authority_images(), server_authority);
                                     },
                                     _ => panic!("unexpected receiver event"),
                                 },

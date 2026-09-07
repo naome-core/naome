@@ -90,7 +90,7 @@ fn actionable_higher_round_evidence_precedes_due_timeout() {
 }
 
 #[test]
-fn grouped_higher_round_selection_ignores_vote_only_rounds_and_precedes_due_timeout() {
+fn grouped_higher_round_quorums_include_vote_only_rounds_and_require_disposal_before_pairing() {
     let fixture = Fixture::new();
     let layout = TestLayout::new("driver-grouped-higher-round-selection");
     let branch = fixed_branch(&fixture);
@@ -147,6 +147,26 @@ fn grouped_higher_round_selection_ignores_vote_only_rounds_and_precedes_due_time
             let (driver, _) = admit(driver, prevote_event(&round_two_prevote));
             let (driver, _) = admit_due(driver, timeout);
 
+            let before = layout.images();
+            let driver = match driver.step().unwrap() {
+                FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
+                    assert!(matches!(reason,
+                        FixedValidatorNodeDriverBlockReasonV0::HigherQuorumsAmbiguous { first, second }
+                        if first.position.round().value() == 1 && second.position.round().value() == 2));
+                    *driver
+                }
+                _ => panic!("vote-only quorums must participate in full-snapshot ambiguity"),
+            };
+            assert_eq!(layout.images(), before);
+            assert!(driver.timeout_is_due());
+            let (driver, drained) = driver.drain_inbox_and_reset().into_parts();
+            let (proposals, mut votes) = drained_contents(drained);
+            assert_eq!(proposals, vec![(selected_control.clone(), selected_payload.clone())]);
+            let mut expected = vec![round_one_prevote.clone(), round_two_prevote.clone(), round_three_prevote.clone(), selected_prevote.clone()];
+            votes.sort_unstable(); expected.sort_unstable();
+            assert_eq!(votes, expected);
+            let (driver, _) = admit(*driver, proposal_event(4, &selected_control, &selected_payload));
+            let (driver, _) = admit(driver, prevote_event(&selected_prevote));
             let driver = step_transition(driver);
             assert_eq!(driver.position(), selected_position);
             assert_eq!(driver.phase(), FixedValidatorLockPhaseV0::Precommit);
@@ -168,7 +188,7 @@ fn grouped_higher_round_selection_ignores_vote_only_rounds_and_precedes_due_time
                 signed.target(),
                 ConsensusVoteTarget::Proposal(selected_root)
             );
-            assert_eq!(driver.inbox_len(), 4);
+            assert_eq!(driver.inbox_len(), 1);
         })
         .unwrap();
 }
@@ -284,10 +304,13 @@ fn competing_actions_block_timeout_until_lossless_full_reset() {
             let driver = match driver.step().unwrap() {
                 FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
                     match reason {
-                        FixedValidatorNodeDriverBlockReasonV0::Ambiguous { first, second } => {
+                        FixedValidatorNodeDriverBlockReasonV0::HigherQuorumsAmbiguous {
+                            first,
+                            second,
+                        } => {
                             assert!(first < second);
-                            assert_eq!(first.position(), position);
-                            assert_eq!(second.position(), position);
+                            assert_eq!(first.position, position);
+                            assert_eq!(second.position, position);
                         }
                         _ => panic!("expected same-class evidence ambiguity"),
                     }
@@ -300,7 +323,7 @@ fn competing_actions_block_timeout_until_lossless_full_reset() {
                 FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
                     assert!(matches!(
                         reason,
-                        FixedValidatorNodeDriverBlockReasonV0::Ambiguous { .. }
+                        FixedValidatorNodeDriverBlockReasonV0::HigherQuorumsAmbiguous { .. }
                     ));
                     *driver
                 }
@@ -376,9 +399,12 @@ fn competing_actionable_positions_block_without_round_preference() {
             let driver = match driver.step().unwrap() {
                 FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason } => {
                     match reason {
-                        FixedValidatorNodeDriverBlockReasonV0::Ambiguous { first, second } => {
-                            assert_eq!(first.position(), round_two);
-                            assert_eq!(second.position(), round_three);
+                        FixedValidatorNodeDriverBlockReasonV0::HigherQuorumsAmbiguous {
+                            first,
+                            second,
+                        } => {
+                            assert_eq!(first.position, round_two);
+                            assert_eq!(second.position, round_three);
                         }
                         _ => panic!("expected cross-position evidence ambiguity"),
                     }

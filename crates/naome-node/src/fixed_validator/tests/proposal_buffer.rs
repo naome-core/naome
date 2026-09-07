@@ -2637,6 +2637,9 @@ fn higher_round_inbox_pairing_is_permutation_invariant_and_selects_smallest_prop
         let drained_prevotes = drained
             .iter()
             .filter_map(|item| match item {
+                FixedValidatorNodeHigherRoundInboxDrainItemV0::QuorumVote(_) => {
+                    panic!("fixture contains proposal prevotes only")
+                }
                 FixedValidatorNodeHigherRoundInboxDrainItemV0::ProposalPrevote(bytes) => {
                     Some(bytes.as_slice())
                 }

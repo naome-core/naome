@@ -4,9 +4,9 @@ use std::iter::FusedIterator;
 use std::mem;
 
 use naome_consensus::{
-    ConsensusKey, ConsensusPosition, ConsensusVoteTarget, FixedConsensusBranchCoordinateV0,
-    FixedConsensusProposalPrevoteVerifyErrorV0, FixedConsensusRoundV0, ProposalSigningRoot,
-    VerifiedConsensusVoteV0,
+    ConsensusKey, ConsensusPosition, ConsensusVoteRole, ConsensusVoteTarget,
+    FixedConsensusBranchCoordinateV0, FixedConsensusProposalPrevoteVerifyErrorV0,
+    FixedConsensusRoundV0, ProposalSigningRoot, VerifiedConsensusVoteV0,
 };
 
 use crate::fixed_validator::{
@@ -15,11 +15,11 @@ use crate::fixed_validator::{
     FixedValidatorNodeProposalBufferLimitsV0, FixedValidatorNodeProposalBufferV0,
 };
 
-/// Positive caller-local limits for one volatile proposal/prevote inbox.
+/// Positive caller-local limits for one volatile proposal/vote inbox.
 ///
-/// The entry limit counts proposal tokens and distinct canonical prevote
+/// The entry limit counts proposal tokens and distinct canonical vote
 /// variants together. The byte limit counts proposal control plus artifact
-/// bytes and complete canonical signed-prevote bytes. Neither limit is a
+/// bytes and complete canonical signed-vote bytes. Neither limit is a
 /// protocol-wide admission rule or a total resident-memory bound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
@@ -48,7 +48,7 @@ impl FixedValidatorNodeHigherRoundInboxLimitsV0 {
         })
     }
 
-    /// Returns the maximum combined proposal-token and prevote-variant count.
+    /// Returns the maximum combined proposal-token and vote-variant count.
     pub const fn max_entries(self) -> usize {
         self.max_entries
     }
@@ -372,15 +372,21 @@ impl Error for FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0 {
     }
 }
 
-pub(in crate::fixed_validator) struct FixedValidatorNodeRetainedProposalPrevoteV0 {
+pub(in crate::fixed_validator) struct FixedValidatorNodeRetainedHigherVoteV0 {
     parent_coordinate: FixedConsensusBranchCoordinateV0,
     position: ConsensusPosition,
-    proposal_signing_root: ProposalSigningRoot,
+    pub(in crate::fixed_validator) role: ConsensusVoteRole,
+    pub(in crate::fixed_validator) target: ConsensusVoteTarget,
     signer: ConsensusKey,
     canonical_bytes: [u8; VerifiedConsensusVoteV0::BYTE_LENGTH],
 }
 
-impl FixedValidatorNodeRetainedProposalPrevoteV0 {
+impl FixedValidatorNodeRetainedHigherVoteV0 {
+    pub(in crate::fixed_validator) fn is_proposal_prevote(&self) -> bool {
+        self.role == ConsensusVoteRole::Prevote
+            && matches!(self.target, ConsensusVoteTarget::Proposal(_))
+    }
+
     pub(in crate::fixed_validator) const fn parent_coordinate(
         &self,
     ) -> FixedConsensusBranchCoordinateV0 {
@@ -391,8 +397,11 @@ impl FixedValidatorNodeRetainedProposalPrevoteV0 {
         self.position
     }
 
-    pub(in crate::fixed_validator) const fn proposal_signing_root(&self) -> ProposalSigningRoot {
-        self.proposal_signing_root
+    pub(in crate::fixed_validator) fn proposal_signing_root(&self) -> ProposalSigningRoot {
+        match self.target {
+            ConsensusVoteTarget::Proposal(root) => root,
+            ConsensusVoteTarget::Nil => unreachable!("proposal pairing filters nil votes"),
+        }
     }
 
     pub(in crate::fixed_validator) const fn signer(&self) -> ConsensusKey {
@@ -416,13 +425,15 @@ pub enum FixedValidatorNodeHigherRoundInboxDrainItemV0 {
     Proposal(Box<FixedValidatorNodeDeferredProposalV0>),
     /// One exact canonical active proposal prevote.
     ProposalPrevote([u8; VerifiedConsensusVoteV0::BYTE_LENGTH]),
+    /// One exact canonical active nil prevote or precommit.
+    QuorumVote([u8; VerifiedConsensusVoteV0::BYTE_LENGTH]),
 }
 
 /// Lossless iterator returned by explicit inbox drain-and-reset.
 #[must_use]
 pub struct FixedValidatorNodeHigherRoundInboxDrainV0 {
     proposals: FixedValidatorNodeProposalBufferDrainV0,
-    prevotes: std::vec::IntoIter<FixedValidatorNodeRetainedProposalPrevoteV0>,
+    votes: std::vec::IntoIter<FixedValidatorNodeRetainedHigherVoteV0>,
 }
 
 impl Iterator for FixedValidatorNodeHigherRoundInboxDrainV0 {
@@ -433,10 +444,16 @@ impl Iterator for FixedValidatorNodeHigherRoundInboxDrainV0 {
             .next()
             .map(FixedValidatorNodeHigherRoundInboxDrainItemV0::Proposal)
             .or_else(|| {
-                self.prevotes.next().map(|vote| {
-                    FixedValidatorNodeHigherRoundInboxDrainItemV0::ProposalPrevote(
-                        vote.canonical_bytes,
-                    )
+                self.votes.next().map(|vote| {
+                    if vote.is_proposal_prevote() {
+                        FixedValidatorNodeHigherRoundInboxDrainItemV0::ProposalPrevote(
+                            vote.canonical_bytes,
+                        )
+                    } else {
+                        FixedValidatorNodeHigherRoundInboxDrainItemV0::QuorumVote(
+                            vote.canonical_bytes,
+                        )
+                    }
                 })
             })
     }
@@ -451,14 +468,14 @@ impl ExactSizeIterator for FixedValidatorNodeHigherRoundInboxDrainV0 {
     fn len(&self) -> usize {
         self.proposals
             .len()
-            .checked_add(self.prevotes.len())
+            .checked_add(self.votes.len())
             .expect("drained inbox length was previously representable")
     }
 }
 
 impl FusedIterator for FixedValidatorNodeHigherRoundInboxDrainV0 {}
 
-/// One caller-owned, process-local proposal and proposal-prevote inbox.
+/// One caller-owned, process-local proposal and vote inbox.
 ///
 /// Every retained proposal was fully admitted before insertion. Every retained
 /// vote was strictly verified against one exact typed branch round, including
@@ -477,7 +494,7 @@ impl FusedIterator for FixedValidatorNodeHigherRoundInboxDrainV0 {}
 pub struct FixedValidatorNodeHigherRoundInboxV0 {
     limits: FixedValidatorNodeHigherRoundInboxLimitsV0,
     pub(in crate::fixed_validator) proposals: FixedValidatorNodeProposalBufferV0,
-    pub(in crate::fixed_validator) prevotes: Vec<FixedValidatorNodeRetainedProposalPrevoteV0>,
+    pub(in crate::fixed_validator) votes: Vec<FixedValidatorNodeRetainedHigherVoteV0>,
     total_canonical_input_bytes: u64,
     saturation: Option<FixedValidatorNodeHigherRoundInboxSaturationV0>,
 }
@@ -493,7 +510,7 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
         Self {
             limits,
             proposals: FixedValidatorNodeProposalBufferV0::new(proposal_limits),
-            prevotes: Vec::new(),
+            votes: Vec::new(),
             total_canonical_input_bytes: 0,
             saturation: None,
         }
@@ -508,13 +525,13 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
     pub fn len(&self) -> usize {
         self.proposals
             .len()
-            .checked_add(self.prevotes.len())
+            .checked_add(self.votes.len())
             .expect("retained inbox length stayed representable at insertion")
     }
 
-    /// Returns whether no proposal token or proposal prevote is retained.
+    /// Returns whether no proposal token or vote is retained.
     pub fn is_empty(&self) -> bool {
-        self.proposals.is_empty() && self.prevotes.is_empty()
+        self.proposals.is_empty() && self.votes.is_empty()
     }
 
     /// Returns the retained proposal-token count.
@@ -522,9 +539,12 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
         self.proposals.len()
     }
 
-    /// Returns the retained distinct canonical prevote-variant count.
+    /// Returns the retained distinct canonical vote-variant count.
     pub fn prevote_len(&self) -> usize {
-        self.prevotes.len()
+        self.votes
+            .iter()
+            .filter(|vote| vote.is_proposal_prevote())
+            .count()
     }
 
     /// Returns the combined checked canonical-input byte count.
@@ -625,9 +645,28 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
         let vote = round
             .decode_and_verify_active_proposal_prevote(canonical_signed_prevote)
             .map_err(FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0::Admission)?;
-        let parent_coordinate = round.parent_coordinate();
+        self.try_insert_verified_vote(round.parent_coordinate(), vote)
+    }
+
+    // Callers must first use exact typed-round active membership admission.
+    pub(in crate::fixed_validator) fn try_insert_verified_vote(
+        &mut self,
+        parent_coordinate: FixedConsensusBranchCoordinateV0,
+        vote: VerifiedConsensusVoteV0,
+    ) -> Result<
+        FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0,
+        FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0,
+    > {
+        if let Some(saturation) = self.saturation {
+            return Err(
+                FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0::Saturated {
+                    saturation,
+                    newly_saturated: false,
+                },
+            );
+        }
         let canonical_bytes = vote.to_canonical_bytes();
-        if self.prevotes.iter().any(|retained| {
+        if self.votes.iter().any(|retained| {
             retained.parent_coordinate == parent_coordinate
                 && retained.canonical_bytes == canonical_bytes
         }) {
@@ -652,23 +691,17 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
                 );
             }
         };
-        self.prevotes
+        self.votes
             .try_reserve(1)
             .map_err(FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0::Reservation)?;
-        let proposal_signing_root = match vote.target() {
-            ConsensusVoteTarget::Proposal(root) => root,
-            ConsensusVoteTarget::Nil => {
-                unreachable!("typed proposal-prevote admission rejects nil")
-            }
-        };
-        self.prevotes
-            .push(FixedValidatorNodeRetainedProposalPrevoteV0 {
-                parent_coordinate,
-                position: vote.position(),
-                proposal_signing_root,
-                signer: vote.signer(),
-                canonical_bytes,
-            });
+        self.votes.push(FixedValidatorNodeRetainedHigherVoteV0 {
+            parent_coordinate,
+            position: vote.position(),
+            role: vote.role(),
+            target: vote.target(),
+            signer: vote.signer(),
+            canonical_bytes,
+        });
         self.total_canonical_input_bytes = prospective_total;
         Ok(FixedValidatorNodeHigherRoundInboxPrevoteInsertOutcomeV0::Inserted)
     }
@@ -679,13 +712,10 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
     /// Drain order grants no evidence or proposal preference.
     pub fn drain_and_reset(&mut self) -> FixedValidatorNodeHigherRoundInboxDrainV0 {
         let proposals = self.proposals.drain_and_reset();
-        let prevotes = mem::take(&mut self.prevotes).into_iter();
+        let votes = mem::take(&mut self.votes).into_iter();
         self.total_canonical_input_bytes = 0;
         self.saturation = None;
-        FixedValidatorNodeHigherRoundInboxDrainV0 {
-            proposals,
-            prevotes,
-        }
+        FixedValidatorNodeHigherRoundInboxDrainV0 { proposals, votes }
     }
 
     pub(in crate::fixed_validator) fn ensure_access(
@@ -702,7 +732,7 @@ impl FixedValidatorNodeHigherRoundInboxV0 {
     ) -> impl Iterator<Item = ConsensusPosition> + '_ {
         self.proposals
             .retained_positions()
-            .chain(self.prevotes.iter().map(|vote| vote.position()))
+            .chain(self.votes.iter().map(|vote| vote.position()))
     }
 
     pub(in crate::fixed_validator) fn note_selected_proposal_removed(
@@ -737,7 +767,7 @@ impl fmt::Debug for FixedValidatorNodeHigherRoundInboxV0 {
             .debug_struct("FixedValidatorNodeHigherRoundInboxV0")
             .field("limits", &self.limits)
             .field("proposals", &self.proposals.len())
-            .field("prevote_variants", &self.prevotes.len())
+            .field("prevote_variants", &self.votes.len())
             .field(
                 "total_canonical_input_bytes",
                 &self.total_canonical_input_bytes,

@@ -4,7 +4,7 @@
 
 This document defines one caller-owned, process-local fixed-validator V0 inbox
 for fully admitted higher-round proposal tokens and individually authenticated
-proposal prevotes. The inbox may outlive successive closure-scoped node signing
+prevotes and precommits with nil or proposal targets. The inbox may outlive successive closure-scoped node signing
 callbacks in one process. It is not contained in node startup or signer state,
 has no canonical or durable encoding, and is empty after runtime-owner or
 process loss.
@@ -13,7 +13,7 @@ The inbox is an explicit composition above the existing proposal token, proposal
 buffer, exact signed-vote verifier, fixed typed round, canonical exact-batch
 certificate builder, and buffered proposal/precommit coordinator. It grants no
 new validity to any retained input. Every proposal token was fully admitted
-before insertion, every prevote is admitted against one exact typed round before
+before insertion, every vote is admitted against one exact typed round before
 insertion, and the selected proposal and prevote batch are fully verified again
 against live node state before any durable effect.
 
@@ -22,6 +22,16 @@ valid value, constructs a signing intent, writes an authority file, or selects a
 proposal, certificate, branch, or finalized value. Pairing occurs only when the
 caller explicitly invokes `try_pair_higher_round_inbox_at` with an exact
 position and inclusive caller-local round-work ceiling.
+
+The driver extends this custody with complete-snapshot quorum collection under
+`fixed-validator-higher-round-recovery-v0.md`. Its general higher-vote route
+performs all four exact typed-round active admissions before private retention.
+The older public proposal-prevote insertion and explicit proposal-pairing APIs
+remain specialized. Proposal pairing filters the shared vote storage to
+proposal prevotes; it never interprets a nil vote or precommit as a prevote.
+`prevote_len` counts only those proposal prevotes, while `len` and canonical
+input accounting cover every retained input. Drain returns the old
+`ProposalPrevote` items and additional `QuorumVote` items without byte loss.
 
 ## Combined local limits and representation
 
@@ -32,7 +42,7 @@ Construction requires two positive caller-local limits:
 
 One proposal token contributes one entry and exactly
 `canonical_proposal_control_bytes.len() + canonical_artifact_bytes.len()` bytes.
-One distinct proposal-prevote variant contributes one entry and exactly the
+One distinct signed-vote variant contributes one entry and exactly the
 fixed 214-byte canonical signed-vote length. Every conversion, item increment,
 and byte sum is checked. The inner proposal buffer uses the same upper limits,
 but is private and cannot be mutated independently of the combined accounting.
@@ -45,8 +55,8 @@ fallible and reject without mutation. Downstream certificate construction and
 encoding retain their existing allocation behavior, so these local limits are
 not a protocol-wide resource schedule or a claim that allocation cannot abort.
 
-The inbox and its entries are not cloneable. A retained prevote owns its sole
-canonical bytes plus descriptive parent-coordinate, position, proposal-root,
+The inbox and its entries are not cloneable. A retained vote owns its sole
+canonical bytes plus descriptive parent-coordinate, position, role, target,
 and signer fields derived during typed admission. Those descriptors are private
 indexing aids, not cached authority.
 

@@ -358,7 +358,7 @@ fn retained_higher_proposal_work_precedes_catchup_until_step_or_drain() {
                 }
                 if mode == "latched-ambiguity" {
                     driver = match driver.step().unwrap() {
-                        FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason: FixedValidatorNodeDriverBlockReasonV0::Ambiguous { .. } } => *driver,
+                        FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason: FixedValidatorNodeDriverBlockReasonV0::HigherQuorumsAmbiguous { .. } } => *driver,
                         _ => panic!("step must latch ambiguity"),
                     };
                 }
@@ -434,6 +434,8 @@ fn current_finality_classifications_precede_explicit_catchup() {
                 .unwrap();
             ready.run_with_signing_session(|scope| {
                 let (mut driver, timeout) = step_arm(driver_with_finality_limits(scope, 8, 1 << 20, 8, 1 << 20, 4, 1 << 20, 4));
+                let (_, higher_vote) = quorum(&fixture, 2, ConsensusVoteRole::Precommit, ConsensusVoteTarget::Nil);
+                (driver, _) = admit(driver, FixedValidatorNodeDriverEventV0::HigherRoundVote { canonical_signed_vote: higher_vote.into_boxed_slice() });
                 (driver, _) = admit(driver, current_finality_precommit_event(&left_vote));
                 if mode != "missing" { (driver, _) = admit(driver, current_finality_proposal_event(&left_control, &left_payload)); }
                 if matches!(mode, "conflicting" | "pair" | "saturated-pair") { (driver, _) = admit(driver, current_finality_precommit_event(&right_vote)); }
@@ -792,7 +794,7 @@ fn catchup_checkpoints_existing_lock_and_complete_valid_evidence_before_any_new_
         ConsensusVoteRole::Prevote,
         ConsensusVoteTarget::Proposal(root),
     );
-    for batch in [false, true] {
+    for mode in 0..3 {
         let (certificate, vote) = quorum(
             &fixture,
             4,
@@ -815,18 +817,28 @@ fn catchup_checkpoints_existing_lock_and_complete_valid_evidence_before_any_new_
                 assert!(released.is_some());
                 let (driver, _) = step_arm(driver);
                 let before = layout.images();
-                let driver = advanced(
-                    catch_up(
+                let driver = if mode == 2 {
+                    let (driver, _) = admit(
                         driver,
-                        batch,
-                        &certificate,
-                        &vote,
-                        4,
-                        ConsensusVoteRole::Precommit,
-                        ConsensusVoteTarget::Nil,
+                        FixedValidatorNodeDriverEventV0::HigherRoundVote {
+                            canonical_signed_vote: vote.clone().into_boxed_slice(),
+                        },
+                    );
+                    step_transition(driver)
+                } else {
+                    advanced(
+                        catch_up(
+                            driver,
+                            mode == 1,
+                            &certificate,
+                            &vote,
+                            4,
+                            ConsensusVoteRole::Precommit,
+                            ConsensusVoteTarget::Nil,
+                        )
+                        .unwrap(),
                     )
-                    .unwrap(),
-                );
+                };
                 assert_eq!(driver.position().round(), ConsensusRound::new(4));
                 assert_eq!(layout.images()[0..2], before[0..2]);
                 // Reopen immediately: no later signed vote can conceal a missing checkpoint.

@@ -74,6 +74,8 @@ pub enum FixedValidatorNodeDriverEventV0 {
     },
     /// One complete canonical signed higher-round proposal prevote.
     HigherRoundProposalPrevote { canonical_signed_prevote: Box<[u8]> },
+    /// One complete higher-round vote, admitted under the combined higher inbox budget.
+    HigherRoundVote { canonical_signed_vote: Box<[u8]> },
     /// The runtime reports that one exact driver-issued phase timer is due.
     TimeoutDue(FixedValidatorNodePhaseTimeoutV0),
 }
@@ -201,6 +203,8 @@ pub enum FixedValidatorNodeDriverAdmissionRejectionV0 {
     },
     /// Exact typed-round proposal-prevote admission or retention failed.
     PrevoteInbox(Box<FixedValidatorNodeHigherRoundInboxPrevoteInsertErrorV0>),
+    /// Higher-round general vote verification or bounded retention failed.
+    HigherVote(Box<FixedValidatorNodeDriverHigherVoteRejectionV0>),
     /// The returned timer does not equal the exact active driver ticket.
     TimeoutMismatch,
 }
@@ -317,6 +321,7 @@ impl fmt::Display for FixedValidatorNodeDriverAdmissionRejectionV0 {
                 "driver proposal prevote round {required:?} exceeds local ceiling {maximum:?}"
             ),
             Self::PrevoteInbox(source) => source.fmt(formatter),
+            Self::HigherVote(source) => source.fmt(formatter),
             Self::TimeoutMismatch => formatter.write_str(
                 "returned phase timer does not equal the driver's undisclosed active timer",
             ),
@@ -342,6 +347,7 @@ impl Error for FixedValidatorNodeDriverAdmissionRejectionV0 {
             Self::ProposalInbox(source) => Some(source.as_ref()),
             Self::PrevoteRouting(source) => Some(source),
             Self::PrevoteInbox(source) => Some(source.as_ref()),
+            Self::HigherVote(source) => Some(source.as_ref()),
             Self::CommandPending
             | Self::Blocked(_)
             | Self::CurrentEvidenceAfterDue { .. }
@@ -569,6 +575,11 @@ pub enum FixedValidatorNodeDriverBlockReasonV0 {
         first: FixedValidatorNodeDriverActionV0,
         second: FixedValidatorNodeDriverActionV0,
     },
+    /// Multiple higher-round quorum identities require explicit higher-inbox disposal.
+    HigherQuorumsAmbiguous {
+        first: FixedValidatorNodeDriverHigherQuorumV0,
+        second: FixedValidatorNodeDriverHigherQuorumV0,
+    },
     /// The current inbox denied an input and blocks current-class work until drain.
     CurrentSaturated {
         position: ConsensusPosition,
@@ -605,6 +616,10 @@ impl fmt::Display for FixedValidatorNodeDriverBlockReasonV0 {
             Self::Ambiguous { first, second } => write!(
                 formatter,
                 "driver snapshot has distinct actionable proposal quorums {first:?} and {second:?}"
+            ),
+            Self::HigherQuorumsAmbiguous { first, second } => write!(
+                formatter,
+                "driver snapshot has distinct higher-round quorums {first:?} and {second:?}"
             ),
             Self::CurrentSaturated {
                 position,
@@ -651,6 +666,8 @@ impl fmt::Display for FixedValidatorNodeDriverBlockReasonV0 {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FixedValidatorNodeDriverStepRejectionV0 {
+    /// Retained higher votes failed complete exact-round quorum reconstruction.
+    HigherQuorumSelection(QuorumCertificateBuildError),
     /// Temporary driver-selection storage could not be reserved.
     SelectionReservation(TryReserveError),
     /// Existing inbox classification rejected retained evidence before mutation.
@@ -672,6 +689,7 @@ pub enum FixedValidatorNodeDriverStepRejectionV0 {
 impl fmt::Display for FixedValidatorNodeDriverStepRejectionV0 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::HigherQuorumSelection(source) => source.fmt(formatter),
             Self::SelectionReservation(source) => write!(
                 formatter,
                 "driver selection storage reservation failed: {source}"
@@ -691,6 +709,7 @@ impl fmt::Display for FixedValidatorNodeDriverStepRejectionV0 {
 impl Error for FixedValidatorNodeDriverStepRejectionV0 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::HigherQuorumSelection(source) => Some(source),
             Self::SelectionReservation(source) => Some(source),
             Self::EvidenceSelection(source) | Self::EvidenceExecution(source) => {
                 Some(source.as_ref())

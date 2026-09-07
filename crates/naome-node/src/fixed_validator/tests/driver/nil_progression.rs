@@ -537,7 +537,6 @@ fn current_nil_precommit_saturation_is_independent_and_retained_quorum_still_adv
     let branch = fixed_branch(&fixture);
     let current = round_at(&branch, 0);
     let higher = round_at(&branch, 1);
-    let root = ProposalSigningRoot::from_bytes([0x72; 32]);
     let (_, finality_control, finality_payload) =
         proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
     let retained = signed_vote_bytes(
@@ -562,13 +561,9 @@ fn current_nil_precommit_saturation_is_independent_and_retained_quorum_still_adv
         ConsensusVoteTarget::Nil,
         &fixture.signing_key(),
     );
-    let higher_prevote = signed_vote_bytes(
-        fixture.context,
-        higher.position(),
-        ConsensusVoteRole::Prevote,
-        ConsensusVoteTarget::Proposal(root),
-        &fixture.signing_key(),
-    );
+    // Retain incomplete higher evidence, which cannot preempt this current quorum.
+    let (_, higher_control, higher_payload) =
+        proposal_inputs(&fixture, &branch, 1, ZfcAxiom::Union);
     let vote_bytes = u64::try_from(retained.len()).unwrap();
 
     for (label, maximum_entries, maximum_bytes) in [
@@ -601,7 +596,7 @@ fn current_nil_precommit_saturation_is_independent_and_retained_quorum_still_adv
                     driver,
                     current_finality_proposal_event(&finality_control, &finality_payload),
                 );
-                let (driver, _) = admit(driver, prevote_event(&higher_prevote));
+                let (driver, _) = admit(driver, proposal_event(1, &higher_control, &higher_payload));
                 let (driver, _) = admit(driver, current_nil_precommit_event(&retained));
                 let before_other_counts = (
                     driver.inbox_len(),
@@ -795,13 +790,9 @@ fn current_nil_precommit_precedes_competing_current_votes_and_due_without_custod
         ConsensusVoteTarget::Nil,
         &fixture.signing_key(),
     );
-    let higher_prevote = signed_vote_bytes(
-        fixture.context,
-        round_at(&branch, 2).position(),
-        ConsensusVoteRole::Prevote,
-        ConsensusVoteTarget::Proposal(root),
-        &fixture.signing_key(),
-    );
+    // Retain incomplete higher evidence, which cannot preempt this current quorum.
+    let (_, higher_control, higher_payload) =
+        proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
     let ready = fixture
         .provision(&layout, 8)
         .create(fixture.signing_key())
@@ -820,7 +811,7 @@ fn current_nil_precommit_precedes_competing_current_votes_and_due_without_custod
             assert!(released_proposal.is_none());
             let (driver, timeout) = step_arm(driver);
             let (driver, _) = admit(driver, current_finality_proposal_event(&control, &payload));
-            let (driver, _) = admit(driver, prevote_event(&higher_prevote));
+            let (driver, _) = admit(driver, proposal_event(2, &higher_control, &higher_payload));
             let (driver, _) = admit_due(driver, timeout);
             assert_eq!(driver.inbox_len(), 1);
             assert_eq!(driver.current_inbox_len(), 3);
