@@ -26,6 +26,9 @@ mod restart;
 #[path = "publication_restart.rs"]
 mod publication_restart;
 
+#[path = "partition_proof_catch_up.rs"]
+mod proof_catch_up;
+
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 const MILESTONE_BOUND: Duration = Duration::from_secs(45);
 type Images = Vec<(PathBuf, Vec<u8>)>;
@@ -383,12 +386,18 @@ fn start_on_h1(
     gates: &mut [Gate; 6],
     phase_millis: u64,
 ) -> ([Process; 4], [Images; 4]) {
-    let mut nodes = std::array::from_fn(|actor| {
-        Process::start(
-            &layouts[actor],
-            &corpus.config(&layouts[actor], actor, gates, phase_millis),
-        )
-    });
+    let configs =
+        std::array::from_fn(|actor| corpus.config(&layouts[actor], actor, gates, phase_millis));
+    start_on_h1_with_configs(corpus, layouts, gates, &configs)
+}
+
+fn start_on_h1_with_configs(
+    corpus: &Corpus,
+    layouts: &[Layout; 4],
+    gates: &mut [Gate; 6],
+    configs: &[String; 4],
+) -> ([Process; 4], [Images; 4]) {
+    let mut nodes = std::array::from_fn(|actor| Process::start(&layouts[actor], &configs[actor]));
     let addresses = nodes.each_mut().map(|node| {
         node.ready();
         let event = node.event("listening");

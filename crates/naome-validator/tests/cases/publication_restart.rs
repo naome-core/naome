@@ -9,11 +9,11 @@ use rustix::process::Signal;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, os::unix::process::ExitStatusExt};
 
-type Signed = BTreeMap<(u64, u64, u8), (Vec<u8>, Vec<u8>, [u8; 32])>;
+pub(super) type Signed = BTreeMap<(u64, u64, u8), (Vec<u8>, Vec<u8>, [u8; 32])>;
 
 // An independent oracle reads only stopped owners, verifies actual signatures,
 // and compares all old completion identities as well as exact message bytes.
-fn signed(corpus: &Corpus, layout: &Layout, actor: usize, through: u64) -> Signed {
+pub(super) fn signed(corpus: &Corpus, layout: &Layout, actor: usize, through: u64) -> Signed {
     let before = layout.images();
     let result = {
         let _guard = PARENT_JOURNALS.read().unwrap();
