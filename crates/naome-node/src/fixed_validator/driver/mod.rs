@@ -218,6 +218,24 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         self.scope().branch.context()
     }
 
+    /// Exact signed completions retained by this driver's anchored owner.
+    pub fn publication_history(
+        &self,
+    ) -> Result<
+        naome_storage::FixedValidatorPublicationHistoryV0<'_>,
+        Box<naome_storage::FixedValidatorVoteSafetyJournalErrorV0>,
+    > {
+        self.scope().publication_history()
+    }
+
+    /// Validates retained publication payloads against their exact historical
+    /// selected parents without source stores, new signing, or selection.
+    pub fn validate_publication_history(
+        &self,
+    ) -> Result<(), super::FixedValidatorNodePublicationRecoveryErrorV0> {
+        self.scope().validate_publication_history()
+    }
+
     /// Borrows the identity of the currently issued timer, if one is active.
     ///
     /// This diagnostic does not transfer a pending arm command, prove elapsed

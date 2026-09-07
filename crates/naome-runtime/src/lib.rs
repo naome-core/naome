@@ -3,9 +3,12 @@
 //! The runtime composes the existing sole-scope driver and authenticated direct
 //! delivery. Consensus verification, signing, and finality remain in the driver.
 //! Its explicit local timing and routing policy does not establish production
-//! timing, general gossip, durable delivery, or distributed liveness.
+//! timing, general gossip, or distributed liveness. The optional publication
+//! journal recovers exact signed bytes and durable per-peer transport receipts.
 
 mod owner;
+mod publication_journal;
+pub use publication_journal::FixedValidatorPublicationJournalErrorV0;
 mod publication;
 mod routing;
 mod timer;

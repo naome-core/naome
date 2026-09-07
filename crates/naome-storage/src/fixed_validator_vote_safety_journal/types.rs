@@ -300,6 +300,7 @@ pub struct FixedValidatorSignedProposalV0 {
     pub(super) position: ConsensusPosition,
     pub(super) proposal_signing_root: ProposalSigningRoot,
     pub(super) canonical_proposal_control_bytes: Vec<u8>,
+    pub(super) canonical_artifact_bytes: Option<Vec<u8>>,
     pub(super) state_id: FixedValidatorVoteSafetyJournalStateIdV0,
 }
 
@@ -314,6 +315,11 @@ impl FixedValidatorSignedProposalV0 {
 
     pub fn canonical_proposal_control_bytes(&self) -> &[u8] {
         &self.canonical_proposal_control_bytes
+    }
+
+    /// Exact payload committed with completion; absent only for legacy records.
+    pub fn canonical_artifact_bytes(&self) -> Option<&[u8]> {
+        self.canonical_artifact_bytes.as_deref()
     }
 
     pub const fn state_id(&self) -> FixedValidatorVoteSafetyJournalStateIdV0 {

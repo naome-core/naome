@@ -169,6 +169,41 @@ fn validator_status(process: &mut Process, id: u64) -> Value {
     response["outcome"].clone()
 }
 
+fn received_publications(process: &mut Process, id: u64, height: usize, targets: &[PeerId]) {
+    // At most one proposal, prevote and precommit are released locally per
+    // height. Drain their actual receipts before proving serving is read-only.
+    for _ in 0..=3 {
+        let state = validator_status(process, id);
+        assert_eq!(state["driver"]["height"], height.to_string());
+        assert_eq!(state["driver"]["phase"], "Proposal");
+        assert_eq!(state["publication_recovery_remaining"], 0);
+        if state["publication"].is_null() {
+            let prepared = process
+                .observed
+                .iter()
+                .filter(|event| event["event"] == "publication_prepared")
+                .count();
+            let completed: Vec<_> = process
+                .observed
+                .iter()
+                .filter(|event| event["event"] == "publication_complete")
+                .collect();
+            assert_eq!(prepared, completed.len());
+            for event in completed {
+                let deliveries = event["disposed"]["deliveries"].as_array().unwrap();
+                assert_eq!(deliveries.len(), targets.len());
+                for (delivery, target) in deliveries.iter().zip(targets) {
+                    assert_eq!(delivery["peer"], target.to_string());
+                    assert_eq!(delivery["state"], "received");
+                }
+            }
+            return;
+        }
+        process.event("publication_complete");
+    }
+    panic!("publication receipts did not settle within the local height bound");
+}
+
 fn authority_images(layout: &Layout) -> Image {
     let mut result = layout.images();
     for directory in ["vote-journal", "vote-anchor"] {
@@ -322,6 +357,14 @@ fn validator_provider_four_actual_signers_feed_archive_then_both_strictly_reopen
                 hex(block.id().as_bytes())
             );
         }
+        for (actor, owner) in validators.iter_mut().enumerate() {
+            let targets: Vec<_> = validator_ids
+                .iter()
+                .enumerate()
+                .filter_map(|(other, id)| (other != actor).then_some(*id))
+                .collect();
+            received_publications(owner, 230 + index as u64, index + 2, &targets);
+        }
         // The fixture supplies no consensus signatures or complete envelopes.
         // Remove the author's artifact files before any archive request.
         fs::remove_file(layouts[actor].root.join("block.bin")).unwrap();
@@ -371,7 +414,7 @@ fn validator_provider_four_actual_signers_feed_archive_then_both_strictly_reopen
         );
     }
     let source_before = authority_images(&layouts[0]);
-    let reopened_config = validator_config(
+    let changed_targets = validator_config(
         &fixture,
         &layouts[0],
         0,
@@ -384,6 +427,17 @@ fn validator_provider_four_actual_signers_feed_archive_then_both_strictly_reopen
         Some(true),
     )
     .replace("mode = \"create\"", "mode = \"open\"");
+    let mut refused = start_validator(&layouts[0], &changed_targets);
+    assert_eq!(refused.event("error")["code"], "publication_journal");
+    assert!(!refused.exit().success());
+    assert!(!refused.observed.iter().any(|event| matches!(
+        event["event"].as_str(),
+        Some("ready" | "listening" | "proof_response_queued")
+    )));
+    assert_eq!(authority_images(&layouts[0]), source_before);
+    // Delivery debt remains bound to the original ordered recipients even
+    // when this restarted process is currently serving only archive readers.
+    let reopened_config = configs[0].replace("mode = \"create\"", "mode = \"open\"");
     let mut provider = start_validator(&layouts[0], &reopened_config);
     assert_eq!(provider.ready()["driver"]["height"], "3");
     let provider_address = archive::listening(&mut provider);

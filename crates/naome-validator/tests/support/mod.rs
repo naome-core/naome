@@ -101,6 +101,19 @@ impl Drop for Layout {
     }
 }
 
+/// Compare authority and incidental files while allowing only the separately
+/// specified delivery snapshot to record a receipt or a restart attempt.
+pub fn without_delivery_progress(images: &[(PathBuf, Vec<u8>)]) -> Vec<&(PathBuf, Vec<u8>)> {
+    images
+        .iter()
+        .filter(|(path, _)| {
+            !path
+                .extension()
+                .is_some_and(|extension| extension == "deliveries")
+        })
+        .collect()
+}
+
 pub struct Fixture {
     pub definition: ArtifactChainDefinition,
     pub context: ConsensusContextV0,
@@ -277,6 +290,101 @@ round_increment_millis = "1"
         )
         .create(self.keys[0].clone())
         .unwrap()
+    }
+
+    /// Strict replay of stopped owners must retain the original signature,
+    /// payload and completion identity even if ordinary consensus progressed.
+    pub fn retained_proposal(
+        &self,
+        layout: &Layout,
+        round: u64,
+    ) -> naome_storage::FixedValidatorSignedProposalV0 {
+        use naome_consensus::{ConsensusHeight, ConsensusPosition, ConsensusRound};
+        use naome_storage::*;
+        let before = layout.images();
+        let proposal = {
+            let _guard = PARENT_JOURNALS.read().unwrap();
+            let finality = FixedValidatorAnchoredFinalityJournalV0::open(
+                layout.root.join("finality-journal"),
+                layout.root.join("finality-anchor"),
+                self.definition,
+                self.context,
+                &self.entries,
+                FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
+            )
+            .unwrap();
+            let journal = FixedValidatorAnchoredVoteSafetyJournalV0::open(
+                layout.root.join("vote-journal"),
+                layout.root.join("vote-anchor"),
+                self.context,
+                finality.fixed_agreement_set_id(),
+                self.keys[0].clone(),
+                FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+            )
+            .unwrap();
+            assert!(journal.pending_vote().unwrap().is_none());
+            assert!(journal.pending_proposal().unwrap().is_none());
+            let proposal = journal
+                .retained_signed_proposal(ConsensusPosition::new(
+                    ConsensusHeight::new(1),
+                    ConsensusRound::new(round),
+                ))
+                .unwrap()
+                .unwrap()
+                .clone();
+            assert!(finality.finalized_len().unwrap() <= 1);
+            if let Some(record) = finality.finality_record(ConsensusHeight::new(1)).unwrap() {
+                assert_eq!(
+                    record.value().proposal_signing_root(),
+                    proposal.proposal_signing_root()
+                );
+                assert_eq!(
+                    Some(record.canonical_artifact_bytes()),
+                    proposal.canonical_artifact_bytes()
+                );
+            }
+            proposal
+        };
+        assert_eq!(
+            layout.images(),
+            before,
+            "strict journal replay is read-only"
+        );
+        proposal
+    }
+
+    /// Releasing recovered proposal custody permits fresh votes and finality.
+    /// Check exact history prefixes and incidental files; callers also strictly
+    /// reopen both anchored journals and compare the retained proposal.
+    pub fn assert_append_only_restart_progress(
+        &self,
+        before: &[(PathBuf, Vec<u8>)],
+        after: &[(PathBuf, Vec<u8>)],
+    ) {
+        let signer = hex(key(&self.keys[0]).as_bytes());
+        let vote_journal = PathBuf::from(format!(
+            "vote-journal/fixed-validator-vote-safety-{signer}.journal"
+        ));
+        let vote_anchor = PathBuf::from(format!(
+            "vote-anchor/fixed-validator-vote-safety-{signer}.anchor"
+        ));
+        let deliveries = PathBuf::from(format!(
+            "vote-journal/fixed-validator-publication-{signer}.deliveries"
+        ));
+        assert_eq!(before.len(), after.len());
+        for ((path, old), (after_path, new)) in before.iter().zip(after) {
+            assert_eq!(path, after_path);
+            if path == &vote_journal || path == Path::new("finality-journal/artifact-chain.journal")
+            {
+                assert!(new.starts_with(old), "recovery rewrote journal {path:?}");
+            } else if path == &deliveries {
+                assert_ne!(old, new, "recovery must persist its resend attempt");
+            } else if path != &vote_anchor
+                && path != Path::new("finality-anchor/fixed-validator-finality.anchor")
+            {
+                assert_eq!(old, new, "recovery changed incidental file {path:?}");
+            }
+        }
     }
 }
 

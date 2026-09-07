@@ -221,6 +221,27 @@ pub struct StaticArtifactNetwork {
 }
 
 impl StaticArtifactNetwork {
+    /// Reserves one of the existing eight outbound slots for consensus. This
+    /// local profile must be enabled before any request or retained completion;
+    /// ordinary standalone archive networks retain their eight-slot policy.
+    pub fn reserve_consensus_capacity(&mut self) -> Result<(), RequestStartError> {
+        if self.pending_budget.active.load(Ordering::Relaxed) != 0 {
+            return Err(RequestStartError::GlobalLimit {
+                maximum: MAX_PENDING_REQUESTS - 1,
+            });
+        }
+        self.pending_budget
+            .consensus_reserved
+            .store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Reports current aggregate capacity for a consensus attempt. This is a
+    /// scheduling hint, not a reservation or a promise of peer admissibility.
+    pub fn consensus_capacity_available(&self) -> bool {
+        self.pending_budget.active.load(Ordering::Relaxed) < MAX_PENDING_REQUESTS
+    }
+
     /// Reports static transport configuration, not connectivity or consensus trust.
     pub fn is_configured_peer(&self, peer_id: &PeerId) -> bool {
         self.swarm
@@ -459,15 +480,28 @@ impl StaticArtifactNetwork {
         peer_id: PeerId,
         transport_connected: bool,
     ) -> Result<usize, RequestStartError> {
+        self.preflight_request_class(peer_id, transport_connected, false)
+    }
+
+    fn preflight_request_class(
+        &self,
+        peer_id: PeerId,
+        transport_connected: bool,
+        consensus: bool,
+    ) -> Result<usize, RequestStartError> {
         let sessions = &self.swarm.behaviour().sessions;
         let Some(peer_index) = sessions.peer_index(&peer_id) else {
             return Err(RequestStartError::UnknownPeer(peer_id));
         };
-        if self
-            .pending
-            .values()
-            .any(|pending| pending.peer_index() == peer_index)
-        {
+        if self.pending.values().any(|pending| {
+            pending.peer_index() == peer_index
+                && (!consensus
+                    || !self
+                        .pending_budget
+                        .consensus_reserved
+                        .load(Ordering::Relaxed)
+                    || matches!(pending, PendingRequest::ConsensusPush(_)))
+        }) {
             return Err(RequestStartError::AlreadyPending(peer_id));
         }
         let session_connected = sessions
@@ -1079,19 +1113,55 @@ pub enum NetworkEvent {
 #[derive(Default)]
 struct PendingBudget {
     active: AtomicUsize,
+    background: AtomicUsize,
+    consensus_reserved: AtomicBool,
 }
 
 impl PendingBudget {
     fn try_acquire(budget: &Arc<Self>) -> Option<PendingPermit> {
-        budget
-            .active
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
-                (active < MAX_PENDING_REQUESTS).then_some(active + 1)
-            })
-            .ok()?;
+        Self::acquire_count(budget, 1, false).ok()?;
         Some(PendingPermit {
             budget: Arc::clone(budget),
+            background: true,
         })
+    }
+
+    fn try_acquire_consensus(budget: &Arc<Self>) -> Option<PendingPermit> {
+        Self::acquire_count(budget, 1, true).ok()?;
+        Some(PendingPermit {
+            budget: Arc::clone(budget),
+            background: false,
+        })
+    }
+
+    fn acquire_count(budget: &Arc<Self>, count: usize, consensus: bool) -> Result<(), usize> {
+        if !consensus {
+            let maximum = MAX_PENDING_REQUESTS
+                - usize::from(budget.consensus_reserved.load(Ordering::Relaxed));
+            budget
+                .background
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                    active
+                        .checked_add(count)
+                        .filter(|projected| *projected <= maximum)
+                })
+                .map_err(|active| maximum.saturating_sub(active))?;
+        }
+        if let Err(active) =
+            budget
+                .active
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                    active
+                        .checked_add(count)
+                        .filter(|projected| *projected <= MAX_PENDING_REQUESTS)
+                })
+        {
+            if !consensus {
+                budget.background.fetch_sub(count, Ordering::Relaxed);
+            }
+            return Err(MAX_PENDING_REQUESTS.saturating_sub(active));
+        }
+        Ok(())
     }
 
     fn try_acquire_many(
@@ -1099,17 +1169,11 @@ impl PendingBudget {
         count: usize,
     ) -> Result<[Option<PendingPermit>; MAX_PENDING_REQUESTS], usize> {
         debug_assert!((1..=MAX_PENDING_REQUESTS).contains(&count));
-        budget
-            .active
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
-                active
-                    .checked_add(count)
-                    .filter(|projected| *projected <= MAX_PENDING_REQUESTS)
-            })
-            .map_err(|active| MAX_PENDING_REQUESTS.saturating_sub(active))?;
+        Self::acquire_count(budget, count, false)?;
         Ok(std::array::from_fn(|index| {
             (index < count).then(|| PendingPermit {
                 budget: Arc::clone(budget),
+                background: true,
             })
         }))
     }
@@ -1117,12 +1181,17 @@ impl PendingBudget {
 
 pub(crate) struct PendingPermit {
     budget: Arc<PendingBudget>,
+    background: bool,
 }
 
 impl Drop for PendingPermit {
     fn drop(&mut self) {
         let previous = self.budget.active.fetch_sub(1, Ordering::Relaxed);
         debug_assert!(previous > 0);
+        if self.background {
+            let previous = self.budget.background.fetch_sub(1, Ordering::Relaxed);
+            debug_assert!(previous > 0);
+        }
     }
 }
 

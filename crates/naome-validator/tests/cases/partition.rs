@@ -23,6 +23,9 @@ use gated_tcp::Gate;
 #[path = "partition_process_restart.rs"]
 mod restart;
 
+#[path = "publication_restart.rs"]
+mod publication_restart;
+
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 const MILESTONE_BOUND: Duration = Duration::from_secs(45);
 type Images = Vec<(PathBuf, Vec<u8>)>;
@@ -34,9 +37,9 @@ struct Corpus {
     entries: [ActiveAgreementEntry; 4],
     noise: [[u8; 32]; 4],
     peers: [PeerId; 4],
-    proposers: [usize; 2],
-    blocks: [ArtifactBlock; 2],
-    payloads: [Vec<u8>; 2],
+    proposers: [usize; 3],
+    blocks: [ArtifactBlock; 3],
+    payloads: [Vec<u8>; 3],
 }
 impl Corpus {
     fn new(weights: [u16; 4]) -> Self {
@@ -78,7 +81,7 @@ impl Corpus {
                 .unwrap()
         });
         assert_eq!(entries[proposers[0]].consensus_key(), round.proposer());
-        let payloads = [1, 2].map(|value| {
+        let payloads = [1, 2, 3].map(|value| {
             ArtifactPayload::Proof(
                 ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, 0x10, value]).unwrap(),
             )

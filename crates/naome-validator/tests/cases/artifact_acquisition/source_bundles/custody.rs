@@ -185,8 +185,24 @@ fn bundle_staging_and_export_preserve_real_in_flight_precommit_and_its_original_
     let complete = node.event("publication_complete");
     assert_eq!(complete["disposed"]["released_proposal"], true);
     assert_eq!(complete["disposed"]["deliveries"][0]["state"], "received");
+    assert_eq!(
+        complete["disposed"]["signer_state"],
+        state["publication"]["signer_state"]
+    );
+    assert_eq!(
+        complete["disposed"]["message_sha256"],
+        state["publication"]["message_sha256"]
+    );
     assert_eq!(source_images(&layout), sources);
-    assert_eq!(layout.images(), authority);
+    let acknowledged = layout.images();
+    assert_ne!(
+        acknowledged, authority,
+        "the receipt must be recorded separately"
+    );
+    assert_eq!(
+        without_delivery_progress(&acknowledged),
+        without_delivery_progress(&authority)
+    );
     node.shutdown();
     sdk.stop();
     drop(provider_guard);
@@ -197,5 +213,5 @@ fn bundle_staging_and_export_preserve_real_in_flight_precommit_and_its_original_
     }
     reopened.shutdown();
     assert_eq!(source_images(&layout), sources);
-    assert_eq!(layout.images(), authority);
+    assert_eq!(layout.images(), acknowledged);
 }

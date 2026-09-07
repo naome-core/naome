@@ -95,7 +95,9 @@ later request can be served. Strict restart classifies both journal/anchor
 pairs before runtime ownership or listening. Terminal, pending or mismatched
 restart states do not start this provider. A ready strict reopen can serve its
 retained first proofs without the original proposal input files. This option
-restores no pending request, publication, archive sync intent or outbox.
+restores no pending provider request or archive sync intent. The executable's
+independent [publication lifecycle](fixed-validator-publication-lifecycle-v0.md)
+recovers its original consensus publications and separate receipt progress.
 
 ## Evidence and limits
 

@@ -218,6 +218,7 @@ fn stored_retained_authoring_uses_real_round_zero_certificate_across_round_and_r
         assert_eq!(valid.canonical_prevote_certificate(), certificate);
     }
     assert_eq!(layout.images(), authority);
+    let original = fixture.retained_proposal(&layout, 1);
     let mut reopened = Process::start(
         &layout,
         &config.replace("mode = \"create\"", "mode = \"open\""),
@@ -228,7 +229,26 @@ fn stored_retained_authoring_uses_real_round_zero_certificate_across_round_and_r
     assert!(
         result(&mut reopened, json!({"command":"sources_status", "id":6}))["acquisition"].is_null()
     );
+    // Current-height historical completions may be locally replayed first.
+    // Identify this exact unacknowledged R1 proposal in the ordered reports.
+    let completed = |v: &Value| {
+        v["event"] == "publication_complete"
+            && v["disposed"]["signer_state"] == stopped["discarded"]["publication"]["signer_state"]
+    };
+    let recovered = reopened
+        .observed
+        .iter()
+        .find(|v| completed(v))
+        .cloned()
+        .unwrap_or_else(|| reopened.until(completed));
+    assert_eq!(
+        recovered["disposed"]["message_sha256"],
+        stopped["discarded"]["publication"]["message_sha256"]
+    );
+    assert_eq!(recovered["disposed"]["recovered"], true);
+    assert_eq!(recovered["disposed"]["deliveries"][0]["state"], "refused");
     reopened.shutdown();
     assert_eq!(source_images(&layout), sources);
-    assert_eq!(layout.images(), authority);
+    fixture.assert_append_only_restart_progress(&authority, &layout.images());
+    assert_eq!(fixture.retained_proposal(&layout, 1), original);
 }

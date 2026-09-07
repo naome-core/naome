@@ -21,7 +21,8 @@ signing branch's exact artifact head.
 There is no candidate/payload serving policy, automatic source population from
 file-backed authoring or received consensus messages, source discovery, target
 selection, retry schedule, automatic conflict invocation, selected-state
-recovery-bundle installation, or durable job/outbox. Separate
+recovery-bundle installation, or durable acquisition job/outbox. Consensus has a
+separate mandatory [publication lifecycle](fixed-validator-publication-lifecycle-v0.md). Separate
 [offline bundle commands](fixed-validator-process-source-bundles-v0.md) can export
 from the live current head or stage only unselected source entries. The independent opt-in
 [complete-proof provider](fixed-validator-proof-provider-v0.md) retains its own
@@ -190,11 +191,12 @@ even when a terminal report cannot be delivered. A writer failure retains a
 wakeup for the awaited owner, so idle open stdin and a held network request do
 not delay source/authority release until another command or consensus deadline.
 
-Artifact requests and publications share the unchanged per-peer slot and
-aggregate transport permits. Either may refuse the other. An ordinary
-publication's peer attempt remains one-shot; finishing or cancelling acquisition
-does not retry it. Restart restores only lower durable sources and authority
-state. It restores no acquisition ID, cursor, pending response, retry or job.
+Artifact requests and publications share eight aggregate transport permits.
+`PROD-020-058` reserves one slot for consensus and permits it across an existing
+same-peer artifact request. New acquisition still refuses an occupied peer slot;
+finishing publication never retries acquisition. Strict restart independently
+recovers consensus publication and lower durable sources/authority. It restores
+no acquisition ID, cursor, pending response, retry or job.
 
 ## Separate anchored authoring
 

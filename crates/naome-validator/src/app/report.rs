@@ -13,6 +13,7 @@ use naome_runtime::{
     FixedValidatorRuntimePublicationV0 as Publication, FixedValidatorRuntimeV0 as Runtime,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 
 use super::Result;
@@ -108,8 +109,21 @@ pub(super) fn driver(driver: Option<&FixedValidatorNodeDriverV0<'_>>) -> Value {
 }
 
 pub(super) fn publication(publication: &Publication) -> Value {
+    let digests = match publication.message() {
+        Message::Proposal {
+            proposal,
+            canonical_artifact_bytes,
+        } => message_digests(
+            proposal.canonical_proposal_control_bytes(),
+            Some(canonical_artifact_bytes),
+        ),
+        Message::Vote { vote, .. } => message_digests(vote.canonical_bytes(), None),
+    };
     json!({
         "size": format!("{:?}", publication.message().size()),
+        "signer_state": hex(publication.message().state_id().as_bytes()),
+        "recovered": publication.recovered(),
+        "message_sha256": digests,
         "local_admission_attempted": publication.local_admission_attempted(),
         "released_proposal": matches!(publication.message(), Message::Vote { released_proposal: Some(_), .. }),
         "deliveries": publication.deliveries().map(|delivery| json!({
@@ -117,13 +131,14 @@ pub(super) fn publication(publication: &Publication) -> Value {
             "state": match delivery.state() {
                 Delivery::NotAttempted => "not_attempted", Delivery::InFlight(_) => "in_flight",
                 Delivery::Refused(_) => "refused", Delivery::Failed(_) => "failed", Delivery::Received(_) => "received",
+                Delivery::PreviouslyReceived => "previously_received",
             },
         })).collect::<Vec<_>>(),
     })
 }
 
 pub(super) fn status(runtime: &Runtime<'_>) -> Value {
-    json!({ "driver": driver(runtime.driver()), "timer": runtime.timer().is_some(), "publication": runtime.pending_publication().map(publication) })
+    json!({ "driver": driver(runtime.driver()), "timer": runtime.timer().is_some(), "publication": runtime.pending_publication().map(publication), "publication_recovery_remaining": runtime.publication_recovery_remaining() })
 }
 
 pub(super) fn stopped(runtime: Runtime<'_>, reason: &str, queued_commands: usize) -> Value {
@@ -155,6 +170,9 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
         Event::PublicationPrepared(size) => {
             json!({"event": "publication_prepared", "size": format!("{size:?}")})
         }
+        Event::PublicationRecovered { state_id, size } => {
+            json!({"event": "publication_recovered", "signer_state": hex(state_id.as_bytes()), "size": format!("{size:?}")})
+        }
         Event::PeerAttempted { peer_id, started } => {
             json!({"event": "peer_attempted", "peer": peer_id.to_string(), "started": started})
         }
@@ -165,7 +183,16 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
             json!({"event": "publication_complete", "disposed": publication(&value)})
         }
         Event::Admission(report) => {
-            json!({"event": "admission", "source": match report.source { InputSource::LocalPublication => json!({"kind": "local_publication"}), InputSource::CallerInput => json!({"kind": "caller"}), InputSource::Peer(peer) => json!({"kind": "peer", "peer": peer.to_string()}) }, "receipt_queued": report.receipt_queued, "all_admitted": report.all_admitted(), "routing_error": report.routing_error.is_some(), "routes": report.results.iter().flatten().map(|result| json!({"route": format!("{:?}", result.route), "admitted": result.result.is_ok()})).collect::<Vec<_>>() })
+            let digests = report.input.as_ref().map(|input| match input {
+                naome_network::ConsensusPushMessage::Proposal {
+                    canonical_proposal,
+                    canonical_artifact,
+                } => message_digests(canonical_proposal, Some(canonical_artifact)),
+                naome_network::ConsensusPushMessage::Vote { canonical_vote } => {
+                    message_digests(canonical_vote, None)
+                }
+            });
+            json!({"event": "admission", "source": match report.source { InputSource::LocalPublication => json!({"kind": "local_publication"}), InputSource::CallerInput => json!({"kind": "caller"}), InputSource::Peer(peer) => json!({"kind": "peer", "peer": peer.to_string()}) }, "message_sha256": digests, "receipt_queued": report.receipt_queued, "all_admitted": report.all_admitted(), "routing_error": report.routing_error.is_some(), "routes": report.results.iter().flatten().map(|result| json!({"route": format!("{:?}", result.route), "admitted": result.result.is_ok()})).collect::<Vec<_>>() })
         }
         Event::Network(NetworkEvent::Listening { address }) => {
             json!({"event": "listening", "address": address.to_string()})
@@ -259,4 +286,10 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+// Diagnostic fingerprints of the original bounded byte sections, not a new
+// consensus message identity, peer trust assertion, or receipt capability.
+fn message_digests(control: &[u8], artifact: Option<&[u8]>) -> Value {
+    json!({"control": hex(&Sha256::digest(control)), "artifact": artifact.map(|bytes| hex(&Sha256::digest(bytes)))})
 }

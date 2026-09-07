@@ -384,6 +384,12 @@ fn disposal_preserves_in_flight_released_publication_and_completion_does_not_rei
     peer.ready();
     node.until(|v| v["event"] == "peer_session" && v["state"] == "established");
     peer.until(|v| v["event"] == "peer_session" && v["state"] == "established");
+    // The old disconnected prevote now has durable resend debt. Finish its
+    // reconnect delivery before withholding the later precommit's receipt.
+    let recovered = node.event("publication_complete");
+    assert_eq!(recovered["disposed"]["recovered"], true);
+    assert_eq!(recovered["disposed"]["deliveries"][0]["state"], "received");
+    let publication_start = node.observed.len();
     peer.signal(rustix::process::Signal::STOP);
     assert_eq!(
         result(
@@ -430,7 +436,11 @@ fn disposal_preserves_in_flight_released_publication_and_completion_does_not_rei
     assert_eq!(refused["event"], "proof_refused");
     assert_eq!(refused["reason"], "busy");
     assert_eq!(refused["state"], state);
-    assert!(!node.observed.iter().any(|v| v["event"] == "peer_completed"));
+    assert!(
+        !node.observed[publication_start..]
+            .iter()
+            .any(|v| v["event"] == "peer_completed")
+    );
     peer.signal(rustix::process::Signal::CONT);
     let receipt = node.event("peer_completed");
     assert_eq!(receipt["received"], true);
@@ -446,7 +456,15 @@ fn disposal_preserves_in_flight_released_publication_and_completion_does_not_rei
     for (_, field) in CLASSES {
         assert_eq!(after["driver"][field], 0);
     }
-    assert_eq!(layout.images(), before);
+    let acknowledged = layout.images();
+    assert_ne!(
+        acknowledged, before,
+        "the current receipt is durable progress"
+    );
+    assert_eq!(
+        without_delivery_progress(&acknowledged),
+        without_delivery_progress(&before)
+    );
     node.shutdown();
     peer.shutdown();
     let mut reopened = Process::start(&layout, &config.replace("create", "open"));
@@ -458,5 +476,5 @@ fn disposal_preserves_in_flight_released_publication_and_completion_does_not_rei
         assert_eq!(ready["driver"][field], 0);
     }
     reopened.shutdown();
-    assert_eq!(layout.images(), before);
+    assert_eq!(layout.images(), acknowledged);
 }

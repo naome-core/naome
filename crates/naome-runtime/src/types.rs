@@ -104,6 +104,10 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     DriverBlocked(FixedValidatorNodeDriverBlockReasonV0),
     DriverRejected(Box<FixedValidatorNodeDriverStepRejectionV0>),
     PublicationPrepared(ConsensusPushSize),
+    PublicationRecovered {
+        state_id: naome_storage::FixedValidatorVoteSafetyJournalStateIdV0,
+        size: ConsensusPushSize,
+    },
     PeerAttempted {
         peer_id: PeerId,
         started: bool,
@@ -180,6 +184,7 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
 
 #[derive(Debug)]
 pub enum FixedValidatorRuntimeFailureV0 {
+    Publication(crate::FixedValidatorPublicationJournalErrorV0),
     Step(FixedValidatorNodeDriverStepErrorV0),
     Admission(FixedValidatorNodeDriverAdmissionErrorV0),
     VoteSignerStopped(FixedValidatorVoteSafetyHaltV0),
@@ -203,8 +208,10 @@ impl fmt::Display for FixedValidatorRuntimeFailureV0 {
 
 impl Error for FixedValidatorRuntimeFailureV0 {}
 
-/// All surviving ownership on an explicit runtime teardown, with no cancellation
-/// or recovery claim. In-flight tickets remain inside `publication`.
+/// Volatile custody on an explicit runtime teardown, with no cancellation or
+/// recovery claim. In-flight tickets remain inside `publication`. The delivery
+/// journal lock and replay schedule are released; strict reopening reconstructs
+/// durable publication debt from the anchored signer and receipt snapshot.
 #[must_use]
 pub struct FixedValidatorRuntimePartsV0<'node> {
     pub driver: Option<FixedValidatorNodeDriverV0<'node>>,

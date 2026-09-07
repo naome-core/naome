@@ -168,6 +168,8 @@ pub enum FixedValidatorNodeProposalAuthoringErrorV0 {
     Acknowledge(Box<FixedValidatorVoteSafetyJournalErrorV0>),
     /// Key use, self-verification, completion, or completion anchoring failed.
     Sign(Box<FixedValidatorVoteSafetyJournalErrorV0>),
+    /// The retained completed proposal payload could not be copied for release.
+    PublicationPayloadCopy(TryReserveError),
 }
 
 impl fmt::Display for FixedValidatorNodeProposalAuthoringErrorV0 {
@@ -202,6 +204,10 @@ impl fmt::Display for FixedValidatorNodeProposalAuthoringErrorV0 {
                 "node proposal preparation acknowledgement failed: {source}"
             ),
             Self::Sign(source) => write!(formatter, "node proposal signing failed: {source}"),
+            Self::PublicationPayloadCopy(source) => write!(
+                formatter,
+                "completed proposal payload could not be copied: {source}"
+            ),
         }
     }
 }
@@ -210,6 +216,7 @@ impl Error for FixedValidatorNodeProposalAuthoringErrorV0 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Round(source) => Some(source),
+            Self::PublicationPayloadCopy(source) => Some(source),
             Self::Session(source)
             | Self::Prepare(source)
             | Self::Acknowledge(source)
@@ -455,6 +462,18 @@ impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
         let mut payload = Vec::new();
         let outcome =
             self.author_proposal_with_input(inclusive_maximum_round, input, Some(&mut payload))?;
+        if let FixedValidatorNodeProposalAuthoringOutcomeV0::Authored { proposal, .. } = &outcome
+            && let Some(retained) = proposal.canonical_artifact_bytes()
+            && retained != payload
+        {
+            // An idempotent request names the original completion. Publish its
+            // exact payload even if a caller supplied another valid encoding.
+            payload.clear();
+            payload
+                .try_reserve_exact(retained.len())
+                .map_err(FixedValidatorNodeProposalAuthoringErrorV0::PublicationPayloadCopy)?;
+            payload.extend_from_slice(retained);
+        }
         Ok((outcome, payload))
     }
 

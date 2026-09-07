@@ -553,6 +553,7 @@ fn shutdown_reports_in_flight_publication_and_discards_inboxes_before_strict_reo
     assert_eq!(source_layout.images(), before);
     receiver.signal(rustix::process::Signal::CONT);
     receiver.shutdown();
+    let original = fixture.retained_proposal(&source_layout, 0);
     let mut reopened = Process::start(&source_layout, &config.replace("create", "open"));
     let state = reopened.ready();
     assert_eq!(state["driver"]["height"], "1");
@@ -560,8 +561,19 @@ fn shutdown_reports_in_flight_publication_and_discards_inboxes_before_strict_reo
     assert_eq!(state["driver"]["current_inbox"], 0);
     assert_eq!(state["driver"]["finality_inbox"], 0);
     assert!(state["publication"].is_null());
+    assert_eq!(
+        reopened.event("publication_recovered")["signer_state"],
+        stopped["discarded"]["publication"]["signer_state"]
+    );
+    assert_eq!(reopened.event("peer_attempted")["started"], false);
+    assert_eq!(
+        reopened.event("publication_complete")["disposed"]["message_sha256"],
+        stopped["discarded"]["publication"]["message_sha256"]
+    );
     reopened.shutdown();
-    assert_eq!(source_layout.images(), before);
+    let after = source_layout.images();
+    fixture.assert_append_only_restart_progress(&before, &after);
+    assert_eq!(fixture.retained_proposal(&source_layout, 0), original);
 }
 
 #[test]

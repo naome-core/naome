@@ -208,9 +208,35 @@ fn candidate_proofs_preserve_positive_busy_and_consuming_historical_custody_duri
             for field in ["height", "round", "phase", "head"] {
                 assert_eq!(ready["driver"][field], initial["driver"][field]);
             }
+            let recovered = reopened.event("publication_recovered");
+            assert_eq!(
+                recovered["signer_state"],
+                initial["publication"]["signer_state"]
+            );
+            assert_eq!(reopened.event("peer_attempted")["started"], false);
+            let completed = reopened.event("publication_complete");
+            assert_eq!(
+                completed["disposed"]["message_sha256"],
+                initial["publication"]["message_sha256"]
+            );
             reopened.shutdown();
         }
-        assert_eq!(layout.images(), durable);
+        let after = layout.images();
+        if valid {
+            assert_eq!(
+                after, durable,
+                "terminal startup must not enable publication"
+            );
+        } else {
+            assert_ne!(
+                after, durable,
+                "healthy restart persists the resend attempt"
+            );
+            assert_eq!(
+                without_delivery_progress(&after),
+                without_delivery_progress(&durable)
+            );
+        }
         assert_eq!(source_images(&layout), sources);
     }
 }

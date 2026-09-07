@@ -156,6 +156,7 @@ The additive records use the existing frame
 | `0x08` | one canonical proposal intent | 630..=25,914 | 666..=25,950 |
 | `0x09` | the exact completing producer authorization | 213 | 249 |
 | `0x0a` | one non-identical canonical intent for an occupied proposal position | 630..=25,914 | 666..=25,950 |
+| `0x0c` | exact completing authorization plus original bounded artifact payload | 213..=4,194,518 | 249..=4,194,554 |
 
 The proposal ceiling counts only new distinct `0x08` preparations. Activation,
 completion, byte-identical replay, and terminal conflict do not consume another
@@ -190,9 +191,14 @@ One new proposal follows this order:
 5. Issue key-use authority only for that exact anchored preparation.
 6. Sign the existing producer-authorization transcript and strictly self-
    verify the signature.
-7. Append and synchronize `0x09`, then advance the signer anchor again.
-8. Only then release the canonical proposal-control bytes and replacement
+7. Append and synchronize payload-bearing `0x0c`, then advance the signer anchor again.
+8. Only then release the canonical proposal-control and exact retained payload bytes and replacement
    signing scope.
+
+The payload is reserved before preparation and key use. This additive
+[publication lifecycle](fixed-validator-publication-lifecycle-v0.md) completion
+closes the crash gap before runtime transfer. Legacy `0x09` records retain their
+control-only decoding contract, but cannot enable durable executable publication.
 
 For the candidate-store adapter, source resolution is inserted between steps 2
 and 3 in this exact order: reject a retained valid value, compare the candidate
