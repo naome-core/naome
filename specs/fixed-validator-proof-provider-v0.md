@@ -127,12 +127,15 @@ focused validation must build both executables with matching profile, features
 and target before selecting both packages for tests, for example:
 
 ```sh
-cargo build -p naome-validator -p naome-verifier --bins --all-features --locked
-cargo test -p naome-validator -p naome-verifier --all-targets --all-features --locked validator_provider
+cargo test -p naome-validator -p naome-verifier --profile test --all-targets --all-features --locked --no-run
+cargo test -p naome-validator -p naome-verifier --profile test --all-targets --all-features --locked validator_provider
 ```
 
-Use `--release` on both commands for release evidence. Workspace test gates
-select both packages. No test invokes Cargo recursively or skips the provider.
+Use `--profile release` on both commands for release evidence. The matching
+build and execution commands preserve the test dependency graph and the
+test-profile optimization settings; plain `cargo build` uses `dev` instead.
+Workspace test gates select both packages. No test invokes Cargo recursively
+or skips the provider.
 These are finite local/CI process and ownership vectors, not deployment,
 exhaustive crash/power-loss, general safety/liveness, throughput, fairness or
 full-node conformance evidence. The archive's unmeasured real 120-second

@@ -55,61 +55,120 @@ jobs:
       - name: Run documentation tests
         run: cargo test --workspace --doc --all-features --locked
 
-  platform:
-    name: Rust platform (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+  linux_tests:
+    name: Rust tests (Linux x86_64, ${{ matrix.profile }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Linux x86_64
-            runner: ubuntu-24.04
-          - name: macOS ARM64
-            runner: macos-15
-          - name: Windows x86_64
-            runner: windows-2025
+        profile: [test, release]
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      runner: ubuntu-24.04
+      profile: ${{ matrix.profile }}
 
+  macos_tests:
+    name: Rust tests (macOS ARM64, ${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [test, release]
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      runner: macos-15
+      profile: ${{ matrix.profile }}
+
+  windows_tests:
+    name: Rust tests (Windows x86_64, ${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [test, release]
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      runner: windows-2025
+      profile: ${{ matrix.profile }}
+
+  linux:
+    name: Rust platform (Linux x86_64)
+    if: ${{ always() }}
+    needs: linux_tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Verify pinned Rust toolchain
+      - name: Verify both Linux profiles
+        env:
+          PLATFORM_RESULT: ${{ needs.linux_tests.result }}
         run: |
-          rustup show active-toolchain
-          rustup component list --installed
-          rustc --version --verbose
-          cargo --version --verbose
+          if [ "$PLATFORM_RESULT" != "success" ]; then
+            echo "Linux profiles result: $PLATFORM_RESULT"
+            exit 1
+          fi
+      - name: Reject workflow cancellation
+        if: ${{ always() && cancelled() }}
+        run: exit 1
 
-      - name: Check with Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+  macos:
+    name: Rust platform (macOS ARM64)
+    if: ${{ always() }}
+    needs: macos_tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify both macOS profiles
+        env:
+          PLATFORM_RESULT: ${{ needs.macos_tests.result }}
+        run: |
+          if [ "$PLATFORM_RESULT" != "success" ]; then
+            echo "macOS profiles result: $PLATFORM_RESULT"
+            exit 1
+          fi
+      - name: Reject workflow cancellation
+        if: ${{ always() && cancelled() }}
+        run: exit 1
 
-      - name: Run tests
-        run: cargo test --workspace --all-targets --all-features --locked --no-fail-fast
-
-      - name: Run release-profile tests
-        run: cargo test --workspace --release --all-targets --all-features --locked --no-fail-fast
+  windows:
+    name: Rust platform (Windows x86_64)
+    if: ${{ always() }}
+    needs: windows_tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify both Windows profiles
+        env:
+          PLATFORM_RESULT: ${{ needs.windows_tests.result }}
+        run: |
+          if [ "$PLATFORM_RESULT" != "success" ]; then
+            echo "Windows profiles result: $PLATFORM_RESULT"
+            exit 1
+          fi
+      - name: Reject workflow cancellation
+        if: ${{ always() && cancelled() }}
+        run: exit 1
 
   required:
     name: Rust CI
     if: ${{ always() }}
-    needs:
-      - quality
-      - platform
+    needs: [quality, linux, macos, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
-
     steps:
       - name: Verify required jobs
         env:
-          PLATFORM_RESULT: ${{ needs.platform.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
         run: |
-          if [ "$QUALITY_RESULT" != "success" ] || [ "$PLATFORM_RESULT" != "success" ]; then
+          if [ "$QUALITY_RESULT" != "success" ] || [ "$LINUX_RESULT" != "success" ] || \
+             [ "$MACOS_RESULT" != "success" ] || [ "$WINDOWS_RESULT" != "success" ]; then
             echo "Required CI jobs did not all succeed."
-            echo "quality=$QUALITY_RESULT platform=$PLATFORM_RESULT"
+            echo "quality=$QUALITY_RESULT linux=$LINUX_RESULT macos=$MACOS_RESULT windows=$WINDOWS_RESULT"
             exit 1
           fi
+      - name: Reject workflow cancellation
+        if: ${{ always() && cancelled() }}
+        run: exit 1
