@@ -666,3 +666,9 @@ verification and anchored finality-to-signer handoff. The runtime does not
 retain or automatically route these responses; the process owns the finite
 caller-selected job and discards responses after refusal, drift or failure.
 The ordinary raw-message routing table above is unchanged.
+
+
+The process's explicit continuous proof follower (`PROD-020-063`) reuses these
+same ingress methods and ordinary event scheduling. The runtime exposes only a
+read-only configured-peer membership query for validating its peer choice; it
+owns no follower interval, persistent intent, fallback policy or new capacity.

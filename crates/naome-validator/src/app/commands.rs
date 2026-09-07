@@ -128,6 +128,7 @@ pub(super) fn execute(
             return Ok(proof_outcome(outcome, runtime, 0));
         }
         Command::SyncFinality { .. }
+        | Command::FollowFinality { .. }
         | Command::SyncStatus { .. }
         | Command::CancelSync { .. }
         | Command::SourcesStatus { .. }

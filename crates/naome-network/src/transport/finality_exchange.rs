@@ -282,6 +282,13 @@ pub enum OutboundFinalityProofFailure {
     Transport(request_response::OutboundFailure),
     PeerMismatch { expected: PeerId, actual: PeerId },
 }
+impl OutboundFinalityProofFailure {
+    /// Whether the peer supplied framing that the proof codec rejected.
+    pub fn is_invalid_response(&self) -> bool {
+        matches!(self, Self::Transport(request_response::OutboundFailure::Io(error))
+            if error.kind() == std::io::ErrorKind::InvalidData)
+    }
+}
 impl fmt::Display for OutboundFinalityProofFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "finality proof request failed: {self:?}")

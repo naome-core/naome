@@ -233,6 +233,11 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
     pub fn local_peer_id(&self) -> PeerId {
         self.network.local_peer_id()
     }
+    /// Tests static configuration only, without claiming a live session or
+    /// reserving request capacity. Noise identity grants no consensus authority.
+    pub fn is_configured_peer(&self, peer: &PeerId) -> bool {
+        self.network.is_configured_peer(peer)
+    }
     pub fn pending_publication(&self) -> Option<&Publication> {
         self.publication.as_ref()
     }

@@ -276,3 +276,76 @@ fn real_phase_deadline_and_status_continue_while_source_response_is_held() {
         "strict replay must not rewrite files"
     );
 }
+
+#[test]
+fn proof_following_waiting_allows_acquisition_and_elapsed_pass_defers_to_source_custody() {
+    let fixture = Fixture::new();
+    let layout = Layout::new();
+    let provider = Plan::new(fixture.peers[0]);
+    let peer = provider.peer;
+    let config = source_config(
+        &layout,
+        provider.configure(fixture.config(&layout, 0, "create", None, false)),
+    );
+    let mut node = Process::start(&layout, &config);
+    node.ready();
+    let node_address = address(&mut node);
+    let (blocks, payloads) = branch(&fixture, 1);
+    let target = hex(blocks[0].id().as_bytes());
+    let guard = PARENT_JOURNALS.read().unwrap();
+    let sdk = provider.start(
+        &guard,
+        fixture.definition,
+        &node_address,
+        blocks,
+        payloads,
+        Some(target.clone()),
+    );
+    connected(&mut node, peer);
+    assert_eq!(
+        result(
+            &mut node,
+            json!({"command":"follow_finality", "id":10, "peer_id":peer.to_string(), "count":1, "interval_millis":"60000"})
+        )["event"],
+        "follow_started"
+    );
+    assert_eq!(
+        result(
+            &mut node,
+            json!({"command":"acquire_ancestry", "id":11, "target":target, "peer_id":peer.to_string()})
+        )["event"],
+        "acquisition_started"
+    );
+    sdk.request("block", &target);
+    result(&mut node, json!({"command":"cancel_sync", "id":12}));
+    node.event("follow_stopped");
+    // Installation also works while sources are already owned. Every elapsed
+    // pass yields to that owner without allocating a competing proof request.
+    assert_eq!(
+        result(
+            &mut node,
+            json!({"command":"follow_finality", "id":13, "peer_id":peer.to_string(), "count":1, "interval_millis":"100"})
+        )["event"],
+        "follow_started"
+    );
+    let images = layout.images();
+    let sources = source_images(&layout);
+    for _ in 0..2 {
+        assert_eq!(node.event("follow_waiting")["reason"], "sources_busy");
+    }
+    assert_eq!(
+        result(&mut node, json!({"command":"sources_status", "id":14}))["acquisition"]["id"],
+        11
+    );
+    assert_eq!(layout.images(), images);
+    assert_eq!(source_images(&layout), sources);
+    result(&mut node, json!({"command":"cancel_sync", "id":15}));
+    node.event("follow_stopped");
+    sdk.release();
+    node.event("acquisition_complete");
+    assert!(result(&mut node, json!({"command":"sync_status", "id":16}))["job"].is_null());
+    assert_eq!(layout.images(), images);
+    node.shutdown();
+    sdk.stop();
+    drop(guard);
+}
