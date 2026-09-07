@@ -52,8 +52,9 @@ from retained source stores, including unselected entries, with temporary
 unavailability during exclusive acquisition.
 
 The executable supplies local process ownership, seed-file loading, JSONL
-commands, and diagnostic disposal on shutdown. It grants no automatic proposal
-source or evidence selection, certificate acquisition beyond the explicit
+commands, and diagnostic disposal on shutdown. `PROD-020-066` additionally
+permits one explicitly started current-height proposal job, as specified below.
+It grants no candidate discovery or ranking, certificate acquisition beyond the explicit
 bounded catch-up job, artifact serving beyond
 the separately opted-in retained complete-proof and artifact-source responses,
 automatic source fallback policy, automatic inbox clearing, repair, dynamic
@@ -62,6 +63,73 @@ distributed-liveness authority. In accordance with `PROD-023`, no remote
 consensus-signer service or configuration is supported. This implements only
 the process's local-key boundary; it does not close `PROD-023`'s dependency on
 the complete `PROD-020` parent.
+
+## Bounded current-height proposal job
+
+`propose_height` takes exactly `id` and `target`. The target is one canonical
+lowercase 32-byte artifact-block ID in the configured source stores. Starting
+requires a live runtime and enabled, currently available source ownership; it
+binds the job to the runtime's current consensus height. There is at most one
+job. Starting another reports `proposal_busy`. This command does not accept a
+caller height, round, signer, signature, or deadline and does not acquire data.
+No job is installed by configuration or restored after process restart.
+
+Between ordinary session polls, an active job may make at most one bounded
+authoring attempt. It waits outside Proposal phase and while acquisition
+exclusively borrows the source stores. At a new round it first checks the
+anchored completed-publication history: a proposal already completed in that
+exact round, including a manual or recovered proposal, suppresses another job
+attempt. An unscheduled-proposer result likewise finishes the job's work for
+that round. A successful authoring attempt finishes that round's work and leaves
+the original signed publication in ordinary runtime custody. Only another live
+round at the same height can allow another attempt.
+
+Every attempt uses the unchanged store-backed runtime and driver authoring
+coordinators. Runtime recovery, publication, pending arm/input, observed or
+elapsed deadline, and driver work retain their existing priority before source
+access or signing. The job first offers its exact fresh target; only the sealed
+`RetainedValidValueRequired` result redirects it to the signer's retained valid
+value and complete earlier-round certificate. This result precedes fresh-source
+reads. Missing retained payload never permits fallback to the fresh candidate.
+There is no fresh-target replacement, alternative-peer lookup, highest-round
+preference, or relaxation of proposer, lock, signature or finality checks.
+
+Runtime busy, unresolved driver work, and absent candidate or payload are wait
+states. Ordinary events or source-changing commands may make a later bounded
+attempt possible; the job adds no busy loop, timer, immediate retry loop, source
+acquisition, inbox disposal or capacity expansion. A permanent source error or
+other semantic authoring rejection stops the job without consuming a healthy
+runtime. An existing fatal authoring result still terminates process ownership.
+The job stops when the height changes or runtime authority disappears, including
+height changes caused by independently valid proof synchronization. Waiting
+intent coexists with source acquisition and proof synchronization; it does not
+borrow their requests or suppress their cancellation and status handling.
+
+`proposal_status` takes exactly `id` and returns the current job or null.
+`cancel_proposal` takes exactly `id`, removes only job intent, and is available
+even during exclusive source acquisition. Cancellation does not retract an
+already completed signature, cancel its publication, clear evidence, or roll
+back anchored progress. While a job is active, all four manual fresh/retained
+authoring commands report `proposal_busy` before source or file access.
+Cancellation takes effect when the session observes that command; it cannot
+undo an earlier attempt. Shutdown, signals and EOF dispose job intent through
+the existing owner teardown. Strict restart retains signed history and delivery
+recovery, but always starts with no proposal job.
+
+Command results report `proposal_job_started`, `proposal_job_status`, or
+`proposal_job_cancelled`. Asynchronous reports use `proposal_job_waiting` on a
+wait-state change, `proposal_job_attempt` with the existing authoring outcome,
+and `proposal_job_stopped` with the reason and final job diagnostics. The job
+diagnostics contain its ID, bound height, exact target, observed round, wait
+state, and whether that round's work has finished. They are not signer authority.
+
+The process tests in `tests/cases/artifact_acquisition/proposal_job.rs` and
+`retained.rs` exercise authenticated publication and weighted finality after a
+missed proposer, source absence and corruption, retained-value preference,
+command exclusion, acquisition/deadline contention, cancellation with held
+publication, and strict restart without job resumption. This is bounded local
+process evidence, not a production-timeout, candidate-ranking, dynamic-validator
+or general distributed-liveness claim.
 
 ## Invocation and configuration
 

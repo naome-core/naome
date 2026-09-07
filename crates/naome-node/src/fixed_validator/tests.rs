@@ -968,6 +968,7 @@ fn public_scope_components_name_one_exact_recovered_branch() {
 }
 
 mod async_lifecycle;
+mod domain_replay;
 mod driver;
 mod finality;
 mod proposal_authoring;

@@ -51,7 +51,7 @@ type DriverPermutationResult = (
     [Vec<(String, Vec<u8>)>; 4],
 );
 
-fn driver<'node>(
+pub(super) fn driver<'node>(
     scope: FixedValidatorNodeSigningScopeV0<'node>,
     max_entries: usize,
     maximum_round: u64,
@@ -174,7 +174,7 @@ fn driver_with_all_limits<'node>(
     .unwrap()
 }
 
-fn step_arm<'node>(
+pub(super) fn step_arm<'node>(
     driver: FixedValidatorNodeDriverV0<'node>,
 ) -> (
     FixedValidatorNodeDriverV0<'node>,
@@ -594,7 +594,7 @@ fn flip_last_store_byte(directory: &Path) {
     fs::write(path, bytes).unwrap();
 }
 
-fn fixed_branch(fixture: &Fixture) -> FixedConsensusBranchV0 {
+pub(super) fn fixed_branch(fixture: &Fixture) -> FixedConsensusBranchV0 {
     FixedConsensusBranchV0::try_from_virtual_genesis(
         fixture.context,
         &fixture.entries,

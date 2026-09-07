@@ -11,6 +11,7 @@ use super::{
     commands,
     input::{Command, Input},
     proof_sync::ProofSync,
+    proposal_job::{ProposalJob, Step as ProposalStep},
     provider, report, source_provider,
     sources::Sources,
 };
@@ -18,6 +19,7 @@ use super::{
 type Stop = (&'static str, bool);
 
 pub(super) struct Session<'io, 'node> {
+    pub proposal_job: Option<ProposalJob>,
     pub runtime: Runtime<'node>,
     pub proof_sync: Option<ProofSync>,
     pub acquiring: bool,
@@ -39,7 +41,36 @@ enum Poll<'node> {
 impl<'node> Session<'_, 'node> {
     pub async fn run(mut self, mut sources: Option<Sources>) -> Result<(Value, bool)> {
         let (reason, success) = loop {
+            if let Some(mut job) = self.proposal_job.take() {
+                match sources.as_mut() {
+                    Some(sources) => match job.advance(&mut self.runtime, sources, self.output)? {
+                        ProposalStep::Waiting => self.proposal_job = Some(job),
+                        ProposalStep::Stopped => {}
+                        ProposalStep::Fatal => break ("proposal_job_fatal", false),
+                    },
+                    None => job.stopped("sources_disabled", self.output)?,
+                }
+            }
             let stop = match self.poll().await? {
+                Poll::Command(Command::ProposeHeight { id, target }) => {
+                    if self.proposal_job.is_some() {
+                        self.rejected(id, "proposal_busy")?;
+                    } else if sources.is_none() {
+                        self.rejected(id, "sources_disabled")?;
+                    } else {
+                        match ProposalJob::start(id, &target, &self.runtime) {
+                            Ok(job) => {
+                                self.result(
+                                    id,
+                                    json!({"event": "proposal_job_started", "job": job.status()}),
+                                )?;
+                                self.proposal_job = Some(job);
+                            }
+                            Err(code) => self.rejected(id, code)?,
+                        }
+                    }
+                    None
+                }
                 Poll::Command(command) if command.starts_acquisition() => {
                     let id = command.id();
                     let started = match sources.as_mut() {
@@ -102,6 +133,9 @@ impl<'node> Session<'_, 'node> {
             }
         };
         if let Some(job) = self.proof_sync.take() {
+            job.stopped(reason, self.output)?;
+        }
+        if let Some(job) = self.proposal_job.take() {
             job.stopped(reason, self.output)?;
         }
         self.input.close();
@@ -178,6 +212,16 @@ impl<'node> Session<'_, 'node> {
 
     async fn poll(&mut self) -> Result<Poll<'node>> {
         loop {
+            if let Some(reason) = self
+                .proposal_job
+                .as_ref()
+                .and_then(|job| job.changed(&self.runtime))
+            {
+                self.proposal_job
+                    .take()
+                    .unwrap()
+                    .stopped(reason, self.output)?;
+            }
             if self
                 .proof_sync
                 .as_ref()
@@ -215,6 +259,19 @@ impl<'node> Session<'_, 'node> {
 
     fn handle_sync(&mut self, polled: Poll<'node>) -> Result<Option<Poll<'node>>> {
         match polled {
+            Poll::Command(Command::ProposalStatus { id }) => self.result(
+                id, json!({"event": "proposal_job_status", "job": self.proposal_job.as_ref().map(ProposalJob::status)})
+            )?,
+            Poll::Command(Command::CancelProposal { id }) => {
+                let job = self.proposal_job.take();
+                self.result(id, json!({"event": "proposal_job_cancelled", "job": job.as_ref().map(ProposalJob::status)}))?;
+                if let Some(job) = job {
+                    job.stopped("cancelled", self.output)?;
+                }
+            }
+            Poll::Command(command) if command.authors_proposal() && self.proposal_job.is_some() => {
+                self.rejected(command.id(), "proposal_busy")?;
+            }
             Poll::Command(Command::FollowFinality { id, peer_id, count, interval_millis }) => {
                 if self.proof_sync.is_some() {
                     self.rejected(id, "sync_busy")?;

@@ -13,6 +13,16 @@ pub(super) const COMMAND_MAX_BYTES: usize = 65_536;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Command {
+    ProposeHeight {
+        id: u64,
+        target: String,
+    },
+    ProposalStatus {
+        id: u64,
+    },
+    CancelProposal {
+        id: u64,
+    },
     SyncFinality {
         id: u64,
         peer_id: String,
@@ -310,13 +320,24 @@ impl Command {
         self.starts_acquisition()
             || matches!(
                 self,
-                Self::AuthorCandidate { .. }
+                Self::ProposeHeight { .. }
+                    | Self::AuthorCandidate { .. }
                     | Self::AuthorStoredRetained { .. }
                     | Self::FinalizeCandidateVotes { .. }
                     | Self::HaltCandidateConflictVotes { .. }
                     | Self::ExportCandidateBundle { .. }
                     | Self::StageCandidateBundle { .. }
             )
+    }
+
+    pub fn authors_proposal(&self) -> bool {
+        matches!(
+            self,
+            Self::AuthorFresh { .. }
+                | Self::AuthorRetained { .. }
+                | Self::AuthorCandidate { .. }
+                | Self::AuthorStoredRetained { .. }
+        )
     }
 
     pub fn parse(bytes: &[u8]) -> serde_json::Result<Self> {
@@ -328,7 +349,10 @@ impl Command {
 
     pub fn id(&self) -> u64 {
         match self {
-            Self::SyncFinality { id, .. }
+            Self::ProposeHeight { id, .. }
+            | Self::ProposalStatus { id }
+            | Self::CancelProposal { id }
+            | Self::SyncFinality { id, .. }
             | Self::FollowFinality { id, .. }
             | Self::SyncStatus { id }
             | Self::CancelSync { id }

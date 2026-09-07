@@ -1285,3 +1285,44 @@ strict restart still produces empty inboxes. The raw image provides no rollback
 protection and is not signer authority; a valid older image is not detected as
 adversarial rollback. The signer and finality journals remain the only authority
 for resumed position, lock, valid proof and selected ancestry.
+
+## Supported-role replay conformance
+
+`TEST-039` through `TEST-056` require rejection relative to an independently
+established expected context, message role, position or target. They do not
+declare every noncurrent round or different raw target invalid. Higher-round
+buffering, authenticated phase checkpoints, lower-round finality and historical
+conflict handling retain their separately specified routing rules. In
+particular a fully verified historical sibling proof may legitimately halt its
+matching historical owner; that is not rejection of a foreign-context proof.
+
+The complete currently supported signed-format inventory is V0 producer
+authorization; proposal control with absent or embedded earlier-round prevote
+proof; prevote and precommit with either nil or proposal targets; their canonical
+shared-body quorum certificates and exact individual-signed-vote batches; and
+the finality envelope composing a value, producer authorization and non-nil
+precommit certificate. This inventory does not implement any future V1 format
+or close the broader production parents.
+
+| Rules | Required binding and current evidence |
+| --- | --- |
+| `TEST-039`–`TEST-044` | Producer authorization is checked against the expected chain, genesis, version, producer-signing domain, position and proposal root before a node prevote can change state. |
+| `TEST-045`–`TEST-050` | Both agreement roles and both target forms retain those bindings through canonical certificates and exact signed batches before proposal/nil precommit, nil round advance or finality. |
+| `TEST-051`–`TEST-056` | Proposal controls, embedded retained proofs and signed votes retain the corresponding exact bindings at their stateful consumers; complete foreign-context finality envelopes likewise cannot borrow local authority. |
+
+`crates/naome-node/src/fixed_validator/tests/domain_replay.rs` first verifies
+re-signed foreign-context/position/target fixtures under their own binding,
+separately checks cross-role signing domains without a length-only shortcut,
+and then requires rejection under the local expected binding. The matrices
+check exact journal and anchor bytes, signer position and phase, lock and valid
+state, selected finality and pending publication/driver custody as applicable.
+Valid local controls after rejection establish that these are binding checks,
+not unconditional denial. Existing fixed primitive vectors remain in
+`crates/naome-consensus/src/producer_authorization/tests.rs` and
+`crates/naome-consensus/src/agreement_evidence/tests.rs`.
+
+The process proposal-job corpus additionally routes real normally signed
+publications over authenticated Noise to foreign-chain, foreign-genesis and
+foreign-version receivers. Each receiver preserves its exact durable state and
+strictly reopens without accepting those publications; the matching-context
+positive control reaches actual process finality.

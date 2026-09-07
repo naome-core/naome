@@ -2,6 +2,7 @@ mod contention;
 mod history;
 mod integrity;
 mod lifecycle;
+mod proposal_job;
 mod provider;
 mod retained;
 mod source_bundles;

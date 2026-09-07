@@ -15,6 +15,7 @@ mod config;
 mod files;
 mod input;
 mod proof_sync;
+mod proposal_job;
 mod provider;
 mod report;
 mod session;
@@ -126,6 +127,7 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
             };
             output.emit(json!({"event": "ready", "state": report::status(&runtime)}))?;
             session::Session {
+                proposal_job: None,
                 proof_sync: None,
                 acquiring: false,
                 runtime,
