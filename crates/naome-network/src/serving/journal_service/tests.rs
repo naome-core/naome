@@ -15,6 +15,52 @@ use crate::tests::{
 use crate::{NetworkEvent, PeerSessionEvent, RespondError, StaticArtifactNetwork, StaticPeer};
 
 #[tokio::test]
+async fn explicit_block_unavailability_retains_exact_ticket_and_shared_rate_gate() {
+    let (mut client, mut server, _, peer) = connected_pair().await;
+    let request = ArtifactBlockRequest::new(ArtifactBlockId::from_bytes([0x31; 32]));
+    for limited in [false, true] {
+        let ticket = client.request_block(peer, request).unwrap();
+        let inbound = timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    _ = client.next_event() => {},
+                    event = server.next_event() => if let NetworkEvent::InboundBlockRequest(inbound) = event { break inbound; },
+                }
+            }
+        }).await.unwrap();
+        if limited {
+            server.exhaust_application_budget_for_test(Instant::now() + Duration::from_secs(60));
+            assert!(matches!(
+                server.respond_block_unavailable(inbound),
+                Err(RespondError::RateLimited)
+            ));
+        } else {
+            server.respond_block_unavailable(inbound).unwrap();
+            assert_eq!(
+                server.application_tokens_for_test(),
+                crate::INBOUND_APPLICATION_REQUEST_BURST - 1
+            );
+        }
+        let event = timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    event = client.next_event() => if let NetworkEvent::OutboundBlock(event) = event { break event; },
+                    _ = server.next_event() => {},
+                }
+            }
+        }).await.unwrap();
+        assert!(ticket.accepts_event(&event));
+        match ticket.complete(event).unwrap() {
+            Ok(response) => {
+                assert!(!limited);
+                assert!(response.is_unavailable());
+            }
+            Err(_) => assert!(limited),
+        }
+    }
+}
+
+#[tokio::test]
 async fn service_forwards_announcement_without_acknowledging_or_mutating() {
     let (mut sender, mut service, sender_peer_id, service_peer_id) = connected_pair().await;
     let sender_directory = TestDirectory::new("journal-service-announcement-sender");

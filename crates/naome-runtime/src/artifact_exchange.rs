@@ -310,6 +310,24 @@ impl FixedValidatorRuntimeV0<'_> {
             .respond_artifact_from_payload_store(inbound, payloads)
     }
 
+    /// Reports temporary block unavailability without borrowing source stores
+    /// or changing driver, timer, input, command or publication custody.
+    pub fn respond_block_unavailable(
+        &mut self,
+        inbound: InboundArtifactBlockRequest,
+    ) -> Result<(), RespondError> {
+        self.network.respond_block_unavailable(inbound)
+    }
+
+    /// Reports temporary payload unavailability through the unchanged shared
+    /// network admission gates without borrowing an archive or signer.
+    pub fn respond_artifact_unavailable(
+        &mut self,
+        inbound: InboundArtifactRequest,
+    ) -> Result<(), RespondError> {
+        self.network.respond_artifact_unavailable(inbound)
+    }
+
     /// Queues only a transport receipt for a caller-held inbound handle and
     /// returns its exact source and bytes, including on a closed channel. Any
     /// later caller queueing requires ordinary admission and is CallerInput.

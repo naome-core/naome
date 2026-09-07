@@ -74,6 +74,8 @@ struct Network {
     publication_retry_millis: Option<String>,
     #[serde(default)]
     serve_finality_proofs: bool,
+    #[serde(default)]
+    serve_artifact_sources: bool,
 }
 
 #[derive(Deserialize)]
@@ -132,6 +134,7 @@ pub(super) struct Prepared {
     pub listen: Multiaddr,
     pub targets: Vec<PeerId>,
     pub serve_finality_proofs: bool,
+    pub serve_artifact_sources: bool,
     pub publication_retry: Option<FixedValidatorPublicationRetryIntervalV0>,
     pub sources: Option<sources::Prepared>,
     pub timeouts: FixedValidatorRuntimeTimeoutsV0,
@@ -186,6 +189,9 @@ impl Config {
     }
 
     fn prepare(self, base: PathBuf) -> Result<Prepared> {
+        if self.network.serve_artifact_sources && self.sources.is_none() {
+            return Err("source_serving_requires_sources");
+        }
         let publication_retry = self
             .network
             .publication_retry_millis
@@ -311,6 +317,7 @@ impl Config {
             listen,
             targets,
             serve_finality_proofs: self.network.serve_finality_proofs,
+            serve_artifact_sources: self.network.serve_artifact_sources,
             publication_retry,
             sources,
             timeouts,

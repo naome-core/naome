@@ -6,6 +6,18 @@ use naome_storage::CanonicalArtifactPayloadStore;
 use super::{InboundArtifactRequest, RespondError, StaticArtifactNetwork};
 
 impl StaticArtifactNetwork {
+    /// Explicitly reports local or temporary payload unavailability without
+    /// reading an archive, through the ordinary channel and shared rate gates.
+    pub fn respond_artifact_unavailable(
+        &mut self,
+        inbound: InboundArtifactRequest,
+    ) -> Result<(), RespondError> {
+        self.respond_artifact_with(inbound, || {
+            Ok(ArtifactResponse::from_wire_bytes(Vec::new())
+                .expect("empty response is canonical unavailability"))
+        })
+    }
+
     /// Serves one statically authorized Noise-authenticated artifact request from
     /// a caller-routed payload archive.
     ///

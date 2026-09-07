@@ -18,7 +18,8 @@ Completing either phase starts no other phase or proposal. A reconstructed
 multi-block tip is not immediately authorable unless its parent is the current
 signing branch's exact artifact head.
 
-There is no candidate/payload serving policy, automatic source population from
+Separately opted-in [candidate/payload serving](fixed-validator-process-source-serving-v0.md)
+may disclose retained entries to configured peers. There is no automatic source population from
 file-backed authoring or received consensus messages, source discovery, target
 selection, retry schedule, automatic conflict invocation, selected-state
 recovery-bundle installation, or durable acquisition job/outbox. Consensus has a

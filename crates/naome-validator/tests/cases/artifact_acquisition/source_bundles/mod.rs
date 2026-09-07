@@ -11,14 +11,14 @@ use naome_storage::{
     CandidateBranchRecoveryBundleV0 as Bundle, CanonicalArtifactPayloadStore,
 };
 
-struct Transfer {
-    bytes: Vec<u8>,
-    blocks: Vec<ArtifactBlock>,
+pub(super) struct Transfer {
+    pub(super) bytes: Vec<u8>,
+    pub(super) blocks: Vec<ArtifactBlock>,
     payloads: Vec<Vec<u8>>,
 }
 
 impl Transfer {
-    fn new(fixture: &Fixture, count: u8, selected: usize) -> Self {
+    pub(super) fn new(fixture: &Fixture, count: u8, selected: usize) -> Self {
         let _guard = PARENT_JOURNALS.read().unwrap();
         let layout = Layout::new();
         let (blocks, payloads) = branch(fixture, count);
@@ -66,7 +66,7 @@ impl Transfer {
         }
     }
 
-    fn command(&self, stage: bool) -> Value {
+    pub(super) fn command(&self, stage: bool) -> Value {
         let bundle =
             Bundle::from_canonical_bytes(&self.bytes, Limits::new(16, u64::MAX, u64::MAX).unwrap())
                 .unwrap();

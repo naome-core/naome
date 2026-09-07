@@ -11,7 +11,7 @@ use super::{
     commands,
     input::{Command, Input},
     proof_sync::ProofSync,
-    provider, report,
+    provider, report, source_provider,
     sources::Sources,
 };
 
@@ -27,6 +27,7 @@ pub(super) struct Session<'io, 'node> {
     pub interrupt: Signal,
     pub terminate: Signal,
     pub serve_finality_proofs: bool,
+    pub serve_artifact_sources: bool,
 }
 
 enum Poll<'node> {
@@ -93,7 +94,7 @@ impl<'node> Session<'_, 'node> {
                     self.authoring_result(id, event)?
                 }
                 Poll::Command(command) => self.command(command, sources.as_mut())?,
-                Poll::Runtime(event) => self.event(event)?,
+                Poll::Runtime(event) => self.event(event, sources.as_mut())?,
                 Poll::Stop(stop) => Some(stop),
             };
             if let Some(stop) = stop {
@@ -163,7 +164,7 @@ impl<'node> Session<'_, 'node> {
                     None
                 }
                 Poll::Command(command) => self.command(command, None)?,
-                Poll::Runtime(event) => self.event(event)?,
+                Poll::Runtime(event) => self.event(event, None)?,
                 Poll::Stop(stop) => Some(stop),
             };
             if let Some(stop) = stop {
@@ -295,12 +296,32 @@ impl<'node> Session<'_, 'node> {
         }
     }
 
-    fn event(&mut self, event: Event<'node>) -> Result<Option<Stop>> {
+    fn event(
+        &mut self,
+        event: Event<'node>,
+        sources: Option<&mut Sources>,
+    ) -> Result<Option<Stop>> {
         let (mut event, fatal) = match event {
             Event::Network(NetworkEvent::InboundFinalityProof(inbound))
                 if self.serve_finality_proofs =>
             {
                 provider::respond(&mut self.runtime, inbound)
+            }
+            Event::Network(NetworkEvent::InboundBlockRequest(inbound))
+                if self.serve_artifact_sources =>
+            {
+                (
+                    source_provider::block(&mut self.runtime, inbound, sources),
+                    false,
+                )
+            }
+            Event::Network(NetworkEvent::InboundArtifactRequest(inbound))
+                if self.serve_artifact_sources =>
+            {
+                (
+                    source_provider::artifact(&mut self.runtime, inbound, sources),
+                    false,
+                )
             }
             event => report::event(event),
         };
