@@ -76,18 +76,26 @@ impl Layout {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
     pub fn images(&self) -> Vec<(PathBuf, Vec<u8>)> {
-        let mut images = Vec::new();
-        for directory in [
+        self.images_in(&[
             "finality-journal",
             "finality-anchor",
             "vote-journal",
             "vote-anchor",
-        ] {
+        ])
+    }
+    pub fn finality_images(&self) -> Vec<(PathBuf, Vec<u8>)> {
+        self.images_in(&["finality-journal", "finality-anchor"])
+    }
+    fn images_in(&self, directories: &[&str]) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut images = Vec::new();
+        for directory in directories {
             for entry in fs::read_dir(self.root.join(directory)).unwrap() {
                 let path = entry.unwrap().path();
                 images.push((
                     path.strip_prefix(&self.root).unwrap().to_path_buf(),
-                    fs::read(&path).unwrap(),
+                    fs::read(&path).unwrap_or_else(|error| {
+                        panic!("read test image {}: {error}", path.display())
+                    }),
                 ));
             }
         }
@@ -99,6 +107,27 @@ impl Drop for Layout {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+#[test]
+fn finality_images_do_not_read_live_vote_paths_and_full_images_remain_strict() {
+    use std::{os::unix::fs::symlink, panic::catch_unwind};
+
+    let layout = Layout::new();
+    layout.write("finality-journal/committed", b"finality");
+    let before = layout.finality_images();
+    // A dangling entry deterministically supplies the same NotFound read as
+    // a temporary vote snapshot renamed after directory enumeration.
+    let transient = layout.root.join("vote-journal/renamed-snapshot");
+    symlink("no-longer-present", &transient).unwrap();
+    assert_eq!(layout.finality_images(), before);
+    assert!(catch_unwind(|| layout.images()).is_err());
+    fs::remove_file(&transient).unwrap();
+    assert_eq!(layout.images(), before);
+
+    let missing_finality = layout.root.join("finality-anchor/missing-snapshot");
+    symlink("no-longer-present", missing_finality).unwrap();
+    assert!(catch_unwind(|| layout.finality_images()).is_err());
 }
 
 /// Compare authority and incidental files while allowing only the separately
