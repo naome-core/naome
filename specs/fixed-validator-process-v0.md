@@ -231,6 +231,16 @@ reader without a response are explicitly unacknowledged and discarded.
 
 ## Explicit inbox disposal
 
+`submit_vote` and authenticated peer input now admit higher-round nil prevotes
+and both precommit targets through the same fully verifying runtime/driver
+boundary as higher proposal prevotes. The existing `[limits.higher]` budget
+covers all these votes and proposals together. A unique complete healthy quorum
+may cause a `transitioned` event and replacement timer without publication or
+finality; ambiguity or saturation requires existing explicit disposal. The
+checkpoint and empty-on-restart volatile custody contract is defined in
+`fixed-validator-higher-round-recovery-v0.md`. No command, configuration field,
+wire format, or journal format is added.
+
 `discard_inbox` requires `inbox` to be exactly one JSON string: `higher`,
 `current`, `finality`, or `nil_precommit`. Numeric tags, enum-shaped objects,
 arrays, case variants, missing or duplicate fields, unknown fields, and an

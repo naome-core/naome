@@ -96,7 +96,11 @@ fn explicitly_selected_vote_classes_discard_without_touching_other_custody_or_au
         assert_eq!(
             result(
                 &mut node,
-                json!({"command":"submit_vote", "id":1, "vote_file":format!("{class}.vote")})
+                if class == "higher" {
+                    json!({"command":"submit_proposal", "id":1, "control_file":"higher.control", "payload_file":"higher.payload"})
+                } else {
+                    json!({"command":"submit_vote", "id":1, "vote_file":format!("{class}.vote")})
+                }
             )["event"],
             "input_queued"
         );

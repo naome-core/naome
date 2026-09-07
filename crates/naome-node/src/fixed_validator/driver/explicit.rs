@@ -94,6 +94,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 self.select_actionable_higher_round()?,
                 DriverEvidenceSelectionV0::None
             )
+            || !matches!(self.select_higher_quorum()?, HigherQuorumSelection::None)
         {
             return Ok(
                 FixedValidatorNodeDriverHigherRoundAdvanceOutcomeV0::HigherEvidenceUnresolved {

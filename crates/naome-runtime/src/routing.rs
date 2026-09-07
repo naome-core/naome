@@ -135,13 +135,12 @@ impl MessageRef<'_> {
                         },
                         FixedValidatorRuntimeRouteV0::HigherProposalPrevote,
                     ),
-                    (true, _, _) => {
-                        return Err(FixedValidatorRuntimeRoutingErrorV0::UnsupportedHigherVote {
-                            position: actual_position,
-                            role: route.role(),
-                            target: route.target(),
-                        });
-                    }
+                    (true, _, _) => (
+                        FixedValidatorNodeDriverEventV0::HigherRoundVote {
+                            canonical_signed_vote: copy_box(bytes)?,
+                        },
+                        FixedValidatorRuntimeRouteV0::HigherQuorumVote,
+                    ),
                     (false, ConsensusVoteRole::Prevote, ConsensusVoteTarget::Proposal(_)) => (
                         FixedValidatorNodeDriverEventV0::CurrentRoundProposalPrevote {
                             canonical_signed_prevote: copy_box(bytes)?,
@@ -209,6 +208,8 @@ pub enum FixedValidatorRuntimeRouteV0 {
     CurrentNilPrecommit,
     HigherProposal,
     HigherProposalPrevote,
+    /// A higher-round nil prevote or precommit routed for full node admission.
+    HigherQuorumVote,
 }
 
 #[derive(Debug)]

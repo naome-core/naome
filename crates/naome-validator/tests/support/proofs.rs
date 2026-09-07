@@ -30,6 +30,59 @@ pub struct Proof {
 }
 
 impl Proof {
+    /// Generates a higher nil vote only through a real anchored driver's due path.
+    pub fn nil_vote(fixture: &Fixture, round: u64, role: ConsensusVoteRole) -> Vec<u8> {
+        let _guard = PARENT_JOURNALS.read().unwrap();
+        let layout = Layout::new();
+        fixture
+            .create_node(&layout)
+            .run_with_signing_session(|scope| {
+                let mut driver = arm(Driver::new(
+                    scope,
+                    FixedValidatorNodeHigherRoundInboxLimitsV0::new(8, 1_048_576).unwrap(),
+                    FixedValidatorNodeCurrentRoundInboxLimitsV0::new(8, 1_048_576).unwrap(),
+                    FixedValidatorNodeCurrentRoundFinalityInboxLimitsV0::new(8, 1_048_576).unwrap(),
+                    FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0::new(8, 1_048_576)
+                        .unwrap(),
+                    ConsensusRound::new(4),
+                )
+                .unwrap());
+                while driver.position().round().value() < round {
+                    driver = empty_round(driver);
+                }
+                for _ in 0..2 {
+                    let ticket = driver.active_timeout().unwrap();
+                    driver = match driver.admit_event(Input::TimeoutDue(ticket)).unwrap() {
+                        Admission::Admitted { driver, .. } => *driver,
+                        _ => panic!("nil vote fixture timeout"),
+                    };
+                    driver = match driver.step().unwrap() {
+                        Step::Transitioned { driver } => *driver,
+                        _ => panic!("nil vote fixture transition"),
+                    };
+                    let vote;
+                    (driver, vote) = match driver.step().unwrap() {
+                        Step::Command {
+                            driver,
+                            command:
+                                Command::PublishVote {
+                                    vote,
+                                    released_proposal: None,
+                                },
+                        } => (*driver, vote),
+                        _ => panic!("nil vote fixture publication"),
+                    };
+                    assert_eq!(vote.target(), ConsensusVoteTarget::Nil);
+                    if vote.role() == role {
+                        return vote.canonical_bytes().to_vec();
+                    }
+                    driver = arm(driver);
+                }
+                panic!("requested nil vote role not reached")
+            })
+            .unwrap()
+    }
+
     /// Every proposal and vote comes from a real anchored signer in a separate
     /// throwaway layout. Conflicting fixtures do not bypass one journal's guard.
     pub fn new(fixture: &Fixture, higher: bool, axiom: u8, role: ConsensusVoteRole) -> Self {

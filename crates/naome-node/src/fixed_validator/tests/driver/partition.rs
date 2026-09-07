@@ -8,6 +8,8 @@ use naome_consensus::{ConsensusAncestryId, FixedValidatorProposalSourceV0};
 
 use super::*;
 
+mod delivery_faults;
+
 #[derive(Clone, Copy, Debug)]
 enum Cut {
     Cold,
@@ -47,7 +49,7 @@ struct Envelope {
 
 type FinalityImages = [Vec<(String, Vec<u8>)>; 2];
 
-fn finality_images(layout: &TestLayout) -> FinalityImages {
+pub(super) fn finality_images(layout: &TestLayout) -> FinalityImages {
     [
         directory_image(&layout.finality_journal),
         directory_image(&layout.finality_anchor),
@@ -71,6 +73,8 @@ struct Simulation<'node, 'layout> {
     deliveries: usize,
     duplicates: usize,
     steps: usize,
+    fault_delivery: Option<delivery_faults::Delivery>,
+    late_rejections: usize,
     values: [ConsensusValueV0; 2],
     blocks: [ArtifactBlock; 2],
     payloads: [Vec<u8>; 2],
@@ -82,6 +86,10 @@ struct Simulation<'node, 'layout> {
 
 impl Simulation<'_, '_> {
     fn enqueue(&mut self, to: usize, envelope: Envelope) {
+        if let Some(delivery) = &mut self.fault_delivery {
+            delivery.enqueue(to, envelope);
+            return;
+        }
         if self.reversed_duplicates {
             self.queues[to].push_back(envelope.clone());
         }
@@ -115,7 +123,12 @@ impl Simulation<'_, '_> {
         }
     }
 
-    fn admission(&mut self, to: usize, event: FixedValidatorNodeDriverEventV0) {
+    fn admission(&mut self, to: usize, event: FixedValidatorNodeDriverEventV0) -> bool {
+        let before = self
+            .fault_delivery
+            .as_ref()
+            .map(|_| self.layouts[to].images());
+        let mut accepted = true;
         let node = self.nodes[to].take().unwrap();
         match node.admit_event(event).unwrap() {
             FixedValidatorNodeDriverAdmissionOutcomeV0::Admitted {
@@ -129,6 +142,28 @@ impl Simulation<'_, '_> {
                 }
                 self.nodes[to] = Some(*driver);
             }
+            FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected {
+                driver, rejection, ..
+            } if self.fault_delivery.is_some() => {
+                assert!(
+                    matches!(*rejection,
+                    FixedValidatorNodeDriverAdmissionRejectionV0::CurrentRound(_)
+                    | FixedValidatorNodeDriverAdmissionRejectionV0::CurrentEvidenceAfterDue { .. }
+                    | FixedValidatorNodeDriverAdmissionRejectionV0::CurrentEvidenceWrongPhase { .. }
+                    | FixedValidatorNodeDriverAdmissionRejectionV0::CurrentProposal(_)
+                    | FixedValidatorNodeDriverAdmissionRejectionV0::CurrentPrevote(_)
+                    | FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrevote(_)
+                    | FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityProposal(_)
+                    | FixedValidatorNodeDriverAdmissionRejectionV0::CurrentFinalityPrecommit(_)
+                    | FixedValidatorNodeDriverAdmissionRejectionV0::CurrentNilPrecommit(_)
+                ),
+                    "fault schedule unexpected rejection: {rejection:?}"
+                );
+                self.nodes[to] = Some(*driver);
+                assert_eq!(Some(self.layouts[to].images()), before);
+                self.late_rejections += 1;
+                accepted = false;
+            }
             FixedValidatorNodeDriverAdmissionOutcomeV0::Rejected { rejection, .. } => {
                 panic!(
                     "{} recipient {to}: unexpected admission rejection {rejection:?}",
@@ -137,11 +172,12 @@ impl Simulation<'_, '_> {
             }
         }
         self.check_history();
+        accepted
     }
 
     fn deliver(&mut self, to: usize, envelope: Envelope) {
         assert!(
-            self.selected[to].is_none(),
+            self.fault_delivery.is_some() || self.selected[to].is_none(),
             "no post-finality envelope in this schedule"
         );
         self.deliveries += 1;
@@ -164,14 +200,19 @@ impl Simulation<'_, '_> {
                         current_nil_prevote_event(&bytes)
                     }
                     (ConsensusVoteRole::Precommit, ConsensusVoteTarget::Proposal(root)) => {
-                        *self.received[to].entry((round, root)).or_default() |= 1 << envelope.from;
+                        let _ = root;
                         current_finality_precommit_event(&bytes)
                     }
                     (ConsensusVoteRole::Precommit, ConsensusVoteTarget::Nil) => {
                         current_nil_precommit_event(&bytes)
                     }
                 };
-                self.admission(to, event);
+                if self.admission(to, event)
+                    && role == ConsensusVoteRole::Precommit
+                    && let ConsensusVoteTarget::Proposal(root) = target
+                {
+                    *self.received[to].entry((round, root)).or_default() |= 1 << envelope.from;
+                }
             }
         }
     }
@@ -261,6 +302,16 @@ impl Simulation<'_, '_> {
                 assert!(self.selected[actor].replace(ancestry_id).is_none());
                 (*driver, None, true)
             }
+            FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver, reason }
+                if self.fault_delivery.is_some()
+                    && matches!(
+                        reason,
+                        FixedValidatorNodeDriverBlockReasonV0::CurrentFinalityProposalMissing { .. }
+                            | FixedValidatorNodeDriverBlockReasonV0::CurrentProposalAmbiguous { .. }
+                    ) =>
+            {
+                (*driver, None, false)
+            }
             FixedValidatorNodeDriverStepOutcomeV0::Blocked { reason, .. } => {
                 panic!("partition must not masquerade as blocked inbox: {reason:?}")
             }
@@ -338,6 +389,12 @@ impl Simulation<'_, '_> {
         }
         loop {
             let mut progress = false;
+            if let Some(delivery) = &mut self.fault_delivery {
+                for (to, envelope) in delivery.next_wave() {
+                    self.queues[to].push_back(envelope);
+                    progress = true;
+                }
+            }
             for actor in 0..4 {
                 while self.nodes[actor].as_ref().unwrap().has_pending_command() {
                     progress |= self.step(actor);
@@ -497,58 +554,15 @@ fn run(scenario: Scenario, reversed_duplicates: bool) {
         assert!(3 * scenario.weights[4] < total);
     }
     with_nodes(scenario, |scopes, fixture, keys, layouts| {
-        let branch = scopes[0].branch().clone();
-        let payloads = [
-            proof_payload(ZfcAxiom::Pairing),
-            proof_payload(ZfcAxiom::Union),
-        ];
-        let selected = ArtifactChainState::new(fixture.definition);
-        let blocks = payloads
-            .each_ref()
-            .map(|payload| selected.prepare_block(artifact_id(payload)).unwrap());
-        let values = blocks.map(|block| {
-            branch
-                .begin_round_zero()
-                .unwrap()
-                .value_for_artifact_block(block)
-        });
-        assert_ne!(values[0], values[1]);
-        let mut sim = Simulation {
-            nodes: scopes.map(|scope| {
-                Some(driver_with_all_limits(
-                    scope,
-                    128,
-                    1 << 20,
-                    128,
-                    1 << 20,
-                    128,
-                    1 << 20,
-                    128,
-                    1 << 20,
-                    4,
-                ))
-            }),
-            tickets: [None; 4],
-            queues: std::array::from_fn(|_| VecDeque::new()),
-            held: Vec::new(),
-            received: std::array::from_fn(|_| BTreeMap::new()),
-            published: BTreeMap::new(),
-            selected: [None; 4],
+        let mut sim = Simulation::new(
+            scopes,
+            fixture,
+            keys,
+            layouts,
             scenario,
             reversed_duplicates,
-            healed: false,
-            dropped: 0,
-            deliveries: 0,
-            duplicates: 0,
-            steps: 0,
-            values,
-            blocks,
-            payloads,
-            keys: keys.iter().map(consensus_key).collect(),
-            branch,
-            layouts,
-            initial_finality: layouts.each_ref().map(finality_images),
-        };
+        );
+        let values = sim.values;
         sim.settle(0, FixedValidatorLockPhaseV0::Proposal);
         let rounds = if matches!(scenario.cut, Cut::Cold) && scenario.winners == 0 {
             3
@@ -766,6 +780,72 @@ fn precommit_delivery_cut_retains_real_votes_until_same_round_healing() {
     ] {
         for reversed_duplicates in [false, true] {
             run(scenario, reversed_duplicates);
+        }
+    }
+}
+
+impl<'node, 'layout> Simulation<'node, 'layout> {
+    fn new(
+        scopes: [FixedValidatorNodeSigningScopeV0<'node>; 4],
+        fixture: &Fixture,
+        keys: &[SigningKey],
+        layouts: &'layout [TestLayout; 4],
+        scenario: Scenario,
+        reversed_duplicates: bool,
+    ) -> Self {
+        let branch = scopes[0].branch().clone();
+        let payloads = [
+            proof_payload(ZfcAxiom::Pairing),
+            proof_payload(ZfcAxiom::Union),
+        ];
+        let selected = ArtifactChainState::new(fixture.definition);
+        let blocks = payloads
+            .each_ref()
+            .map(|payload| selected.prepare_block(artifact_id(payload)).unwrap());
+        let values = blocks.map(|block| {
+            branch
+                .begin_round_zero()
+                .unwrap()
+                .value_for_artifact_block(block)
+        });
+        assert_ne!(values[0], values[1]);
+        Self {
+            nodes: scopes.map(|scope| {
+                Some(driver_with_all_limits(
+                    scope,
+                    128,
+                    1 << 20,
+                    128,
+                    1 << 20,
+                    128,
+                    1 << 20,
+                    128,
+                    1 << 20,
+                    4,
+                ))
+            }),
+            tickets: [None; 4],
+            queues: std::array::from_fn(|_| VecDeque::new()),
+            held: Vec::new(),
+            received: std::array::from_fn(|_| BTreeMap::new()),
+            published: BTreeMap::new(),
+            selected: [None; 4],
+            scenario,
+            reversed_duplicates,
+            healed: false,
+            dropped: 0,
+            deliveries: 0,
+            duplicates: 0,
+            steps: 0,
+            fault_delivery: None,
+            late_rejections: 0,
+            values,
+            blocks,
+            payloads,
+            keys: keys.iter().map(consensus_key).collect(),
+            branch,
+            layouts,
+            initial_finality: layouts.each_ref().map(finality_images),
         }
     }
 }

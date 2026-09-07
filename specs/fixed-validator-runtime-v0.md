@@ -176,9 +176,9 @@ still pass the selected driver admission path.
 | Current nil precommit | Current nil precommit |
 | Higher proposal | Higher proposal with its descriptive producer round |
 | Higher proposal prevote | Higher proposal prevote |
+| Higher nil prevote or either higher precommit | General higher vote under the same higher-inbox budget |
 
-Wrong contexts, different heights, lower rounds, unsupported higher vote forms,
-and malformed descriptive headers yield a routing error with the exact peer or
+Wrong contexts, different heights, lower rounds, and malformed descriptive headers yield a routing error with the exact peer or
 caller input. Rejected headers establish no authoritative statement about consensus
 validity. This owner does not automatically invoke the driver's explicit
 exact-current or lower-round finality, certificate catch-up, candidate-backed,
@@ -274,6 +274,13 @@ mutable driver or general signing-scope callback.
 | `commit_historical_finality_conflict`, `commit_historical_finality_conflict_vote_batch` | Complete direct historical selected-sibling proof against the owned retained parent, without source stores or caller target |
 | `commit_lower_round_preselection_conflict_vote_batches` | Independently verified lower-round pair and neutral halt |
 | `commit_current_round_preselection_conflict_vote_batches` | Independently verified exact-current pair and neutral halt, with no caller round |
+
+Ordinary driver selection may checkpoint one unique complete healthy higher
+quorum under `fixed-validator-higher-round-recovery-v0.md`. The runtime adds no
+certificate authority: recognized higher headers still undergo full node
+verification. Current finality and complete-snapshot ambiguity/saturation
+retain their priority. Checkpointing schedules the existing replacement timer,
+retains charged inbox custody, and does not create a publication.
 
 The seven positive methods return runtime `Busy` while a publication, pending
 runtime arm, or pending driver command remains owned. An unavailable driver
@@ -485,7 +492,7 @@ tearing down the runtime:
 
 | Runtime method | Returned existing driver inbox drain |
 | --- | --- |
-| `drain_inbox_and_reset` | Higher proposals and proposal prevotes |
+| `drain_inbox_and_reset` | Higher proposals, prevotes, and precommits |
 | `drain_current_inbox_and_reset` | Current proposals and proposal/nil prevotes |
 | `drain_current_finality_inbox_and_reset` | Current finality proposals and proposal precommits |
 | `drain_current_nil_precommit_inbox_and_reset` | Current nil precommits |

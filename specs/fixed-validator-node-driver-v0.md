@@ -7,7 +7,7 @@ V0 driver. The driver is the first node-owned control boundary above the
 existing exact-event coordinators. For its lifetime it privately owns:
 
 - the sole live `FixedValidatorNodeSigningScopeV0`;
-- one existing bounded process-local higher-round proposal/prevote inbox;
+- one existing bounded process-local higher-round proposal/vote inbox;
 - one separately bounded process-local current-round proposal/proposal-or-nil-
   prevote inbox;
 - one independently bounded process-local current-round proposal-finality
@@ -19,7 +19,7 @@ existing exact-event coordinators. For its lifetime it privately owns:
 
 The driver accepts complete current- or higher-round proposals that it fully
 admits into the existing private token boundary, complete canonical current-
-round proposal or nil prevotes and higher-round proposal prevotes that it
+round proposal or nil prevotes and higher-round prevotes or precommits that it
 independently admits against the exact node-derived fixed-set round, distinct
 complete finality-proposal inputs and individual current-round proposal
 precommits for its dedicated finality path, complete canonical current-round
@@ -48,11 +48,11 @@ return a driver after proof processing only for a typed pre-effect
 rejection or a completed child-height handoff. Both explicit paired bridges
 instead submit two complete proofs for a terminal neutral halt regardless of current-round inbox state, restoring the
 driver only on typed pre-effect rejection. Explicit higher-round catch-up
-preserves command, current-finality, and retained higher-proposal priority before
+preserves command, current-finality, and retained higher-evidence priority before
 checkpointing a fully authenticated round and replacing the timer.
 
 This remains a partial driver boundary. Its input surface now covers current-
-and higher-round proposal/prevote evidence, current-round nil prevotes,
+and higher-round proposals and votes, current-round nil prevotes,
 current-round finality proposals, proposal precommits, exact-current nil
 precommits, and exact driver-issued timeout-due tickets. It drives a current
 proposal through an anchored prevote, one sole matching current proposal or nil
@@ -79,6 +79,15 @@ candidate-backed direct-child bridge. Automatic lower-round or candidate-backed
 evidence routing, broader or incomplete preselection conflict handling,
 automatic proposal source selection, networking, and artifact-payload persistence
 remain outside this driver.
+
+A complete healthy higher inbox can also provide one unique nil-or-proposal,
+prevote-or-precommit quorum for checkpoint-only execution under
+[bounded higher-round recovery](fixed-validator-higher-round-recovery-v0.md).
+Competing actionable round/role/target identities block before proposal pairing;
+when there is one identity, an existing matching proposal pair retains its
+separately verified signing path. Otherwise the quorum only checkpoints the
+signer and replaces its timer. It does not itself sign, update lock/valid
+state, migrate inbox custody, or finalize.
 
 The separate [bounded runtime](fixed-validator-runtime-v0.md) composes this
 synchronous driver with direct consensus delivery and explicit local timing.
@@ -241,7 +250,7 @@ The recoverable gates precede supplied-input inspection in this exact order:
    its proposal, conflicting roots, and classification reservation or invariant
    rejection return `CurrentFinalityUnresolved`.
 3. Existing higher-round saturation or latched ambiguity, or any result other
-   than `None` from the complete retained higher-proposal selection, returns
+   than `None` from complete retained higher-proposal or general higher-quorum selection, returns
    `HigherEvidenceUnresolved`. This includes a unique actionable proposal quorum,
    newly detected ambiguity, and reservation or invariant rejection.
 
@@ -630,6 +639,13 @@ nil-precommit insertion. Admission grants no quorum, timeout, transition,
 finality, branch, provenance, peer-trust, or network authority. Retained former-
 position votes are never relabeled after advancement.
 
+`HigherRoundVote` accepts either higher vote role and either target after full
+signature/context verification, same-height and strictly-higher checks, both
+round ceilings, exact round derivation, and typed active-set admission. It shares
+the existing higher proposal/prevote budget; duplicates, saturation, lossless
+rejection, and explicit drain follow
+`fixed-validator-higher-round-recovery-v0.md`.
+
 Its `FixedValidatorNodeDriverEventV0::HigherRoundProposal` variant carries one
 descriptive `proposal_round`, complete canonical proposal-control bytes, and
 the owned complete canonical artifact payload. The driver first uses the shared
@@ -897,6 +913,16 @@ could act; it also drops all four process-local inboxes and their retained
 evidence with that volatile owner. Otherwise, the step derives the exact
 current branch position and phase from the privately owned scope and evaluates
 the three remaining retained evidence sets in the order defined below.
+
+Before proposal-bearing selection, the complete healthy higher-vote snapshot
+is grouped by round, role, and target and reverified under the unchanged active
+weight. Multiple actionable identities latch higher ambiguity even when only
+one has a retained proposal. Selection failure does not fall through. With one
+identity, existing proposal pairing is considered first; when it has no action,
+the unique certificate enters checkpoint-only execution before current
+nil-precommit, current voting, or due work. Both classes must have no work for
+ordinary current selection to continue. The complete contract is in
+`fixed-validator-higher-round-recovery-v0.md`.
 
 For that snapshot, the driver applies the existing higher-round inbox rules at
 every retained position still strictly above the live signer round and within
@@ -1171,9 +1197,9 @@ This driver does not define or perform:
 - a complete or protocol-wide evidence view, durable inbox or timer encoding,
   restart reconstruction, cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
-- automatic proposal source selection, proposal self-admission, general
-  higher-round quorum observation,
-  collection, routing, or arbitration, automatic exact-current or lower-round single-proof
+- automatic proposal source selection, proposal self-admission, higher-round quorum
+  observation and collection beyond the bounded same-height healthy inbox,
+  competing-quorum arbitration, automatic exact-current or lower-round single-proof
   finality acquisition or routing, automatic acquisition or routing for
   candidate-backed direct-child or conflict evidence or a missing proposal, durable
   handling of incomplete or broader multi-root cases beyond the exact retained

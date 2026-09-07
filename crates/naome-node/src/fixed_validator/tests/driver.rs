@@ -32,12 +32,14 @@ mod candidate_backed;
 mod current_round_finality;
 mod current_round_pair;
 mod envelope;
+mod higher_collection;
 mod higher_round;
 mod historical_conflict;
 mod lower_round_finality;
 mod lower_round_pair;
 mod partition;
 mod proposal_authoring;
+mod recovery_simulation;
 
 type DrainedEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
 type DrainedCurrentEvidence = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>, Vec<Vec<u8>>);
@@ -458,6 +460,9 @@ fn drained_contents(drained: FixedValidatorNodeHigherRoundInboxDrainV0) -> Drain
     let mut prevotes = Vec::new();
     for item in drained {
         match item {
+            FixedValidatorNodeHigherRoundInboxDrainItemV0::QuorumVote(_) => {
+                panic!("fixture contains proposal prevotes only")
+            }
             FixedValidatorNodeHigherRoundInboxDrainItemV0::Proposal(proposal) => proposals.push((
                 proposal.canonical_proposal_control_bytes().to_vec(),
                 proposal.canonical_artifact_bytes().to_vec(),

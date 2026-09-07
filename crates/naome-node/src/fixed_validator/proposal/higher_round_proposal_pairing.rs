@@ -17,7 +17,7 @@ use naome_storage::{
     FixedValidatorVoteSafetyJournalErrorV0,
 };
 
-use crate::fixed_validator::higher_round_inbox::FixedValidatorNodeRetainedProposalPrevoteV0;
+use crate::fixed_validator::higher_round_inbox::FixedValidatorNodeRetainedHigherVoteV0;
 use crate::fixed_validator::voting::{
     FinishedVoteV0, FixedValidatorNodeVoteExecutionErrorV0, finish_vote,
 };
@@ -578,7 +578,7 @@ pub(in crate::fixed_validator) enum ActionableInboxSelectionV0 {
 }
 
 pub(in crate::fixed_validator) struct ActionableInboxSnapshotV0<'inbox> {
-    votes: Vec<&'inbox FixedValidatorNodeRetainedProposalPrevoteV0>,
+    votes: Vec<&'inbox FixedValidatorNodeRetainedHigherVoteV0>,
     proposal_identities: Vec<(ConsensusPosition, ProposalSigningRoot)>,
 }
 
@@ -591,12 +591,9 @@ impl<'inbox> ActionableInboxSnapshotV0<'inbox> {
         votes.try_reserve_exact(inbox.prevote_len()).map_err(
             FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation,
         )?;
-        votes.extend(
-            inbox
-                .prevotes
-                .iter()
-                .filter(|vote| vote.parent_coordinate() == parent_coordinate),
-        );
+        votes.extend(inbox.votes.iter().filter(|vote| {
+            vote.is_proposal_prevote() && vote.parent_coordinate() == parent_coordinate
+        }));
         votes.sort_unstable_by(|left, right| {
             left.position()
                 .cmp(&right.position())
@@ -654,12 +651,14 @@ pub(in crate::fixed_validator) fn select_actionable_inbox_root(
     parent_coordinate: FixedConsensusBranchCoordinateV0,
     position: ConsensusPosition,
 ) -> Result<ActionableInboxSelectionV0, FixedValidatorNodeBufferedProposalPrecommitRejectionV0> {
-    let mut candidates: Vec<&FixedValidatorNodeRetainedProposalPrevoteV0> = Vec::new();
+    let mut candidates: Vec<&FixedValidatorNodeRetainedHigherVoteV0> = Vec::new();
     candidates
-        .try_reserve_exact(inbox.prevotes.len())
+        .try_reserve_exact(inbox.prevote_len())
         .map_err(FixedValidatorNodeBufferedProposalPrecommitRejectionV0::SelectionReservation)?;
-    candidates.extend(inbox.prevotes.iter().filter(|vote| {
-        vote.parent_coordinate() == parent_coordinate && vote.position() == position
+    candidates.extend(inbox.votes.iter().filter(|vote| {
+        vote.is_proposal_prevote()
+            && vote.parent_coordinate() == parent_coordinate
+            && vote.position() == position
     }));
     candidates.sort_unstable_by(|left, right| {
         left.proposal_signing_root()
@@ -686,7 +685,7 @@ pub(in crate::fixed_validator) fn select_actionable_inbox_root(
 }
 
 fn select_actionable_sorted_inbox_root(
-    candidates: &[&FixedValidatorNodeRetainedProposalPrevoteV0],
+    candidates: &[&FixedValidatorNodeRetainedHigherVoteV0],
     target_round: &FixedConsensusRoundV0<'_>,
     mut has_matching_proposal: impl FnMut(ProposalSigningRoot) -> bool,
 ) -> Result<ActionableInboxSelectionV0, FixedValidatorNodeBufferedProposalPrecommitRejectionV0> {

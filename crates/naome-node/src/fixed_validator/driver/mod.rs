@@ -95,6 +95,11 @@ mod admission;
 mod classification;
 mod execution;
 mod explicit;
+mod higher_quorum;
+use higher_quorum::HigherQuorumSelection;
+pub use higher_quorum::{
+    FixedValidatorNodeDriverHigherQuorumV0, FixedValidatorNodeDriverHigherVoteRejectionV0,
+};
 mod types;
 
 use classification::*;
@@ -562,6 +567,41 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                         driver: Box::new(self),
                         rejection: Box::new(
                             FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(source),
+                        ),
+                    })
+                }
+            },
+            DriverOrdinaryWorkV0::HigherQuorum(selection) => match selection {
+                HigherQuorumSelection::None => {
+                    unreachable!("classifier excludes empty quorum work")
+                }
+                HigherQuorumSelection::One { certificate, .. } => {
+                    self.execute_higher_quorum(certificate)
+                }
+                HigherQuorumSelection::Ambiguous { first, second } => {
+                    let reason = FixedValidatorNodeDriverBlockReasonV0::HigherQuorumsAmbiguous {
+                        first,
+                        second,
+                    };
+                    self.ambiguity = Some(reason);
+                    Ok(FixedValidatorNodeDriverStepOutcomeV0::Blocked {
+                        driver: Box::new(self),
+                        reason,
+                    })
+                }
+                HigherQuorumSelection::Reservation(source) => {
+                    Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection: Box::new(
+                            FixedValidatorNodeDriverStepRejectionV0::SelectionReservation(source),
+                        ),
+                    })
+                }
+                HigherQuorumSelection::Rejected(source) => {
+                    Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection: Box::new(
+                            FixedValidatorNodeDriverStepRejectionV0::HigherQuorumSelection(source),
                         ),
                     })
                 }

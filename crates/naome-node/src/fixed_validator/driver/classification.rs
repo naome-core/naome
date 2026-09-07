@@ -104,9 +104,19 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         if let Some(reason) = self.higher_block_reason() {
             return Ok(DriverOrdinaryWorkV0::Blocked(reason));
         }
+        let quorum = self.select_higher_quorum()?;
+        if !matches!(
+            quorum,
+            HigherQuorumSelection::None | HigherQuorumSelection::One { .. }
+        ) {
+            return Ok(DriverOrdinaryWorkV0::HigherQuorum(quorum));
+        }
         let higher = self.select_actionable_higher_round()?;
         if !matches!(higher, DriverEvidenceSelectionV0::None) {
             return Ok(DriverOrdinaryWorkV0::Higher(higher));
+        }
+        if !matches!(quorum, HigherQuorumSelection::None) {
+            return Ok(DriverOrdinaryWorkV0::HigherQuorum(quorum));
         }
         let nil_precommit = self.select_current_nil_precommit()?;
         if !matches!(nil_precommit, DriverCurrentNilPrecommitSelectionV0::None) {
@@ -524,6 +534,7 @@ pub(super) enum DriverOrdinaryWorkV0<'inbox> {
     Finality(DriverCurrentFinalitySelectionV0<'inbox>),
     Blocked(FixedValidatorNodeDriverBlockReasonV0),
     Higher(DriverEvidenceSelectionV0),
+    HigherQuorum(HigherQuorumSelection),
     NilPrecommit(DriverCurrentNilPrecommitSelectionV0),
     Current(DriverCurrentSelectionV0),
     Due,

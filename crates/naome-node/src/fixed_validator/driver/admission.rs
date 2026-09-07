@@ -36,6 +36,9 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             ));
         }
         match event {
+            FixedValidatorNodeDriverEventV0::HigherRoundVote {
+                canonical_signed_vote,
+            } => self.admit_higher_vote(canonical_signed_vote),
             FixedValidatorNodeDriverEventV0::CurrentRoundFinalityProposal {
                 canonical_proposal_control_bytes,
                 canonical_artifact_bytes,

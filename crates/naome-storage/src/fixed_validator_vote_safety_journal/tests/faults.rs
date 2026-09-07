@@ -725,3 +725,105 @@ fn recovery_and_stabilization_io_failures_are_reported_without_a_handle() {
         Err(FixedValidatorVoteSafetyJournalErrorV0::Stabilize { .. })
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn higher_checkpoint_followed_by_every_completion_anchor_fault_never_releases_conflicting_bytes() {
+    use crate::fixed_validator_anchor::faults::{Operation, REPLACEMENT_OPERATIONS, inject};
+
+    let fixture = Fixture::new(2);
+    let branch = fixture.branch();
+    let round_zero = branch.begin_round_zero().unwrap();
+    let target_position =
+        ConsensusPosition::new(round_zero.position().height(), ConsensusRound::new(3));
+    let certificate = certificate_bytes(
+        fixture.context,
+        target_position,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+        &fixture.signing_key(),
+    );
+    let mut expected = None;
+    for operation in std::iter::once(None).chain(REPLACEMENT_OPERATIONS.into_iter().map(Some)) {
+        let journal_directory = TestDirectory::new("post-checkpoint-completion-fault-journal");
+        let anchor_directory = TestDirectory::new("post-checkpoint-completion-fault-anchor");
+        let anchor_path = anchor_directory.vote_anchor(fixture.signer());
+        let journal_path = keyed_paths(&journal_directory.0, fixture.signer())
+            .unwrap()
+            .1;
+        let mut journal = fixture.create_anchored(&journal_directory, &anchor_directory);
+        let _ = activate_anchored_proposal_authoring(&mut journal);
+        let _ = journal.bind_signing_lineage(&round_zero).unwrap();
+        let mut session = journal.issue_signing_session(&round_zero).unwrap();
+        let checkpoint = session
+            .prepare_higher_round_quorum_advance(&round_zero, &certificate, ConsensusRound::new(3))
+            .unwrap();
+        let target_round = session
+            .acknowledge_prepared_higher_round(checkpoint)
+            .unwrap();
+        assert_eq!(session.position(), target_position);
+        let effect = session.decide_precommit_without_quorum().unwrap();
+        let intent = prepared(session.prepare_vote(&target_round, effect).unwrap());
+        let acknowledged = session.acknowledge_prepared_vote(intent).unwrap();
+        let anchor_before = fs::read(&anchor_path).unwrap();
+        if let Some(operation) = operation {
+            let fault = inject(&anchor_path, operation);
+            assert!(
+                matches!(
+                    session.sign_prepared_vote(acknowledged),
+                    Err(FixedValidatorVoteSafetyJournalErrorV0::Commit { .. })
+                ),
+                "{operation:?} must withhold completed bytes"
+            );
+            fault.assert_fired();
+            drop(fault);
+            assert!(matches!(
+                session.decide_precommit_without_quorum(),
+                Err(FixedValidatorVoteSafetyJournalErrorV0::Poisoned)
+            ));
+        } else {
+            let signed = session.sign_prepared_vote(acknowledged).unwrap();
+            assert_eq!(signed.position(), target_position);
+            assert_eq!(signed.role(), ConsensusVoteRole::Precommit);
+            assert_eq!(signed.target(), ConsensusVoteTarget::Nil);
+            expected = Some((
+                signed,
+                fs::read(&journal_path).unwrap(),
+                fs::read(&anchor_path).unwrap(),
+            ));
+        }
+        drop(session);
+        if operation.is_some() {
+            assert!(matches!(
+                journal.retained_signed_vote(target_position, ConsensusVoteRole::Precommit),
+                Err(FixedValidatorVoteSafetyJournalErrorV0::Poisoned)
+            ));
+        }
+        drop(journal);
+        let (expected_vote, expected_journal, expected_anchor) = expected.as_ref().unwrap();
+        assert_eq!(&fs::read(&journal_path).unwrap(), expected_journal);
+        if operation.is_some() && operation != Some(Operation::SyncReplacementDirectory) {
+            assert_eq!(fs::read(&anchor_path).unwrap(), anchor_before);
+            assert!(
+                matches!(fixture.open_anchored(&journal_directory, &anchor_directory),
+                Err(FixedValidatorAnchoredVoteSafetyJournalErrorV0::Journal(source)) if matches!(*source, FixedValidatorVoteSafetyJournalErrorV0::AnchorBehind { anchored_sequence: 4, journal_sequence: 5 }))
+            );
+        } else {
+            assert_eq!(&fs::read(&anchor_path).unwrap(), expected_anchor);
+            let mut reopened = fixture
+                .open_anchored(&journal_directory, &anchor_directory)
+                .unwrap();
+            assert_eq!(
+                reopened
+                    .retained_signed_vote(target_position, ConsensusVoteRole::Precommit)
+                    .unwrap()
+                    .as_ref(),
+                Some(expected_vote)
+            );
+            assert!(reopened.issue_signing_session(&round_zero).is_err());
+            let resumed = reopened.issue_signing_session(&target_round).unwrap();
+            assert_eq!(resumed.position(), target_position);
+            assert_eq!(resumed.phase(), FixedValidatorLockPhaseV0::Precommit);
+        }
+    }
+}
