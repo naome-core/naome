@@ -12,6 +12,15 @@ use naome_storage::{
 
 #[test]
 fn stored_retained_authoring_uses_real_round_zero_certificate_across_round_and_restart() {
+    retained_authoring(false);
+}
+
+#[test]
+fn proposal_job_prefers_retained_evidence_and_cancel_preserves_in_flight_publication() {
+    retained_authoring(true);
+}
+
+fn retained_authoring(automatic: bool) {
     let fixture = history::dominant_fixture();
     let layout = Layout::new();
     let provider = Plan::new(fixture.peers[0]);
@@ -132,13 +141,29 @@ fn stored_retained_authoring_uses_real_round_zero_certificate_across_round_and_r
     if !node.observed[transition_index + 1..].iter().any(armed) {
         node.until(armed);
     }
-    assert_eq!(
-        result(
-            &mut node,
-            json!({"command":"author_stored_retained", "id":5})
-        )["event"],
-        "proposal_authored"
-    );
+    if automatic {
+        // A well-framed but absent caller candidate cannot replace the
+        // signer's actual valid value or prevent its retained-payload lookup.
+        assert_eq!(
+            result(
+                &mut node,
+                json!({"command":"propose_height", "id":5, "target":"01".repeat(32)})
+            )["event"],
+            "proposal_job_started"
+        );
+        assert_eq!(
+            node.event("proposal_job_attempt")["outcome"]["event"],
+            "proposal_authored"
+        );
+    } else {
+        assert_eq!(
+            result(
+                &mut node,
+                json!({"command":"author_stored_retained", "id":5})
+            )["event"],
+            "proposal_authored"
+        );
+    }
     let ConsensusPushMessage::Proposal {
         canonical_proposal,
         canonical_artifact,
@@ -159,6 +184,14 @@ fn stored_retained_authoring_uses_real_round_zero_certificate_across_round_and_r
     );
     assert_eq!(source_images(&layout), sources);
     assert!(!node.observed.iter().any(|v| v["event"] == "finality"));
+    if automatic {
+        assert_eq!(
+            result(&mut node, json!({"command":"cancel_proposal", "id":55}))["event"],
+            "proposal_job_cancelled"
+        );
+        assert_eq!(node.event("proposal_job_stopped")["reason"], "cancelled");
+        assert!(result(&mut node, json!({"command":"proposal_status", "id":56}))["job"].is_null());
+    }
     // The held receipt keeps R1 publication custody and prevents a later R1
     // prevote from replacing the exact R0 valid certificate before shutdown.
     let stopped = node.shutdown();
@@ -226,6 +259,7 @@ fn stored_retained_authoring_uses_real_round_zero_certificate_across_round_and_r
     let status = reopened.ready();
     assert_eq!(status["driver"]["height"], "1");
     assert_eq!(status["driver"]["round"], "1");
+    assert!(result(&mut reopened, json!({"command":"proposal_status", "id":57}))["job"].is_null());
     assert!(
         result(&mut reopened, json!({"command":"sources_status", "id":6}))["acquisition"].is_null()
     );
