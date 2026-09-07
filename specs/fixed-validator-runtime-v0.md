@@ -382,11 +382,15 @@ usable without dismantling the runtime. The caller selects one exact source
 store for each request. Both delegate their existing integrity reads, response
 resource gates, typed errors, and consuming-input behavior; no source is chosen
 automatically and no journal import or head service is added.
+`PROD-020-062` adds explicit `respond_block_unavailable` and
+`respond_artifact_unavailable` adapters through the same channel and rate gates
+without a store borrow. The [process source service](fixed-validator-process-source-serving-v0.md)
+uses them while acquisition exclusively borrows its sources.
 `acknowledge_consensus_push` separately queues only the existing transport receipt
 for a caller-held inbound handle and returns its exact source and byte allocations
 on success or closed-channel failure. It performs no admission. Any subsequent
 `queue_input` is a fresh explicit `CallerInput` submission with ordinary strict
-verification; it does not inherit a peer-admission result. These three response
+verification; it does not inherit a peer-admission result. These response
 operations remain available independently of driver survival and change no
 driver, timer, publication, or input marker. Queueing a response is not proof of
 its transmission, receipt, admission, validity, or finality.

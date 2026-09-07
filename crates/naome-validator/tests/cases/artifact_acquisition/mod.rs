@@ -6,6 +6,7 @@ mod provider;
 mod retained;
 mod source_bundles;
 mod source_proofs;
+mod source_serving;
 
 use std::{fs, path::PathBuf};
 

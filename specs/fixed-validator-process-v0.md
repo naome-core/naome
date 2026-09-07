@@ -47,11 +47,15 @@ passes complete live-branch verification and the existing anchored signer
 handoff; the finite job stops on drift, refusal or failure and never resumes
 automatically after restart.
 
+`PROD-020-062` adds explicitly opted-in [artifact-source serving](fixed-validator-process-source-serving-v0.md)
+from retained source stores, including unselected entries, with temporary
+unavailability during exclusive acquisition.
+
 The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. It grants no automatic proposal
 source or evidence selection, certificate acquisition beyond the explicit
 bounded catch-up job, artifact serving beyond
-the separately opted-in retained complete-proof response,
+the separately opted-in retained complete-proof and artifact-source responses,
 automatic source fallback policy, automatic inbox clearing, repair, dynamic
 validator, key rotation, production timeout calibration, hardware custody, or
 distributed-liveness authority. In accordance with `PROD-023`, no remote
@@ -68,8 +72,9 @@ failure before opening configuration or authority files. There is no daemon
 fork, service installation, configuration reload, or hidden environment override.
 
 The UTF-8 TOML file is at most 65,536 bytes. Every field listed below is required;
-the additional `[network].serve_finality_proofs` boolean is optional and defaults
-to `false`. The optional `[network].publication_retry_millis` is a canonical
+the additional `[network].serve_finality_proofs` and
+`[network].serve_artifact_sources` booleans are optional and default to `false`.
+Enabling artifact-source serving requires `[sources]` before authority provision. The optional `[network].publication_retry_millis` is a canonical
 positive unsigned decimal `u64` string with checked monotonic deadline addition;
 it has no default and may be changed or omitted on strict restart. Unknown fields
 and tables, including remote-signer configuration,

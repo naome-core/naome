@@ -5,6 +5,15 @@ use naome_protocol::artifact_exchange::{ARTIFACT_RESPONSE_MAX_BYTES, ArtifactRes
 use naome_storage::{ArtifactBlockCandidateStore, ArtifactChainJournal};
 
 impl StaticArtifactNetwork {
+    /// Explicitly reports temporary or local block unavailability without a
+    /// storage lookup, retaining the ordinary channel and shared rate gates.
+    pub fn respond_block_unavailable(
+        &mut self,
+        inbound: InboundArtifactBlockRequest,
+    ) -> Result<(), RespondError> {
+        self.respond_block_value(inbound, None)
+    }
+
     /// Serves one authenticated block request from the healthy local journal.
     ///
     /// A found response performs one bounded canonical encoding because

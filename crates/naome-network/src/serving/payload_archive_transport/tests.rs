@@ -33,6 +33,44 @@ const PAYLOAD_STORE_FILE_NAME: &str = "artifact-payload-store.log";
 const PAYLOAD_STORE_HEADER: &[u8] = b"naome:artifact-payload-store:v1\0";
 const PAYLOAD_STORE_ENTRY_DOMAIN: &[u8] = b"naome:artifact-payload-store-entry:v1\0";
 
+#[tokio::test]
+async fn explicit_unavailability_uses_the_same_channel_and_shared_rate_gates() {
+    let artifact = ArtifactId::from_bytes([0x31; 32]);
+    let (mut client, mut server, _, peer) = connected_pair().await;
+    let inbound = receive_inbound_request(&mut client, &mut server, peer, artifact).await;
+    server.respond_artifact_unavailable(inbound).unwrap();
+    assert_eq!(
+        server.application_tokens_for_test(),
+        INBOUND_APPLICATION_REQUEST_BURST - 1
+    );
+    let event = timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => if let NetworkEvent::OutboundArtifact(event) = event { break event; },
+                _ = server.next_event() => {},
+            }
+        }
+    }).await.unwrap();
+    assert_eq!(event.peer_id(), peer);
+    assert_eq!(event.request(), ArtifactRequest::new(artifact));
+    assert!(into_response(event).is_unavailable());
+    let inbound = receive_inbound_request(&mut client, &mut server, peer, artifact).await;
+    server.exhaust_application_budget_for_test(Instant::now() + Duration::from_secs(60));
+    assert!(matches!(
+        server.respond_artifact_unavailable(inbound),
+        Err(RespondError::RateLimited)
+    ));
+    assert_request_failed_without_unavailable(&mut client, &mut server).await;
+    let inbound = receive_inbound_request(&mut client, &mut server, peer, artifact).await;
+    drop(client);
+    wait_for_closed_channel(&mut server, &inbound).await;
+    assert!(matches!(
+        server.respond_artifact_unavailable(inbound),
+        Err(RespondError::ChannelClosed)
+    ));
+    assert_eq!(server.application_tokens_for_test(), 0);
+}
+
 struct DependencyBranch {
     blocks: [ArtifactBlock; 2],
     payloads: [Vec<u8>; 2],

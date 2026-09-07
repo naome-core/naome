@@ -18,6 +18,7 @@ mod proof_sync;
 mod provider;
 mod report;
 mod session;
+mod source_provider;
 mod sources;
 
 type Result<T> = std::result::Result<T, &'static str>;
@@ -128,6 +129,7 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
                 interrupt,
                 terminate,
                 serve_finality_proofs: config.serve_finality_proofs,
+                serve_artifact_sources: config.serve_artifact_sources,
             }
             .run(sources)
             .await

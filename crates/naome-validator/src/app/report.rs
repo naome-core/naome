@@ -289,7 +289,7 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
     (value, fatal)
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
