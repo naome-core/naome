@@ -13,6 +13,17 @@ pub(super) const COMMAND_MAX_BYTES: usize = 65_536;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Command {
+    SyncFinality {
+        id: u64,
+        peer_id: String,
+        count: u64,
+    },
+    SyncStatus {
+        id: u64,
+    },
+    CancelSync {
+        id: u64,
+    },
     Status {
         id: u64,
     },
@@ -311,7 +322,10 @@ impl Command {
 
     pub fn id(&self) -> u64 {
         match self {
-            Self::Status { id }
+            Self::SyncFinality { id, .. }
+            | Self::SyncStatus { id }
+            | Self::CancelSync { id }
+            | Self::Status { id }
             | Self::Shutdown { id }
             | Self::DiscardInbox { id, .. }
             | Self::AuthorFresh { id, .. }

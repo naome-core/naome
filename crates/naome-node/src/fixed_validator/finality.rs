@@ -1586,7 +1586,7 @@ enum CurrentRoundPreselectionConflictSideV0 {
     Second,
 }
 
-enum CurrentRoundFinalityRoundErrorV0 {
+pub(super) enum CurrentRoundFinalityRoundErrorV0 {
     Rejected(FixedValidatorNodeCurrentRoundFinalityRejectionV0),
     Fatal(FixedValidatorNodeCurrentRoundFinalityErrorV0),
 }
@@ -1859,7 +1859,7 @@ fn candidate_backed_finality_rejected<'node>(
     }
 }
 
-fn current_round_for_finality<'branch>(
+pub(super) fn current_round_for_finality<'branch>(
     branch: &'branch FixedConsensusBranchV0,
     signer_position: ConsensusPosition,
     inclusive_maximum_round: ConsensusRound,

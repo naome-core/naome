@@ -1198,3 +1198,16 @@ In particular, the composing runtime, scheduler, transport, binary,
 finality-routing, and multi-node work may use this driver, but may not turn timer receipt, peer
 identity, network arrival order, retained-set order, or caller-selected
 positions into consensus validity or selection authority.
+
+## Complete direct-child envelope submission
+
+`PROD-020-060` adds `commit_finality_envelope` under the
+[bounded proof catch-up contract](fixed-validator-process-proof-catch-up-v0.md).
+It preserves pending-command and retained-current-finality priority, checked
+successor generation, live signer/branch coherence and both round ceilings.
+The complete envelope itself supplies the sole initially unauthenticated round
+route; full verification against the live branch alone creates the owned
+transition admitted by the existing anchored finality-to-signer handoff.
+This ingress accepts lower, equal and higher signer-relative evidence rounds
+for the exact direct child, adds no old-height conflict route, and preserves
+all inbox custody while replacing the timer only after successful handoff.

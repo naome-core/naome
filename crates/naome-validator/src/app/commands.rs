@@ -127,7 +127,10 @@ pub(super) fn execute(
             };
             return Ok(proof_outcome(outcome, runtime, 0));
         }
-        Command::SourcesStatus { .. }
+        Command::SyncFinality { .. }
+        | Command::SyncStatus { .. }
+        | Command::CancelSync { .. }
+        | Command::SourcesStatus { .. }
         | Command::CancelAcquisition { .. }
         | Command::AcquireAncestry { .. }
         | Command::AcquireAncestryFallback { .. }

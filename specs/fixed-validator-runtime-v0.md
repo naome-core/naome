@@ -651,3 +651,14 @@ owner while three remain live, and newly observed isolated votes under a
 persistent signing oracle. Its final reopen verifies the subsequent durable
 nil-precommit state and unchanged lock/valid proof. This is local runtime
 teardown/reopen evidence, not process termination or general crash safety.
+
+## Complete-envelope catch-up ingress
+
+`PROD-020-060` adds explicit `request_finality_proof` and
+`commit_finality_envelope` methods for the [bounded process catch-up job](fixed-validator-process-proof-catch-up-v0.md).
+Both preserve ordinary runtime custody gates. Requests grant no verification
+authority; complete proofs independently enter the driver's direct-child
+verification and anchored finality-to-signer handoff. The runtime does not
+retain or automatically route these responses; the process owns the finite
+caller-selected job and discards responses after refusal, drift or failure.
+The ordinary raw-message routing table above is unchanged.

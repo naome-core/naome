@@ -10,6 +10,7 @@ use super::{
     acquisition::{self, Acquisition},
     commands,
     input::{Command, Input},
+    proof_sync::ProofSync,
     provider, report,
     sources::Sources,
 };
@@ -18,6 +19,8 @@ type Stop = (&'static str, bool);
 
 pub(super) struct Session<'io, 'node> {
     pub runtime: Runtime<'node>,
+    pub proof_sync: Option<ProofSync>,
+    pub acquiring: bool,
     pub base: &'io Path,
     pub output: &'io report::Output,
     pub input: mpsc::Receiver<Input>,
@@ -43,7 +46,12 @@ impl<'node> Session<'_, 'node> {
                         None => Err("sources_disabled"),
                     };
                     match started {
-                        Ok(job) => self.run_acquisition(id, job).await?,
+                        Ok(job) => {
+                            self.acquiring = true;
+                            let result = self.run_acquisition(id, job).await;
+                            self.acquiring = false;
+                            result?
+                        }
                         Err(code) => {
                             self.rejected(id, code)?;
                             None
@@ -92,6 +100,9 @@ impl<'node> Session<'_, 'node> {
                 break stop;
             }
         };
+        if let Some(job) = self.proof_sync.take() {
+            job.stopped(reason, self.output)?;
+        }
         self.input.close();
         // Both source handles and the runtime die inside the awaited signing
         // callback. The outer owner emits this summary only after all drop.
@@ -166,7 +177,22 @@ impl<'node> Session<'_, 'node> {
 
     async fn poll(&mut self) -> Result<Poll<'node>> {
         loop {
-            return Ok(tokio::select! {
+            if self
+                .proof_sync
+                .as_ref()
+                .is_some_and(|job| job.changed(&self.runtime))
+            {
+                self.proof_sync
+                    .take()
+                    .unwrap()
+                    .stopped("sync_head_changed", self.output)?;
+            }
+            let deadline = self.proof_sync.as_ref().map(ProofSync::deadline);
+            let polled = tokio::select! {
+                _ = async { if let Some(deadline) = deadline { tokio::time::sleep_until(deadline).await } else { std::future::pending::<()>().await } } => {
+                    self.proof_sync.take().unwrap().stopped("network_deadline", self.output)?;
+                    continue;
+                },
                 _ = self.output.failed() => return Err("output_write"),
                 _ = self.interrupt.recv() => Poll::Stop(("sigint", true)),
                 _ = self.terminate.recv() => Poll::Stop(("sigterm", true)),
@@ -182,8 +208,62 @@ impl<'node> Session<'_, 'node> {
                     None => Poll::Stop(("input_closed", false)),
                 },
                 event = self.runtime.next_event() => Poll::Runtime(event),
-            });
+            };
+            if let Some(polled) = self.handle_sync(polled)? {
+                return Ok(polled);
+            }
         }
+    }
+
+    fn handle_sync(&mut self, polled: Poll<'node>) -> Result<Option<Poll<'node>>> {
+        match polled {
+            Poll::Command(Command::SyncFinality { id, peer_id, count }) => {
+                if self.proof_sync.is_some() || self.acquiring {
+                    self.rejected(id, "sync_busy")?;
+                } else {
+                    match ProofSync::start(id, &peer_id, count, &mut self.runtime) {
+                        Ok(job) => {
+                            self.result(id, json!({"event": "sync_started", "job": job.status()}))?;
+                            self.proof_sync = Some(job);
+                        }
+                        Err(code) => self.rejected(id, code)?,
+                    }
+                }
+            }
+            Poll::Command(Command::SyncStatus { id }) => self.result(
+                id, json!({"event": "sync_status", "job": self.proof_sync.as_ref().map(ProofSync::status)})
+            )?,
+            Poll::Command(Command::CancelSync { id }) => {
+                let job = self.proof_sync.take();
+                self.result(id, json!({"event": "sync_cancelled", "job": job.as_ref().map(ProofSync::status)}))?;
+                if let Some(job) = job {
+                    job.stopped("cancelled", self.output)?;
+                }
+            }
+            Poll::Command(command) if command.starts_acquisition() && self.proof_sync.is_some() => {
+                self.rejected(command.id(), "sync_busy")?;
+            }
+            Poll::Runtime(Event::Network(NetworkEvent::OutboundFinalityProof(event))) => {
+                if self.proof_sync.as_ref().is_some_and(|job| job.accepts(&event)) {
+                    let (job, event) = self.proof_sync.take().unwrap().complete(event, &mut self.runtime, self.output)?;
+                    self.proof_sync = job;
+                    if let Some(event) = event {
+                        return Ok(Some(Poll::Runtime(event)));
+                    }
+                } else {
+                    self.output.emit(json!({"event": "sync_response_discarded", "peer_id": event.peer_id().to_string(), "height": event.request().height().value().to_string()}))?;
+                }
+            }
+            Poll::Runtime(event @ Event::TimerArmed(_)) => {
+                if let Some(job) = self.proof_sync.as_mut()
+                    && let Err(reason) = job.successor(&mut self.runtime) {
+                    self.proof_sync.take().unwrap().stopped(reason, self.output)?;
+                }
+                return Ok(Some(Poll::Runtime(event)));
+            }
+            other => return Ok(Some(other)),
+        }
+        Ok(None)
     }
 
     fn command(&mut self, command: Command, sources: Option<&mut Sources>) -> Result<Option<Stop>> {

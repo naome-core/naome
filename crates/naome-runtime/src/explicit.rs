@@ -1,6 +1,7 @@
 //! Caller-selected complete proofs through the existing driver coordinators.
 
 use super::*;
+use crate::FixedValidatorRuntimeFinalityProofRequestErrorV0;
 use crate::FixedValidatorRuntimeProofRefusalV0 as ProofRefusal;
 use naome_consensus::{ConsensusPosition, ConsensusRound, ConsensusVoteRole, ConsensusVoteTarget};
 use naome_node::{
@@ -17,6 +18,56 @@ use naome_node::{
 };
 
 impl<'node> FixedValidatorRuntimeV0<'node> {
+    /// Starts one exact configured-peer request through the existing bounded
+    /// transport. No response is admitted or trusted by this call.
+    pub fn request_finality_proof(
+        &mut self,
+        peer: naome_network::PeerId,
+        request: naome_network::FinalityProofRequest,
+    ) -> Result<naome_network::FinalityProofTicket, FixedValidatorRuntimeFinalityProofRequestErrorV0>
+    {
+        self.proof_gate()
+            .map_err(FixedValidatorRuntimeFinalityProofRequestErrorV0::Refused)?;
+        self.network
+            .request_finality_proof(peer, request)
+            .map_err(FixedValidatorRuntimeFinalityProofRequestErrorV0::Network)
+    }
+
+    /// Explicit complete direct-child proof ingress. Refusal refunds the exact
+    /// payload allocation; delegated rejection consumes input and restores the
+    /// driver, while a fatal result requires strict anchored restart.
+    pub fn commit_finality_envelope(
+        &mut self,
+        envelope: &[u8],
+        payload: Vec<u8>,
+    ) -> Result<Event<'node>, (ProofRefusal, Vec<u8>)> {
+        use naome_node::FixedValidatorNodeDriverEnvelopeOutcomeV0 as Outcome;
+        if let Err(reason) = self.proof_gate() {
+            return Err((reason, payload));
+        }
+        let driver = self.driver.take().unwrap();
+        let (driver, event, advanced) = match driver.commit_finality_envelope(envelope, payload) {
+            Ok(Outcome::CommandPending { driver }) => {
+                (driver, Event::ExplicitCommandPending, false)
+            }
+            Ok(Outcome::CurrentFinalityUnresolved { driver }) => {
+                (driver, Event::CurrentFinalityUnresolved, false)
+            }
+            Ok(Outcome::Rejected { driver, rejection }) => {
+                (driver, Event::FinalityEnvelopeRejected(rejection), false)
+            }
+            Ok(Outcome::Finality { driver, selection }) => {
+                (driver, Event::Finality(selection), true)
+            }
+            Ok(Outcome::FinalityStopped(halt)) => {
+                return Ok(Event::Fatal(Box::new(Failure::FinalityStopped(halt))));
+            }
+            Err(error) => return Ok(Event::Fatal(Box::new(Failure::Step(error)))),
+        };
+        self.restore_proof_driver(*driver, advanced);
+        Ok(event)
+    }
+
     /// Explicitly checkpoints the caller's complete higher-round certificate.
     /// Publication and pending arm/command custody return `Busy` before any
     /// driver call. Buffered input, phase, and due state add no runtime gate;
