@@ -53,3 +53,32 @@ required checks succeeded, the merge commit is reachable from `origin/main`,
 and the merged patch matches the gated feature patch. Report local checks, CI,
 and runtime or multi-node evidence separately. Do not begin another scope merely
 because this PR merged; continue only as far as the active user request says.
+
+## Rust validation and CI
+
+Use the Rust version pinned in `rust-toolchain.toml`. CI runs the complete
+workspace in both `test` and `release` profiles on Linux x86_64, macOS ARM64,
+and Windows x86_64. Each profile builds all targets before executing tests:
+
+```sh
+cargo test --workspace --profile test --all-targets --all-features --locked --no-run
+cargo test --workspace --profile test --all-targets --all-features --locked --no-fail-fast
+```
+
+Use `--profile release` in both commands for release validation. The `test`
+profile optimizes `naome-node`, Ed25519/Curve25519, and both SHA-2 versions at
+level 2 while retaining debug assertions and overflow checks. Other workspace
+packages retain their default test optimization level; `dev` and `release`
+settings are unchanged. For CI timing comparisons, set `CARGO_INCREMENTAL=0`
+and record compilation and execution separately.
+
+Focused validator/verifier process tests must select both packages and use the
+same profile, features, and targets for compilation and execution. Prefer the
+same `cargo test --no-run` barrier before the filtered test command; plain
+`cargo build` uses the different `dev` profile.
+
+The three platform checks each require their complete two-profile matrix;
+`Rust CI` requires all three platform checks and `Rust quality`. Cache hits
+still run every Cargo build and test command. Cache writes occur only after
+successful pushes to `main`, with keys covering the runner, profile, toolchain,
+manifests, lockfile, and build/workflow configuration.

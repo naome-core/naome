@@ -1,5 +1,11 @@
 use super::*;
+use naome_consensus::VerifiedConsensusVoteV0;
 use naome_network::ConsensusPushMessage;
+use naome_storage::{
+    FixedValidatorAnchoredFinalityJournalV0, FixedValidatorAnchoredVoteSafetyJournalV0,
+    FixedValidatorFinalityReplayLimitV0, FixedValidatorVoteSafetyReplayLimitV0,
+};
+use sha2::{Digest, Sha256};
 
 #[test]
 fn reserved_consensus_crosses_acquisition_while_acquisition_remains_explicit() {
@@ -187,31 +193,31 @@ fn real_phase_deadline_and_status_continue_while_source_response_is_held() {
         "acquisition_started"
     );
     sdk.request("block", &target);
-    let authority = layout.images();
+    // Timeout votes may replace vote anchors and delivery snapshots at any
+    // point; only the finality directories must remain unchanged while live.
+    let finality_before = layout.finality_images();
     let sources = source_images(&layout);
     assert_eq!(node.event("timer_due")["admitted"], true);
     assert_eq!(node.event("peer_attempted")["started"], true);
-    assert!(matches!(sdk.message(), ConsensusPushMessage::Vote { .. }));
+    let ConsensusPushMessage::Vote { canonical_vote } = sdk.message() else {
+        panic!("the real phase deadline must publish a vote");
+    };
+    let vote =
+        VerifiedConsensusVoteV0::decode_and_verify(&canonical_vote, fixture.context).unwrap();
+    assert_eq!(vote.signer(), fixture.entries[0].consensus_key());
+    let complete = node.event("publication_complete");
     assert_eq!(
-        node.event("publication_complete")["disposed"]["deliveries"][0]["state"],
-        "received"
+        complete["disposed"]["message_sha256"]["control"],
+        hex(&Sha256::digest(&canonical_vote))
     );
+    assert_eq!(
+        complete["disposed"]["deliveries"][0]["peer"],
+        peer.to_string()
+    );
+    assert_eq!(complete["disposed"]["deliveries"][0]["state"], "received");
     let status = result(&mut node, json!({"command":"status", "id":2}));
     assert_eq!(status["driver"]["head"], initial["driver"]["head"]);
-    assert_ne!(
-        layout.images(),
-        authority,
-        "actual timeout voting writes signer intent"
-    );
-    let finality = |images: Vec<(PathBuf, Vec<u8>)>| {
-        images
-            .into_iter()
-            .filter(|(path, _)| {
-                path.starts_with("finality-journal") || path.starts_with("finality-anchor")
-            })
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(finality(layout.images()), finality(authority));
+    assert_eq!(layout.finality_images(), finality_before);
     assert_eq!(
         result(&mut node, json!({"command":"sources_status", "id":3}))["acquisition"]["id"],
         1
@@ -228,4 +234,45 @@ fn real_phase_deadline_and_status_continue_while_source_response_is_held() {
     sdk.stop();
     drop(provider_guard);
     assert_eq!(source_images(&layout), sources);
+    assert_eq!(layout.finality_images(), finality_before);
+    let stopped = layout.images();
+    {
+        let _guard = PARENT_JOURNALS.read().unwrap();
+        let finality = FixedValidatorAnchoredFinalityJournalV0::open(
+            layout.root.join("finality-journal"),
+            layout.root.join("finality-anchor"),
+            fixture.definition,
+            fixture.context,
+            &fixture.entries,
+            FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
+        )
+        .unwrap();
+        let journal = FixedValidatorAnchoredVoteSafetyJournalV0::open(
+            layout.root.join("vote-journal"),
+            layout.root.join("vote-anchor"),
+            fixture.context,
+            finality.fixed_agreement_set_id(),
+            fixture.keys[0].clone(),
+            FixedValidatorVoteSafetyReplayLimitV0::new(32).unwrap(),
+        )
+        .unwrap();
+        let retained = journal
+            .retained_signed_vote(vote.position(), vote.role())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            retained.canonical_bytes(),
+            canonical_vote,
+            "strict replay must retain the exact published timeout vote"
+        );
+        assert_eq!(
+            complete["disposed"]["signer_state"],
+            hex(retained.state_id().as_bytes())
+        );
+    }
+    assert_eq!(
+        layout.images(),
+        stopped,
+        "strict replay must not rewrite files"
+    );
 }

@@ -1,0 +1,85 @@
+name: Rust tests
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+      profile:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  NAOME_TEST_PROFILE: ${{ inputs.profile }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tests:
+    name: Full workspace
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify checkout, profile, and pinned toolchain
+        run: |
+          case "$NAOME_TEST_PROFILE" in
+            test|release) ;;
+            *) echo "Unsupported test profile: $NAOME_TEST_PROFILE"; exit 1 ;;
+          esac
+          git show --no-patch --format='commit=%H%ntree=%T%nparents=%P' HEAD
+          rustup show active-toolchain
+          rustup component list --installed
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Restore Cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: cargo-v1-${{ inputs.runner }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.profile }}-all-features-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', '.cargo/config', '.cargo/config.toml', '.github/workflows/*.yml') }}
+
+      - name: Check with Clippy
+        if: ${{ inputs.profile == 'test' }}
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Build all test targets and process binaries
+        run: cargo test --workspace --profile "$NAOME_TEST_PROFILE" --all-targets --all-features --locked --no-run
+
+      - name: Run all tests
+        run: cargo test --workspace --profile "$NAOME_TEST_PROFILE" --all-targets --all-features --locked --no-fail-fast
+
+      - name: Verify tracked sources are unchanged
+        run: git diff --exit-code HEAD
+
+      - name: Save Cargo cache from main
+        if: >-
+          ${{
+            success() &&
+            github.event_name == 'push' &&
+            github.ref == 'refs/heads/main' &&
+            steps.cargo-cache.outputs.cache-hit != 'true'
+          }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}

@@ -55,3 +55,25 @@ unsafe_code = "forbid"
 
 [lints]
 workspace = true
+
+# Optimize model exploration and repeated signature/hash checks in test builds.
+# Keep debug assertions and overflow checks enabled in these packages.
+[profile.test.package.naome-node]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+
+[profile.test.package.curve25519-dalek]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+
+[profile.test.package.ed25519-dalek]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+
+[profile.test.package.sha2]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
