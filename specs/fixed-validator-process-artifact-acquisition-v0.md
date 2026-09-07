@@ -20,8 +20,10 @@ signing branch's exact artifact head.
 
 There is no candidate/payload serving policy, automatic source population from
 file-backed authoring or received consensus messages, source discovery, target
-selection, retry schedule, automatic conflict invocation, recovery-bundle
-installation, or durable job/outbox. The independent opt-in
+selection, retry schedule, automatic conflict invocation, selected-state
+recovery-bundle installation, or durable job/outbox. Separate
+[offline bundle commands](fixed-validator-process-source-bundles-v0.md) can export
+from the live current head or stage only unselected source entries. The independent opt-in
 [complete-proof provider](fixed-validator-proof-provider-v0.md) retains its own
 selected-history-only response contract.
 
@@ -98,10 +100,11 @@ caller-ordered list of one through eight such strings. `max_blocks` is a JSON
 unsigned integer that must fit positive `usize`.
 
 Schema validation comes first. Disabled sources reject starts, store-backed
-authoring, and the separate [source-backed proof commands](fixed-validator-process-source-proofs-v0.md)
+authoring, the separate [source-backed proof commands](fixed-validator-process-source-proofs-v0.md),
+and [offline bundle commands](fixed-validator-process-source-bundles-v0.md)
 with `sources_disabled`. While an acquisition owns the source borrow,
-all six starts, both store-backed authoring commands, and both source-backed
-proof commands reject with `sources_busy`, before their typed input, proof-file
+all six starts, both store-backed authoring commands, both source-backed
+proof commands, and both bundle commands reject with `sources_busy`, before their typed input, file
 loading, or source access. With idle sources,
 the process eagerly parses peer strings, fallback list counts, block IDs and
 the positive payload reconstruction limit, including for cached completion.

@@ -20,12 +20,18 @@ fn regular(path: &Path) -> Result<File> {
 }
 
 pub(super) fn bytes(path: &Path, maximum: usize) -> Result<Vec<u8>> {
+    bytes_u64(path, maximum as u64)
+}
+
+pub(super) fn bytes_u64(path: &Path, maximum: u64) -> Result<Vec<u8>> {
+    let mut file = regular(path)?;
     let mut bytes = Vec::new();
-    regular(path)?
-        .take(maximum as u64 + 1)
+    (&mut file)
+        .take(maximum)
         .read_to_end(&mut bytes)
         .map_err(|_| "file_read")?;
-    if bytes.len() > maximum {
+    // Probe the same descriptor without adding to or narrowing a full-width cap.
+    if bytes.len() as u64 == maximum && file.read(&mut [0]).map_err(|_| "file_read")? != 0 {
         return Err("file_too_large");
     }
     Ok(bytes)
