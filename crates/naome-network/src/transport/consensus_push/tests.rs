@@ -11,6 +11,76 @@ fn vote() -> ConsensusPushMessage {
         canonical_vote: vec![0xa5; CONSENSUS_PUSH_VOTE_BYTES],
     }
 }
+
+#[test]
+fn reserved_consensus_slot_survives_background_saturation_and_retained_completion() {
+    let peer = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = crate::tests::test_network_for_peers(&[peer]);
+    network.reserve_consensus_capacity().unwrap();
+    let background = PendingBudget::try_acquire_many(&network.pending_budget, 7).unwrap();
+    assert!(PendingBudget::try_acquire(&network.pending_budget).is_none());
+    assert!(PendingBudget::try_acquire_many(&network.pending_budget, 1).is_err());
+    let ticket = network.push_consensus(peer, vote()).unwrap();
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 8);
+    assert!(!network.consensus_capacity_available());
+    let event = terminal(&mut network, ticket.request_id, peer, None);
+    // A successful terminal still owns its permit until the matching ticket
+    // consumes it. Background work cannot steal the reserved slot afterward.
+    assert!(PendingBudget::try_acquire_consensus(&network.pending_budget).is_none());
+    let _receipt = ticket.complete(event).unwrap().unwrap();
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 7);
+    assert!(network.consensus_capacity_available());
+    assert!(PendingBudget::try_acquire(&network.pending_budget).is_none());
+    let again = network.push_consensus(peer, vote()).unwrap();
+    let failure = terminal(
+        &mut network,
+        again.request_id,
+        peer,
+        Some(request_response::OutboundFailure::ConnectionClosed),
+    );
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 7);
+    assert!(again.complete(failure).unwrap().is_err());
+    drop(background);
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 0);
+    assert_eq!(network.pending_budget.background.load(Ordering::Relaxed), 0);
+    // Failed aggregate reservation refunds the independent background quota.
+    let all_consensus: Vec<_> = (0..8)
+        .map(|_| PendingBudget::try_acquire_consensus(&network.pending_budget).unwrap())
+        .collect();
+    assert!(PendingBudget::try_acquire_many(&network.pending_budget, 2).is_err());
+    assert_eq!(network.pending_budget.background.load(Ordering::Relaxed), 0);
+    drop(all_consensus);
+}
+
+#[test]
+fn reserved_consensus_can_cross_an_existing_same_peer_archive_request() {
+    let peer = Keypair::generate_ed25519().public().to_peer_id();
+    let mut network = crate::tests::test_network_for_peers(&[peer]);
+    network.reserve_consensus_capacity().unwrap();
+    let _archive = network.push_recovery_bundle(peer, vec![1]).unwrap();
+    let vote = network.push_consensus(peer, vote()).unwrap();
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 2);
+    assert!(network.push_recovery_bundle(peer, vec![1]).is_err());
+    assert!(
+        network
+            .push_consensus(
+                peer,
+                ConsensusPushMessage::Vote {
+                    canonical_vote: vec![0; CONSENSUS_PUSH_VOTE_BYTES]
+                }
+            )
+            .is_err()
+    );
+    let event = terminal(
+        &mut network,
+        vote.request_id,
+        peer,
+        Some(request_response::OutboundFailure::ConnectionClosed),
+    );
+    assert!(vote.complete(event).unwrap().is_err());
+    assert_eq!(network.pending_budget.active.load(Ordering::Relaxed), 1);
+    assert!(network.reserve_consensus_capacity().is_err());
+}
 fn pointers(message: &ConsensusPushMessage) -> Vec<*const u8> {
     match message {
         ConsensusPushMessage::Proposal {

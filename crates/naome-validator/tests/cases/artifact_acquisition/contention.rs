@@ -2,7 +2,7 @@ use super::*;
 use naome_network::ConsensusPushMessage;
 
 #[test]
-fn shared_peer_slot_refuses_each_direction_without_automatic_retry() {
+fn reserved_consensus_crosses_acquisition_while_acquisition_remains_explicit() {
     for acquisition_first in [false, true] {
         let fixture = Fixture::new();
         let layout = Layout::new();
@@ -54,6 +54,13 @@ fn shared_peer_slot_refuses_each_direction_without_automatic_retry() {
             "proposal_authored"
         );
         if acquisition_first {
+            assert!(matches!(
+                sdk.message(),
+                ConsensusPushMessage::Proposal { .. }
+            ));
+            for _ in 0..2 {
+                assert!(matches!(sdk.message(), ConsensusPushMessage::Vote { .. }));
+            }
             let finality = node.event("finality");
             assert_eq!(
                 finality["state"]["driver"]["head"],
@@ -62,7 +69,7 @@ fn shared_peer_slot_refuses_each_direction_without_automatic_retry() {
             assert_eq!(
                 node.observed
                     .iter()
-                    .filter(|v| v["event"] == "peer_attempted" && v["started"] == false)
+                    .filter(|v| v["event"] == "peer_attempted" && v["started"] == true)
                     .count(),
                 3
             );
@@ -70,7 +77,7 @@ fn shared_peer_slot_refuses_each_direction_without_automatic_retry() {
                 node.observed
                     .iter()
                     .filter(|v| v["event"] == "publication_complete"
-                        && v["disposed"]["deliveries"][0]["state"] == "refused")
+                        && v["disposed"]["deliveries"][0]["state"] == "received")
                     .count(),
                 3
             );
@@ -183,10 +190,11 @@ fn real_phase_deadline_and_status_continue_while_source_response_is_held() {
     let authority = layout.images();
     let sources = source_images(&layout);
     assert_eq!(node.event("timer_due")["admitted"], true);
-    assert_eq!(node.event("peer_attempted")["started"], false);
+    assert_eq!(node.event("peer_attempted")["started"], true);
+    assert!(matches!(sdk.message(), ConsensusPushMessage::Vote { .. }));
     assert_eq!(
         node.event("publication_complete")["disposed"]["deliveries"][0]["state"],
-        "refused"
+        "received"
     );
     let status = result(&mut node, json!({"command":"status", "id":2}));
     assert_eq!(status["driver"]["head"], initial["driver"]["head"]);

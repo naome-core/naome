@@ -189,7 +189,7 @@ One network instance enforces:
 | Aggregate retained complete-proof request bytes | 608 |
 | Incoming and outgoing complete-proof responses in shared custody | 8 |
 | Aggregate complete-proof response body bytes in shared custody | 33,755,848 |
-| Pending outbound application requests per peer | 1 |
+| Pending outbound application requests per peer in the base profile | 1 |
 | Streams per artifact, block, or head exchange per connection | 2 |
 | Head-announcement streams per connection | 1 |
 | Recovery-bundle push streams per connection | 1 |
@@ -366,6 +366,12 @@ Starting a direct request checks: configured peer, no pending request for that
 peer, connected managed session, then one shared permit. It then queues the
 immutable request and records protocol, peer, generation, request, and network
 instance.
+
+The explicit consensus reservation profile under
+`fixed-validator-publication-lifecycle-v0.md` limits background work to seven
+aggregate permits and permits one consensus request across an existing same-peer
+background request. Total aggregate capacity remains eight. Ordinary background
+requests retain the per-peer refusal above; this introduces no acquisition retry.
 
 Opaque non-cloneable tickets for blocks, heads, announcements, and complete
 finality proofs must match all

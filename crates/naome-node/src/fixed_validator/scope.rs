@@ -2,6 +2,26 @@
 
 use super::*;
 
+/// Recovery refuses bytes that lack their exact historical artifact context.
+#[derive(Debug)]
+pub enum FixedValidatorNodePublicationRecoveryErrorV0 {
+    Signer(Box<FixedValidatorVoteSafetyJournalErrorV0>),
+    Finality(Box<naome_storage::FixedValidatorFinalityJournalErrorV0>),
+    MissingParent,
+    MissingPayload,
+    InvalidControl,
+    Value(naome_consensus::ConsensusValueError),
+    Allocation(std::collections::TryReserveError),
+    Artifact(Box<naome_chain::ArtifactBlockApplyError>),
+}
+
+impl std::fmt::Display for FixedValidatorNodePublicationRecoveryErrorV0 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "signed publication recovery refused: {self:?}")
+    }
+}
+impl std::error::Error for FixedValidatorNodePublicationRecoveryErrorV0 {}
+
 /// One non-escaping fixed-validator signing scope and its exact branch.
 ///
 /// External finality height authority cannot enter through `signing_session`:
@@ -93,6 +113,59 @@ pub struct FixedValidatorNodeSigningScopeV0<'node> {
 }
 
 impl<'node> FixedValidatorNodeSigningScopeV0<'node> {
+    /// Read-only exact anchored publication history, without signing authority.
+    pub fn publication_history(
+        &self,
+    ) -> Result<
+        naome_storage::FixedValidatorPublicationHistoryV0<'_>,
+        Box<FixedValidatorVoteSafetyJournalErrorV0>,
+    > {
+        self.signing_session
+            .signing_session
+            .publication_history()
+            .map_err(Box::new)
+    }
+
+    pub(super) fn validate_publication_history(
+        &self,
+    ) -> Result<(), FixedValidatorNodePublicationRecoveryErrorV0> {
+        use FixedValidatorNodePublicationRecoveryErrorV0 as Error;
+        use naome_storage::FixedValidatorCompletedPublicationV0;
+        let history = self.publication_history().map_err(Error::Signer)?;
+        for entry in history.entries() {
+            let FixedValidatorCompletedPublicationV0::Proposal(proposal) = entry else {
+                continue;
+            };
+            let payload = proposal
+                .canonical_artifact_bytes()
+                .ok_or(Error::MissingPayload)?;
+            let parent = self
+                .finality
+                .parent_for_height(proposal.position().height())
+                .map_err(|error| Error::Finality(Box::new(error)))?
+                .ok_or(Error::MissingParent)?;
+            let value = naome_consensus::ConsensusValueV0::from_canonical_bytes(
+                proposal
+                    .canonical_proposal_control_bytes()
+                    .get(..naome_consensus::ConsensusValueV0::BYTE_LENGTH)
+                    .ok_or(Error::InvalidControl)?,
+            )
+            .map_err(Error::Value)?;
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(payload.len())
+                .map_err(Error::Allocation)?;
+            bytes.extend_from_slice(payload);
+            // Validation uses the retained parent for this historical height;
+            // current-head or empty-ledger validation would reject dependencies
+            // or falsely establish the artifact binding. It selects nothing.
+            let _ = parent
+                .artifact_snapshot()
+                .validate_child(&value.artifact_block(), bytes)
+                .map_err(|error| Error::Artifact(Box::new(error)))?;
+        }
+        Ok(())
+    }
     /// Returns the exact branch recovered for this signing lineage.
     pub const fn branch(&self) -> &FixedConsensusBranchV0 {
         &self.branch

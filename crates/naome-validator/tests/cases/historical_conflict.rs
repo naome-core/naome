@@ -367,9 +367,29 @@ fn historical_halt_or_consuming_rejection_preserves_real_height_three_inflight_p
                 for field in ["height", "round", "phase", "head"] {
                     assert_eq!(ready["driver"][field], initial["driver"][field]);
                 }
+                assert_eq!(
+                    reopened.event("publication_recovered")["signer_state"],
+                    initial["publication"]["signer_state"]
+                );
+                assert_eq!(reopened.event("peer_attempted")["started"], false);
                 reopened.shutdown();
             }
-            assert_eq!(layout.images(), durable);
+            let after = layout.images();
+            if distinct {
+                assert_eq!(
+                    after, durable,
+                    "terminal startup must not enable publication"
+                );
+            } else {
+                assert_ne!(
+                    after, durable,
+                    "healthy restart persists the resend attempt"
+                );
+                assert_eq!(
+                    without_delivery_progress(&after),
+                    without_delivery_progress(&durable)
+                );
+            }
         }
     }
 }

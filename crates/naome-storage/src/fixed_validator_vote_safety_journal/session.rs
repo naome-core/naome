@@ -43,11 +43,40 @@ impl FixedValidatorVoteSafetySigningSessionV0<'_> {
                 role: pending.role,
             });
         }
+        let payload = match &source {
+            FixedValidatorProposalSourceV0::Fresh {
+                canonical_artifact_bytes,
+                ..
+            }
+            | FixedValidatorProposalSourceV0::RetainedValid {
+                canonical_artifact_bytes,
+            } => canonical_artifact_bytes,
+        };
+        // Reserve the complete publication before preparation or key use. The
+        // consensus path still validates the source before any durable effect.
+        if payload.len() > naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES {
+            return Err(
+                FixedValidatorVoteSafetyJournalErrorV0::PublicationPayloadTooLong {
+                    actual: payload.len(),
+                },
+            );
+        }
+        let mut publication_payload =
+            allocate_bytes(payload.len(), self.journal.core.record_sequence)?;
+        publication_payload.copy_from_slice(payload);
         let intent = self
             .lock_state
             .prepare_proposal_intent(round, source, self.journal.signer())
             .map_err(FixedValidatorVoteSafetyJournalErrorV0::ProposalPreparation)?;
-        self.journal.prepare_proposal(intent)
+        let outcome = self.journal.prepare_proposal(intent)?;
+        if matches!(
+            outcome,
+            FixedValidatorProposalPrepareOutcomeV0::Prepared(_)
+                | FixedValidatorProposalPrepareOutcomeV0::AlreadyPrepared(_)
+        ) {
+            self.journal.core.live_pending_publication_payload = Some(publication_payload);
+        }
+        Ok(outcome)
     }
 
     /// Asserts that the exact prepared proposal state is externally durable.

@@ -6,6 +6,8 @@ mod explicit;
 #[path = "artifact_exchange.rs"]
 pub(crate) mod artifact_exchange;
 
+use crate::FixedValidatorPublicationJournalErrorV0 as PublicationError;
+use crate::publication_journal::PublicationJournal;
 use naome_consensus::{FixedValidatorLockPhaseV0, FixedValidatorProposalSourceV0};
 use naome_network::{
     ConsensusPushMessage, MAX_STATIC_PEERS, NetworkEvent, OutboundConsensusPushEvent, PeerId,
@@ -20,7 +22,9 @@ use naome_node::{
     FixedValidatorNodeDriverStepOutcomeV0 as StepOutcome, FixedValidatorNodeDriverV0 as Driver,
     FixedValidatorNodeHigherRoundInboxDrainV0, FixedValidatorNodePhaseTimeoutV0,
 };
+use naome_storage::FixedValidatorVoteSafetyJournalStateIdV0;
 use naome_storage::{ArtifactBlockCandidateStore, CanonicalArtifactPayloadStore};
+use std::{collections::VecDeque, path::Path};
 use tokio::time::{Instant, sleep_until};
 
 use crate::routing::{MessageRef, PreparedAdmission};
@@ -51,8 +55,9 @@ enum PendingInput {
 /// Each `next_event` returns at most one visible result. Dropping its borrowed
 /// future preserves all stored custody; it does not cancel a transport request.
 /// Only the caller may dispose of returned events or tear down this owner. No
-/// inbox is silently drained, no failed send is retried, and publication waits
-/// prevent a second signed publication from being released by this owner.
+/// inbox is silently drained. The durable profile resends unacknowledged bytes
+/// on strict restart and peer reconnection; publication waits prevent a second
+/// signed publication from being released by this owner.
 #[must_use]
 pub struct FixedValidatorRuntimeV0<'node> {
     driver: Option<Driver<'node>>,
@@ -66,6 +71,8 @@ pub struct FixedValidatorRuntimeV0<'node> {
     failed_admission: Option<AdmissionReport>,
     step_yielded: bool,
     rejected_due_ticket: Option<FixedValidatorNodePhaseTimeoutV0>,
+    publication_journal: Option<PublicationJournal>,
+    recovery: VecDeque<(FixedValidatorVoteSafetyJournalStateIdV0, bool)>,
 }
 
 impl<'node> FixedValidatorRuntimeV0<'node> {
@@ -99,7 +106,74 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             failed_admission: None,
             step_yielded: false,
             rejected_due_ticket: None,
+            publication_journal: None,
+            recovery: VecDeque::new(),
         })
+    }
+
+    /// Enables crash recovery before any runtime step or external release.
+    /// Creation requires no completed signing history; open strictly binds the
+    /// existing context, signer and ordered recipient identities. Addresses may
+    /// change. Failure consumes this owner without releasing publication bytes.
+    pub fn with_publication_journal(
+        mut self,
+        directory: &Path,
+        create: bool,
+    ) -> Result<Self, PublicationError> {
+        if self.publication_journal.is_some()
+            || self.publication.is_some()
+            || self.timer.is_some()
+            || self.pending_input.is_some()
+        {
+            return Err(PublicationError::AlreadyEnabled);
+        }
+        let driver = self.driver.as_ref().ok_or(PublicationError::Invalid)?;
+        driver
+            .validate_publication_history()
+            .map_err(|error| PublicationError::Recovery(Box::new(error)))?;
+        let history = driver.publication_history()?;
+        let journal = PublicationJournal::open(directory, create, &history, &self.peers)?;
+        let mut entries = Vec::new();
+        for entry in history.entries() {
+            // Previous-height acknowledged messages need no work. Current
+            // local evidence must be re-admitted even when all peers received.
+            if entry.position().height() == driver.position().height()
+                || (0..self.peers.len()).any(|peer| !journal.received(entry.state_id(), peer))
+            {
+                entries.try_reserve(1)?;
+                let phase = match entry.phase() {
+                    FixedValidatorLockPhaseV0::Proposal => 0,
+                    FixedValidatorLockPhaseV0::Prevote => 1,
+                    FixedValidatorLockPhaseV0::Precommit => 2,
+                };
+                entries.push((
+                    (
+                        entry.position().height().value(),
+                        entry.position().round().value(),
+                        phase,
+                    ),
+                    entry.state_id(),
+                ));
+            }
+        }
+        entries.sort_unstable_by_key(|entry| entry.0);
+        self.recovery.try_reserve(entries.len())?;
+        self.recovery
+            .extend(entries.into_iter().map(|entry| (entry.1, true)));
+        self.network
+            .reserve_consensus_capacity()
+            .map_err(|_| PublicationError::Invalid)?;
+        self.publication_journal = Some(journal);
+        Ok(self)
+    }
+
+    pub fn publication_recovery_remaining(&self) -> usize {
+        self.recovery.len()
+    }
+
+    fn publication_failure(&mut self, error: PublicationError) -> Event<'node> {
+        self.driver = None;
+        Event::Fatal(Box::new(Failure::Publication(error)))
     }
 
     fn preflight(
@@ -267,7 +341,9 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         }
     }
 
-    /// Explicitly transfers every surviving owner; queued sends are not cancelled.
+    /// Ends runtime supervision and transfers volatile custody without cancelling
+    /// queued sends. This releases the delivery journal lock and replay schedule;
+    /// durable publication resumes only through strict journal reopening.
     pub fn into_parts(self) -> Parts<'node> {
         let (pending_network_event, pending_caller_input) = match self.pending_input {
             Some(PendingInput::Network(event)) => (Some(event), None),
@@ -372,7 +448,8 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
     }
 
     fn authoring_busy(&self, driver: &Driver<'_>) -> bool {
-        self.publication.is_some()
+        !self.recovery.is_empty()
+            || self.publication.is_some()
             || self.pending_arm.is_some()
             || self.pending_input.is_some()
             || self.timer.is_none()
@@ -428,6 +505,13 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
                     }
                     command => match Publication::from_command(command, &self.peers) {
                         Ok(publication) if self.publication.is_none() => {
+                            if let Some(journal) = &mut self.publication_journal
+                                && let Err(error) =
+                                    journal.register(publication.message().state_id())
+                            {
+                                self.publication = Some(publication);
+                                return Some(self.publication_failure(error));
+                            }
                             let size = publication.message().size();
                             self.publication = Some(publication);
                             Event::PublicationPrepared(size)
@@ -476,6 +560,11 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
     }
 
     fn start_next_peer(&mut self) -> Option<Event<'node>> {
+        if self.publication_journal.is_some() && !self.network.consensus_capacity_available() {
+            // Keep this recipient unattempted while actual transport work or a
+            // retained terminal owns the slot. A later poll rechecks capacity.
+            return None;
+        }
         let publication = self.publication.as_mut().unwrap();
         let delivery = publication
             .deliveries
@@ -487,6 +576,12 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             Err(error) => return Some(Event::ReservationFailed(error)),
         };
         let peer_id = delivery.peer_id;
+        if let Some(journal) = &mut self.publication_journal {
+            let index = self.peers.iter().position(|peer| *peer == peer_id).unwrap();
+            if let Err(error) = journal.attempt(publication.message.state_id(), index) {
+                return Some(self.publication_failure(error));
+            }
+        }
         let started = match self.network.push_consensus(peer_id, message) {
             Ok(ticket) => {
                 delivery.state = DeliveryState::InFlight(ticket);
@@ -502,6 +597,10 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
     }
 
     fn complete_peer(&mut self, event: OutboundConsensusPushEvent) -> Event<'node> {
+        let state_id = self
+            .publication
+            .as_ref()
+            .map(|publication| publication.message.state_id());
         let delivery = self.publication.as_mut().and_then(|publication| {
             publication.deliveries.iter_mut().flatten().find(|delivery| {
                 matches!(&delivery.state, DeliveryState::InFlight(ticket) if ticket.accepts_event(&event))
@@ -517,6 +616,18 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         };
         let received = match ticket.complete(event) {
             Ok(Ok(receipt)) => {
+                if let Some(journal) = &mut self.publication_journal {
+                    let index = self
+                        .peers
+                        .iter()
+                        .position(|peer| *peer == delivery.peer_id)
+                        .unwrap();
+                    if let Err(error) = journal.acknowledge(state_id.unwrap(), index) {
+                        // The transport completed, but durable delivery is not
+                        // established. Retain resend debt and release authority.
+                        return self.publication_failure(error);
+                    }
+                }
                 delivery.state = DeliveryState::Received(receipt);
                 true
             }
@@ -653,6 +764,47 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
     }
 
     fn handle_network_event(&mut self, event: NetworkEvent) -> Event<'node> {
+        if let NetworkEvent::PeerSession(naome_network::PeerSessionEvent::Established { peer_id }) =
+            &event
+            && let Some(peer) = self.peers.iter().position(|peer| peer == peer_id)
+            && let Some(journal) = &self.publication_journal
+        {
+            let queued = (|| -> Result<(), PublicationError> {
+                let history = self.driver.as_ref().unwrap().publication_history()?;
+                let mut entries = Vec::new();
+                for entry in history.entries() {
+                    if !journal.received(entry.state_id(), peer)
+                        && !self
+                            .recovery
+                            .iter()
+                            .any(|queued| queued.0 == entry.state_id())
+                    {
+                        entries.try_reserve(1)?;
+                        let phase = match entry.phase() {
+                            FixedValidatorLockPhaseV0::Proposal => 0,
+                            FixedValidatorLockPhaseV0::Prevote => 1,
+                            FixedValidatorLockPhaseV0::Precommit => 2,
+                        };
+                        entries.push((
+                            (
+                                entry.position().height().value(),
+                                entry.position().round().value(),
+                                phase,
+                            ),
+                            entry.state_id(),
+                        ));
+                    }
+                }
+                entries.sort_unstable_by_key(|entry| entry.0);
+                self.recovery.try_reserve(entries.len())?;
+                self.recovery
+                    .extend(entries.into_iter().map(|entry| (entry.1, false)));
+                Ok(())
+            })();
+            if let Err(error) = queued {
+                return self.publication_failure(error);
+            }
+        }
         let inbound = match event {
             NetworkEvent::InboundConsensusPush(inbound) => inbound,
             NetworkEvent::OutboundConsensusPush(event) => return self.complete_peer(event),
@@ -725,6 +877,33 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         }
         if self.pending_arm.is_some() {
             return self.arm();
+        }
+        if self.publication.is_none()
+            && let Some((state_id, admit_locally)) = self.recovery.front().copied()
+        {
+            let recovered = (|| {
+                let history = self.driver.as_ref().unwrap().publication_history()?;
+                let entry = history
+                    .entries()
+                    .find(|entry| entry.state_id() == state_id)
+                    .ok_or(PublicationError::Invalid)?;
+                let mut publication = Publication::from_history(
+                    entry,
+                    &self.peers,
+                    self.publication_journal.as_ref().unwrap(),
+                )?;
+                publication.locally_admitted = !admit_locally;
+                Ok::<_, PublicationError>(publication)
+            })();
+            match recovered {
+                Ok(publication) => {
+                    self.recovery.pop_front();
+                    let size = publication.message().size();
+                    self.publication = Some(publication);
+                    return Event::PublicationRecovered { state_id, size };
+                }
+                Err(error) => return self.publication_failure(error),
+            }
         }
         if self.publication.is_some() {
             if self.driver.as_ref().unwrap().has_pending_command() {

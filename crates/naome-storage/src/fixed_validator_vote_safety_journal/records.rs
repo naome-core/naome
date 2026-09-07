@@ -32,6 +32,7 @@ pub(super) fn signed_proposal_from_completed(
         position: completed.position(),
         proposal_signing_root: completed.proposal_signing_root(),
         canonical_proposal_control_bytes: completed.into_canonical_proposal_control_bytes(),
+        canonical_artifact_bytes: None,
         state_id,
     }
 }

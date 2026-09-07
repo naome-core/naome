@@ -48,6 +48,9 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
         source: io::Error,
     },
     PathAllocation,
+    PublicationPayloadTooLong {
+        actual: usize,
+    },
     Create {
         source: io::Error,
     },
@@ -416,6 +419,7 @@ pub enum FixedValidatorVoteSafetyJournalErrorV0 {
 impl fmt::Display for FixedValidatorVoteSafetyJournalErrorV0 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PublicationPayloadTooLong { actual } => write!(formatter, "proposal publication payload length {actual} exceeds the protocol limit"),
             Self::LockFile { source } => write!(formatter, "vote-safety lock file failed: {source}"),
             Self::Locked => formatter.write_str("this consensus key's vote-safety journal is already exclusively open"),
             Self::Lock { source } => write!(formatter, "vote-safety journal locking failed: {source}"),

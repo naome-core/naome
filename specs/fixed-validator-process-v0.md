@@ -31,11 +31,17 @@ for candidate finality and a historical selected-sibling halt using those stores
 `PROD-020-057` adds explicit offline [candidate-bundle export and unselected staging](fixed-validator-process-source-bundles-v0.md)
 through the same stores and live selected history.
 
+`PROD-020-058` makes the [crash-recoverable consensus publication lifecycle](fixed-validator-publication-lifecycle-v0.md)
+mandatory before ready: original signed bytes share the anchored completion
+boundary, delivery progress is separate and durable, and strict restart resends
+unacknowledged messages without signing again. It also reserves outbound
+consensus capacity above archive and acquisition traffic.
+
 The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. It grants no automatic proposal
 source or evidence selection, certificate acquisition, artifact serving beyond
 the separately opted-in retained complete-proof response,
-automatic fallback policy, automatic inbox clearing, delivery retry, repair, durable outbox, dynamic
+automatic source fallback policy, automatic inbox clearing, repair, dynamic
 validator, key rotation, production timeout calibration, hardware custody, or
 distributed-liveness authority. In accordance with `PROD-023`, no remote
 consensus-signer service or configuration is supported. This implements only
@@ -188,9 +194,10 @@ existing consensus-push maximum/exact widths. Actual reads are capped even if
 files grow. Command parse/source failures produce `command_rejected`. Successful
 queueing reports `input_queued`, which establishes no validity. Authoring returns
 the runtime's actual outcome, including busy, rejected, or pending ordinary
-work. No rejection or completed delivery is automatically retried. Refunded
+work. Operator command rejections are not automatically retried. Refunded
 sources and transferred reports/publications are diagnosed and discarded by
-this profile, not retained as a durable outbox.
+this profile. The independent anchored publication source and durable receipt
+snapshot retain unacknowledged consensus debt after those reports are disposed.
 
 A dedicated input thread holds partial frame bytes across runtime polls. The
 channel contains at most one frame, with at most one additional frame being
@@ -242,7 +249,8 @@ publication whose local admission was already attempted. The operator must
 explicitly resubmit owned source bytes through an existing command. Completing
 an in-flight publication likewise does not reinsert disposed local evidence.
 Strict restart restores only underlying anchored signer/finality state; it
-reconstructs no discarded inbox, publication, or timer. This command adds no
+reconstructs no discarded inbox or timer. The publication lifecycle independently
+recovers exact signed messages and redoes current local admission. This command adds no
 evidence preference, conflict resolution, consensus validity, signing,
 selection, or finality authority.
 
@@ -390,7 +398,8 @@ artifacts, accepting network recovery bundles, or selecting additional evidence.
 
 Reports are bounded JSONL. They distinguish `proposal_authored` (anchored signing
 completion), `publication_prepared` (runtime custody), `peer_completed` with
-`received` (correlated transport receipt), per-route `admission` with explicit
+`received` (correlated transport receipt synchronized in delivery progress),
+`publication_recovered` (original anchored completion), per-route `admission` with explicit
 caller/local-publication/peer provenance, and `finality` with selected head and
 next position. A peer receipt is neither admission nor finality. A
 `publication_complete` report includes failed/refused delivery states and any
@@ -420,9 +429,12 @@ SIGINT/SIGTERM do not interrupt synchronous proof, filesystem, or signing work
 inside a poll. No hard real-time shutdown bound or power-loss guarantee is
 introduced. Successful shutdown exits zero; input framing errors, startup
 refusals, fatal runtime outcomes, and output failure exit nonzero. Strict restart
-reopens durable state into a fresh runtime with empty volatile custody and fresh
-timers. It never reconstructs prior operator input, network sessions, peer
-receipts, publications, or inboxes.
+reopens durable state into a fresh runtime with fresh timers. It reconstructs
+original completed consensus publications and per-peer receipts through the
+mandatory lifecycle, but no prior operator input, transport tickets, network
+sessions or trusted inbox contents. Missing receipt snapshots, changed ordered
+recipient identities and legacy proposals without payload bytes refuse startup
+before ready; no implicit migration or source-file reload is provided.
 
 ## Evidence and limits
 

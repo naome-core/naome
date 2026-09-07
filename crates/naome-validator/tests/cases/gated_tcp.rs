@@ -13,6 +13,7 @@ struct State {
     sockets: Vec<TcpStream>,
     accepted: usize,
     refused: usize,
+    allow_backend_restart: bool,
 }
 
 /// An opaque TCP path. Only the validator processes terminate Noise/Yamux.
@@ -24,6 +25,9 @@ pub struct Gate {
 }
 
 impl Gate {
+    pub fn allow_backend_restart(&self) {
+        self.state.lock().unwrap().allow_backend_restart = true;
+    }
     pub fn bind() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -67,8 +71,17 @@ impl Gate {
                     continue;
                 }
                 drop(shared);
-                let outgoing = TcpStream::connect_timeout(&backend, Duration::from_secs(1))
-                    .expect("gate backend is an already listening process");
+                let outgoing = match TcpStream::connect_timeout(&backend, Duration::from_secs(1)) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        let mut shared = state.lock().unwrap();
+                        assert!(shared.allow_backend_restart, "gate backend failed: {error}");
+                        shared.refused += 1;
+                        assert!(shared.refused <= 64, "bounded restart connection attempts");
+                        let _ = incoming.shutdown(Shutdown::Both);
+                        continue;
+                    }
+                };
                 // Cut and registration share the lock. A connection established
                 // during a cut cannot start forwarding after cut returns.
                 let mut shared = state.lock().unwrap();

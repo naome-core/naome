@@ -158,7 +158,7 @@ pub use fixed_validator_finality_journal::{
 pub use fixed_validator_vote_safety_journal::{
     FixedValidatorAnchoredRecoveredSigningSessionV0, FixedValidatorAnchoredSignerRecoveryV0,
     FixedValidatorAnchoredVoteSafetyJournalErrorV0, FixedValidatorAnchoredVoteSafetyJournalV0,
-    FixedValidatorAnchoredVoteSafetySigningSessionV0,
+    FixedValidatorAnchoredVoteSafetySigningSessionV0, FixedValidatorCompletedPublicationV0,
     FixedValidatorDurablePrepareAcknowledgementV0,
     FixedValidatorDurableProposalPrepareAcknowledgementV0,
     FixedValidatorFinalityConflictSignerStopOutcomeV0, FixedValidatorFinalityConflictSignerStopV0,
@@ -167,13 +167,14 @@ pub use fixed_validator_vote_safety_journal::{
     FixedValidatorPreparedProposalV0, FixedValidatorPreparedVoteV0,
     FixedValidatorProposalPrepareOutcomeV0, FixedValidatorProposalReplayLimitErrorV0,
     FixedValidatorProposalReplayLimitV0, FixedValidatorProposalSafetyHaltV0,
-    FixedValidatorRecoveredSignerBranchV0, FixedValidatorRecoveredSigningSessionV0,
-    FixedValidatorSignedProposalV0, FixedValidatorSignedVoteV0,
-    FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVoteCompletionMismatchV0,
-    FixedValidatorVotePrepareOutcomeV0, FixedValidatorVoteSafetyHaltV0,
-    FixedValidatorVoteSafetyJournalErrorV0, FixedValidatorVoteSafetyJournalStateIdV0,
-    FixedValidatorVoteSafetyJournalV0, FixedValidatorVoteSafetyReplayLimitErrorV0,
-    FixedValidatorVoteSafetyReplayLimitV0, FixedValidatorVoteSafetySigningSessionV0,
+    FixedValidatorPublicationHistoryV0, FixedValidatorRecoveredSignerBranchV0,
+    FixedValidatorRecoveredSigningSessionV0, FixedValidatorSignedProposalV0,
+    FixedValidatorSignedVoteV0, FixedValidatorSignerRecoveryRoundLimitV0,
+    FixedValidatorVoteCompletionMismatchV0, FixedValidatorVotePrepareOutcomeV0,
+    FixedValidatorVoteSafetyHaltV0, FixedValidatorVoteSafetyJournalErrorV0,
+    FixedValidatorVoteSafetyJournalStateIdV0, FixedValidatorVoteSafetyJournalV0,
+    FixedValidatorVoteSafetyReplayLimitErrorV0, FixedValidatorVoteSafetyReplayLimitV0,
+    FixedValidatorVoteSafetySigningSessionV0,
 };
 
 pub use fixed_validator_anchor::FixedValidatorAnchorErrorV0;

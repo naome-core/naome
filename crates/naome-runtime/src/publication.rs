@@ -8,7 +8,10 @@ use naome_network::{
     PeerId,
 };
 use naome_node::{FixedValidatorNodeDeferredProposalV0, FixedValidatorNodeDriverCommandV0};
-use naome_storage::{FixedValidatorSignedProposalV0, FixedValidatorSignedVoteV0};
+use naome_storage::{
+    FixedValidatorCompletedPublicationV0, FixedValidatorSignedProposalV0,
+    FixedValidatorSignedVoteV0, FixedValidatorVoteSafetyJournalStateIdV0,
+};
 
 use crate::routing::MessageRef;
 
@@ -28,6 +31,12 @@ pub enum FixedValidatorRuntimePublicationMessageV0 {
 }
 
 impl FixedValidatorRuntimePublicationMessageV0 {
+    pub fn state_id(&self) -> FixedValidatorVoteSafetyJournalStateIdV0 {
+        match self {
+            Self::Proposal { proposal, .. } => proposal.state_id(),
+            Self::Vote { vote, .. } => vote.state_id(),
+        }
+    }
     pub(crate) fn as_message(&self) -> MessageRef<'_> {
         match self {
             Self::Proposal {
@@ -80,11 +89,16 @@ pub enum FixedValidatorRuntimeDeliveryStateV0 {
     Refused(ConsensusPushStartFailure),
     Failed(Box<OutboundConsensusPushFailure>),
     Received(AuthenticatedConsensusPushReceipt),
+    /// A matching receipt was durably recorded by an earlier process.
+    PreviouslyReceived,
 }
 
 impl FixedValidatorRuntimeDeliveryStateV0 {
     pub const fn is_terminal(&self) -> bool {
-        matches!(self, Self::Refused(_) | Self::Failed(_) | Self::Received(_))
+        matches!(
+            self,
+            Self::Refused(_) | Self::Failed(_) | Self::Received(_) | Self::PreviouslyReceived
+        )
     }
 }
 
@@ -99,6 +113,7 @@ pub struct FixedValidatorRuntimePublicationV0 {
     pub(crate) message: FixedValidatorRuntimePublicationMessageV0,
     pub(crate) deliveries: [Option<FixedValidatorRuntimePeerDeliveryV0>; MAX_STATIC_PEERS],
     pub(crate) locally_admitted: bool,
+    pub(crate) recovered: bool,
 }
 
 impl FixedValidatorRuntimePublicationV0 {
@@ -137,7 +152,57 @@ impl FixedValidatorRuntimePublicationV0 {
             message,
             deliveries,
             locally_admitted: false,
+            recovered: false,
         })
+    }
+
+    pub(crate) fn from_history(
+        entry: FixedValidatorCompletedPublicationV0<'_>,
+        peers: &[PeerId],
+        journal: &crate::publication_journal::PublicationJournal,
+    ) -> Result<Self, crate::FixedValidatorPublicationJournalErrorV0> {
+        let state_id = entry.state_id();
+        let message = match entry {
+            FixedValidatorCompletedPublicationV0::Proposal(proposal) => {
+                let bytes = proposal.canonical_artifact_bytes().ok_or(
+                    crate::FixedValidatorPublicationJournalErrorV0::MissingProposalPayload,
+                )?;
+                let mut canonical_artifact_bytes = Vec::new();
+                canonical_artifact_bytes.try_reserve_exact(bytes.len())?;
+                canonical_artifact_bytes.extend_from_slice(bytes);
+                FixedValidatorRuntimePublicationMessageV0::Proposal {
+                    proposal: proposal.clone(),
+                    canonical_artifact_bytes,
+                }
+            }
+            FixedValidatorCompletedPublicationV0::Vote(vote) => {
+                FixedValidatorRuntimePublicationMessageV0::Vote {
+                    vote: vote.clone(),
+                    released_proposal: None,
+                }
+            }
+        };
+        Ok(Self {
+            message,
+            deliveries: std::array::from_fn(|index| {
+                peers
+                    .get(index)
+                    .map(|peer_id| FixedValidatorRuntimePeerDeliveryV0 {
+                        peer_id: *peer_id,
+                        state: if journal.received(state_id, index) {
+                            FixedValidatorRuntimeDeliveryStateV0::PreviouslyReceived
+                        } else {
+                            FixedValidatorRuntimeDeliveryStateV0::NotAttempted
+                        },
+                    })
+            }),
+            locally_admitted: false,
+            recovered: true,
+        })
+    }
+
+    pub const fn recovered(&self) -> bool {
+        self.recovered
     }
 
     pub const fn message(&self) -> &FixedValidatorRuntimePublicationMessageV0 {

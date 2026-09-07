@@ -25,6 +25,14 @@ through this same runtime and local process. `PROD-020-053` adds both direct
 exact-current single-finality proof forms through these same owners.
 `PROD-020-054` adds both direct historical selected-sibling proof forms.
 
+`PROD-020-058` adds the optional
+[publication lifecycle](fixed-validator-publication-lifecycle-v0.md) through
+`with_publication_journal`, mandatory in the Unix executable. That profile
+recovers exact anchored signed messages and separate durable peer receipts,
+retries outstanding debt on strict restart and peer reconnection, and reserves
+consensus capacity above background requests. References below to volatile-only
+custody and one-shot delivery describe the base constructor unless qualified.
+
 Consensus retains verification and transition semantics; storage retains durable
 signing and finality authority; the node driver retains its sole signing scope,
 command custody, inboxes, and step precedence. The runtime grants none of those
@@ -62,7 +70,8 @@ Already queued sends are not claimed to have been recalled, acknowledged, or
 delivered. Explicit `into_parts` is still required for a caller-chosen transfer
 before teardown and cannot extend borrowing signing authority beyond the
 callback. Restart builds a new runtime from a strictly reopened signing scope;
-it does not restore old runtime commands, input, deadlines, or receipt state.
+it does not restore old runtime commands, input or deadlines. The durable profile
+strictly reopens publication bytes and receipt state as specified separately.
 
 ## Exact local timing
 
@@ -80,7 +89,9 @@ retains the opaque ticket's context, position, phase, generation, and lineage.
 These process-local deadlines do not define canonical validity, establish a
 production timing recommendation, or prove elapsed time to another node.
 
-`next_event` first transfers a pending arm or driver command. Without an owned
+`next_event` first transfers a pending arm. Durable recovery queues original
+publications before ordinary driver work, then transfers any pending driver
+command through the publication gate. Without recovery or an owned
 publication, ordinary retained driver work is stepped before a new timeout or
 input observation. A transition that supersedes an active ticket discards
 only its old runtime deadline. A newly installed ticket receives a new deadline;
@@ -386,13 +397,16 @@ to its caller; only the explicitly enabled
 [validator provider](fixed-validator-proof-provider-v0.md) routes them to this
 operation. A raw transport response remains separate from provider authority.
 
-Artifact requests and publications continue to share the existing per-peer slot
+In the base volatile profile, artifact requests and publications share the existing per-peer slot
 and aggregate permits. A pending publication may refuse a missing-source request,
 and a pending artifact request may refuse the publication's one-shot peer attempt.
 Completing the artifact request does not retry that publication. Only the lower
 workflow's explicitly selected fallback mode may advance through its supplied
 peer order under its existing bounds and deadlines. No new retry or priority
-policy is introduced.
+policy is introduced by the acquisition APIs. The durable publication profile
+reserves one of eight aggregate slots above at most seven background requests,
+allows consensus across a same-peer background request, and waits for aggregate
+capacity before attempting the next recipient. Acquisition retries remain explicit.
 
 The runtime owns no additional acquisition queue or task. Dropping a runtime
 poll future preserves the caller's separate workflow; cancelling or dropping
@@ -416,7 +430,7 @@ outbound retry, silent inbox drain, or eviction occurs.
 
 The direct transport permits two consensus streams per connection shared by
 inbound and outbound directions. Its eight shared outbound permits, per-peer
-outbound limit, ingress budgets, connection limits, and total Yamux ceiling
+outbound limit in the base profile, ingress budgets, connection limits, and total Yamux ceiling
 remain unchanged. Shared capacity permits ordinary reciprocal publication but
 reserves no worker for either direction. A caller can still explicitly
 serialize exchanges using bounded transport service and buffered admission;
@@ -438,7 +452,8 @@ total allocator use.
 Dropping a borrowed `next_event` future preserves stored driver, publication,
 ticket, and input custody; it does not cancel queued transport work. No await
 occurs after consuming the driver or removing an event for admission.
-`into_parts` explicitly transfers every surviving owner and marker. Its
+`into_parts` ends durable supervision, releasing its delivery lock and recovery
+schedule, and transfers surviving volatile owners and markers. Its
 `pending_network_event` and `pending_caller_input` fields are mutually exclusive.
 A route-copy
 allocation error returns the original unacknowledged inbound handle, including its response path. Closed-channel acknowledgement
@@ -447,9 +462,12 @@ still preserves original source and input, with `receipt_queued = false`.
 A fatal driver operation leaves no usable driver. Subsequent `next_event` returns
 `DriverUnavailable`; only separately retained runtime custody survives. Strict
 anchored reopen alone classifies durable prefixes and creates a fresh driver.
-The runtime adds no rollback, repair, durable outbox, recovered inbox, recovered
+The base runtime adds no rollback, repair, durable outbox, recovered inbox, recovered
 pending command, inherited due event, or persistent timer lineage. Future
 unsupported dependency outcomes transfer intact, including any driver they own.
+The durable profile adds only the exact publication source and per-peer progress
+defined in `fixed-validator-publication-lifecycle-v0.md`; inboxes and timers
+still require fresh ordinary construction and admission.
 
 ## Explicit inbox recovery
 
@@ -618,7 +636,9 @@ liveness, exhaustive allocation/I/O faults, or non-Unix filesystem runtime
 evidence. Automatic artifact acquisition, broader finality routing, automatic
 source selection, general gossip, durable delivery, reserved control capacity,
 node binaries, key loading/rotation, remote signing, and dynamic validators
-remain outside this slice.
+remain outside the original runtime slice. The separately specified
+`PROD-020-058` executable profile adds durable publication and reserved outbound
+capacity with its own actual-process evidence.
 
 `SEC-012-004` adds one [partitioned owner restart](fixed-validator-partition-restart-v0.md)
 execution with a real distributed non-nil lock, exact anchored reopening of one

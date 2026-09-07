@@ -395,6 +395,21 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 position: prepared.position,
             },
         )?;
+        // Every byte needed after a crash shares the existing completion and
+        // anchor boundary. Reserve the record before the signing key is used.
+        let publication_payload = self.live_pending_publication_payload.as_deref();
+        let tag = if publication_payload.is_some() {
+            PROPOSAL_PUBLICATION_COMPLETE_RECORD
+        } else {
+            PROPOSAL_COMPLETE_RECORD
+        };
+        let body_length =
+            COMPLETED_PROPOSAL_BODY_BYTES + publication_payload.map_or(0, <[u8]>::len);
+        let mut body = allocate_bytes(body_length, self.record_sequence)?;
+        body[0] = tag;
+        if let Some(payload) = publication_payload {
+            body[COMPLETED_PROPOSAL_BODY_BYTES..].copy_from_slice(payload);
+        }
         let dalek_signature = signing_key.sign(&intent.signing_transcript());
         let signature = ConsensusSignature::from_bytes(dalek_signature.to_bytes());
         let completed = intent
@@ -404,13 +419,11 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
         let authorization_start = naome_consensus::ConsensusValueV0::BYTE_LENGTH;
         let authorization_end =
             authorization_start + naome_consensus::VerifiedProducerAuthorizationV0::BYTE_LENGTH;
-        let body = tagged_record(
-            PROPOSAL_COMPLETE_RECORD,
-            &control[authorization_start..authorization_end],
-            self.record_sequence,
-        )?;
+        body[1..COMPLETED_PROPOSAL_BODY_BYTES]
+            .copy_from_slice(&control[authorization_start..authorization_end]);
         let next_state_id = self.append_record(&body, self.record_sequence)?;
-        let signed = signed_proposal_from_completed(completed, next_state_id);
+        let mut signed = signed_proposal_from_completed(completed, next_state_id);
+        signed.canonical_artifact_bytes = self.live_pending_publication_payload.take();
         self.proposals
             .get_mut(&prepared.position)
             .expect("prepared proposal remains retained through completion")

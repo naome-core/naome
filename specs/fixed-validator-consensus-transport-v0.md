@@ -73,6 +73,14 @@ exact owned `ConsensusPushMessage` through `ConsensusPushStartError`, including
 both original allocations of a proposal. The private codec request cannot be
 constructed through the public API to bypass this gate.
 
+The optional `reserve_consensus_capacity` profile, enabled by the executable
+[publication lifecycle](fixed-validator-publication-lifecycle-v0.md), must be
+selected with no held outbound permits. It limits background requests to seven
+of the existing eight aggregate permits and lets consensus cross a same-peer
+background request while retaining one consensus request per peer. Background
+requests still refuse an occupied peer slot. `consensus_capacity_available`
+is only a current scheduling hint; normal queueing still checks every gate.
+
 Successful queueing consumes the input. A `ConsensusPushTicket` identifies the
 protocol-local request generation, expected peer, message kind and lengths,
 and network instance. The physical pending request retains a shared permit.
@@ -88,7 +96,8 @@ carries no retry copy and cannot establish whether the receiver processed the
 message before the response was lost. A caller needing retries must retain
 its own input and explicitly initiate each attempt. There is no automatic
 retry, forwarding, cancellation API, durable outbox, deduplication across
-attempts, or exactly-once delivery.
+attempts, or exactly-once delivery in this transport. The separate runtime
+publication lifecycle retains durable inputs and schedules its own attempts.
 
 Each network separately budgets consensus ingress at eight retained events
 and 33,755,856 combined body bytes, exactly eight maximum proposal bodies of

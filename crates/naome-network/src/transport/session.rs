@@ -119,6 +119,10 @@ impl Behaviour {
         debug_assert!(peer.owns_dial);
         debug_assert!(matches!(peer.link, Link::Down { .. }));
         let options = DialOpts::peer_id(peer_id)
+            // Reusing the listener port after a process crash can collide with
+            // the previous outbound TCP tuple in TIME_WAIT (AddrInUse). Static
+            // routing needs only the remote listener; Noise binds peer identity.
+            .allocate_new_port()
             .condition(PeerCondition::DisconnectedAndNotDialing)
             .addresses(vec![peer.address.clone()])
             .build();

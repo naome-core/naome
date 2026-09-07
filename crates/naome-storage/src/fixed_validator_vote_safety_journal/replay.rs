@@ -60,6 +60,8 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 && !(MIN_PROPOSAL_INTENT_BODY_BYTES..=MAX_PROPOSAL_INTENT_BODY_BYTES)
                     .contains(&body_length)
                 && body_length != COMPLETED_PROPOSAL_BODY_BYTES
+                && !(COMPLETED_PROPOSAL_BODY_BYTES..=MAX_PROPOSAL_PUBLICATION_BODY_BYTES)
+                    .contains(&body_length)
             {
                 return Err(
                     FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordLength {
@@ -216,6 +218,38 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
                 self.replay_proposal_prepare(entry, offset, payload, state_id)
             }
             PROPOSAL_COMPLETE_RECORD => self.replay_proposal_completion(entry, payload, state_id),
+            PROPOSAL_PUBLICATION_COMPLETE_RECORD => {
+                let authorization_bytes = COMPLETED_PROPOSAL_BODY_BYTES - 1;
+                if payload.len() < authorization_bytes
+                    || payload.len() > MAX_PROPOSAL_PUBLICATION_BODY_BYTES - 1
+                {
+                    return Err(
+                        FixedValidatorVoteSafetyJournalErrorV0::InvalidRecordLength {
+                            entry,
+                            offset,
+                            actual: u32::try_from(payload.len() + 1).unwrap_or(u32::MAX),
+                            minimum: COMPLETED_PROPOSAL_BODY_BYTES as u32,
+                            maximum: MAX_PROPOSAL_PUBLICATION_BODY_BYTES as u32,
+                        },
+                    );
+                }
+                let position = self.pending_proposal.ok_or(
+                    FixedValidatorVoteSafetyJournalErrorV0::ProposalCompletionWithoutPrepare {
+                        entry,
+                    },
+                )?;
+                let mut artifact = allocate_bytes(payload.len() - authorization_bytes, entry)?;
+                artifact.copy_from_slice(&payload[authorization_bytes..]);
+                self.replay_proposal_completion(entry, &payload[..authorization_bytes], state_id)?;
+                self.proposals
+                    .get_mut(&position)
+                    .unwrap()
+                    .signed
+                    .as_mut()
+                    .unwrap()
+                    .canonical_artifact_bytes = Some(artifact);
+                Ok(())
+            }
             PROPOSAL_CONFLICT_HALT_RECORD => {
                 self.replay_proposal_halt(entry, offset, payload, state_id)
             }

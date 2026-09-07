@@ -488,8 +488,9 @@ The first body byte is the record tag and has exactly these meanings:
 | `0x09` | one exact producer authorization `[212]` | completed producer signature for the immediately pending proposal intent |
 | `0x0a` | one non-identical canonical proposal intent `[629..=25,913]` | terminal local halt for an occupied proposal position |
 | `0x0b` | `finality_state_id[32] || positive_conflict_height_u64_be[8] || first_ancestry[32] || first_envelope[32] || second_ancestry[32] || second_envelope[32]` | terminal local signer stop transferred from one exact externally anchored neutral paired-preselection halt |
+| `0x0c` | producer authorization `[212]` followed by exact bounded canonical artifact payload | payload-bearing proposal completion under `PROD-020-058` |
 
-A completion body is exactly 215 bytes and its complete frame is 251 bytes.
+A vote completion body is exactly 215 bytes and its complete frame is 251 bytes.
 One signing-lineage body is exactly 41 bytes and its complete frame is 77 bytes.
 Each selected-sibling or neutral paired-preselection finality-conflict stop body
 is exactly 169 bytes and its complete frame is 205 bytes. Equal-width tags
@@ -497,11 +498,19 @@ retain distinct semantics and exact-repeat identities.
 Prepare and halt bodies are 392..=25,676 bytes and their complete frames are
 428..=25,712 bytes. Higher-round checkpoint bodies are 607..=50,371 bytes and
 their complete frames are 643..=50,407 bytes. Proposal activation body/frame is
-9/45 bytes, proposal completion body/frame is 213/249 bytes, and proposal
+9/45 bytes, legacy `0x09` proposal completion body/frame is 213/249 bytes, and proposal
 prepare or halt bodies/frames are 630..=25,914/666..=25,950 bytes. Before allocation, every
 `body_length` must be in the bounded union of those admitted widths. After the
 bounded body is read, its tag-specific width and canonical framing are checked
 during tag dispatch before admission.
+
+`PROD-020-058` adds `0x0c` with body length `213 + payload.len()` and frame
+length `249 + payload.len()`, bounded respectively by 4,194,518 and 4,194,554
+bytes. Current proposal sessions retain the exact payload before key use and
+append it inside the same completion/anchor boundary. The bounded width union
+admits this additive record; tag dispatch still enforces each older tag's exact
+width. See the [publication lifecycle](fixed-validator-publication-lifecycle-v0.md)
+for strict node-level payload validation and delivery progress.
 
 `SigningLineageIdV0` is the exact SHA-256 result:
 
@@ -572,6 +581,10 @@ preparations share one pending-effect boundary. Byte-identical proposal replay
 is no-write; an exact `0x09` completion reconstructs and verifies the existing
 producer authorization against its pending intent before proposal-control bytes
 may be released.
+An exact `0x0c` completion performs the same authorization checks and retains
+the original payload, covered by that completion's chained state identity.
+The sealed node recovery path separately validates the whole payload against
+its exact historical parent before enabling publication recovery.
 
 One non-identical proposal intent for an already occupied position appends
 `0x0a` before key use and terminally stops this local signer. The retained
@@ -938,12 +951,15 @@ strictly replay its latest completed intent and the first binding height must
 equal that latest vote height. After the first lineage record, every later
 binding is sequential and the legacy no-lineage path is permanently closed.
 The additive `0x05` selected-sibling stop, `0x06` higher-round checkpoint,
-`0x07` through `0x0a` proposal records, and `0x0b` neutral paired-preselection
-stop are likewise readable by the current decoder but
+`0x07` through `0x0a` proposal records, `0x0b` neutral paired-preselection
+stop, and `0x0c` payload-bearing proposal completion are readable by the current decoder but
 intentionally rejected by older binaries that do not recognize them. A healthy
 older journal must append and anchor `0x07` before any current implementation
 session or recovery issuance. Older binaries are not forward compatible with
 newly extended journals; this prerelease format makes no such promise.
+Legacy `0x09` completions remain readable as control-only signed proposals.
+The mandatory executable publication profile refuses history containing any
+such completion; it does not infer missing payload bytes or migrate them.
 
 The journal does not implement timeout scheduling, unauthenticated or unbounded
 higher-round progression, proposal or certificate buffering and routing,

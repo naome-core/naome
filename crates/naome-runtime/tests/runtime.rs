@@ -4,6 +4,8 @@
 mod adversarial;
 #[path = "cases/duplex.rs"]
 mod duplex;
+#[path = "cases/publication_lifecycle.rs"]
+mod publication_lifecycle;
 mod support;
 
 use ed25519_dalek::SigningKey;

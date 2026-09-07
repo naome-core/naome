@@ -93,6 +93,16 @@ fn anchored_proposal_authoring_activates_signs_replays_and_recovers_exactly() {
     );
     let acknowledgement = session.acknowledge_prepared_proposal(prepared).unwrap();
     let signed = session.sign_prepared_proposal(acknowledgement).unwrap();
+    assert_eq!(signed.canonical_artifact_bytes(), Some(payload.as_slice()));
+    let history = session.publication_history().unwrap();
+    assert_eq!(history.context(), fixture.context);
+    assert!(
+        history
+            .entries()
+            .any(|entry| entry.state_id() == signed.state_id()
+                && entry.position() == signed.position()
+                && entry.phase() == FixedValidatorLockPhaseV0::Proposal)
+    );
     let verified = round
         .decode_and_verify_proposal_control(
             signed.canonical_proposal_control_bytes(),
@@ -149,6 +159,10 @@ fn anchored_proposal_authoring_activates_signs_replays_and_recovers_exactly() {
         Some(signed)
     );
     let resumed = reopened.issue_signing_session(&round).unwrap();
+    assert!(resumed.publication_history().unwrap().entries().any(
+        |entry| matches!(entry, FixedValidatorCompletedPublicationV0::Proposal(proposal)
+            if proposal.canonical_artifact_bytes().is_some())
+    ));
     assert_eq!(resumed.position(), round.position());
     assert_eq!(resumed.phase(), FixedValidatorLockPhaseV0::Proposal);
 }

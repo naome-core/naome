@@ -88,6 +88,7 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
     };
     let (summary, success) = ready
         .run_with_signing_session_async(async move |scope| {
+            let publication_directory = config.publication_directory().to_path_buf();
             let driver = FixedValidatorNodeDriverV0::new(
                 scope,
                 config.higher,
@@ -103,7 +104,12 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
                 .map_err(|_| "listen_start")?;
             let runtime =
                 FixedValidatorRuntimeV0::new(driver, network, config.targets, config.timeouts)
-                    .map_err(|_| "runtime_create")?;
+                    .map_err(|_| "runtime_create")?
+                    .with_publication_journal(
+                        &publication_directory,
+                        matches!(config.mode, config::Mode::Create),
+                    )
+                    .map_err(|_| "publication_journal")?;
             output.emit(json!({"event": "ready", "state": report::status(&runtime)}))?;
             session::Session {
                 runtime,

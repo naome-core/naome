@@ -143,6 +143,10 @@ pub(super) struct Prepared {
 }
 
 impl Prepared {
+    pub fn publication_directory(&self) -> &Path {
+        &self.directories.vote_journal
+    }
+
     pub fn provision(&self) -> FixedValidatorNodeProvisionV0<'_> {
         let dirs = &self.directories;
         FixedValidatorNodeProvisionV0::new(

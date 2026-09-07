@@ -69,6 +69,7 @@ const PROPOSAL_PREPARE_RECORD: u8 = 8;
 const PROPOSAL_COMPLETE_RECORD: u8 = 9;
 const PROPOSAL_CONFLICT_HALT_RECORD: u8 = 10;
 const PRESELECTION_CONFLICT_STOP_RECORD: u8 = 11;
+const PROPOSAL_PUBLICATION_COMPLETE_RECORD: u8 = 12;
 const SIGNING_LINEAGE_DOMAIN: &[u8] = b"naome:fixed-validator-vote-safety-signing-lineage:v0\0";
 const SIGNING_LINEAGE_ID_BYTES: usize = 32;
 const SIGNING_LINEAGE_PAYLOAD_BYTES: usize = 8 + SIGNING_LINEAGE_ID_BYTES;
@@ -93,12 +94,18 @@ const MAX_PROPOSAL_INTENT_BODY_BYTES: usize =
     1 + ObservedFixedValidatorProposalIntentV0::MAX_BYTE_LENGTH;
 const COMPLETED_PROPOSAL_BODY_BYTES: usize =
     1 + naome_consensus::VerifiedProducerAuthorizationV0::BYTE_LENGTH;
-const MAX_BOUNDED_RECORD_BODY_BYTES: usize =
-    if MAX_PROPOSAL_INTENT_BODY_BYTES > MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES {
-        MAX_PROPOSAL_INTENT_BODY_BYTES
-    } else {
-        MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES
-    };
+const MAX_PROPOSAL_PUBLICATION_BODY_BYTES: usize =
+    COMPLETED_PROPOSAL_BODY_BYTES + naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES;
+const MAX_BOUNDED_RECORD_BODY_BYTES: usize = if MAX_PROPOSAL_PUBLICATION_BODY_BYTES
+    > MAX_PROPOSAL_INTENT_BODY_BYTES
+    && MAX_PROPOSAL_PUBLICATION_BODY_BYTES > MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES
+{
+    MAX_PROPOSAL_PUBLICATION_BODY_BYTES
+} else if MAX_PROPOSAL_INTENT_BODY_BYTES > MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES {
+    MAX_PROPOSAL_INTENT_BODY_BYTES
+} else {
+    MAX_HIGHER_ROUND_CHECKPOINT_BODY_BYTES
+};
 
 /// One exclusively opened, per-key fixed-validator vote-safety journal.
 ///
@@ -159,6 +166,7 @@ struct FixedValidatorVoteSafetyJournalCore<F> {
     pending_proposal: Option<ConsensusPosition>,
     live_pending_intent: Option<FixedValidatorVoteIntentV0>,
     live_pending_proposal_intent: Option<FixedValidatorProposalIntentV0>,
+    live_pending_publication_payload: Option<Vec<u8>>,
     latest_slot: Option<VoteSlot>,
     latest_proposal_position: Option<ConsensusPosition>,
     lineage: Option<RetainedSigningLineageV0>,
@@ -197,6 +205,7 @@ impl<F: StoreIo> FixedValidatorVoteSafetyJournalCore<F> {
             pending_proposal: None,
             live_pending_intent: None,
             live_pending_proposal_intent: None,
+            live_pending_publication_payload: None,
             latest_slot: None,
             latest_proposal_position: None,
             lineage: None,
@@ -349,6 +358,8 @@ mod tests;
 
 mod types;
 pub use types::*;
+mod publication;
+pub use publication::{FixedValidatorCompletedPublicationV0, FixedValidatorPublicationHistoryV0};
 mod anchored;
 mod append;
 mod errors;

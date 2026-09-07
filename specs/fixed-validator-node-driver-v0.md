@@ -149,8 +149,10 @@ Dropping a driver neither rolls back a completed journal prefix nor proves that
 a returned command was delivered. It can lose volatile inbox evidence, an
 unreleased command, and a selected proposal token still held with that command.
 The durable signer and finality stores keep their existing strict-reopen
-classifications. The bounded runtime also retains publication custody only
-in memory; durable outbox and pending-command recovery remain unfinished.
+classifications. The base runtime retains publication custody in memory.
+`PROD-020-058` adds a [publication lifecycle](fixed-validator-publication-lifecycle-v0.md)
+that reconstructs exact completed signed messages from anchored history without
+restoring pending commands or previously trusted inbox evidence.
 
 ## Explicit current-round proposal authoring
 

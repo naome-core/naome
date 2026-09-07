@@ -11,8 +11,8 @@ use super::inbound_retention::InboundRetentionPermit;
 pub(super) mod codec;
 
 use super::{
-    ExchangeRequestId, MAX_STATIC_PEERS, NetworkEvent, PeerId, PendingBudget, PendingPermit,
-    PendingRequest, RequestStartError, StaticArtifactNetwork,
+    ExchangeRequestId, MAX_PENDING_REQUESTS, MAX_STATIC_PEERS, NetworkEvent, PeerId, PendingBudget,
+    PendingPermit, PendingRequest, RequestStartError, StaticArtifactNetwork,
 };
 
 /// Minimum proposal control width accepted by the envelope.
@@ -427,7 +427,16 @@ impl StaticArtifactNetwork {
             }));
         }
         let connected = self.swarm.behaviour().consensus_push.is_connected(&peer_id);
-        let (peer_index, permit) = match self.acquire_request_permit(peer_id, connected) {
+        let reservation = self
+            .preflight_request_class(peer_id, connected, true)
+            .and_then(|index| {
+                PendingBudget::try_acquire_consensus(&self.pending_budget)
+                    .map(|permit| (index, permit))
+                    .ok_or(RequestStartError::GlobalLimit {
+                        maximum: MAX_PENDING_REQUESTS,
+                    })
+            });
+        let (peer_index, permit) = match reservation {
             Ok(value) => value,
             Err(error) => {
                 return Err(Box::new(ConsensusPushStartError {
