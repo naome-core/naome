@@ -112,6 +112,12 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
                         matches!(config.mode, config::Mode::Create),
                     )
                     .map_err(|_| "publication_journal")?;
+            let runtime = match config.evidence {
+                Some((directory, create)) => runtime
+                    .with_evidence_journal(&directory, create)
+                    .map_err(|_| "evidence_journal")?,
+                None => runtime,
+            };
             let runtime = match config.publication_retry {
                 Some(interval) => runtime
                     .with_publication_retry_interval(interval)

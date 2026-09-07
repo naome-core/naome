@@ -409,6 +409,18 @@ pub struct FixedValidatorNodeProposalBufferV0 {
 }
 
 impl FixedValidatorNodeProposalBufferV0 {
+    pub(in crate::fixed_validator) fn raw_inputs(
+        &self,
+    ) -> impl Iterator<Item = crate::fixed_validator::driver::evidence::RawEvidenceRef<'_>> {
+        use crate::fixed_validator::driver::evidence::RawEvidenceRef;
+        self.proposals.iter().map(|p| {
+            RawEvidenceRef::Proposal(
+                p.proposal.canonical_proposal_control_bytes(),
+                p.proposal.canonical_artifact_bytes(),
+            )
+        })
+    }
+
     /// Constructs one empty healthy buffer under exact caller-local limits.
     pub const fn new(limits: FixedValidatorNodeProposalBufferLimitsV0) -> Self {
         Self {

@@ -40,6 +40,61 @@ fn quiescent(nodes: &mut [Process; 4], actor: usize, id: &mut u64) -> Value {
     }
 }
 
+// A status response is not a reservation against the next real deadline or
+// publication. Retry only this exact start refusal; every other failure remains
+// fatal to the harness and an accepted pass must still commit its exact proof.
+fn start_sync(
+    nodes: &mut [Process; 4],
+    actor: usize,
+    peer: PeerId,
+    id: &mut u64,
+    refused: &mut Vec<(usize, u64)>,
+) -> u64 {
+    let deadline = Instant::now() + MILESTONE_BOUND;
+    loop {
+        *id += 1;
+        let current = *id;
+        nodes[actor].send(json!({"command":"sync_finality", "id":current,
+            "peer_id":peer.to_string(), "count":1}));
+        let accepted = loop {
+            let mut result = None;
+            for (index, node) in nodes.iter_mut().enumerate() {
+                if let Some(event) = node.observe(Duration::from_millis(1)) {
+                    if index == actor
+                        && event["id"] == current
+                        && event["event"] == "command_rejected"
+                        && event["code"] == "sync_request_start"
+                    {
+                        refused.push((actor, current));
+                        result = Some(false);
+                    } else {
+                        healthy(&event);
+                        assert_ne!(event["event"], "stopped");
+                        if index == actor
+                            && event["id"] == current
+                            && event["event"] == "command_result"
+                        {
+                            assert_eq!(event["outcome"]["event"], "sync_started");
+                            result = Some(true);
+                        }
+                    }
+                }
+                assert!(node.child.try_wait().unwrap().is_none());
+            }
+            assert!(
+                Instant::now() < deadline,
+                "bounded proof start did not become available"
+            );
+            if let Some(result) = result {
+                break result;
+            }
+        };
+        if accepted {
+            return current;
+        }
+    }
+}
+
 fn prefix_preserved(layout: &Layout, baseline: &Images) {
     let current = finality_images(layout);
     for (path, bytes) in baseline
@@ -156,6 +211,7 @@ fn run(kill_minority: bool) {
         },
     );
     let mut id = 100;
+    let mut refused_sync_starts = Vec::new();
     for actor in 2..4 {
         let state = quiescent(&mut nodes, actor, &mut id);
         assert_eq!(state["driver"]["height"], "2");
@@ -302,14 +358,13 @@ fn run(kill_minority: bool) {
                 >= 1
         );
         assert_eq!(finality_images(&layouts[actor]), baseline[actor]);
-        id += 1;
-        let sync_id = id;
-        let response = command(
+        let sync_id = start_sync(
             &mut nodes,
             actor,
-            json!({"command":"sync_finality", "id":sync_id, "peer_id":corpus.peers[0].to_string(), "count":1}),
+            corpus.peers[0],
+            &mut id,
+            &mut refused_sync_starts,
         );
-        assert_eq!(response["event"], "sync_started");
         pump_until(
             &mut nodes,
             "one exact live-produced proof commits",
@@ -397,6 +452,14 @@ fn run(kill_minority: bool) {
         );
         assert_eq!(node.shutdown()["locks_released"], true);
         for event in &node.observed {
+            if event["event"] == "command_rejected"
+                && event["code"] == "sync_request_start"
+                && event["id"]
+                    .as_u64()
+                    .is_some_and(|id| refused_sync_starts.contains(&(actor, id)))
+            {
+                continue;
+            }
             healthy(event);
         }
     }

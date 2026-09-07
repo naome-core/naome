@@ -835,7 +835,9 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
                 },
             );
         }
-        if !matches!(self.classify_ordinary_work()?, DriverOrdinaryWorkV0::Idle) {
+        if self.retained_evidence_reuse_pending()
+            || !matches!(self.classify_ordinary_work()?, DriverOrdinaryWorkV0::Idle)
+        {
             return Ok(
                 FixedValidatorNodeDriverProposalAuthoringOutcomeV0::StepWorkPending {
                     driver: Box::new(self),

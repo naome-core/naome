@@ -679,3 +679,36 @@ The process's explicit continuous proof follower (`PROD-020-063`) reuses these
 same ingress methods and ordinary event scheduling. The runtime exposes only a
 read-only configured-peer membership query for validating its peer choice; it
 owns no follower interval, persistent intent, fallback policy or new capacity.
+
+
+## Optional durable incoming evidence
+
+`with_evidence_journal(directory, create)` attaches bounded raw custody to a
+fresh runtime before its initial arm. The explicit existing directory contains
+`fixed-validator-retained.evidence` and its exclusive lock file. Create refuses
+an existing image; open requires a regular bounded file with a complete SHA-256
+checksum, then invokes the node's full raw-evidence reconstruction. Missing,
+malformed, wrong-binding and corrupt input refuse without repair or fallback.
+The checksum detects corruption and grants no authority or rollback protection.
+This file-backed profile is supported on Unix; other platforms explicitly
+refuse it.
+
+Admissions persist their complete resulting custody, including proposal dual
+routing and refusal state, before returning the completed admission report.
+Driver outcomes persist changed custody before returning an event. Identical
+images do not perform replacement writes. Explicit class disposal returns its
+successful result only after durable replacement; a failure consumes the driver
+and returns no successful drain, with a queued fatal evidence error on the next
+runtime event. Failed admission reports and independent input/publication
+custody remain available through shutdown parts. Diagnostic shutdown drains do
+not erase the saved image.
+
+Replacement writes a new exclusive temporary file, synchronizes it, renames it
+and synchronizes the directory. Any write-stage error poisons the owner and
+requires strict reopen; a crash may leave the previous or replacement complete
+image and uncommitted temporary files. No temporary image is adopted on open.
+The evidence image and signer journals are not one atomic transaction. A crash
+between their commits is handled by strict signer recovery followed by complete
+raw re-verification and position normalization; no file can restore authority
+that the anchored signer and finality state do not grant. Stream receipts keep
+their existing transport-only meaning.

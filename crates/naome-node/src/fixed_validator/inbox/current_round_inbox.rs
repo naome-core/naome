@@ -272,6 +272,30 @@ pub(in crate::fixed_validator) struct CurrentRoundInboxV0 {
 }
 
 impl CurrentRoundInboxV0 {
+    pub(in crate::fixed_validator) const fn limits(
+        &self,
+    ) -> FixedValidatorNodeCurrentRoundInboxLimitsV0 {
+        self.limits
+    }
+    pub(in crate::fixed_validator) fn raw_inputs(
+        &self,
+    ) -> impl Iterator<Item = crate::fixed_validator::driver::evidence::RawEvidenceRef<'_>> {
+        use crate::fixed_validator::driver::evidence::RawEvidenceRef;
+        self.proposals
+            .iter()
+            .map(|p| {
+                RawEvidenceRef::Proposal(
+                    p.proposal.canonical_proposal_control_bytes(),
+                    p.proposal.canonical_artifact_bytes(),
+                )
+            })
+            .chain(
+                self.prevotes
+                    .iter()
+                    .map(|v| RawEvidenceRef::Vote(&v.canonical_bytes)),
+            )
+    }
+
     pub(in crate::fixed_validator) const fn new(
         limits: FixedValidatorNodeCurrentRoundInboxLimitsV0,
     ) -> Self {

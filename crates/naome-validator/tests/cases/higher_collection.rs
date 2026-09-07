@@ -11,7 +11,7 @@ fn result(node: &mut Process, command: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
-fn raw_higher_votes_checkpoint_through_process_runtime_and_survive_sigkill_without_publication() {
+fn raw_higher_votes_checkpoint_and_nil_quorums_are_reused_before_strict_sigkill_restart() {
     let fixture = Fixture::new();
     for role in [Role::Prevote, Role::Precommit] {
         let proof = Proof::new(&fixture, true, 1, role);
@@ -49,10 +49,29 @@ fn raw_higher_votes_checkpoint_through_process_runtime_and_survive_sigkill_witho
                 }
             );
             node.event("timer_armed");
-            assert!(!node.observed.iter().any(|value| matches!(
-                value["event"].as_str(),
-                Some("publication_prepared" | "publication_complete" | "finality")
-            )));
+            let mut original_publication = None;
+            if nil {
+                node.event("transitioned");
+                node.event("timer_armed");
+                if role == Role::Prevote {
+                    original_publication =
+                        Some(node.event("publication_complete")["disposed"].clone());
+                }
+            }
+            // A nil-precommit quorum's next-round close remains volatile.
+            // Strict reopen returns its preceding anchored checkpoint.
+            let expected_round = proof.round;
+            let expected_phase = if role == Role::Prevote && !nil {
+                "Prevote"
+            } else {
+                "Precommit"
+            };
+            assert!(
+                !node
+                    .observed
+                    .iter()
+                    .any(|value| matches!(value["event"].as_str(), Some("finality")))
+            );
             assert_eq!(layout.finality_images(), finality);
             node.child.kill().unwrap();
             assert_eq!(node.exit().signal(), Some(9));
@@ -61,22 +80,35 @@ fn raw_higher_votes_checkpoint_through_process_runtime_and_survive_sigkill_witho
             let state = reopened.ready();
             assert_eq!(state["driver"]["height"], initial["driver"]["height"]);
             assert_eq!(state["driver"]["head"], initial["driver"]["head"]);
-            assert_eq!(state["driver"]["round"], proof.round.to_string());
-            assert_eq!(
-                state["driver"]["phase"],
-                if role == Role::Prevote {
-                    "Prevote"
-                } else {
-                    "Precommit"
-                }
-            );
+            assert_eq!(state["driver"]["round"], expected_round.to_string());
+            assert_eq!(state["driver"]["phase"], expected_phase);
             assert_eq!(state["driver"]["higher_inbox"], 0);
+            let recovered_count = usize::from(original_publication.is_some());
+            assert_eq!(state["publication_recovery_remaining"], recovered_count);
             reopened.event("timer_armed");
+            if let Some(mut expected) = original_publication {
+                // The process always enables publication recovery. Reuse of
+                // a nil-prevote quorum already signed this exact precommit;
+                // wait for its recovery instead of racing it with shutdown.
+                assert_eq!(expected["recovered"], false);
+                expected["recovered"] = json!(true);
+                assert_eq!(reopened.event("publication_complete")["disposed"], expected);
+            }
             reopened.shutdown();
             assert!(!reopened.observed.iter().any(|value| matches!(
                 value["event"].as_str(),
-                Some("publication_prepared" | "publication_complete" | "finality")
+                Some("publication_prepared" | "finality")
             )));
+            for event in ["publication_recovered", "publication_complete"] {
+                assert_eq!(
+                    reopened
+                        .observed
+                        .iter()
+                        .filter(|value| value["event"] == event)
+                        .count(),
+                    recovered_count
+                );
+            }
             assert_eq!(layout.images(), durable);
         }
     }

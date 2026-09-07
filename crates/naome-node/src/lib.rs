@@ -98,6 +98,7 @@ pub use fixed_validator::{
     FixedValidatorNodeDriverProposalAuthoringOutcomeV0, FixedValidatorNodeDriverStepErrorV0,
     FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverStepRejectionV0,
     FixedValidatorNodeDriverV0, FixedValidatorNodeEnvelopeRejectionV0,
+    FixedValidatorNodeEvidenceClassV0, FixedValidatorNodeEvidenceErrorV0,
     FixedValidatorNodeFinalityErrorV0, FixedValidatorNodeFinalityOutcomeV0,
     FixedValidatorNodeFinalityRoundRouteV0, FixedValidatorNodeFinalitySelectionV0,
     FixedValidatorNodeFinalityStoppedV0, FixedValidatorNodeHigherRoundInboxAccessErrorV0,

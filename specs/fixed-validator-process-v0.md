@@ -599,3 +599,31 @@ terminal invalid-proof handling and shared `sync_status`/`cancel_sync` ownership
 Waiting allows source acquisition; active acquisition defers elapsed passes.
 All proof verification, runtime custody and anchored signer handoff remain
 unchanged. No following intent survives restart.
+
+
+## Optional durable incoming evidence
+
+The explicit local Unix profile may add:
+
+```toml
+[evidence]
+directory = "evidence"
+mode = "create" # use "open" for strict restart
+```
+
+The directory must already exist and is resolved relative to the configuration
+file. Unknown fields, invalid modes and empty paths are rejected. This option
+is independent of publication recovery and never implicitly creates a directory
+or falls back to empty custody when open fails. Source-file opening follows
+strict authority startup, so a create-mode source I/O failure may occur after
+authority files have been provisioned. It releases the runtime on failure and
+reports `evidence_journal`. Status includes `durable_evidence`.
+
+Existing `submit_proposal`, `submit_vote` and authenticated peer admissions
+use the runtime persistence fence. `discard_inbox` durably disposes exactly the
+named class before reporting success. Restart verifies raw bytes again through
+the node; it does not require the original caller proposal files or redelivery
+of already saved evidence. The profile preserves the existing hard inbox
+budgets, explicit saturation/ambiguity disposal and authority gates. See the
+runtime contract for old/new image crash behavior, fatal write failures and
+the absence of adversarial rollback protection.

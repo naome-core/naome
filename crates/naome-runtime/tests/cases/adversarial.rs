@@ -13,6 +13,8 @@ use naome_node::{
 };
 use naome_runtime::FixedValidatorRuntimeRouteV0 as Route;
 
+#[path = "evidence_recovery.rs"]
+mod evidence_recovery;
 #[path = "recovery.rs"]
 mod recovery;
 

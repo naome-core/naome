@@ -91,6 +91,13 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     pub(super) fn classify_ordinary_work(
         &self,
     ) -> Result<DriverOrdinaryWorkV0<'_>, FixedValidatorNodeDriverStepErrorV0> {
+        if self.evidence_refused(FixedValidatorNodeEvidenceClassV0::Finality) {
+            return Ok(DriverOrdinaryWorkV0::Blocked(
+                FixedValidatorNodeDriverBlockReasonV0::RetainedEvidenceRequiresDisposal {
+                    class: FixedValidatorNodeEvidenceClassV0::Finality,
+                },
+            ));
+        }
         let finality = self
             .select_current_finality()
             .map_err(FixedValidatorNodeDriverStepErrorV0::Round)?;
@@ -219,6 +226,13 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     }
 
     pub(super) fn current_finality_is_unresolved(&self) -> Result<bool, ProposerSelectionError> {
+        // Pending class movement may expose a complete current finality or
+        // conflict snapshot. Explicit proofs must let ordinary step resolve it.
+        if self.retained_evidence_reuse_pending()
+            || self.evidence_refused(FixedValidatorNodeEvidenceClassV0::Finality)
+        {
+            return Ok(true);
+        }
         Ok(!matches!(
             self.select_current_finality()?,
             DriverCurrentFinalitySelectionV0::None
@@ -494,7 +508,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
     }
 
     pub(super) fn higher_block_reason(&self) -> Option<FixedValidatorNodeDriverBlockReasonV0> {
-        self.ambiguity.or_else(|| {
+        self.evidence_block_reason().or(self.ambiguity).or_else(|| {
             self.inbox
                 .saturation()
                 .map(FixedValidatorNodeDriverBlockReasonV0::Saturated)

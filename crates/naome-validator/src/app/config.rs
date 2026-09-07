@@ -39,6 +39,14 @@ pub(super) struct Config {
     limits: Limits,
     timeouts: Timeouts,
     sources: Option<sources::Config>,
+    evidence: Option<Evidence>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Evidence {
+    directory: PathBuf,
+    mode: Mode,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -137,6 +145,7 @@ pub(super) struct Prepared {
     pub serve_artifact_sources: bool,
     pub publication_retry: Option<FixedValidatorPublicationRetryIntervalV0>,
     pub sources: Option<sources::Prepared>,
+    pub evidence: Option<(PathBuf, bool)>,
     pub timeouts: FixedValidatorRuntimeTimeoutsV0,
     pub driver_max_round: ConsensusRound,
     pub higher: FixedValidatorNodeHigherRoundInboxLimitsV0,
@@ -192,6 +201,18 @@ impl Config {
         if self.network.serve_artifact_sources && self.sources.is_none() {
             return Err("source_serving_requires_sources");
         }
+        let evidence = self
+            .evidence
+            .map(|evidence| {
+                if evidence.directory.as_os_str().is_empty() {
+                    return Err("evidence_directory");
+                }
+                Ok((
+                    base.join(evidence.directory),
+                    matches!(evidence.mode, Mode::Create),
+                ))
+            })
+            .transpose()?;
         let publication_retry = self
             .network
             .publication_retry_millis
@@ -319,6 +340,7 @@ impl Config {
             serve_finality_proofs: self.network.serve_finality_proofs,
             serve_artifact_sources: self.network.serve_artifact_sources,
             publication_retry,
+            evidence,
             sources,
             timeouts,
             driver_max_round,

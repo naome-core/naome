@@ -86,6 +86,7 @@ pub use driver::{
     FixedValidatorNodeDriverProposalAuthoringOutcomeV0, FixedValidatorNodeDriverStepErrorV0,
     FixedValidatorNodeDriverStepOutcomeV0, FixedValidatorNodeDriverStepRejectionV0,
     FixedValidatorNodeDriverV0, FixedValidatorNodeEnvelopeRejectionV0,
+    FixedValidatorNodeEvidenceClassV0, FixedValidatorNodeEvidenceErrorV0,
     FixedValidatorNodePhaseTimeoutV0,
 };
 pub use finality::{

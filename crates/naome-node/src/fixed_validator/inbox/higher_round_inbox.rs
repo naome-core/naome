@@ -500,6 +500,17 @@ pub struct FixedValidatorNodeHigherRoundInboxV0 {
 }
 
 impl FixedValidatorNodeHigherRoundInboxV0 {
+    pub(in crate::fixed_validator) fn raw_inputs(
+        &self,
+    ) -> impl Iterator<Item = crate::fixed_validator::driver::evidence::RawEvidenceRef<'_>> {
+        use crate::fixed_validator::driver::evidence::RawEvidenceRef;
+        self.proposals.raw_inputs().chain(
+            self.votes
+                .iter()
+                .map(|v| RawEvidenceRef::Vote(v.canonical_bytes())),
+        )
+    }
+
     /// Constructs one empty healthy process-local inbox.
     pub fn new(limits: FixedValidatorNodeHigherRoundInboxLimitsV0) -> Self {
         let proposal_limits = FixedValidatorNodeProposalBufferLimitsV0::new(

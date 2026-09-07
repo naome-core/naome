@@ -139,7 +139,7 @@ pub(super) fn publication(publication: &Publication) -> Value {
 }
 
 pub(super) fn status(runtime: &Runtime<'_>) -> Value {
-    json!({ "driver": driver(runtime.driver()), "timer": runtime.timer().is_some(), "publication": runtime.pending_publication().map(publication), "publication_recovery_remaining": runtime.publication_recovery_remaining() })
+    json!({ "durable_evidence": runtime.evidence_journal_enabled(), "driver": driver(runtime.driver()), "timer": runtime.timer().is_some(), "publication": runtime.pending_publication().map(publication), "publication_recovery_remaining": runtime.publication_recovery_remaining() })
 }
 
 pub(super) fn stopped(runtime: Runtime<'_>, reason: &str, queued_commands: usize) -> Value {

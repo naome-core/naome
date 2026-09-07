@@ -631,7 +631,7 @@ fn current_ambiguity_is_round_local_and_higher_evidence_escapes() {
             ];
             expected.sort_unstable();
             assert_eq!(proposals, expected);
-            assert!(prevotes.is_empty());
+            assert_eq!(prevotes, vec![higher_prevote]);
             assert!(nil_prevotes.is_empty());
         })
         .unwrap();

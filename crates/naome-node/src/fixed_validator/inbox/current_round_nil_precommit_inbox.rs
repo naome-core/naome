@@ -202,6 +202,20 @@ pub(in crate::fixed_validator) struct CurrentRoundNilPrecommitInboxV0 {
 }
 
 impl CurrentRoundNilPrecommitInboxV0 {
+    pub(in crate::fixed_validator) const fn limits(
+        &self,
+    ) -> FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0 {
+        self.limits
+    }
+    pub(in crate::fixed_validator) fn raw_inputs(
+        &self,
+    ) -> impl Iterator<Item = crate::fixed_validator::driver::evidence::RawEvidenceRef<'_>> {
+        use crate::fixed_validator::driver::evidence::RawEvidenceRef;
+        self.precommits
+            .iter()
+            .map(|v| RawEvidenceRef::Vote(&v.canonical_bytes))
+    }
+
     pub(in crate::fixed_validator) const fn new(
         limits: FixedValidatorNodeCurrentRoundNilPrecommitInboxLimitsV0,
     ) -> Self {

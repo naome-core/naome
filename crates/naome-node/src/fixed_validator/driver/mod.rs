@@ -91,6 +91,8 @@ mod envelope;
 pub use envelope::{
     FixedValidatorNodeDriverEnvelopeOutcomeV0, FixedValidatorNodeEnvelopeRejectionV0,
 };
+pub(in crate::fixed_validator) mod evidence;
+pub use evidence::{FixedValidatorNodeEvidenceClassV0, FixedValidatorNodeEvidenceErrorV0};
 mod admission;
 mod classification;
 mod execution;
@@ -159,6 +161,7 @@ pub struct FixedValidatorNodeDriverV0<'node> {
     ambiguity: Option<FixedValidatorNodeDriverBlockReasonV0>,
     current_ambiguity: Option<FixedValidatorNodeDriverBlockReasonV0>,
     pending_command: Option<PendingCommandV0>,
+    evidence_refusals: u8,
 }
 
 impl<'node> FixedValidatorNodeDriverV0<'node> {
@@ -211,6 +214,7 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             generation: 0,
             active_timeout: Some(active_timeout),
             due: false,
+            evidence_refusals: 0,
             ambiguity: None,
             current_ambiguity: None,
             pending_command: Some(PendingCommandV0::Arm(active_timeout)),
@@ -366,6 +370,34 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             });
         }
 
+        // Already actionable current finality keeps its established priority.
+        // A missing proposal may instead be supplied by complete atomic reuse.
+        let finality_precedes_reuse = !self
+            .evidence_refused(FixedValidatorNodeEvidenceClassV0::Finality)
+            && matches!(
+                self.select_current_finality()
+                    .map_err(FixedValidatorNodeDriverStepErrorV0::Round)?,
+                DriverCurrentFinalitySelectionV0::Ready { .. }
+                    | DriverCurrentFinalitySelectionV0::PreselectionConflict { .. }
+                    | DriverCurrentFinalitySelectionV0::ConflictingRoots { .. }
+            );
+        if !finality_precedes_reuse && let Err(error) = self.reuse_retained_evidence() {
+            match error {
+                FixedValidatorNodeEvidenceErrorV0::Capacity(class)
+                | FixedValidatorNodeEvidenceErrorV0::RequiresDisposal(class) => {
+                    self.evidence_refusals |= class.bit();
+                    return Ok(FixedValidatorNodeDriverStepOutcomeV0::Blocked { driver: Box::new(self), reason: FixedValidatorNodeDriverBlockReasonV0::RetainedEvidenceRequiresDisposal { class } });
+                }
+                error => {
+                    return Ok(FixedValidatorNodeDriverStepOutcomeV0::Rejected {
+                        driver: Box::new(self),
+                        rejection: Box::new(
+                            FixedValidatorNodeDriverStepRejectionV0::EvidenceReuse(Box::new(error)),
+                        ),
+                    });
+                }
+            }
+        }
         match self.classify_ordinary_work()? {
             DriverOrdinaryWorkV0::Finality(selection) => match selection {
                 DriverCurrentFinalitySelectionV0::None

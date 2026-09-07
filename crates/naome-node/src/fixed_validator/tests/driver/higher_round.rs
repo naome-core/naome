@@ -386,6 +386,7 @@ fn retained_higher_proposal_work_precedes_catchup_until_step_or_drain() {
                     assert_eq!(signed.target(), ConsensusVoteTarget::Proposal(left.proposal_signing_root()));
                     assert!(released.is_some());
                     let (driver, _) = step_arm(driver);
+                    let driver = step_idle(driver);
                     drop(advanced(catch_up(driver, batch, &certificate, &vote, 3, ConsensusVoteRole::Precommit, ConsensusVoteTarget::Nil).unwrap()));
                 } else {
                     let (driver, drained) = driver.drain_inbox_and_reset().into_parts();
@@ -816,6 +817,8 @@ fn catchup_checkpoints_existing_lock_and_complete_valid_evidence_before_any_new_
                 assert_eq!(signed.target(), ConsensusVoteTarget::Proposal(root));
                 assert!(released.is_some());
                 let (driver, _) = step_arm(driver);
+                // Resolve the retained prevote's new class before explicit ingress.
+                let driver = step_idle(driver);
                 let before = layout.images();
                 let driver = if mode == 2 {
                     let (driver, _) = admit(

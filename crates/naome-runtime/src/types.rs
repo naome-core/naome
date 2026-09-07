@@ -189,6 +189,7 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
 
 #[derive(Debug)]
 pub enum FixedValidatorRuntimeFailureV0 {
+    Evidence(crate::FixedValidatorEvidenceJournalErrorV0),
     Publication(crate::FixedValidatorPublicationJournalErrorV0),
     Step(FixedValidatorNodeDriverStepErrorV0),
     Admission(FixedValidatorNodeDriverAdmissionErrorV0),
@@ -230,6 +231,8 @@ pub struct FixedValidatorRuntimePartsV0<'node> {
     /// Shares one slot with `pending_network_event`; at most one is present.
     pub pending_caller_input: Option<ConsensusPushMessage>,
     pub failed_admission: Option<FixedValidatorRuntimeAdmissionReportV0>,
+    /// A failed durable disposal consumed the driver before its fatal event was polled.
+    pub evidence_failure: Option<crate::FixedValidatorEvidenceJournalErrorV0>,
     /// The last driver step yielded a blocker or rejection; strict input,
     /// accepted due state, an explicit drain, or proof advancement re-enables
     /// classification.

@@ -568,6 +568,10 @@ impl Error for FixedValidatorNodeDriverCurrentFinalityClassificationErrorV0 {
 #[must_use]
 #[non_exhaustive]
 pub enum FixedValidatorNodeDriverBlockReasonV0 {
+    /// Recovered refusal or an atomic reuse capacity rejection requires explicit class disposal.
+    RetainedEvidenceRequiresDisposal {
+        class: FixedValidatorNodeEvidenceClassV0,
+    },
     /// The bounded inbox rejected a distinct input and latched saturation.
     Saturated(FixedValidatorNodeHigherRoundInboxSaturationV0),
     /// Two distinct actions are valid in the same frozen step snapshot.
@@ -612,6 +616,10 @@ pub enum FixedValidatorNodeDriverBlockReasonV0 {
 impl fmt::Display for FixedValidatorNodeDriverBlockReasonV0 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RetainedEvidenceRequiresDisposal { class } => write!(
+                formatter,
+                "retained {class:?} evidence requires explicit disposal"
+            ),
             Self::Saturated(source) => source.fmt(formatter),
             Self::Ambiguous { first, second } => write!(
                 formatter,
@@ -666,6 +674,8 @@ impl fmt::Display for FixedValidatorNodeDriverBlockReasonV0 {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FixedValidatorNodeDriverStepRejectionV0 {
+    /// Atomic raw custody reconstruction rejected before any authority operation.
+    EvidenceReuse(Box<FixedValidatorNodeEvidenceErrorV0>),
     /// Retained higher votes failed complete exact-round quorum reconstruction.
     HigherQuorumSelection(QuorumCertificateBuildError),
     /// Temporary driver-selection storage could not be reserved.
@@ -689,6 +699,7 @@ pub enum FixedValidatorNodeDriverStepRejectionV0 {
 impl fmt::Display for FixedValidatorNodeDriverStepRejectionV0 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EvidenceReuse(source) => source.fmt(formatter),
             Self::HigherQuorumSelection(source) => source.fmt(formatter),
             Self::SelectionReservation(source) => write!(
                 formatter,
@@ -709,6 +720,7 @@ impl fmt::Display for FixedValidatorNodeDriverStepRejectionV0 {
 impl Error for FixedValidatorNodeDriverStepRejectionV0 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::EvidenceReuse(source) => Some(source.as_ref()),
             Self::HigherQuorumSelection(source) => Some(source),
             Self::SelectionReservation(source) => Some(source),
             Self::EvidenceSelection(source) | Self::EvidenceExecution(source) => {
@@ -923,7 +935,8 @@ pub enum FixedValidatorNodeDriverCurrentRoundFinalityOutcomeV0<'node> {
     CommandPending {
         driver: Box<FixedValidatorNodeDriverV0<'node>>,
     },
-    /// Retained exact-current finality must be resolved through the ordinary step.
+    /// Retained exact-current finality or pending raw-class movement must be
+    /// resolved through the ordinary step.
     CurrentFinalityUnresolved {
         driver: Box<FixedValidatorNodeDriverV0<'node>>,
     },
@@ -953,7 +966,8 @@ pub enum FixedValidatorNodeDriverLowerRoundFinalityOutcomeV0<'node> {
     CommandPending {
         driver: Box<FixedValidatorNodeDriverV0<'node>>,
     },
-    /// Retained exact-current finality must be resolved through the ordinary step.
+    /// Retained exact-current finality or pending raw-class movement must be
+    /// resolved through the ordinary step.
     CurrentFinalityUnresolved {
         driver: Box<FixedValidatorNodeDriverV0<'node>>,
     },

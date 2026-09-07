@@ -1194,8 +1194,8 @@ This driver does not define or perform:
 - network transport, listener or dialer behavior, peer discovery,
   authentication, provenance trust, relay, gossip, delivery-completeness
   inference, or peer-selected admission;
-- a complete or protocol-wide evidence view, durable inbox or timer encoding,
-  restart reconstruction, cross-process exactly-once delivery, canonical
+- a complete or protocol-wide evidence view, durable timer encoding,
+  cross-process exactly-once delivery, canonical
   evidence preference, automatic eviction, or protocol-wide resource limits;
 - automatic proposal source selection, proposal self-admission, higher-round quorum
   observation and collection beyond the bounded same-height healthy inbox,
@@ -1237,3 +1237,51 @@ transition admitted by the existing anchored finality-to-signer handoff.
 This ingress accepts lower, equal and higher signer-relative evidence rounds
 for the exact direct child, adds no old-height conflict route, and preserves
 all inbox custody while replacing the timer only after successful handoff.
+
+
+## Retained raw evidence reuse and optional recovery
+
+`PROD-020-065` extends the volatile-only baseline above. After pending commands
+transfer, the driver automatically re-verifies retained higher inputs that now
+match its exact current position and places them in the existing role-specific
+current inboxes. A proposal enters both voting and finality custody. If strict
+signer recovery returns an earlier durable round, same-height future inputs in
+current custody return to the higher inbox. Older rounds and heights remain
+charged to their original class until explicit disposal; they are not evicted.
+
+The complete move is prepared in scratch inboxes before any inbox is replaced
+or any action is selected. Each destination uses its existing independent count
+and canonical-byte limits. A saturated or ambiguous participating class, or a
+destination capacity refusal, preserves every source input and blocks reuse
+until explicit disposal of the affected class. Reuse cannot expose a partial
+quorum after refusal. Successful reuse grants only ordinary retained input:
+current signing, nil progression, finality and conflict handling still pass
+through the existing complete verification and anchored coordinators. A ready
+current finality or conflicting-root snapshot retains its existing priority.
+No signature or selection is authorized by a routing header or saved class tag.
+
+Pending raw-class movement also fences explicit ingress. Authoring returns
+`StepWorkPending`; explicit higher checkpoints and single-proof finality routes
+conservatively return `CurrentFinalityUnresolved` before reading caller proofs
+or sources. This denotes unresolved potential current work, not a claim that
+a quorum exists. Only ordinary step reclassifies custody; explicit terminal
+conflict proofs retain their existing prompt halt path. These refusal calls
+preserve all raw custody and perform no evidence-file writes.
+
+`retained_evidence_image` exports raw canonical proposal controls, payloads and
+votes, ordered by resource class, plus conservative class refusal bits. Its
+binding includes context, fixed set, signer, maximum round and all four inbox
+budgets. Its checked size ceiling is the sum of those canonical-byte budgets
+and bounded per-entry framing. `restore_retained_evidence` consumes a fresh
+driver before its initial arm transfers, rejects invalid framing, limits,
+classes, duplicates, trailing data or binding, and reconstructs every input
+through full proposal/payload or active-vote verification against the retained
+selected parent for its height. No trusted token, timer, command or signature
+is deserialized. Restored refusal bits are deny-only and require exact-class
+disposal; their original diagnostic cause is not reconstructed.
+
+The node itself performs no evidence-file I/O. Without the runtime opt-in,
+strict restart still produces empty inboxes. The raw image provides no rollback
+protection and is not signer authority; a valid older image is not detected as
+adversarial rollback. The signer and finality journals remain the only authority
+for resumed position, lock, valid proof and selected ancestry.
