@@ -204,6 +204,7 @@ fn four_process_sigkill_before_receipt_replays_exact_publication_and_finalizes_n
     let config = corpus
         .config(&layouts[sender], sender, &gates, 120_000)
         .replace("mode = \"create\"", "mode = \"open\"")
+        .replace("[network]", "[network]\npublication_retry_millis = \"100\"")
         .replace(
             "listen = \"/ip4/127.0.0.1/tcp/0\"",
             &format!("listen = {listening:?}"),
@@ -257,6 +258,15 @@ fn four_process_sigkill_before_receipt_replays_exact_publication_and_finalizes_n
                 && event["all_admitted"] == true
                 && event["message_sha256"] == expected_digests),
         "the actual resumed recipient must receive the exact persisted signed control and payload"
+    );
+    pump_until(
+        &mut nodes,
+        "periodic pass after managed reconnect and receipts",
+        |nodes| {
+            nodes[sender].observed.iter().any(|event| {
+                event["event"] == "publication_retry_scheduled" && event["queued"] == "0"
+            })
+        },
     );
     // Wait until every current publication has transferred before separately
     // asking the actual next scheduled proposer to author a further height.

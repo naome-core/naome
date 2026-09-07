@@ -63,6 +63,8 @@ pub enum FixedValidatorPublicationJournalErrorV0 {
     Poisoned,
     UnsupportedPlatform,
     AlreadyEnabled,
+    RetryRequiresJournal,
+    Timing(crate::FixedValidatorRuntimeTimingErrorV0),
 }
 
 impl fmt::Display for FixedValidatorPublicationJournalErrorV0 {

@@ -13,7 +13,10 @@ use naome_network::{
     Keypair, MAX_STATIC_PEERS, Multiaddr, PeerId, StaticArtifactNetwork, StaticPeer,
 };
 use naome_node::*;
-use naome_runtime::{FixedValidatorPhaseDurationV0, FixedValidatorRuntimeTimeoutsV0};
+use naome_runtime::{
+    FixedValidatorPhaseDurationV0, FixedValidatorPublicationRetryIntervalV0,
+    FixedValidatorRuntimeTimeoutsV0,
+};
 use naome_storage::*;
 use serde::Deserialize;
 
@@ -68,6 +71,7 @@ struct Network {
     listen: String,
     peers: Vec<Peer>,
     publication_targets: Vec<String>,
+    publication_retry_millis: Option<String>,
     #[serde(default)]
     serve_finality_proofs: bool,
 }
@@ -128,6 +132,7 @@ pub(super) struct Prepared {
     pub listen: Multiaddr,
     pub targets: Vec<PeerId>,
     pub serve_finality_proofs: bool,
+    pub publication_retry: Option<FixedValidatorPublicationRetryIntervalV0>,
     pub sources: Option<sources::Prepared>,
     pub timeouts: FixedValidatorRuntimeTimeoutsV0,
     pub driver_max_round: ConsensusRound,
@@ -181,6 +186,17 @@ impl Config {
     }
 
     fn prepare(self, base: PathBuf) -> Result<Prepared> {
+        let publication_retry = self
+            .network
+            .publication_retry_millis
+            .as_ref()
+            .map(|value| {
+                FixedValidatorPublicationRetryIntervalV0::new(Duration::from_millis(decimal(
+                    value,
+                )?))
+                .map_err(|_| "publication_retry_interval")
+            })
+            .transpose()?;
         let definition = ArtifactChainDefinition::new(hex32(&self.deployment_discriminator)?);
         let context = ConsensusContextV0::new(
             definition.id(),
@@ -295,6 +311,7 @@ impl Config {
             listen,
             targets,
             serve_finality_proofs: self.network.serve_finality_proofs,
+            publication_retry,
             sources,
             timeouts,
             driver_max_round,

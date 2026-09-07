@@ -36,6 +36,10 @@ mandatory before ready: original signed bytes share the anchored completion
 boundary, delivery progress is separate and durable, and strict restart resends
 unacknowledged messages without signing again. It also reserves outbound
 consensus capacity above archive and acquisition traffic.
+`PROD-020-059` adds optional `[network].publication_retry_millis` for one
+explicit positive periodic delivery interval. Omitting it preserves the
+restart/reconnection-only profile; configuring it retries exact original
+unacknowledged messages through the same durable delivery lifecycle.
 
 The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. It grants no automatic proposal
@@ -58,7 +62,10 @@ fork, service installation, configuration reload, or hidden environment override
 
 The UTF-8 TOML file is at most 65,536 bytes. Every field listed below is required;
 the additional `[network].serve_finality_proofs` boolean is optional and defaults
-to `false`. Unknown fields and tables, including remote-signer configuration,
+to `false`. The optional `[network].publication_retry_millis` is a canonical
+positive unsigned decimal `u64` string with checked monotonic deadline addition;
+it has no default and may be changed or omitted on strict restart. Unknown fields
+and tables, including remote-signer configuration,
 are rejected. Version
 is the integer `0`, and mode is exactly `"create"` or `"open"`. Relative paths
 in configuration and commands resolve against the configuration file's parent

@@ -104,6 +104,10 @@ pub enum FixedValidatorRuntimeEventV0<'node> {
     DriverBlocked(FixedValidatorNodeDriverBlockReasonV0),
     DriverRejected(Box<FixedValidatorNodeDriverStepRejectionV0>),
     PublicationPrepared(ConsensusPushSize),
+    /// One finite timer-triggered pass; zero means there was no resend debt.
+    PublicationRetryScheduled {
+        queued: usize,
+    },
     PublicationRecovered {
         state_id: naome_storage::FixedValidatorVoteSafetyJournalStateIdV0,
         size: ConsensusPushSize,

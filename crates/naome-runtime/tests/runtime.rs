@@ -6,6 +6,8 @@ mod adversarial;
 mod duplex;
 #[path = "cases/publication_lifecycle.rs"]
 mod publication_lifecycle;
+#[path = "cases/publication_retry.rs"]
+mod publication_retry;
 mod support;
 
 use ed25519_dalek::SigningKey;

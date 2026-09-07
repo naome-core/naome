@@ -102,6 +102,13 @@ impl FixedValidatorRuntimeDeliveryStateV0 {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalAdmission {
+    Pending,
+    Attempted,
+    Skipped,
+}
+
 /// The sole pending or completed publication, including every original byte.
 ///
 /// While pending, the runtime owns this value and every in-flight ticket. On
@@ -112,7 +119,7 @@ impl FixedValidatorRuntimeDeliveryStateV0 {
 pub struct FixedValidatorRuntimePublicationV0 {
     pub(crate) message: FixedValidatorRuntimePublicationMessageV0,
     pub(crate) deliveries: [Option<FixedValidatorRuntimePeerDeliveryV0>; MAX_STATIC_PEERS],
-    pub(crate) locally_admitted: bool,
+    pub(crate) local_admission: LocalAdmission,
     pub(crate) recovered: bool,
 }
 
@@ -151,7 +158,7 @@ impl FixedValidatorRuntimePublicationV0 {
         Ok(Self {
             message,
             deliveries,
-            locally_admitted: false,
+            local_admission: LocalAdmission::Pending,
             recovered: false,
         })
     }
@@ -196,7 +203,7 @@ impl FixedValidatorRuntimePublicationV0 {
                         },
                     })
             }),
-            locally_admitted: false,
+            local_admission: LocalAdmission::Pending,
             recovered: true,
         })
     }
@@ -215,11 +222,16 @@ impl FixedValidatorRuntimePublicationV0 {
 
     /// Whether ordinary local admission was attempted, including a rejection.
     pub const fn local_admission_attempted(&self) -> bool {
-        self.locally_admitted
+        matches!(self.local_admission, LocalAdmission::Attempted)
+    }
+
+    /// A retry reuses exact bytes without repeating ordinary local admission.
+    pub const fn local_admission_skipped(&self) -> bool {
+        matches!(self.local_admission, LocalAdmission::Skipped)
     }
 
     pub fn is_complete(&self) -> bool {
-        self.locally_admitted
+        self.local_admission != LocalAdmission::Pending
             && self
                 .deliveries()
                 .all(|delivery| delivery.state.is_terminal())

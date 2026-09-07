@@ -110,6 +110,12 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
                         matches!(config.mode, config::Mode::Create),
                     )
                     .map_err(|_| "publication_journal")?;
+            let runtime = match config.publication_retry {
+                Some(interval) => runtime
+                    .with_publication_retry_interval(interval)
+                    .map_err(|_| "publication_retry_interval")?,
+                None => runtime,
+            };
             output.emit(json!({"event": "ready", "state": report::status(&runtime)}))?;
             session::Session {
                 runtime,
