@@ -147,3 +147,9 @@ priority and a real outstanding consensus publication. Those prepared fixtures
 are not attributed to honest live consensus production by the serving peer.
 These vectors establish this bounded profile, not arbitrary network scheduling,
 exhaustive I/O cuts or general partition/liveness guarantees.
+
+The separate [partition catch-up integration](fixed-validator-partition-proof-catch-up-v0.md)
+under `PROD-020-061` uses actual quorum-produced provider history, catches up
+later-round minority signers, and requires their weight for a subsequent live
+quorum, including one minority SIGKILL and strict reopen. It adds no production
+policy and does not widen this command's authority.

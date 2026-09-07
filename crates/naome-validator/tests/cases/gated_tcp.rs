@@ -122,6 +122,12 @@ impl Gate {
         }
     }
 
+    pub fn heal(&self) {
+        let mut shared = self.state.lock().unwrap();
+        assert!(!shared.stopped);
+        shared.blocked = false;
+    }
+
     pub fn counts(&self) -> (usize, usize) {
         let shared = self.state.lock().unwrap();
         (shared.accepted, shared.refused)
