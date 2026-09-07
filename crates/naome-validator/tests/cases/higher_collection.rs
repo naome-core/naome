@@ -49,11 +49,13 @@ fn raw_higher_votes_checkpoint_and_nil_quorums_are_reused_before_strict_sigkill_
                 }
             );
             node.event("timer_armed");
+            let mut original_publication = None;
             if nil {
                 node.event("transitioned");
                 node.event("timer_armed");
                 if role == Role::Prevote {
-                    node.event("publication_complete");
+                    original_publication =
+                        Some(node.event("publication_complete")["disposed"].clone());
                 }
             }
             // A nil-precommit quorum's next-round close remains volatile.
@@ -81,12 +83,32 @@ fn raw_higher_votes_checkpoint_and_nil_quorums_are_reused_before_strict_sigkill_
             assert_eq!(state["driver"]["round"], expected_round.to_string());
             assert_eq!(state["driver"]["phase"], expected_phase);
             assert_eq!(state["driver"]["higher_inbox"], 0);
+            let recovered_count = usize::from(original_publication.is_some());
+            assert_eq!(state["publication_recovery_remaining"], recovered_count);
             reopened.event("timer_armed");
+            if let Some(mut expected) = original_publication {
+                // The process always enables publication recovery. Reuse of
+                // a nil-prevote quorum already signed this exact precommit;
+                // wait for its recovery instead of racing it with shutdown.
+                assert_eq!(expected["recovered"], false);
+                expected["recovered"] = json!(true);
+                assert_eq!(reopened.event("publication_complete")["disposed"], expected);
+            }
             reopened.shutdown();
             assert!(!reopened.observed.iter().any(|value| matches!(
                 value["event"].as_str(),
-                Some("publication_prepared" | "publication_complete" | "finality")
+                Some("publication_prepared" | "finality")
             )));
+            for event in ["publication_recovered", "publication_complete"] {
+                assert_eq!(
+                    reopened
+                        .observed
+                        .iter()
+                        .filter(|value| value["event"] == event)
+                        .count(),
+                    recovered_count
+                );
+            }
             assert_eq!(layout.images(), durable);
         }
     }
