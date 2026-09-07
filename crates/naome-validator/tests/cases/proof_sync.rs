@@ -185,6 +185,8 @@ struct Peer<'guard> {
 }
 enum Control {
     Reply(Vec<u8>, Vec<u8>),
+    Unavailable,
+    DropProof,
     Ack,
     Stop,
 }
@@ -211,6 +213,8 @@ impl<'guard> Peer<'guard> {
                             Some(Control::Reply(envelope, payload)) => {
                                 network.respond_finality_proof(proof.take().expect("one held request"), Some((&envelope, &payload))).unwrap();
                             }
+                            Some(Control::Unavailable) => { network.respond_finality_proof(proof.take().expect("held proof"), None).unwrap(); }
+                            Some(Control::DropProof) => { drop(proof.take().expect("held proof")); }
                             Some(Control::Ack) => { let _ = network.acknowledge_consensus_push(consensus.take().expect("held publication")).unwrap(); }
                             Some(Control::Stop) | None => break,
                         },
@@ -242,6 +246,9 @@ impl<'guard> Peer<'guard> {
         self.controls.blocking_send(Control::Ack).unwrap();
     }
 }
+
+#[path = "proof_following.rs"]
+mod proof_following;
 impl Drop for Peer<'_> {
     fn drop(&mut self) {
         let _ = self.controls.blocking_send(Control::Stop);

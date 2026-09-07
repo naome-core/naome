@@ -10,7 +10,7 @@ Each complete direct-child proof independently enters the live driver's strict
 verification and existing anchored finality-to-signer handoff. An authenticated
 peer supplies bytes, not a trusted head, checkpoint, branch or validator set.
 
-This operation uses no candidate or payload source store. It does not discover
+The one-shot operation uses no candidate or payload source store. It does not discover
 peers or heads, choose among peers or conflicting proofs, assemble raw votes,
 invoke historical or paired conflict operations, change quorum rules, or grant
 proposal or vote signing authority. It adds no background following, retries,
@@ -60,7 +60,7 @@ handoff; fatal outcomes retain independent custody only for disposal.
 one exact address on the existing bounded transport. Starting or completing a
 transport request alone performs no consensus verification or anchored effect.
 
-## Commands and job lifetime
+## One-shot commands and job lifetime
 
 The existing strict JSON object framing admits:
 
@@ -129,6 +129,65 @@ response, deadline or remaining count. A fresh explicit command begins from
 the then-current healthy next height. Partial or ambiguous anchor writes retain
 the existing strict refusal classifications; no job resumes through them.
 
+## Explicit continuous following
+
+`PROD-020-063` adds a separate command using the same proof owner and bounded
+pass, with no configuration default or automatic startup:
+
+```json
+{"command":"follow_finality","id":20,"peer_id":"<configured PeerId>","count":2,"interval_millis":"1000"}
+```
+
+The peer must be configured, but need not currently be connected. Count remains
+a JSON unsigned integer in 1–16. The interval is a canonical positive decimal
+`u64` millisecond string with checked clock addition; IDs retain the full `u64`
+range. Schema and configuration refusals install no owner. One-shot sync and
+following share one exclusive logical owner. The command result is
+`follow_started`; `sync_status` and `cancel_sync` inspect and cancel either form.
+
+Following first waits one complete caller interval. Every pass derives the
+then-live next height and checks its inclusive count boundary, with one
+120-second network budget and at most one exact ticket at a time. The first
+request emits `sync_pass_started`. All proof verification, anchored handoff,
+current-finality priority, runtime custody gates and ordinary successor-arm
+scheduling remain as above. A follower never steps the driver itself.
+
+After a successful pass, authenticated absence, transport interruption or
+network deadline, changed live height, temporary request capacity/disconnection,
+publication custody, or pending-command/current-finality priority, the owner
+disposes the old pass and any logical ticket and waits a fresh full interval.
+Elapsed intervals are not queued or replayed. A later pass downloads fresh
+bytes from the same peer; a previously refused proof is not retained. While
+artifact acquisition owns source handles, elapsed passes defer with
+`sources_busy`. A waiting follower does not exclude a new acquisition, and an
+explicit follower may be installed while acquisition is active. An active
+proof pass still excludes acquisition. Cancellation of either owner leaves the
+other owner intact.
+
+Every full proof rejection, malformed wire framing (`InvalidData`), peer
+mismatch, unavailable driver, arithmetic exhaustion or other non-transient
+failure stops following. Driver fatal events also retain ordinary process
+teardown. Transport interruption, including incomplete delivery, is retryable;
+a complete invalid proof is terminal. No retry selects a different peer,
+changes evidence, discards an inbox, or grants signing or conflict authority.
+
+Each pass retains existing `sync_progress`, `sync_completed`, `sync_stopped`
+and ordinary driver diagnostics. `follow_waiting` reports its reason and a
+waiting status; `follow_stopped` reports terminal failure, cancellation or
+shutdown. Following status adds `following: true`, `state` (`waiting` or
+`active`), the chosen `count` and decimal `interval_millis`. Only active status
+has the bounded pass heights and completed count. Completion ends a pass,
+not the explicit follower. A late old response cannot satisfy a later ticket,
+revive cancellation or change the next pass's selected parent.
+
+Following intent remains entirely volatile. EOF, signals, input/output failure
+and process termination dispose the owner through existing teardown. Strict
+restart recovers only the anchored prefix and independent publication state;
+it never restores peer choice, interval, job ID, deadline or ticket. Explicit
+following grants no discovery, peer ranking/fallback, head advertisement,
+automatic historical-conflict routing, source population, persistent retry
+policy, dynamic-validator integration or production-liveness guarantee.
+
 ## Evidence boundary
 
 Driver tests exercise all signer-relative proof rounds, retained inbox and due
@@ -153,3 +212,14 @@ under `PROD-020-061` uses actual quorum-produced provider history, catches up
 later-round minority signers, and requires their weight for a subsequent live
 quorum, including one minority SIGKILL and strict reopen. It adds no production
 policy and does not widen this command's authority.
+
+Following process vectors exercise interval delay, absence and transport retry,
+terminal invalid proofs, cancellation and stale ticket disposal, live head
+change, publication/current-finality priority, acquisition coexistence and
+SIGKILL prefix recovery. A separate four-validator execution uses a real 5/7
+quorum to produce two successive heights after followers have observed absence.
+The followers receive no consensus publications; one chosen provider connection
+is cut and healed without fallback. Both retain the provider's exact proof
+bytes, and strict stopped replay checks shared selected history and restart
+without following intent. Controlled prepared proofs are used only in the
+adversarial command vectors, not as the live quorum's evidence.

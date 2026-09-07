@@ -112,7 +112,14 @@ impl request_response::Codec for FinalityProofCodec {
         };
         // Validate BOTH lengths and reserve combined custody before allocating either body.
         let permit = InboundRetentionBudget::try_acquire(&self.responses, envelope + payload)
-            .ok_or_else(|| invalid("finality response retention exhausted"))?;
+            .ok_or_else(|| {
+                // Local custody pressure is retryable and says nothing about
+                // the peer's framing. Keep it distinct from InvalidData.
+                io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "finality response retention exhausted",
+                )
+            })?;
         let response = if tag[0] == 0 {
             FinalityProofResponse::Unavailable
         } else {

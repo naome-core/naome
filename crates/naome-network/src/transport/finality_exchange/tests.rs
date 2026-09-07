@@ -624,3 +624,55 @@ async fn finality_provider_admission_precedes_unhealthy_history_even_for_foreign
         }
     }
 }
+
+#[test]
+fn proof_following_distinguishes_invalid_peer_framing_from_transient_transport_loss() {
+    for (kind, invalid) in [
+        (io::ErrorKind::InvalidData, true),
+        (io::ErrorKind::UnexpectedEof, false),
+        (io::ErrorKind::ConnectionReset, false),
+        (io::ErrorKind::TimedOut, false),
+    ] {
+        let failure = OutboundFinalityProofFailure::Transport(
+            request_response::OutboundFailure::Io(io::Error::new(kind, "response")),
+        );
+        assert_eq!(failure.is_invalid_response(), invalid);
+    }
+    assert!(
+        !OutboundFinalityProofFailure::Transport(request_response::OutboundFailure::Timeout)
+            .is_invalid_response()
+    );
+}
+
+#[test]
+fn proof_following_local_shared_response_retention_is_retryable_and_release_restores_reads() {
+    let responses = budget(2, FINALITY_PROOF_MAX_RETAINED_BYTES);
+    let mut codec = FinalityProofCodec::new(
+        budget(2, 2 * FINALITY_PROOF_REQUEST_BYTES),
+        Arc::clone(&responses),
+    );
+    // Serving and inbound replies own this same budget. No response body is
+    // allocated while a queued serving response holds the available bytes.
+    let held =
+        InboundRetentionBudget::try_acquire(&responses, FINALITY_PROOF_MAX_RETAINED_BYTES).unwrap();
+    let valid = found(FINALITY_PROOF_MIN_ENVELOPE_BYTES, 1);
+    let mut input = Cursor::new(&valid);
+    let error = block_on(codec.read_response(&FINALITY_PROOF_PROTOCOL, &mut input)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(input.position(), 9);
+    assert!(
+        !OutboundFinalityProofFailure::Transport(request_response::OutboundFailure::Io(error))
+            .is_invalid_response()
+    );
+    // Framing remains invalid even while local custody is exhausted.
+    let error = block_on(codec.read_response(&FINALITY_PROOF_PROTOCOL, &mut Cursor::new(vec![2])))
+        .unwrap_err();
+    assert!(
+        OutboundFinalityProofFailure::Transport(request_response::OutboundFailure::Io(error))
+            .is_invalid_response()
+    );
+    drop(held);
+    assert!(
+        block_on(codec.read_response(&FINALITY_PROOF_PROTOCOL, &mut Cursor::new(valid))).is_ok()
+    );
+}

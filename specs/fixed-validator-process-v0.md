@@ -577,3 +577,15 @@ execution using the existing executable and explicit open configuration. It
 checks a distributed non-nil lock, strict process restart, subsequent locked
 voting under real deadlines, and unchanged shared finality while three other
 original processes remain alive. It adds no production process behavior.
+
+
+## Explicit continuous proof following
+
+`PROD-020-063` adds caller-selected `follow_finality` to the existing
+[proof catch-up command contract](fixed-validator-process-proof-catch-up-v0.md).
+It uses one configured static peer, a positive caller interval and bounded
+passes of 1–16 heights, with fresh live-height derivation, transient retry,
+terminal invalid-proof handling and shared `sync_status`/`cancel_sync` ownership.
+Waiting allows source acquisition; active acquisition defers elapsed passes.
+All proof verification, runtime custody and anchored signer handoff remain
+unchanged. No following intent survives restart.
