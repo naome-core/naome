@@ -5,7 +5,9 @@
 This is a draft protocol contract for the canonical account and validator-state
 foundation. It records selected semantics and identifies the byte-level,
 resource, economic, and integration requirements that remain unspecified.
-It is not an implemented consensus profile, a production genesis, or evidence
+Selected decisions are mirrored in `consensus-rules.md`; remaining decisions
+retain explicit open entries there. This is not an implemented consensus
+profile, a production genesis, or evidence
 that an incomplete rule in `consensus-rules.md` is implemented.
 
 V1 names the successor schema family in this document. Its exact protocol-version
@@ -41,9 +43,8 @@ Current-height producer authorization and agreement evidence are excluded from
 the proposal signing root and proposal post-state. The final envelope identity
 includes that evidence. Valid current-height evidence variants for one proposal
 therefore share its proposal root and ancestry but may have different envelope
-identities. The broader wording of `CODEC-046` and `CODEC-047` must be reconciled
-explicitly with this current-height distinction when their successor contract
-is finalized; prior-height settlement evidence is committed execution input.
+identities. `CODEC-046` and `CODEC-047` record this current-height distinction;
+prior-height settlement evidence is committed execution input.
 
 No state field may introduce a self-reference through the resulting proposal
 root, child ancestry, or final envelope identity. Parent-state verification and
@@ -157,9 +158,8 @@ context. Exact identifier domains and integer encodings remain unfinished.
 
 The selected refinement of `ECON-109` tracks the liability window of each amount
 removed from effective backing, rather than requiring the entire registration to
-exit before any excess principal can mature. The ledger's existing wording must
-be reconciled explicitly when this contract is finalized; this draft does not
-mark that rule implemented.
+exit before any excess principal can mature. `ECON-100` and `ECON-109` record
+this selected refinement and remain unimplemented.
 
 An exit or bond reduction finalized in epoch E is excluded throughout E and E+1
 and first eligible in E+2. This explicitly extends the increase-delay convention
@@ -208,7 +208,7 @@ Withdrawal requires the immutable beneficiary's authorization, debits only
 released principal and credits that beneficiary. Cancellation, re-bonding or
 new deposits cannot erase an existing exposure obligation.
 
-Equivocation evidence and the corresponding historical delegation-snapshot
+Economic penalty eligibility and the corresponding historical delegation-snapshot
 liability expire at the end of offense epoch E+30. Rotation, inactivity, re-entry
 and later activity do not extend or reopen that offense deadline. This is a
 separate explicit refinement of `ECON-109`: an offense's deadline does not derive
@@ -216,7 +216,12 @@ from the newest bond tranche or the lineage's latest active epoch. When eligible
 evidence executes, the selected forfeiture set is still all principal currently
 liable at execution, rather than the principal present at the offense.
 
-Evidence must execute canonically by the final height of its deadline epoch.
+Whether otherwise valid, distinct non-penalizing evidence under `ECON-188`
+remains admissible after that deadline is unresolved under `ECON-247`; the
+economic deadline alone does not settle that separate admission question.
+
+Evidence must execute canonically by the final height of its deadline epoch
+to impose the economic penalty.
 Local receipt, partial acquisition or mempool presence creates no bond hold.
 Matured bond amounts release at the following epoch boundary before ordinary
 operations. An earlier withdrawal within the ordinary operation stream cannot
@@ -398,6 +403,58 @@ lineage-wide permanent tombstone rules remain binding. The refinements above
 select exposure and deadline semantics; exact record bytes, remaining scheduling
 and epoch-boundary integration are unfinished. These rights do not imply that
 the operations are implemented.
+
+## Delegation targets and integer allocation
+
+A consensus delegation request specifies an absolute maximum number of Knowledge
+Weight units for each target registration, not a relative share of all future
+owner capacity. These requests do not transfer ownership. Requested amounts,
+computed allocation targets and currently effective allocations are distinct.
+Target calculation alone grants no active consensus authority.
+
+Let L be the owner's applicable live Knowledge Weight, let r_i be its requested
+nonnegative amount for target i, and let R be the exact sum of the requests.
+If R is zero, every target allocation is zero. If R is at most L, the targets
+are exactly r_i and L-R remains undelegated. Otherwise, use the selected
+highest-averages allocation:
+
+1. Initialize each target to `a_i = floor(L * r_i / R)`.
+2. While fewer than L units have been assigned, increment the target maximizing
+   `r_i / (a_i + 1)`, recomputing its quotient after each increment.
+3. Compare quotients exactly by cross multiplication; floating-point or rounded
+   division is not permitted. Equal quotients require one fixed canonical target
+   order independent of L. The exact tie order remains to be specified.
+
+L=0 yields all zero allocations without evaluating an R/L threshold. The number
+of increments after initialization is less than the number of targets, because
+it equals the sum of the fractional parts discarded by the initial floors.
+Resource bounds must nevertheless account for target count, operand lengths,
+exact products and maximum selection; this mathematical bound is not a selected
+operation limit or a measured complete-operation cost.
+
+For fixed requests and fixed tie order in the oversubscribed case `0 < L < R`,
+this procedure is equivalent to selecting the first L quotients from the
+sequences `r_i/1, r_i/2, ...`. The seeded
+quotients are exactly those at least R/L, and their count is at most L. Completing
+that prefix by successive maxima therefore produces the same global prefix.
+Consequently increasing only L cannot reduce any target allocation. At L=R,
+the targets equal the requests, so a target never exceeds its absolute request
+in the oversubscribed case; for L>R, allocations remain at the requests and
+surplus capacity is undelegated. This guarantee does not cover changed requests,
+changed eligibility, bond caps, or staged effective allocations.
+
+Highest averages deliberately permits violations of rounded proportional quotas.
+For requests `(1,1,5)` and L=4, it produces `(0,0,4)`, even though the largest
+request's exact proportional share is 20/7 and its ceiling is three. The choice
+refines the remainder contract under `ECON-093` and `ECON-126`; it must not be
+described as quota-preserving largest-remainder allocation.
+
+Canonical request encoding, exact tie order, delegation-growth queue priority,
+request amendments, and origin-batch assignment remain unfinished. Historical
+offense-snapshot obligations and fee-reward checkpoints require their own exact
+contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
+or `ECON-155`, and staging must never count one owned unit in two simultaneous
+effective allocations.
 
 ## Ordered transactional execution
 
