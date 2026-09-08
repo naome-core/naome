@@ -522,8 +522,27 @@ recover their old activation authority or priority. Irreversible registration
 exit retains its separate precedence and cannot be canceled by a delegation
 amendment.
 
-Canonical request encoding, exact composition among multiple pending reduction
-portions and origin-batch assignment remain unfinished. Historical offense-snapshot
+When several reduction portions for the same owner and target are pending,
+cancel newest portions first, in reverse of their canonical queue order. For
+remaining cancellation amount C and the current portion amount Q, cancel
+`min(C, Q)` and continue toward older portions only if C remains positive.
+A partially canceled portion keeps its original eligibility and priority for
+its surviving amount. This procedure neither changes already executed effects
+nor renews the age of any survivor.
+
+An amendment is evaluated against the owner's complete requested target vector.
+Every additional activation caused by that amendment receives its fresh priority
+and E+2 eligibility, even if the receiving target's own absolute request field
+is unchanged. For live capacity 100 and requests `(100,100)`, targets are
+`(50,50)`. Amending the first request to zero produces targets `(0,100)`; the
+second target's additional 50 units follow the amendment's delay and cannot
+activate before capacity is actually available. Existing unchanged pending
+portions retain their old priority. This is not maturation-derived growth and
+does not use its no-second-wait exception. Retention of already-effective weight
+through cancellation of a pending reduction retains its separate rule above.
+
+Canonical request encoding, integration with simultaneous capacity and target-
+eligibility changes, and origin-batch assignment remain unfinished. Historical offense-snapshot
 obligations and fee-reward checkpoints require their own exact contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
 or `ECON-155`, and staging must never count one owned unit in two simultaneous
 effective allocations.
