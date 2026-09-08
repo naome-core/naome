@@ -486,10 +486,27 @@ with mandatory decay, penalties, target eligibility and concurrent amendments.
 These ordering constraints neither complete that integration nor grant earlier
 activation than the original request eligibility and capacity maturity.
 
-Canonical request encoding, request amendments, and origin-batch assignment
-remain unfinished. Historical
-offense-snapshot obligations and fee-reward checkpoints require their own exact
-contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
+### Delegation-plan amendments
+
+An authenticated owner amendment preserves unchanged amounts and their existing
+pending priority. Additional requested amounts receive the amendment's fresh
+priority and ordinary E+2 eligibility. A finalized decrease immediately cancels
+its excess unactivated portions, newest pending portions first. Those canceled
+portions cannot activate during the amendment's delay or be restored through the
+superseded standing request. The surviving unchanged pending portions retain
+their original priority.
+
+Already effective amounts are not removed at amendment finalization. Their
+voluntary reduction is excluded throughout the finalization epoch E and E+1,
+first becomes eligible in E+2, and still requires available churn budget. A
+transfer to another target may activate only when the owned capacity is actually
+available; the old and new targets cannot count the same unit simultaneously.
+Cancellation of an unactivated intent alone changes no effective active weight.
+Mandatory decay and penalties retain their separate, undelayed treatment.
+
+Canonical request encoding, exact composition of repeated amendments and
+origin-batch assignment remain unfinished. Historical offense-snapshot
+obligations and fee-reward checkpoints require their own exact contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
 or `ECON-155`, and staging must never count one owned unit in two simultaneous
 effective allocations.
 
