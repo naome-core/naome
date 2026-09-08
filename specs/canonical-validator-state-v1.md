@@ -453,9 +453,9 @@ Ordinary Knowledge Weight matures on its required schedule and advances the
 first-matured accumulator independently of active-set staging. Maturation makes
 owner capacity available; any resulting increase in effective consensus weight
 remains subject to staged churn. This explicitly distinguishes matured owner
-weight from activated voting weight in `ECON-040`. Exact delegation-growth
-event identities and exact eligibility coordinates remain to be specified;
-the standing authorization and fresh-priority rule below apply. The first-matured
+weight from activated voting weight in `ECON-040`. The logical queue coordinates
+and dated authorization rules below govern delegation growth; exact record
+encoding remains unfinished. The first-matured
 accumulator still determines the growth-driven bootstrap target; that replacement
 retains its queue treatment while the independent linear cap is not delayed.
 
@@ -500,6 +500,78 @@ including a displaced incumbent, rather than charging only the changed candidate
 Rounding and partial remainders must be specified with these transitions before
 `PROD-066` can be completed. These rules do not authorize arbitrary reduction of
 an incumbent's weight merely to make a newcomer fit.
+
+### Logical queue coordinates and identities
+
+Compare queued portions lexicographically by eligibility epoch, source height,
+source phase, phase-local coordinate, optional stable owner ID, optional stable
+registration ID, effect kind, direction and immutable source-view ordinal. Compare IDs by
+their canonical bytes; an absent optional subject sorts before a present one.
+Delegation effects carry the stable owner and target registration. Registration,
+bond, exit and bootstrap-tag effects carry the registration and no owner subject;
+their authorizing or funding accounts do not become ordering subjects. An
+account-only scheduled effect carries its affected stable account as owner
+subject and no registration. Subject presence follows the effect class and is
+not an implementation choice.
+These are logical fields, not fabricated signed-operation fields. Eligibility
+and height precede phase, so a newer derived event cannot overtake an older
+eligible request merely because of its event kind.
+
+The source phases, in ascending order at one height, are: mandatory owner-loss
+projection, maturation, bootstrap-target derivation, effects of the staged pass,
+and ordinary committed operations. The first three have a single phase-local
+coordinate at that height. A staged effect uses its causing portion's frozen
+pass-list index, including positions later skipped or canceled. An ordinary
+effect uses the operation's committed position followed by its operation ID.
+Its source height and epoch are those of that finalized operation. Derived
+loss, maturation and bootstrap events instead use the height of their selected
+pre-authorization phase. This ordering does not move settlement, release or
+artifact publication from their selected execution phases.
+
+The effect kinds have the following ascending logical order: ordinary scheduled
+request, permanent-target-removal reconciliation, owner-loss reconciliation,
+maturation increment, growth-driven bootstrap reduction, and voluntary-bond-cut
+reconciliation. Their different sources, subjects and phases normally distinguish
+them already; the explicit final kind comparison leaves no implementation-chosen
+tie. A maturation increment for one owner and registration remains one logical
+event even when dated authority partitions it into several queued subportions.
+
+An event identity is the immutable tuple of its chain/genesis/protocol-version context, finalized
+parent consensus ancestry, source height, source phase, phase-local coordinate,
+effect kind and optional owner/registration subjects. It uses the parent before
+the event's transition, never a resulting proposal root or post-state commitment.
+An ordinary cause additionally retains its actual operation identity through
+the phase-local coordinate. An automatic event has no signature, fabricated
+operation position or ordinary-operation identity.
+
+A portion identity adds the change direction and its canonical source-view
+ordinal to that event identity. For every event split by authorization,
+including maturation, owner-loss and bond-cut reconciliation, source-view ordinals
+follow the immutable ascending dated-view sequence captured for that event;
+views at the same date are already combined. Other unsplit events use ordinal
+zero. Retain the captured authorization facts needed to verify a surviving
+portion; later plans, removals or capacity cannot reinterpret its original view.
+The direction order is reduction, increase, then weight-preserving change.
+A zero-weight exit completion is an
+ordinary exit request, not a fabricated positive weight portion.
+
+Remaining amount is mutable state outside both identities. Partial execution,
+partial cancellation and normalization neither change a survivor's identity nor
+renumber surviving subportions. Creating an event or consuming its support is
+part of the same canonical atomic overlay as its cause. Rejected speculative
+work creates no retained event, consumes no support and gives no authority;
+canonical replay cannot create a second copy of an already-produced portion.
+Exact domain-separated hashes, binary framing and authenticated record layout
+remain codec work; they must encode these logical distinctions injectively.
+
+After all pre-pass boundary-derived portions have been created and normalized,
+freeze the IDs of eligible portions in canonical order. Their zero-based list
+positions define this pass's visit indices. At each position consult current
+state, skip an already canceled portion and visit a surviving portion once.
+New portions created during the pass do not enter its frozen list; they wait
+for a later epoch's pass and retain their actual event eligibility and priority.
+This fixes traversal only, without changing any portion's required delay or
+granting a second visit after later state changes.
 
 ### Economic progress units
 
@@ -670,8 +742,8 @@ queue priority at its canonical availability event; it does not inherit the
 original request age. Unchanged pending portions retain their existing priority.
 The original request eligibility and weight maturity must both be satisfied.
 Once both conditions hold, the newly matured amount may participate in churn
-without another E+2 wait. The exact derived-event identity and total queue
-ordering remain unspecified. Automatic queuing grants no immediate active
+without another E+2 wait. The logical event identity and total queue ordering
+above apply. Automatic queuing grants no immediate active
 weight and remains subject to staged churn.
 
 For maturation-derived growth, the chronological queue comparison uses the
@@ -686,13 +758,13 @@ Simultaneous maturation effects for an owner are aggregated before computing its
 new allocation targets, so origin-batch enumeration cannot choose which target
 receives a rounding unit or earlier priority. Derive at most one new increment
 per owner and registration at that coordinate. Their total ordering must be
-independent of input arrival or origin-batch enumeration; its exact simultaneous-
-event tie rule remains to be specified. Previously queued unchanged portions remain distinct
+independent of input arrival or origin-batch enumeration, using the logical
+owner/registration and source-view ordering above. Eligibility subportions do
+not create duplicate logical increments. Previously queued unchanged portions remain distinct
 with their retained priority; aggregation must not renew or backdate them.
 
-The exact event encoding and coordinate derivation must still cover interaction
-with mandatory decay, penalties, target eligibility and concurrent amendments.
-These ordering constraints neither complete that integration nor grant earlier
+The exact event encoding must retain the selected phase coordinates, mandatory
+effects and dated authorization facts. These ordering constraints do not grant earlier
 activation than the original request eligibility and capacity maturity.
 
 ### Permanent delegation-target removal
@@ -851,8 +923,8 @@ ordinary capacity and gross-churn rules, including the two-unit cost for a
 one-unit transfer. Queuing grants no immediate active weight and cannot use a
 pending amendment to authorize earlier activation. The maturation-only
 no-second-wait exception does not apply to this loss-derived event. Exact
-canonical event coordinates, overlapping target derivation and composition with
-existing pending changes remain to be specified.
+authenticated event records and bounded execution of the selected target and
+pending-change composition remain to be specified.
 
 ### Maturation during a pending plan amendment
 
