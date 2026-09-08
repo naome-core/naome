@@ -575,9 +575,22 @@ mandatory-loss rounding. With requests `(1,2)`, capacity two has effective
 allocations `(1,1)` and no pending change. Loss to one projects those effective
 allocations to `(1,0)`, but recomputing the request targets yields `(0,1)`.
 Reaching that target would require a voluntary transfer costing two churn units.
-Whether this loss-derived transfer is automatically queued, and its fresh-event
-eligibility if so, remain unselected. Neither maturation-only automatic growth
-nor amendment-triggered activation supplies those missing semantics.
+Automatically queue the newly required voluntary reconciliation under the
+standing owner request, with fresh priority at the canonical loss event. For
+an event in epoch E, this new change is excluded in E and E+1 and first eligible
+in E+2. The originating request's own eligibility must also hold. This fresh
+delay applies to the loss-derived reconciliation, not to the mandatory loss
+projection or cancellation of excess pending portions.
+
+Only newly required amounts receive this new event's eligibility and priority;
+existing surviving pending portions retain theirs and must not be duplicated
+or renewed. The voluntary source reduction and destination increase obey the
+ordinary capacity and gross-churn rules, including the two-unit cost for a
+one-unit transfer. Queuing grants no immediate active weight and cannot use a
+pending amendment to authorize earlier activation. The maturation-only
+no-second-wait exception does not apply to this loss-derived event. Exact
+canonical event coordinates, overlapping target derivation and composition with
+existing pending changes remain to be specified.
 
 ### Delegation-plan amendments
 
