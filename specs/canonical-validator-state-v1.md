@@ -555,8 +555,24 @@ previously assessed debt enters that boundary snapshot under the selected
 atomic preparation rules. Later increases still require their ordinary
 authorization, eligibility and staging.
 
+Before capturing the owner-loss vector, zero effective allocations that are
+already required to be zero for that next snapshot by a mandatory invalidation,
+such as a permanent penalty tombstone. Their removal frees allocation capacity;
+it creates no Knowledge Weight and does not change historical assessment or
+the committed order of actual collections. A finalized exit request alone does
+not justify this zeroing while its effective exit remains delayed. Partial
+exits, bond-cap projection and top-256 ranking retain their separate rules.
+
+For allocations `(40,60)` with the first registration mandatorily invalid and
+owner capacity falling from 100 to 90, first remove the invalid allocation.
+The surviving sixty units fit within ninety, so the second registration retains
+60. Do not first project the old `(40,60)` vector to `(36,54)` and then remove
+the first component. Keeping the original sixty is retention, not a new
+activation, and still leaves H's already frozen snapshot unchanged.
+
 Compute this projection once per mandatory owner-loss phase. Capture its starting
-effective allocation vector and the owner's already-matured batches. Combine all
+effective allocation vector after mandatory zeroing and the owner's
+already-matured batches. Combine all
 losses of those batches that become effective for the same next authorization
 snapshot, and project the captured vector once against their final surviving
 capacity. Do not replace that vector with an intermediate rounded result after
