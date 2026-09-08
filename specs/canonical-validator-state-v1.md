@@ -545,8 +545,9 @@ through cancellation of a pending reduction retains its separate rule above.
 
 Canonical request encoding, integration with simultaneous capacity and target-
 eligibility changes, and canonical origin-attribution records remain unfinished. Historical offense-snapshot
-obligations and fee-reward checkpoints require their own exact contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
-or `ECON-155`, and staging must never count one owned unit in two simultaneous
+obligations and fee-reward checkpoints require their own exact records. Computing
+aggregate targets does not settle `ECON-105`, `ECON-163`, `ECON-164` or `ECON-155`,
+and staging must never count one owned unit in two simultaneous
 effective allocations.
 
 ## Ordinary Knowledge Weight origin batches
@@ -656,9 +657,23 @@ admit late evidence or reopen an offense for another assessment. Each later
 collection reduces the existing outstanding amount rather than assessing a
 new penalty or creating another reporter reward.
 
-Exact implicated-batch encumbrance, available-source accounting and debt records
-remain to be specified under `ECON-146`, `ECON-163` and `ECON-164`; the selected
-collection order and maturation phase appear below. Historical attribution must
+Delayed liability is historical exposure, not an additional exclusive weight
+reserve. Before assessment, ordinary decay and otherwise permitted redelegation
+continue without a new evidence-window weight lock. Neither action erases the
+frozen offense attribution or changes its immutable owner. Timely assessment
+uses that history even if the implicated batch no longer has live weight; the
+selected collection and persistent-shortfall rules then apply.
+
+Distinct first destructive transitions may assess separate liabilities against
+the same owner, including when its weight supported different validator lineages
+at different snapshots. A current unit can be destroyed only once: collection
+reduces the current batch basis and discharges only the amount actually
+collected. Paying one assessment does not erase a different assessment. This
+does not permit reassessment of an already penalized lineage or late evidence.
+
+Exact available-source accounting and debt records remain to be specified under
+`ECON-163` and `ECON-164`; the selected collection order and maturation phase
+appear below. Authenticated historical attribution under `ECON-105` must
 bind the liability to the correct immutable beneficiary account and prevent any
 collected unit from being charged twice.
 
@@ -724,14 +739,29 @@ execution cost; numerator growth still follows the amount domain.
 
 ### Collection order and execution phase
 
-Collection first addresses the implicated origin batches. For a remaining owner
-shortfall, other available live batches of that same owner are consumed by
-earliest original expiry, with equal expiry resolved by ascending canonical
-origin-batch identity. Each collection is bounded by both the outstanding amount
-and that batch's current live amount and uses the proportional-basis update
-above. A changed delegation does not transfer ownership or erase liability.
-Authenticated historical attribution records, encumbrance and available-source
-accounting remain part of `ECON-105`, `ECON-146` and `ECON-163`.
+For each newly assessed historical batch share c_i, first collect
+`min(c_i, current live amount of batch i)` from that batch. Each share has its
+own first-stage source cap; do not pool the owner's assessment across implicated
+batches before honoring those caps. Batches with zero assessed shares require
+no first-stage collection, and expired batches supply zero.
+
+After this first stage, collect the remaining owner shortfall from all remaining
+available live ordinary batches of that same owner, including unused weight in
+already visited implicated batches. Currently delegated owner weight remains
+available: delegation does not transfer ownership or create a reserve. Immature,
+expired and already destroyed weight supplies no current units. Consume this
+fallback pool by earliest original expiry, with equal expiry resolved by
+ascending canonical origin-batch identity. Each collection is bounded by both
+the outstanding amount and that batch's current live amount and uses the
+proportional-basis update above. A changed delegation does not erase liability.
+
+For example, two implicated batches each assessed one unit and each holding ten
+live units first supply one each. If one batch is expired, its missing unit can
+then be collected from the other batch's remaining weight through the fallback
+pool. The historical assessment shares and original ownership remain unchanged.
+Authenticated historical attribution records and atomic available-source
+integration remain part of `ECON-105` and `ECON-163`; historical exposure adds
+no exclusive reserve under `ECON-146`.
 
 Available fallback owner weight is collected during the canonical assessment
 transition. At later maturation, count the full original first-matured amount,
