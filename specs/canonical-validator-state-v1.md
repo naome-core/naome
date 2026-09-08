@@ -1,0 +1,2825 @@
+# Canonical validator-state foundation V1
+
+## Status and applicability
+
+This is a draft protocol contract for the canonical account and validator-state
+foundation. It records selected semantics and identifies the byte-level,
+resource, economic, and integration requirements that remain unspecified.
+Selected decisions are mirrored in `consensus-rules.md`; remaining decisions
+retain explicit open entries there. This is not an implemented consensus
+profile, a production genesis, or evidence
+that an incomplete rule in `consensus-rules.md` is implemented.
+
+V1 names the successor schema family in this document. Its exact protocol-version
+commitment, remaining domains, complete encodings, and admission limits remain to
+be specified before consensus-facing implementation. The current fixed-validator
+artifact-only V0 profile remains a separate format.
+
+The foundation supports permissionless account and validator-registration
+admission under authenticated state transitions. Registration alone grants no
+active membership, proposer authority, consensus-signing authority, finality,
+branch selection, or canonical-state installation authority.
+
+## Consensus framing and commitments
+
+The successor uses explicitly versioned strict binary framing. It has new value,
+signing, ancestry, and envelope domains and a strict decoder. It does not append
+to or reinterpret V0 bytes. The existing 128-byte `ArtifactBlock`, its identity,
+the artifact-chain definition, and their existing domains remain unchanged.
+
+The successor proposal value binds its exact context, finalized-height
+coordinate, parent consensus ancestry, artifact block, post-artifact-state
+commitment, post-consensus-state commitment, prior-height settlement input,
+operation sequence, and applicable definition supporting-proof input. Exact
+field framing remains unfinished.
+
+At height greater than one, the settlement input is the exact canonical valid
+precommit certificate for the preceding height. The first non-genesis height
+uses the separately specified genesis-commit sentinel. A different valid
+prior-height settlement certificate produces a different next-height proposal
+signing root and consensus ancestry.
+
+Current-height producer authorization and agreement evidence are excluded from
+the proposal signing root and proposal post-state. The final envelope identity
+includes that evidence. Valid current-height evidence variants for one proposal
+therefore share its proposal root and ancestry but may have different envelope
+identities. `CODEC-046` and `CODEC-047` record this current-height distinction;
+prior-height settlement evidence is committed execution input.
+
+No state field may introduce a self-reference through the resulting proposal
+root, child ancestry, or final envelope identity. Parent-state verification and
+transition execution precede deriving those child identities.
+
+## Typed authenticated state
+
+The consensus-state commitment contains a fixed ordered set of typed subroots.
+Each subroot commits a distinct state namespace through a SHA-256 compressed
+binary Patricia map. The complete namespace inventory and its fixed ordering
+remain to be specified. The inventory must cover every consensus-relevant
+account, validator, escrow, delegation, scheduled-change, snapshot, reward,
+attribution, liability, penalty, and accounting fact used by a transition.
+
+Every map leaf binds its canonical logical key and canonical value. Empty, leaf,
+branch, and aggregate-root hashing use the exact versioned domains below,
+including the applicable namespace. Routing uses a 256-bit domain-separated
+hash of the canonical logical key. A branch records the first differing bit
+from the most-significant end and its ordered left and right child commitments.
+
+Canonical paths have strictly increasing branch-bit positions and correct
+left/right routing. Branches have two nonempty children. Deletion collapses
+unary structure. Equivalent key/value maps have the same root regardless of
+insertion or deletion history. At most 256 branch positions occur on a path;
+this structural bound is not a performance measurement or a proof wire format.
+
+Stored records retain the canonical logical key. Before replacement, unequal
+logical keys with the same routing digest are rejected rather than aliased.
+Loading and replay recompute routing and enforce the same rule. Hashes remain
+computational commitments under their cryptographic assumptions.
+
+The current artifact-set commitment remains unchanged. Its leaves commit
+artifact IDs, so it cannot be reused unchanged as an account or validator-value
+commitment.
+
+Matching supplied state or witnesses to an expected root establishes only that
+relationship. The boundary that supplies the root must separately establish its
+canonical-parent provenance. An uninstalled transition cannot establish that
+provenance for itself, and installation must recheck the parent to which the
+transition is bound.
+
+### Exact typed-map commitments
+
+The following domain strings are exact ASCII bytes, with each displayed `\0`
+representing one final zero byte. They belong to this V1 schema family and must
+not be reused for an incompatible encoding. `NAT` and `BYTES` use the shared
+successor framing defined below. A namespace tag t is a natural drawn from the
+protocol schema's fixed namespace inventory; this section does not assign that
+unfinished inventory or permit caller-defined namespaces.
+
+| Purpose | Exact domain |
+| --- | --- |
+| Logical-key routing | `naome/consensus/v1/map-key\0` |
+| Empty typed map | `naome/consensus/v1/map-empty\0` |
+| Typed leaf | `naome/consensus/v1/map-leaf\0` |
+| Typed branch | `naome/consensus/v1/map-branch\0` |
+| Aggregate consensus state | `naome/consensus/v1/state-root\0` |
+
+For canonical logical-key bytes k and canonical value bytes v, define:
+
+```
+route(t,k)  = SHA256(key-domain || NAT(t) || BYTES(k))
+empty(t)    = SHA256(empty-domain || NAT(t))
+leaf(t,k,v) = SHA256(leaf-domain || NAT(t) || BYTES(k) || BYTES(v))
+branch(t,b,L,R) = SHA256(branch-domain || NAT(t) || U8(b) || L[32] || R[32])
+```
+
+`U8(b)` is exactly one byte for the branch's split-bit index, 0 through 255.
+Bit zero is the most-significant bit of route byte zero; bit 255 is the
+least-significant bit of byte 31. A zero bit selects L and a one bit selects R.
+The fixed one-byte branch position is a structural bound of 256-bit routing,
+not a fixed-width encoding for heights, balances, nonces or accounting values.
+Key/value lengths remain subject to their complete namespace codec and resource
+rules before allocation. Hashing opaque bytes does not establish valid typed
+records. No routing digest replaces the retained canonical logical key.
+
+For the schema's fixed ordered namespace tags `t[0] ... t[m-1]` and their
+corresponding map roots `r[0] ... r[m-1]`, define:
+
+```
+StateRoot = SHA256(state-domain || NAT(m)
+                   || NAT(t[0]) || r[0][32] || ... || NAT(t[m-1]) || r[m-1][32])
+```
+
+The schema fixes m, each tag and their order. Missing, repeated, unknown or
+reordered namespace entries are not alternate encodings. An empty namespace
+contributes its exact `empty(t)` root; it is not omitted. Empty namespaces do
+not decide their future contents or close unfinished transition semantics.
+These commitments cover map content and schema domains, not canonical-parent
+provenance. The containing genesis and consensus context bind the roots at their
+own authority boundary. The preimages do not include the final genesis identity,
+resulting proposal root or child ancestry and therefore add no such hash cycle.
+
+Every nonempty map node is either a leaf or a branch with two nonempty children;
+a child's commitment cannot be the namespace's empty root. Each branch splits
+at the first bit where any descendant route differs, so all descendant routes
+share its earlier prefix and each child has the prescribed split-bit value.
+Branch positions strictly increase along every root-to-leaf path. A complete
+local-state load or replay validates these relationships and the namespace's
+canonical records; recomputing a hash for an arbitrary stored node is not alone
+a canonical-tree check. Reuse of already validated immutable subtrees must stay
+bound to their exact namespace and content commitments.
+
+Insertion first checks the full logical key. If an equal route belongs to an
+unequal key, reject instead of replacing or reporting absence. An equal key
+may be replaced only by its authorized transition and leaves routing unchanged.
+Inserting an absent key creates the branch at its first differing route bit.
+Deleting a leaf removes any resulting unary branch, reconnecting the surviving
+subtree; deleting the last leaf yields `empty(t)`. There are no tombstone leaves
+unless the namespace's own typed record explicitly represents a retained protocol
+tombstone. A protocol tombstone is then a live record with its ordinary leaf
+commitment, not a deleted map position.
+
+Every changed path is rehashed with these preimages. Unchanged immutable subtrees
+may remain shared; pointer layout, insertion history, cache contents and local
+index shape do not affect the result. Equal canonical key/value maps have equal
+roots under this construction. A rejected collision, malformed record or invalid
+transition leaves the prior map unchanged. Multi-namespace updates retain the
+complete proposal's transactional and installation rules; a computed new root
+alone grants no permission to install it.
+
+Exact namespace tags, record bytes and deterministic read/update sets remain
+unfinished. No optional proof or local storage encoding may reinterpret these
+hash preimages, and this component contract supplies neither a stateless witness
+format nor complete operation-resource limits.
+
+### Complete local state and derived indexes
+
+V1 foundation validation uses complete locally authenticated parent state. The
+parent's canonical provenance is established separately from matching its root;
+execution pins the exact parent consensus identity, schema and typed roots.
+Logical completeness does not require every record to reside in RAM: validated
+persistent nodes may load on demand through bounded caches. Every primary record
+required by the transition and every completeness-dependent enumeration must
+remain available. A matching root with inaccessible referenced subtrees is not
+sufficient state access for that path.
+
+Canonical primary records and their specified deterministic derivations establish
+transition facts. A local index is only an acceleration of those facts. Its
+construction must establish both the correctness of every entry and completeness
+against the underlying canonical records, including eligibility and ranking,
+due changes, maturations, releases, recoveries, owner allocations and liability
+sources wherever the transition requires those complete sets. Checking only the
+records returned by an index cannot establish that none was omitted. An index
+may use a different storage representation from the canonical hashed-key map;
+its logical projection and update rules must still be deterministic and specified.
+
+Bind each usable index generation to the exact authenticated parent state and
+applicable derivation version. An index for another root, an incompletely built
+index or one whose maintenance is uncertain must not serve validation. Construct
+or rebuild it from complete validated primary records and check it before use.
+Such a rebuild changes only local derived state; it cannot change canonical
+roots, fix a primary-record mismatch, invent missing data, choose another parent
+or rewrite lineage. Persisted index caches require enough version and root
+binding to detect stale reuse after restart. Their exact format remains open.
+
+A missing node, failed read, undecodable local record, root mismatch or unusable
+index causes local state-unavailable/corrupt status for the affected validation
+path. It is neither authenticated absence nor, by itself, evidence that another
+node's proposal is invalid. Do not substitute zero balances, empty subtrees,
+missing candidates or an empty due queue. Resume that path only after required
+state access is restored and validated. Canonical state cannot be reconstructed
+from an untrusted derived index. Acquisition and recovery retain their separate
+canonical-source and bounded-resource requirements.
+
+Completeness follows each transition's defined read set. Ranking must account
+for every eligible candidate that could enter the selected set, and processing
+all due events must not omit a due primary record. Conversely, an explicitly
+partial operation such as a claim with a chosen source list does not become an
+implicit claim of all sources; its unlisted sources retain their existing rights.
+A single account membership proof cannot establish a complete candidate set,
+complete owner portfolio or complete due-event queue.
+
+Prepared authorization state remains immutable for H's rounds. Rebuilding a
+cache cannot change that snapshot or install prepared effects. Proposal execution
+uses an isolated primary-record overlay and correspondingly updated derived
+views, so later operations see earlier accepted speculative changes consistently.
+A rejected proposal installs neither kind of change. Before final installation,
+recheck the canonical parent. Install the complete primary transition atomically
+and either install matching derived views or invalidate them before subsequent
+validation; no observer may use a child root with an old-parent index. Persistent
+index recovery must preserve this condition through restart. Work bound to a
+superseded parent is discarded or recomputed, not retargeted by changing its root.
+
+Stateless transition witnesses are not required V1 block inputs under this model.
+Optional map membership/nonmembership proofs do not replace local completeness
+or establish canonical-parent authority. Their wire format is separate work,
+not a prerequisite for this stateful admission path. Account authorizations,
+new-key and new-policy consent, historical consensus evidence, artifact proofs
+and other explicitly required cryptographic evidence remain required; a state
+access choice removes none of those verification obligations.
+
+This is not a requirement to retain every historical state indefinitely. Current
+state and the historical records required by settlement, exposure, liability,
+replay and other selected rules must remain available for their specified
+lifetimes. Their exact retention/pruning contract is still required. Full local
+state also supplies no missing tail, governance, namespace or record semantics.
+
+Measure persistent reads, cache misses, complete enumeration, derived-index
+maintenance and all changed-owner boundary work, as well as cryptographic and
+arithmetic costs. Measure index construction/rebuild and restart separately from
+normal transition execution. A 256-branch Patricia path bound does not bound the
+number of records processed. These obligations do not select admission limits,
+fees, or a bounded-work claim for an unfinished global transition.
+
+### Semantic coverage inventory
+
+The complete namespace inventory must cover the following facts, either as
+committed records or through a specified authenticated derivation with retention
+and bounded-work obligations. This list does not select subroot ordering, record
+layout, or unfinished economic semantics.
+
+| Semantic family | Required coverage | Ledger basis |
+| --- | --- | --- |
+| Accounts | Creation identity, policy, nonce, liquid balance, recovery policy and pending changes | `ECON-003`, `ECON-004`, `ECON-027`, `ECON-142`, `ECON-156`–`ECON-162` |
+| Registrations and keys | Stable lineage and roles, registration order, current and historical keys, pending activation, permanent reservations | `PROD-005`, `PROD-010`, `PROD-047`, `PROD-088`, `ECON-106`, `ECON-143`, `ECON-144` |
+| Bond custody and exposure | Beneficiary principal, backing, reductions and exits, retained liable portions, release eligibility | `ECON-096`–`ECON-110`, `PROD-006` |
+| Attribution | Commitments, payer/beneficiary, deposits, deadlines, replay facts, winning attribution and supporting proof | `ECON-028`, `ECON-060`–`ECON-079`, `ECON-113`–`ECON-118`, `ECON-131`–`ECON-134` |
+| Ordinary Knowledge Weight | Origin batches, ownership, activation, original amount, decay, penalties and cumulative first-matured weight | `ECON-039`–`ECON-045`, `ECON-049`, `ECON-052`, `ECON-059`, `ECON-111`, `ECON-112`, `GOV-039` |
+| Delegation and commission | Owner authorization, requested/effective allocations, activation, commission history, reward checkpoints and separate grant delegation | `ECON-085`–`ECON-095`, `ECON-120`, `ECON-121`, `ECON-123`, `ECON-141`, `ECON-154`, `ECON-155` |
+| Consensus snapshots | Immutable eligible/active weights, keys and lineage, historical delegation/commission, proposer priorities and settled participation | `PROD-024`, `PROD-028`, `PROD-029`, `PROD-035`, `PROD-039`–`PROD-044`, `ECON-109`, `ECON-137`, `ECON-140`, `ECON-145` |
+| Fee reward custody | Unsettled height pools, accumulator obligations, carries and claim checkpoints | `ECON-081`–`ECON-085`, `ECON-120`, `ECON-137`–`ECON-139`, `ECON-152`–`ECON-155` |
+| Penalties and scheduling | First-penalty marker, offense replay classification and snapshot, queued changes, required deadline reservations | `ECON-015`, `ECON-106`, `ECON-145`, `ECON-174`, `ECON-179`–`ECON-181`, `PROD-039`–`PROD-042` |
+| Reserves and governance | Bootstrap reduction, development vesting, grant treasury/delegation/snapshots/votes/execution/rolling spending, upgrades and cancellation | `GOV-021`–`GOV-055`, `GOV-084`, `GOV-087`, `GOV-006`, `GOV-007`, `GOV-104`–`GOV-106` |
+| Supply and tail | Ownership of every live atom, issuance and burn accounting, eventual tail-event destinations and realization state | `ECON-005`–`ECON-007`, `ECON-193`–`ECON-205`, `ECON-211`, `ECON-212`, `ECON-222` |
+
+Citation NAO rewards are immediately spendable; the E+2 delay applies to their
+derived Knowledge Weight, not a citation-money escrow (`ECON-040`, `ECON-056`).
+Fee reward entitlements remain nonspendable until claimed (`ECON-085`, `ECON-138`).
+Reclassifying pool backing as reward obligations must not count the same atoms
+twice. Historical bond exposure references principal without duplicating it;
+historical delegation references weight origins without minting more weight.
+Attribution deposit refunds belong to the payer, whereas released bond principal
+belongs to its immutable beneficiary.
+
+Tail realization and machinery reuse remain open under `ECON-222` and
+`ECON-205`. Empty reserved namespaces cannot resolve those choices. Recovery
+record integration, authenticated reward-cursor records, delegation record integration
+and deadline accounting retain their unfinished contracts. Grant-vote
+authority, consensus delegation and development-reserve spending remain distinct.
+
+## Stable account and registration identities
+
+An account ID derives from a domain-separated hash of its immutable creation
+descriptor: its initial canonical authorization policy and an explicit 32-byte
+creation discriminator. Their exact shared preimages are defined below.
+The initial descriptor remains immutable; current account authorization policy
+is separate state. Key rotation preserves account identity, ownership of
+balances and Knowledge Weight, registration references, and historical
+liabilities. Explicitly authorized fees and independently scheduled state
+effects remain applicable; rotation does not transfer or recreate ownership.
+
+Account creation is explicit. Ordinary credits and registration role references
+must resolve to existing accounts; a credit does not invent authorization policy.
+Post-genesis creation requires initial-policy consent and an existing sponsor's
+authorization over the complete creation operation. The sponsor pays its fee and
+any initial funding from authenticated available funds.
+
+The new account authorizes creation with nonce zero. Successful creation consumes
+that nonce and leaves its next nonce at one. The sponsor consumes its own exact
+current nonce once. Rejection creates no account, credits no initial funding,
+charges no fee, and consumes neither nonce.
+
+A registration ID derives from a domain-separated hash of the stable operator
+account ID and the operator nonce consumed by that registration. It does not
+derive from the current consensus key, authorization evidence, or signature
+subset. Consensus-key rotation preserves the registration and liability lineage.
+
+These identifiers belong to their containing genesis state. Their derivation
+does not depend on the final genesis identity. Ordinary operation authorization
+still binds the full chain, genesis, protocol-version, and operation-role
+context. The shared framing below defines the identifier domains and integer
+encodings without changing that containing-genesis boundary.
+
+### Bond reduction and liability refinement
+
+The selected refinement of `ECON-109` tracks the liability window of each amount
+removed from effective backing, rather than requiring the entire registration to
+exit before any excess principal can mature. `ECON-100` and `ECON-109` record
+this selected refinement and remain unimplemented.
+
+An exit or bond reduction finalized in epoch E is excluded throughout E and E+1
+and first eligible in E+2. This explicitly extends the increase-delay convention
+of `PROD-009` to these requests. Eligibility is not guaranteed execution: the
+actual effective transition must still obey the voluntary churn rules. Merely
+submitting or finalizing a request does not remove principal from backing or
+start its release clock.
+
+When a reduction actually becomes effective, its exact amount stops backing
+agreement weight and remains escrowed as liable principal. Let L be that amount's
+last effective exposure epoch. It remains liable throughout the 30 complete
+epochs L+1 through L+30; it can become released principal no earlier than the
+first height of L+31. This permits an excess reduction to mature while other
+principal continues backing an active registration. Current backing, retained
+reduction amounts and released principal are disjoint accounting categories;
+exposure records do not duplicate their atoms. Equal exposure/release conditions
+may share one record if this preserves every liability and accounting fact.
+
+While a registration remains eligible, including during a partial exit, its
+currently usable backing must be at least
+`max(10^13, ceil(w / 20))` NAO atoms for effective weight w. The `10^13` atoms
+are exactly 10,000 NAO under `ECON-002`; the second term follows from the
+20-weight-units-per-atom cap. The minimum remains in force until full effective
+exit. This lower bound does not automatically schedule or release excess bond.
+
+A bond top-up becomes liable when its acceptance finalizes, including while
+waiting for activation. Its additional usable backing and weight capacity become
+effective only through the delayed, churn-compliant activation transition.
+Pending top-up principal is therefore distinct from currently usable backing
+and from released principal, without counting its atoms twice.
+
+For a registration that has never had effective active exposure, either an
+effective excess-bond reduction or full effective exit may release the removed
+amount without an additional 30-epoch wait. The ordinary request delay, staging
+and boundary release phase still apply. This exception applies to a never-exposed
+registration, not to a new deposit into a previously exposed lineage, and does
+not erase an inherited release floor or other existing liability obligation.
+
+The first canonically executed valid equivocation penalty forfeits all currently
+liable principal in the registration lineage, including liable top-ups added
+after the proven offense. It is not restricted to principal present at that
+offense position. The selected set does not include principal already validly
+released from liability. The one-transition marker, permanent lineage tombstone,
+and 90% burn/10% reporter split retain their existing requirements.
+
+Withdrawal requires the immutable beneficiary's authorization, debits only
+released principal and credits that beneficiary. Cancellation, re-bonding or
+new deposits cannot erase an existing exposure obligation.
+
+New economic penalty assessment and the corresponding historical delegation-
+snapshot liability admission expire at the end of offense epoch E+30. An already
+assessed Knowledge Weight shortfall follows the persistent account-liability
+rule below. Rotation, inactivity, re-entry
+and later activity do not extend or reopen that offense deadline. This is a
+separate explicit refinement of `ECON-109`: an offense's deadline does not derive
+from the newest bond tranche or the lineage's latest active epoch. When eligible
+evidence executes, the selected forfeiture set is still all principal currently
+liable at execution, rather than the principal present at the offense.
+
+The same canonical-execution deadline governs all equivocation-evidence
+admission under `ECON-247`. Even otherwise valid, distinct non-penalizing
+evidence against an already penalized lineage under `ECON-188` is rejected
+after the final height of its offense epoch E+30. Before that deadline it
+remains subject to the bounded pending-evidence rules and creates no second
+destructive penalty or reporter reward.
+
+Evidence must execute canonically by the final height of its deadline epoch
+to be admitted.
+Local receipt, partial acquisition or mempool presence creates no bond hold.
+Matured bond amounts release at the following epoch boundary before ordinary
+operations. An earlier withdrawal within the ordinary operation stream cannot
+change those eligibility and release results. This deliberately allows evidence
+that has missed its canonical execution deadline to lose penalty eligibility;
+it does not promise inclusion merely because an honest node received evidence.
+The independent deadline-reservation and honest-proposer-gap requirements remain
+unfinished under `ECON-181`, `RES-049` and `PROD-091`.
+
+The following sections refine re-bonding, request conflicts, principal selection
+and release ordering. Complete record bytes, resource-bounded queue execution
+and integration with the remaining epoch-boundary effects are still required.
+The selected deadline and release rules do not alone establish the complete
+evidence-admission or epoch-transition contract.
+
+### Exposure and principal source classes
+
+Bond exposure means membership in a canonically installed immutable selected
+validator snapshot, including a selected registration whose weight is zero.
+Being an eligible candidate outside that selected set creates no exposure.
+This definition does not add a positive-weight eligibility filter or alter the
+zero-total halt rule. Retain each lineage's latest such exposure epoch, or an
+explicit never-exposed state. Rejected preparation and an intermediate mandatory
+comparison map do not advance that history.
+
+For usable principal ceasing backing, freeze its release floor as the maximum
+of its inherited floor and the lineage's latest already-established exposure
+epoch plus 31. This lineage floor also covers usable surplus and deposits added
+after the historical exposure; a new deposit in an exposed lineage has no
+tranche-specific never-exposed exemption. If the lineage is never exposed, only
+inherited floors and the ordinary cessation/release-phase requirements remain.
+Once the amount is independently cooling, later lineage activity never extends
+that frozen floor.
+
+At boundary height H, reductions and exits freeze these floors before assigning
+H's new selected-snapshot exposure. Only principal still usable after staging
+receives exposure from the resulting installed H snapshot. A removed amount
+does not gain H exposure because the registration's remainder stays selected.
+For last established exposure in epoch E-1 and removal at the first height of E,
+the exposure floor is E+30, not E+31. All preparation and floor assignment remain
+speculative until the complete canonical transition installs atomically.
+
+Boundary staging and floor assignment precede that height's release scan.
+Prior-height settlement remains the first proposal-dependent phase; the boundary
+release scan follows it and precedes ordinary operations. A removed amount whose
+inherited and exposure floors are already satisfied may therefore become released
+in that same boundary scan, including a qualifying never-exposed reduction.
+Cessation itself credits no spendable balance. Withdrawal remains a separately
+authorized ordinary operation against released principal. If the proposal fails,
+staging, exposure, release and any withdrawal all install nothing.
+
+Within a registration and its immutable beneficiary, principal classes identify
+custody and remaining release/hold conditions rather than original deposit IDs.
+Usable classes retain inherited release floors, with no inherited floor sorting
+before any epoch floor. Pending activation and exit-held principal remain
+separate from usable principal. Independent cooling classes retain their frozen
+release floors; released principal is one fungible withdrawable balance. Classes
+coalesce only when all remaining rights and conditions match.
+
+A usable-bond reduction consumes classes in ascending resulting release floor,
+then ascending inherited floor. Equal usable-class keys coalesce, leaving no
+funding-age tie. Consume the lesser of the class amount and the remaining
+authorized reduction, splitting the final class exactly if needed. Do not take
+pending, already cooling or released principal through this selection. Full
+exit consumes all remaining usable classes and retains the separate rules for
+exit-canceled pending principal.
+
+Direct re-bonding selects otherwise admissible cooling classes by descending
+frozen release floor, preserving nearer-term principal for release. Equal
+remaining conditions coalesce. Every selected amount enters its pending re-bond
+class with its inherited floor intact. Withdrawal debits only the released
+balance. These source rules do not broaden eligible custody categories, cancel
+an exit hold, erase liability, or duplicate atoms during a split.
+
+### Exit precedence and re-bonding
+
+A finalized exit is irreversible for that registration. Neither the operator nor
+the beneficiary can cancel it, restart its delay or move its queue position
+backward. Other pending requests cannot prevent either role from initiating exit.
+Future participation after that exit requires a fresh registration and an unused
+consensus key, with the independent bond and authorization requirements; it does
+not erase the former registration's liability or tombstone history.
+
+Exit takes precedence over unapplied backing and weight increases. Finalizing
+exit cancels their future activation, and later increase requests are rejected.
+Canceling activation does not refund principal or remove its liability. The
+already effective state changes only through the delayed transition and its
+remaining churn budget. Canceled pending top-ups and pending re-bonds remain held until full effective
+exit. For a previously exposed registration, these amounts remain liable through
+30 complete epochs after its last effective active epoch, preserving any later
+pre-existing release floor. An amount with no previous release floor uses the
+exit-derived floor alone. The never-exposed-registration exception remains
+applicable only without erasing an existing exposure obligation. Independent
+cooling reductions retain their own release clocks and are not re-locked by this
+rule. Release also requires completion of the effective exit and the applicable
+boundary release phase; canceling activation creates no spendable duplicate.
+
+A repeated exit request for an already-exiting registration is rejected. It
+changes no fee, nonce, queue position, effective date or other state.
+
+An explicitly beneficiary-authorized direct re-bonding operation moves retained
+principal into a disjoint pending-rebond category. It preserves the amount's
+existing release floor and holds the principal liable while awaiting delayed,
+churn-compliant activation, even when that old release date arrives first. The
+same principal is not simultaneously withdrawable or usable backing elsewhere.
+While it later backs active weight, no old release date makes it withdrawable.
+On subsequent effective reduction or exit, its release floor must preserve both
+the old obligation and the new complete exposure window.
+
+Partial re-bonding splits amounts without duplicating atoms. Records may merge
+only when their remaining rights and conditions are identical. V1 provides no standalone pending re-bond cancellation operation. The amount
+proceeds through activation and subsequent ordinary reduction or exit, or follows
+the irreversible-exit cancellation and retention rules above. Canceling a
+re-bond intent cannot independently unlock the principal.
+
+### Bootstrap allocation during voluntary bond reduction
+
+A valid voluntary bond reduction uses spare combined backing first, then
+permanently surrenders this registration's bootstrap weight before reducing
+ordinary delegation. For current bootstrap weight S, current ordinary total O
+and proposed surviving usable backing B in NAO atoms, let
+`D = max(0, S + O - 20 * B)`. The surviving components are
+`S' = S - min(S, D)` and `O' = O - (D - min(S, D))`.
+These are exact nonnegative integers; `S' + O' <= 20 * B`. A backing change
+that already covers S+O removes no weight. Only the ordinary reduction, if any,
+uses the owner-reference allocation below with surviving total K=O'.
+
+This is an authorized voluntary effective transition, retaining E+2 eligibility,
+gross churn, the continuing minimum bond, and liability/release requirements.
+It is not a mandatory bootstrap-cap exception to churn. The exact admissible
+bond-atom step still depends on those constraints; the formulas alone do not
+authorize an otherwise invalid step or removal below the continuing minimum.
+
+Voluntarily surrendered bootstrap weight never returns through a bond top-up,
+key rotation or later target recomputation, and is never redistributed to another
+genesis allocation. It does not mint ordinary Knowledge Weight or increment the
+first-matured accumulator. The nominal aggregate target in GOV-033 retains its
+formula; applied bootstrap may lie below that target because surrendered weight
+cannot be restored or redistributed. Every tag remains independently
+nonincreasing, and the independent linear cap and epoch-730 sunset still apply.
+The fixed original-tag schedule below defines queued growth-driven replacement
+and global per-tag remainder allocation. Exact authenticated event records and
+bounded execution remain separate unfinished requirements.
+
+### Original-tag bootstrap schedule
+
+Keep all 32 original genesis tags in one fixed order by ascending lexicographic
+canonical genesis RegistrationId bytes. Rotation, exit, surrender and tombstoning
+never reorder or remove a slot from this nominal calculation. Let N=10^16.
+For any integer aggregate A with `0 <= A <= N`, write `A = 32*q + r`,
+`0 <= r < 32`. Its nominal share for zero-based slot i is q+1 if i<r, otherwise
+q. The shares sum exactly to A and each share is nondecreasing as A increases.
+This is equal-original-share highest averages, not redistribution across the
+currently surviving tags.
+
+For epoch E below 730, the independent linear aggregate cap is
+`C(E) = floor(N * (730-E) / 730)`; at and after epoch 730 it is zero. Before
+voluntary staging, reduce each current applied tag S_i to the lesser of S_i
+and its nominal share of C(E). This mandatory reduction never waits for churn.
+It guarantees that the applied aggregate is at most C(E), including when other
+tags have already surrendered weight or become zero.
+
+Let F be cumulative first-matured ordinary weight. The nominal growth target is
+`T = min(C(E), max(0, N-F))`, saturating at zero when F>=N. Derive its shares
+over the same original 32 slots. Aggregate all first-matured updates at the same
+canonical maturation coordinate before deriving this target and its new queued
+amounts, so owner or origin-batch enumeration grants no priority. The currently owed growth-driven reduction for
+slot i is `max(0, S_i - share_i(T))`. Existing unapplied reductions are normalized
+to this amount: cancel newest excess in reverse canonical queue order, preserve
+survivors and their priority, and create only the uncovered new amount. A tag
+already below its nominal target owes no reduction and gains no restoration.
+After mandatory cap loss, voluntary surrender or tombstoning, perform the same
+normalization without recreating canceled portions.
+
+New growth-driven reductions use the canonical maturation event's fresh priority
+and may enter that event epoch's ordinary staged queue without an additional
+E+2 delay. They share its one-pass ordering and remaining full-map churn budget;
+there is no separate bootstrap-first queue pass. At each queued portion's visit,
+maximize its whole-weight reduction within that portion's remaining amount and
+valid complete-state churn. A newer portion for the same tag cannot inherit an
+older portion's position.
+Ordinary owner contributions do not change through this bootstrap-only step.
+Unapplied weight retains its original queue position. The mandatory linear cap,
+terminal sunset and first-matured accumulator never wait for this queue.
+
+Applied bootstrap may remain above the growth target while reductions await
+churn, or below it because nominal shares of surrendered or retired tags are
+never redistributed. An applied aggregate below T does not cancel another tag's
+own still-owed reduction to its nominal share. Per-tag applied weight never
+increases; target recomputation neither restores a surrendered unit nor mints
+ordinary weight. Exact event encoding and measured work bounds remain unfinished.
+
+### Owner allocation during voluntary bond reduction
+
+When a valid voluntary bond reduction reduces a registration's effective ordinary
+delegation, distribute its surviving ordinary total by highest averages over
+the captured existing effective owner contributions. Let c_i be each positive
+owner contribution, C their sum and K the admissible surviving ordinary total,
+with `0 <= K <= C`. Use the floor-seeded highest-averages procedure with inputs
+c_i, denominator C and house size K. Compare quotient ties by ascending
+lexicographic canonical stable owner-account identifier bytes.
+
+C=0 permits only K=0 and requires no division. K=0 produces all zero owner
+contributions; K=C preserves every contribution. For a smaller K, fixed-input
+house monotonicity ensures no result exceeds its corresponding c_i. No new
+owner receives a contribution through this reduction. The contributions sum
+exactly to K; rounded proportional quotas are not promised.
+
+This allocates an already admissible surviving ordinary total; it does not
+choose the bond-atom decrement, remove the continuing minimum bond, bypass E+2
+or gross churn. The bootstrap-first rule above determines the surviving ordinary
+total within combined backing. The removed effective delegation frees owner allocation
+capacity without destroying ordinary Knowledge Weight, changing its decay
+basis, or transferring ownership. Historical snapshots retain their original
+contributions.
+
+Capture that reference per registration before its first bond-driven or partial-exit reduction.
+For later bond-driven or partial-exit reductions with no other effective owner-contribution
+change, reuse the same reference and apply highest averages to the new admissible
+surviving total K. K cannot increase through a reduction. The reference survives
+mere epoch changes, new requests, key rotation, membership-status changes and
+backing-only changes that do not themselves alter owner contributions. An owner
+reaching zero through these reductions does not cause a reset. An exit step
+that reduces ordinary weight while backing remains at the minimum belongs to
+this same reduction sequence; its unchanged bond-atom count does not reset the
+reference.
+
+If another canonical transition actually changes this registration's effective
+owner-contribution vector, use its resulting current vector as the new reference
+before the next bond-driven or partial-exit reduction. This includes actual activation, owner
+weight loss or reassignment; each retains its own authorization, eligibility
+and churn requirements. Install the contribution change and reference update
+atomically, with no speculative or rejected transition changing either.
+
+Fixed-input house monotonicity makes every contribution nonincreasing across
+successive bond or partial-exit reductions with the same reference. Splitting such a reduction
+across steps, requests or epochs alone cannot alter the final distribution at
+the same K. Genuine intervening contribution changes may alter subsequent
+rounding through the new reference; no invariance across arbitrary reordered
+transitions is claimed. Exact reference encoding, coupled economic-step sizing
+and resulting pending-delegation integration remain unfinished.
+
+After a voluntary bond cut changes ordinary contributions, normalize surviving
+owner requests and existing pending portions against the resulting state.
+Newly uncovered standing-request increases receive fresh priority at that
+effective bond-cut event and first eligibility in its epoch plus two, also
+requiring the originating request's eligibility. Existing surviving portions
+retain their own dates and priority. This queues intent without restoring the
+removed contribution or granting its old priority. Reactivation still needs
+actual owner capacity, combined backing and voluntary churn; the maturation-only
+exception does not apply. An exiting registration remains excluded from new
+target calculations, so this rule never queues reactivation of the exiting
+target.
+
+### Voluntary churn refinement
+
+For an epoch following a completed non-genesis epoch, W is the total agreement
+weight in the authorization snapshot of that preceding epoch's final height.
+Penalties executed by that final height do not change this historical reference.
+Genesis initialization of the reference remains part of the genesis contract.
+For positive W, the selected integer voluntary churn budget is `ceil(W / 10)`. This explicitly refines `PROD-039`:
+the budget may exceed exact 10% by less than one indivisible weight unit. A
+floor-rounded budget would permit zero progress at totals one through nine.
+Zero total eligible active weight retains `PROD-034`'s halt without fallback
+weight, quorum relaxation or bootstrap extension. The refinement does not grant
+recovery authority or prove eventual execution of every queued change.
+
+Churn counts both increases and decreases in effective active agreement weight
+by stable validator registration: moving one unit from A to B costs two units.
+A pure key rotation preserving the registration-weight mapping costs zero.
+Penalties, Knowledge Weight decay and terminal bootstrap sunset retain their
+mandatory treatment outside voluntary delay under `PROD-041`. Growth-driven
+bootstrap replacement and the independent bootstrap cap retain `PROD-042`.
+The mandatory comparison state applies the due penalties, decay and independent
+bootstrap-cap reductions, then reranks already-effective eligible candidates.
+Promotions caused by that mandatory reranking belong to this comparison state;
+they do not newly activate requested capacity. Newly activated capacity remains
+in the voluntary queue. Thus mandatory removals change the comparison state
+without changing the selected historical denominator. Exact composition of
+queued requests must still prevent a net-total-only calculation from hiding
+replacement of one registration's weight by another's.
+
+Ordinary Knowledge Weight matures on its required schedule and advances the
+first-matured accumulator independently of active-set staging. Maturation makes
+owner capacity available; any resulting increase in effective consensus weight
+remains subject to staged churn. This explicitly distinguishes matured owner
+weight from activated voting weight in `ECON-040`. The logical queue coordinates
+and dated authorization rules below govern delegation growth; exact record
+encoding remains unfinished. The first-matured
+accumulator still determines the growth-driven bootstrap target; that replacement
+retains its queue treatment while the independent linear cap is not delayed.
+
+Eligible requests are ordered by eligibility epoch, finalized request height,
+committed operation position and operation ID. An unfinished portion retains its
+original position, takes the maximum canonical progress permitted by the
+remaining budget, and leaves later requests to the remaining budget. This is the
+selected ordering for the draft, not evidence that `PROD-040` is implemented.
+
+Visit the eligible queue once in that canonical order for each epoch's staged
+transition. At its visit, a request takes its largest valid partial step under
+the current state and remaining budget. If no valid non-no-op transition is feasible, retain
+its position and continue to later requests. Do not revisit an earlier request
+after a later request changes the state during the same pass. Skipped and
+unfinished portions remain for the next epoch, preserving their positions.
+An exhausted budget does not stop the pass: a valid zero-churn step may still
+execute. Completing a zero-weight exit or removing spare backing is progress
+even when its weight delta is zero. These rules choose scheduling, not a
+guarantee of eventual service.
+
+For each applied step, charge the sum over stable registrations of the absolute
+change between its immediately preceding and resulting selected active-weight
+maps, treating absent registrations as weight zero. Deduct that charge from the
+remaining budget before the next request. Returning later to a previously seen
+map does not refund earlier churn. Recompute selection for the complete step,
+including any displaced or promoted registration; do not lower an unrelated
+incumbent merely to make a candidate fit. The economic progress units below
+refine each step; complete coupled-state construction and resource-bounded
+maximum selection remain required.
+
+Requested delegation and bond-backed capacity are separate from currently
+effective consensus weight. Eligible changes activate in partial increments;
+top-256 ranking uses the resulting effective weights. Unapplied weight retains
+its ownership but grants no active consensus authority. This selected separation
+does not authorize counting one owned unit in multiple effective allocations.
+
+The following queue, economic-progress and pending-change sections refine
+eligibility, conflicts, cancellation and supersession. Their complete records
+and bounded execution remain unfinished. Partial economic changes must preserve
+integer bond backing and Knowledge Weight ownership; a permitted weight delta
+alone does not determine the exact bond atoms that cease exposure. A partial
+transition must account for the complete selected registration-weight change,
+including a displaced incumbent, rather than charging only the changed candidate.
+The selected integer progress and surviving-remainder rules must be integrated
+with those complete transitions before `PROD-066` can be implemented. These rules
+do not authorize arbitrary reduction of
+an incumbent's weight merely to make a newcomer fit.
+
+### Logical queue coordinates and identities
+
+Compare queued portions lexicographically by eligibility epoch, source height,
+source phase, phase-local coordinate, optional stable owner ID, optional stable
+registration ID, effect kind, direction and immutable source-view ordinal. Compare IDs by
+their canonical bytes; an absent optional subject sorts before a present one.
+Delegation effects carry the stable owner and target registration. Registration,
+bond, exit and bootstrap-tag effects carry the registration and no owner subject;
+their authorizing or funding accounts do not become ordering subjects. An
+account-only scheduled effect carries its affected stable account as owner
+subject and no registration. Subject presence follows the effect class and is
+not an implementation choice.
+These are logical fields, not fabricated signed-operation fields. Eligibility
+and height precede phase, so a newer derived event cannot overtake an older
+eligible request merely because of its event kind.
+
+The source phases, in ascending order at one height, are: mandatory owner-loss
+projection, maturation, bootstrap-target derivation, effects of the staged pass,
+and ordinary committed operations. The first three have a single phase-local
+coordinate at that height. A staged effect uses its causing portion's frozen
+pass-list index, including positions later skipped or canceled. An ordinary
+effect uses the operation's committed position followed by its operation ID.
+Its source height and epoch are those of that finalized operation. Derived
+loss, maturation and bootstrap events instead use the height of their selected
+pre-authorization phase. This ordering does not move settlement, release or
+artifact publication from their selected execution phases.
+
+The effect kinds have the following ascending logical order: ordinary scheduled
+request, permanent-target-removal reconciliation, owner-loss reconciliation,
+maturation increment, growth-driven bootstrap reduction, and voluntary-bond-cut
+reconciliation. Their different sources, subjects and phases normally distinguish
+them already; the explicit final kind comparison leaves no implementation-chosen
+tie. A maturation increment for one owner and registration remains one logical
+event even when dated authority partitions it into several queued subportions.
+
+An event identity is the immutable tuple of its chain/genesis/protocol-version context, finalized
+parent consensus ancestry, source height, source phase, phase-local coordinate,
+effect kind and optional owner/registration subjects. It uses the parent before
+the event's transition, never a resulting proposal root or post-state commitment.
+An ordinary cause additionally retains its actual operation identity through
+the phase-local coordinate. An automatic event has no signature, fabricated
+operation position or ordinary-operation identity.
+
+A portion identity adds the change direction and its canonical source-view
+ordinal to that event identity. For every event split by authorization,
+including maturation, owner-loss and bond-cut reconciliation, source-view ordinals
+follow the immutable ascending dated-view sequence captured for that event;
+views at the same date are already combined. Other unsplit events use ordinal
+zero. Retain the captured authorization facts needed to verify a surviving
+portion; later plans, removals or capacity cannot reinterpret its original view.
+The direction order is reduction, increase, then weight-preserving change.
+A zero-weight exit completion is an
+ordinary exit request, not a fabricated positive weight portion.
+
+Remaining amount is mutable state outside both identities. Partial execution,
+partial cancellation and normalization neither change a survivor's identity nor
+renumber surviving subportions. Creating an event or consuming its support is
+part of the same canonical atomic overlay as its cause. Rejected speculative
+work creates no retained event, consumes no support and gives no authority;
+canonical replay cannot create a second copy of an already-produced portion.
+Exact domain-separated hashes, binary framing and authenticated record layout
+remain codec work; they must encode these logical distinctions injectively.
+
+After all pre-pass boundary-derived portions have been created and normalized,
+freeze the IDs of eligible portions in canonical order. Their zero-based list
+positions define this pass's visit indices. At each position consult current
+state, skip an already canceled portion and visit a surviving portion once.
+New portions created during the pass do not enter its frozen list; they wait
+for a later epoch's pass and retain their actual event eligibility and priority.
+This fixes traversal only, without changing any portion's required delay or
+granting a second visit after later state changes.
+
+### Economic progress units
+
+An authenticated bond-reduction request specifies a positive whole-atom amount
+of currently usable backing to remove. Its admission amount cannot exceed
+current backing minus the continuing minimum. A registration has at most one
+unfinished such request; a second request is rejected until the first completes.
+Each executed partial amount subtracts from that request's remaining amount;
+later top-ups do not enlarge it. Irreversible exit remains admissible despite
+an unfinished reduction. Finalizing exit cancels that request's remaining amount
+and makes the exit govern still-usable backing; already executed reductions
+retain their independent cooling clocks. This
+request rule does not create a cancellation or amendment operation.
+
+For a bond reduction, progress is a whole number d of usable NAO atoms within
+the request's remaining authorized amount. Set `B' = B - d`, preserve the
+continuing minimum and apply the bootstrap-first backing formulas to obtain
+the resulting weight. Choose the largest valid d whose complete selected-map
+churn fits the remaining budget. Unapplied atoms keep the request's position;
+an allowed weight decrement alone does not authorize rounding up d.
+
+For a single-target delegation portion, progress is a whole number of ordinary
+weight units, bounded by its remaining amount, standing authority, actual owner
+capacity and the destination's combined backing. A reduction changes only that
+portion's designated contribution. Transfers cannot count a source unit twice;
+separate queue entries do not acquire an invented atomic pairing.
+
+For an eligible irreversible exit with current combined weight w, progress is a
+whole weight decrease d from zero through w. Let x=w-d. Surrender bootstrap
+first and apply the owner-reference rule to the surviving ordinary total. For
+x>0 retain exactly `max(10^13, ceil(x/20))` usable backing atoms, removing only
+actual excess backing; the continuing minimum remains binding. For the final
+x=0 exit, retain zero usable backing and complete the effective departure. An
+already-zero-weight registration still has a zero-weight-progress candidate
+that completes its eligible exit. Choose the largest valid d permitted by the
+complete selected-map churn, with the specified backing result determining the
+economic step even when d=0.
+
+All atoms that cease backing move into liable retention under their selected
+exposure/release floors; none becomes immediately withdrawable through these
+formulas. A final exit also permanently removes its remaining bootstrap tag
+weight without redistribution or revival. Recompute selected membership for
+the complete candidate, including replacement of the departing registration.
+If no positive replacement exists, there is no invented replacement weight;
+loss of the last positive agreement weight retains the existing halt rule.
+
+These scalar candidate families select semantic maximality. Their exact
+rank-crossing intervals can support analytical maximum selection; enumerating
+every atom or weight unit is not a production resource bound. Exact operation
+records and measured work limits remain unfinished; source selection follows
+the principal-class rules above.
+
+## Account authorization and operation identity
+
+An account policy has one normalized representation: a threshold `M` and sorted,
+distinct Ed25519 keys, with `1 <= M <= N`. A single-key account is the `M = N = 1`
+case. The shared framing below fixes policy bytes and key admission; the
+benchmark-selected maximum `N` remains unfinished.
+
+Each authorization contains exactly `M` distinct signer entries in ascending
+policy-index order. Every supplied signature is verified. Duplicate indices,
+unknown indices, extra signatures, and malformed evidence fail. Any qualifying
+`M`-key subset is acceptable; there is no requirement to use the globally lowest
+`M` keys. Different qualifying subsets can produce different valid evidence.
+
+Every required account authorizes the complete common operation, including its
+context, all role assignments, and the full distinct-account nonce vector.
+One account occupying several authorizing or paying roles authorizes all those
+roles and consumes one nonce. Different authorizing accounts each supply and
+consume their own exact nonce. A receiving-only reward account supplies neither
+an authorization nor a nonce for registration.
+
+Operation identity and signing intent exclude signature evidence. All identity
+and possession-proof targets are derived before the signatures that authorize
+them, without a signature/identity cycle. The shared preimages below fix operation,
+policy-binding, account-specific authorization and key-possession transcripts;
+complete typed payloads and outer framing remain separate codec requirements.
+Validation uses the applicable evolving execution state; signing
+does not require committing an intermediate global state root.
+
+### Shared V1 identity and authorization bytes
+
+This section fixes shared preimages for ordinary post-genesis operations.
+Genesis preauthorizations retain their separately specified unsigned-genesis-root
+transcripts; requiring the final genesis identity in those pre-finalization
+signatures would introduce a forbidden cycle. This section does not complete
+typed operation payloads, genesis transcripts or the successor block envelope.
+
+`NAT(x)` is exactly the successor natural encoding in CODEC-117. Define
+`BYTES(x) = NAT(byte_length(x)) || x`, where `||` concatenates bytes. Fixed
+identifiers, hashes and Ed25519 keys occupy exactly 32 bytes, and signatures
+exactly 64 bytes. All counts, indices, nonces, operation-kind tags and the V1
+context's protocol version use NAT. Every parser enforces authenticated resource
+allowances before allocation; this encoding chooses no policy-size or work cap.
+
+The following domain strings are exact ASCII bytes. Each displayed `\0` denotes
+one final zero byte, not a backslash and digit; quotation marks are not encoded.
+
+| Purpose | Exact domain |
+| --- | --- |
+| Policy commitment | `naome/consensus/v1/account-policy\0` |
+| Stable account ID | `naome/consensus/v1/account-id\0` |
+| Stable registration ID | `naome/consensus/v1/registration-id\0` |
+| Operation ID | `naome/consensus/v1/operation-id\0` |
+| Account authorization | `naome/consensus/v1/account-authorization\0` |
+| Registration key possession | `naome/consensus/v1/registration-key-possession\0` |
+| Rotation key possession | `naome/consensus/v1/rotation-key-possession\0` |
+| New owner-policy consent | `naome/consensus/v1/new-owner-policy-consent\0` |
+| New recovery-policy consent | `naome/consensus/v1/new-recovery-policy-consent\0` |
+
+Let P be `NAT(M) || NAT(N) || key[0] || ... || key[N-1]`, with the normalized
+threshold and ascending distinct key bytes required above. Then:
+
+```
+PolicyHash     = SHA256(policy-domain || P)
+AccountId      = SHA256(account-id-domain || BYTES(P_initial) || discriminator[32])
+RegistrationId = SHA256(registration-id-domain || operatorAccountId[32] || NAT(operatorNonce))
+Context        = ChainId[32] || GenesisId[32] || NAT(protocolVersion)
+```
+
+The registration nonce is the exact operator nonce consumed by that registration,
+including when the operator occupies other authorizing roles. Neither identity
+contains authorization witnesses, a resulting state root or final genesis ID.
+Current policy updates do not rewrite the account's immutable initial descriptor.
+
+A typed operation determines its exact distinct required authorizing-account
+set. Sort those accounts by AccountId and encode each authorization-intent row
+as `AccountId[32] || PolicyHash[32] || NAT(authorizationGeneration) || NAT(nonce)`.
+The applicable policy is selected by the operation contract, never by a caller-
+supplied policy-role switch. The common intent is:
+
+```
+Intent = Context || NAT(operationKind) || BYTES(canonicalTypedPayload)
+         || NAT(authorizingAccountCount) || orderedAuthorizationIntentRows
+OperationId = SHA256(operation-id-domain || Intent)
+```
+
+The typed payload binds every semantic role, amount, destination, fee and
+supporting-proof or offense-evidence reference required by that operation.
+Encode each semantic role and fee once in that typed payload, without a second
+competing role or fee header. Only the operation's account-signature, new-key
+possession and new-policy consent witnesses are excluded from Intent; proof identifiers, evidence
+statements and other semantic payload content are not excluded. The active
+protocol's typed codec must recognize the kind and validate the complete payload;
+hashing an arbitrary payload grants no admission or execution authority.
+
+Reject missing, extra or duplicate authorization rows. Every row must match the
+required account's applicable policy commitment, current authorization generation
+and exact nonce in evolving execution state. The applicable policy is its current
+owner policy, except that RecoveryStart uses the target account's already
+committed recovery policy for that target row as specified below.
+Aliased roles share one row and one nonce consumption. Receiving-only roles add
+none. For account creation alone, the new account's row uses its initial policy
+hash, authorization generation zero and nonce zero; its sponsor already exists
+and cannot alias that new account.
+
+For each row, compute:
+
+```
+AccountAuthDigest = SHA256(account-authorization-domain || Context
+                          || OperationId[32] || AccountId[32] || PolicyHash[32])
+```
+
+Each qualifying account key signs exactly those 32 digest bytes with ordinary
+Ed25519. This is not Ed25519ph and does not sign a textual hexadecimal digest.
+An account's witness row is `NAT(M) || (NAT(policyIndex) || signature[64])*M`,
+with zero-based distinct ascending indices. Witness rows occur in the intent's
+account order, preceded by NAT of the exact authorizing-account count. Validate
+every supplied signature against its indexed key and this account-specific
+digest. Extra or missing rows or signatures, out-of-range indices and trailing
+bytes are invalid. Different valid qualifying signer subsets leave OperationId
+unchanged; changing policies, nonces, roles or semantic payloads changes the
+committed preimage, subject to the hash's cryptographic assumptions.
+
+Registration and rotation use their respective possession domain to compute
+`SHA256(domain || Context || OperationId[32] || RegistrationId[32] || newKey[32])`.
+The new consensus key signs exactly that 32-byte digest with ordinary Ed25519.
+Registration derives RegistrationId from the operator row before obtaining this
+signature; rotation uses the existing registration named in its typed payload.
+The payload determines whether exactly one such witness is required and which
+key and role it proves. This witness grants no account-spending authority and
+does not enter OperationId. Exact outer operation/witness-section framing remains
+part of the complete successor codec.
+
+### Account-policy rotation and precommitted recovery
+
+Each account retains a current owner policy, optional committed recovery policy,
+exact growing natural authorization generation g, and its ordinary exact nonce n.
+Post-genesis creation starts with g zero and no recovery policy. The immutable
+creation descriptor and AccountId never change. Genesis setup remains governed
+by its separate ceremony and installation contract.
+
+Every successful owner-policy or recovery-policy installation, replacement or
+disabling advances g by one, including a successful installation of identical
+policy content. Each ordinary accepted operation still consumes one nonce per
+distinct authorizing account. Generation and nonce never reset or wrap. A
+signature for an earlier generation cannot become usable merely because the
+account later restores the same policy keys. Scheduled recovery activation
+advances g but is not an additional user operation and consumes no nonce.
+
+#### Consent and ordinary rotation
+
+OwnerPolicyRotate binds the complete proposed owner policy, target account and
+fee roles. The current owner policy authorizes its target row using current g
+and n; a distinct fee payer authorizes its own row, while an aliased payer uses
+the target's one row. The proposed new owner policy separately gives threshold
+consent over the same operation. Do not add a duplicate account row or consume
+a second target nonce for that consent.
+
+New-policy consent uses the same normalized policy, exact threshold witness and
+strict signature rules as account authorization. Use the exact new-owner or
+new-recovery consent domain listed above according to the typed operation:
+
+```
+NewPolicyConsentDigest = SHA256(consent-domain || Context || OperationId[32]
+                               || targetAccountId[32] || newPolicyHash[32])
+```
+
+Every qualifying new-policy key signs exactly these 32 bytes with ordinary
+Ed25519. The witness is `NAT(M) || (NAT(policyIndex) || signature[64])*M` in
+strictly ascending distinct policy-index order, verified under the complete
+new policy bound in the typed payload. It is authentication evidence excluded
+from OperationId; the proposed policy itself is semantic intent and is included.
+The operation kind fixes which consent is required; missing, extra or wrong-role
+consent is invalid. Consent grants no separate spending or consensus-key authority.
+
+Successful ordinary rotation activates immediately at its operation position,
+advances g, consumes n once, and cancels any pending recovery. Later operations
+in the same block must use the new owner policy and advanced generation/nonce.
+There is no queued ordinary owner-policy rotation. Rejection installs none of
+these effects, fees or nonce changes. This account-policy timing does not change
+the separate epoch delay for validator consensus-key rotation.
+
+#### Recovery-policy setup and lost-key scope
+
+Recovery is a lost-owner-key path only. The current owner retains ordinary
+spending and cancellation authority during its delay; no account freeze is
+introduced. An adversary controlling the current owner threshold can spend,
+rotate, disable recovery or cancel it. This contract does not promise recovery
+against that adversary and grants no emergency or privileged override.
+
+RecoveryPolicySet requires current owner authorization plus new-recovery-policy
+threshold consent. It installs or replaces that optional policy immediately at
+its operation position and advances g. RecoveryPolicyDisable requires current
+owner authorization and immediately removes the policy and advances g. Both
+cancel any pending recovery. Their ordinary fee payer may alias the owner or
+be a separately authorizing sponsor. Recovery-policy keys alone cannot install,
+replace or disable that policy, rotate the owner immediately, transfer assets,
+or authorize validator operations. The owner can set up recovery after explicit
+account creation; uncommitted or external identity evidence supplies no authority.
+
+#### One pending recovery and activation
+
+RecoveryStart binds the target account, complete new owner policy, distinct
+fee-payer account and fee. Its target authorization row uses the already committed
+recovery PolicyHash with that account's current g and n. Its sponsor row uses
+the sponsor's current owner policy, generation and nonce. The target and sponsor
+must be distinct: recovery keys acquire no right to debit the target account's
+fee balance. The new owner policy supplies the separate new-owner consent.
+Successful admission consumes the target nonce and sponsor nonce once and charges
+the sponsor from available liquid funds, using the ordinary non-artifact fee
+partition. Missing recovery policy or an existing pending recovery rejects a new
+request without replacement, fee or nonce changes.
+
+A successful request finalized in epoch E stores its OperationId, admitted
+recovery-policy commitment and generation, complete accepted target policy and
+finalized source height, from which first activation epoch E+2 is derived. It remains pending throughout E and E+1. Ordinary
+operations may advance n while it waits; they neither restart its delay nor
+invalidate its accepted authorization. RecoveryStart itself does not advance g
+or change owner authority. Repeating the consumed nonce cannot create another
+request. Current recovery keys do not gain an independent cancellation path.
+
+RecoveryCancel binds the exact pending request OperationId and requires current
+owner authorization and ordinary fee payment. Success removes that request and
+consumes the required account nonces without advancing g; missing or mismatched
+requests reject atomically. Owner rotation, RecoveryPolicySet and
+RecoveryPolicyDisable also cancel a pending request as part of their successful
+transition. These owner-authorized actions are the veto; there is no silent
+replacement of one pending recovery by another. A later accepted request gets
+its own fresh E+2 date.
+
+At the first height of E+2, parent-derived boundary preparation activates the
+still-pending target owner policy, advances g and removes the request before
+that height's operations. It preserves the committed recovery policy. The
+request must still match its admitted recovery policy and generation; ordinary
+nonce advances alone are not a mismatch. Do not reauthorize against its old
+consumed nonce or require signatures from the lost owner policy. Any authority
+change that could invalidate that match must already have canceled the pending
+request atomically; an inconsistent pending record is invalid state, not a
+reason to install an attacker-selected policy. An operation included at the
+activation height uses the newly activated policy and cannot veto the boundary
+retroactively. Boundary preparation and installation retain the full proposal's
+existing atomicity and canonical-parent checks.
+
+All policy transitions preserve stable account and registration identities,
+asset ownership, reward credits, Knowledge Weight origins and debt, delegations,
+liability, and independently scheduled economic or consensus changes apart from
+explicit fees and the recovery-request cancellations above. Account recovery
+does not automatically rotate a validator consensus key, restore a tombstoned
+registration, reset exposure or forgive a penalty. Historical verification uses
+its historical policy/context rather than substituting a current policy.
+The account-family bytes below fix its typed kinds, records and consent sections.
+Complete stream integration and resource limits remain required before canonical
+implementation.
+
+### Canonical account record and management operations
+
+This section fixes the account-family logical key and record bytes and the six
+account-management payloads. Namespace-tag assignment, other operation families,
+complete block framing and production admission bounds remain unfinished. The
+account namespace's logical key is exactly AccountId[32]. Its value contains,
+in this exact order:
+
+```
+BYTES(initialPolicyP) || creationDiscriminator[32]
+|| BYTES(currentOwnerPolicyP) || recoveryPolicyOption
+|| NAT(authorizationGeneration) || NAT(nextNonce) || NAT(liquidBalance)
+|| RAT(pooledRealizedFeeRewardCredit) || pendingRecoveryOption
+```
+
+Each P is exactly the normalized policy encoding defined above, not its hash.
+`RAT(x)` is `NAT(numerator) || NAT(denominator)` with a positive denominator,
+coprime components and the unique zero `0/1`. All accounting remains exact;
+this encoding does not select a fixed fractional scale or a numerator/denominator
+work allowance. A recovery-policy option is the single byte `00` for none, or
+`01 || BYTES(recoveryPolicyP)` for present. Other option tags are invalid.
+
+A pending-recovery option is the single byte `00` for none, or these bytes:
+
+```
+01 || admittedOperationId[32] || admittedRecoveryPolicyHash[32]
+   || NAT(admittedAuthorizationGeneration) || BYTES(newOwnerPolicyP)
+   || NAT(finalizedSourceHeight)
+```
+
+The finalized source height is assigned by accepted execution, never by the
+request payload. It is positive and no greater than the containing finalized
+state's height. Derive its epoch as `floor((finalizedSourceHeight - 1) / 8192)`
+and its activation epoch as that epoch plus two. Do not encode a second,
+independently editable activation coordinate. A still-pending record must match
+the current committed recovery policy and authorization generation, and its
+activation epoch must be later than the containing finalized state's epoch.
+Ordinary nonce advancement does not break this match. Boundary activation and
+owner-authorized cancellation retain their previously selected rules.
+
+Recompute AccountId from the immutable initial policy and discriminator and
+require equality with the map key. Validate every encoded policy, including
+historical initial and proposed policies, under the V1 canonical key and threshold
+rules. No field may be omitted merely because its value is zero or equals an
+initial value, except through its specified option tag. Reject invalid options,
+nonminimal integers, noncanonical rational values, malformed policies, truncation
+and trailing bytes. Field lengths and integer operands must pass their applicable
+resource checks before allocation or arithmetic. Those production bounds remain
+required, not supplied by a claimed record length.
+
+Decoding a self-consistent record does not prove its authorization history,
+nonce/generation progression, balance provenance or canonical installation.
+Post-genesis creation stores the supplied initial policy and discriminator, sets
+current owner policy equal to that initial policy, generation to zero, next nonce
+to one, liquid balance to exactly D and pooled realized fee-reward credit to
+`0/1`, with no recovery policy or pending request. The sponsor funding and fee
+effects remain separate required parts of the same atomic creation transition. Genesis
+initialization retains its separate contract. A byte-valid record cannot invent
+an alternative genesis exception.
+
+This account record owns pooled realized fee-reward credit. Weight-origin batches,
+outstanding Knowledge Weight debt, delegation plans and effective portions,
+per-registration reward cursors, bond-beneficiary rights and governance facts
+remain in their explicitly separate record families. Omitting them from this
+record does not set them to zero, delete them or waive required complete state
+access. The account-family codec alone does not complete those schemas.
+
+The following natural operation-kind tags and payload field order are exact.
+IDs occupy 32 bytes. Each fee F is positive; creation funding D is nonnegative.
+Current policy hashes, generations and nonces occur only in the shared intent
+rows and are not duplicated in the typed payload.
+
+| Tag | Operation | Canonical typed payload |
+| --- | --- | --- |
+| 0 | AccountCreate | `BYTES(initialPolicyP) || discriminator[32] || sponsorAccountId[32] || NAT(D) || NAT(F)` |
+| 1 | OwnerPolicyRotate | `targetAccountId[32] || BYTES(newOwnerPolicyP) || feePayerAccountId[32] || NAT(F)` |
+| 2 | RecoveryPolicySet | `targetAccountId[32] || BYTES(newRecoveryPolicyP) || feePayerAccountId[32] || NAT(F)` |
+| 3 | RecoveryPolicyDisable | `targetAccountId[32] || feePayerAccountId[32] || NAT(F)` |
+| 4 | RecoveryStart | `targetAccountId[32] || BYTES(newOwnerPolicyP) || sponsorAccountId[32] || NAT(F)` |
+| 5 | RecoveryCancel | `targetAccountId[32] || pendingOperationId[32] || feePayerAccountId[32] || NAT(F)` |
+
+For AccountCreate, derive the target ID from its payload's initial policy and
+discriminator; do not encode a competing target ID. The target's shared row
+uses that initial policy, generation zero and nonce zero; its existing sponsor
+uses ordinary current authorization. The target must not already exist.
+RecoveryStart's sponsor must differ from its target, and its target row uses
+the committed recovery policy. All other management operations use current
+owner authorization for the target and current authorization for any distinct
+fee payer, deduplicating aliased roles under the common nonce rule.
+
+Within this account-management family, encode the complete operation as:
+
+```
+BYTES(Intent) || BYTES(accountAuthorizationWitnessSection)
+              || BYTES(newPolicyConsentSection)
+```
+
+Intent and the account-witness section use their exact shared framing above.
+OwnerPolicyRotate and RecoveryStart require exactly one new-owner consent section;
+RecoveryPolicySet requires exactly one new-recovery consent section. That section
+contains the already specified threshold witness for the policy in the payload.
+AccountCreate, RecoveryPolicyDisable and RecoveryCancel require an empty consent
+section, encoded as the single byte `00` for its zero length. Creation already
+uses the initial policy's account authorization row and requires no duplicate
+consent witness. No account-management operation accepts a consensus-key
+possession witness or extra authentication evidence in these sections.
+
+The decoder must consume each section and payload exactly, enforce the required
+kind-specific authorization and consent shape, and reject unknown tags within
+this family. The complete successor operation inventory must assign other kinds
+without reusing tags 0 through 5; their codecs are not supplied here. Only the
+canonical Intent determines OperationId, while valid signature subsets may
+produce different complete operation bytes. Every signer authorizes the full
+semantic operation, including both account-role and proposed-policy information,
+under its existing role-bound digest.
+
+This framing does not assign these operations to an unfinished outer stream
+encoding, supply complete fee coefficients or prove valid state transitions.
+Canonical proposal framing, per-class budgets, exact record lookups, rejection
+ordering and transactional parent-bound installation remain required. Isolated
+codec or transition measurements must state their synthetic bounds and cannot
+turn caller-provided limits or roots into consensus authority.
+
+### V1 Ed25519 admission and verification
+
+Every V1 account-policy key and newly admitted consensus key must be a canonical
+compressed Edwards25519 point in the prime-order subgroup, excluding identity.
+Decompress the point, require recompression to reproduce the input bytes, and
+require nonidentity prime-order subgroup membership. Merely round-tripping a
+key object's stored input bytes does not establish canonical encoding. Reject
+noncanonical encodings, invalid points, small-order keys and mixed-torsion keys
+before installing a policy or reserving a consensus key. This is a V1 admission
+rule and does not change V0 framing or claim V0 already enforces it.
+
+Signature verification uses canonical Ed25519 encodings, a canonical scalar and
+the strict uncofactored verification equation, rejecting small-order R. Together
+with prime-order admitted keys this rejects torsion-based witness alternatives.
+Admission of a key alone proves neither possession nor operation authorization;
+the required signatures still verify under the selected transcript. Exact
+benchmark-derived limits and implementation verification remain unfinished.
+
+## Consensus-key rotation and immutable registration order
+
+A post-genesis registration has an immutable order coordinate consisting of its
+finalized height and zero-based position in the complete committed operation
+stream at that height. Genesis registrations use height zero and their unique
+zero-based ordinal in ascending canonical RegistrationId bytes. This genesis
+ordering is derived only after the separately authorized registration descriptors
+and identities are fixed; it invents no participant or ceremony authorization.
+
+Rank candidates by descending effective weight, then ascending immutable order
+coordinate, then ascending current consensus-key bytes. Distinct valid
+registrations cannot share an order coordinate, so the final key comparison
+cannot change their rank. Duplicate coordinates are invalid state rather than
+another registration-order tie. This defines `PROD-047`'s earlier finalized
+registration precisely. Rotation never refreshes registration age. With all
+other candidate state unchanged, changing a key therefore preserves the complete
+selected RegistrationId-to-weight map and costs zero voluntary churn.
+
+ConsensusKeyRotate binds the stable RegistrationId, exact currently assigned old
+consensus key, one unused new key, fee-payer account and fee. The registration's
+operator account authorizes under its current owner policy, generation and nonce;
+a distinct fee payer authorizes separately, and aliased roles consume one nonce.
+The new key supplies the already specified rotation-possession proof over this
+complete OperationId and context. No old consensus-key signature is required;
+consensus-signing authority alone grants no account or rotation authority.
+New-key admission, fee payment, required nonce consumption, permanent reservation
+and creation of the pending request are atomic. The typed payload and shared
+intent bind both keys; signature variants do not change OperationId.
+
+A live registration may have at most one pending replacement. Reject a second
+request instead of replacing or accelerating the existing request. A successful
+request finalized in E records its OperationId, old and new keys and activation
+epoch E+2; the old key remains assigned throughout E and E+1. An already reserved
+new key rejects before reservation or any other state installs. The new key is
+permanently reserved immediately on successful admission, even if activation is
+later canceled. Neither cancellation nor retirement makes either key reusable.
+
+The operator may submit ConsensusKeyRotationCancel binding the exact pending
+OperationId, registration and ordinary fee roles. Its current account policy
+and any distinct fee payer authorize and consume their exact nonces. A missing
+or mismatched pending request rejects without writes. Successful cancellation
+removes only pending activation and retains permanent reservations and historical
+lineage. Any later rotation needs another unused key and its own fresh E+2 date.
+
+Rotation and explicit cancellation remain available during a partial irreversible
+exit while the registration is live. They do not stop, reverse or delay exit,
+add backing or weight, or restore delegated capacity. Full effective exit and
+tombstoning cancel any pending replacement; new rotation requests for such a
+registration reject. Operator account-policy rotation or recovery preserves an
+already accepted consensus-key rotation as an independently scheduled change;
+its current operator policy may explicitly cancel it. Admission authorization
+is not rechecked against a later account nonce or policy at activation.
+
+At the first height of the activation epoch, apply an uncanceled replacement to
+its existing live lineage before freezing that height's authorization snapshot.
+Exactly the new key is assigned from that height onward. Due destructive
+exclusions and full effective exit take precedence: a registration removed at
+that boundary gains no authority from a simultaneous replacement. Preserve the
+old assignment for historical snapshot, offense and H-1 settlement verification.
+A penalty finalized inside H cannot rewrite H's frozen key assignment; its
+mandatory next-snapshot consequences retain their separate timing. Preparation
+and installation remain one atomic transition with canonical-parent checks.
+
+A selected registration's existing proposer priority follows that stable
+RegistrationId to its replacement key without reset, duplication or newcomer
+initialization. The existing raw-key tie-break between equal proposer priorities
+still applies, so this does not promise an identical proposer sequence after
+rotation. Entry and exit priority rules for an actually changed selected set,
+cross-snapshot proposer bounds and their proofs remain unfinished under the
+existing proposer rules; key rotation does not supply those missing contracts.
+Fee accumulators, reward cursors, bootstrap tag, controller, escrow beneficiary,
+ordinary weight provenance, exposure, liabilities and tombstone lineage remain
+attached to the same registration. No pending key becomes a second participant.
+
+The validator-family operation bytes below fix rotation and cancellation tags
+and payloads; the four key-record families below fix their primary bytes.
+Historical snapshot integration, authenticated boundary ordering and
+measured admission limits remain necessary for complete `PROD-084` and canonical
+rotation integration.
+
+## Bonded validator registration
+
+Registration binds distinct operator-authorization, consensus-signing,
+reward-receipt, and bond-escrow roles. The operator, fee payer, bond beneficiary,
+and reward recipient accounts may coincide or differ. Every authorizing or
+debited account signs the complete operation under the nonce rule above.
+
+The registration payload declares its initial commission as an integer from
+0 through 2000 basis points. That initial rate applies when the registration
+first becomes effective; it is not an increase from an implicit zero rate.
+Later changes obey the ordinary commission limits and delays. Registration
+admission alone still supplies no effective weight or fee entitlement.
+
+The named reward account is immutable for that RegistrationId. The operator
+cannot redirect it through an account-policy or consensus-key change. Historical
+commission and bootstrap entitlements remain owned by that account, including
+after exit or tombstoning. This contract includes no reward-account amendment
+operation; it does not restrict the recipient account's ordinary authorized use
+of its own claimed funds.
+
+The new consensus key separately proves possession over the complete operation
+and context. That proof grants no account-spending authority. Registration
+atomically applies fee payment, actual bond debit and escrow, nonce consumption,
+the registration record, and consensus-key reservation, or changes none of them.
+
+The bond funder is its immutable beneficiary. Released principal is credited only
+to that account. This foundation does not introduce gifted bonds, transferable
+bond claims, or multiple funding shares within one registration.
+
+The existing minimum is 10,000 NAO. Each escrowed atom supports at most 20 units
+of effective agreement weight. Registration records do not themselves establish
+delegated weight, active-set selection, or consensus authority.
+
+Successful registration or rotation admission permanently reserves its consensus
+key within the containing genesis context. An already admitted key cannot be
+assigned again, including to another registration or by reactivating a retired
+key. Invalid admission reserves nothing. Historical key assignments and lineage
+tombstones remain available for the required verification and liability rules.
+Only the explicitly specified cancellation paths are supported; cancellation
+never releases a consensus-key reservation.
+
+Either the operator or the bond beneficiary may request delayed exit. The
+beneficiary may request bond reduction and may withdraw only released principal
+under the selected backing and liability rules. The operator's consent at
+registration includes these beneficiary rights.
+
+A request is distinct from an effective change and from withdrawable value.
+Exit or reduction does not shorten offense liability. The existing
+30-complete-epoch liability window, complete offense-liable forfeiture, and
+lineage-wide permanent tombstone rules remain binding. The refinements above
+select exposure and deadline semantics; exact record bytes, remaining scheduling
+and epoch-boundary integration are unfinished. These rights do not imply that
+the operations are implemented.
+
+### Canonical registration and consensus-key operation bytes
+
+Tags 6 through 8 extend the same V1 natural operation-kind space as account
+management tags 0 through 5. They do not select an unfinished outer class or
+block-stream encoding. All account/registration IDs and consensus keys occupy
+32 bytes. Bond principal B and positive fee F use NAT; initial commission b uses
+NAT and must be at most 2000. Registration requires B at least `10^13` NAO atoms,
+independently of the still-unselected complete fee and resource schedules.
+
+| Tag | Operation | Canonical typed payload |
+| --- | --- | --- |
+| 6 | ValidatorRegister | `operatorAccountId[32] || consensusKey[32] || bondBeneficiaryAccountId[32] || rewardAccountId[32] || feePayerAccountId[32] || NAT(B) || NAT(b) || NAT(F)` |
+| 7 | ConsensusKeyRotate | `RegistrationId[32] || oldConsensusKey[32] || newConsensusKey[32] || feePayerAccountId[32] || NAT(F)` |
+| 8 | ConsensusKeyRotationCancel | `RegistrationId[32] || pendingOperationId[32] || feePayerAccountId[32] || NAT(F)` |
+
+ValidatorRegister requires exactly the distinct operator, bond beneficiary and
+fee-payer account rows. Each uses its existing current owner policy, generation
+and nonce. The reward account must exist but adds no row solely for receiving
+rewards; if it aliases an authorizing role, that account still has only one row.
+All role partitions use the shared sorted, deduplicated account-row contract.
+Derive RegistrationId from the payload's operator and that operator row's exact
+consumed nonce; do not encode a second RegistrationId or nonce in the payload.
+The derived registration must be absent and the consensus key must be unreserved
+within the containing genesis context. Every authorizing account signs the whole
+payload, including its immutable reward recipient, bond beneficiary and initial
+commission. Registration's consensus-key possession digest uses that derived ID
+and the registration-specific domain already defined above.
+
+The beneficiary funds B and the payer funds F from available liquid balances at
+this operation's position. If they alias, require their combined B+F debit from
+that one balance before any effects install. The operator does not incur another
+bond or fee debit merely because it authorizes. The new registration, escrow,
+permanent reservation, fees and all distinct-account nonce changes remain one
+atomic transition. Its finalized height and complete-stream operation position
+are assigned by accepted execution rather than supplied as another payload
+coordinate. This framing neither activates a candidate immediately nor replaces
+the selected delay, backing, delegation or selection rules.
+
+ConsensusKeyRotate and ConsensusKeyRotationCancel resolve the immutable operator
+account from the named registration. Their exact authorizing set is that
+operator and any distinct fee payer, using current owner policies, generations
+and nonces. A consensus-signing key, beneficiary-only role or receiving-only
+reward role supplies no substitute operator authority. Rotation requires the
+payload's old key to equal the registration's currently assigned key and its new
+key to satisfy strict V1 admission and permanent key-absence checks. The new key
+signs the rotation-possession digest for the named registration and this exact
+operation. Cancellation names the exact existing pending request and requires no
+consensus-key signature. Both operations retain the live-lineage, one-pending,
+partial-exit and cancellation rules above.
+
+For these three kinds, the complete operation frame is exactly:
+
+```
+BYTES(Intent) || BYTES(accountAuthorizationWitnessSection)
+              || BYTES(consensusKeyPossessionSection)
+```
+
+The first two sections use their shared exact encodings. For tags 6 and 7 the
+possession section consists of exactly one 64-byte ordinary Ed25519 signature,
+with no count, key index, key bytes or nested framing. The operation kind chooses
+the possession domain and payload key. For tag 8 it is empty, encoded as the
+single byte `00` for its zero length. No additional owner/recovery-policy consent
+or old-key signature is accepted. Missing, extra, malformed, trailing or
+wrong-domain evidence rejects. Policy and key admission and every supplied
+signature use the selected strict V1 rules and applicable resource checks.
+
+The exact Intent alone determines OperationId. Different valid qualifying
+account-signature subsets do not change it; the required possession signature
+still binds that same ID. Other operation families must not reuse tags 0 through
+8. These operation bytes do not by themselves finish the separate primary
+records below, escrow/lifecycle integration, complete deadline ordering, genesis registration framing,
+canonical state access or fee/resource admission. Those prerequisites remain
+explicit before consensus-facing implementation.
+
+### Canonical registration and key records
+
+Registration identity and key binding use four distinct primary-record families.
+Their logical key/value bytes are fixed below; namespace tags and their positions
+in the complete state-root inventory remain unfinished. All identifiers and keys
+occupy 32 bytes, all integer fields use NAT, and all encoded consensus keys pass
+the strict V1 key-admission rules. No record length, height or claimed ordinal
+supplies its own resource allowance.
+
+**Immutable descriptor.** Its logical key is RegistrationId[32]. Its value is:
+
+```
+operatorAccountId[32] || NAT(registrationNonce) || initialConsensusKey[32]
+|| bondBeneficiaryAccountId[32] || rewardAccountId[32]
+|| NAT(initialCommissionBasisPoints)
+|| NAT(registrationHeight) || NAT(registrationPosition)
+```
+
+The registration nonce is the operator nonce used to derive this RegistrationId,
+not that account's current nonce. Recompute the ID from it and the retained
+operator and require equality with the logical key. All named accounts must
+resolve to their canonical account records. The initial commission is from zero
+through 2000. Every descriptor field remains immutable, including after key or
+account-policy changes, exit and tombstoning.
+
+For an ordinary registration, height and position are its actual positive
+finalized height and zero-based position in the complete committed operation
+stream. The pair must be unique among registrations. Genesis registrations have
+height zero and the separately selected ascending-RegistrationId ordinal. Their
+descriptors and source nonces must come from the authorized genesis construction;
+zero height is not an ordinary-operation exception or invented authorization.
+These records do not manufacture a genesis OperationId or production participant.
+Bootstrap provenance remains in its separately authorized genesis/state family.
+
+**Key control.** Its logical key is RegistrationId[32]. Its value is:
+
+```
+NAT(currentAssignmentOrdinal) || pendingConsensusKeyRotationOption
+```
+
+The pending option is the single byte `00` for none, or:
+
+```
+01 || admittedOperationId[32] || oldConsensusKey[32] || newConsensusKey[32]
+   || NAT(finalizedSourceHeight)
+```
+
+Other option bytes are invalid. A control record names an existing immutable
+descriptor. Read its current key from the assignment-history entry at the named
+ordinal; do not encode a second independently editable current-key field.
+Initial registration creates ordinal zero and no pending replacement. A pending
+request's old key must equal that current key, its new key must differ and must
+not appear in that registration's assignment history. Both must have permanent
+reservations for this same registration. The source height is positive, no
+earlier than registration or current assignment, and no later than the containing
+state height. Derive its activation epoch as
+`floor((finalizedSourceHeight - 1) / 8192) + 2`; while pending, that epoch must
+be later than the containing state's epoch. Do not encode an independent
+activation coordinate or recheck the consumed account nonce at activation.
+Canonical exit/penalty eligibility remains a required separate input: absence of
+those facts cannot be interpreted as a live registration. Terminal exclusion
+clears pending activation under the selected ordering without deleting control
+or freeing either key reservation.
+
+**Permanent reservation.** Its logical key is consensusKey[32] and its value is
+RegistrationId[32], naming an existing immutable descriptor. Successful initial
+registration or rotation admission creates this record atomically with its other
+effects. It is never reassigned or deleted. Initial admission requires actual
+absence, even if an existing reservation names the same registration. Canceled
+replacement keys remain reserved without acquiring an assignment-history entry.
+Every reservation belongs to the containing genesis context; the final genesis
+identity is not inserted into its value as a new hash dependency.
+
+**Assignment history.** Its logical key is
+`RegistrationId[32] || NAT(assignmentOrdinal)` and its value is:
+
+```
+consensusKey[32] || NAT(assignmentHeight)
+```
+
+Each registration has exactly the contiguous ordinals zero through the ordinal
+named by its control record. Ordinal zero matches the descriptor's initial key
+and registration height, including zero for genesis. Subsequent entries use
+strictly increasing heights and distinct keys; each is appended at the first
+height of the accepted rotation's E+2 epoch, together with advancing control and
+clearing that pending request. A later assignment therefore occurs at a positive
+epoch-boundary height. All historical keys remain permanently reserved for that
+registration. No extra history entry beyond the current ordinal is allowed, and
+no accepted pending or canceled key is treated as already assigned.
+
+Assignment means key-to-lineage binding, not selected membership. In particular,
+an initial assignment recorded at registration's operation height does not
+rewrite that height's frozen authorization snapshot. Historical snapshots,
+eligibility, weights and lifecycle facts still determine whether the assigned
+key had consensus authority at a given height. An assignment entry has no end
+field: its binding is superseded by the next entry, while exit or tombstoning can
+exclude a lineage without deleting its last binding. This does not extend any
+offense deadline or authorize an excluded key.
+
+The descriptor registration height and every assignment height must be no
+greater than the containing finalized state height, including when no rotation
+is pending. Genesis height zero retains its separate provenance requirements.
+
+The complete local-state validator checks descriptor IDs and unique order
+coordinates, mandatory descriptor/control correspondence, exact contiguous
+history and its current pointer, initial-field agreement, unique historical keys,
+and all history/pending/reservation links. Orphan controls, histories or
+reservations, missing required records, duplicate logical keys, nonminimal
+integers, unknown options, truncation and trailing bytes reject. A self-consistent
+set of records does not prove its genesis provenance or historical operation
+authorization. Actual replay must enforce admission, one-pending lifecycle,
+E+2 timing, cancellation and terminal-exclusion precedence; arbitrary supplied
+history bytes cannot establish those transitions.
+
+These families retain every descriptor, reservation and assignment-history entry,
+including after exit or tombstoning. This is an explicit growing primary-state
+storage obligation, not a pruning guarantee or a constant-size bound. Complete
+loading and replay must validate it under the state-access contract; normal
+validated-state transitions may use the specified affected records and derived
+indexes without claiming that an incomplete scan proved global absence.
+
+Bond custody/exposure, exit requests and effective exclusion, destructive-penalty
+markers, bootstrap provenance, delegation, selection snapshots, proposer priority,
+commission changes and reward accumulators remain in separate authoritative
+families. In particular, exit and later timely penalty facts are not collapsed
+into a mutually exclusive status field here. Their omission supplies no zero
+value, waived liability or lifecycle authority. These four codecs do not complete
+those families, the global namespace inventory, boundary execution, resources or
+canonical installation.
+
+## Delegation targets and integer allocation
+
+A consensus delegation request specifies an absolute maximum number of Knowledge
+Weight units for each target registration, not a relative share of all future
+owner capacity. These requests do not transfer ownership. Requested amounts,
+computed allocation targets and currently effective allocations are distinct.
+Target calculation alone grants no active consensus authority.
+
+Let L be the owner's applicable live Knowledge Weight, let r_i be its requested
+nonnegative amount for target i, and let R be the exact sum of the requests.
+If R is zero, every target allocation is zero. If R is at most L, the targets
+are exactly r_i and L-R remains undelegated. Otherwise, use the selected
+highest-averages allocation:
+
+1. Initialize each target to `a_i = floor(L * r_i / R)`.
+2. While fewer than L units have been assigned, increment the target maximizing
+   `r_i / (a_i + 1)`, recomputing its quotient after each increment.
+3. Compare quotients exactly by cross multiplication; floating-point or rounded
+   division is not permitted. Equal quotients are ordered by ascending
+   `RegistrationId`, compared lexicographically by their canonical identifier
+   bytes. This order is independent of L and of request arrival order.
+
+L=0 yields all zero allocations without evaluating an R/L threshold. The number
+of increments after initialization is less than the number of targets, because
+it equals the sum of the fractional parts discarded by the initial floors.
+Resource bounds must nevertheless account for target count, operand lengths,
+exact products and maximum selection; this mathematical bound is not a selected
+operation limit or a measured complete-operation cost.
+
+For fixed requests and fixed tie order in the oversubscribed case `0 < L < R`,
+this procedure is equivalent to selecting the first L quotients from the
+sequences `r_i/1, r_i/2, ...`. The seeded
+quotients are exactly those at least R/L, and their count is at most L. Completing
+that prefix by successive maxima therefore produces the same global prefix.
+Consequently increasing only L cannot reduce any target allocation. At L=R,
+the targets equal the requests, so a target never exceeds its absolute request
+in the oversubscribed case; for L>R, allocations remain at the requests and
+surplus capacity is undelegated. This guarantee does not cover changed requests,
+changed eligibility, bond caps, or staged effective allocations.
+
+Highest averages deliberately permits violations of rounded proportional quotas.
+For requests `(1,1,5)` and L=4, it produces `(0,0,4)`, even though the largest
+request's exact proportional share is 20/7 and its ceiling is three. The choice
+refines the remainder contract under `ECON-093` and `ECON-126`; it must not be
+described as quota-preserving largest-remainder allocation.
+
+An existing absolute request provides standing owner authorization for newly
+matured capacity up to its requested maximum. No fresh signed request is required
+solely because that capacity matures. A newly available amount receives fresh
+queue priority at its canonical availability event; it does not inherit the
+original request age. Unchanged pending portions retain their existing priority.
+The original request eligibility and weight maturity must both be satisfied.
+Once both conditions hold, the newly matured amount may participate in churn
+without another E+2 wait. The logical event identity and total queue ordering
+above apply. Automatic queuing grants no immediate active
+weight and remains subject to staged churn.
+
+For maturation-derived growth, the chronological queue comparison uses the
+canonical finalized-state availability coordinate in place of an ordinary
+request's finalized-operation coordinate. An automatic event is not a signed
+ordinary operation and must not manufacture an operation position or reuse an
+ordinary operation identity. The common ordering still starts with eligibility
+and age: a separate event-kind-first pass must not put newly available growth
+ahead of older eligible requests.
+
+Simultaneous maturation effects for an owner are aggregated before computing its
+new allocation targets, so origin-batch enumeration cannot choose which target
+receives a rounding unit or earlier priority. Derive at most one new increment
+per owner and registration at that coordinate. Their total ordering must be
+independent of input arrival or origin-batch enumeration, using the logical
+owner/registration and source-view ordering above. Eligibility subportions do
+not create duplicate logical increments. Previously queued unchanged portions remain distinct
+with their retained priority; aggregation must not renew or backdate them.
+
+The exact event encoding must retain the selected phase coordinates, mandatory
+effects and dated authorization facts. These ordering constraints do not grant earlier
+activation than the original request eligibility and capacity maturity.
+
+### Permanent delegation-target removal
+
+Exclude a registration from new delegation-target calculations as soon as its
+irreversible exit request is finalized, or its permanent penalty tombstone is
+canonically applied. Its requested maximum contributes zero to the allocation
+sum R from that event onward. Recompute targets over the owner's remaining
+permitted requests; do not create a request for an unrequested replacement.
+Historical request, attribution and liability facts retain their verification
+requirements.
+
+For live capacity 100 and requests `(100,100)`, excluding the first registration
+raises the second target from 50 to 100. Automatically queue newly required
+voluntary reconciliation with fresh removal-event priority and first eligibility
+in event epoch E+2, also requiring the originating owner request's eligibility.
+Existing surviving pending portions retain their eligibility and priority under
+the general normalization rule.
+
+Excluding an exiting target from future calculation does not prematurely remove
+its still-effective allocation or bypass its delayed exit and churn. Replacement
+activation waits for actually available owner capacity and the ordinary gross
+churn budget; the same units cannot support the departing and receiving targets
+simultaneously. A permanent penalty keeps its mandatory effect on the next
+applicable snapshot without waiting for this voluntary replacement.
+
+Temporary bond limitation and being outside the top-256 active set are not
+permanent target removal and do not invoke this filter. Their separate backing,
+eligibility, ranking and activation constraints remain binding. Exact event
+records and composition with partial exits and other mandatory reductions remain
+part of the unfinished integration contract.
+
+### Mandatory owner-capacity loss
+
+A mandatory loss of live owner capacity from decay or collection cannot itself
+activate delegated weight. Let e_i be the owner's currently effective ordinary
+allocation to registration i before that loss and L' its surviving capacity.
+The loss-only result must satisfy `0 <= e'_i <= e_i` for every registration and
+`sum(e'_i) <= L'`. A registration with e_i=0 receives no new effective allocation
+from this phase. Other independently eligible changes retain their own staged
+execution and cannot be disguised as a consequence of the loss.
+
+New or waiting requested maxima are not inputs that authorize this reduction.
+For example, effective allocations `(5,5)` with capacity falling from ten to six
+cannot become `(0,6)` through the loss-only phase, even if a pending amendment
+requests `(100,1000)`. The second allocation would increase before its separate
+activation requirements were met.
+
+Undelegated capacity absorbs the loss first. Let E be `sum(e_i)`. If L'>=E,
+retain every e_i unchanged and leave L'-E undelegated. Otherwise apply the exact
+floor-seeded highest-averages procedure above with house size L', fixed inputs
+e_i and total E, breaking ties by ascending canonical RegistrationId bytes.
+Requested maxima and pending increases do not enter this calculation. E=0
+retains zero allocations without division; L'=0 produces all zero allocations.
+
+At house size E the procedure returns exactly e_i. Its fixed-input house
+monotonicity therefore ensures each result at a smaller house size is at most
+e_i. The resulting allocated total is `min(E, L')`; this phase creates no new
+delegation or new activation priority. With effective allocations `(40,40)` and
+20 undelegated units, a loss of 20 leaves `(40,40)` unchanged. A further capacity
+loss to 60 produces `(30,30)` from those current allocations.
+
+These mandatory reductions apply before the next applicable authorization
+snapshot without voluntary churn delay. Proposal-time collection preserves H's
+frozen snapshot and affects H+1; parent-derived boundary decay or collection of
+previously assessed debt enters that boundary snapshot under the selected
+atomic preparation rules. Later increases still require their ordinary
+authorization, eligibility and staging.
+
+Before capturing the owner-loss vector, zero effective allocations that are
+already required to be zero for that next snapshot by a mandatory invalidation,
+such as a permanent penalty tombstone. Their removal frees allocation capacity;
+it creates no Knowledge Weight and does not change historical assessment or
+the committed order of actual collections. A finalized exit request alone does
+not justify this zeroing while its effective exit remains delayed. Partial
+exits, bond-cap projection and top-256 ranking retain their separate rules.
+
+For allocations `(40,60)` with the first registration mandatorily invalid and
+owner capacity falling from 100 to 90, first remove the invalid allocation.
+The surviving sixty units fit within ninety, so the second registration retains
+60. Do not first project the old `(40,60)` vector to `(36,54)` and then remove
+the first component. Keeping the original sixty is retention, not a new
+activation, and still leaves H's already frozen snapshot unchanged.
+
+Compute this projection once per mandatory owner-loss phase. Capture its starting
+effective allocation vector after mandatory zeroing and the owner's
+already-matured batches. Combine all
+losses of those batches that become effective for the same next authorization
+snapshot, and project the captured vector once against their final surviving
+capacity. Do not replace that vector with an intermediate rounded result after
+each loss. Assessments and actual batch collections still execute in their
+committed order with their individual first-stage source caps; only the
+delegation-loss projection is combined.
+
+For starting allocations `(1,3,3)` in ascending registration order and old
+capacity falling from seven through five to four, the selected single projection
+returns `(0,2,2)`. Projecting first to five and then using that rounded vector
+again would instead return `(1,2,1)`, which is not the selected phase result.
+Combining projections removes that dependence on intermediate rounding; it does
+not claim that reordered economic operations have identical collection effects.
+
+Complete this old-capacity loss projection before processing newly maturing
+capacity and separately eligible activations. New maturation retains its full
+first-matured count and debt collection before allocation. It cannot be netted
+against old-capacity loss to preserve an allocation that the loss phase removes;
+any subsequent increase follows the ordinary selected activation rules.
+Exact authenticated phase records and bond-cap integration remain unfinished.
+
+After the loss projection, reconcile existing pending delegation portions
+against the post-loss effective allocations and applicable targets, before new
+maturation can supply fresh capacity. Remove any excess pending increase or
+reduction amount newest-first, in reverse canonical queue order. For each
+visited portion remove the lesser of its amount and the excess still to remove.
+An untouched or partially surviving portion retains its original eligibility
+and priority. This reconciliation changes no effective allocation and spends
+no voluntary churn; the mandatory loss itself retains its separate treatment.
+
+For capacity 100, effective allocation 50 and pending increase 50 toward target
+100, a loss leaving capacity 60 retains only ten pending units. For effective
+allocation 100, target 60 and pending reduction 40, a mandatory loss leaving
+effective allocation 80 retains only twenty pending reduction units. Applying
+the old forty-unit reduction after that loss would overshoot the target.
+
+Canceled excess portions cannot recover their old priority when capacity later
+returns. Newly maturing amounts follow the existing fresh-availability-priority
+rule. Reconciliation does not grant a waiting amendment earlier eligibility,
+create an increase to fill a newly exposed gap, or revive removed effective
+weight. Exact derivation of applicable targets with overlapping amendments and
+other boundary events remains part of the integration contract.
+
+An unchanged standing request can expose a new target deficit solely through
+mandatory-loss rounding. With requests `(1,2)`, capacity two has effective
+allocations `(1,1)` and no pending change. Loss to one projects those effective
+allocations to `(1,0)`, but recomputing the request targets yields `(0,1)`.
+Reaching that target would require a voluntary transfer costing two churn units.
+Automatically queue the newly required voluntary reconciliation under the
+standing owner request, with fresh priority at the canonical loss event. For
+an event in epoch E, this new change is excluded in E and E+1 and first eligible
+in E+2. The originating request's own eligibility must also hold. This fresh
+delay applies to the loss-derived reconciliation, not to the mandatory loss
+projection or cancellation of excess pending portions.
+
+The loss-derived event is the mandatory owner-loss projection for the next
+authorization snapshot at height H, anchored to finalized parent H-1. Its event
+epoch is the epoch containing H, even when the underlying collection executed
+at the preceding epoch's final height. Thus its fresh eligibility is
+`epoch(H) + 2`, not the preceding evidence operation's epoch plus two. Actual
+collection order and H-1's frozen authorization remain unchanged. Permanent
+target-removal events retain their separate finalized exit or tombstone event
+date; this projection-date rule does not move those events.
+
+Only newly required amounts receive this new event's eligibility and priority;
+existing surviving pending portions retain theirs and must not be duplicated
+or renewed. The voluntary source reduction and destination increase obey the
+ordinary capacity and gross-churn rules, including the two-unit cost for a
+one-unit transfer. Queuing grants no immediate active weight and cannot use a
+pending amendment to authorize earlier activation. The maturation-only
+no-second-wait exception does not apply to this loss-derived event. Exact
+authenticated event records and bounded execution of the selected target and
+pending-change composition remain to be specified.
+
+### Maturation during a pending plan amendment
+
+For new availability, retain one currently eligible full-plan backbone and at
+most the latest pending full plan. A superseded pending plan retains only the
+provenance needed by its already-existing surviving queued portions; reaching
+its former eligibility date does not make it a new-growth backbone. When the
+latest pending plan itself becomes eligible, it replaces the backbone for new
+growth. Existing surviving portions retain their authorization evidence,
+eligibility and priority through this replacement.
+
+Before an owner's first plan becomes eligible, its backbone is the empty plan:
+every target and maturation marginal is zero. A first pending plan cannot use
+nonexistent earlier authorization.
+
+Explicit request revocations and cancellation of actual queued amounts retain
+their effects. A later restoration does not recover old eligibility or priority.
+Keep the backbone's original full request vector for counterfactual allocation:
+revocation restricts permissible output and must not renormalize that original
+vector to give another target earlier authority.
+
+Let h_i(L) be the highest-averages target from that original backbone's applicable
+dated authorization view at live capacity L. While it remains the backbone,
+retain a ceiling m_i initially equal
+to its request for i and lowered by each later explicit request reduction for i.
+Restoring a request in a pending plan does not raise m_i. Promoting a new
+backbone resets its ceilings to that plan's requests; it does not renew the
+priority of existing surviving portions.
+
+For genuinely new maturation increasing available capacity from L0 to L1,
+the older-plan support at i is exactly
+`b_i = min(h_i(L1), m_i) - min(h_i(L0), m_i)`.
+Compute both sides with the same original backbone, ceilings and dated
+denominator view for this maturation event. Mandatory old-capacity loss and
+target-removal effects occur separately, before this comparison; do not fold
+their effects into L1-L0 or disguise them as maturation. These b_i are nonnegative by fixed-
+input house monotonicity, and their sum is at most L1-L0.
+
+Likewise compute the latest plan's nonnegative target increments a_i over the
+same capacity increase using the current permanent-target filter. After preserving and normalizing existing portions,
+let g_i be the remaining uncovered increase toward that latest target. At most
+`n_i = min(a_i, g_i)` is new maturation-derived intent for this target. Attribute
+each part to its earliest sufficient dated authorization view as specified below.
+Every part receives this maturation event's fresh priority. Their aggregate
+cannot exceed L1-L0 because each n_i is bounded by a_i. Older uncovered deficits
+keep their own causes and cannot acquire the maturation exception through this
+calculation.
+
+Permanent removal prohibits new output to the removed target immediately, but
+does not remove that target from an older authorization view's denominator until
+the removal event reaches its own E+2 eligibility. Before then, mask the removed
+output without redistributing it. Otherwise removal of A from `(100,100)` would
+incorrectly authorize all fifty new B units at old eligibility during maturation
+from fifty to one hundred; only twenty-five have pre-removal support.
+
+For a maturation event, inspect authorization views in ascending eligibility
+order: the current eligible view, the latest pending plan's eligibility, and
+each pending permanent-removal eligibility. At a date before the latest plan
+becomes eligible use the backbone; at and after that date use the latest plan.
+Each view omits from its denominator only removals eligible by that date, while
+always prohibiting output to every already-removed target. Backbone views keep
+their explicit-revocation ceilings; latest-plan views use that plan's ceilings.
+At coincident dates apply all due changes before computing the single view.
+
+In each view compute the nonnegative clipped target marginal s_i over the same
+L0-to-L1 interval. If q_i of this event's n_i units already have earlier support,
+assign exactly `max(0, min(n_i, s_i) - q_i)` additional units at this view's
+eligibility, then update q_i. The assigned eligibility is the maximum of the
+maturation event's epoch, the view's authorization date and every other
+applicable event floor; an old backbone does not backdate new availability.
+This adds no second E+2 delay to maturation. Earlier assignments are not duplicated or renewed
+if a later view would round differently. The final view is the latest plan with
+all already-finalized removals applied, so it supports the whole n_i. This
+partition gives every new unit one source and never creates more than the
+latest target's new-capacity increment. Subsequent cancellation or supersession
+retains the ordinary normalization and surviving-provenance rules.
+
+Consume each event's support at most once. Cancellation removes or reduces its
+identified pending portion; recomputing a total target does not recreate the
+canceled event's eligibility or priority. A restoration amendment supplies a
+new amendment event, while genuine later maturation has its own fresh event and
+marginal support. Exact authenticated records and canonical event encodings
+remain unfinished; a sum of independent historical-plan maxima is not a valid
+substitute for this attribution.
+
+Attribute maturation-derived increments to full-plan authorization, not merely
+to an unchanged per-registration request field. Separate the increment already
+justified by an eligible older full plan from the additional increment that
+depends on a not-yet-eligible amendment. The former may use the older plan's
+eligibility; the latter must also await the amendment's eligibility. Both remain
+subject to actual capacity and voluntary churn. Maturation adds no second E+2
+wait, and both newly available portions receive fresh maturation-event priority.
+
+For an eligible old plan `(100,100)` and capacity 50, effective allocations may
+be `(25,25)`. Amending the first request to zero in epoch E creates an additional
+25-unit target for the second registration that remains pending until E+2. If
+50 more units mature in E+1, the old full plan alone would increase the second
+target by 25, whereas the amended plan increases it by 50. Of those newly matured
+increments, 25 may use the older eligible authorization and the additional 25
+await the amendment's E+2 eligibility. The preexisting pending 25 keeps its own
+eligibility and priority; it is not accelerated or counted again.
+
+An older plan cannot revive increases revoked by the latest authorized amendment.
+In the example, no new first-registration increase is permitted through the
+older plan after its request is revoked. Track authorization dependencies for
+surviving portions separately from their fresh availability priority. Exact
+attribution across multiple overlapping plan versions and capacity events must
+be specified without summing the same capacity or authorization increment twice.
+
+A never-eligible intermediate plan does not by itself permanently revoke unused
+older authorization merely because it would hypothetically route future weight
+differently. For eligible old requests `(100,0)` at capacity zero, pending plans
+`(100,100)` and then `(100,0)` cancel no actual pending weight and never reduce
+the first registration's explicit request. If 50 units mature before those
+amendments become eligible, all 50 may use the old eligible full plan for the
+first registration, with fresh maturation priority and normal capacity and churn
+requirements. Do not treat the intermediate hypothetical 25-unit share as an
+already executed revocation of the other 25.
+
+This preserves only unused authorization: cancellation of actual pending amounts
+and explicit request reductions retain their selected effects. Returning to an
+older-looking plan does not restore those canceled portions' old eligibility
+or priority or negate an explicit revocation. The latest authorized plan must
+still permit the proposed increase.
+
+### General pending-change normalization
+
+After every delegation-target recomputation, including maturation and changes
+in plan eligibility, normalize pending portions toward the applicable target.
+For current effective amount e and target t of one owner and registration, the
+required direction and amount are given by t-e. Cancel all pending portions in
+the opposite direction. In the required direction, cancel any excess newest-first
+in reverse canonical queue order and preserve surviving portions' eligibility
+and priority, including partial survivors. If t=e, neither direction remains.
+Only the still-uncovered difference may generate a new queued amount.
+
+For e=50 with a pending reduction of 12 toward t=38, maturation that raises t
+to 56 cancels the obsolete reduction and requires only six new increase units.
+Do not keep a twelve-unit reduction followed by an eighteen-unit increase.
+Retaining the twelve already-effective units creates no activation or churn;
+the six-unit increase retains its separate activation and churn requirements.
+This general normalization refines the selected amendment and mandatory-loss
+cleanup without changing their phase order or granting earlier activation.
+
+New amounts retain their event-specific authorization, minimum delay and fresh
+priority. Where multiple full-plan authorizations demonstrably cover a new
+increase, use the earliest applicable eligibility first, bounded by the amount
+each authorization actually proves, and bind only the uncovered remainder to
+later eligibility. Include every applicable event floor when comparing
+eligibility: an old plan cannot remove a loss-derived event's fresh E+2 delay.
+An unchanged old pending portion is not a new amount and is not reprioritized.
+
+For a new net increase of six units fully supported by an older eligible plan,
+do not bind it to a later plan merely because that plan also supports it.
+Earlier authorization does not backdate the new availability event's priority
+or remove capacity and churn requirements. Attribution must not count the same
+capacity or authorization support twice. Exact joint attribution records,
+equal-eligibility source canonicalization and overlapping-plan target derivation
+remain part of the unfinished integration contract.
+
+### Delegation-plan amendments
+
+An authenticated owner amendment preserves unchanged amounts and their existing
+pending priority. Additional requested amounts receive the amendment's fresh
+priority and ordinary E+2 eligibility. A finalized decrease immediately cancels
+its excess unactivated portions, newest pending portions first. Those canceled
+portions cannot activate during the amendment's delay or be restored through the
+superseded standing request. The surviving unchanged pending portions retain
+their original priority.
+
+Already effective amounts are not removed at amendment finalization. Their
+voluntary reduction is excluded throughout the finalization epoch E and E+1,
+first becomes eligible in E+2, and still requires available churn budget. A
+transfer to another target may activate only when the owned capacity is actually
+available; the old and new targets cannot count the same unit simultaneously.
+Cancellation of an unactivated intent alone changes no effective active weight.
+Mandatory decay and penalties retain their separate, undelayed treatment.
+
+A later authenticated amendment may immediately reduce an earlier unapplied
+reduction of weight that is still effective. The surviving unchanged reduction
+portions retain their existing eligibility and queue priority. This cancellation
+preserves existing effective weight, spends no churn, and does not impose a new
+E+2 delay merely to retain that weight. The additional-amount E+2 rule applies
+to fresh activation, not to this retention of already-effective weight.
+
+For example, effective weight 100 followed by requested targets 60 and then 90,
+with no reduction yet applied, leaves a pending reduction of 10 under its
+existing eligibility and priority. If the first reduction already brought the
+effective weight to 80, changing the target to 90 cancels the remaining old
+reduction and requires a fresh increase of 10 under the later amendment's E+2
+eligibility and churn budget. Previously removed weight is not restored by
+canceling a pending reduction. Previously canceled unactivated portions do not
+recover their old activation authority or priority. Irreversible registration
+exit retains its separate precedence and cannot be canceled by a delegation
+amendment.
+
+When several reduction portions for the same owner and target are pending,
+cancel newest portions first, in reverse of their canonical queue order. For
+remaining cancellation amount C and the current portion amount Q, cancel
+`min(C, Q)` and continue toward older portions only if C remains positive.
+A partially canceled portion keeps its original eligibility and priority for
+its surviving amount. This procedure neither changes already executed effects
+nor renews the age of any survivor.
+
+An amendment is evaluated against the owner's complete requested target vector.
+Every additional activation caused by that amendment receives its fresh priority
+and E+2 eligibility, even if the receiving target's own absolute request field
+is unchanged. For live capacity 100 and requests `(100,100)`, targets are
+`(50,50)`. Amending the first request to zero produces targets `(0,100)`; the
+second target's additional 50 units follow the amendment's delay and cannot
+activate before capacity is actually available. Existing unchanged pending
+portions retain their old priority. This is not maturation-derived growth and
+does not use its no-second-wait exception. Retention of already-effective weight
+through cancellation of a pending reduction retains its separate rule above.
+
+Canonical request encoding, integration with simultaneous capacity and target-
+eligibility changes, and canonical origin-attribution records remain unfinished. Historical offense-snapshot
+obligations and fee-reward checkpoints require their own exact records. Computing
+aggregate targets does not implement `ECON-105`, `ECON-163`, `ECON-164` or `ECON-155`,
+and staging must never count one owned unit in two simultaneous
+effective allocations.
+
+## Ordinary Knowledge Weight origin batches
+
+One canonical origin batch is identified logically by the stable owner account
+and the epoch E in which its qualifying citation-reward value was earned.
+Accumulate the owner's actual qualifying rewards from that earning epoch before
+maturation, with each contribution counted once. At E+2 the batch matures with
+original amount S equal to that accumulated value at the selected one-atom-to-
+one-unit ratio. Its original amount and activation epoch are then immutable;
+the original amount contributes once to the first-matured accumulator.
+
+Later earning epochs create distinct batches. Do not add later rewards to an
+already activated batch, combine different earning epochs, or merge distinct
+post-collection bases to recover rounding units or refresh age. Collection
+changes only the separate remaining basis under the rule below. Account-key
+rotation does not change the batch owner identity.
+
+Batch granularity is part of the arithmetic contract, not just storage layout.
+Two separately rounded one-unit batches would both reach zero at age one, while
+the selected combined two-unit batch has `floor(2 * 729 / 730) = 1` live unit.
+Per-reward-event batching is therefore not an equivalent implementation.
+
+There are at most 730 unexpired matured batch identities per owner at a time,
+with ages zero through 729. This is not a bound on owners, pending contributions,
+retained expired batches, historical snapshots, outstanding debt or canonical
+history. Exact batch-identity bytes, pending accumulation records and historical
+contribution/delegation attribution remain part of the canonical state contract.
+
+## Historical origin attribution
+
+For one owner in a consistent effective snapshot, let b_i be each positive live
+ordinary origin-batch amount and let L be their sum. Use one column for each
+registration with a positive actually effective allocation from that owner,
+plus an undelegated column containing `L - sum(effective allocations)`. The
+column totals a_j must be nonnegative and sum to L. Requested or queued capacity
+does not enter these columns. This calculation consumes the effective snapshot;
+it does not decide activation, bond capacity, active membership or provenance.
+
+The attribution matrix X has nonnegative integer entries, exact row sums b_i,
+and exact column sums a_j. For L>0, each cell is between the floor and ceiling
+of `b_i * a_j / L`. Independent rounding of columns is forbidden: two one-unit
+rows and two one-unit columns could otherwise both allocate their remainder to
+the first row, counting that batch's single unit twice. L=0 requires zero
+effective allocations and no positive batch rows, producing no attribution
+entries without division.
+
+Let `q_ij = floor(b_i * a_j / L)` and `m_ij = (b_i * a_j) mod L`. The remaining
+row and column demands are their required sums minus the q sums. Write
+`X_ij = q_ij + z_ij`, where z_ij is zero or one and must be zero when m_ij is
+zero. The residual additions satisfy every remaining row and column demand.
+A feasible integer residual exists: the fractional remainders themselves are a
+feasible fractional flow between rows and columns, and the corresponding
+integer-capacity bipartite network admits an integral solution.
+
+Among feasible residual matrices, maximize the exact integer sum
+`sum(z_ij * m_ij)`. This minimizes the total absolute rounding error while
+respecting all row, column and cell bounds. It also minimizes the corresponding
+sum of squared rounding errors. Among equal optima, prefer an extra unit at the
+earliest differing cell in row-major order: rows by ascending canonical origin-
+batch identity, registration columns by ascending canonical RegistrationId,
+and the undelegated column last. Equivalently, choose the lexicographically
+greatest residual bit vector in that order. This optimum and tie rule define
+the result; an implementation's flow traversal order does not.
+
+For fixed margins the number K of residual additions is fixed, and scaled total
+absolute error is `sum(m_ij) + K*L - 2*sum(z_ij*m_ij)`. For rows `(1,2)` and
+columns `(1,2)`, the selected matrix is `[[0,1],[1,1]]`, with scaled error four;
+the first-feasible diagonal matrix `[[1,0],[0,2]]` has scaled error eight.
+
+Freeze the attribution with the corresponding effective snapshot. An offense's
+implicated batch contribution is its entry in the offending registration's
+column, accumulated across owners without changing their immutable batch
+ownership. Later decay, amendments or collection must not reconstruct the
+historical attribution from current state. Exact snapshot records, proofs and
+retention remain to be specified. The 730-batch per-owner limit does not bound
+column count or prove complete execution cost; matrix construction, exact
+optimization and optimum tie selection require measured resource bounds.
+
+## Delayed Knowledge Weight liability
+
+The offense-snapshot Knowledge Weight penalty is assessed once by the timely
+canonical destructive equivocation transition. The assessed liability and the
+amount of live weight immediately available for destruction are distinct. The
+aggregate calculation and deterministic origin-batch allocation use the selected
+rounding contract below and the frozen attribution matrix above. Authenticated
+snapshot records, proof binding and canonical integration remain unfinished
+under `ECON-105`.
+
+For example, an origin batch with original weight 7,300 has live weight 10 at
+age 729 and zero at age 730. If its ten units were delegated at the offense
+snapshot, the liability is one unit, but timely evidence at age 730 cannot
+collect that unit from the expired batch. Retaining the historical snapshot
+does not create live weight to destroy.
+
+Any uncollected amount remains a Knowledge Weight liability of the same stable
+owner account. It is collected from that account's other available ordinary
+Knowledge Weight or future matured ordinary Knowledge Weight. Without sufficient
+weight the balance remains outstanding; collection is not guaranteed. This does
+not charge another owner's weight, convert the shortfall into a NAO debt, or
+replace the separate bond forfeiture.
+
+The ordinary 730-epoch terminal decay remains binding: collection does not
+freeze, revive or refresh an expired batch. A liability assessed by the offense
+deadline persists until discharged even after that deadline; this does not
+admit late evidence or reopen an offense for another assessment. Each later
+collection reduces the existing outstanding amount rather than assessing a
+new penalty or creating another reporter reward.
+
+Delayed liability is historical exposure, not an additional exclusive weight
+reserve. Before assessment, ordinary decay and otherwise permitted redelegation
+continue without a new evidence-window weight lock. Neither action erases the
+frozen offense attribution or changes its immutable owner. Timely assessment
+uses that history even if the implicated batch no longer has live weight; the
+selected collection and persistent-shortfall rules then apply.
+
+Distinct first destructive transitions may assess separate liabilities against
+the same owner, including when its weight supported different validator lineages
+at different snapshots. A current unit can be destroyed only once: collection
+reduces the current batch basis and discharges only the amount actually
+collected. Paying one assessment does not erase a different assessment. This
+does not permit reassessment of an already penalized lineage or late evidence.
+
+Exact available-source accounting and debt records remain to be specified under
+`ECON-163` and `ECON-164`; the selected collection order and maturation phase
+appear below. Authenticated historical attribution under `ECON-105` must
+bind the liability to the correct immutable beneficiary account and prevent any
+collected unit from being charged twice.
+
+### Outstanding owner accounting
+
+For a stable owner, let U be its previously outstanding assessed amount, N its
+newly assessed amount and K the units actually collected in the transition.
+The resulting outstanding amount is exactly `U' = U + N - K`, with
+`0 <= K <= U + N`. A later collection uses N=0. Distinct immutable assessment
+and lineage facts remain independently verifiable; the owner's fungible
+outstanding balance does not require a payment priority between assessments.
+This identity neither mandates permanent cumulative counters nor chooses record
+encoding or historical-retention machinery.
+It does not reorder committed evidence operations or pool the separate
+first-stage batch shares of distinct assessments.
+
+After a complete applicable collection phase, positive outstanding liability
+implies zero current live ordinary owner weight: the selected fallback pool
+includes all such available weight. This is a property of the resulting economic
+state, not a rewrite of height H's already frozen authorization snapshot or a
+claim about intermediate preparation. Immature rewards may still exist and will
+be subject to the selected collection-before-allocation rule when they mature.
+
+### Integer penalty assessment and allocation
+
+Let D be the total effective delegated ordinary Knowledge Weight at the offense
+snapshot. Assess the aggregate penalty `C = ceil(D / 10)` once for that validator
+lineage's first destructive transition. D=0 produces C=0. For D>0, C is positive,
+never exceeds D, and exceeds exact ten percent by less than one weight unit.
+Do not round ten percent separately for each owner or origin batch.
+
+For each distinct implicated origin batch i, let b_i be its positive effective
+delegated amount in that snapshot, so `sum(b_i) = D`. When D=0 there are no
+positive implicated amounts and every allocation is zero, without division.
+Otherwise compute exact integers `q_i = floor(C * b_i / D)` and
+`m_i = (C * b_i) mod D`. Give one additional unit to each of the
+`C - sum(q_i)` batches with greatest m_i, breaking equal remainders by ascending
+canonical origin-batch identity. No batch receives more than one remainder unit.
+
+The shares sum exactly to C. Each share lies between the floor and ceiling of
+its exact proportional value and is no greater than b_i. This is quota-preserving
+largest-remainder allocation, distinct from the selected highest-averages method
+for delegation targets. Each immutable owner is assessed the sum of its batch
+shares; neither later decay nor collection-source selection recomputes those
+historical shares or transfers liability to another owner.
+
+### Proportional decay after collection
+
+Each origin batch retains immutable original amount S and its original activation
+epoch. A separate exact nonnegative rational remaining basis T starts at S. At
+age A below 730, let k = 730 - A. The live amount is `floor(T * k / 730)`; at
+age at least 730 it is zero. Without any collection T=S, reproducing `ECON-111`.
+
+To collect c integer current-weight units, require
+`0 <= c <= floor(T * k / 730)` and k>0, then set
+`T' = T - c * 730 / k`. All calculations are exact. The new current live amount
+is exactly the previous amount minus c, because
+`floor(T' * k / 730) = floor(T * k / 730 - c)`.
+The collection bound ensures T' is nonnegative. No collection divides by zero
+at expiry; an expired batch supplies zero and any unpaid account liability
+remains outstanding.
+
+Future live amounts use T' with the same original activation epoch. For S=100,
+collection of 10 at age 365 reduces live weight from 50 to 40 and T from 100 to
+80. At age 547 the live amount is `floor(80 * 183 / 730) = 20`. No constant
+undecaying subtraction is applied against the original curve, and collection
+does not renew the remaining lifetime.
+
+A collection permanently discharges c units of assessed account liability;
+later decay does not recreate that debt. Collection at age zero uses T'=T-c.
+The cumulative first-matured accumulator still counts the original newly matured
+amount, including when existing liability is collected at maturation; collection
+is a separate destruction effect, not a second maturation or a revision of the
+historical original amount.
+
+The rational basis has a finite denominator bound: every update subtracts a
+rational whose denominator divides some k in 1..730. Starting from integer S,
+its reduced denominator therefore divides `lcm(1,...,730)`, a 1,048-bit constant.
+An exact scaled-integer representation is consequently possible without
+multiplying a new independent denominator at each collection. This mathematical
+bound does not select a canonical record encoding, resource maximum or measured
+execution cost; numerator growth still follows the amount domain.
+
+### Collection order and execution phase
+
+For each newly assessed historical batch share c_i, first collect
+`min(c_i, current live amount of batch i)` from that batch. Each share has its
+own first-stage source cap; do not pool the owner's assessment across implicated
+batches before honoring those caps. Batches with zero assessed shares require
+no first-stage collection, and expired batches supply zero.
+
+After this first stage, collect the remaining owner shortfall from all remaining
+available live ordinary batches of that same owner, including unused weight in
+already visited implicated batches. Currently delegated owner weight remains
+available: delegation does not transfer ownership or create a reserve. Immature,
+expired and already destroyed weight supplies no current units. Consume this
+fallback pool by earliest original expiry, with equal expiry resolved by
+ascending canonical origin-batch identity. Each collection is bounded by both
+the outstanding amount and that batch's current live amount and uses the
+proportional-basis update above. A changed delegation does not erase liability.
+
+For example, two implicated batches each assessed one unit and each holding ten
+live units first supply one each. If one batch is expired, its missing unit can
+then be collected from the other batch's remaining weight through the fallback
+pool. The historical assessment shares and original ownership remain unchanged.
+Authenticated historical attribution records and atomic available-source
+integration remain part of `ECON-105` and `ECON-163`; historical exposure adds
+no exclusive reserve under `ECON-146`.
+
+Available fallback owner weight is collected during the canonical assessment
+transition. At later maturation, count the full original first-matured amount,
+collect outstanding account liability, and only then expose surviving owner
+capacity to delegation allocation and staging. No additional assessment or
+reporter reward is created by that collection.
+
+Assessment and collection inside height H's proposal do not change H's frozen
+authorization snapshot; their weight consequences apply to the next snapshot.
+Collection of previously assessed debt during parent-derived maturity preparation
+precedes deriving that boundary height's surviving capacity and authorization
+snapshot. These prepared effects install only atomically with the complete
+finalized transition, preserving the existing parent-provenance boundary.
+
+## Canonical supply and fee-custody records
+
+The core accounting namespace has exactly three mandatory records. Their logical
+keys are the single raw bytes shown below, not textual digits or NAT values.
+Namespace-tag assignment and the other custody families remain part of the
+unfinished global inventory.
+
+| Logical key, hexadecimal | Canonical value |
+| --- | --- |
+| `00` | `NAT(cumulativeIssuedAtoms) || NAT(cumulativeBurnedAtoms)` |
+| `01` | `NAT(feeRewardReserveAtoms)` |
+| `02` | `00` for the genesis pool sentinel, or `01 || NAT(poolHeight) || NAT(poolAtoms)` |
+
+All three records remain present even when their numerical values are zero.
+Other keys, other pool tags, nonminimal integers and trailing bytes are invalid
+in this namespace. The genesis sentinel has no amount or height suffix. A
+non-genesis pool height is positive and must equal the containing finalized
+state's height. The sentinel is valid only at height zero. An authenticated
+absence of a required key cannot satisfy this complete state schema; a missing
+physical node or unusable local index remains a local state-access failure and
+is not evidence of a legitimate zero balance.
+
+Let I and B be the cumulative issued and burned atoms. Both use exact growing
+naturals and never decrease; require `B <= I`. Accounted live supply is derived
+as `I - B`. No third independently writable live-supply counter exists. Genesis
+sets I to the selected gross issuance `10^18` atoms, and B to exactly the explicit
+burns actually performed by the approved genesis transition. This includes the
+selected genesis validator-pool fraction under `GOV-123`; it does not invent an
+unfinished ceremony input or burn total. The fee-reward reserve starts at zero
+and the pool record holds the genesis sentinel, not a distributable genesis pool.
+
+Changing I requires the separately selected issuance authority. Ordinary account
+management, fees, fee settlement and claims change I by zero. The only permitted
+post-genesis issuance remains the independently specified tail policy; this
+record schema neither selects its parameters nor grants a caller authority to
+balance a transaction by adding issuance. Likewise, B increases only by an
+explicitly required burn, not by an unexplained custody discrepancy.
+
+After finalized non-genesis height H, the pool record is exactly `(H, P_H)`.
+During H+1's first proposal-dependent settlement, authenticate the required
+height-H certificate and use that exact historical pool and snapshot. Let
+`R_total` be the sum of the existing integer signer-share formula. Consume P_H
+once: add R_total to the integer fee-reward reserve and add `P_H - R_total` to
+B. The resulting reward obligations belong to that reserve under the exact
+accumulator rules below. Replace the consumed pool with a current H+1 pool
+initialized to zero before adding that height's accepted fee contributions.
+Never relabel P_H as new fees or count it in both pools. A zero P_H still requires
+certificate authentication, participation accounting and the single cursor
+advance; it does not skip settlement.
+
+At height one, the separately specified genesis certificate sentinel consumes
+no distributable prior pool and opens only the height-one pool. No later height
+may use that exception. Wrong-height pool input, duplicate consumption or an
+unexpected sentinel rejects the transition; a local inability to read required
+state retains its separate unavailable classification. Every rejected proposal
+leaves prior counters, pool cursor, reserve and reward obligations unchanged.
+
+For each non-artifact operation fee F, debit exactly F from its authorized
+payer's available liquid balance, add `floor(F/5)` to the current-height pool,
+and add `F - floor(F/5)` to B. All six account-management operations use these
+fee effects and issue zero atoms. AccountCreate's funding D separately moves
+D from sponsor to the new account and leaves the other custody totals unchanged.
+A successful whole-atom fee-reward claim moves its claimed amount from reserve
+to the owner's liquid balance; its own fee still follows the current-height
+fee partition and pre-proceeds funding rule. Artifact fee partitioning retains
+its separately specified citation pool and burn rules.
+
+The reserve is integer custody. Realized rational credits and unrealized cursor
+entitlements are claims against it, not additional live atoms. Their total exact
+outstanding value must equal the reserve. Current pool custody, reserve custody,
+liquid balances, bond categories, attribution deposits, governance reserves and
+all other live-atom categories are mutually exclusive accounting locations.
+Their complete sum equals `I - B`; this core schema does not finish the inventory
+or ownership rules of the other families.
+
+A transition may establish conservation incrementally from a fully validated
+parent invariant. It must account for every changed custody location, including
+non-account records, and prove `sum(custody_deltas) = issued_delta - burned_delta`
+with unchanged custody preserved. Checking only payer/recipient balances or
+matching an arbitrary parent root is insufficient. No full-state rescan per
+operation is mandated by this arithmetic identity, but complete state validation,
+deterministic indexes and exact change tracking remain required. Byte-valid
+counter records alone do not prove conservation or canonical authority.
+
+The exact accounting record bytes support component codec and transition
+calibration. Global namespace tags, complete custody integration, tail semantics,
+canonical installation and operation/resource admission remain unfinished.
+
+## Fee-funded reward accumulation and claims
+
+This section selects the fee-funded accumulator, fractional ownership, historical
+checkpoints and claim semantics for `ECON-139` and `ECON-152`–`ECON-155`.
+It does not select tail-reward reuse or complete authenticated records, codecs,
+resource bounds or measured admission costs. Existing `ECON-084` settlement
+still assigns each included signer its integer share
+`R = floor(P * w / W)` and burns `P - sum(R)` immediately, using that reward
+height's validator pool P and total active agreement weight W. This section
+introduces no additional burn or issuance.
+
+### Exact shares and custody
+
+A declared commission is an integer b in basis points, `0 <= b <= 2000`, with
+exact rate `c = b / 10000`. The existing five-percentage-point epoch increase
+limit is 500 basis points; existing increase/decrease eligibility dates remain
+binding. No floating-point or rounded intermediate arithmetic is permitted.
+Commission scheduling records and the complete admission codec remain unfinished.
+
+For the historical selected registration receiving R, let O be its ordinary
+effective delegated weight and S its effective tagged bootstrap weight. Its
+reward denominator is `w = O + S`, the same weight used for that signer share.
+Let `C = c * R` and `D = R - C`. If R is zero, accrue zero and do not divide;
+a zero-weight selected signer has R zero. For positive R, w must be positive.
+A positive entitlement with zero denominator is inconsistent state, not a rule
+that reallocates rewards. The enclosing agreement rules must establish their
+own valid positive total W before the signer-share formula is evaluated.
+
+Each stable registration retains a nonnegative cumulative accumulator A, initially
+zero, measured in exact NAO atoms per unit of effective weight. On settlement,
+add `delta = D / w` to A. Ordinary owners accrue their effective contribution
+times delta. The historical registration reward-recipient account immediately
+accrues the nonspendable exact credit `C + S * delta`. Thus bootstrap participates
+proportionally in the remainder through its own tagged contribution, without
+creating ordinary Knowledge Weight or an independently delegable owner balance.
+This explicitly refines `ECON-120` for bootstrap and for an operator's nominated
+reward account. Commission belongs to that named account, including when it is
+distinct from the operator. A receiving-only accrual consumes no nonce.
+
+For each owner and registration, retain its reward-cursor weight q and accumulator
+checkpoint a. Synchronizing that source adds `q * (A - a)` to the owner's pooled
+realized credit and sets a to A. A new contribution starts at current A with
+zero prior entitlement. Multiple ordinary origins owned by the same account
+use their aggregate effective contribution to this registration. Accrual neither
+transfers the weight nor gives the reward recipient consensus authority.
+
+Every rational is exact and canonical: nonnegative numerator, positive denominator,
+coprime components, and zero represented as `0/1`. Its components use the growing
+natural domain. Accumulators, realized credits and differences have no fixed
+fractional scale, intermediate floor, saturation or discarded remainder.
+Changing a denominator never transfers an earlier fraction to a new contributor.
+Only a successful claim converts part of a credit into whole spendable atoms.
+An owner's realized fractions pool across registrations, commission and bootstrap
+sources. Unclaimed credits survive zero weight, exit, tombstone and key changes;
+no expiry, confiscation or dust burn is introduced by this section.
+
+The integer fee-reward reserve increases by sum(R) at settlement and decreases
+only by whole atoms paid in successful claims. It holds the atoms backing all
+realized and unrealized rational obligations; those obligations are not additional
+supply or spendable balances. Across registrations and accounts, reserve atoms
+equal total outstanding exact obligations. A source synchronization moves an
+obligation from unrealized to realized form without changing the reserve. The
+historical pool is consumed exactly once into this reserve and its already
+specified burn. Reward fractions alone do not mint or burn fractional atoms.
+
+### Historical checkpoint boundary
+
+H's settlement uses H-1's immutable selected weights, owner contributions,
+bootstrap contribution, commission and reward recipient. A commission first
+applicable at H cannot change H-1's share even though H settles it. A new
+commission applies to the reward earned at its first eligible effective height,
+which is settled in that height's successor. A current certificate variant
+cannot rewrite any already-settled height.
+
+Preparing H's consensus snapshot must preserve the separate reward cursor for
+H-1. First settle H-1 into each applicable registration accumulator. Then close
+every changed ordinary owner's old contribution at that resulting A by moving
+`q * (A - a)` into its credit, and initialize the new H contribution at the
+same A. New contributors receive none of the preceding height's rewards;
+outgoing contributors retain their final reward. Unchanged ordinary contributions
+need no per-block write. A registration entering or leaving selected membership
+changes its reward-cursor weights even if its candidate delegation is unchanged;
+an unselected candidate earns zero for that height. A zero-weight contribution
+has no accrual. Bootstrap accrual is computed directly at each settlement from
+the historical snapshot and needs no synthetic ordinary-owner checkpoint.
+
+These closing and opening effects follow settlement and precede boundary releases
+and ordinary operations, within the same atomic proposal transition. They never
+feed settlement-dependent information into H's authorization snapshot. A penalty
+inside H affects a later snapshot and does not retroactively close H's reward
+cursor. Genesis establishes empty reward cursors; the first height's sentinel
+settles no prior entitlement before opening that height's contributions. A
+rejected proposal installs neither accumulator changes nor cursor advancement.
+Retain old reward inputs until their settlement and closing checkpoints complete;
+removing a registration or key cannot erase outstanding account entitlements.
+
+### Authorized lazy claims
+
+A claim binds its owner account, fee-payer account, an ascending distinct list of
+stable RegistrationIds, a positive whole-atom amount Q and its fee in the typed
+payload. The owner and fee payer authorize the complete operation under the
+shared V1 domains, current policies and exact nonces; aliased roles consume one
+nonce. Claims use no consensus-key spending authority. Only the owner receives
+Q; this operation provides no alternate recipient or transfer of claim rights.
+
+Synchronize the owner's sources named by that list, then require
+`Q <= floor(owner pooled realized credit)`. A named source must exist for that
+owner; duplicates, noncanonical order or missing sources fail the complete
+operation. An empty list is valid when already-realized credit covers Q. An
+unlisted source is untouched. Deduct exactly Q from realized credit and reserve,
+credit Q to the owner's liquid balance, and retain every residual fraction.
+Partial claims are permitted and claiming frequency cannot alter total earned
+value. Closed sources with no outstanding rights may be removed only after their
+credit has been realized; active sources retain their exact checkpoint.
+
+The fee payer must fund the full authorized positive fee from its liquid balance
+before claim proceeds. A distinct sponsor is permitted. No claim may borrow its
+own proceeds to pay that fee. Apply the existing non-artifact fee partition;
+claim-created pool credit belongs to the current height and creates no immediate
+claim entitlement. Invalid source, amount, policy, nonce or funding checks leave
+credits, checkpoints, reserve, balances, fees and nonces unchanged, including
+when an earlier source was speculatively synchronized.
+
+Exact source-list bounds, authenticated lookup and cursor-update records,
+commission scheduling and adversarial growing-denominator work remain required.
+Rational record fields use the selected canonical RAT framing; that framing
+does not supply their work bounds or complete cursor layouts. Unchanged-owner laziness does not make large sets of changed
+owners free. Measure those boundary writes and rational normalization as well as
+claims before selecting admission allowances. Tail accounting remains separate
+until its own rules explicitly choose any reuse.
+
+## Ordered transactional execution
+
+The proposal commits one ordered operation stream with economic and validator
+type tags. Its two class subsequences retain separate count and byte bounds.
+Ordinary operations retain their committed positions, permitting account
+creation or funding before a later operation that consumes the result.
+
+The included deadline-bearing subsequence must be ordered globally by earliest
+consensus deadline and then ascending operation ID. A violation invalidates the
+block. This is an explicit block-validity requirement beyond the honest-proposer
+wording of `SEC-036`. It constrains included operations; it does not prove that
+every operation available in a remote mempool was included.
+
+Before reading a height H proposal's execution inputs, derive H's authorization
+snapshot from the authenticated finalized parent state and deterministic height
+and epoch rules. Boundary preparation is a pure parent-derived view, not an
+installation of speculative canonical state. Effects whose selected effective
+coordinate is H must be reflected in this view before authorizing H, including
+terminal bootstrap sunset at the first height of epoch 730. Exact internal
+ordering among the remaining boundary effects still requires specification.
+
+The resulting participant snapshot is fixed for H's rounds. A prior-height
+certificate variant selected inside H's proposal cannot choose H's membership,
+weights or quorum denominator. A penalty finalized at H does not change H's
+snapshot; its mandatory consequences affect the next height's snapshot, including
+when H+1 is in the same epoch. Historical certificate verification retains its
+own exact snapshot.
+
+Prior-height settlement is the first proposal-dependent execution phase, using
+the corresponding historical weight, delegation and commission data; the first
+height uses its genesis sentinel. The approved boundary-release phase precedes
+ordinary operations. The committed operation stream follows, and artifact
+publication runs last. Same-block delegation, registration or rewards cannot
+retroactively authorize the block or alter prior-height settlement inputs.
+
+Prepared boundary effects and proposal-dependent effects form one atomic
+transition. Neither the preliminary view nor a rejected proposal installs a
+canonical state update. Settlement-first execution does not permit a proposal's
+selected settlement input to authorize that same proposal. Exact ordering of
+boundary accounting relative to settlement remains to be completed while
+preserving this authority separation.
+
+Repeated unsigned operation IDs are rejected across both classes, including
+different authorization variants of one operation. Reuse of an authorizing
+`(AccountId, nonce)` pair across operations is rejected. Within one operation,
+repeated account roles share one nonce. Different operations may consume
+successive nonces, checked against evolving execution state. Duplicate account
+creation targets and already reserved consensus keys fail their state checks.
+Repeated lineage references alone are not duplicates: later distinct evidence
+must preserve the already-selected no-second-penalty behavior.
+
+Every operation must have sufficient funds at its execution point. It cannot
+borrow from later effects. Every speculative effect belongs to one transactional
+overlay. A rejected proposal installs no fee, nonce, balance, escrow,
+registration, attribution, or artifact change.
+
+A payer-authorized reveal that violates its committed claim has the selected
+valid deposit-forfeiture outcome under `ECON-116`. This is not a rejected
+operation that mutates state. Unauthorized or malformed reveal attempts retain
+the no-write rule of `ECON-134`; a beneficiary-only claim-violating reveal retains
+the no-mutation rule of `ECON-171` and does not acquire the payer's forfeiture
+authority. A reveal requires a commitment from a strict ancestor, although a
+valid reveal may precede its artifact in the same block.
+
+Exact epoch-boundary, expiry, penalty, exposure, account-policy activation integration, and
+tail-settlement rules remain unfinished. The ordering above does not supply
+those missing transitions or complete `CODEC-068` by itself.
+
+## Exact integers and resource admission
+
+Heights, account nonces, and accounting quantities use exact growing integer
+domains, with exact signed integers where required by proposer priorities and
+their arithmetic. Reference `u64`, `u128`, or fixed signed widths do not establish
+protocol limits.
+
+An unsigned natural is encoded as its magnitude's byte count in minimal ULEB128,
+followed by that many minimal big-endian magnitude bytes. Zero has an empty
+magnitude and is encoded as the single byte `00`. A positive magnitude has no
+leading zero byte. The byte count has no fixed protocol integer width; its
+admissible prefix length is derived from the applicable magnitude bound.
+
+In a ULEB128 byte-count prefix, each byte contributes its low seven bits in
+least-significant-group order. The high bit is set exactly when another prefix
+byte follows. Zero is one zero byte; a multiple-byte prefix cannot end in a
+zero low-seven-bit group. Unterminated, oversized, or nonminimal prefixes fail
+before allocating the magnitude.
+
+A signed integer has a sign byte followed by that unsigned magnitude encoding:
+`00` means nonnegative and `01` means negative. Other sign bytes and negative
+zero are invalid. These sign tags are part of this draft's exact wire contract.
+
+| Integer | Canonical bytes, hexadecimal |
+| --- | --- |
+| Unsigned zero | `00` |
+| Unsigned one | `01 01` |
+| Unsigned 127 | `01 7f` |
+| Unsigned 128 | `01 80` |
+| Unsigned 256 | `02 01 00` |
+| Signed zero | `00 00` |
+| Signed one | `00 01 01` |
+| Signed negative one | `01 01 01` |
+
+The enclosing schema determines whether a field is signed or unsigned and
+supplies its admissible bound. Zero with a nonempty magnitude, leading-zero
+magnitudes, truncation, and bytes beyond the enclosing field boundary fail.
+All arithmetic uses the exact decoded value, without modulo reinterpretation.
+
+No wrap, saturation, value loss, or representation-imposed terminal coordinate
+is permitted. An exact unbounded height cannot fit a forever-fixed height field
+or total block-byte ceiling. Role budgets therefore include explicit growing
+coordinate/accounting allowances alongside bounded operation and work allowances.
+This does not promise constant CPU or memory requirements for an indefinite
+history.
+
+Admission must establish the applicable authenticated context before using it
+to bound variable data. A claimed height, length, version, or amount cannot
+authorize its own allocation budget. Unknown-parent input requires bounded
+deferral, refusal, or separately bounded acquisition before its variable body.
+Length-prefix parsing itself must be bounded before magnitude allocation.
+
+Successor bounds derive from actual transition semantics, such as exact parent
+height plus one, authorized nonce consumption, or authenticated funds plus the
+permitted issuance increase. Arithmetic-work limits account for operand lengths,
+multiplication, division, normalization, and traversal, not only wire bytes.
+Historical-certificate validation uses its exact historical snapshot.
+
+Arbitrarily many timeout rounds can occur at one height, so finalized parent
+height and balances do not bound every round coordinate. Unusually large round
+certificates use a separate, incrementally bounded acquisition process. Each
+step has predetermined byte, memory, storage and verification-work allowances
+independent of the sender's claimed length or round. Partial evidence and peer
+identity do not enlarge those allowances. Spilling to disk alone is insufficient.
+
+Exceeding a local acquisition budget means not yet validated, not a mathematically
+invalid round. Acquisition grants no round, vote, branch or finality authority.
+Only complete verification of the exact context, immutable snapshot, distinct
+signers, strict-greater-than-two-thirds threshold and corresponding phase under
+`PROD-076` permits certificate-driven higher-round advancement. A proposal alone cannot do so
+(`PROD-080`).
+
+Budget growth, concurrent-request fairness, cancellation, retention and eventual
+catch-up guarantees remain unfinished. A permanently fixed local ceiling cannot
+support an unconditional promise of catching up to every finite valid round;
+manual budget enlargement would make that promise operator-dependent. Exact
+round admission and growing role budgets must resolve these obligations before
+implementation.
+
+## Genesis and integration boundary
+
+The reusable genesis schema must preserve the selected construction sequence:
+bootstrap-attribution domain, unsigned genesis root, exact ceremony-frozen
+authorizations, and final genesis identity. Neither direct nor indirect state
+fields may introduce a final-genesis hash cycle. Existing artifact-genesis
+derivation is not the complete successor genesis schema.
+
+Genesis has a separately specified finite installation/admission envelope.
+Its initial account descriptors and authorizations follow the genesis contract;
+ordinary post-genesis creation does not silently define genesis nonce handling.
+Production keys, allocations, applicant records, and frozen ceremony signatures
+are external facts and are not invented by this specification.
+
+The foundational registration contract must be separated from later
+rotation/recovery integration dependencies while preserving those requirements.
+That approved separation does not remove unrelated fee, resource, genesis, or
+canonical-parent prerequisites. The exact ledger decomposition remains part of
+the implementation-scope review. No rule becomes implemented merely because
+its architectural direction is selected here.
+
+## Required specification and measurement work
+
+Before canonical admission code is eligible, finish the complete state inventory,
+record and operation schemas, identifier and signing preimages, integer-field
+bounds, complete local state-access and index rules, version/context framing,
+and rejection order. Select exact
+operation fees and protocol limits from the required economic model and measured
+canonical bytes, signature verification, arithmetic, reads, and retained-state
+growth. Preserve unresolved tail and boundary requirements until specified.
+
+The measurement package must exercise the actual selected policy and decoding
+algorithms, not only a cryptographic primitive. It must record machine,
+architecture, pinned toolchain, optimization profile, corpus, sample method,
+and separate construction/compilation from execution. Cover threshold extremes,
+malformed and duplicate evidence, shared account roles, maximum distinct
+authorizers, integer-width growth, Patricia paths and updates, and atomic
+multi-operation failures. Measurements do not by themselves choose a deployment
+hardware target, acceptable latency, fee schedule, or policy-size maximum.
+
+The first eventual transition implementation must prove unchanged parent roots
+on rejection, exact conservation, replay isolation, evidence-invariant operation
+identity, permanent key reservation, role-separated escrow, and deterministic
+successor commitments. Its publication scope must identify whether canonical
+parent provenance and installation are implemented or remain external; a
+caller-selected reference root or fee limit cannot be presented as canonical
+authority or canonical fee adequacy.
+
+### Account-operation measurement obligations
+
+The following are structural obligations for the measurement corpus, not selected
+resource coefficients or sufficient whole-operation cost bounds. Exact record
+layout, complete local state access, fee parameters, and transaction implementation are
+still required before their complete costs can be measured.
+
+For registration, let `A` be the set of distinct operator, bond-beneficiary, and
+fee-payer accounts. Its size is between one and three. If account `a` has policy
+threshold `M_a` among `N_a` keys, registration verifies
+`sum(M_a for a in A) + 1` signatures: one threshold authorization for each distinct
+authorizing account and one separately domain-bound consensus-key possession
+proof. Account-role aliasing does not duplicate that account's authorization or
+nonce. A receiving-only reward account adds no authorization signature.
+
+The account-reference set is the union of `A` and the reward account, so it has
+between one and four distinct accounts. Measurements must account for the
+authenticated facts actually read and the selected representation of their
+policies; a prevalidated-policy microbenchmark omits policy admission, complete
+local state access and authenticated update work. Registration also requires the applicable registration/key-absence,
+escrow, scheduling, fee-pool, and accounting facts and updates. Their exact
+storage operations cannot be inferred from the signature count.
+
+For non-artifact operation fee `F > 0`, `ECON-082` fixes validator-pool credit
+`P = floor(F / 5)` and burn `F - P`. Let a registration bond be `B`. The combined
+liquid-balance debit is `B + F`, escrow increases by `B`, the current-height
+validator pool increases by `P`, and accounted live supply decreases by
+`F - P`. The registration operation itself creates no issuance. If beneficiary
+and payer are the same account, that account must fund the combined `B + F`;
+checking the two amounts independently against one starting balance is invalid.
+If they differ, each must fund its own debit. Authorization-only nonce updates
+do not introduce another balance debit.
+
+For sponsored account creation with initial funding `D >= 0`, the existing
+sponsor funds `D + F`, the new account receives `D`, the validator pool receives
+`P`, and accounted live supply decreases by `F - P`. The sponsor and new account
+are distinct account identities because creation of an existing account fails.
+The signature count is the sponsor threshold plus the new-policy threshold.
+Creation consumes both account nonces under the specified creation convention;
+it does not substitute the new policy's consent for the sponsor's debit
+authorization.
+
+The corpus must cover all account-role partitions, minimum and insufficient
+balances, fee/bond combined-debit failure, invalid first and last signatures,
+distinct qualifying signer subsets, repeated nonce pairs, duplicate creation
+and key targets, and a failure after earlier speculative operations have
+succeeded. It must measure authenticated reads and path updates, newly retained
+record bytes, integer operand widths, and resulting fee-pool/burn accounting.
+CPU caching or structural sharing must not change protocol outcomes or conceal
+unmetered work, and the resource model must preserve `RES-046`'s prohibition on
+charging one work unit to two payers.
+
+### Initial measurement target
+
+The initial engineering target is Linux x86_64, four CPU cores, 8 GiB RAM,
+and SSD storage, aiming for at most one second of complete local block
+validation. This is a measurement target, not a wall-clock block-validity rule
+or a permanent hardware guarantee. Resource coefficients and admissible limits
+remain undecided until complete representative and adversarial paths are measured.
+
+The isolated `tools/state-measurement` prototype measures authorization primitives
+and candidate integer decoders. It is not a canonical transaction implementation
+and cannot establish the complete-block target. Its policy sizes are corpus
+parameters, not proposed protocol maxima. It compares these decoder implementations,
+not an inherent performance ordering of all possible encodings.
+
+The isolated typed-map calibration uses the selected V1 SHA-256 preimages and
+in-memory immutable path-copy insert, replace and delete operations. Its fixture
+namespace tags and opaque key/value bytes are not canonical record schemas.
+It separately times present/absent reads, path-copy updates and complete
+in-memory structural validation, reporting corpus record/byte counts and actual
+maximum path depth. Corpus construction is outside those timed operations;
+update timings include creating and dropping their temporary child map.
+
+Its tests compare updates with a separate rebuild-from-sorted-routes oracle,
+retain old snapshots, cover length boundaries and namespace separation, and
+reject noncanonical in-memory trees even when their branch hashes match their
+supplied children. Routing collisions use an explicitly synthetic injection and
+are not claimed as discovered SHA-256 collisions. No disk decoder, missing-node
+recovery, complete derived index, canonical transaction, aggregate namespace
+inventory or block-admission limit is implemented by this calibration. The older
+authorization corpus also remains a primitive benchmark, not the selected full
+V1 prime-order policy admission and transcript implementation.
+
+The separate account-family corpus exercises all six selected management kinds,
+strict prime-order policy parsing, exact intent and consent digests, account
+record decoding and account/accounting map updates. It uses synthetic namespace
+tags 9001/9002, a supplied chain/genesis/version and positive execution height,
+and explicit corpus bounds (1 MiB input, 512-byte natural magnitudes, 64 policy
+keys). These are experimental allowances, not authenticated protocol limits.
+Timed operation paths include parsing, signature verification, touched record
+lookups, nonce/generation changes, fee partition and both map updates; fixture
+construction and signing are outside the timer. Reported end roots and complete
+fixture custody checks make effects inspectable, without proving canonical parent
+provenance or the absence of other custody namespaces in real state.
+
+Its recovery measurement traverses every record in the complete fixture account
+map and prepares due owner changes at a supplied adjacent boundary height. It
+returns only a prepared account map and does not install either state root,
+settle the preceding fee pool, authenticate a participation certificate or
+complete the canonical height transition. Retargeted fixture heights/pool cursors
+are corpus construction, not evidence of those omitted transitions. Tests cover
+all six effects, fee-role aliasing, combined creation funding and fees, late-batch
+rollback of both roots and complete records, generation replay after restoring
+keys, exact recovery boundaries despite nonce advancement, policy-change
+cancellation, strict witness/codec rejection and independent transcript hashes.
+None of these measurements closes canonical account, codec, accounting, resource
+or complete-state implementation dependencies.
+
+A hosted Linux run must record its actual CPU, physical memory, compiler, source
+revision, and enforced CPU/memory/swap constraints. An 8 GiB process budget on a
+larger host must be reported as such, not as physical 8 GiB hardware. These
+in-memory primitives do not exercise SSD persistence or authenticated state I/O.
+Compilation and runtime measurements must be reported separately.
+
+Hosted Linux calibration may use four logical CPUs on a VM with fewer reported
+physical cores and the enforced 8 GiB process budget. Such runs provide initial
+calibration only. Validation against the four-physical-core complete-block target
+remains a separate requirement; a hosted single-threaded primitive run does not
+satisfy it.

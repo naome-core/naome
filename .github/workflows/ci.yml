@@ -172,3 +172,39 @@ jobs:
       - name: Reject workflow cancellation
         if: ${{ always() && cancelled() }}
         run: exit 1
+
+  state_measurement:
+    name: State primitive measurement (Linux x86_64)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate and compile isolated measurement prototype
+        run: |
+          python3 - <<'PYTHON'
+          import json, subprocess, time
+          manifest = 'tools/state-measurement/Cargo.toml'
+          commands = [
+              ['cargo', 'fmt', '--manifest-path', manifest, '--', '--check'],
+              ['cargo', 'clippy', '--manifest-path', manifest, '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings'],
+          ]
+          for profile in ['test', 'release']:
+              base = ['cargo', 'test', '--manifest-path', manifest, '--profile', profile, '--all-targets', '--all-features', '--locked']
+              commands.extend([base + ['--no-run'], base + ['--no-fail-fast']])
+          commands.append(['cargo', 'build', '--manifest-path', manifest, '--release', '--locked'])
+          for command in commands:
+              start = time.monotonic()
+              subprocess.run(command, check=True)
+              print(json.dumps({'kind': 'preparation_step', 'command': command, 'elapsed_seconds': time.monotonic() - start}), flush=True)
+          PYTHON
+      - name: Measure under four-CPU and 8 GiB no-swap constraints
+        run: |
+          sudo systemd-run --scope --unit=naome-state-measurement \
+            -p MemoryMax=8589934592 -p MemorySwapMax=0 \
+            -p CPUQuota=400% -p AllowedCPUs=0-3 \
+            sudo -u "$USER" env PATH="$PATH" CARGO_INCREMENTAL=0 \
+            python3 "$GITHUB_WORKSPACE/tools/state-measurement/run-linux.py"
