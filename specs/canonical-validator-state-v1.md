@@ -1063,7 +1063,7 @@ request without replacement, fee or nonce changes.
 
 A successful request finalized in epoch E stores its OperationId, admitted
 recovery-policy commitment and generation, complete accepted target policy and
-first activation epoch E+2. It remains pending throughout E and E+1. Ordinary
+finalized source height, from which first activation epoch E+2 is derived. It remains pending throughout E and E+1. Ordinary
 operations may advance n while it waits; they neither restart its delay nor
 invalidate its accepted authorization. RecoveryStart itself does not advance g
 or change owner authority. Repeating the consumed nonce cannot create another
@@ -1098,8 +1098,132 @@ explicit fees and the recovery-request cancellations above. Account recovery
 does not automatically rotate a validator consensus key, restore a tombstoned
 registration, reset exposure or forgive a penalty. Historical verification uses
 its historical policy/context rather than substituting a current policy.
-Exact typed kind tags, payload/record framing, consent-section framing and
-resource limits remain required before canonical implementation.
+The account-family bytes below fix its typed kinds, records and consent sections.
+Complete stream integration and resource limits remain required before canonical
+implementation.
+
+### Canonical account record and management operations
+
+This section fixes the account-family logical key and record bytes and the six
+account-management payloads. Namespace-tag assignment, other operation families,
+complete block framing and production admission bounds remain unfinished. The
+account namespace's logical key is exactly AccountId[32]. Its value contains,
+in this exact order:
+
+```
+BYTES(initialPolicyP) || creationDiscriminator[32]
+|| BYTES(currentOwnerPolicyP) || recoveryPolicyOption
+|| NAT(authorizationGeneration) || NAT(nextNonce) || NAT(liquidBalance)
+|| RAT(pooledRealizedFeeRewardCredit) || pendingRecoveryOption
+```
+
+Each P is exactly the normalized policy encoding defined above, not its hash.
+`RAT(x)` is `NAT(numerator) || NAT(denominator)` with a positive denominator,
+coprime components and the unique zero `0/1`. All accounting remains exact;
+this encoding does not select a fixed fractional scale or a numerator/denominator
+work allowance. A recovery-policy option is the single byte `00` for none, or
+`01 || BYTES(recoveryPolicyP)` for present. Other option tags are invalid.
+
+A pending-recovery option is the single byte `00` for none, or these bytes:
+
+```
+01 || admittedOperationId[32] || admittedRecoveryPolicyHash[32]
+   || NAT(admittedAuthorizationGeneration) || BYTES(newOwnerPolicyP)
+   || NAT(finalizedSourceHeight)
+```
+
+The finalized source height is assigned by accepted execution, never by the
+request payload. It is positive and no greater than the containing finalized
+state's height. Derive its epoch as `floor((finalizedSourceHeight - 1) / 8192)`
+and its activation epoch as that epoch plus two. Do not encode a second,
+independently editable activation coordinate. A still-pending record must match
+the current committed recovery policy and authorization generation, and its
+activation epoch must be later than the containing finalized state's epoch.
+Ordinary nonce advancement does not break this match. Boundary activation and
+owner-authorized cancellation retain their previously selected rules.
+
+Recompute AccountId from the immutable initial policy and discriminator and
+require equality with the map key. Validate every encoded policy, including
+historical initial and proposed policies, under the V1 canonical key and threshold
+rules. No field may be omitted merely because its value is zero or equals an
+initial value, except through its specified option tag. Reject invalid options,
+nonminimal integers, noncanonical rational values, malformed policies, truncation
+and trailing bytes. Field lengths and integer operands must pass their applicable
+resource checks before allocation or arithmetic. Those production bounds remain
+required, not supplied by a claimed record length.
+
+Decoding a self-consistent record does not prove its authorization history,
+nonce/generation progression, balance provenance or canonical installation.
+Post-genesis creation stores the supplied initial policy and discriminator, sets
+current owner policy equal to that initial policy, generation to zero, next nonce
+to one, liquid balance to exactly D and pooled realized fee-reward credit to
+`0/1`, with no recovery policy or pending request. The sponsor funding and fee
+effects remain separate required parts of the same atomic creation transition. Genesis
+initialization retains its separate contract. A byte-valid record cannot invent
+an alternative genesis exception.
+
+This account record owns pooled realized fee-reward credit. Weight-origin batches,
+outstanding Knowledge Weight debt, delegation plans and effective portions,
+per-registration reward cursors, bond-beneficiary rights and governance facts
+remain in their explicitly separate record families. Omitting them from this
+record does not set them to zero, delete them or waive required complete state
+access. The account-family codec alone does not complete those schemas.
+
+The following natural operation-kind tags and payload field order are exact.
+IDs occupy 32 bytes. Each fee F is positive; creation funding D is nonnegative.
+Current policy hashes, generations and nonces occur only in the shared intent
+rows and are not duplicated in the typed payload.
+
+| Tag | Operation | Canonical typed payload |
+| --- | --- | --- |
+| 0 | AccountCreate | `BYTES(initialPolicyP) || discriminator[32] || sponsorAccountId[32] || NAT(D) || NAT(F)` |
+| 1 | OwnerPolicyRotate | `targetAccountId[32] || BYTES(newOwnerPolicyP) || feePayerAccountId[32] || NAT(F)` |
+| 2 | RecoveryPolicySet | `targetAccountId[32] || BYTES(newRecoveryPolicyP) || feePayerAccountId[32] || NAT(F)` |
+| 3 | RecoveryPolicyDisable | `targetAccountId[32] || feePayerAccountId[32] || NAT(F)` |
+| 4 | RecoveryStart | `targetAccountId[32] || BYTES(newOwnerPolicyP) || sponsorAccountId[32] || NAT(F)` |
+| 5 | RecoveryCancel | `targetAccountId[32] || pendingOperationId[32] || feePayerAccountId[32] || NAT(F)` |
+
+For AccountCreate, derive the target ID from its payload's initial policy and
+discriminator; do not encode a competing target ID. The target's shared row
+uses that initial policy, generation zero and nonce zero; its existing sponsor
+uses ordinary current authorization. The target must not already exist.
+RecoveryStart's sponsor must differ from its target, and its target row uses
+the committed recovery policy. All other management operations use current
+owner authorization for the target and current authorization for any distinct
+fee payer, deduplicating aliased roles under the common nonce rule.
+
+Within this account-management family, encode the complete operation as:
+
+```
+BYTES(Intent) || BYTES(accountAuthorizationWitnessSection)
+              || BYTES(newPolicyConsentSection)
+```
+
+Intent and the account-witness section use their exact shared framing above.
+OwnerPolicyRotate and RecoveryStart require exactly one new-owner consent section;
+RecoveryPolicySet requires exactly one new-recovery consent section. That section
+contains the already specified threshold witness for the policy in the payload.
+AccountCreate, RecoveryPolicyDisable and RecoveryCancel require an empty consent
+section, encoded as the single byte `00` for its zero length. Creation already
+uses the initial policy's account authorization row and requires no duplicate
+consent witness. No account-management operation accepts a consensus-key
+possession witness or extra authentication evidence in these sections.
+
+The decoder must consume each section and payload exactly, enforce the required
+kind-specific authorization and consent shape, and reject unknown tags within
+this family. The complete successor operation inventory must assign other kinds
+without reusing tags 0 through 5; their codecs are not supplied here. Only the
+canonical Intent determines OperationId, while valid signature subsets may
+produce different complete operation bytes. Every signer authorizes the full
+semantic operation, including both account-role and proposed-policy information,
+under its existing role-bound digest.
+
+This framing does not assign these operations to an unfinished outer stream
+encoding, supply complete fee coefficients or prove valid state transitions.
+Canonical proposal framing, per-class budgets, exact record lookups, rejection
+ordering and transactional parent-bound installation remain required. Isolated
+codec or transition measurements must state their synthetic bounds and cannot
+turn caller-provided limits or roots into consensus authority.
 
 ### V1 Ed25519 admission and verification
 
