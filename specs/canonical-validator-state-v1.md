@@ -583,6 +583,43 @@ specified under `ECON-146`, `ECON-163` and `ECON-164`. Historical attribution mu
 bind the liability to the correct immutable beneficiary account and prevent any
 collected unit from being charged twice.
 
+### Proportional decay after collection
+
+Each origin batch retains immutable original amount S and its original activation
+epoch. A separate exact nonnegative rational remaining basis T starts at S. At
+age A below 730, let k = 730 - A. The live amount is `floor(T * k / 730)`; at
+age at least 730 it is zero. Without any collection T=S, reproducing `ECON-111`.
+
+To collect c integer current-weight units, require
+`0 <= c <= floor(T * k / 730)` and k>0, then set
+`T' = T - c * 730 / k`. All calculations are exact. The new current live amount
+is exactly the previous amount minus c, because
+`floor(T' * k / 730) = floor(T * k / 730 - c)`.
+The collection bound ensures T' is nonnegative. No collection divides by zero
+at expiry; an expired batch supplies zero and any unpaid account liability
+remains outstanding.
+
+Future live amounts use T' with the same original activation epoch. For S=100,
+collection of 10 at age 365 reduces live weight from 50 to 40 and T from 100 to
+80. At age 547 the live amount is `floor(80 * 183 / 730) = 20`. No constant
+undecaying subtraction is applied against the original curve, and collection
+does not renew the remaining lifetime.
+
+A collection permanently discharges c units of assessed account liability;
+later decay does not recreate that debt. Collection at age zero uses T'=T-c.
+The cumulative first-matured accumulator still counts the original newly matured
+amount, including when existing liability is collected at maturation; collection
+is a separate destruction effect, not a second maturation or a revision of the
+historical original amount.
+
+The rational basis has a finite denominator bound: every update subtracts a
+rational whose denominator divides some k in 1..730. Starting from integer S,
+its reduced denominator therefore divides `lcm(1,...,730)`, a 1,048-bit constant.
+An exact scaled-integer representation is consequently possible without
+multiplying a new independent denominator at each collection. This mathematical
+bound does not select a canonical record encoding, resource maximum or measured
+execution cost; numerator growth still follows the amount domain.
+
 ## Ordered transactional execution
 
 The proposal commits one ordered operation stream with economic and validator
