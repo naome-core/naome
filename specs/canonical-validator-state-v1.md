@@ -86,6 +86,85 @@ canonical-parent provenance. An uninstalled transition cannot establish that
 provenance for itself, and installation must recheck the parent to which the
 transition is bound.
 
+### Complete local state and derived indexes
+
+V1 foundation validation uses complete locally authenticated parent state. The
+parent's canonical provenance is established separately from matching its root;
+execution pins the exact parent consensus identity, schema and typed roots.
+Logical completeness does not require every record to reside in RAM: validated
+persistent nodes may load on demand through bounded caches. Every primary record
+required by the transition and every completeness-dependent enumeration must
+remain available. A matching root with inaccessible referenced subtrees is not
+sufficient state access for that path.
+
+Canonical primary records and their specified deterministic derivations establish
+transition facts. A local index is only an acceleration of those facts. Its
+construction must establish both the correctness of every entry and completeness
+against the underlying canonical records, including eligibility and ranking,
+due changes, maturations, releases, recoveries, owner allocations and liability
+sources wherever the transition requires those complete sets. Checking only the
+records returned by an index cannot establish that none was omitted. An index
+may use a different storage representation from the canonical hashed-key map;
+its logical projection and update rules must still be deterministic and specified.
+
+Bind each usable index generation to the exact authenticated parent state and
+applicable derivation version. An index for another root, an incompletely built
+index or one whose maintenance is uncertain must not serve validation. Construct
+or rebuild it from complete validated primary records and check it before use.
+Such a rebuild changes only local derived state; it cannot change canonical
+roots, fix a primary-record mismatch, invent missing data, choose another parent
+or rewrite lineage. Persisted index caches require enough version and root
+binding to detect stale reuse after restart. Their exact format remains open.
+
+A missing node, failed read, undecodable local record, root mismatch or unusable
+index causes local state-unavailable/corrupt status for the affected validation
+path. It is neither authenticated absence nor, by itself, evidence that another
+node's proposal is invalid. Do not substitute zero balances, empty subtrees,
+missing candidates or an empty due queue. Resume that path only after required
+state access is restored and validated. Canonical state cannot be reconstructed
+from an untrusted derived index. Acquisition and recovery retain their separate
+canonical-source and bounded-resource requirements.
+
+Completeness follows each transition's defined read set. Ranking must account
+for every eligible candidate that could enter the selected set, and processing
+all due events must not omit a due primary record. Conversely, an explicitly
+partial operation such as a claim with a chosen source list does not become an
+implicit claim of all sources; its unlisted sources retain their existing rights.
+A single account membership proof cannot establish a complete candidate set,
+complete owner portfolio or complete due-event queue.
+
+Prepared authorization state remains immutable for H's rounds. Rebuilding a
+cache cannot change that snapshot or install prepared effects. Proposal execution
+uses an isolated primary-record overlay and correspondingly updated derived
+views, so later operations see earlier accepted speculative changes consistently.
+A rejected proposal installs neither kind of change. Before final installation,
+recheck the canonical parent. Install the complete primary transition atomically
+and either install matching derived views or invalidate them before subsequent
+validation; no observer may use a child root with an old-parent index. Persistent
+index recovery must preserve this condition through restart. Work bound to a
+superseded parent is discarded or recomputed, not retargeted by changing its root.
+
+Stateless transition witnesses are not required V1 block inputs under this model.
+Optional map membership/nonmembership proofs do not replace local completeness
+or establish canonical-parent authority. Their wire format is separate work,
+not a prerequisite for this stateful admission path. Account authorizations,
+new-key and new-policy consent, historical consensus evidence, artifact proofs
+and other explicitly required cryptographic evidence remain required; a state
+access choice removes none of those verification obligations.
+
+This is not a requirement to retain every historical state indefinitely. Current
+state and the historical records required by settlement, exposure, liability,
+replay and other selected rules must remain available for their specified
+lifetimes. Their exact retention/pruning contract is still required. Full local
+state also supplies no missing tail, governance, namespace or record semantics.
+
+Measure persistent reads, cache misses, complete enumeration, derived-index
+maintenance and all changed-owner boundary work, as well as cryptographic and
+arithmetic costs. Measure index construction/rebuild and restart separately from
+normal transition execution. A 256-branch Patricia path bound does not bound the
+number of records processed. These obligations do not select admission limits,
+fees, or a bounded-work claim for an unfinished global transition.
+
 ### Semantic coverage inventory
 
 The complete namespace inventory must cover the following facts, either as
@@ -2080,7 +2159,8 @@ its architectural direction is selected here.
 
 Before canonical admission code is eligible, finish the complete state inventory,
 record and operation schemas, identifier and signing preimages, integer-field
-bounds, map proof format, version/context framing, and rejection order. Select exact
+bounds, complete local state-access and index rules, version/context framing,
+and rejection order. Select exact
 operation fees and protocol limits from the required economic model and measured
 canonical bytes, signature verification, arithmetic, reads, and retained-state
 growth. Preserve unresolved tail and boundary requirements until specified.
@@ -2106,7 +2186,7 @@ authority or canonical fee adequacy.
 
 The following are structural obligations for the measurement corpus, not selected
 resource coefficients or sufficient whole-operation cost bounds. Exact record
-layout, proof representation, fee parameters, and transaction implementation are
+layout, complete local state access, fee parameters, and transaction implementation are
 still required before their complete costs can be measured.
 
 For registration, let `A` be the set of distinct operator, bond-beneficiary, and
@@ -2120,8 +2200,8 @@ nonce. A receiving-only reward account adds no authorization signature.
 The account-reference set is the union of `A` and the reward account, so it has
 between one and four distinct accounts. Measurements must account for the
 authenticated facts actually read and the selected representation of their
-policies; a prevalidated-policy microbenchmark omits policy admission and state
-proof work. Registration also requires the applicable registration/key-absence,
+policies; a prevalidated-policy microbenchmark omits policy admission, complete
+local state access and authenticated update work. Registration also requires the applicable registration/key-absence,
 escrow, scheduling, fee-pool, and accounting facts and updates. Their exact
 storage operations cannot be inferred from the signature count.
 
