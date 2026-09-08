@@ -402,10 +402,11 @@ it does not promise inclusion merely because an honest node received evidence.
 The independent deadline-reservation and honest-proposer-gap requirements remain
 unfinished under `ECON-181`, `RES-049` and `PROD-091`.
 
-Exact handling of re-bonding, churn queue integration and conflicting requests,
-rounding, and ordering of release relative to settlement and other epoch-boundary
-effects remain unfinished. The selected deadline and release rules do not alone
-establish the complete evidence-admission or epoch-transition contract.
+The following sections refine re-bonding, request conflicts, principal selection
+and release ordering. Complete record bytes, resource-bounded queue execution
+and integration with the remaining epoch-boundary effects are still required.
+The selected deadline and release rules do not alone establish the complete
+evidence-admission or epoch-transition contract.
 
 ### Exposure and principal source classes
 
@@ -707,8 +708,9 @@ maps, treating absent registrations as weight zero. Deduct that charge from the
 remaining budget before the next request. Returning later to a previously seen
 map does not refund earlier churn. Recompute selection for the complete step,
 including any displaced or promoted registration; do not lower an unrelated
-incumbent merely to make a candidate fit. Exact request-specific progress units,
-coupled-state candidates and resource-bounded maximum selection remain unfinished.
+incumbent merely to make a candidate fit. The economic progress units below
+refine each step; complete coupled-state construction and resource-bounded
+maximum selection remain required.
 
 Requested delegation and bond-backed capacity are separate from currently
 effective consensus weight. Eligible changes activate in partial increments;
@@ -716,14 +718,16 @@ top-256 ranking uses the resulting effective weights. Unapplied weight retains
 its ownership but grants no active consensus authority. This selected separation
 does not authorize counting one owned unit in multiple effective allocations.
 
-Exact staged eligibility, coupled transfers, conflicting requests, cancellation
-and supersession remain unfinished. Partial economic changes must preserve
+The following queue, economic-progress and pending-change sections refine
+eligibility, conflicts, cancellation and supersession. Their complete records
+and bounded execution remain unfinished. Partial economic changes must preserve
 integer bond backing and Knowledge Weight ownership; a permitted weight delta
 alone does not determine the exact bond atoms that cease exposure. A partial
 transition must account for the complete selected registration-weight change,
 including a displaced incumbent, rather than charging only the changed candidate.
-Rounding and partial remainders must be specified with these transitions before
-`PROD-066` can be completed. These rules do not authorize arbitrary reduction of
+The selected integer progress and surviving-remainder rules must be integrated
+with those complete transitions before `PROD-066` can be implemented. These rules
+do not authorize arbitrary reduction of
 an incumbent's weight merely to make a newcomer fit.
 
 ### Logical queue coordinates and identities
@@ -2496,9 +2500,10 @@ claim entitlement. Invalid source, amount, policy, nonce or funding checks leave
 credits, checkpoints, reserve, balances, fees and nonces unchanged, including
 when an earlier source was speculatively synchronized.
 
-Exact source-list bounds, authenticated lookup and cursor-update records, canonical
-rational bytes, commission scheduling and adversarial growing-denominator work
-remain required. Unchanged-owner laziness does not make large sets of changed
+Exact source-list bounds, authenticated lookup and cursor-update records,
+commission scheduling and adversarial growing-denominator work remain required.
+Rational record fields use the selected canonical RAT framing; that framing
+does not supply their work bounds or complete cursor layouts. Unchanged-owner laziness does not make large sets of changed
 owners free. Measure those boundary writes and rational normalization as well as
 claims before selecting admission allowances. Tail accounting remains separate
 until its own rules explicitly choose any reuse.
