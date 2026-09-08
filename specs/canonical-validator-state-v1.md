@@ -523,9 +523,31 @@ snapshot without voluntary churn delay. Proposal-time collection preserves H's
 frozen snapshot and affects H+1; parent-derived boundary decay or collection of
 previously assessed debt enters that boundary snapshot under the selected
 atomic preparation rules. Later increases still require their ordinary
-authorization, eligibility and staging. Exact reconciliation with pending
-portions, simultaneous boundary events and bond-cap changes remains part of
-the unfinished integration contract.
+authorization, eligibility and staging.
+
+Compute this projection once per mandatory owner-loss phase. Capture its starting
+effective allocation vector and the owner's already-matured batches. Combine all
+losses of those batches that become effective for the same next authorization
+snapshot, and project the captured vector once against their final surviving
+capacity. Do not replace that vector with an intermediate rounded result after
+each loss. Assessments and actual batch collections still execute in their
+committed order with their individual first-stage source caps; only the
+delegation-loss projection is combined.
+
+For starting allocations `(1,3,3)` in ascending registration order and old
+capacity falling from seven through five to four, the selected single projection
+returns `(0,2,2)`. Projecting first to five and then using that rounded vector
+again would instead return `(1,2,1)`, which is not the selected phase result.
+Combining projections removes that dependence on intermediate rounding; it does
+not claim that reordered economic operations have identical collection effects.
+
+Complete this old-capacity loss projection before processing newly maturing
+capacity and separately eligible activations. New maturation retains its full
+first-matured count and debt collection before allocation. It cannot be netted
+against old-capacity loss to preserve an allocation that the loss phase removes;
+any subsequent increase follows the ordinary selected activation rules.
+Exact authenticated phase records, reconciliation with pending portions and
+bond-cap changes remain part of the unfinished integration contract.
 
 ### Delegation-plan amendments
 
