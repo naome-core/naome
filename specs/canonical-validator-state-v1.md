@@ -1318,7 +1318,8 @@ ordinary weight provenance, exposure, liabilities and tombstone lineage remain
 attached to the same registration. No pending key becomes a second participant.
 
 The validator-family operation bytes below fix rotation and cancellation tags
-and payloads. Historical assignment records, authenticated boundary ordering and
+and payloads; the four key-record families below fix their primary bytes.
+Historical snapshot integration, authenticated boundary ordering and
 measured admission limits remain necessary for complete `PROD-084` and canonical
 rotation integration.
 
@@ -1445,10 +1446,140 @@ signature use the selected strict V1 rules and applicable resource checks.
 The exact Intent alone determines OperationId. Different valid qualifying
 account-signature subsets do not change it; the required possession signature
 still binds that same ID. Other operation families must not reuse tags 0 through
-8. These bytes do not finish registration/escrow records, historical key
-assignment retention, complete deadline ordering, genesis registration framing,
+8. These operation bytes do not by themselves finish the separate primary
+records below, escrow/lifecycle integration, complete deadline ordering, genesis registration framing,
 canonical state access or fee/resource admission. Those prerequisites remain
 explicit before consensus-facing implementation.
+
+### Canonical registration and key records
+
+Registration identity and key binding use four distinct primary-record families.
+Their logical key/value bytes are fixed below; namespace tags and their positions
+in the complete state-root inventory remain unfinished. All identifiers and keys
+occupy 32 bytes, all integer fields use NAT, and all encoded consensus keys pass
+the strict V1 key-admission rules. No record length, height or claimed ordinal
+supplies its own resource allowance.
+
+**Immutable descriptor.** Its logical key is RegistrationId[32]. Its value is:
+
+```
+operatorAccountId[32] || NAT(registrationNonce) || initialConsensusKey[32]
+|| bondBeneficiaryAccountId[32] || rewardAccountId[32]
+|| NAT(initialCommissionBasisPoints)
+|| NAT(registrationHeight) || NAT(registrationPosition)
+```
+
+The registration nonce is the operator nonce used to derive this RegistrationId,
+not that account's current nonce. Recompute the ID from it and the retained
+operator and require equality with the logical key. All named accounts must
+resolve to their canonical account records. The initial commission is from zero
+through 2000. Every descriptor field remains immutable, including after key or
+account-policy changes, exit and tombstoning.
+
+For an ordinary registration, height and position are its actual positive
+finalized height and zero-based position in the complete committed operation
+stream. The pair must be unique among registrations. Genesis registrations have
+height zero and the separately selected ascending-RegistrationId ordinal. Their
+descriptors and source nonces must come from the authorized genesis construction;
+zero height is not an ordinary-operation exception or invented authorization.
+These records do not manufacture a genesis OperationId or production participant.
+Bootstrap provenance remains in its separately authorized genesis/state family.
+
+**Key control.** Its logical key is RegistrationId[32]. Its value is:
+
+```
+NAT(currentAssignmentOrdinal) || pendingConsensusKeyRotationOption
+```
+
+The pending option is the single byte `00` for none, or:
+
+```
+01 || admittedOperationId[32] || oldConsensusKey[32] || newConsensusKey[32]
+   || NAT(finalizedSourceHeight)
+```
+
+Other option bytes are invalid. A control record names an existing immutable
+descriptor. Read its current key from the assignment-history entry at the named
+ordinal; do not encode a second independently editable current-key field.
+Initial registration creates ordinal zero and no pending replacement. A pending
+request's old key must equal that current key, its new key must differ and must
+not appear in that registration's assignment history. Both must have permanent
+reservations for this same registration. The source height is positive, no
+earlier than registration or current assignment, and no later than the containing
+state height. Derive its activation epoch as
+`floor((finalizedSourceHeight - 1) / 8192) + 2`; while pending, that epoch must
+be later than the containing state's epoch. Do not encode an independent
+activation coordinate or recheck the consumed account nonce at activation.
+Canonical exit/penalty eligibility remains a required separate input: absence of
+those facts cannot be interpreted as a live registration. Terminal exclusion
+clears pending activation under the selected ordering without deleting control
+or freeing either key reservation.
+
+**Permanent reservation.** Its logical key is consensusKey[32] and its value is
+RegistrationId[32], naming an existing immutable descriptor. Successful initial
+registration or rotation admission creates this record atomically with its other
+effects. It is never reassigned or deleted. Initial admission requires actual
+absence, even if an existing reservation names the same registration. Canceled
+replacement keys remain reserved without acquiring an assignment-history entry.
+Every reservation belongs to the containing genesis context; the final genesis
+identity is not inserted into its value as a new hash dependency.
+
+**Assignment history.** Its logical key is
+`RegistrationId[32] || NAT(assignmentOrdinal)` and its value is:
+
+```
+consensusKey[32] || NAT(assignmentHeight)
+```
+
+Each registration has exactly the contiguous ordinals zero through the ordinal
+named by its control record. Ordinal zero matches the descriptor's initial key
+and registration height, including zero for genesis. Subsequent entries use
+strictly increasing heights and distinct keys; each is appended at the first
+height of the accepted rotation's E+2 epoch, together with advancing control and
+clearing that pending request. A later assignment therefore occurs at a positive
+epoch-boundary height. All historical keys remain permanently reserved for that
+registration. No extra history entry beyond the current ordinal is allowed, and
+no accepted pending or canceled key is treated as already assigned.
+
+Assignment means key-to-lineage binding, not selected membership. In particular,
+an initial assignment recorded at registration's operation height does not
+rewrite that height's frozen authorization snapshot. Historical snapshots,
+eligibility, weights and lifecycle facts still determine whether the assigned
+key had consensus authority at a given height. An assignment entry has no end
+field: its binding is superseded by the next entry, while exit or tombstoning can
+exclude a lineage without deleting its last binding. This does not extend any
+offense deadline or authorize an excluded key.
+
+The descriptor registration height and every assignment height must be no
+greater than the containing finalized state height, including when no rotation
+is pending. Genesis height zero retains its separate provenance requirements.
+
+The complete local-state validator checks descriptor IDs and unique order
+coordinates, mandatory descriptor/control correspondence, exact contiguous
+history and its current pointer, initial-field agreement, unique historical keys,
+and all history/pending/reservation links. Orphan controls, histories or
+reservations, missing required records, duplicate logical keys, nonminimal
+integers, unknown options, truncation and trailing bytes reject. A self-consistent
+set of records does not prove its genesis provenance or historical operation
+authorization. Actual replay must enforce admission, one-pending lifecycle,
+E+2 timing, cancellation and terminal-exclusion precedence; arbitrary supplied
+history bytes cannot establish those transitions.
+
+These families retain every descriptor, reservation and assignment-history entry,
+including after exit or tombstoning. This is an explicit growing primary-state
+storage obligation, not a pruning guarantee or a constant-size bound. Complete
+loading and replay must validate it under the state-access contract; normal
+validated-state transitions may use the specified affected records and derived
+indexes without claiming that an incomplete scan proved global absence.
+
+Bond custody/exposure, exit requests and effective exclusion, destructive-penalty
+markers, bootstrap provenance, delegation, selection snapshots, proposer priority,
+commission changes and reward accumulators remain in separate authoritative
+families. In particular, exit and later timely penalty facts are not collapsed
+into a mutually exclusive status field here. Their omission supplies no zero
+value, waived liability or lifecycle authority. These four codecs do not complete
+those families, the global namespace inventory, boundary execution, resources or
+canonical installation.
 
 ## Delegation targets and integer allocation
 
