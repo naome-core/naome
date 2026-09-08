@@ -118,8 +118,8 @@ belongs to its immutable beneficiary.
 
 Tail realization and machinery reuse remain open under `ECON-222` and
 `ECON-205`. Empty reserved namespaces cannot resolve those choices. Recovery
-activation, exact accumulator/carry arithmetic, delegation rounding, liability
-ordering and deadline accounting retain their unfinished contracts. Grant-vote
+activation, authenticated reward-cursor records, delegation record integration
+and deadline accounting retain their unfinished contracts. Grant-vote
 authority, consensus delegation and development-reserve spending remain distinct.
 
 ## Stable account and registration identities
@@ -1322,7 +1322,7 @@ through cancellation of a pending reduction retains its separate rule above.
 Canonical request encoding, integration with simultaneous capacity and target-
 eligibility changes, and canonical origin-attribution records remain unfinished. Historical offense-snapshot
 obligations and fee-reward checkpoints require their own exact records. Computing
-aggregate targets does not settle `ECON-105`, `ECON-163`, `ECON-164` or `ECON-155`,
+aggregate targets does not implement `ECON-105`, `ECON-163`, `ECON-164` or `ECON-155`,
 and staging must never count one owned unit in two simultaneous
 effective allocations.
 
@@ -1571,6 +1571,136 @@ Collection of previously assessed debt during parent-derived maturity preparatio
 precedes deriving that boundary height's surviving capacity and authorization
 snapshot. These prepared effects install only atomically with the complete
 finalized transition, preserving the existing parent-provenance boundary.
+
+## Fee-funded reward accumulation and claims
+
+This section selects the fee-funded accumulator, fractional ownership, historical
+checkpoints and claim semantics for `ECON-139` and `ECON-152`–`ECON-155`.
+It does not select tail-reward reuse or complete authenticated records, codecs,
+resource bounds or measured admission costs. Existing `ECON-084` settlement
+still assigns each included signer its integer share
+`R = floor(P * w / W)` and burns `P - sum(R)` immediately, using that reward
+height's validator pool P and total active agreement weight W. This section
+introduces no additional burn or issuance.
+
+### Exact shares and custody
+
+A declared commission is an integer b in basis points, `0 <= b <= 2000`, with
+exact rate `c = b / 10000`. The existing five-percentage-point epoch increase
+limit is 500 basis points; existing increase/decrease eligibility dates remain
+binding. No floating-point or rounded intermediate arithmetic is permitted.
+Commission scheduling records and the complete admission codec remain unfinished.
+
+For the historical selected registration receiving R, let O be its ordinary
+effective delegated weight and S its effective tagged bootstrap weight. Its
+reward denominator is `w = O + S`, the same weight used for that signer share.
+Let `C = c * R` and `D = R - C`. If R is zero, accrue zero and do not divide;
+a zero-weight selected signer has R zero. For positive R, w must be positive.
+A positive entitlement with zero denominator is inconsistent state, not a rule
+that reallocates rewards. The enclosing agreement rules must establish their
+own valid positive total W before the signer-share formula is evaluated.
+
+Each stable registration retains a nonnegative cumulative accumulator A, initially
+zero, measured in exact NAO atoms per unit of effective weight. On settlement,
+add `delta = D / w` to A. Ordinary owners accrue their effective contribution
+times delta. The historical registration reward-recipient account immediately
+accrues the nonspendable exact credit `C + S * delta`. Thus bootstrap participates
+proportionally in the remainder through its own tagged contribution, without
+creating ordinary Knowledge Weight or an independently delegable owner balance.
+This explicitly refines `ECON-120` for bootstrap and for an operator's nominated
+reward account. Commission belongs to that named account, including when it is
+distinct from the operator. A receiving-only accrual consumes no nonce.
+
+For each owner and registration, retain its reward-cursor weight q and accumulator
+checkpoint a. Synchronizing that source adds `q * (A - a)` to the owner's pooled
+realized credit and sets a to A. A new contribution starts at current A with
+zero prior entitlement. Multiple ordinary origins owned by the same account
+use their aggregate effective contribution to this registration. Accrual neither
+transfers the weight nor gives the reward recipient consensus authority.
+
+Every rational is exact and canonical: nonnegative numerator, positive denominator,
+coprime components, and zero represented as `0/1`. Its components use the growing
+natural domain. Accumulators, realized credits and differences have no fixed
+fractional scale, intermediate floor, saturation or discarded remainder.
+Changing a denominator never transfers an earlier fraction to a new contributor.
+Only a successful claim converts part of a credit into whole spendable atoms.
+An owner's realized fractions pool across registrations, commission and bootstrap
+sources. Unclaimed credits survive zero weight, exit, tombstone and key changes;
+no expiry, confiscation or dust burn is introduced by this section.
+
+The integer fee-reward reserve increases by sum(R) at settlement and decreases
+only by whole atoms paid in successful claims. It holds the atoms backing all
+realized and unrealized rational obligations; those obligations are not additional
+supply or spendable balances. Across registrations and accounts, reserve atoms
+equal total outstanding exact obligations. A source synchronization moves an
+obligation from unrealized to realized form without changing the reserve. The
+historical pool is consumed exactly once into this reserve and its already
+specified burn. Reward fractions alone do not mint or burn fractional atoms.
+
+### Historical checkpoint boundary
+
+H's settlement uses H-1's immutable selected weights, owner contributions,
+bootstrap contribution, commission and reward recipient. A commission first
+applicable at H cannot change H-1's share even though H settles it. A new
+commission applies to the reward earned at its first eligible effective height,
+which is settled in that height's successor. A current certificate variant
+cannot rewrite any already-settled height.
+
+Preparing H's consensus snapshot must preserve the separate reward cursor for
+H-1. First settle H-1 into each applicable registration accumulator. Then close
+every changed ordinary owner's old contribution at that resulting A by moving
+`q * (A - a)` into its credit, and initialize the new H contribution at the
+same A. New contributors receive none of the preceding height's rewards;
+outgoing contributors retain their final reward. Unchanged ordinary contributions
+need no per-block write. A registration entering or leaving selected membership
+changes its reward-cursor weights even if its candidate delegation is unchanged;
+an unselected candidate earns zero for that height. A zero-weight contribution
+has no accrual. Bootstrap accrual is computed directly at each settlement from
+the historical snapshot and needs no synthetic ordinary-owner checkpoint.
+
+These closing and opening effects follow settlement and precede boundary releases
+and ordinary operations, within the same atomic proposal transition. They never
+feed settlement-dependent information into H's authorization snapshot. A penalty
+inside H affects a later snapshot and does not retroactively close H's reward
+cursor. Genesis establishes empty reward cursors; the first height's sentinel
+settles no prior entitlement before opening that height's contributions. A
+rejected proposal installs neither accumulator changes nor cursor advancement.
+Retain old reward inputs until their settlement and closing checkpoints complete;
+removing a registration or key cannot erase outstanding account entitlements.
+
+### Authorized lazy claims
+
+A claim binds its owner account, fee-payer account, an ascending distinct list of
+stable RegistrationIds, a positive whole-atom amount Q and its fee in the typed
+payload. The owner and fee payer authorize the complete operation under the
+shared V1 domains, current policies and exact nonces; aliased roles consume one
+nonce. Claims use no consensus-key spending authority. Only the owner receives
+Q; this operation provides no alternate recipient or transfer of claim rights.
+
+Synchronize the owner's sources named by that list, then require
+`Q <= floor(owner pooled realized credit)`. A named source must exist for that
+owner; duplicates, noncanonical order or missing sources fail the complete
+operation. An empty list is valid when already-realized credit covers Q. An
+unlisted source is untouched. Deduct exactly Q from realized credit and reserve,
+credit Q to the owner's liquid balance, and retain every residual fraction.
+Partial claims are permitted and claiming frequency cannot alter total earned
+value. Closed sources with no outstanding rights may be removed only after their
+credit has been realized; active sources retain their exact checkpoint.
+
+The fee payer must fund the full authorized positive fee from its liquid balance
+before claim proceeds. A distinct sponsor is permitted. No claim may borrow its
+own proceeds to pay that fee. Apply the existing non-artifact fee partition;
+claim-created pool credit belongs to the current height and creates no immediate
+claim entitlement. Invalid source, amount, policy, nonce or funding checks leave
+credits, checkpoints, reserve, balances, fees and nonces unchanged, including
+when an earlier source was speculatively synchronized.
+
+Exact source-list bounds, authenticated lookup and cursor-update records, canonical
+rational bytes, commission scheduling and adversarial growing-denominator work
+remain required. Unchanged-owner laziness does not make large sets of changed
+owners free. Measure those boundary writes and rational normalization as well as
+claims before selecting admission allowances. Tail accounting remains separate
+until its own rules explicitly choose any reuse.
 
 ## Ordered transactional execution
 
