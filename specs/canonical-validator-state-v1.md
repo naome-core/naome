@@ -546,8 +546,29 @@ capacity and separately eligible activations. New maturation retains its full
 first-matured count and debt collection before allocation. It cannot be netted
 against old-capacity loss to preserve an allocation that the loss phase removes;
 any subsequent increase follows the ordinary selected activation rules.
-Exact authenticated phase records, reconciliation with pending portions and
-bond-cap changes remain part of the unfinished integration contract.
+Exact authenticated phase records and bond-cap integration remain unfinished.
+
+After the loss projection, reconcile existing pending delegation portions
+against the post-loss effective allocations and applicable targets, before new
+maturation can supply fresh capacity. Remove any excess pending increase or
+reduction amount newest-first, in reverse canonical queue order. For each
+visited portion remove the lesser of its amount and the excess still to remove.
+An untouched or partially surviving portion retains its original eligibility
+and priority. This reconciliation changes no effective allocation and spends
+no voluntary churn; the mandatory loss itself retains its separate treatment.
+
+For capacity 100, effective allocation 50 and pending increase 50 toward target
+100, a loss leaving capacity 60 retains only ten pending units. For effective
+allocation 100, target 60 and pending reduction 40, a mandatory loss leaving
+effective allocation 80 retains only twenty pending reduction units. Applying
+the old forty-unit reduction after that loss would overshoot the target.
+
+Canceled excess portions cannot recover their old priority when capacity later
+returns. Newly maturing amounts follow the existing fresh-availability-priority
+rule. Reconciliation does not grant a waiting amendment earlier eligibility,
+create an increase to fill a newly exposed gap, or revive removed effective
+weight. Exact derivation of applicable targets with overlapping amendments and
+other boundary events remains part of the integration contract.
 
 ### Delegation-plan amendments
 
