@@ -231,6 +231,39 @@ rounding, and ordering of release relative to settlement and other epoch-boundar
 effects remain unfinished. The selected deadline and release rules do not alone
 establish the complete evidence-admission or epoch-transition contract.
 
+### Exit precedence and re-bonding
+
+A finalized exit is irreversible for that registration. Neither the operator nor
+the beneficiary can cancel it, restart its delay or move its queue position
+backward. Other pending requests cannot prevent either role from initiating exit.
+Future participation after that exit requires a fresh registration and an unused
+consensus key, with the independent bond and authorization requirements; it does
+not erase the former registration's liability or tombstone history.
+
+Exit takes precedence over unapplied backing and weight increases. Finalizing
+exit cancels their future activation, and later increase requests are rejected.
+Canceling activation does not refund principal or remove its liability. The
+already effective state changes only through the delayed transition and its
+remaining churn budget. Exact disposition and release horizons of canceled
+pending principal must be specified; it must not become a spendable duplicate.
+Repeated exit requests cannot acquire a new effective date for the same exit;
+their exact rejection or no-op classification remains to be specified.
+
+An explicitly beneficiary-authorized direct re-bonding operation moves retained
+principal into a disjoint pending-rebond category. It preserves the amount's
+existing release floor and holds the principal liable while awaiting delayed,
+churn-compliant activation, even when that old release date arrives first. The
+same principal is not simultaneously withdrawable or usable backing elsewhere.
+While it later backs active weight, no old release date makes it withdrawable.
+On subsequent effective reduction or exit, its release floor must preserve both
+the old obligation and the new complete exposure window.
+
+Partial re-bonding splits amounts without duplicating atoms. Records may merge
+only when their remaining rights and conditions are identical. Independent
+cancellation of pending re-bonding and its interaction with irreversible exit
+require exact lifecycle rules; an unspecified cancellation path cannot bypass
+the selected liability hold.
+
 ### Voluntary churn refinement
 
 For positive prior-epoch total active agreement weight W, the selected integer
@@ -325,7 +358,8 @@ key within the containing genesis context. An already admitted key cannot be
 assigned again, including to another registration or by reactivating a retired
 key. Invalid admission reserves nothing. Historical key assignments and lineage
 tombstones remain available for the required verification and liability rules.
-Cancellation of pending changes requires its own exact contract before support.
+Cancellation outside the explicitly selected exit-precedence behavior requires
+its own exact contract before support.
 
 Either the operator or the bond beneficiary may request delayed exit. The
 beneficiary may request bond reduction and may withdraw only released principal
@@ -335,9 +369,10 @@ registration includes these beneficiary rights.
 A request is distinct from an effective change and from withdrawable value.
 Exit or reduction does not shorten offense liability. The existing
 30-complete-epoch liability window, complete offense-liable forfeiture, and
-lineage-wide permanent tombstone rules remain binding. Exact exposure records,
-epoch endpoints, reduction scheduling, and penalty/withdrawal ordering remain
-unfinished; these rights do not imply those operations are implemented.
+lineage-wide permanent tombstone rules remain binding. The refinements above
+select exposure and deadline semantics; exact record bytes, remaining scheduling
+and epoch-boundary integration are unfinished. These rights do not imply that
+the operations are implemented.
 
 ## Ordered transactional execution
 
