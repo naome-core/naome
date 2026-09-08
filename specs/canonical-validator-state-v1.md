@@ -488,6 +488,36 @@ with mandatory decay, penalties, target eligibility and concurrent amendments.
 These ordering constraints neither complete that integration nor grant earlier
 activation than the original request eligibility and capacity maturity.
 
+### Permanent delegation-target removal
+
+Exclude a registration from new delegation-target calculations as soon as its
+irreversible exit request is finalized, or its permanent penalty tombstone is
+canonically applied. Its requested maximum contributes zero to the allocation
+sum R from that event onward. Recompute targets over the owner's remaining
+permitted requests; do not create a request for an unrequested replacement.
+Historical request, attribution and liability facts retain their verification
+requirements.
+
+For live capacity 100 and requests `(100,100)`, excluding the first registration
+raises the second target from 50 to 100. Automatically queue newly required
+voluntary reconciliation with fresh removal-event priority and first eligibility
+in event epoch E+2, also requiring the originating owner request's eligibility.
+Existing surviving pending portions retain their eligibility and priority under
+the general normalization rule.
+
+Excluding an exiting target from future calculation does not prematurely remove
+its still-effective allocation or bypass its delayed exit and churn. Replacement
+activation waits for actually available owner capacity and the ordinary gross
+churn budget; the same units cannot support the departing and receiving targets
+simultaneously. A permanent penalty keeps its mandatory effect on the next
+applicable snapshot without waiting for this voluntary replacement.
+
+Temporary bond limitation and being outside the top-256 active set are not
+permanent target removal and do not invoke this filter. Their separate backing,
+eligibility, ranking and activation constraints remain binding. Exact event
+records and composition with partial exits and other mandatory reductions remain
+part of the unfinished integration contract.
+
 ### Mandatory owner-capacity loss
 
 A mandatory loss of live owner capacity from decay or collection cannot itself
