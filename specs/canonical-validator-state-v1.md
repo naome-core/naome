@@ -2066,6 +2066,94 @@ precedes deriving that boundary height's surviving capacity and authorization
 snapshot. These prepared effects install only atomically with the complete
 finalized transition, preserving the existing parent-provenance boundary.
 
+## Canonical supply and fee-custody records
+
+The core accounting namespace has exactly three mandatory records. Their logical
+keys are the single raw bytes shown below, not textual digits or NAT values.
+Namespace-tag assignment and the other custody families remain part of the
+unfinished global inventory.
+
+| Logical key, hexadecimal | Canonical value |
+| --- | --- |
+| `00` | `NAT(cumulativeIssuedAtoms) || NAT(cumulativeBurnedAtoms)` |
+| `01` | `NAT(feeRewardReserveAtoms)` |
+| `02` | `00` for the genesis pool sentinel, or `01 || NAT(poolHeight) || NAT(poolAtoms)` |
+
+All three records remain present even when their numerical values are zero.
+Other keys, other pool tags, nonminimal integers and trailing bytes are invalid
+in this namespace. The genesis sentinel has no amount or height suffix. A
+non-genesis pool height is positive and must equal the containing finalized
+state's height. The sentinel is valid only at height zero. An authenticated
+absence of a required key cannot satisfy this complete state schema; a missing
+physical node or unusable local index remains a local state-access failure and
+is not evidence of a legitimate zero balance.
+
+Let I and B be the cumulative issued and burned atoms. Both use exact growing
+naturals and never decrease; require `B <= I`. Accounted live supply is derived
+as `I - B`. No third independently writable live-supply counter exists. Genesis
+sets I to the selected gross issuance `10^18` atoms, and B to exactly the explicit
+burns actually performed by the approved genesis transition. This includes the
+selected genesis validator-pool fraction under `GOV-123`; it does not invent an
+unfinished ceremony input or burn total. The fee-reward reserve starts at zero
+and the pool record holds the genesis sentinel, not a distributable genesis pool.
+
+Changing I requires the separately selected issuance authority. Ordinary account
+management, fees, fee settlement and claims change I by zero. The only permitted
+post-genesis issuance remains the independently specified tail policy; this
+record schema neither selects its parameters nor grants a caller authority to
+balance a transaction by adding issuance. Likewise, B increases only by an
+explicitly required burn, not by an unexplained custody discrepancy.
+
+After finalized non-genesis height H, the pool record is exactly `(H, P_H)`.
+During H+1's first proposal-dependent settlement, authenticate the required
+height-H certificate and use that exact historical pool and snapshot. Let
+`R_total` be the sum of the existing integer signer-share formula. Consume P_H
+once: add R_total to the integer fee-reward reserve and add `P_H - R_total` to
+B. The resulting reward obligations belong to that reserve under the exact
+accumulator rules below. Replace the consumed pool with a current H+1 pool
+initialized to zero before adding that height's accepted fee contributions.
+Never relabel P_H as new fees or count it in both pools. A zero P_H still requires
+certificate authentication, participation accounting and the single cursor
+advance; it does not skip settlement.
+
+At height one, the separately specified genesis certificate sentinel consumes
+no distributable prior pool and opens only the height-one pool. No later height
+may use that exception. Wrong-height pool input, duplicate consumption or an
+unexpected sentinel rejects the transition; a local inability to read required
+state retains its separate unavailable classification. Every rejected proposal
+leaves prior counters, pool cursor, reserve and reward obligations unchanged.
+
+For each non-artifact operation fee F, debit exactly F from its authorized
+payer's available liquid balance, add `floor(F/5)` to the current-height pool,
+and add `F - floor(F/5)` to B. All six account-management operations use these
+fee effects and issue zero atoms. AccountCreate's funding D separately moves
+D from sponsor to the new account and leaves the other custody totals unchanged.
+A successful whole-atom fee-reward claim moves its claimed amount from reserve
+to the owner's liquid balance; its own fee still follows the current-height
+fee partition and pre-proceeds funding rule. Artifact fee partitioning retains
+its separately specified citation pool and burn rules.
+
+The reserve is integer custody. Realized rational credits and unrealized cursor
+entitlements are claims against it, not additional live atoms. Their total exact
+outstanding value must equal the reserve. Current pool custody, reserve custody,
+liquid balances, bond categories, attribution deposits, governance reserves and
+all other live-atom categories are mutually exclusive accounting locations.
+Their complete sum equals `I - B`; this core schema does not finish the inventory
+or ownership rules of the other families.
+
+A transition may establish conservation incrementally from a fully validated
+parent invariant. It must account for every changed custody location, including
+non-account records, and prove `sum(custody_deltas) = issued_delta - burned_delta`
+with unchanged custody preserved. Checking only payer/recipient balances or
+matching an arbitrary parent root is insufficient. No full-state rescan per
+operation is mandated by this arithmetic identity, but complete state validation,
+deterministic indexes and exact change tracking remain required. Byte-valid
+counter records alone do not prove conservation or canonical authority.
+
+The exact accounting record bytes support component codec and transition
+calibration. Global namespace tags, complete custody integration, tail semantics,
+canonical installation and operation/resource admission remain unfinished.
+
 ## Fee-funded reward accumulation and claims
 
 This section selects the fee-funded accumulator, fractional ownership, historical
