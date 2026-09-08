@@ -313,7 +313,8 @@ first-matured accumulator independently of active-set staging. Maturation makes
 owner capacity available; any resulting increase in effective consensus weight
 remains subject to staged churn. This explicitly distinguishes matured owner
 weight from activated voting weight in `ECON-040`. Exact delegation-growth
-requests and their queue positions remain to be specified. The first-matured
+event identities and exact eligibility coordinates remain to be specified;
+the standing authorization and fresh-priority rule below apply. The first-matured
 accumulator still determines the growth-driven bootstrap target; that replacement
 retains its queue treatment while the independent linear cap is not delayed.
 
@@ -453,8 +454,19 @@ request's exact proportional share is 20/7 and its ceiling is three. The choice
 refines the remainder contract under `ECON-093` and `ECON-126`; it must not be
 described as quota-preserving largest-remainder allocation.
 
-Canonical request encoding, delegation-growth queue priority,
-request amendments, and origin-batch assignment remain unfinished. Historical
+An existing absolute request provides standing owner authorization for newly
+matured capacity up to its requested maximum. No fresh signed request is required
+solely because that capacity matures. A newly available amount receives fresh
+queue priority at its canonical availability event; it does not inherit the
+original request age. Unchanged pending portions retain their existing priority.
+The original request eligibility and weight maturity must both be satisfied.
+Once both conditions hold, the newly matured amount may participate in churn
+without another E+2 wait. The exact derived-event identity and total queue
+ordering remain unspecified. Automatic queuing grants no immediate active
+weight and remains subject to staged churn.
+
+Canonical request encoding, request amendments, and origin-batch assignment
+remain unfinished. Historical
 offense-snapshot obligations and fee-reward checkpoints require their own exact
 contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
 or `ECON-155`, and staging must never count one owned unit in two simultaneous
