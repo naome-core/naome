@@ -136,8 +136,8 @@ does not prove this relationship or the parent's canonical provenance.
 Operation class 0 is economic and class 1 is validator. Every recognized kind
 has exactly one class: account-management kinds 0 through 5 are economic;
 registration/key-management kinds 6 through 8 are validator; fee-reward claim
-kind 9 is economic; equivocation-evidence kind 10 and delegation-plan kind 11
-are validator. The remaining
+kind 9 is economic; equivocation-evidence kind 10, delegation-plan kind 11
+and bond/exit kinds 12 through 16 are validator. The remaining
 inventory must assign every other kind before its admission. Unknown classes,
 unknown kinds, wrong-class kinds and unconsumed nested bytes reject. Derive each
 class's count and byte usage from the sole committed stream rather than carrying
@@ -802,8 +802,8 @@ The independent deadline-reservation and honest-proposer-gap requirements remain
 unfinished under `ECON-181`, `RES-049` and `PROD-091`.
 
 The following sections refine re-bonding, request conflicts, principal selection
-and release ordering. Complete record bytes, resource-bounded queue execution
-and integration with the remaining epoch-boundary effects are still required.
+and release ordering. The component record bytes below retain separate requirements for resource-
+bounded queue execution and integration with other epoch-boundary effects.
 The selected deadline and release rules do not alone establish the complete
 evidence-admission or epoch-transition contract.
 
@@ -906,6 +906,268 @@ only when their remaining rights and conditions are identical. V1 provides no st
 proceeds through activation and subsequent ordinary reduction or exit, or follows
 the irreversible-exit cancellation and retention rules above. Canceling a
 re-bond intent cannot independently unlock the principal.
+
+### Canonical bond and exit operations
+
+The following V1 kinds extend the validator-operation class. Reg means
+RegistrationId[32], payer and initiator are AccountId[32], and B and F use NAT.
+Every displayed amount and fee is positive.
+
+| Kind | Operation | Complete payload | Required account authorization |
+| --- | --- | --- | --- |
+| 12 | BondTopUp | Reg || payer || NAT(B) || NAT(F) | Immutable beneficiary and payer |
+| 13 | BondReduce | Reg || payer || NAT(B) || NAT(F) | Immutable beneficiary and payer |
+| 14 | BondRebond | Reg || payer || NAT(B) || NAT(F) | Immutable beneficiary and payer |
+| 15 | ValidatorExit | Reg || initiator || payer || NAT(F) | Initiator and payer |
+| 16 | BondWithdraw | Reg || payer || NAT(B) || NAT(F) | Immutable beneficiary and payer |
+
+All referenced accounts and the registration exist. Resolve the immutable bond
+beneficiary from the registration descriptor; the payload cannot name a new
+beneficiary or funder. For ValidatorExit the signed initiator is exactly the
+operator or beneficiary. Either suffices; the other need not authorize unless
+also serving as payer. Use exactly the distinct required current account-policy,
+generation and nonce rows, consuming aliased roles only once. The complete frame
+is BYTES(Intent)||BYTES(accountAuthorizationWitnessSection)||BYTES(empty), with
+one exact `00` empty final section and no consensus-key or new-policy witness.
+All semantic fields, roles and the fee are bound by the shared OperationId.
+
+BondTopUp debits B from the beneficiary's liquid funds into this registration's
+pending principal. Later top-ups require no additional operator consent. Gifted
+funding, transferable claims and multiple beneficiaries remain unsupported.
+The registration must still be live: no irreversible exit request or tombstone.
+A pending initial registration may accept a top-up, but that top-up cannot
+activate before the initial registration does. It retains its own ordinary E+2
+eligibility and priority, without borrowing the initial request's date.
+
+BondReduce requests B whole atoms of usable backing to cease backing later.
+The registration must be live. B cannot exceed usable principal minus the
+continuing minimum `max(10^13, ceil(w / 20))` at admission, where w is its
+combined effective ordinary and bootstrap candidate weight. It may have
+only one unfinished reduction, and a second request rejects before fee or nonce
+changes. The delayed effective step separately enforces weight coverage by the
+selected bootstrap-first and owner-reference reductions; admission does not
+remove backing or start its release clock. This provides no standalone reduction
+cancellation operation. Irreversible exit cancels its unapplied remainder.
+
+BondRebond moves B from admissible independent cooling principal into its own
+pending re-bond request, selected by descending frozen release floor. It requires
+a live registration and preserves every selected floor. The operation neither
+withdraws the amount nor makes it usable immediately. It cannot consume released,
+usable, already pending or exit-held principal, and has no standalone cancellation
+path. Splits conserve atoms exactly; each request keeps its own activation date
+and queue priority.
+
+ValidatorExit creates the irreversible exit request and first permanent target-
+removal cause, cancels unapplied increases and the remaining voluntary reduction,
+and moves all exit-canceled pending principal into the exit-held category.
+Its effective exit remains delayed and staged. An existing exit or tombstone
+rejects a new exit request without fees, nonces or reprioritization. An exit
+before initial activation cancels that activation but retains its principal
+under the same never-exposed and inherited-floor rules. It does not fabricate
+prior active exposure or a usable minimum bond that never activated.
+
+BondWithdraw debits exactly B from released principal and credits the immutable
+beneficiary's liquid account. It is permitted after exit or tombstoning when
+released principal exists. Insufficient released principal rejects; cooling or
+pending value cannot substitute for it. Ordinary fee funding is separate and
+must be available in the payer's liquid balance before proceeds. Aliased funder/
+payer roles in a top-up similarly require enough for B plus F. No operation
+borrows a later credit, changes beneficiary ownership or independently shortens
+liability. Admission, authorization, fee/nonce effects and all source/destination
+records install together or not at all.
+
+### Canonical bond custody and lifecycle records
+
+All bond records resolve their beneficiary through the immutable registration
+descriptor. Principal is counted exactly once among usable, request-owned pending,
+exit-held, independent cooling and released categories. Historical original
+amounts and exposure references are not additional custody.
+
+```
+FloorOption = NAT(0) | NAT(1) || NAT(epoch)
+HeightOption = NAT(0) | NAT(1) || NAT(height)
+```
+
+Absence of an inherited floor sorts before any present epoch. A present zero
+epoch is distinct from absence. Unknown option tags or extra suffixes reject.
+Separate namespaces have these logical keys and values:
+
+| Record | Key | Complete value |
+| --- | --- | --- |
+| Usable principal class | RegistrationId[32] || FloorOption | NAT(amount) |
+| Independent cooling class | RegistrationId[32] || FloorOption | NAT(amount) |
+| Exit-held principal class | RegistrationId[32] || FloorOption | NAT(amount) |
+| Released principal | RegistrationId[32] | NAT(amount) |
+| Bond lifecycle | RegistrationId[32] | activationHeightOption || lastExposureEpochOption || effectiveExitHeightOption |
+
+Each amount is positive; zero is authenticated absence. For usable and exit-held
+classes the option is the inherited floor. A cooling class's option is its frozen
+resulting floor. Released principal carries no floor because all release and
+hold conditions have already been discharged. Equal keys within a category
+coalesce by exact addition, and a partial debit splits the amount without
+inventing deposit IDs. No coalescing crosses custody categories or merges pending
+requests with different causes, eligibility or priority.
+
+Bond lifecycle is mandatory for every admitted registration. Its options use
+the displayed framing; lastExposureEpochOption uses FloorOption. Activation and
+effective-exit heights are facts, not independently scheduled targets. A new
+post-genesis registration starts with all three options absent and its initial
+principal in its pending-registration request. Successful initial activation
+sets its height once. Genesis registrations have activation height zero and no effective exit.
+Their initial usable bonds, applicable genesis exposure facts and other ceremony
+inputs remain subject to complete authenticated genesis construction.
+Every present lifecycle coordinate is bounded by the installed state height or
+epoch. A post-genesis activation height is positive and resolves to the actual
+successful initial activation; an exposure epoch resolves to an actually installed
+selected snapshot. Effective exit resolves to actual full voluntary-exit
+completion and its accepted exit source, never a future scheduled event. When
+activation and effective exit both exist, exit cannot precede activation.
+
+The latest exposure advances only when the registration belongs to an actually
+installed selected H snapshot, including selected zero-weight membership. Use
+H's epoch; rejected preparation changes nothing. Staging that removes backing
+freezes its floors before H's new exposure, exactly as specified above. An
+unselected eligible candidate gains no exposure. Earlier key changes, later
+activity and supplied historical claims cannot modify an independently cooling
+floor. A previously exposed lineage cannot return to the never-exposed option.
+
+An irreversible-exit-request namespace uses RegistrationId[32] as key and value:
+
+```
+Context || sourceParentAncestry[32] || NAT(sourceHeight)
+|| NAT(operationPosition) || OperationId[32] || initiatorAccountId[32]
+```
+
+It exists only for a canonically accepted kind-15 request and is permanent.
+Its source fields and first permanent-removal record must agree; a prior penalty
+cannot be replaced by a new exit request. An effectiveExitHeight is absent until
+the full staged exit completes and then is fixed at that actual positive height.
+It may exist without initial activation when a pending registration exits first.
+An ordinary exit completion requires its exit-request record and appropriate
+E+2 eligibility. A penalty is a separate permanent fact, not an alternative
+encoding of voluntary exit or proof that its delayed exit already completed.
+
+Registration candidacy and custody must be derived from these facts together
+with the independent descriptor, key, penalty and weight state. Initial activation
+is required for usable candidacy. A partial exit retains its selected continuing
+minimum and backing requirements; a full exit or mandatory tombstone grants no
+future activation. A tombstone can coexist with a prior exit request, past
+activation and exposure. Do not collapse those facts into one status tag that
+forgives liability or loses its first removal date.
+
+When usable amount x ceases backing, debit its exact source class and move x
+to cooling with the maximum of its inherited floor and the already-established
+last exposure plus 31, using no exposure term for a never-exposed lineage. A full
+exit also transfers exit-held principal into cooling, preserving its inherited
+floor and final lineage exposure floor. Until that full completion, exit-held
+principal cannot release, even when its inherited date passes. Independent
+cooling is not re-locked by exit or later exposure.
+
+The boundary release scan, after prior-height settlement and before ordinary
+operations, moves every fully eligible cooling amount to the released balance.
+A no-floor amount has no date barrier but still requires the selected cessation,
+exit-hold and release-phase conditions. After this scan no due cooling class may
+remain in installed state merely because an incomplete index missed it. The scan
+credits no liquid account; a separately authorized withdrawal does. Newly removed
+qualifying amounts may release in the same scan without intermediate canonical
+installation. Physical unavailability is not authenticated zero principal.
+
+The first destructive penalty collects all currently liable usable, pending,
+exit-held and cooling principal, and cancels its pending activation/reduction/
+exit queue work without rewriting any historical exposure or voluntary-exit fact.
+It leaves already released principal outside forfeiture. Sum the currently owned
+amounts once before applying the existing floor(total/10) reporter split; original
+request amounts are provenance and are not counted again. Remove exhausted
+custody/queue rows atomically with the marker, tombstone, reporter/burn effects
+and all other penalty effects. The absence of an effective voluntary-exit height
+after a tombstone does not hold nonexistent forfeited principal or restore a
+canceled exit queue.
+
+### Canonical bond request queue bodies
+
+Ordinary bond requests use the shared Event and PortionId framing. Their Event
+has phase 4, effectKind 0, no owner ordering subject and exactly the registration
+subject. The authorizing beneficiary/initiator remains a role, not an ordering
+subject. sourceViewOrdinal is always zero. Each queue row has PortionId[32] as
+key in the bond-request namespace and value:
+
+```
+BYTES(Event) || NAT(direction) || NAT(requestKind) || RequestBody
+```
+
+Eligibility is exactly the source epoch plus two and is derived from the source
+height. Event, direction and ordinal zero recompute the key. The source operation
+must actually have the matching kind, registration, amount and authorizations.
+No supplied queue row or source hash substitutes for canonical source validation.
+
+| requestKind | Source operation | direction | RequestBody |
+| --- | --- | --- | --- |
+| 0 | Initial registration, kind 6 | 1 | NAT(initialAmount) |
+| 1 | BondTopUp, kind 12 | 1 | NAT(originalAmount) || NAT(remainingAmount) |
+| 2 | BondRebond, kind 14 | 1 | RebondClasses |
+| 3 | BondReduce, kind 13 | 0 | NAT(originalAmount) || NAT(remainingAmount) |
+| 4 | ValidatorExit, kind 15 | 0 or 2 as below | empty |
+
+Initial and original amounts are positive. Top-up and reduction remaining
+amounts are positive and at most original; re-bond class remainders may be zero
+as specified below. Delete a completed or fully canceled row. Unknown kinds,
+noncanonical numbers, inappropriate directions or extra body bytes reject.
+Initial, top-up and re-bond bodies own their remaining pending principal; a
+reduction amount is only an authorization to remove existing usable principal,
+not another escrow. An exit body invents no positive amount to keep itself alive.
+
+For initial registration, keep its entire initial amount liable and pending
+until its eligible registration activation. That activation transfers it into
+usable backing and establishes candidacy together, with the continuing minimum
+and all other eligibility checks. It does not mint effective delegated weight.
+There is no separately usable partial initial registration. Later top-ups keep
+their own requests; initial activation cannot advance their dates.
+
+A top-up step moves the applied positive atom amount, bounded by its remaining
+amount, into usable backing without an inherited floor, subject to the selected
+delayed complete-state staging rules.
+It changes no owner contribution merely because more backing is available.
+The mutable remaining amount counts only atoms not yet activated. Pending source
+amounts of different requests never merge to borrow one request's priority.
+
+```
+RebondClasses = NAT(classCount)
+               || (FloorOption || NAT(originalAmount) || NAT(remainingAmount))*classCount
+```
+
+classCount is positive. The source-selected classes are unique and sorted by
+descending frozen floor, with no floor last. Every original amount is positive;
+remaining amounts may be zero but are at most their originals. Keep the original
+class rows and their order while any remaining amount is positive. Their original
+sum equals the admitted re-bond amount; only the remaining sum is current pending
+custody. Delete the request when that sum reaches zero. Partial activation consumes
+classes in this same descending order, skipping zero remainders and splitting
+the final amount exactly. Activated principal enters its usable inherited-floor
+class. Source selection order does not become a new source-view ordinal.
+
+A reduction step consumes the selected usable classes by ascending resulting
+release floor and then inherited floor. Its actual atom decrement reduces only
+remainingAmount, never originalAmount or queue identity. It applies the selected
+bootstrap-first, preserved owner-reference, whole-atom maximum and full-map churn
+rules. A backing-only step may spend zero churn, but cannot waive minimum backing
+or liability. The resulting owner contributions and reconciliation events remain
+separate effects of that same step.
+
+An exit request uses direction 0 when its combined effective ordinary and
+bootstrap candidate weight w is positive at admission and direction 2 otherwise,
+independent of whether the registration belongs to the selected set. Preserve that direction through every
+later partial step, even if mandatory changes first bring weight to zero.
+The selected full-state exit procedure determines each step; no synthetic positive
+weight remainder is stored for a zero-weight completion. New ordinary activation
+is already canceled, and backing/held principal can complete only with the full
+exit's selected conditions. Partial cuts retain the same request and queue place.
+
+Each source creates its request once in its actual canonical phase. Completion,
+exit cancellation or penalty deletion cannot rerun that old source to resurrect
+principal or priority. Complete source/registration/eligible-queue indexes retain
+all requests, including zero-churn work; their generation and frozen-pass indices
+obey the same completeness, no-renumbering and atomic-installation rules as
+other portions. BondWithdraw is immediate and creates no queued request.
 
 ### Bootstrap allocation during voluntary bond reduction
 
@@ -1031,8 +1293,8 @@ successive bond or partial-exit reductions with the same reference. Splitting su
 across steps, requests or epochs alone cannot alter the final distribution at
 the same K. Genuine intervening contribution changes may alter subsequent
 rounding through the new reference; no invariance across arbitrary reordered
-transitions is claimed. Exact reference encoding, coupled economic-step sizing
-and resulting pending-delegation integration remain unfinished.
+transitions is claimed. The reference codec below retains separate coupled
+economic-step sizing and complete pending-delegation integration requirements.
 
 After a voluntary bond cut changes ordinary contributions, normalize surviving
 owner requests and existing pending portions against the resulting state.
@@ -1045,6 +1307,77 @@ actual owner capacity, combined backing and voluntary churn; the maturation-only
 exception does not apply. An exiting registration remains excluded from new
 target calculations, so this rule never queues reactivation of the exiting
 target.
+
+### Canonical bond-cut contribution reference
+
+The bond-cut-reference namespace has one mandatory row per registration, keyed
+by RegistrationId[32], with complete value:
+
+```
+NAT(ownerCount) || (ownerAccountId[32] || NAT(referenceContribution))*ownerCount
+```
+
+Owners are strictly ascending and distinct, accounts exist, and every contribution
+is positive. ownerCount may be zero. These are the frozen reference contributions,
+not additional owned or currently effective units. Initial registration and
+genesis ordinary-weight initialization use the empty vector.
+
+Before the first bond-driven or partial-exit cut, capture the current effective
+owner vector. Reuse it across that reduction sequence and derive the selected
+highest-averages result at each new surviving total. Keep zero-result owners in
+the original positive reference, rather than deleting their original reference
+entry when their effective row becomes absent. A change of epoch, request, key,
+selected-set membership or backing alone does not reset it.
+
+Another canonical cause that actually changes the effective owner vector resets
+the reference to that resulting current vector atomically. No caller may choose
+between the old and new references. Bootstrap-only changes leave it alone. A
+partial exit that cuts ordinary weight at unchanged minimum backing remains in
+the original reduction sequence. In valid state, the current effective vector is
+the selected highest-averages projection of its reference at the current ordinary
+total; when a non-bond change resets the reference, projection at its full sum
+returns that same vector. Historical attribution remains separately frozen.
+
+Reference changes and all affected effective rows, principal classes, bootstrap
+surrender, pending request amounts and owner reconciliation events form one
+complete staged update. Rejected work preserves them all. Reference records
+supply neither permission for a cut nor a substitute for minimum backing,
+whole-atom maximality, full-map churn or the selected request delay.
+
+### Required bond-state conformance vectors
+
+Implementation must cover strict operation roles and codecs, beneficiary/payer
+aliasing, initiator selection, live versus exiting/tombstoned admission, positive
+amounts, initial pending registration, and independent top-up dates without
+operator consent. Test full source and fee funding, insufficient released or
+cooling value, no gifted ownership, duplicate exit/reduction rejection and
+whole-proposal rollback after an earlier speculative custody transfer.
+
+Exercise disjoint category conservation, partial class splits/coalescing, request
+priority separation, descending re-bond selection and activation, ascending
+resulting-floor reduction, and original-versus-remaining amount accounting.
+Cover exit before initial activation, exit-canceled top-ups/re-bonds, no-floor
+never-exposed release, inherited floors, zero-weight selected exposure, boundary
+removal before new exposure, independent cooling during later activity and
+release before ordinary withdrawal. A tombstone may coexist with prior exit
+history without inventing effective-exit completion or a second forfeiture.
+
+Check full and partial request bodies and exact Event/Portion IDs, unchanged exit
+direction after mandatory zeroing, zero-weight exit completion without a positive
+sentinel, canceled-source anti-resurrection and complete frozen-pass/index
+behavior. Repeated bond cuts and unchanged-minimum partial exits must match one
+reference projection at the final total; an actual intervening owner-vector
+change must reset that reference, while key/epoch/membership/backing-only changes
+must not. Pending, usable, cooling and exit-held principal must aggregate once
+for the first penalty and exclude released value. Every failure preserves all
+primary roots and custody images. These are future implementation obligations,
+not runtime tests executed by this specification change.
+
+These component contracts refine ECON-144, PROD-066 and PROD-112/113/114. Complete
+boundary ordering, the remaining bootstrap and other queue bodies, global
+namespace ordering, genesis construction, durable installation and measured
+count/byte/work admission remain required. Parsing a record or executing an
+isolated arithmetic helper does not satisfy those integration dependencies.
 
 ### Voluntary churn refinement
 
@@ -1119,7 +1452,7 @@ does not authorize counting one owned unit in multiple effective allocations.
 
 The following queue, economic-progress and pending-change sections refine
 eligibility, conflicts, cancellation and supersession. The delegation component
-records below leave non-delegation bodies and bounded full execution unfinished. Partial economic changes must preserve
+records below leave other non-bond, non-delegation bodies and bounded full execution unfinished. Partial economic changes must preserve
 integer bond backing and Knowledge Weight ownership; a permitted weight delta
 alone does not determine the exact bond atoms that cease exposure. A partial
 transition must account for the complete selected registration-weight change,
@@ -1190,7 +1523,7 @@ part of the same canonical atomic overlay as its cause. Rejected speculative
 work creates no retained event, consumes no support and gives no authority;
 canonical replay cannot create a second copy of an already-produced portion.
 The component framing below encodes these distinctions injectively; exact
-non-delegation portion bodies, resource bounds and full installation remain
+other non-bond, non-delegation portion bodies, resource bounds and full installation remain
 separate requirements.
 
 After all pre-pass boundary-derived portions have been created and normalized,
@@ -1255,8 +1588,8 @@ AuthorizationView = PlanId[32] || NAT(viewDate) || CeilingVector
 A delegation event has both its stable owner and target registration, direction
 0 or 1, and effectKind 0, 1, 2, 3 or 5. It cannot encode bootstrap, bond-atom,
 account-only or zero-weight exit-completion effects as ordinary owner weight.
-Their portion-body codecs remain separate work despite sharing the event
-identity framing. admittedAmount and remainingAmount are positive whole units,
+Their family-specific bodies do not use this delegation codec; the ordinary
+bond-request bodies above share the event identity framing. admittedAmount and remainingAmount are positive whole units,
 with remainingAmount<=admittedAmount. An event/capture is immutable after its
 creation; only remainingAmount may decrease. Delete the row at zero, including
 full cancellation. Partial execution or cancellation changes neither the key,
@@ -1331,7 +1664,7 @@ and newly created in-pass portions wait for a later pass as already specified.
 These records start empty in genesis. Their logical order, source binding and
 atomic update rules do not select count/byte/work ceilings, grant a local queue
 or recovered cache canonical authority, or complete the remaining shared
-non-delegation bodies and full boundary/custody installation contract.
+other non-bond, non-delegation bodies and full boundary/custody installation contract.
 
 ### Economic progress units
 
@@ -1913,8 +2246,8 @@ A request is distinct from an effective change and from withdrawable value.
 Exit or reduction does not shorten offense liability. The existing
 30-complete-epoch liability window, complete offense-liable forfeiture, and
 lineage-wide permanent tombstone rules remain binding. The refinements above
-select exposure and deadline semantics; exact record bytes, remaining scheduling
-and epoch-boundary integration are unfinished. These rights do not imply that
+select exposure, deadline and component custody/request bytes; remaining
+scheduling and epoch-boundary integration are unfinished. These rights do not imply that
 the operations are implemented.
 
 ### Canonical registration and consensus-key operation bytes
