@@ -216,12 +216,15 @@ from the newest bond tranche or the lineage's latest active epoch. When eligible
 evidence executes, the selected forfeiture set is still all principal currently
 liable at execution, rather than the principal present at the offense.
 
-Whether otherwise valid, distinct non-penalizing evidence under `ECON-188`
-remains admissible after that deadline is unresolved under `ECON-247`; the
-economic deadline alone does not settle that separate admission question.
+The same canonical-execution deadline governs all equivocation-evidence
+admission under `ECON-247`. Even otherwise valid, distinct non-penalizing
+evidence against an already penalized lineage under `ECON-188` is rejected
+after the final height of its offense epoch E+30. Before that deadline it
+remains subject to the bounded pending-evidence rules and creates no second
+destructive penalty or reporter reward.
 
 Evidence must execute canonically by the final height of its deadline epoch
-to impose the economic penalty.
+to be admitted.
 Local receipt, partial acquisition or mempool presence creates no bond hold.
 Matured bond amounts release at the following epoch boundary before ordinary
 operations. An earlier withdrawal within the ordinary operation stream cannot
