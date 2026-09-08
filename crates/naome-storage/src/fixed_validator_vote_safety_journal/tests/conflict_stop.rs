@@ -697,6 +697,7 @@ fn preselection_pair_stop_uses_tag_0b_and_replays_as_a_distinct_idempotent_kind(
     expected_image.extend_from_slice(&body);
     expected_image.extend_from_slice(expected_state.as_bytes());
     assert_eq!(expected_image.len() - prefix.len(), 205);
+    super::codec_replay::check_vote_journal_image(&fixture, &expected_image);
 
     let mut pair_retagged_as_selected = expected_image.clone();
     pair_retagged_as_selected[prefix.len() + 4] = FINALITY_CONFLICT_STOP_RECORD;

@@ -156,15 +156,33 @@ fn run(kill_minority: bool) {
     assert_eq!(corpus.proposers, [0, 1, 2]);
     let layouts = std::array::from_fn(|_| Layout::new());
     let mut gates = std::array::from_fn(|_| Gate::bind());
+    // The minority must reach R1 Prevote through real R0 deadlines, then
+    // remain available across bounded restart, mesh and operator milestones.
+    // Five-second later-round deadlines can exhaust round 4 before catch-up.
+    let reconnect_bound = naome_network::DIAL_RETRY_MAX + MILESTONE_BOUND;
+    let catch_up_budget_millis =
+        u64::try_from((MILESTONE_BOUND * 12 + reconnect_bound).as_millis()).unwrap();
     let configs = std::array::from_fn(|actor| {
-        corpus
-            .config(
-                &layouts[actor],
-                actor,
-                &gates,
-                if actor < 2 { 120_000 } else { 5000 },
-            )
-            .replace("[network]", "[network]\nserve_finality_proofs = true")
+        let mut config = corpus.config(
+            &layouts[actor],
+            actor,
+            &gates,
+            if actor < 2 {
+                catch_up_budget_millis
+            } else {
+                5000
+            },
+        );
+        if actor >= 2 {
+            let initial =
+                "[timeouts.prevote]\nbase_millis = \"5000\"\nround_increment_millis = \"1\"";
+            assert!(config.contains(initial));
+            config = config.replace(
+                initial,
+                &format!("[timeouts.prevote]\nbase_millis = \"5000\"\nround_increment_millis = \"{catch_up_budget_millis}\""),
+            );
+        }
+        config.replace("[network]", "[network]\nserve_finality_proofs = true")
     });
     let (mut nodes, baseline) = start_on_h1_with_configs(&corpus, &layouts, &mut gates, &configs);
     let original_pids = nodes.each_ref().map(|node| node.child.id());
@@ -320,9 +338,12 @@ fn run(kill_minority: bool) {
     for gate in &gates {
         gate.heal();
     }
-    pump_until(
+    // A long cut can reach the transport's capped dial backoff. The usual
+    // milestone bound alone is shorter than one legitimate retry interval.
+    pump_until_with_bound(
         &mut nodes,
         "complete mesh restored before catch-up",
+        reconnect_bound,
         |nodes| {
             (0..4).all(|actor| {
                 (0..4).filter(|&other| other != actor).all(|other| {
@@ -436,9 +457,10 @@ fn run(kill_minority: bool) {
     for gate in &gates {
         gate.heal();
     }
-    pump_until(
+    pump_until_with_bound(
         &mut nodes,
         "managed replay heals final H3 recipient",
+        reconnect_bound,
         |nodes| {
             nodes
                 .iter()

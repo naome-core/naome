@@ -130,3 +130,7 @@ pub use fixed_validator::{
     FixedValidatorNodeVoteRejectionV0, FixedValidatorNodeVotingSessionV0,
     FixedValidatorSignerCatchUpHeightLimitV0,
 };
+
+#[cfg(all(test, unix))]
+#[path = "../../../tests/support/codec_corpus.rs"]
+mod codec_corpus;

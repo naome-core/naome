@@ -569,3 +569,32 @@ impl Error for FixedValidatorProposalIntentErrorV0 {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) fn check_proposal_intent_corpus(
+    intent: &FixedValidatorProposalIntentV0,
+    context: ConsensusContextV0,
+    fixed_set: FixedAgreementSetId,
+    proposer: ConsensusKey,
+) {
+    crate::codec_corpus::check(
+        "proposal intent",
+        &[intent.canonical_intent_bytes().to_vec()],
+        |bytes| {
+            let decoded = ObservedFixedValidatorProposalIntentV0::decode_and_verify(
+                bytes, context, fixed_set, proposer,
+            )
+            .ok()?;
+            Some(
+                FixedValidatorProposalIntentV0::new(
+                    decoded.snapshot,
+                    decoded.value,
+                    decoded.proposer,
+                )
+                .ok()?
+                .canonical_intent_bytes()
+                .to_vec(),
+            )
+        },
+    );
+}

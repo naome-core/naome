@@ -219,3 +219,7 @@ pub use acquisition::recovery_bundle_staging::{
     AcknowledgedRecoveryBundleStageError, AcknowledgedRecoveryBundleStageOutcome,
     RecoveryBundleStageSelection,
 };
+
+#[cfg(test)]
+#[path = "../../../tests/support/codec_corpus.rs"]
+mod codec_corpus;

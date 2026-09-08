@@ -676,3 +676,37 @@ fn proof_following_local_shared_response_retention_is_retryable_and_release_rest
         block_on(codec.read_response(&FINALITY_PROOF_PROTOCOL, &mut Cursor::new(valid))).is_ok()
     );
 }
+
+#[test]
+fn finality_exchange_frames_have_a_deterministic_mutation_corpus() {
+    let mut codec = codec(1);
+    let mut request_bytes = Cursor::new(Vec::new());
+    block_on(codec.write_request(
+        &FINALITY_PROOF_PROTOCOL,
+        &mut request_bytes,
+        WireRequest {
+            request: request(0x0102030405060708),
+            permit: None,
+        },
+    ))
+    .unwrap();
+    crate::codec_corpus::check("finality request", &[request_bytes.into_inner()], |bytes| {
+        let decoded =
+            block_on(codec.read_request(&FINALITY_PROOF_PROTOCOL, &mut Cursor::new(bytes))).ok()?;
+        let mut output = Cursor::new(Vec::new());
+        block_on(codec.write_request(&FINALITY_PROOF_PROTOCOL, &mut output, decoded)).ok()?;
+        Some(output.into_inner())
+    });
+    crate::codec_corpus::check(
+        "finality response",
+        &[vec![0], found(FINALITY_PROOF_MIN_ENVELOPE_BYTES, 1)],
+        |bytes| {
+            let decoded =
+                block_on(codec.read_response(&FINALITY_PROOF_PROTOCOL, &mut Cursor::new(bytes)))
+                    .ok()?;
+            let mut output = Cursor::new(Vec::new());
+            block_on(codec.write_response(&FINALITY_PROOF_PROTOCOL, &mut output, decoded)).ok()?;
+            Some(output.into_inner())
+        },
+    );
+}

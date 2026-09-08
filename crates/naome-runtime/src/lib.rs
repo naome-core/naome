@@ -45,3 +45,7 @@ pub use types::{
     FixedValidatorRuntimeProofRefusalV0, FixedValidatorRuntimeQueueErrorV0,
     FixedValidatorRuntimeQueueFailureV0, FixedValidatorRuntimeTransportPollV0,
 };
+
+#[cfg(test)]
+#[path = "../../../tests/support/codec_corpus.rs"]
+mod codec_corpus;

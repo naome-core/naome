@@ -38,6 +38,7 @@ fn journal(directory: &Directory) -> PublicationJournal {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn ambiguous_receipt_replacement_never_turns_an_unobserved_receipt_into_acknowledged_debt() {
     use faults::Stage;
@@ -76,6 +77,7 @@ fn ambiguous_receipt_replacement_never_turns_an_unobserved_receipt_into_acknowle
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn receipt_snapshot_rejects_truncation_corruption_foreign_identity_and_false_ack_masks() {
     let directory = Directory::new();
@@ -133,4 +135,102 @@ fn receipt_owner_explicitly_unlocks_even_with_a_duplicate_file_description() {
     contender.try_lock().unwrap();
     drop(duplicate);
     contender.unlock().unwrap();
+}
+
+#[test]
+fn receipt_records_have_independent_vectors_and_repaired_checksum_mutations() {
+    let directory = Directory::new();
+    let ids = [StateId::from_bytes([1; 32]), StateId::from_bytes([2; 32])];
+    let encode = |deliveries: &[Delivery]| {
+        let mut bytes = b"naome:fixed-validator-publication-deliveries:v0\0".to_vec();
+        bytes.extend_from_slice(&(deliveries.len() as u64).to_be_bytes());
+        for delivery in deliveries {
+            bytes.extend_from_slice(delivery.state_id.as_bytes());
+            for count in delivery.attempts {
+                bytes.extend_from_slice(&count.to_be_bytes());
+            }
+            bytes.push(delivery.received);
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"naome:fixed-validator-publication-deliveries-checksum:v0\0");
+        hash.update(&bytes);
+        bytes.extend_from_slice(&hash.finalize());
+        bytes
+    };
+    let deliveries = [
+        Delivery {
+            state_id: ids[0],
+            attempts: [0; MAX_STATIC_PEERS],
+            received: 0,
+        },
+        Delivery {
+            state_id: ids[1],
+            attempts: std::array::from_fn(|index| if index == 0 { 0x0102030405060708 } else { 0 }),
+            received: 1,
+        },
+    ];
+    let golden = encode(&deliveries);
+    #[cfg(unix)]
+    {
+        let mut owner = journal(&directory);
+        for delivery in &deliveries {
+            owner.deliveries.push(Delivery {
+                state_id: delivery.state_id,
+                attempts: delivery.attempts,
+                received: delivery.received,
+            });
+        }
+        owner.save(true).unwrap();
+        assert_eq!(fs::read(directory.0.join("progress")).unwrap(), golden);
+    }
+    let reconstruct = |bytes: &[u8]| -> Option<Vec<u8>> {
+        let mut fresh = journal(&directory);
+        fresh.decode(bytes, &ids).ok()?;
+        Some(encode(&fresh.deliveries))
+    };
+    crate::codec_corpus::check(
+        "publication receipt image",
+        &[encode(&[]), golden.clone()],
+        reconstruct,
+    );
+    let body = &golden[..golden.len() - 32];
+    crate::codec_corpus::check(
+        "publication receipt repaired checksum",
+        &[body.to_vec()],
+        |body| {
+            let mut bytes = body.to_vec();
+            bytes.extend_from_slice(&checksum(body));
+            let mut output = reconstruct(&bytes)?;
+            output.truncate(output.len() - 32);
+            Some(output)
+        },
+    );
+    let offset = HEADER.len() + 8;
+    let mut cases = Vec::new();
+    let mut duplicate = golden.clone();
+    duplicate[offset + RECORD_BYTES..offset + 2 * RECORD_BYTES]
+        .copy_from_slice(&golden[offset..offset + RECORD_BYTES]);
+    cases.push(duplicate);
+    let mut reversed = golden.clone();
+    reversed[offset..offset + RECORD_BYTES]
+        .copy_from_slice(&golden[offset + RECORD_BYTES..offset + 2 * RECORD_BYTES]);
+    reversed[offset + RECORD_BYTES..offset + 2 * RECORD_BYTES]
+        .copy_from_slice(&golden[offset..offset + RECORD_BYTES]);
+    cases.push(reversed);
+    for (index, value) in [
+        (HEADER.len(), 255),
+        (offset + 32 + 2 * 8, 1),
+        (offset + RECORD_BYTES - 1, 2),
+        (offset + 2 * RECORD_BYTES - 1, 128),
+    ] {
+        let mut changed = golden.clone();
+        changed[index] = value;
+        cases.push(changed);
+    }
+    for mut bytes in cases {
+        let split = bytes.len() - 32;
+        let digest = checksum(&bytes[..split]);
+        bytes[split..].copy_from_slice(&digest);
+        assert!(reconstruct(&bytes).is_none());
+    }
 }

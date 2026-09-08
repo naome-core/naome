@@ -435,15 +435,18 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
             return Err(Failure::Bound);
         }
         let mut inboxes = Inboxes::new(&self);
-        let mut previous = 0;
+        let mut previous = (0, 0);
         for _ in 0..count {
             let tag = cursor.byte()?;
-            if tag < previous {
+            let kind = cursor.byte()?;
+            // Export orders by class, then proposals before votes. Accepting
+            // another order would silently normalize a complete source image.
+            if (tag, kind) < previous {
                 return Err(Failure::InvalidImage);
             }
-            previous = tag;
+            previous = (tag, kind);
             let class = Class::from_byte(tag)?;
-            let input = match cursor.byte()? {
+            let input = match kind {
                 0 => RawEvidenceRef::Proposal(cursor.field()?, cursor.field()?),
                 1 => RawEvidenceRef::Vote(cursor.field()?),
                 _ => return Err(Failure::InvalidImage),

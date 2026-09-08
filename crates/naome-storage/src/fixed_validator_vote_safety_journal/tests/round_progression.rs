@@ -740,6 +740,7 @@ fn checkpoint_file_replay_defers_quorum_signature_authority_to_typed_restore() {
     *checkpoint.last_mut().unwrap() ^= 0x80;
     let body = tagged_record(HIGHER_ROUND_CHECKPOINT_RECORD, &checkpoint, 0).unwrap();
     let checkpoint_state = append_test_record(&mut image, lineage_state, &body);
+    super::codec_replay::check_vote_journal_image(&fixture, &image);
 
     let io = ScriptedIo::from_images(image.clone(), image.clone());
     let core = fixture.replay_scripted(io, checkpoint_state).unwrap();

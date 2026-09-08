@@ -1111,3 +1111,31 @@ fn recovery_and_stabilization_failures_return_no_handle() {
         Err(ArtifactBlockCandidateStoreError::Stabilize { .. })
     ));
 }
+
+#[test]
+fn complete_candidate_store_frames_have_a_mutation_corpus() {
+    let definition = chain_definition(0x31);
+    let seeds = [
+        prefix(definition),
+        image(definition, &[block(1, 2)]),
+        image(definition, &[block(1, 2), block(1, 3)]),
+    ];
+    crate::codec_corpus::check("candidate source journal", &seeds, |bytes| {
+        let core = ArtifactBlockCandidateStoreCore::replay(
+            ScriptedIo::from_images(bytes.to_vec(), bytes.to_vec()),
+            definition.id(),
+            limits(4),
+        )
+        .ok()?;
+        if core.committed_end as usize != bytes.len() {
+            return None;
+        }
+        let blocks = bytes[STORE_PREFIX_BYTES as usize..]
+            .chunks_exact(ENTRY_BYTES as usize)
+            .map(|entry| {
+                ArtifactBlock::from_canonical_bytes(&entry[..ARTIFACT_BLOCK_BYTES]).unwrap()
+            })
+            .collect::<Vec<_>>();
+        Some(image(definition, &blocks))
+    });
+}

@@ -471,3 +471,151 @@ fn round_limit_accepts_maximum_and_rejects_max_plus_one_before_io_and_replay() {
         }) if round == fixture.limit.max_round() + 1 && maximum == fixture.limit.max_round()
     ));
 }
+
+#[test]
+fn complete_finality_journal_tags_have_a_typed_mutation_corpus() {
+    let fixture = Fixture::new();
+    let branch = fixed_genesis(fixture.definition, fixture.context, &fixture.entries).unwrap();
+    let prefix = canonical_prefix(
+        fixture.context,
+        branch.fixed_agreement_set_id(),
+        fixture.limit,
+    )
+    .unwrap();
+    let (mut first, mut second) = fixture.preselection_conflict_pair(&branch, 0);
+    if first.value().proposal_signing_root() > second.value().proposal_signing_root() {
+        std::mem::swap(&mut first, &mut second);
+    }
+    let finalize = canonical_record_body(FINALIZE_RECORD, &first, 0).unwrap();
+    let conflict = canonical_record_body(CONFLICT_HALT_RECORD, &second, 1).unwrap();
+    let pair = canonical_preselection_conflict_record_body(&first, &second, 0).unwrap();
+    let image = |bodies: &[Vec<u8>]| {
+        let mut bytes = prefix.clone();
+        let mut state = genesis_state_id(&prefix);
+        for body in bodies {
+            let length = u32::try_from(body.len()).unwrap().to_be_bytes();
+            state = step_state_id(state, length, body);
+            bytes.extend_from_slice(&length);
+            bytes.extend_from_slice(body);
+            bytes.extend_from_slice(state.as_bytes());
+        }
+        bytes
+    };
+    let seeds = [
+        prefix.clone(),
+        image(std::slice::from_ref(&finalize)),
+        image(&[finalize, conflict]),
+        image(&[pair]),
+    ];
+    crate::codec_corpus::check("finality journal complete image", &seeds, |bytes| {
+        if bytes.len() < JOURNAL_PREFIX_BYTES {
+            return None;
+        }
+        let expected = if bytes.len() == JOURNAL_PREFIX_BYTES {
+            genesis_state_id(&prefix)
+        } else {
+            FixedValidatorFinalityJournalStateIdV0::from_bytes(
+                bytes[bytes.len() - 32..].try_into().ok()?,
+            )
+        };
+        let genesis = fixed_genesis(fixture.definition, fixture.context, &fixture.entries).unwrap();
+        let core = FixedValidatorFinalityJournalCore::replay(
+            ScriptedIo::from_images(bytes.to_vec(), bytes.to_vec()),
+            fixture.context,
+            fixture.limit,
+            prefix.clone(),
+            vec![genesis],
+            expected,
+            None,
+        )
+        .ok()?;
+        if core.committed_end as usize != bytes.len() {
+            return None;
+        }
+        let mut offset = JOURNAL_PREFIX_BYTES;
+        let mut bodies = Vec::new();
+        while offset < bytes.len() {
+            let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+            let parsed = parse_record(
+                0,
+                offset as u64,
+                &bytes[offset + 4..offset + 4 + length],
+                fixture.limit,
+            )
+            .unwrap();
+            let reconstruct = |round_value: u64, transition: ParsedTransitionBytes<'_>| {
+                let mut round = branch.begin_round_zero().unwrap();
+                for _ in 0..round_value {
+                    round = round.advance_round().unwrap();
+                }
+                let verified = round
+                    .decode_and_verify(transition.envelope, transition.payload.to_vec())
+                    .unwrap();
+                assert_eq!(verified.to_canonical_bytes(), transition.envelope);
+                assert_eq!(
+                    ArtifactPayload::from_canonical_bytes(transition.payload)
+                        .unwrap()
+                        .to_canonical_bytes(),
+                    transition.payload
+                );
+                verified.into_owned()
+            };
+            bodies.push(match parsed {
+                ParsedRecord::Single {
+                    tag,
+                    round,
+                    transition,
+                } => canonical_record_body(tag, &reconstruct(round, transition), 0).unwrap(),
+                ParsedRecord::PreselectionConflict {
+                    round,
+                    first,
+                    second,
+                } => canonical_preselection_conflict_record_body(
+                    &reconstruct(round, first),
+                    &reconstruct(round, second),
+                    0,
+                )
+                .unwrap(),
+            });
+            offset += length + ENTRY_FIXED_BYTES as usize;
+        }
+        Some(image(&bodies))
+    });
+    // Mutate inner fields with valid chained footers, so semantic replay is reached.
+    for seed in &seeds[1..] {
+        let mut offset = JOURNAL_PREFIX_BYTES;
+        while offset < seed.len() {
+            let length = u32::from_be_bytes(seed[offset..offset + 4].try_into().unwrap()) as usize;
+            for relative in [0, 1, 8, 9, 12, 13, 16] {
+                let mut changed = seed.clone();
+                changed[offset + 4 + relative] ^= 0xff;
+                let mut cursor = JOURNAL_PREFIX_BYTES;
+                let mut state = genesis_state_id(&prefix);
+                while cursor < changed.len() {
+                    let length_bytes: [u8; 4] = changed[cursor..cursor + 4].try_into().unwrap();
+                    let size = u32::from_be_bytes(length_bytes) as usize;
+                    state =
+                        step_state_id(state, length_bytes, &changed[cursor + 4..cursor + 4 + size]);
+                    changed[cursor + 4 + size..cursor + 4 + size + 32]
+                        .copy_from_slice(state.as_bytes());
+                    cursor += size + ENTRY_FIXED_BYTES as usize;
+                }
+                let genesis =
+                    fixed_genesis(fixture.definition, fixture.context, &fixture.entries).unwrap();
+                assert!(
+                    FixedValidatorFinalityJournalCore::replay(
+                        ScriptedIo::from_images(changed.clone(), changed),
+                        fixture.context,
+                        fixture.limit,
+                        prefix.clone(),
+                        vec![genesis],
+                        state,
+                        None
+                    )
+                    .is_err()
+                );
+            }
+            offset += length + ENTRY_FIXED_BYTES as usize;
+        }
+    }
+}

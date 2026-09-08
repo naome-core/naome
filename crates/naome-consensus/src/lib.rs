@@ -611,3 +611,7 @@ impl Error for AgreementSignerError {}
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/support/codec_corpus.rs"]
+mod codec_corpus;

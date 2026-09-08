@@ -95,6 +95,11 @@ fn every_step_variant_round_trips_canonically() {
 
     assert_eq!(decoded, certificate);
     assert_eq!(decoded.to_canonical_bytes(), encoded);
+    crate::codec_corpus::check("all proof steps", &[encoded], |bytes| {
+        ProofCertificate::from_canonical_bytes(bytes)
+            .ok()
+            .map(|value| value.to_canonical_bytes())
+    });
 }
 
 #[test]
@@ -122,6 +127,15 @@ fn definition_application_round_trips_inside_a_proof_formula() {
     );
     assert_eq!(step.definition_references(), vec![definition_id]);
 
+    crate::codec_corpus::check(
+        "defined proof formula",
+        std::slice::from_ref(&encoded),
+        |bytes| {
+            ProofCertificate::from_canonical_bytes(bytes)
+                .ok()
+                .map(|value| value.to_canonical_bytes())
+        },
+    );
     let mut unknown_tag = encoded;
     unknown_tag[9] = 0x06;
     assert_eq!(
@@ -229,6 +243,7 @@ fn all_fixed_zfc_axiom_tags_round_trip() {
         ZfcAxiom::Choice,
     ];
 
+    let mut seeds = Vec::new();
     for (tag, axiom) in axioms.into_iter().enumerate() {
         let certificate = ProofCertificate::new(vec![ProofStep::ZfcAxiom(axiom)]).unwrap();
         let encoded = certificate.to_canonical_bytes();
@@ -238,7 +253,13 @@ fn all_fixed_zfc_axiom_tags_round_trip() {
             ProofCertificate::from_canonical_bytes(&encoded).unwrap(),
             certificate
         );
+        seeds.push(encoded);
     }
+    crate::codec_corpus::check("all fixed ZFC axiom tags", &seeds, |bytes| {
+        ProofCertificate::from_canonical_bytes(bytes)
+            .ok()
+            .map(|certificate| certificate.to_canonical_bytes())
+    });
 }
 
 #[test]
