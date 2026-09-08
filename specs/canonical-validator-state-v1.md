@@ -191,11 +191,12 @@ effective only through the delayed, churn-compliant activation transition.
 Pending top-up principal is therefore distinct from currently usable backing
 and from released principal, without counting its atoms twice.
 
-For a registration that has never had effective active exposure, an effective
-exit that cancels its pending activation may release its bond without an additional
-30-epoch wait. The E+2 exit eligibility delay still applies. This exception applies
-to a never-exposed registration, not to a new deposit into a previously exposed
-lineage, and does not erase another existing liability obligation.
+For a registration that has never had effective active exposure, either an
+effective excess-bond reduction or full effective exit may release the removed
+amount without an additional 30-epoch wait. The ordinary request delay, staging
+and boundary release phase still apply. This exception applies to a never-exposed
+registration, not to a new deposit into a previously exposed lineage, and does
+not erase an inherited release floor or other existing liability obligation.
 
 The first canonically executed valid equivocation penalty forfeits all currently
 liable principal in the registration lineage, including liable top-ups added
@@ -240,6 +241,65 @@ Exact handling of re-bonding, churn queue integration and conflicting requests,
 rounding, and ordering of release relative to settlement and other epoch-boundary
 effects remain unfinished. The selected deadline and release rules do not alone
 establish the complete evidence-admission or epoch-transition contract.
+
+### Exposure and principal source classes
+
+Bond exposure means membership in a canonically installed immutable selected
+validator snapshot, including a selected registration whose weight is zero.
+Being an eligible candidate outside that selected set creates no exposure.
+This definition does not add a positive-weight eligibility filter or alter the
+zero-total halt rule. Retain each lineage's latest such exposure epoch, or an
+explicit never-exposed state. Rejected preparation and an intermediate mandatory
+comparison map do not advance that history.
+
+For usable principal ceasing backing, freeze its release floor as the maximum
+of its inherited floor and the lineage's latest already-established exposure
+epoch plus 31. This lineage floor also covers usable surplus and deposits added
+after the historical exposure; a new deposit in an exposed lineage has no
+tranche-specific never-exposed exemption. If the lineage is never exposed, only
+inherited floors and the ordinary cessation/release-phase requirements remain.
+Once the amount is independently cooling, later lineage activity never extends
+that frozen floor.
+
+At boundary height H, reductions and exits freeze these floors before assigning
+H's new selected-snapshot exposure. Only principal still usable after staging
+receives exposure from the resulting installed H snapshot. A removed amount
+does not gain H exposure because the registration's remainder stays selected.
+For last established exposure in epoch E-1 and removal at the first height of E,
+the exposure floor is E+30, not E+31. All preparation and floor assignment remain
+speculative until the complete canonical transition installs atomically.
+
+Boundary staging and floor assignment precede that height's release scan.
+Prior-height settlement remains the first proposal-dependent phase; the boundary
+release scan follows it and precedes ordinary operations. A removed amount whose
+inherited and exposure floors are already satisfied may therefore become released
+in that same boundary scan, including a qualifying never-exposed reduction.
+Cessation itself credits no spendable balance. Withdrawal remains a separately
+authorized ordinary operation against released principal. If the proposal fails,
+staging, exposure, release and any withdrawal all install nothing.
+
+Within a registration and its immutable beneficiary, principal classes identify
+custody and remaining release/hold conditions rather than original deposit IDs.
+Usable classes retain inherited release floors, with no inherited floor sorting
+before any epoch floor. Pending activation and exit-held principal remain
+separate from usable principal. Independent cooling classes retain their frozen
+release floors; released principal is one fungible withdrawable balance. Classes
+coalesce only when all remaining rights and conditions match.
+
+A usable-bond reduction consumes classes in ascending resulting release floor,
+then ascending inherited floor. Equal usable-class keys coalesce, leaving no
+funding-age tie. Consume the lesser of the class amount and the remaining
+authorized reduction, splitting the final class exactly if needed. Do not take
+pending, already cooling or released principal through this selection. Full
+exit consumes all remaining usable classes and retains the separate rules for
+exit-canceled pending principal.
+
+Direct re-bonding selects otherwise admissible cooling classes by descending
+frozen release floor, preserving nearer-term principal for release. Equal
+remaining conditions coalesce. Every selected amount enters its pending re-bond
+class with its inherited floor intact. Withdrawal debits only the released
+balance. These source rules do not broaden eligible custody categories, cancel
+an exit hold, erase liability, or duplicate atoms during a split.
 
 ### Exit precedence and re-bonding
 
@@ -619,7 +679,8 @@ loss of the last positive agreement weight retains the existing halt rule.
 These scalar candidate families select semantic maximality. Their exact
 rank-crossing intervals can support analytical maximum selection; enumerating
 every atom or weight unit is not a production resource bound. Exact operation
-records, source-principal selection and measured work limits remain unfinished.
+records and measured work limits remain unfinished; source selection follows
+the principal-class rules above.
 
 ## Account authorization and operation identity
 
