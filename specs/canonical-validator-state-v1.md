@@ -11,7 +11,7 @@ profile, a production genesis, or evidence
 that an incomplete rule in `consensus-rules.md` is implemented.
 
 V1 names the successor schema family in this document. Its exact protocol-version
-commitment, domain strings, complete encodings, and admission limits remain to
+commitment, remaining domains, complete encodings, and admission limits remain to
 be specified before consensus-facing implementation. The current fixed-validator
 artifact-only V0 profile remains a separate format.
 
@@ -60,7 +60,7 @@ account, validator, escrow, delegation, scheduled-change, snapshot, reward,
 attribution, liability, penalty, and accounting fact used by a transition.
 
 Every map leaf binds its canonical logical key and canonical value. Empty, leaf,
-branch, and aggregate-root hashing use separately specified versioned domains,
+branch, and aggregate-root hashing use the exact versioned domains below,
 including the applicable namespace. Routing uses a 256-bit domain-separated
 hash of the canonical logical key. A branch records the first differing bit
 from the most-significant end and its ordered left and right child commitments.
@@ -85,6 +85,91 @@ relationship. The boundary that supplies the root must separately establish its
 canonical-parent provenance. An uninstalled transition cannot establish that
 provenance for itself, and installation must recheck the parent to which the
 transition is bound.
+
+### Exact typed-map commitments
+
+The following domain strings are exact ASCII bytes, with each displayed `\0`
+representing one final zero byte. They belong to this V1 schema family and must
+not be reused for an incompatible encoding. `NAT` and `BYTES` use the shared
+successor framing defined below. A namespace tag t is a natural drawn from the
+protocol schema's fixed namespace inventory; this section does not assign that
+unfinished inventory or permit caller-defined namespaces.
+
+| Purpose | Exact domain |
+| --- | --- |
+| Logical-key routing | `naome/consensus/v1/map-key\0` |
+| Empty typed map | `naome/consensus/v1/map-empty\0` |
+| Typed leaf | `naome/consensus/v1/map-leaf\0` |
+| Typed branch | `naome/consensus/v1/map-branch\0` |
+| Aggregate consensus state | `naome/consensus/v1/state-root\0` |
+
+For canonical logical-key bytes k and canonical value bytes v, define:
+
+```
+route(t,k)  = SHA256(key-domain || NAT(t) || BYTES(k))
+empty(t)    = SHA256(empty-domain || NAT(t))
+leaf(t,k,v) = SHA256(leaf-domain || NAT(t) || BYTES(k) || BYTES(v))
+branch(t,b,L,R) = SHA256(branch-domain || NAT(t) || U8(b) || L[32] || R[32])
+```
+
+`U8(b)` is exactly one byte for the branch's split-bit index, 0 through 255.
+Bit zero is the most-significant bit of route byte zero; bit 255 is the
+least-significant bit of byte 31. A zero bit selects L and a one bit selects R.
+The fixed one-byte branch position is a structural bound of 256-bit routing,
+not a fixed-width encoding for heights, balances, nonces or accounting values.
+Key/value lengths remain subject to their complete namespace codec and resource
+rules before allocation. Hashing opaque bytes does not establish valid typed
+records. No routing digest replaces the retained canonical logical key.
+
+For the schema's fixed ordered namespace tags `t[0] ... t[m-1]` and their
+corresponding map roots `r[0] ... r[m-1]`, define:
+
+```
+StateRoot = SHA256(state-domain || NAT(m)
+                   || NAT(t[0]) || r[0][32] || ... || NAT(t[m-1]) || r[m-1][32])
+```
+
+The schema fixes m, each tag and their order. Missing, repeated, unknown or
+reordered namespace entries are not alternate encodings. An empty namespace
+contributes its exact `empty(t)` root; it is not omitted. Empty namespaces do
+not decide their future contents or close unfinished transition semantics.
+These commitments cover map content and schema domains, not canonical-parent
+provenance. The containing genesis and consensus context bind the roots at their
+own authority boundary. The preimages do not include the final genesis identity,
+resulting proposal root or child ancestry and therefore add no such hash cycle.
+
+Every nonempty map node is either a leaf or a branch with two nonempty children;
+a child's commitment cannot be the namespace's empty root. Each branch splits
+at the first bit where any descendant route differs, so all descendant routes
+share its earlier prefix and each child has the prescribed split-bit value.
+Branch positions strictly increase along every root-to-leaf path. A complete
+local-state load or replay validates these relationships and the namespace's
+canonical records; recomputing a hash for an arbitrary stored node is not alone
+a canonical-tree check. Reuse of already validated immutable subtrees must stay
+bound to their exact namespace and content commitments.
+
+Insertion first checks the full logical key. If an equal route belongs to an
+unequal key, reject instead of replacing or reporting absence. An equal key
+may be replaced only by its authorized transition and leaves routing unchanged.
+Inserting an absent key creates the branch at its first differing route bit.
+Deleting a leaf removes any resulting unary branch, reconnecting the surviving
+subtree; deleting the last leaf yields `empty(t)`. There are no tombstone leaves
+unless the namespace's own typed record explicitly represents a retained protocol
+tombstone. A protocol tombstone is then a live record with its ordinary leaf
+commitment, not a deleted map position.
+
+Every changed path is rehashed with these preimages. Unchanged immutable subtrees
+may remain shared; pointer layout, insertion history, cache contents and local
+index shape do not affect the result. Equal canonical key/value maps have equal
+roots under this construction. A rejected collision, malformed record or invalid
+transition leaves the prior map unchanged. Multi-namespace updates retain the
+complete proposal's transactional and installation rules; a computed new root
+alone grants no permission to install it.
+
+Exact namespace tags, record bytes and deterministic read/update sets remain
+unfinished. No optional proof or local storage encoding may reinterpret these
+hash preimages, and this component contract supplies neither a stateless witness
+format nor complete operation-resource limits.
 
 ### Complete local state and derived indexes
 
