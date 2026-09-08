@@ -85,6 +85,42 @@ canonical-parent provenance. An uninstalled transition cannot establish that
 provenance for itself, and installation must recheck the parent to which the
 transition is bound.
 
+### Semantic coverage inventory
+
+The complete namespace inventory must cover the following facts, either as
+committed records or through a specified authenticated derivation with retention
+and bounded-work obligations. This list does not select subroot ordering, record
+layout, or unfinished economic semantics.
+
+| Semantic family | Required coverage | Ledger basis |
+| --- | --- | --- |
+| Accounts | Creation identity, policy, nonce, liquid balance, recovery policy and pending changes | `ECON-003`, `ECON-004`, `ECON-027`, `ECON-142`, `ECON-156`–`ECON-162` |
+| Registrations and keys | Stable lineage and roles, registration order, current and historical keys, pending activation, permanent reservations | `PROD-005`, `PROD-010`, `PROD-047`, `PROD-088`, `ECON-106`, `ECON-143`, `ECON-144` |
+| Bond custody and exposure | Beneficiary principal, backing, reductions and exits, retained liable portions, release eligibility | `ECON-096`–`ECON-110`, `PROD-006` |
+| Attribution | Commitments, payer/beneficiary, deposits, deadlines, replay facts, winning attribution and supporting proof | `ECON-028`, `ECON-060`–`ECON-079`, `ECON-113`–`ECON-118`, `ECON-131`–`ECON-134` |
+| Ordinary Knowledge Weight | Origin batches, ownership, activation, original amount, decay, penalties and cumulative first-matured weight | `ECON-039`–`ECON-045`, `ECON-049`, `ECON-052`, `ECON-059`, `ECON-111`, `ECON-112`, `GOV-039` |
+| Delegation and commission | Owner authorization, requested/effective allocations, activation, commission history, reward checkpoints and separate grant delegation | `ECON-085`–`ECON-095`, `ECON-120`, `ECON-121`, `ECON-123`, `ECON-141`, `ECON-154`, `ECON-155` |
+| Consensus snapshots | Immutable eligible/active weights, keys and lineage, historical delegation/commission, proposer priorities and settled participation | `PROD-024`, `PROD-028`, `PROD-029`, `PROD-035`, `PROD-039`–`PROD-044`, `ECON-109`, `ECON-137`, `ECON-140`, `ECON-145` |
+| Fee reward custody | Unsettled height pools, accumulator obligations, carries and claim checkpoints | `ECON-081`–`ECON-085`, `ECON-120`, `ECON-137`–`ECON-139`, `ECON-152`–`ECON-155` |
+| Penalties and scheduling | First-penalty marker, offense replay classification and snapshot, queued changes, required deadline reservations | `ECON-015`, `ECON-106`, `ECON-145`, `ECON-174`, `ECON-179`–`ECON-181`, `PROD-039`–`PROD-042` |
+| Reserves and governance | Bootstrap reduction, development vesting, grant treasury/delegation/snapshots/votes/execution/rolling spending, upgrades and cancellation | `GOV-021`–`GOV-055`, `GOV-084`, `GOV-087`, `GOV-006`, `GOV-007`, `GOV-104`–`GOV-106` |
+| Supply and tail | Ownership of every live atom, issuance and burn accounting, eventual tail-event destinations and realization state | `ECON-005`–`ECON-007`, `ECON-193`–`ECON-205`, `ECON-211`, `ECON-212`, `ECON-222` |
+
+Citation NAO rewards are immediately spendable; the E+2 delay applies to their
+derived Knowledge Weight, not a citation-money escrow (`ECON-040`, `ECON-056`).
+Fee reward entitlements remain nonspendable until claimed (`ECON-085`, `ECON-138`).
+Reclassifying pool backing as reward obligations must not count the same atoms
+twice. Historical bond exposure references principal without duplicating it;
+historical delegation references weight origins without minting more weight.
+Attribution deposit refunds belong to the payer, whereas released bond principal
+belongs to its immutable beneficiary.
+
+Tail realization and machinery reuse remain open under `ECON-222` and
+`ECON-205`. Empty reserved namespaces cannot resolve those choices. Recovery
+activation, exact accumulator/carry arithmetic, delegation rounding, liability
+ordering and deadline accounting retain their unfinished contracts. Grant-vote
+authority, consensus delegation and development-reserve spending remain distinct.
+
 ## Stable account and registration identities
 
 An account ID derives from a domain-separated hash of its immutable creation
@@ -116,6 +152,107 @@ These identifiers belong to their containing genesis state. Their derivation
 does not depend on the final genesis identity. Ordinary operation authorization
 still binds the full chain, genesis, protocol-version, and operation-role
 context. Exact identifier domains and integer encodings remain unfinished.
+
+### Bond reduction and liability refinement
+
+The selected refinement of `ECON-109` tracks the liability window of each amount
+removed from effective backing, rather than requiring the entire registration to
+exit before any excess principal can mature. The ledger's existing wording must
+be reconciled explicitly when this contract is finalized; this draft does not
+mark that rule implemented.
+
+An exit or bond reduction finalized in epoch E is excluded throughout E and E+1
+and first eligible in E+2. This explicitly extends the increase-delay convention
+of `PROD-009` to these requests. Eligibility is not guaranteed execution: the
+actual effective transition must still obey the voluntary churn rules. Merely
+submitting or finalizing a request does not remove principal from backing or
+start its release clock.
+
+When a reduction actually becomes effective, its exact amount stops backing
+agreement weight and remains escrowed as liable principal. Let L be that amount's
+last effective exposure epoch. It remains liable throughout the 30 complete
+epochs L+1 through L+30; it can become released principal no earlier than the
+first height of L+31. This permits an excess reduction to mature while other
+principal continues backing an active registration. Current backing, retained
+reduction amounts and released principal are disjoint accounting categories;
+exposure records do not duplicate their atoms. Equal exposure/release conditions
+may share one record if this preserves every liability and accounting fact.
+
+The first canonically executed valid equivocation penalty forfeits all currently
+liable principal in the registration lineage, including liable top-ups added
+after the proven offense. It is not restricted to principal present at that
+offense position. The selected set does not include principal already validly
+released from liability. The one-transition marker, permanent lineage tombstone,
+and 90% burn/10% reporter split retain their existing requirements.
+
+Withdrawal requires the immutable beneficiary's authorization, debits only
+released principal and credits that beneficiary. Cancellation, re-bonding or
+new deposits cannot erase an existing exposure obligation.
+
+Equivocation evidence and the corresponding historical delegation-snapshot
+liability expire at the end of offense epoch E+30. Rotation, inactivity, re-entry
+and later activity do not extend or reopen that offense deadline. This is a
+separate explicit refinement of `ECON-109`: an offense's deadline does not derive
+from the newest bond tranche or the lineage's latest active epoch. When eligible
+evidence executes, the selected forfeiture set is still all principal currently
+liable at execution, rather than the principal present at the offense.
+
+Evidence must execute canonically by the final height of its deadline epoch.
+Local receipt, partial acquisition or mempool presence creates no bond hold.
+Matured bond amounts release at the following epoch boundary before ordinary
+operations. An earlier withdrawal within the ordinary operation stream cannot
+change those eligibility and release results. This deliberately allows evidence
+that has missed its canonical execution deadline to lose penalty eligibility;
+it does not promise inclusion merely because an honest node received evidence.
+The independent deadline-reservation and honest-proposer-gap requirements remain
+unfinished under `ECON-181`, `RES-049` and `PROD-091`.
+
+Exact handling of never-active registrations, re-bonding, churn queue integration and
+conflicting requests, rounding, and ordering of release relative to settlement and other epoch-boundary
+effects remain unfinished. The selected deadline and release rules do not alone
+establish the complete evidence-admission or epoch-transition contract.
+
+### Voluntary churn refinement
+
+For positive prior-epoch total active agreement weight W, the selected integer
+voluntary churn budget is `ceil(W / 10)`. This explicitly refines `PROD-039`:
+the budget may exceed exact 10% by less than one indivisible weight unit. A
+floor-rounded budget would permit zero progress at totals one through nine.
+Zero total eligible active weight retains `PROD-034`'s halt without fallback
+weight, quorum relaxation or bootstrap extension. The refinement does not grant
+recovery authority or prove eventual execution of every queued change.
+
+Churn counts both increases and decreases in effective active agreement weight
+by stable validator registration: moving one unit from A to B costs two units.
+A pure key rotation preserving the registration-weight mapping costs zero.
+Penalties, Knowledge Weight decay and terminal bootstrap sunset retain their
+mandatory treatment outside voluntary delay under `PROD-041`. Growth-driven
+bootstrap replacement and the independent bootstrap cap retain `PROD-042`.
+The exact baseline after mandatory effects and composition of queued requests
+must still be specified so a net-total-only calculation cannot hide replacement
+of one registration's weight by another's.
+
+Eligible requests are ordered by eligibility epoch, finalized request height,
+committed operation position and operation ID. An unfinished portion retains its
+original position, takes the maximum canonical progress permitted by the
+remaining budget, and leaves later requests to the remaining budget. This is the
+selected ordering for the draft, not evidence that `PROD-040` is implemented.
+
+Requested delegation and bond-backed capacity are separate from currently
+effective consensus weight. Eligible changes activate in partial increments;
+top-256 ranking uses the resulting effective weights. Unapplied weight retains
+its ownership but grants no active consensus authority. This selected separation
+does not authorize counting one owned unit in multiple effective allocations.
+
+Exact staged eligibility, coupled transfers, conflicting requests, cancellation
+and supersession remain unfinished. Partial economic changes must preserve
+integer bond backing and Knowledge Weight ownership; a permitted weight delta
+alone does not determine the exact bond atoms that cease exposure. A partial
+transition must account for the complete selected registration-weight change,
+including a displaced incumbent, rather than charging only the changed candidate.
+Rounding and partial remainders must be specified with these transitions before
+`PROD-066` can be completed. These rules do not authorize arbitrary reduction of
+an incumbent's weight merely to make a newcomer fit.
 
 ## Account authorization and operation identity
 
@@ -287,11 +424,26 @@ permitted issuance increase. Arithmetic-work limits account for operand lengths,
 multiplication, division, normalization, and traversal, not only wire bytes.
 Historical-certificate validation uses its exact historical snapshot.
 
-Rounds require a separate acquisition and catch-up contract: arbitrarily many
-timeout rounds can occur at one height, so finalized parent height and balances
-do not bound every round coordinate. A round supplied by an untrusted sender
-cannot determine its own pre-allocation allowance. Exact round admission,
-growing role budgets, and operational refusal semantics remain unfinished.
+Arbitrarily many timeout rounds can occur at one height, so finalized parent
+height and balances do not bound every round coordinate. Unusually large round
+certificates use a separate, incrementally bounded acquisition process. Each
+step has predetermined byte, memory, storage and verification-work allowances
+independent of the sender's claimed length or round. Partial evidence and peer
+identity do not enlarge those allowances. Spilling to disk alone is insufficient.
+
+Exceeding a local acquisition budget means not yet validated, not a mathematically
+invalid round. Acquisition grants no round, vote, branch or finality authority.
+Only complete verification of the exact context, immutable snapshot, distinct
+signers, strict-greater-than-two-thirds threshold and corresponding phase under
+`PROD-076` permits certificate-driven higher-round advancement. A proposal alone cannot do so
+(`PROD-080`).
+
+Budget growth, concurrent-request fairness, cancellation, retention and eventual
+catch-up guarantees remain unfinished. A permanently fixed local ceiling cannot
+support an unconditional promise of catching up to every finite valid round;
+manual budget enlargement would make that promise operator-dependent. Exact
+round admission and growing role budgets must resolve these obligations before
+implementation.
 
 ## Genesis and integration boundary
 
@@ -411,3 +563,9 @@ revision, and enforced CPU/memory/swap constraints. An 8 GiB process budget on a
 larger host must be reported as such, not as physical 8 GiB hardware. These
 in-memory primitives do not exercise SSD persistence or authenticated state I/O.
 Compilation and runtime measurements must be reported separately.
+
+Hosted Linux calibration may use four logical CPUs on a VM with fewer reported
+physical cores and the enforced 8 GiB process budget. Such runs provide initial
+calibration only. Validation against the four-physical-core complete-block target
+remains a separate requirement; a hosted single-threaded primitive run does not
+satisfy it.
