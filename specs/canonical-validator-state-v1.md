@@ -2333,6 +2333,24 @@ and cannot establish the complete-block target. Its policy sizes are corpus
 parameters, not proposed protocol maxima. It compares these decoder implementations,
 not an inherent performance ordering of all possible encodings.
 
+The isolated typed-map calibration uses the selected V1 SHA-256 preimages and
+in-memory immutable path-copy insert, replace and delete operations. Its fixture
+namespace tags and opaque key/value bytes are not canonical record schemas.
+It separately times present/absent reads, path-copy updates and complete
+in-memory structural validation, reporting corpus record/byte counts and actual
+maximum path depth. Corpus construction is outside those timed operations;
+update timings include creating and dropping their temporary child map.
+
+Its tests compare updates with a separate rebuild-from-sorted-routes oracle,
+retain old snapshots, cover length boundaries and namespace separation, and
+reject noncanonical in-memory trees even when their branch hashes match their
+supplied children. Routing collisions use an explicitly synthetic injection and
+are not claimed as discovered SHA-256 collisions. No disk decoder, missing-node
+recovery, complete derived index, canonical transaction, aggregate namespace
+inventory or block-admission limit is implemented by this calibration. The older
+authorization corpus also remains a primitive benchmark, not the selected full
+V1 prime-order policy admission and transcript implementation.
+
 A hosted Linux run must record its actual CPU, physical memory, compiler, source
 revision, and enforced CPU/memory/swap constraints. An 8 GiB process budget on a
 larger host must be reported as such, not as physical 8 GiB hardware. These

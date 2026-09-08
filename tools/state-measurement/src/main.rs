@@ -7,6 +7,7 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 mod numbers;
+mod typed_map;
 
 struct Policy {
     threshold: usize,
@@ -99,10 +100,11 @@ fn measure(name: &str, mut operation: impl FnMut() -> bool) {
 
 fn main() {
     println!(
-        "{{\"kind\":\"local_design_calibration\",\"scope\":\"authorization core and candidate integer decoders only\",\"canonical_limit_selected\":false}}"
+        "{{\"kind\":\"local_design_calibration\",\"scope\":\"legacy authorization primitives, integer decoders and in-memory typed maps\",\"canonical_limit_selected\":false}}"
     );
+    typed_map::calibrate();
     // A fixed synthetic 96-byte message isolates signature costs. It is not
-    // the successor's as-yet-unspecified authorization transcript.
+    // the selected successor authorization transcript or its prime-order admission.
     let message = [0x3c; 96];
     let other_message = [0x3d; 96];
     for count in [1, 4, 16, 64, 256] {

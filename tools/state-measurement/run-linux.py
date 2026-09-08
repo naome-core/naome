@@ -39,7 +39,7 @@ def main():
     binary = root / 'tools/state-measurement/target/release/naome-state-measurement'
     metadata = {
         'kind': 'linux_primitive_calibration_metadata',
-        'scope': 'authorization core and integer decoders; no full block or SSD I/O',
+        'scope': 'legacy authorization primitives, integers and typed maps; no full block or SSD I/O',
         'head': command('git', 'rev-parse', 'HEAD'),
         'tree': command('git', 'rev-parse', 'HEAD^{tree}'),
         'uname': platform.uname()._asdict(),
