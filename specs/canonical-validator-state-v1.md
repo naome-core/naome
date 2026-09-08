@@ -208,8 +208,10 @@ Withdrawal requires the immutable beneficiary's authorization, debits only
 released principal and credits that beneficiary. Cancellation, re-bonding or
 new deposits cannot erase an existing exposure obligation.
 
-Economic penalty eligibility and the corresponding historical delegation-snapshot
-liability expire at the end of offense epoch E+30. Rotation, inactivity, re-entry
+New economic penalty assessment and the corresponding historical delegation-
+snapshot liability admission expire at the end of offense epoch E+30. An already
+assessed Knowledge Weight shortfall follows the persistent account-liability
+rule below. Rotation, inactivity, re-entry
 and later activity do not extend or reopen that offense deadline. This is a
 separate explicit refinement of `ECON-109`: an offense's deadline does not derive
 from the newest bond tranche or the lineage's latest active epoch. When eligible
@@ -546,6 +548,40 @@ eligibility changes, and origin-batch assignment remain unfinished. Historical o
 obligations and fee-reward checkpoints require their own exact contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
 or `ECON-155`, and staging must never count one owned unit in two simultaneous
 effective allocations.
+
+## Delayed Knowledge Weight liability
+
+The offense-snapshot Knowledge Weight penalty is assessed once by the timely
+canonical destructive equivocation transition. The assessed liability and the
+amount of live weight immediately available for destruction are distinct. The
+aggregate ten-percent calculation and deterministic origin-batch allocation
+retain `ECON-049` and the still-unfinished integer contract of `ECON-105`.
+
+For example, an origin batch with original weight 7,300 has live weight 10 at
+age 729 and zero at age 730. If its ten units were delegated at the offense
+snapshot, the liability is one unit, but timely evidence at age 730 cannot
+collect that unit from the expired batch. Retaining the historical snapshot
+does not create live weight to destroy.
+
+Any uncollected amount remains a Knowledge Weight liability of the same stable
+owner account. It is collected from that account's other available ordinary
+Knowledge Weight or future matured ordinary Knowledge Weight. Without sufficient
+weight the balance remains outstanding; collection is not guaranteed. This does
+not charge another owner's weight, convert the shortfall into a NAO debt, or
+replace the separate bond forfeiture.
+
+The ordinary 730-epoch terminal decay remains binding: collection does not
+freeze, revive or refresh an expired batch. A liability assessed by the offense
+deadline persists until discharged even after that deadline; this does not
+admit late evidence or reopen an offense for another assessment. Each later
+collection reduces the existing outstanding amount rather than assessing a
+new penalty or creating another reporter reward.
+
+Exact implicated-batch encumbrance, collection order across available batches,
+collection timing, debt records and future-maturation accounting remain to be
+specified under `ECON-146`, `ECON-163` and `ECON-164`. Historical attribution must
+bind the liability to the correct immutable beneficiary account and prevent any
+collected unit from being charged twice.
 
 ## Ordered transactional execution
 
