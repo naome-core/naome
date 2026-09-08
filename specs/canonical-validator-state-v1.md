@@ -425,8 +425,9 @@ highest-averages allocation:
 2. While fewer than L units have been assigned, increment the target maximizing
    `r_i / (a_i + 1)`, recomputing its quotient after each increment.
 3. Compare quotients exactly by cross multiplication; floating-point or rounded
-   division is not permitted. Equal quotients require one fixed canonical target
-   order independent of L. The exact tie order remains to be specified.
+   division is not permitted. Equal quotients are ordered by ascending
+   `RegistrationId`, compared lexicographically by their canonical identifier
+   bytes. This order is independent of L and of request arrival order.
 
 L=0 yields all zero allocations without evaluating an R/L threshold. The number
 of increments after initialization is less than the number of targets, because
@@ -452,7 +453,7 @@ request's exact proportional share is 20/7 and its ceiling is three. The choice
 refines the remainder contract under `ECON-093` and `ECON-126`; it must not be
 described as quota-preserving largest-remainder allocation.
 
-Canonical request encoding, exact tie order, delegation-growth queue priority,
+Canonical request encoding, delegation-growth queue priority,
 request amendments, and origin-batch assignment remain unfinished. Historical
 offense-snapshot obligations and fee-reward checkpoints require their own exact
 contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
