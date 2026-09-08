@@ -129,7 +129,7 @@ For every state-changing call, the order is:
 3. write the exact next anchor image to a create-new temporary file and
    synchronize that file;
 4. atomically rename the temporary file over the authoritative anchor and
-   synchronize the anchor directory;
+   synchronize its namespace metadata using the platform operation below;
 5. only then update live journal state and publish the outcome, height or round
    effect, stop, signing acknowledgement, proposal-control bytes, or signed
    vote bytes.
@@ -185,12 +185,35 @@ No mismatch chooses a winner, promotes a temporary file, truncates a complete
 suffix, rolls either side back, or automatically repairs the pair. Temporary
 files are non-authoritative and never accepted on reopen.
 
-The reference V0 implementation requires durable parent-directory
-synchronization and atomic same-directory rename replacement. Non-Unix targets
-fail with the typed unsupported-platform error. On Unix, a filesystem that
-rejects file or directory synchronization fails closed through the applicable
-typed write or stabilization error. The implementation never substitutes a
-silent directory-sync no-op.
+On Unix, the namespace-metadata operation above is parent-directory
+synchronization. A filesystem that rejects file or directory synchronization
+fails closed through the applicable typed write or stabilization error.
+
+`SEC-003-005` adds a Windows finality-only adapter on caller-provisioned local
+NTFS directories. Both directories are checked before paired creation or open.
+The journal header, new anchor and replacement temporary are opened with
+`FILE_FLAG_WRITE_THROUGH`, written completely and explicitly flushed. Replacement
+uses same-directory `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` and
+`MOVEFILE_WRITE_THROUGH`, then opens the destination read/write and flushes that
+file's data and metadata before publication. The source handle's flags are not
+treated as controlling the later path-based rename. Strict reopen verifies the
+same exact pair first, flushes the replayed journal, and flushes the actual
+anchor again without rewriting or renaming it. Every failure follows the same
+no-wrapper or poisoned-owner contract above. Existing anchor and journal bytes
+are unchanged across platforms.
+
+This adapter uses Microsoft's documented file-metadata flush semantics, not a
+successful no-op for directory synchronization. The documentation specifies
+flushing file-system metadata through `FlushFileBuffers` and identifies NTFS
+rename metadata among write-through effects. These are operating-system flush
+requests; process-kill and injected-error tests do not prove physical power-cut
+durability or hardware behavior. See [file caching](https://learn.microsoft.com/en-us/windows/win32/fileio/file-caching),
+[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
+and [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw).
+
+Windows vote-safety anchors and other non-Unix platforms retain their explicit
+unsupported-platform result. This finality adapter does not enable a Windows
+consensus signer or validator process.
 
 ## Product and security boundary
 

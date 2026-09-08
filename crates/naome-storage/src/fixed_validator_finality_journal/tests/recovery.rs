@@ -21,7 +21,7 @@ fn finalizes_two_heights_and_reopens_exact_head() {
     assert_eq!(reopened.head().unwrap().ancestry_id(), expected_head);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn anchored_finality_advances_before_publication_and_reopens_exactly() {
     let fixture = Fixture::new();
@@ -112,7 +112,7 @@ fn anchored_finality_advances_before_publication_and_reopens_exactly() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn anchored_finality_classifies_old_ahead_and_divergent_anchor_images() {
     let fixture = Fixture::new();

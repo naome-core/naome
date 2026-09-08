@@ -2,7 +2,9 @@
 
 ## Authority and scope
 
-`SEC-003-001` defines the local Unix `naome-verifier` executable. It owns one
+`SEC-003-001` defines the local Unix `naome-verifier` executable;
+`SEC-003-005` extends the same owner to Windows with local NTFS authority
+storage. It owns one
 `FixedValidatorAnchoredFinalityJournalV0` and accepts complete caller-supplied
 fixed-validator artifact-only V0 finality envelopes and artifact payloads.
 It verifies every imported proof independently, retains successful finality,
@@ -86,6 +88,12 @@ check. Parent-directory routing follows the caller's filesystem choices.
 The program reads source bytes without modifying or locking those sources;
 full verification applies to the exact bytes it obtained.
 
+On Windows, source opens reject DOS device aliases and device namespaces before
+opening, use `FILE_FLAG_OPEN_REPARSE_POINT`, and inspect the same opened handle
+to reject reparse points, devices and directories before reading. Alternate
+data-stream paths are unsupported. These checks preserve bounded reads and do
+not resolve a final symlink into an accepted regular source.
+
 The configuration is bounded to 65,536 bytes. Envelope reads are bounded by
 `VerifiedFixedConsensusTransitionV0::MAX_BYTE_LENGTH`, and an envelope below
 its `MIN_BYTE_LENGTH` is refused. Payload reads are bounded by
@@ -114,6 +122,14 @@ An independently running verifier needs its own caller-provisioned pair; it
 cannot concurrently open the authority files held by a validator process.
 The existing file protocol does not detect coordinated rollback of both files,
 provide hardware monotonicity, or promise whole-record power-loss atomicity.
+
+The Windows profile requires both authority directories to resolve to local
+NTFS volumes. Remote, unknown and non-NTFS volumes are rejected before journal
+or anchor creation; paths that the native volume-query adapter cannot represent
+are also rejected. Native file and metadata flushing replaces the Unix
+parent-directory synchronization operation as specified in the
+[anchor contract](fixed-validator-external-anchor-v0.md). Vote-safety anchors
+and the validator executable remain unsupported on Windows.
 
 A strictly opened journal may already contain a terminal finality conflict.
 The process then emits `halted` with the exact terminal diagnostic state and a
@@ -192,7 +208,13 @@ stdout does not undo a completed commit. A later explicit strict reopen and
 fully verified duplicate import can establish the retained outcome; command
 IDs and missing acknowledgements do not authorize an automatic retry.
 
-`shutdown`, complete-frame EOF, SIGINT, and SIGTERM end orderly ownership.
+`shutdown` and complete-frame EOF end orderly ownership. Unix SIGINT/SIGTERM
+and Windows console Ctrl-C/Ctrl-Break enter the same teardown path, reported as
+`sigint`/`sigterm` and `ctrl_c`/`ctrl_break`, respectively. Windows console
+close, logoff and system-shutdown notifications are not graceful-stop inputs
+of this profile. Forced termination preserves acknowledged history under the
+existing strict-reopen contract; a completed commit whose output acknowledgement
+was lost may also survive. Volatile following intent is never restored.
 Truncated final input, an oversized line, input failure, a durable conflict,
 or a commit failure ends with a failed status. Signals are handled between
 synchronous operations; there is no wall-clock cancellation of a filesystem
@@ -215,6 +237,17 @@ thread or repeats a failed flush. These queue and frame limits are process
 policy. Total replay time and retained-history memory still grow with history.
 
 ## Verification evidence and limits
+
+The Windows extension runs the shared offline, archive-to-archive and following
+process suites in both CI profiles. Its platform-specific vectors cover
+owner-only seed acceptance, broad and inherited grants, wrong ownership, null
+and unsupported ACLs, opened-handle/path substitution, reparse and device
+rejection, bounded inputs, and native Ctrl-C/Ctrl-Break teardown in an isolated
+console. Finality-storage replacement and stabilization fault vectors are also
+enabled on Windows. The actual live-validator provider vectors remain Unix-only
+because this extension does not port the validator executable. Compile checks
+and process tests are distinct from physical power-loss testing, which is not
+part of this evidence.
 
 The offline Unix process tests in `crates/naome-verifier/tests/process.rs` cover
 keyless two-height imports, first-evidence retention under valid certificate

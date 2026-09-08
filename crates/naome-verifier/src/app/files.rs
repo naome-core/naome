@@ -1,10 +1,17 @@
-use std::{fs::File, io::Read, os::unix::fs::OpenOptionsExt, path::Path};
+use std::{fs::File, io::Read, path::Path};
 
+#[cfg(unix)]
 use rustix::fs::OFlags;
-use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use zeroize::Zeroizing;
 
 use super::Result;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(any(windows, test))]
+mod windows_acl;
 
 pub(super) fn bytes(path: &Path, maximum: usize) -> Result<Vec<u8>> {
     // Inspect the opened descriptor. NONBLOCK prevents a FIFO open from
@@ -20,6 +27,7 @@ pub(super) fn bytes(path: &Path, maximum: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(unix)]
 fn regular(path: &Path) -> Result<File> {
     let file = File::options()
         .read(true)
@@ -32,12 +40,22 @@ fn regular(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+#[cfg(windows)]
+fn regular(path: &Path) -> Result<File> {
+    windows::regular(path)
+}
+
 pub(super) fn seed(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
     let file = regular(path)?;
-    let metadata = file.metadata().map_err(|_| "seed_metadata")?;
-    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
-        return Err("seed_permissions");
+    #[cfg(unix)]
+    {
+        let metadata = file.metadata().map_err(|_| "seed_metadata")?;
+        if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+            return Err("seed_permissions");
+        }
     }
+    #[cfg(windows)]
+    windows::private(&file)?;
     let mut bytes = Zeroizing::new(Vec::with_capacity(33));
     file.take(33)
         .read_to_end(&mut bytes)

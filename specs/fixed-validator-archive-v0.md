@@ -55,10 +55,21 @@ The existing static session contract chooses the lower raw `PeerId` as the
 sole dial owner and retains its bounded reconnect behavior. Sync does not
 initiate a connection or modify routing.
 
-The seed path resolves against the configuration directory. Before authority
+The seed path resolves against the configuration directory. On Unix, before authority
 provisioning, open its final component without following symlinks and with
 nonblocking mode, inspect that same regular descriptor, require the current
 effective owner and no group/other permission bits, and read exactly 32 bytes.
+The Windows `SEC-003-005` extension uses the same archive behavior with local
+NTFS authority storage. It inspects the opened seed handle's owner and DACL:
+the owner must be the process-token user, and every accepted ACE must be an
+ordinary allow entry addressed only to that owner. Explicit or inherited
+grants to other identities, missing/null DACLs, deny/object/callback/conditional
+entries and unsupported syntax are rejected before authority creation. It
+does not grant special exceptions to Administrators or SYSTEM. The executable
+does not impersonate another identity and pins its Windows system allocator
+for the audited token-query wrapper. No path-based ACL query substitutes for
+the opened handle.
+
 Temporary seed buffers are zeroizing. Derive the Ed25519 Noise identity and
 reject equality with every configured consensus public key. This comparison
 detects configured key reuse; it cannot establish the seed's use elsewhere.

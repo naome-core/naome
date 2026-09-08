@@ -1,10 +1,7 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
 use serde_json::json;
-use tokio::{
-    runtime::Builder,
-    signal::unix::{SignalKind, signal},
-};
+use tokio::runtime::Builder;
 
 mod archive;
 mod commands;
@@ -12,6 +9,7 @@ mod config;
 mod files;
 mod input;
 mod report;
+mod shutdown;
 
 type Result<T> = std::result::Result<T, &'static str>;
 
@@ -63,8 +61,7 @@ fn run(output: &report::Output) -> Result<Stopped> {
 
 async fn run_async(path: PathBuf, output: &report::Output) -> Result<Stopped> {
     let mut config = config::Prepared::load(&path)?;
-    let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| "signal_registration")?;
-    let mut terminate = signal(SignalKind::terminate()).map_err(|_| "signal_registration")?;
+    let mut shutdown = shutdown::Signals::new()?;
     let mut input = input::start()?;
     let mut archive = config
         .network
@@ -84,8 +81,7 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<Stopped> {
     let stopped = loop {
         tokio::select! {
             biased;
-            _ = interrupt.recv() => break Stopped { reason: "sigint", success: true },
-            _ = terminate.recv() => break Stopped { reason: "sigterm", success: true },
+            reason = shutdown.receive() => break Stopped { reason, success: true },
             _ = output.failed() => return Err("output_write"),
             work = next_work(&mut input, &mut archive) => match work {
                 Work::Network(event) => {

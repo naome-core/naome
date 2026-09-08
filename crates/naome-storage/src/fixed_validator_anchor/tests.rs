@@ -1,12 +1,12 @@
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::env;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::fs;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::path::PathBuf;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::SigningKey;
@@ -19,13 +19,13 @@ use sha2::{Digest as _, Sha256 as IndependentSha256};
 
 use super::*;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 static DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct TestDirectory(PathBuf);
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl TestDirectory {
     fn new(label: &str) -> Self {
         loop {
@@ -43,7 +43,7 @@ impl TestDirectory {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Drop for TestDirectory {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).unwrap();
@@ -78,7 +78,7 @@ fn derive_fixed_set_id(
     branch.fixed_agreement_set_id()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn exact_finality_anchor_roundtrips_and_advances_one_issued_transition() {
     let directory = TestDirectory::new("finality-roundtrip");

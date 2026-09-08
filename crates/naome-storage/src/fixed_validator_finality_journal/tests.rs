@@ -26,14 +26,14 @@ use crate::{
     CandidateBranchReconstructionLimits, CanonicalArtifactPayloadStore,
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod recovery_bundle_export;
 
 const AUTHORIZATION_BODY_BYTES: usize = 116;
 const VOTE_BODY_BYTES: usize = 118;
 static DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn proof_lookup_addresses(
     context: ConsensusContextV0,
 ) -> [(ConsensusContextV0, ConsensusHeight); 6] {
@@ -72,7 +72,7 @@ impl TestDirectory {
         self.0.join(JOURNAL_FILE_NAME)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn finality_anchor(&self) -> PathBuf {
         self.0.join("fixed-validator-finality.anchor")
     }
@@ -301,7 +301,7 @@ impl Fixture {
         )
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn create_anchored(
         &self,
         journal_directory: &TestDirectory,
@@ -318,7 +318,7 @@ impl Fixture {
         .unwrap()
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn open_anchored(
         &self,
         journal_directory: &TestDirectory,
@@ -436,7 +436,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn single_entry_image(
     prefix: &[u8],
     previous: FixedValidatorFinalityJournalStateIdV0,

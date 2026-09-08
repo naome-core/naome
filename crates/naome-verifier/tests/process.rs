@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 
 mod support;
 
@@ -13,4 +13,9 @@ mod rejections;
 #[path = "cases/restart.rs"]
 mod restart;
 #[path = "cases/validator_provider.rs"]
+#[cfg(unix)]
 mod validator_provider;
+
+#[path = "cases/windows.rs"]
+#[cfg(windows)]
+mod windows;

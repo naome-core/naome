@@ -7,24 +7,28 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(any(unix, windows))'.dependencies]
 naome-chain = { path = "../naome-chain" }
 naome-consensus = { path = "../naome-consensus" }
 naome-network = { path = "../naome-network" }
 naome-proof = { path = "../naome-proof" }
 naome-storage = { path = "../naome-storage" }
-rustix = { version = "1.1", features = ["fs", "process"] }
 zeroize = "1.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "signal", "sync", "time"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 
-[target.'cfg(unix)'.dev-dependencies]
+[target.'cfg(windows)'.dependencies]
+windows-permissions = "=0.2.4"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["fs", "process"] }
+
+[target.'cfg(any(unix, windows))'.dev-dependencies]
 ed25519-dalek.workspace = true
 naome-foundation = { path = "../naome-foundation" }
 naome-ledger = { path = "../naome-ledger" }
-rustix = { version = "1.1", features = ["process"] }
 
 [lints]
 workspace = true

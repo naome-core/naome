@@ -18,6 +18,9 @@ impl FixedValidatorAnchoredFinalityJournalV0 {
         replay_limit: FixedValidatorFinalityReplayLimitV0,
     ) -> Result<Self, FixedValidatorAnchoredFinalityJournalErrorV0> {
         let journal_directory = journal_directory.as_ref();
+        require_finality_platform(journal_directory)
+            .and_then(|()| require_finality_platform(anchor_directory.as_ref()))
+            .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Anchor)?;
         let mut journal = FixedValidatorFinalityJournalV0::create(
             journal_directory,
             definition,
@@ -26,7 +29,7 @@ impl FixedValidatorAnchoredFinalityJournalV0 {
             replay_limit,
         )
         .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal)?;
-        sync_directory(journal_directory)
+        sync_finality_file(journal_directory, JOURNAL_FILE_NAME)
             .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Anchor)?;
         let state_id = journal
             .state_id()
@@ -56,6 +59,9 @@ impl FixedValidatorAnchoredFinalityJournalV0 {
         entries: &[ActiveAgreementEntry],
         replay_limit: FixedValidatorFinalityReplayLimitV0,
     ) -> Result<Self, FixedValidatorAnchoredFinalityJournalErrorV0> {
+        require_finality_platform(journal_directory.as_ref())
+            .and_then(|()| require_finality_platform(anchor_directory.as_ref()))
+            .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Anchor)?;
         let branch = fixed_genesis(definition, context, entries)
             .map_err(FixedValidatorAnchoredFinalityJournalErrorV0::Journal)?;
         let fixed_set_id = branch.fixed_agreement_set_id();

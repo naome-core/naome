@@ -135,7 +135,7 @@ fn history(fixture: &Fixture, journal: &mut FixedValidatorFinalityJournalCore<Fi
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn historical_direct_forms_match_stored_proof_halt_and_retain_the_entire_selected_prefix() {
     for batch in [false, true] {

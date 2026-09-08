@@ -2,7 +2,9 @@
 
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+#[cfg(not(windows))]
+use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,7 +14,10 @@ use sha2::{Digest, Sha256};
 
 use super::{ExclusiveLock, ExclusiveLockError, open_exclusive_lock};
 
-#[cfg(all(test, unix))]
+#[cfg(windows)]
+mod windows;
+
+#[cfg(all(test, any(unix, windows)))]
 pub(crate) mod faults;
 
 const FINALITY_HEADER: &[u8] = b"naome:fixed-validator-finality-anchor:v0\0";
@@ -199,7 +204,7 @@ impl FixedValidatorAnchorFileV0 {
         kind: AnchorKindV0,
         state_id: [u8; ID_BYTES],
     ) -> Result<Self, FixedValidatorAnchorErrorV0> {
-        require_durable_directory_sync()?;
+        require_anchor_platform(directory, kind)?;
         let lock = open_anchor_lock(directory, &file_name)?;
         let position = AnchorPositionV0 {
             sequence: 0,
@@ -232,7 +237,7 @@ impl FixedValidatorAnchorFileV0 {
         replay_limit: u64,
         kind: AnchorKindV0,
     ) -> Result<Self, FixedValidatorAnchorErrorV0> {
-        require_durable_directory_sync()?;
+        require_anchor_platform(directory, kind)?;
         let path = directory.join(&file_name);
         let lock = open_anchor_lock(directory, &file_name)?;
         let expected_length = encoded_length(kind);
@@ -286,14 +291,14 @@ impl FixedValidatorAnchorFileV0 {
             .write(true)
             .open(&path)
             .and_then(|file| {
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 faults::check(&path, faults::Operation::StabilizeFile)?;
                 file.sync_all()
             })
             .and_then(|()| {
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, any(unix, windows)))]
                 faults::check(&path, faults::Operation::StabilizeDirectory)?;
-                sync_directory_platform(&self.directory)
+                sync_file_binding(&self.directory, &self.file_name)
             })
             .map_err(|source| FixedValidatorAnchorErrorV0::Stabilize { source })
     }
@@ -490,9 +495,9 @@ fn create_synced(
     file_name: &str,
     bytes: &[u8],
 ) -> Result<(), FixedValidatorAnchorErrorV0> {
-    require_durable_directory_sync()?;
+    require_finality_platform(directory)?;
     let path = directory.join(file_name);
-    let mut file = OpenOptions::new()
+    let mut file = durable_open_options()
         .create_new(true)
         .write(true)
         .open(&path)
@@ -505,7 +510,7 @@ fn create_synced(
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
-    sync_directory_platform(directory)
+    sync_file_binding(directory, file_name)
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })
 }
 
@@ -515,20 +520,20 @@ fn replace_synced(
     file_name: &str,
     bytes: &[u8],
 ) -> Result<(), FixedValidatorAnchorErrorV0> {
-    require_durable_directory_sync()?;
+    require_finality_platform(directory)?;
     let temporary_path = directory.join(temporary_file_name);
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     faults::check(
         &directory.join(file_name),
         faults::Operation::CreateTemporary,
     )
     .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
-    let mut temporary = OpenOptions::new()
+    let mut temporary = durable_open_options()
         .create_new(true)
         .write(true)
         .open(&temporary_path)
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     faults::check(
         &directory.join(file_name),
         faults::Operation::WriteTemporary,
@@ -537,24 +542,105 @@ fn replace_synced(
     temporary
         .write_all(bytes)
         .and_then(|()| {
-            #[cfg(all(test, unix))]
+            #[cfg(all(test, any(unix, windows)))]
             faults::check(&directory.join(file_name), faults::Operation::SyncTemporary)?;
             temporary.sync_all()
         })
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     faults::check(&directory.join(file_name), faults::Operation::Rename)
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
-    fs::rename(&temporary_path, directory.join(file_name))
+    replace_file(&temporary_path, &directory.join(file_name))
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, windows)))]
     faults::check(
         &directory.join(file_name),
         faults::Operation::SyncReplacementDirectory,
     )
     .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })?;
-    sync_directory_platform(directory)
+    sync_file_binding(directory, file_name)
         .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })
+}
+
+pub(crate) fn durable_open_options() -> OpenOptions {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_WRITE_THROUGH: u32 = 0x8000_0000;
+        let mut options = OpenOptions::new();
+        options.custom_flags(FILE_FLAG_WRITE_THROUGH);
+        options
+    }
+    #[cfg(not(windows))]
+    {
+        OpenOptions::new()
+    }
+}
+
+fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        atomicwrites::replace_atomic(source, destination)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination)
+    }
+}
+
+pub(crate) fn require_finality_platform(
+    directory: &Path,
+) -> Result<(), FixedValidatorAnchorErrorV0> {
+    #[cfg(windows)]
+    {
+        windows::require_local_ntfs(directory)
+            .map_err(|source| FixedValidatorAnchorErrorV0::Open { source })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = directory;
+        require_durable_directory_sync()
+    }
+}
+
+fn require_anchor_platform(
+    directory: &Path,
+    kind: AnchorKindV0,
+) -> Result<(), FixedValidatorAnchorErrorV0> {
+    #[cfg(windows)]
+    if matches!(kind, AnchorKindV0::Vote { .. }) {
+        // This platform extension is only the keyless finality owner.
+        return Err(FixedValidatorAnchorErrorV0::UnsupportedDurableDirectorySync);
+    }
+    let _ = kind;
+    require_finality_platform(directory)
+}
+
+pub(crate) fn sync_finality_file(
+    directory: &Path,
+    file_name: &str,
+) -> Result<(), FixedValidatorAnchorErrorV0> {
+    require_finality_platform(directory)?;
+    sync_file_binding(directory, file_name)
+        .map_err(|source| FixedValidatorAnchorErrorV0::Write { source })
+}
+
+fn sync_file_binding(directory: &Path, file_name: &str) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        // Flush the destination's data AND metadata after replacement, or on
+        // strict reopen. A source handle's flags do not govern a later rename.
+        durable_open_options()
+            .read(true)
+            .write(true)
+            .open(directory.join(file_name))?
+            .sync_all()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = file_name;
+        sync_directory_platform(directory)
+    }
 }
 
 pub(crate) fn sync_directory(directory: &Path) -> Result<(), FixedValidatorAnchorErrorV0> {
