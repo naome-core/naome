@@ -440,9 +440,10 @@ remain local state unavailability rather than authenticated logical absence.
 
 Wrong key lengths, nonminimal numbers, unknown roles, truncation and trailing
 bytes reject the component encoding. Byte-valid rows do not prove their
-canonical history. Historical snapshot and attribution schemas, exact source
-custody, deadline-indexed admission, pending-evidence bounds, expiry work and
-complete penalty/accounting integration remain required before implementation.
+canonical history. The historical snapshot, attribution and owner-source
+component contracts below retain separate custody integration, deadline-indexed
+admission, pending-evidence bounds, measured expiry work and complete
+penalty/accounting installation requirements before implementation.
 Every failure preserves fees, nonces, both record families, custody, balances,
 liabilities and registration state under the common atomic-installation rule.
 
@@ -636,8 +637,9 @@ access choice removes none of those verification obligations.
 This is not a requirement to retain every historical state indefinitely. Current
 state and the historical records required by settlement, exposure, liability,
 replay and other selected rules must remain available for their specified
-lifetimes. Their exact retention/pruning contract is still required. Full local
-state also supplies no missing tail, governance, namespace or record semantics.
+lifetimes. The component retention rules below cover penalty snapshots and
+ordinary batches; other record families retain their separate requirements. Full
+local state supplies no missing tail, governance, namespace or record semantics.
 
 Measure persistent reads, cache misses, complete enumeration, derived-index
 maintenance and all changed-owner boundary work, as well as cryptographic and
@@ -2437,9 +2439,9 @@ portions retain their old priority. This is not maturation-derived growth and
 does not use its no-second-wait exception. Retention of already-effective weight
 through cancellation of a pending reduction retains its separate rule above.
 
-Canonical request encoding, integration with simultaneous capacity and target-
-eligibility changes, and canonical origin-attribution records remain unfinished. Historical offense-snapshot
-obligations and fee-reward checkpoints require their own exact records. Computing
+Canonical request encoding and integration with simultaneous capacity and target-
+eligibility changes remain unfinished. The historical offense-snapshot and fee-
+reward component records below retain their separate integration requirements. Computing
 aggregate targets does not implement `ECON-105`, `ECON-163`, `ECON-164` or `ECON-155`,
 and staging must never count one owned unit in two simultaneous
 effective allocations.
@@ -2468,8 +2470,83 @@ Per-reward-event batching is therefore not an equivalent implementation.
 There are at most 730 unexpired matured batch identities per owner at a time,
 with ages zero through 729. This is not a bound on owners, pending contributions,
 retained expired batches, historical snapshots, outstanding debt or canonical
-history. Exact batch-identity bytes, pending accumulation records and historical
-contribution/delegation attribution remain part of the canonical state contract.
+history. The component identity, batch records and historical attribution codecs below
+fix these bytes; complete state integration and measured work remain required.
+
+### Canonical origin-batch records
+
+An ordinary batch has the exact identity:
+
+```
+BatchId = SHA256("naome/consensus/v1/origin-batch-id\0"
+                 || ownerAccountId[32] || NAT(earningEpoch))
+```
+
+The domain is exact ASCII with one final zero byte. The immutable owner and
+nonnegative earning epoch E determine the ID; neither current keys, remaining
+basis, allocation, evidence nor collection amounts enter it. The containing
+canonical genesis supplies identity scope, as for account and registration IDs.
+Every rule ordering canonical origin-batch identities compares these 32 ID bytes
+lexicographically, including attribution and penalty remainder ties. This is not
+numeric earning-epoch order. An ID collision between different descriptors
+rejects the attempted transition; it cannot merge their ownership or amounts.
+
+The ordinary-batch namespace uses BatchId[32] as its logical key. Its complete
+value has exactly one of these two forms:
+
+```
+Pending = NAT(0) || ownerAccountId[32] || NAT(E) || NAT(P)
+Matured = NAT(1) || ownerAccountId[32] || NAT(E) || NAT(S) || RAT(T)
+```
+
+P and S are positive. Recompute the key from owner and E, and require an existing
+owner account. Unknown tags, alternate NAT/RAT encodings, trailing fields, a
+mismatching key or a zero original amount are invalid records. Pending P is the
+sum of that owner's actual qualifying citation rewards earned in E, counted
+once by their canonical reward transitions. A zero qualifying contribution
+creates no row. Only another qualifying reward from the same E may increase P;
+there is no caller-selected backdating or ordinary operation that edits a batch.
+
+At the first height of E+2, replace the pending value with S=P and T=S/1 in the
+same transition that counts S once in the first-matured accumulator. The batch's
+activation epoch is exactly E+2 and its expiry epoch exactly E+732; neither is
+stored as an independently adjustable field. After maturation S and the
+owner/earning descriptor never change. At current epoch e, an installed pending
+row requires E<=e<E+2, and a matured row requires E+2<=e<E+732. Boundary preparation
+moves or removes the due rows before using the resulting owner capacity; it
+does not install those effects on its own.
+
+Use the existing reduced RAT encoding for T, with 0<=T<=S. Its reduced denominator
+divides lcm(1,...,730); a well-formed bounded rational alone does not prove valid
+collection history. Only canonical maturation and the specified collection
+transition establish the basis. Decay changes the derived live amount, not T.
+A zero-T row remains matured until expiry, preserving its immutable original
+amount and preventing a second maturation. More generally, a currently zero
+live amount is not an instruction to re-create, combine or refresh a batch.
+
+At the first height of E+732, remove the matured row from live batch state.
+Its current contribution is zero. Historical attribution and finalized replay
+retain their separately specified ownership and assessment facts; deletion
+cannot cancel outstanding owner liability or permit re-maturation. Current
+source lookup may treat authenticated absence as zero only when the exact
+historical descriptor is already known to be expired at the collection epoch.
+Before that expiry, a missing required matured source is an inconsistent state
+or unavailable local data, not a zero-weight shortcut. An absent physical node
+never establishes either canonical deletion or logical absence.
+
+The first-matured accumulator has one mandatory logical key, the single byte
+`00`, in its own namespace and value NAT(M). This is a cumulative count of
+original ordinary weight matured, not live supply or current voting weight.
+Genesis initializes M to zero: genesis balances and temporary bootstrap weight
+create no matured ordinary citation weight. Each due batch adds S exactly once;
+later collection, expiry and row deletion never subtract from M. A restart or a missing accumulator cannot initialize M to zero.
+The ordinary-batch, owner-liability, historical-authority and historical-
+attribution namespaces start empty in genesis: there are no prior ordinary
+reward maturations, equivocation assessments or positive finalized heights.
+The first-height authorization view derives from genesis through the ordinary
+parent-derived rules; no fabricated height-zero historical row replaces it.
+Global tags, complete genesis construction, issuance integration and measured
+bounds remain separate requirements.
 
 ## Historical origin attribution
 
@@ -2516,10 +2593,136 @@ Freeze the attribution with the corresponding effective snapshot. An offense's
 implicated batch contribution is its entry in the offending registration's
 column, accumulated across owners without changing their immutable batch
 ownership. Later decay, amendments or collection must not reconstruct the
-historical attribution from current state. Exact snapshot records, proofs and
-retention remain to be specified. The 730-batch per-owner limit does not bound
+historical attribution from current state. The component records and stateful
+authority/retention contract below fix their representation; complete canonical
+integration and optional proof wire formats remain separate. The 730-batch per-owner limit does not bound
 column count or prove complete execution cost; matrix construction, exact
 optimization and optimum tie selection require measured resource bounds.
+
+### Historical authority and attribution records
+
+The following two primary record families retain the exact parent-derived
+snapshot used to authorize finalized height H. They do not accept a supplied
+snapshot as authority, choose active membership or replace complete state
+transition validation. H is positive, and its epoch is floor((H-1)/8192).
+
+The historical-authority namespace uses NAT(H) as its logical key. Its value is:
+
+```
+Context || parentConsensusAncestry[32] || NAT(selectedCount)
+|| (RegistrationId[32] || consensusKey[32]
+    || NAT(ordinaryWeight) || NAT(bootstrapWeight) || NAT(commissionBps))*selectedCount
+|| NAT(attributionOwnerCount)
+```
+
+The selected rows are strictly ascending by RegistrationId bytes, with distinct
+consensus keys. selectedCount is from 1 through 256; individual zero-weight rows
+are retained, while the sum of ordinaryWeight+bootstrapWeight across all rows
+is positive for an authorized finalized height. Commission is the immutable
+snapshot rate from 0 through 2000. Each key is the exact admitted key assigned
+to that lineage for H. The containing registration descriptor supplies its
+immutable reward account and other roles; this record grants no role transfer.
+The complete selected rows determine the agreement denominator, including
+nonparticipating members. Bootstrap never enters ordinary penalty D.
+
+Context contains the historical protocol version, chain and final genesis;
+parentConsensusAncestry is the exact finalized parent of H, not H's resulting
+ancestry. Source validation binds all these fields and rows to the deterministic
+H view of that authenticated parent. A valid key assignment alone cannot prove
+selected membership, weight, commission or historical protocol version. The
+snapshot record does not store H's resulting proposal root, ancestry or envelope
+identity and cannot introduce a child-commitment cycle.
+
+The historical-attribution namespace uses NAT(H)||ownerAccountId[32] as its
+logical key. Its complete value is:
+
+```
+NAT(columnCount)
+|| (RegistrationId[32] || NAT(effectiveAllocation))*columnCount
+|| NAT(batchCount)
+|| (NAT(earningEpoch) || NAT(liveBatchAmount)
+    || NAT(attributedAmount)*(columnCount+1))*batchCount
+```
+
+There is exactly one row for every owner with any positive actually effective
+ordinary allocation to any registration in H's prepared view, and no row for
+an owner whose ordinary weight is entirely undelegated. attributionOwnerCount
+counts those complete owner rows at H. An omitted undelegated-only owner cannot
+supply an implicated batch and does not enter another owner's matrix. Current
+source accounting still covers every owner's complete live portfolio.
+
+columnCount is positive. Include every positive effective registration allocation
+of this owner, in strictly ascending RegistrationId order, even if that
+registration is outside the selected set. Each effectiveAllocation is positive.
+Do not limit these columns to the top 256 or infer active membership from them.
+batchCount is from 1 through 730 and includes every positive live ordinary batch
+of that owner at H. Compute each BatchId from the key's owner and row earning
+epoch, then require strictly ascending, distinct BatchIds. Its liveBatchAmount
+is positive and the batch must be mature and unexpired at H. No zero-live batch
+is represented. Row ownership cannot be replaced by the fee payer, reporter,
+operator or a current delegator.
+
+The attributedAmount cells are in the displayed registration-column order,
+followed by exactly one undelegated cell, including when it is zero. Zero cells
+are explicitly encoded; no sparse or omitted-cell alternative is valid. Let L
+be the sum of liveBatchAmount. The undelegated column total is L minus the sum
+of effectiveAllocation and must be nonnegative. Check every exact row and column
+sum, proportional floor/ceiling bound, and the specified maximum-remainder
+objective and row-major optimum tie rule. Feasible margins alone do not validate
+an alternative matrix. The source is H's complete prepared effective state, not
+requested, queued, later collected or later decayed amounts.
+
+Across the complete H owner rows, each selected registration's ordinaryWeight
+must equal the sum of its column amounts. The matrix includes nonselected
+columns because omitting them can change the selected columns' rounding.
+No bootstrap column, fictitious ordinary owner or duplicate origin is added.
+An owner row with no positive allocation, an unknown registration, a missing
+required owner, an extra height row or a mismatching count/sum is invalid
+canonical state even if every supplied record is individually well formed.
+
+Derive and freeze these records before reading proposal-dependent settlement or
+operations. Install them only with H's complete accepted transition; rejected
+preparation creates no canonical history. H's penalty execution reads the
+strictly earlier offense height's records, with its exact historical Context,
+canonical parent and key/RegistrationId binding. Resolve that offending
+registration's positive cells across all applicable owner rows, sum D and apply
+the once-rounded assessment and BatchId remainder ordering already specified.
+Current owner state only determines collection availability, never historical
+assessment or membership. Different rounds at H use this same immutable record.
+
+Validation or replay establishes the records' derivation and completeness once
+against their canonical source. Later operations may reuse that validated
+immutable state provenance. A complete derived index for one H must enumerate
+exactly its authority-linked owner set and batches; another height's index, a
+partial result or an unverified snapshot claim cannot establish missing rows.
+This specifies stateful authority binding and does not require a new stateless
+snapshot proof inside the evidence operation. Optional proof wire formats and
+bounded acquisition remain separate work.
+
+For offense epoch E, retain both record families in live authenticated state
+through deadline D=(E+31)*8192. At the first height D+1, after consuming any
+snapshot required by prior-height settlement and before ordinary evidence
+operations, delete that expired epoch's authority records and their complete
+associated attribution rows atomically. This applies to every retained H in E,
+not only heights already mentioned by evidence. A complete height/expiry index
+must establish all due rows; partial deletion or an index-only deletion is not
+canonical pruning. H's own newly prepared snapshot is not an expired row.
+
+Retained finalized block history and validated replay preserve source authority
+after pruning. Historical certificate verification outside the live window must
+recover and validate its actual historical inputs, never substitute today's
+snapshot or extend evidence admission. Pruning does not remove finalized evidence
+bytes, permanent key history or first-penalty markers, and cannot erase an
+already assessed owner shortfall. Failure to obtain the required history is
+local unavailability; it grants no valid-empty snapshot or alternate authority.
+These lifetimes do not decide auxiliary evidence-index bounds under RES-050.
+
+These component codecs do not complete the global namespace ordering, full
+snapshot/proposer state, boundary execution, durable installation or measured
+resource admission. In particular, 256 selected registrations and 730 live
+batches per owner do not bound the number of owners, nonselected columns,
+retained heights, matrix computation or total historical bytes. All records and
+derived work require the complete-state admission model before implementation.
 
 ## Delayed Knowledge Weight liability
 
@@ -2527,9 +2730,9 @@ The offense-snapshot Knowledge Weight penalty is assessed once by the timely
 canonical destructive equivocation transition. The assessed liability and the
 amount of live weight immediately available for destruction are distinct. The
 aggregate calculation and deterministic origin-batch allocation use the selected
-rounding contract below and the frozen attribution matrix above. Authenticated
-snapshot records, proof binding and canonical integration remain unfinished
-under `ECON-105`.
+rounding contract below and the frozen attribution matrix above. Its component
+snapshot records and stateful source binding are specified above; complete
+canonical integration remains unfinished under `ECON-105`.
 
 For example, an origin batch with original weight 7,300 has live weight 10 at
 age 729 and zero at age 730. If its ten units were delegated at the offense
@@ -2565,9 +2768,9 @@ reduces the current batch basis and discharges only the amount actually
 collected. Paying one assessment does not erase a different assessment. This
 does not permit reassessment of an already penalized lineage or late evidence.
 
-Exact available-source accounting and debt records remain to be specified under
-`ECON-163` and `ECON-164`; the selected collection order and maturation phase
-appear below. Authenticated historical attribution under `ECON-105` must
+The component source and debt records below refine `ECON-163` and `ECON-164`;
+complete custody/delegation and canonical transition integration remain required.
+The selected collection order and maturation phase appear below. Authenticated historical attribution under `ECON-105` must
 bind the liability to the correct immutable beneficiary account and prevent any
 collected unit from being charged twice.
 
@@ -2579,8 +2782,8 @@ The resulting outstanding amount is exactly `U' = U + N - K`, with
 `0 <= K <= U + N`. A later collection uses N=0. Distinct immutable assessment
 and lineage facts remain independently verifiable; the owner's fungible
 outstanding balance does not require a payment priority between assessments.
-This identity neither mandates permanent cumulative counters nor chooses record
-encoding or historical-retention machinery.
+The component codec below selects a positive outstanding row with zero encoded
+by absence; distinct assessment provenance remains in authenticated history.
 It does not reorder committed evidence operations or pool the separate
 first-stage batch shares of distinct assessments.
 
@@ -2590,6 +2793,115 @@ includes all such available weight. This is a property of the resulting economic
 state, not a rewrite of height H's already frozen authorization snapshot or a
 claim about intermediate preparation. Immature rewards may still exist and will
 be subject to the selected collection-before-allocation rule when they mature.
+
+### Canonical owner liability and source accounting
+
+The outstanding-owner-liability namespace has logical key ownerAccountId[32]
+and complete value NAT(U), with U strictly positive and the account existing.
+Zero liability has exactly one representation: authenticated absence. Delete
+the row when collection discharges its entire balance. Reject an encoded zero,
+unknown owner, noncanonical natural or trailing bytes. Unlike a missing physical
+node, authenticated absence in a validated complete state supplies U=0.
+The row is a fungible outstanding ordinary-weight obligation, not a NAO balance,
+a delegated reserve or a new source of voting weight.
+
+A first destructive transition obtains immutable assessment identity from its
+OffenseId, registration first-penalty marker and canonically included operation.
+Its offense snapshot fixes each batch share and immutable owner; sum those
+shares for that owner's N. The retained finalized operation and authenticated
+historical replay preserve the distinct assessment facts even after snapshot or
+processed-record expiry. There is no separate cumulative-assessed or paid counter
+in this namespace and no caller-supplied assessment row. Deleting U=0 does not
+delete the lineage marker or permit another first assessment. Several distinct
+lineages may contribute to one owner's U without introducing payment priority
+between past assessments or forgetting their separate canonical origins.
+
+The source set is the owner's complete matured, unexpired ordinary-batch set
+at the collection epoch. Derive each current live amount from the exact current
+RAT(T) and original activation epoch. Pending rewards, expired batches, bootstrap,
+NAO balances and historical matrix cells supply no current units. Effective
+delegation does not remove a live ordinary batch from the source set. Previously
+collected units are already absent from T and cannot appear through a second
+index, old snapshot or prior overlay generation.
+
+For a newly assessed operation, first apply each historical batch's own capped
+share to that same batch's current live amount. Preserve the selected per-batch
+caps even when one owner has several implicated batches. A known expired source
+supplies zero as specified above; a required unexpired record must resolve to
+its matching owner/earning descriptor. Next consume the remaining complete live
+owner pool by earliest original expiry, then ascending BatchId. This fallback
+includes unused implicated-batch weight and currently delegated ordinary weight.
+It settles the owner's outstanding total U+N after the actual first-stage
+collections; it neither recomputes N nor pools the first-stage caps of separate
+evidence operations. Successive operations use the preceding accepted speculative
+changes in their committed order.
+
+For each collected integer c, apply the exact proportional T update and reduce
+the obligation by exactly c. Bound c by the current live source and remaining
+obligation before updating either. The final balance is U'=U+N-K, where K is the
+sum of actual collections, and only a positive U' has a row. After a complete
+collection phase, positive U' implies zero remaining live ordinary owner weight.
+A cached total alone cannot prove this implication: the source enumeration must
+be complete and every basis update reflected in its owner index.
+
+At later maturation, transform all applicable due batches and count their full
+original amounts once, then collect existing U before releasing surviving
+capacity to owner allocation and staging. Use the same complete earliest-expiry
+source order, with N=0 and no new first-penalty or reporter effect. Ordinary
+batch expiry and debt-row deletion do not alter previously counted M.
+This retains the already specified distinction between parent-derived boundary
+collection and proposal-time assessment: the latter cannot rewrite H's frozen
+authorization or historical attribution, while its mandatory allocation effects
+feed the next applicable snapshot.
+
+The complete due-batch index is ordered by maturation/expiry epoch and BatchId;
+the owner-source index contains exactly all current matured batches of that
+owner, ordered by original expiry and BatchId, with amounts derived from their
+current primary values. Index inclusion of a zero-live unexpired row is harmless
+only if it supplies exactly zero; omitting a positive source is not. Bind both
+indexes to the exact primary-state generation, update or invalidate them after
+every affected speculative write, and rebuild completely after uncertain cache
+recovery. The historical height/owner index remains a separate immutable view.
+
+Commit basis changes, owner debt, the first-matured accumulator when applicable,
+all affected delegation and mandatory next-snapshot consequences, bond/reporting
+and fee effects, nonces, offense records and the permanent marker as one complete
+canonical transition. A late failure rolls back the whole proposal, not merely
+the debt row. No local prepared collection, cache repair or history acquisition
+may install these effects independently. Exact global namespace tags, remaining
+custody/delegation record integration, boundary ordering and measured complete
+execution remain required for ECON-105, ECON-163 and ECON-164 implementation.
+
+### Required penalty-state conformance vectors
+
+Implementation must independently check batch-ID preimages, owner and earning-
+epoch binding, hash-byte tie order, strict pending/matured/debt framing and
+canonical RAT values, including equivalent unreduced fractions and invalid
+remaining bases. Cover same-epoch accumulation, E+2 maturation exactly once,
+zero-basis retention, age-729 versus age-730 removal, unchanged original S/M,
+no re-maturation after removal, and missing-node versus authenticated-absence
+classification.
+
+Historical vectors must separate key-assignment history from selected authority,
+exercise zero-weight selected members, rotations and historical versions, and
+reject swapped heights/parents, missing or extra owners, altered margins and
+feasible but suboptimal or incorrectly tie-broken matrices. Include a nonselected
+registration column whose omission changes an active column's attribution, and
+show current decay, collection, redelegation or account-key rotation cannot
+change the frozen liability. Check H's immutable view despite a penalty inside
+H and that rejected preparation installs no historical records.
+
+Exercise once-rounded assessment over several owners/batches, individual
+first-stage caps, expired implicated sources, residual implicated fallback,
+currently delegated fallback, successive distinct-lineage assessments against
+one owner, persistent shortfalls and maturation-before-allocation. Prove each
+collected unit reduces both its basis and U exactly once, zero-debt deletion
+cannot reopen a lineage, and a late speculative failure preserves every primary
+root and record. At D/D+1, verify complete atomic snapshot pruning, unchanged
+permanent markers/debt, timely versus late evidence, and authenticated historical
+replay after pruning. Stale or incomplete source/expiry indexes must fail closed.
+These are required future vectors, not claims of executed tests or runtime
+conformance by this specification change.
 
 ### Integer penalty assessment and allocation
 
@@ -2647,9 +2959,9 @@ The rational basis has a finite denominator bound: every update subtracts a
 rational whose denominator divides some k in 1..730. Starting from integer S,
 its reduced denominator therefore divides `lcm(1,...,730)`, a 1,048-bit constant.
 An exact scaled-integer representation is consequently possible without
-multiplying a new independent denominator at each collection. This mathematical
-bound does not select a canonical record encoding, resource maximum or measured
-execution cost; numerator growth still follows the amount domain.
+multiplying a new independent denominator at each collection. The component record uses reduced RAT(T), not a scaled-integer wire alternative.
+This mathematical bound does not select a resource maximum or measured execution
+cost; numerator growth still follows the amount domain.
 
 ### Collection order and execution phase
 
