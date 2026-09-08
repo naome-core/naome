@@ -286,7 +286,7 @@ re-bond intent cannot independently unlock the principal.
 
 When a valid voluntary bond reduction reduces a registration's effective ordinary
 delegation, distribute its surviving ordinary total by highest averages over
-the existing effective owner contributions. Let c_i be each positive current
+the captured existing effective owner contributions. Let c_i be each positive
 owner contribution, C their sum and K the admissible surviving ordinary total,
 with `0 <= K <= C`. Use the floor-seeded highest-averages procedure with inputs
 c_i, denominator C and house size K. Compare quotient ties by ascending
@@ -306,9 +306,28 @@ capacity without destroying ordinary Knowledge Weight, changing its decay
 basis, or transferring ownership. Historical snapshots retain their original
 contributions.
 
-The exact contribution reference across multiple partial steps, composition
-with intervening changes and the treatment of resulting pending delegation
-remain to be specified under the coupled transition contract.
+Capture that reference per registration before its first bond-driven reduction.
+For later bond-driven reductions with no other effective owner-contribution
+change, reuse the same reference and apply highest averages to the new admissible
+surviving total K. K cannot increase through a reduction. The reference survives
+mere epoch changes, new requests, key rotation, membership-status changes and
+backing-only changes that do not themselves alter owner contributions. An owner
+reaching zero through these bond reductions does not cause a reset.
+
+If another canonical transition actually changes this registration's effective
+owner-contribution vector, use its resulting current vector as the new reference
+before the next bond-driven reduction. This includes actual activation, owner
+weight loss or reassignment; each retains its own authorization, eligibility
+and churn requirements. Install the contribution change and reference update
+atomically, with no speculative or rejected transition changing either.
+
+Fixed-input house monotonicity makes every contribution nonincreasing across
+successive bond reductions with the same reference. Splitting such a reduction
+across steps, requests or epochs alone cannot alter the final distribution at
+the same K. Genuine intervening contribution changes may alter subsequent
+rounding through the new reference; no invariance across arbitrary reordered
+transitions is claimed. Exact reference encoding, coupled economic-step sizing
+and resulting pending-delegation integration remain unfinished.
 
 ### Voluntary churn refinement
 
