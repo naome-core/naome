@@ -162,6 +162,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 name = "naome-state-measurement"
 version = "0.0.0"
 dependencies = [
+ "curve25519-dalek",
  "ed25519-dalek",
  "num-bigint",
  "sha2",

@@ -2563,6 +2563,31 @@ inventory or block-admission limit is implemented by this calibration. The older
 authorization corpus also remains a primitive benchmark, not the selected full
 V1 prime-order policy admission and transcript implementation.
 
+The separate account-family corpus exercises all six selected management kinds,
+strict prime-order policy parsing, exact intent and consent digests, account
+record decoding and account/accounting map updates. It uses synthetic namespace
+tags 9001/9002, a supplied chain/genesis/version and positive execution height,
+and explicit corpus bounds (1 MiB input, 512-byte natural magnitudes, 64 policy
+keys). These are experimental allowances, not authenticated protocol limits.
+Timed operation paths include parsing, signature verification, touched record
+lookups, nonce/generation changes, fee partition and both map updates; fixture
+construction and signing are outside the timer. Reported end roots and complete
+fixture custody checks make effects inspectable, without proving canonical parent
+provenance or the absence of other custody namespaces in real state.
+
+Its recovery measurement traverses every record in the complete fixture account
+map and prepares due owner changes at a supplied adjacent boundary height. It
+returns only a prepared account map and does not install either state root,
+settle the preceding fee pool, authenticate a participation certificate or
+complete the canonical height transition. Retargeted fixture heights/pool cursors
+are corpus construction, not evidence of those omitted transitions. Tests cover
+all six effects, fee-role aliasing, combined creation funding and fees, late-batch
+rollback of both roots and complete records, generation replay after restoring
+keys, exact recovery boundaries despite nonce advancement, policy-change
+cancellation, strict witness/codec rejection and independent transcript hashes.
+None of these measurements closes canonical account, codec, accounting, resource
+or complete-state implementation dependencies.
+
 A hosted Linux run must record its actual CPU, physical memory, compiler, source
 revision, and enforced CPU/memory/swap constraints. An 8 GiB process budget on a
 larger host must be reported as such, not as physical 8 GiB hardware. These

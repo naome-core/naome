@@ -6,6 +6,7 @@ use num_bigint::{BigInt, BigUint};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+mod accounts;
 mod numbers;
 mod typed_map;
 
@@ -100,9 +101,10 @@ fn measure(name: &str, mut operation: impl FnMut() -> bool) {
 
 fn main() {
     println!(
-        "{{\"kind\":\"local_design_calibration\",\"scope\":\"legacy authorization primitives, integer decoders and in-memory typed maps\",\"canonical_limit_selected\":false}}"
+        "{{\"kind\":\"local_design_calibration\",\"scope\":\"legacy authorization primitives, integer decoders, in-memory typed maps and isolated account-family transitions\",\"canonical_limit_selected\":false}}"
     );
     typed_map::calibrate();
+    accounts::calibrate();
     // A fixed synthetic 96-byte message isolates signature costs. It is not
     // the selected successor authorization transcript or its prime-order admission.
     let message = [0x3c; 96];

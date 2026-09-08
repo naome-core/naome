@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run primitive calibration inside a verified, externally imposed cgroup scope."""
+"""Run isolated calibration inside a verified, externally imposed cgroup scope."""
 import hashlib
 import json
 import os
@@ -39,7 +39,7 @@ def main():
     binary = root / 'tools/state-measurement/target/release/naome-state-measurement'
     metadata = {
         'kind': 'linux_primitive_calibration_metadata',
-        'scope': 'legacy authorization primitives, integers and typed maps; no full block or SSD I/O',
+        'scope': 'legacy primitives, integers, typed maps and isolated account-family transitions; no full block or SSD I/O',
         'head': command('git', 'rev-parse', 'HEAD'),
         'tree': command('git', 'rev-parse', 'HEAD^{tree}'),
         'uname': platform.uname()._asdict(),

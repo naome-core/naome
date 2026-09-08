@@ -13,7 +13,7 @@ const LEAF: &[u8] = b"naome/consensus/v1/map-leaf\0";
 const BRANCH: &[u8] = b"naome/consensus/v1/map-branch\0";
 
 #[derive(Clone)]
-struct Map {
+pub(super) struct Map {
     tag: Arc<[u8]>,
     root: Option<Arc<Node>>,
 }
@@ -34,7 +34,7 @@ enum Body {
     },
 }
 #[derive(Debug, PartialEq, Eq)]
-struct Collision;
+pub(super) struct Collision;
 
 fn digest(parts: &[&[u8]]) -> Hash {
     let mut h = Sha256::new();
@@ -58,13 +58,30 @@ fn split(a: &Hash, b: &Hash) -> Option<u8> {
     })
 }
 impl Map {
-    fn new(tag: BigUint) -> Self {
+    pub(super) fn entries(&self) -> Vec<(&[u8], &[u8])> {
+        fn walk<'a>(node: &'a Node, out: &mut Vec<(&'a [u8], &'a [u8])>) {
+            match &node.body {
+                Body::Leaf { key, value, .. } => out.push((key, value)),
+                Body::Branch { left, right, .. } => {
+                    walk(left, out);
+                    walk(right, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(root) = &self.root {
+            walk(root, &mut out);
+        }
+        out
+    }
+
+    pub(super) fn new(tag: BigUint) -> Self {
         Self {
             tag: encode_length_be(&tag).into(),
             root: None,
         }
     }
-    fn root_hash(&self) -> Hash {
+    pub(super) fn root_hash(&self) -> Hash {
         self.root
             .as_ref()
             .map_or_else(|| digest(&[EMPTY, &self.tag]), |n| n.hash)
@@ -94,7 +111,7 @@ impl Map {
         }
         node
     }
-    fn get(&self, key: &[u8]) -> Result<Option<&[u8]>, Collision> {
+    pub(super) fn get(&self, key: &[u8]) -> Result<Option<&[u8]>, Collision> {
         let Some(root) = &self.root else {
             return Ok(None);
         };
@@ -115,7 +132,7 @@ impl Map {
             Ok(None)
         }
     }
-    fn insert(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), Collision> {
+    pub(super) fn insert(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), Collision> {
         let route = self.route(&key);
         self.insert_routed(route, key, value)
     }
@@ -196,7 +213,7 @@ impl Map {
         }
     }
     // Validates complete in-memory structure, not a disk decoder or reload.
-    fn validate(&self) -> bool {
+    pub(super) fn validate(&self) -> bool {
         self.root
             .as_ref()
             .is_none_or(|root| self.check(root, None).is_some())
