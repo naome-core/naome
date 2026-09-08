@@ -368,7 +368,14 @@ impl Process {
             .unwrap();
         }
         #[cfg(windows)]
-        windows::signal(self.child.id(), signal);
+        windows::signal(self.child.id(), signal).unwrap_or_else(|error| {
+            panic!(
+                "{}: {error}; observed {:?}; pending {:?}",
+                signal.reason(),
+                self.observed,
+                self.receiver.try_iter().take(4096).collect::<Vec<_>>(),
+            );
+        });
     }
 
     pub fn exit(&mut self) -> ExitStatus {

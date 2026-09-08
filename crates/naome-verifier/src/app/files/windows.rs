@@ -109,13 +109,24 @@ pub(super) fn private(file: &File) -> Result<()> {
         SecurityInformation::Dacl,
     )
     .map_err(|_| "seed_permissions")?;
-    if !super::windows_acl::owner_only(
-        dacl.to_str().ok_or("seed_permissions")?,
-        &process_sid.to_string(),
-    ) {
+    if !super::windows_acl::owner_only(dacl.to_str().ok_or("seed_permissions")?, |trustee| {
+        trustee_is_owner(trustee, &process_sid)
+    }) {
         return Err("seed_permissions");
     }
     Ok(())
+}
+
+fn trustee_is_owner(trustee: &str, owner: &windows_permissions::Sid) -> bool {
+    // The parser admits only numeric SIDs or two-letter SDDL aliases. Let
+    // Windows resolve aliases such as LA using its actual local domain SID.
+    // Never infer an identity from a matching RID or permit an owner exception.
+    let Ok(descriptor) =
+        wrappers::ConvertStringSecurityDescriptorToSecurityDescriptor(&format!("O:{trustee}"))
+    else {
+        return false;
+    };
+    matches!(wrappers::GetSecurityDescriptorOwner(&descriptor), Ok(Some(sid)) if sid == owner)
 }
 
 #[cfg(test)]
@@ -129,6 +140,24 @@ mod tests {
     use windows_permissions::{LocalBox, SecurityDescriptor};
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn native_trustee_aliases_require_the_same_binary_sid() {
+        let descriptor =
+            wrappers::ConvertStringSecurityDescriptorToSecurityDescriptor("O:LA").unwrap();
+        let local_admin = wrappers::GetSecurityDescriptorOwner(&descriptor)
+            .unwrap()
+            .unwrap();
+        assert!(trustee_is_owner("LA", local_admin));
+        assert!(trustee_is_owner(&local_admin.to_string(), local_admin));
+        assert!(!trustee_is_owner("BA", local_admin));
+        assert!(!trustee_is_owner("WD", local_admin));
+        assert!(!trustee_is_owner(
+            &format!("{local_admin}-500"),
+            local_admin
+        ));
+        assert!(!trustee_is_owner("ZZ", local_admin));
+    }
 
     fn security_metadata(file: &File) -> String {
         let descriptor = wrappers::GetSecurityInfo(

@@ -3,7 +3,7 @@
 //! This intentionally does not implement Windows access-check evaluation.
 //! Object/callback/conditional ACEs, null DACLs and unknown syntax are refused.
 
-pub(super) fn owner_only(sddl: &str, owner_sid: &str) -> bool {
+pub(super) fn owner_only(sddl: &str, mut is_owner: impl FnMut(&str) -> bool) -> bool {
     if sddl.len() > 1_048_576 {
         return false;
     }
@@ -56,7 +56,8 @@ pub(super) fn owner_only(sddl: &str, owner_sid: &str) -> bool {
             || !valid_rights(rights)
             || !object.is_empty()
             || !inherited.is_empty()
-            || canonical_alias(sid) != owner_sid
+            || !valid_trustee(sid)
+            || !is_owner(sid)
         {
             return false;
         }
@@ -87,20 +88,22 @@ fn valid_rights(rights: &str) -> bool {
         )
 }
 
-fn canonical_alias(sid: &str) -> &str {
-    match sid {
-        "SY" => "S-1-5-18",
-        "LS" => "S-1-5-19",
-        "NS" => "S-1-5-20",
-        _ => sid,
-    }
+fn valid_trustee(sid: &str) -> bool {
+    (sid.len() == 2 && sid.bytes().all(|byte| byte.is_ascii_uppercase()))
+        || (sid.starts_with("S-1-")
+            && sid.len() <= 184
+            && sid[4..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'-'))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     const OWNER: &str = "S-1-5-21-1-2-3-1001";
+
+    fn owner_only(sddl: &str, owner: &str) -> bool {
+        super::owner_only(sddl, |sid| sid == owner)
+    }
 
     #[test]
     fn owner_grants_accept_explicit_inherited_and_numeric_rights() {
@@ -114,7 +117,9 @@ mod tests {
                 OWNER
             ));
         }
-        assert!(owner_only("D:P(A;;FA;;;SY)", "S-1-5-18"));
+        // Native ownership comparison resolves aliases outside this parser.
+        assert!(super::owner_only("D:PAI(A;;FA;;;LA)", |sid| sid == "LA"));
+        assert!(!super::owner_only("D:PAI(A;;FA;;;LA)", |_| false));
     }
 
     #[test]
@@ -137,6 +142,8 @@ mod tests {
             "P(A;;FA;;;OWNER)S:",
             "P(A;;FA;;;OWNER",
             "P(A;;FA;;;OWNER))",
+            "P(A;;FA;;;LAO:SY)",
+            "P(A;;FA;;;LA\0)",
         ] {
             assert!(
                 !owner_only(&format!("D:{}", body.replace("OWNER", OWNER)), OWNER),
@@ -145,5 +152,11 @@ mod tests {
         }
         assert!(!owner_only("", OWNER));
         assert!(!owner_only("O:S-1-5-18D:P(A;;FA;;;SY)", OWNER));
+        for trustee in ["LAO:SY", "LA\0", "S-1-5-21O:SY", "S-1-5-21\0"] {
+            assert!(!super::owner_only(
+                &format!("D:P(A;;FA;;;{trustee})"),
+                |_| panic!("invalid token must not reach native SDDL decoding"),
+            ));
+        }
     }
 }

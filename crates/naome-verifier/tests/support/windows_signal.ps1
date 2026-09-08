@@ -7,10 +7,15 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 public static class VerifierConsoleSignal {
     private delegate bool Handler(uint kind);
-    private static readonly Handler Ignore = kind => kind == 0 || kind == 1;
+    private static int received = -1;
+    private static readonly Handler Ignore = kind => {
+        Interlocked.Exchange(ref received, (int)kind);
+        return kind == 0 || kind == 1;
+    };
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool FreeConsole();
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -38,7 +43,10 @@ public static class VerifierConsoleSignal {
             if (!((members[0] == ownId && members[1] == targetId)
                 || (members[1] == ownId && members[0] == targetId))) return 14;
             if (!GenerateConsoleCtrlEvent(kind, 0)) return 15;
-            return target.WaitForExit(10000) ? 0 : 16;
+            if (target.WaitForExit(10000)) return 0;
+            Console.Error.WriteLine("Signal timeout: sent {0}, helper received {1}",
+                kind, Volatile.Read(ref received));
+            return 16;
         }
     }
 }
