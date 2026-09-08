@@ -210,7 +210,9 @@ IDs and missing acknowledgements do not authorize an automatic retry.
 
 `shutdown` and complete-frame EOF end orderly ownership. Unix SIGINT/SIGTERM
 and Windows console Ctrl-C/Ctrl-Break enter the same teardown path, reported as
-`sigint`/`sigterm` and `ctrl_c`/`ctrl_break`, respectively. Windows console
+`sigint`/`sigterm` and `ctrl_c`/`ctrl_break`, respectively. Windows startup
+registers its handlers and then clears inherited Ctrl-C suppression before
+reporting readiness. Windows console
 close, logoff and system-shutdown notifications are not graceful-stop inputs
 of this profile. Forced termination preserves acknowledged history under the
 existing strict-reopen contract; a completed commit whose output acknowledgement

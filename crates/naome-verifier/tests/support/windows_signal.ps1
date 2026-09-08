@@ -36,6 +36,7 @@ public static class VerifierConsoleSignal {
             if (!AttachConsole(targetId)) return 11;
             // AttachConsole resets the table: register after attachment.
             if (!SetConsoleCtrlHandler(Ignore, true)) return 12;
+            if (!SetConsoleCtrlHandler(null, false)) return 17;
             uint[] members = new uint[3];
             uint count = GetConsoleProcessList(members, (uint)members.Length);
             uint ownId = (uint)Process.GetCurrentProcess().Id;

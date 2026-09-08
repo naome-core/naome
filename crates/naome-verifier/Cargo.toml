@@ -21,6 +21,7 @@ toml = { version = "1.1", default-features = false, features = ["parse", "serde"
 
 [target.'cfg(windows)'.dependencies]
 windows-permissions = "=0.2.4"
+winconsole = { version = "=0.11.1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", features = ["fs", "process"] }

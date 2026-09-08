@@ -29,6 +29,14 @@ impl Signals {
             interrupt: tokio::signal::windows::ctrl_c().map_err(|_| "signal_registration")?,
             terminate: tokio::signal::windows::ctrl_break().map_err(|_| "signal_registration")?,
         };
+        #[cfg(windows)]
+        {
+            // Register Tokio's handler before clearing the separately inherited
+            // ignore-Ctrl-C flag. A handler alone does not clear that flag.
+            // This audited wrapper call supplies no callback or pointer.
+            winconsole::console::set_ctrl_handler(None, false)
+                .map_err(|_| "signal_registration")?;
+        }
         Ok(signals)
     }
 
