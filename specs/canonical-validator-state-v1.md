@@ -1317,9 +1317,10 @@ Fee accumulators, reward cursors, bootstrap tag, controller, escrow beneficiary,
 ordinary weight provenance, exposure, liabilities and tombstone lineage remain
 attached to the same registration. No pending key becomes a second participant.
 
-Exact operation-kind tags, typed payload bytes, historical assignment records,
-authenticated boundary ordering and measured admission limits remain necessary
-for complete `PROD-084` and canonical rotation integration.
+The validator-family operation bytes below fix rotation and cancellation tags
+and payloads. Historical assignment records, authenticated boundary ordering and
+measured admission limits remain necessary for complete `PROD-084` and canonical
+rotation integration.
 
 ## Bonded validator registration
 
@@ -1327,6 +1328,19 @@ Registration binds distinct operator-authorization, consensus-signing,
 reward-receipt, and bond-escrow roles. The operator, fee payer, bond beneficiary,
 and reward recipient accounts may coincide or differ. Every authorizing or
 debited account signs the complete operation under the nonce rule above.
+
+The registration payload declares its initial commission as an integer from
+0 through 2000 basis points. That initial rate applies when the registration
+first becomes effective; it is not an increase from an implicit zero rate.
+Later changes obey the ordinary commission limits and delays. Registration
+admission alone still supplies no effective weight or fee entitlement.
+
+The named reward account is immutable for that RegistrationId. The operator
+cannot redirect it through an account-policy or consensus-key change. Historical
+commission and bootstrap entitlements remain owned by that account, including
+after exit or tombstoning. This contract includes no reward-account amendment
+operation; it does not restrict the recipient account's ordinary authorized use
+of its own claimed funds.
 
 The new consensus key separately proves possession over the complete operation
 and context. That proof grants no account-spending authority. Registration
@@ -1361,6 +1375,80 @@ lineage-wide permanent tombstone rules remain binding. The refinements above
 select exposure and deadline semantics; exact record bytes, remaining scheduling
 and epoch-boundary integration are unfinished. These rights do not imply that
 the operations are implemented.
+
+### Canonical registration and consensus-key operation bytes
+
+Tags 6 through 8 extend the same V1 natural operation-kind space as account
+management tags 0 through 5. They do not select an unfinished outer class or
+block-stream encoding. All account/registration IDs and consensus keys occupy
+32 bytes. Bond principal B and positive fee F use NAT; initial commission b uses
+NAT and must be at most 2000. Registration requires B at least `10^13` NAO atoms,
+independently of the still-unselected complete fee and resource schedules.
+
+| Tag | Operation | Canonical typed payload |
+| --- | --- | --- |
+| 6 | ValidatorRegister | `operatorAccountId[32] || consensusKey[32] || bondBeneficiaryAccountId[32] || rewardAccountId[32] || feePayerAccountId[32] || NAT(B) || NAT(b) || NAT(F)` |
+| 7 | ConsensusKeyRotate | `RegistrationId[32] || oldConsensusKey[32] || newConsensusKey[32] || feePayerAccountId[32] || NAT(F)` |
+| 8 | ConsensusKeyRotationCancel | `RegistrationId[32] || pendingOperationId[32] || feePayerAccountId[32] || NAT(F)` |
+
+ValidatorRegister requires exactly the distinct operator, bond beneficiary and
+fee-payer account rows. Each uses its existing current owner policy, generation
+and nonce. The reward account must exist but adds no row solely for receiving
+rewards; if it aliases an authorizing role, that account still has only one row.
+All role partitions use the shared sorted, deduplicated account-row contract.
+Derive RegistrationId from the payload's operator and that operator row's exact
+consumed nonce; do not encode a second RegistrationId or nonce in the payload.
+The derived registration must be absent and the consensus key must be unreserved
+within the containing genesis context. Every authorizing account signs the whole
+payload, including its immutable reward recipient, bond beneficiary and initial
+commission. Registration's consensus-key possession digest uses that derived ID
+and the registration-specific domain already defined above.
+
+The beneficiary funds B and the payer funds F from available liquid balances at
+this operation's position. If they alias, require their combined B+F debit from
+that one balance before any effects install. The operator does not incur another
+bond or fee debit merely because it authorizes. The new registration, escrow,
+permanent reservation, fees and all distinct-account nonce changes remain one
+atomic transition. Its finalized height and complete-stream operation position
+are assigned by accepted execution rather than supplied as another payload
+coordinate. This framing neither activates a candidate immediately nor replaces
+the selected delay, backing, delegation or selection rules.
+
+ConsensusKeyRotate and ConsensusKeyRotationCancel resolve the immutable operator
+account from the named registration. Their exact authorizing set is that
+operator and any distinct fee payer, using current owner policies, generations
+and nonces. A consensus-signing key, beneficiary-only role or receiving-only
+reward role supplies no substitute operator authority. Rotation requires the
+payload's old key to equal the registration's currently assigned key and its new
+key to satisfy strict V1 admission and permanent key-absence checks. The new key
+signs the rotation-possession digest for the named registration and this exact
+operation. Cancellation names the exact existing pending request and requires no
+consensus-key signature. Both operations retain the live-lineage, one-pending,
+partial-exit and cancellation rules above.
+
+For these three kinds, the complete operation frame is exactly:
+
+```
+BYTES(Intent) || BYTES(accountAuthorizationWitnessSection)
+              || BYTES(consensusKeyPossessionSection)
+```
+
+The first two sections use their shared exact encodings. For tags 6 and 7 the
+possession section consists of exactly one 64-byte ordinary Ed25519 signature,
+with no count, key index, key bytes or nested framing. The operation kind chooses
+the possession domain and payload key. For tag 8 it is empty, encoded as the
+single byte `00` for its zero length. No additional owner/recovery-policy consent
+or old-key signature is accepted. Missing, extra, malformed, trailing or
+wrong-domain evidence rejects. Policy and key admission and every supplied
+signature use the selected strict V1 rules and applicable resource checks.
+
+The exact Intent alone determines OperationId. Different valid qualifying
+account-signature subsets do not change it; the required possession signature
+still binds that same ID. Other operation families must not reuse tags 0 through
+8. These bytes do not finish registration/escrow records, historical key
+assignment retention, complete deadline ordering, genesis registration framing,
+canonical state access or fee/resource admission. Those prerequisites remain
+explicit before consensus-facing implementation.
 
 ## Delegation targets and integer allocation
 
