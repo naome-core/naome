@@ -307,8 +307,57 @@ first-matured accumulator. The nominal aggregate target in GOV-033 retains its
 formula; applied bootstrap may lie below that target because surrendered weight
 cannot be restored or redistributed. Every tag remains independently
 nonincreasing, and the independent linear cap and epoch-730 sunset still apply.
-Exact integration with queued growth-driven replacement and global per-tag
-remainder allocation remains unfinished under GOV-083 and GOV-106.
+The fixed original-tag schedule below defines queued growth-driven replacement
+and global per-tag remainder allocation. Exact authenticated event records and
+bounded execution remain separate unfinished requirements.
+
+### Original-tag bootstrap schedule
+
+Keep all 32 original genesis tags in one fixed order by ascending lexicographic
+canonical genesis RegistrationId bytes. Rotation, exit, surrender and tombstoning
+never reorder or remove a slot from this nominal calculation. Let N=10^16.
+For any integer aggregate A with `0 <= A <= N`, write `A = 32*q + r`,
+`0 <= r < 32`. Its nominal share for zero-based slot i is q+1 if i<r, otherwise
+q. The shares sum exactly to A and each share is nondecreasing as A increases.
+This is equal-original-share highest averages, not redistribution across the
+currently surviving tags.
+
+For epoch E below 730, the independent linear aggregate cap is
+`C(E) = floor(N * (730-E) / 730)`; at and after epoch 730 it is zero. Before
+voluntary staging, reduce each current applied tag S_i to the lesser of S_i
+and its nominal share of C(E). This mandatory reduction never waits for churn.
+It guarantees that the applied aggregate is at most C(E), including when other
+tags have already surrendered weight or become zero.
+
+Let F be cumulative first-matured ordinary weight. The nominal growth target is
+`T = min(C(E), max(0, N-F))`, saturating at zero when F>=N. Derive its shares
+over the same original 32 slots. Aggregate all first-matured updates at the same
+canonical maturation coordinate before deriving this target and its new queued
+amounts, so owner or origin-batch enumeration grants no priority. The currently owed growth-driven reduction for
+slot i is `max(0, S_i - share_i(T))`. Existing unapplied reductions are normalized
+to this amount: cancel newest excess in reverse canonical queue order, preserve
+survivors and their priority, and create only the uncovered new amount. A tag
+already below its nominal target owes no reduction and gains no restoration.
+After mandatory cap loss, voluntary surrender or tombstoning, perform the same
+normalization without recreating canceled portions.
+
+New growth-driven reductions use the canonical maturation event's fresh priority
+and may enter that event epoch's ordinary staged queue without an additional
+E+2 delay. They share its one-pass ordering and remaining full-map churn budget;
+there is no separate bootstrap-first queue pass. At each queued portion's visit,
+maximize its whole-weight reduction within that portion's remaining amount and
+valid complete-state churn. A newer portion for the same tag cannot inherit an
+older portion's position.
+Ordinary owner contributions do not change through this bootstrap-only step.
+Unapplied weight retains its original queue position. The mandatory linear cap,
+terminal sunset and first-matured accumulator never wait for this queue.
+
+Applied bootstrap may remain above the growth target while reductions await
+churn, or below it because nominal shares of surrendered or retired tags are
+never redistributed. An applied aggregate below T does not cancel another tag's
+own still-owed reduction to its nominal share. Per-tag applied weight never
+increases; target recomputation neither restores a surrendered unit nor mints
+ordinary weight. Exact event encoding and measured work bounds remain unfinished.
 
 ### Owner allocation during voluntary bond reduction
 
