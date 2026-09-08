@@ -136,7 +136,8 @@ does not prove this relationship or the parent's canonical provenance.
 Operation class 0 is economic and class 1 is validator. Every recognized kind
 has exactly one class: account-management kinds 0 through 5 are economic;
 registration/key-management kinds 6 through 8 are validator; fee-reward claim
-kind 9 is economic; equivocation-evidence kind 10 is validator. The remaining
+kind 9 is economic; equivocation-evidence kind 10 and delegation-plan kind 11
+are validator. The remaining
 inventory must assign every other kind before its admission. Unknown classes,
 unknown kinds, wrong-class kinds and unconsumed nested bytes reject. Derive each
 class's count and byte usage from the sole committed stream rather than carrying
@@ -1117,8 +1118,8 @@ its ownership but grants no active consensus authority. This selected separation
 does not authorize counting one owned unit in multiple effective allocations.
 
 The following queue, economic-progress and pending-change sections refine
-eligibility, conflicts, cancellation and supersession. Their complete records
-and bounded execution remain unfinished. Partial economic changes must preserve
+eligibility, conflicts, cancellation and supersession. The delegation component
+records below leave non-delegation bodies and bounded full execution unfinished. Partial economic changes must preserve
 integer bond backing and Knowledge Weight ownership; a permitted weight delta
 alone does not determine the exact bond atoms that cease exposure. A partial
 transition must account for the complete selected registration-weight change,
@@ -1188,8 +1189,9 @@ renumber surviving subportions. Creating an event or consuming its support is
 part of the same canonical atomic overlay as its cause. Rejected speculative
 work creates no retained event, consumes no support and gives no authority;
 canonical replay cannot create a second copy of an already-produced portion.
-Exact domain-separated hashes, binary framing and authenticated record layout
-remain codec work; they must encode these logical distinctions injectively.
+The component framing below encodes these distinctions injectively; exact
+non-delegation portion bodies, resource bounds and full installation remain
+separate requirements.
 
 After all pre-pass boundary-derived portions have been created and normalized,
 freeze the IDs of eligible portions in canonical order. Their zero-based list
@@ -1199,6 +1201,137 @@ New portions created during the pass do not enter its frozen list; they wait
 for a later epoch's pass and retain their actual event eligibility and priority.
 This fixes traversal only, without changing any portion's required delay or
 granting a second visit after later state changes.
+
+### Canonical event and delegation-portion bytes
+
+The logical queue fields above use this exact binary event descriptor:
+
+```
+Event = Context || sourceParentAncestry[32] || NAT(sourceHeight)
+        || NAT(sourcePhase) || PhaseCoordinate || NAT(effectKind)
+        || ownerOption || registrationOption
+```
+
+sourceHeight is positive. sourcePhase is 0 for owner-loss projection, 1 for
+maturation, 2 for bootstrap-target derivation, 3 for staged-pass effects or 4
+for ordinary operations. PhaseCoordinate is empty for phases 0 through 2,
+NAT(frozenVisitIndex) for phase 3, and NAT(operationPosition)||OperationId[32]
+for phase 4. It has no independent optional tag. effectKind is respectively
+0 through 5 in the logical order above: ordinary request, permanent-removal
+reconciliation, owner-loss reconciliation, maturation increment, bootstrap
+reduction and voluntary-bond-cut reconciliation.
+
+Each subject option is NAT(0) without a suffix or NAT(1)||ID[32]. Subject
+presence is determined by the effect family under the logical rules, not by
+the caller. Unknown phases/kinds/options, inappropriate subjects, noncanonical
+integers, extra coordinates, truncation and trailing bytes reject. The hashes are:
+
+```
+QueueEventId = SHA256("naome/consensus/v1/queue-event-id\0" || Event)
+PortionId = SHA256("naome/consensus/v1/queue-portion-id\0"
+                   || QueueEventId[32] || NAT(direction) || NAT(sourceViewOrdinal))
+```
+
+Domains are exact ASCII with one final zero byte. direction is 0 for reduction,
+1 for increase or 2 for weight-preserving change. The event's causal fields and
+immutable source-view ordinal determine identity; current remaining amounts,
+current state roots, new plans and signatures do not. A claimed hash is not
+proof of a valid cause. Byte ordering of these hashes or serialized naturals is
+not queue order: decode and compare the previously specified logical numeric
+and ID tuple, including eligibility before source height and phase.
+
+The delegation-portion namespace has PortionId[32] as logical key. Its value is:
+
+```
+BYTES(Event) || NAT(direction) || NAT(sourceViewOrdinal)
+|| NAT(eligibilityEpoch) || NAT(admittedAmount) || NAT(remainingAmount)
+|| BYTES(AuthorizationView)
+
+AuthorizationView = PlanId[32] || NAT(viewDate) || CeilingVector
+                    || NAT(denominatorRemovalCount) || RegistrationId[32]*denominatorRemovalCount
+                    || NAT(outputRemovalCount) || RegistrationId[32]*outputRemovalCount
+```
+
+A delegation event has both its stable owner and target registration, direction
+0 or 1, and effectKind 0, 1, 2, 3 or 5. It cannot encode bootstrap, bond-atom,
+account-only or zero-weight exit-completion effects as ordinary owner weight.
+Their portion-body codecs remain separate work despite sharing the event
+identity framing. admittedAmount and remainingAmount are positive whole units,
+with remainingAmount<=admittedAmount. An event/capture is immutable after its
+creation; only remainingAmount may decrease. Delete the row at zero, including
+full cancellation. Partial execution or cancellation changes neither the key,
+admittedAmount, captured view, eligibility nor surviving ordinal.
+
+The referenced plan belongs to the event owner and retains its original full
+vector. CeilingVector uses the positive sorted form defined with owner-plan control below
+and represents this
+view's frozen ceilings, not the owner's later control row. Every ceiling is at
+most its original request, and omitted targets have zero ceiling. Both removal
+lists are strictly ascending and distinct; the denominator list is a subset
+of the output list. They contain exactly the referenced plan's positive targets
+permanently removed at the event's source view, with denominator removal further
+restricted to causes eligible by viewDate. Each removal resolves to its immutable
+canonical cause. A removed target remains masked even when its older denominator
+entry is not yet removed. A latest-plan view uses that plan's full ceilings;
+a backbone view preserves its clipped ceilings.
+
+At the event's creation, build the complete immutable ascending dated-view
+sequence from the selected backbone, latest plan and due removal dates. Apply
+coincident changes together before forming their one view. sourceViewOrdinal is
+the position in that sequence, including positions which supplied no surviving
+portion; unsplit causes use zero. For every admitted portion, the captured view
+and original admittedAmount must match the exact source computation, including
+its captured capacities, applicable target difference, previous support
+assignments and all event-specific floors. Increase portions require their
+selected positive target and, where applicable, full-plan marginal support.
+Reduction portions instead derive the authorized effective-minus-target
+decrease from the actual amendment or cause. They may reference an empty plan
+or one omitting the target and need no positive request or maturation-increment
+support. Both directions retain their original amount bounds, source and
+applicable delay/churn rules. A syntactically valid view or an older plan
+reference cannot establish those facts by itself.
+
+The source transition validates this derivation against its complete authenticated
+parent and prior accepted speculative effects. Immutable validated provenance
+then permits later use without recomputing the original marginal from today's
+capacity or plans. Captured fields preserve the specific authorization needed
+by a survivor; retained finalized replay preserves the full causal computation.
+No API may install a supplied portion merely because its digest, vector and
+bounds parse. A required plan or source whose provenance is unavailable gives
+local unavailability, not fresh authority or an empty view.
+
+For maturation, admitted support across subportions is bounded by the one event's
+selected n_i and overall new capacity; each successive dated view receives only
+support not already assigned. Other event kinds retain their own cause, floors
+and non-maturation delays. Supersession and restoration never increase a
+survivor's admittedAmount. Current permanent removal still forbids new output,
+and current normalization, available capacity, backing and churn remain required
+at execution even when the captured old authorization remains valid.
+
+Create portions only while executing their actual sourceHeight and source phase
+in that canonical transition. Aggregate the one logical cause before its dated
+partition, and consume its support once in the same overlay. After cancellation
+or completion, absence does not authorize rerunning an earlier cause: later
+recomputations must use their actual new event and cannot fabricate the old
+source coordinate to revive its priority. Canonical replay reconstructs each
+cause once from its parent and discards uncommitted speculative work; no permanent
+per-portion consumed-marker namespace is needed for this rule. It is not a
+permission to skip complete source validation after restart.
+
+A complete queue index projects every live portion into its exact logical order;
+an owner/target index projects both directions, and a plan-reference index
+includes every live captured view. Bind all three to the same primary generation.
+Normalization cancels opposite-direction and newest excess portions without
+resetting survivors; plan pruning uses the resulting complete reference set.
+A missing or stale index cannot prove an empty queue, sufficient cancellation or
+an unreferenced plan. The eligible frozen pass is derived only after the selected
+pre-pass effects; its retained visit indices do not renumber after cancellation,
+and newly created in-pass portions wait for a later pass as already specified.
+
+These records start empty in genesis. Their logical order, source binding and
+atomic update rules do not select count/byte/work ceilings, grant a local queue
+or recovered cache canonical authority, or complete the remaining shared
+non-delegation bodies and full boundary/custody installation contract.
 
 ### Economic progress units
 
@@ -2062,9 +2195,174 @@ owner/registration and source-view ordering above. Eligibility subportions do
 not create duplicate logical increments. Previously queued unchanged portions remain distinct
 with their retained priority; aggregation must not renew or backdate them.
 
-The exact event encoding must retain the selected phase coordinates, mandatory
-effects and dated authorization facts. These ordering constraints do not grant earlier
+The event and delegation-portion codecs retain the selected phase coordinates,
+mandatory effects and dated authorization facts. These constraints do not grant earlier
 activation than the original request eligibility and capacity maturity.
+
+### Canonical delegation amendment and plan records
+
+DelegationPlanSet is V1 operation kind 11 in the validator class. It changes
+consensus delegation requests, not separate ecosystem-grant delegation. Its
+complete payload is:
+
+```
+ownerAccountId[32] || feePayerAccountId[32] || BYTES(PlanVector) || NAT(F)
+PlanVector = NAT(targetCount) || (RegistrationId[32] || NAT(maximum))*targetCount
+```
+
+The vector is the owner's complete replacement plan. IDs are strictly ascending
+and distinct; every listed maximum is positive. Omission means zero, and the
+empty vector revokes all requests. Explicit zero entries are not an alternative
+encoding. F is positive. Both owner and payer must exist and authorize through
+the shared exact current-policy/generation/nonce rows, deduplicated when aliased.
+The complete operation is BYTES(Intent)||BYTES(accountAuthorizationWitnessSection)
+||BYTES(empty), with the last section exactly `00`. It has no target-validator
+signature, owner-key-possession witness or grant-vote authority. Authorization
+binds the full vector and fee through the existing operation transcript.
+
+Every listed positive target must resolve to a live registration at this point
+in the evolving operation state: neither an irreversible exit request nor a
+permanent tombstone may already be finalized or accepted earlier in this same
+proposal. A live registration need not yet be selected or have positive effective
+weight. Requesting it still grants no activation, backing, membership or quorum
+weight. Later irreversible removal uses the already specified automatic filter;
+it does not retrospectively invalidate the admitted plan.
+
+Compare the proposed canonical vector with the owner's latest admitted vector,
+before applying the permanent-target filter. Exact equality rejects before any
+fee, nonce or plan change. An owner with no plan has the empty vector, so an
+initial empty submission likewise rejects. A vector that removes an obsolete
+positive target can differ from the stored vector even if their currently
+filtered targets are equal. A valid change pays the ordinary fee from existing
+payer funds and consumes each distinct authorizer's nonce once. No delegation
+operation credits funds that could finance its own fee.
+
+The admitted plan identity is its existing unsigned OperationId, called PlanId
+here; no second plan hash or signature-dependent identity is introduced. Its
+plan namespace key is PlanId[32], and its complete value is:
+
+```
+Context || sourceParentAncestry[32] || NAT(sourceHeight)
+|| NAT(operationPosition) || ownerAccountId[32] || BYTES(PlanVector)
+```
+
+sourceHeight is positive; operationPosition is the zero-based position in the
+complete committed stream. The eligibility epoch is derived as
+floor((sourceHeight-1)/8192)+2, not supplied independently. Validated source
+provenance must establish the exact canonically included authorized kind-11
+operation, its actual OperationId, owner, vector and coordinates. These fields
+alone cannot recompute OperationId or substitute for that authorization. The
+source parent is the parent before this operation's transition, never its
+resulting child ancestry. All record fields are immutable after admission.
+
+The owner-plan-control namespace uses ownerAccountId[32] as key and value:
+
+```
+backboneOption || latestPlanId[32] || CeilingVector
+backboneOption = NAT(0) | NAT(1) || backbonePlanId[32]
+CeilingVector = NAT(count) || (RegistrationId[32] || NAT(ceiling))*count
+```
+
+The absent backbone denotes the selected initially empty eligible plan. The
+latest reference resolves to the most recently admitted plan, including an
+empty revocation. Once that plan is eligible it is also the backbone; while
+pending, at most that latest plan may later become the new-growth backbone.
+Superseded pending plans never acquire that role at their former dates.
+Every referenced plan belongs to this owner. The control row remains after the
+first accepted plan, including when its latest vector is empty; an owner with
+no such row has never admitted a plan and has no effective or queued delegation.
+
+CeilingVector represents the backbone's explicit-revocation ceilings m_i.
+Entries are strictly ascending, distinct and positive, with omission meaning
+zero. It is empty for an absent backbone. Each entry names a positive target in
+the original backbone and is at most that original request. Initially a promoted
+backbone uses its full vector. Each later explicit decrease lowers the relevant
+ceiling; a pending restoration does not raise it. Do not renormalize the original
+backbone vector after clipping or permanent removal. Promoting the latest plan
+resets ceilings to its requests without refreshing surviving portion identities.
+Its applicable removal masks still apply separately. Plan equality, ceilings
+and calculated allocation equality are different comparisons.
+
+An amendment updates the control, immutable plan and applicable ceilings, then
+applies the specified newest-first cancellation and normalization. It leaves
+already effective allocations unchanged. Only newly uncovered amounts receive
+this cause's fresh priority and E+2 requirements; changed cross-target allocation
+is covered even when one target's raw maximum is unchanged. The existing full-
+plan dated-marginal rules govern later maturation and do not sum superseded
+hypothetical plans. Fee payment, nonce consumption, plan/control updates and all
+resulting portion creation/cancellation are one atomic speculative transition.
+
+An obsolete plan record is removed from live state exactly when it is neither
+the backbone nor latest plan and no surviving delegation portion references it.
+Check the complete reference set after the transition's plan/portion updates;
+partial scans cannot authorize deletion. Retained finalized history preserves
+its original authorization. Deletion cannot reinterpret a surviving portion,
+resurrect old support or reset eligibility. Current control and surviving
+references never resolve through an absent record. Empty vectors remain real
+plans while referenced. Genesis has no plan or owner-control records.
+
+### Effective allocation and permanent-removal records
+
+The effective-delegation namespace has key ownerAccountId[32]||RegistrationId[32]
+and value NAT(q), with q strictly positive. Zero is authenticated absence. Each
+owner and registration must exist. These are actually effective ordinary units,
+not requested maxima, queued amounts, original reward value or bootstrap weight.
+An exiting registration may retain a positive allocation until its selected
+staged or mandatory removal applies; an exit request alone does not zero it.
+
+At a consistent prepared authorization view, each owner's complete q sum is at
+most its surviving live ordinary capacity, and each registration's complete owner
+sum is its ordinary candidate contribution before selected-set ranking. Sum all
+registrations, not just active members. The historical attribution matrices use
+these exact prepared allocations. A proposal-time collection or tombstone
+preserves H's frozen view: post-H allocation rows can still await the required
+H+1 mandatory projection and are not an independently valid H+1 snapshot.
+The next derivation must apply all due mandatory zeroing and the single captured
+owner-loss projection before using them for authority or new maturation.
+Missing rows or delayed-projection obligations cannot be replaced by a guessed
+current capacity total.
+
+Capture the owner-loss vector from the authenticated parent's effective rows
+after the selected mandatory zeroing. Compute its final surviving old-batch
+capacity from the complete current source records and due old-capacity losses,
+then project once. Keep that vector immutable within preparation rather than
+feeding an intermediate rounded projection back into itself. New maturity and
+separately staged activation follow their already specified phases. This local
+capture is not another canonical source of ownership or an independently
+installable checkpoint. Persisted preparation caches retain exact parent/version
+binding and can be discarded without changing primary state.
+
+A permanent-delegation-removal namespace records the first irreversible target-
+removal cause. Its key is RegistrationId[32] and value:
+
+```
+Context || sourceParentAncestry[32] || NAT(sourceHeight)
+|| NAT(operationPosition) || OperationId[32] || NAT(removalKind)
+```
+
+removalKind is 0 for a finalized irreversible exit request or 1 for the first
+canonical penalty tombstone. The positive height and operation coordinate must
+resolve to that actual canonical cause; its epoch and E+2 denominator-removal
+date are derived from sourceHeight. A second removal cause does not replace the
+first date or create another permanent-removal reconciliation event. In
+particular, a penalty after exit retains the original target-filter date while
+still applying its independent mandatory allocation removal and economics.
+
+These records are permanent and start empty in genesis. They agree with the
+independently authoritative exit and penalty lifecycle facts, rather than
+replacing them. Every positive target in a historical plan may later reference
+such a removed registration; current output remains masked immediately, while
+older dated denominators follow the selected E+2 rule. Plan replacement or
+pruning cannot delete removal facts, and a temporary bond cap or top-256
+exclusion creates no removal record. Exact exit operation/custody bytes and
+complete lifecycle integration remain separate requirements.
+
+Effective allocation updates, complete owner/registration indexes and the
+resulting historical snapshots must agree atomically. Successful staged changes
+still require actual capacity, backing and full-map gross churn. Neither these
+records nor plan admission supplies those constraints or completes their
+implementation. Global namespace ordering, complete custody/boundary execution
+and measured admission limits remain required.
 
 ### Permanent delegation-target removal
 
@@ -2221,9 +2519,8 @@ or renewed. The voluntary source reduction and destination increase obey the
 ordinary capacity and gross-churn rules, including the two-unit cost for a
 one-unit transfer. Queuing grants no immediate active weight and cannot use a
 pending amendment to authorize earlier activation. The maturation-only
-no-second-wait exception does not apply to this loss-derived event. Exact
-authenticated event records and bounded execution of the selected target and
-pending-change composition remain to be specified.
+no-second-wait exception does not apply to this loss-derived event. The component event and portion records retain those causes; bounded complete
+execution and joint target/pending-change integration remain required.
 
 ### Maturation during a pending plan amendment
 
@@ -2305,8 +2602,9 @@ Consume each event's support at most once. Cancellation removes or reduces its
 identified pending portion; recomputing a total target does not recreate the
 canceled event's eligibility or priority. A restoration amendment supplies a
 new amendment event, while genuine later maturation has its own fresh event and
-marginal support. Exact authenticated records and canonical event encodings
-remain unfinished; a sum of independent historical-plan maxima is not a valid
+marginal support. The component records and event framing above retain this source support;
+complete transition integration remains required. A sum of independent
+historical-plan maxima is not a valid
 substitute for this attribution.
 
 Attribute maturation-derived increments to full-plan authorization, not merely
@@ -2439,12 +2737,47 @@ portions retain their old priority. This is not maturation-derived growth and
 does not use its no-second-wait exception. Retention of already-effective weight
 through cancellation of a pending reduction retains its separate rule above.
 
-Canonical request encoding and integration with simultaneous capacity and target-
-eligibility changes remain unfinished. The historical offense-snapshot and fee-
+The kind-11 request and component state codecs fix their bytes; integration with
+simultaneous capacity and target-eligibility changes remains unfinished. The
+historical offense-snapshot and fee-
 reward component records below retain their separate integration requirements. Computing
 aggregate targets does not implement `ECON-105`, `ECON-163`, `ECON-164` or `ECON-155`,
 and staging must never count one owned unit in two simultaneous
 effective allocations.
+
+### Required delegation-state conformance vectors
+
+Implementation must reject noncanonical full plans, explicit zeros, duplicate or
+unsorted targets, nonexistent/exiting/tombstoned positive targets and identical
+latest-vector submissions without fee or nonce writes. Cover initial empty
+rejection, empty revocation, aliasing owner/payer authorization, successive
+nonces, raw-vector versus filtered-target equality and live zero-weight targets
+that gain no immediate membership.
+
+Check exact event/portion preimages and every phase-coordinate form, subject
+presence and decoded numeric ordering. Reject invented source coordinates,
+mutated parent/version, fabricated authorization views and unproven support.
+Partial execution and newest-first cancellation must preserve survivor IDs,
+view ordinals and eligibility; full deletion cannot let a later recomputation
+reuse old cause priority. Test coincident dated views, source support consumed
+once, and frozen-pass skips without renumbering or an in-pass second visit.
+
+Plan vectors must exercise superseded never-eligible plans, explicit ceiling
+revocation and restoration, eligible backbone promotion, all referenced-plan
+retention and exact pruning after the final reference disappears. Permanent
+removal records must survive plan changes and preserve the first removal date
+when a later penalty follows exit, without suppressing the later penalty's
+separate mandatory effects. Current masks must constrain a still-valid old
+captured view.
+
+Use complete nonselected as well as selected effective allocations for owner
+capacity and historical matrices. Check post-H collections against unchanged
+H authority, one H+1 projection after mandatory zeroing, old-capacity loss before
+new maturation, and no reuse of intermediate rounded projections. Stale or
+partial queue/owner/reference indexes cannot prove empty or complete sets. A
+late rejected operation must preserve every primary root, reference, nonce and
+fee effect under whole-proposal rollback. These are future implementation
+requirements, not tests executed by this specification change.
 
 ## Ordinary Knowledge Weight origin batches
 
