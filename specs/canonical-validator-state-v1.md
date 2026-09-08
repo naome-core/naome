@@ -502,9 +502,30 @@ New or waiting requested maxima are not inputs that authorize this reduction.
 For example, effective allocations `(5,5)` with capacity falling from ten to six
 cannot become `(0,6)` through the loss-only phase, even if a pending amendment
 requests `(100,1000)`. The second allocation would increase before its separate
-activation requirements were met. The exact loss distribution among existing
-allocations and undelegated capacity remains to be selected; these bounds alone
-do not choose that economic policy.
+activation requirements were met.
+
+Undelegated capacity absorbs the loss first. Let E be `sum(e_i)`. If L'>=E,
+retain every e_i unchanged and leave L'-E undelegated. Otherwise apply the exact
+floor-seeded highest-averages procedure above with house size L', fixed inputs
+e_i and total E, breaking ties by ascending canonical RegistrationId bytes.
+Requested maxima and pending increases do not enter this calculation. E=0
+retains zero allocations without division; L'=0 produces all zero allocations.
+
+At house size E the procedure returns exactly e_i. Its fixed-input house
+monotonicity therefore ensures each result at a smaller house size is at most
+e_i. The resulting allocated total is `min(E, L')`; this phase creates no new
+delegation or new activation priority. With effective allocations `(40,40)` and
+20 undelegated units, a loss of 20 leaves `(40,40)` unchanged. A further capacity
+loss to 60 produces `(30,30)` from those current allocations.
+
+These mandatory reductions apply before the next applicable authorization
+snapshot without voluntary churn delay. Proposal-time collection preserves H's
+frozen snapshot and affects H+1; parent-derived boundary decay or collection of
+previously assessed debt enters that boundary snapshot under the selected
+atomic preparation rules. Later increases still require their ordinary
+authorization, eligibility and staging. Exact reconciliation with pending
+portions, simultaneous boundary events and bond-cap changes remains part of
+the unfinished integration contract.
 
 ### Delegation-plan amendments
 
