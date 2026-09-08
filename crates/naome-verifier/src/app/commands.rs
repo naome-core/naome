@@ -43,7 +43,9 @@ pub(super) fn execute(
             ))
         }
         Command::Shutdown { .. } => Ok((json!({"kind": "shutdown"}), false)),
-        Command::Sync { .. } | Command::CancelSync { .. } => Err(Rejected("network_disabled")),
+        Command::Sync { .. } | Command::FollowFinality { .. } | Command::CancelSync { .. } => {
+            Err(Rejected("network_disabled"))
+        }
         Command::Import {
             envelope_file,
             payload_file,

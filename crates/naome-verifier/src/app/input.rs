@@ -30,6 +30,12 @@ pub(super) enum Command {
         peer_id: String,
         count: u64,
     },
+    FollowFinality {
+        id: u64,
+        peer_id: String,
+        count: u64,
+        interval_millis: String,
+    },
     CancelSync {
         id: u64,
     },
@@ -69,6 +75,7 @@ impl Command {
             | Self::Status { id }
             | Self::Record { id, .. }
             | Self::Sync { id, .. }
+            | Self::FollowFinality { id, .. }
             | Self::CancelSync { id }
             | Self::Shutdown { id } => *id,
         }

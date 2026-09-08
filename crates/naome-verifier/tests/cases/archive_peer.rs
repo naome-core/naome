@@ -18,6 +18,7 @@ struct Peer {
     id: PeerId,
     requests: VecDeque<InboundFinalityProofRequest>,
     history: Vec<FinalityProofRequest>,
+    address: String,
     layout: Layout,
 }
 
@@ -49,7 +50,7 @@ impl Peer {
         let layout = Layout::new();
         let mut process = Process::start(
             &layout,
-            &config(fixture, &layout, "create", seed, &[(id, address)]),
+            &config(fixture, &layout, "create", seed, &[(id, address.clone())]),
         );
         process.ready();
         listening(&mut process);
@@ -60,6 +61,7 @@ impl Peer {
             id,
             requests: VecDeque::new(),
             history: Vec::new(),
+            address,
         };
         peer.until(|event| event["event"] == "peer_session" && event["kind"] == "established")
             .await;
@@ -301,11 +303,26 @@ async fn archive_connection_loss_keeps_only_acknowledged_prefix() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn archive_anchor_failure_never_acknowledges_the_suffix_or_repairs_it_on_restart() {
+    anchor_failure(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn archive_following_anchor_failure_terminates_and_strict_restart_refuses_suffix() {
+    anchor_failure(true).await;
+}
+
+async fn anchor_failure(following: bool) {
     let fixture = Fixture::new();
     let first = fixture.proof(&[], 0, 1);
     let second = fixture.proof(&[&first], 0, 2);
     let mut peer = Peer::new(&fixture).await;
-    let inbound = peer.start(401, 2).await;
+    let inbound = if following {
+        let started = peer.command(json!({"command":"follow_finality","id":401,"peer_id":peer.id.to_string(),"count":2,"interval_millis":"20"})).await;
+        assert_eq!(started["outcome"]["kind"], "follow_started");
+        peer.inbound().await
+    } else {
+        peer.start(401, 2).await
+    };
     peer.respond(inbound, Some((&first.envelope, &first.payload)));
     let next = peer.inbound().await;
     assert_eq!(next.request().height().value(), 2);
@@ -405,3 +422,6 @@ async fn archive_halted_history_is_never_served_or_reopened_as_ready() {
     )));
     assert_eq!(layout.images(), images);
 }
+
+#[path = "archive_following.rs"]
+mod following;
