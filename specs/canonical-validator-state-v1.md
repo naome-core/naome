@@ -274,8 +274,11 @@ re-bond intent cannot independently unlock the principal.
 
 ### Voluntary churn refinement
 
-For positive prior-epoch total active agreement weight W, the selected integer
-voluntary churn budget is `ceil(W / 10)`. This explicitly refines `PROD-039`:
+For an epoch following a completed non-genesis epoch, W is the total agreement
+weight in the authorization snapshot of that preceding epoch's final height.
+Penalties executed by that final height do not change this historical reference.
+Genesis initialization of the reference remains part of the genesis contract.
+For positive W, the selected integer voluntary churn budget is `ceil(W / 10)`. This explicitly refines `PROD-039`:
 the budget may exceed exact 10% by less than one indivisible weight unit. A
 floor-rounded budget would permit zero progress at totals one through nine.
 Zero total eligible active weight retains `PROD-034`'s halt without fallback
@@ -288,9 +291,23 @@ A pure key rotation preserving the registration-weight mapping costs zero.
 Penalties, Knowledge Weight decay and terminal bootstrap sunset retain their
 mandatory treatment outside voluntary delay under `PROD-041`. Growth-driven
 bootstrap replacement and the independent bootstrap cap retain `PROD-042`.
-The exact baseline after mandatory effects and composition of queued requests
-must still be specified so a net-total-only calculation cannot hide replacement
-of one registration's weight by another's.
+The mandatory comparison state applies the due penalties, decay and independent
+bootstrap-cap reductions, then reranks already-effective eligible candidates.
+Promotions caused by that mandatory reranking belong to this comparison state;
+they do not newly activate requested capacity. Newly activated capacity remains
+in the voluntary queue. Thus mandatory removals change the comparison state
+without changing the selected historical denominator. Exact composition of
+queued requests must still prevent a net-total-only calculation from hiding
+replacement of one registration's weight by another's.
+
+Ordinary Knowledge Weight matures on its required schedule and advances the
+first-matured accumulator independently of active-set staging. Maturation makes
+owner capacity available; any resulting increase in effective consensus weight
+remains subject to staged churn. This explicitly distinguishes matured owner
+weight from activated voting weight in `ECON-040`. Exact delegation-growth
+requests and their queue positions remain to be specified. The first-matured
+accumulator still determines the growth-driven bootstrap target; that replacement
+retains its queue treatment while the independent linear cap is not delayed.
 
 Eligible requests are ordered by eligibility epoch, finalized request height,
 committed operation position and operation ID. An unfinished portion retains its
@@ -395,12 +412,34 @@ block. This is an explicit block-validity requirement beyond the honest-proposer
 wording of `SEC-036`. It constrains included operations; it does not prove that
 every operation available in a remote mempool was included.
 
-The position uses its immutable authorization snapshot derived before that
-position. Prior-height settlement executes first using the corresponding
-historical weight, delegation, and commission data; the first height uses its
-genesis sentinel. The operation stream follows, and artifact publication runs
-last. Same-block delegation, registration, or rewards cannot retroactively
-authorize the block or alter prior-height settlement inputs.
+Before reading a height H proposal's execution inputs, derive H's authorization
+snapshot from the authenticated finalized parent state and deterministic height
+and epoch rules. Boundary preparation is a pure parent-derived view, not an
+installation of speculative canonical state. Effects whose selected effective
+coordinate is H must be reflected in this view before authorizing H, including
+terminal bootstrap sunset at the first height of epoch 730. Exact internal
+ordering among the remaining boundary effects still requires specification.
+
+The resulting participant snapshot is fixed for H's rounds. A prior-height
+certificate variant selected inside H's proposal cannot choose H's membership,
+weights or quorum denominator. A penalty finalized at H does not change H's
+snapshot; its mandatory consequences affect the next height's snapshot, including
+when H+1 is in the same epoch. Historical certificate verification retains its
+own exact snapshot.
+
+Prior-height settlement is the first proposal-dependent execution phase, using
+the corresponding historical weight, delegation and commission data; the first
+height uses its genesis sentinel. The approved boundary-release phase precedes
+ordinary operations. The committed operation stream follows, and artifact
+publication runs last. Same-block delegation, registration or rewards cannot
+retroactively authorize the block or alter prior-height settlement inputs.
+
+Prepared boundary effects and proposal-dependent effects form one atomic
+transition. Neither the preliminary view nor a rejected proposal installs a
+canonical state update. Settlement-first execution does not permit a proposal's
+selected settlement input to authorize that same proposal. Exact ordering of
+boundary accounting relative to settlement remains to be completed while
+preserving this authority separation.
 
 Repeated unsigned operation IDs are rejected across both classes, including
 different authorization variants of one operation. Reuse of an authorizing
