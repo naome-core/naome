@@ -955,6 +955,84 @@ Admission of a key alone proves neither possession nor operation authorization;
 the required signatures still verify under the selected transcript. Exact
 benchmark-derived limits and implementation verification remain unfinished.
 
+## Consensus-key rotation and immutable registration order
+
+A post-genesis registration has an immutable order coordinate consisting of its
+finalized height and zero-based position in the complete committed operation
+stream at that height. Genesis registrations use height zero and their unique
+zero-based ordinal in ascending canonical RegistrationId bytes. This genesis
+ordering is derived only after the separately authorized registration descriptors
+and identities are fixed; it invents no participant or ceremony authorization.
+
+Rank candidates by descending effective weight, then ascending immutable order
+coordinate, then ascending current consensus-key bytes. Distinct valid
+registrations cannot share an order coordinate, so the final key comparison
+cannot change their rank. Duplicate coordinates are invalid state rather than
+another registration-order tie. This defines `PROD-047`'s earlier finalized
+registration precisely. Rotation never refreshes registration age. With all
+other candidate state unchanged, changing a key therefore preserves the complete
+selected RegistrationId-to-weight map and costs zero voluntary churn.
+
+ConsensusKeyRotate binds the stable RegistrationId, exact currently assigned old
+consensus key, one unused new key, fee-payer account and fee. The registration's
+operator account authorizes under its current owner policy, generation and nonce;
+a distinct fee payer authorizes separately, and aliased roles consume one nonce.
+The new key supplies the already specified rotation-possession proof over this
+complete OperationId and context. No old consensus-key signature is required;
+consensus-signing authority alone grants no account or rotation authority.
+New-key admission, fee payment, required nonce consumption, permanent reservation
+and creation of the pending request are atomic. The typed payload and shared
+intent bind both keys; signature variants do not change OperationId.
+
+A live registration may have at most one pending replacement. Reject a second
+request instead of replacing or accelerating the existing request. A successful
+request finalized in E records its OperationId, old and new keys and activation
+epoch E+2; the old key remains assigned throughout E and E+1. An already reserved
+new key rejects before reservation or any other state installs. The new key is
+permanently reserved immediately on successful admission, even if activation is
+later canceled. Neither cancellation nor retirement makes either key reusable.
+
+The operator may submit ConsensusKeyRotationCancel binding the exact pending
+OperationId, registration and ordinary fee roles. Its current account policy
+and any distinct fee payer authorize and consume their exact nonces. A missing
+or mismatched pending request rejects without writes. Successful cancellation
+removes only pending activation and retains permanent reservations and historical
+lineage. Any later rotation needs another unused key and its own fresh E+2 date.
+
+Rotation and explicit cancellation remain available during a partial irreversible
+exit while the registration is live. They do not stop, reverse or delay exit,
+add backing or weight, or restore delegated capacity. Full effective exit and
+tombstoning cancel any pending replacement; new rotation requests for such a
+registration reject. Operator account-policy rotation or recovery preserves an
+already accepted consensus-key rotation as an independently scheduled change;
+its current operator policy may explicitly cancel it. Admission authorization
+is not rechecked against a later account nonce or policy at activation.
+
+At the first height of the activation epoch, apply an uncanceled replacement to
+its existing live lineage before freezing that height's authorization snapshot.
+Exactly the new key is assigned from that height onward. Due destructive
+exclusions and full effective exit take precedence: a registration removed at
+that boundary gains no authority from a simultaneous replacement. Preserve the
+old assignment for historical snapshot, offense and H-1 settlement verification.
+A penalty finalized inside H cannot rewrite H's frozen key assignment; its
+mandatory next-snapshot consequences retain their separate timing. Preparation
+and installation remain one atomic transition with canonical-parent checks.
+
+A selected registration's existing proposer priority follows that stable
+RegistrationId to its replacement key without reset, duplication or newcomer
+initialization. The existing raw-key tie-break between equal proposer priorities
+still applies, so this does not promise an identical proposer sequence after
+rotation. Entry and exit priority rules for an actually changed selected set,
+cross-snapshot proposer bounds and their proofs remain unfinished under the
+existing proposer rules; key rotation does not supply those missing contracts.
+Fee accumulators, reward cursors, bootstrap tag, controller, escrow beneficiary,
+ordinary weight provenance, exposure, liabilities and tombstone lineage remain
+attached to the same registration. No pending key becomes a second participant.
+
+Exact operation-kind tags, typed payload bytes, historical assignment records,
+authenticated boundary ordering and measured admission limits remain necessary
+for complete `PROD-084` and canonical rotation integration.
+
 ## Bonded validator registration
 
 Registration binds distinct operator-authorization, consensus-signing,
@@ -980,8 +1058,8 @@ key within the containing genesis context. An already admitted key cannot be
 assigned again, including to another registration or by reactivating a retired
 key. Invalid admission reserves nothing. Historical key assignments and lineage
 tombstones remain available for the required verification and liability rules.
-Cancellation outside the explicitly selected exit-precedence behavior requires
-its own exact contract before support.
+Only the explicitly specified cancellation paths are supported; cancellation
+never releases a consensus-key reservation.
 
 Either the operator or the bond beneficiary may request delayed exit. The
 beneficiary may request bond reduction and may withdraw only released principal
