@@ -178,6 +178,25 @@ reduction amounts and released principal are disjoint accounting categories;
 exposure records do not duplicate their atoms. Equal exposure/release conditions
 may share one record if this preserves every liability and accounting fact.
 
+While a registration remains eligible, including during a partial exit, its
+currently usable backing must be at least
+`max(10^13, ceil(w / 20))` NAO atoms for effective weight w. The `10^13` atoms
+are exactly 10,000 NAO under `ECON-002`; the second term follows from the
+20-weight-units-per-atom cap. The minimum remains in force until full effective
+exit. This lower bound does not automatically schedule or release excess bond.
+
+A bond top-up becomes liable when its acceptance finalizes, including while
+waiting for activation. Its additional usable backing and weight capacity become
+effective only through the delayed, churn-compliant activation transition.
+Pending top-up principal is therefore distinct from currently usable backing
+and from released principal, without counting its atoms twice.
+
+For a registration that has never had effective active exposure, an effective
+exit that cancels its pending activation may release its bond without an additional
+30-epoch wait. The E+2 exit eligibility delay still applies. This exception applies
+to a never-exposed registration, not to a new deposit into a previously exposed
+lineage, and does not erase another existing liability obligation.
+
 The first canonically executed valid equivocation penalty forfeits all currently
 liable principal in the registration lineage, including liable top-ups added
 after the proven offense. It is not restricted to principal present at that
@@ -207,8 +226,8 @@ it does not promise inclusion merely because an honest node received evidence.
 The independent deadline-reservation and honest-proposer-gap requirements remain
 unfinished under `ECON-181`, `RES-049` and `PROD-091`.
 
-Exact handling of never-active registrations, re-bonding, churn queue integration and
-conflicting requests, rounding, and ordering of release relative to settlement and other epoch-boundary
+Exact handling of re-bonding, churn queue integration and conflicting requests,
+rounding, and ordering of release relative to settlement and other epoch-boundary
 effects remain unfinished. The selected deadline and release rules do not alone
 establish the complete evidence-admission or epoch-transition contract.
 
