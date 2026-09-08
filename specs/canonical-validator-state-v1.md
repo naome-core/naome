@@ -334,28 +334,43 @@ capacity without destroying ordinary Knowledge Weight, changing its decay
 basis, or transferring ownership. Historical snapshots retain their original
 contributions.
 
-Capture that reference per registration before its first bond-driven reduction.
-For later bond-driven reductions with no other effective owner-contribution
+Capture that reference per registration before its first bond-driven or partial-exit reduction.
+For later bond-driven or partial-exit reductions with no other effective owner-contribution
 change, reuse the same reference and apply highest averages to the new admissible
 surviving total K. K cannot increase through a reduction. The reference survives
 mere epoch changes, new requests, key rotation, membership-status changes and
 backing-only changes that do not themselves alter owner contributions. An owner
-reaching zero through these bond reductions does not cause a reset.
+reaching zero through these reductions does not cause a reset. An exit step
+that reduces ordinary weight while backing remains at the minimum belongs to
+this same reduction sequence; its unchanged bond-atom count does not reset the
+reference.
 
 If another canonical transition actually changes this registration's effective
 owner-contribution vector, use its resulting current vector as the new reference
-before the next bond-driven reduction. This includes actual activation, owner
+before the next bond-driven or partial-exit reduction. This includes actual activation, owner
 weight loss or reassignment; each retains its own authorization, eligibility
 and churn requirements. Install the contribution change and reference update
 atomically, with no speculative or rejected transition changing either.
 
 Fixed-input house monotonicity makes every contribution nonincreasing across
-successive bond reductions with the same reference. Splitting such a reduction
+successive bond or partial-exit reductions with the same reference. Splitting such a reduction
 across steps, requests or epochs alone cannot alter the final distribution at
 the same K. Genuine intervening contribution changes may alter subsequent
 rounding through the new reference; no invariance across arbitrary reordered
 transitions is claimed. Exact reference encoding, coupled economic-step sizing
 and resulting pending-delegation integration remain unfinished.
+
+After a voluntary bond cut changes ordinary contributions, normalize surviving
+owner requests and existing pending portions against the resulting state.
+Newly uncovered standing-request increases receive fresh priority at that
+effective bond-cut event and first eligibility in its epoch plus two, also
+requiring the originating request's eligibility. Existing surviving portions
+retain their own dates and priority. This queues intent without restoring the
+removed contribution or granting its old priority. Reactivation still needs
+actual owner capacity, combined backing and voluntary churn; the maturation-only
+exception does not apply. An exiting registration remains excluded from new
+target calculations, so this rule never queues reactivation of the exiting
+target.
 
 ### Voluntary churn refinement
 
@@ -401,6 +416,26 @@ original position, takes the maximum canonical progress permitted by the
 remaining budget, and leaves later requests to the remaining budget. This is the
 selected ordering for the draft, not evidence that `PROD-040` is implemented.
 
+Visit the eligible queue once in that canonical order for each epoch's staged
+transition. At its visit, a request takes its largest valid partial step under
+the current state and remaining budget. If no valid non-no-op transition is feasible, retain
+its position and continue to later requests. Do not revisit an earlier request
+after a later request changes the state during the same pass. Skipped and
+unfinished portions remain for the next epoch, preserving their positions.
+An exhausted budget does not stop the pass: a valid zero-churn step may still
+execute. Completing a zero-weight exit or removing spare backing is progress
+even when its weight delta is zero. These rules choose scheduling, not a
+guarantee of eventual service.
+
+For each applied step, charge the sum over stable registrations of the absolute
+change between its immediately preceding and resulting selected active-weight
+maps, treating absent registrations as weight zero. Deduct that charge from the
+remaining budget before the next request. Returning later to a previously seen
+map does not refund earlier churn. Recompute selection for the complete step,
+including any displaced or promoted registration; do not lower an unrelated
+incumbent merely to make a candidate fit. Exact request-specific progress units,
+coupled-state candidates and resource-bounded maximum selection remain unfinished.
+
 Requested delegation and bond-backed capacity are separate from currently
 effective consensus weight. Eligible changes activate in partial increments;
 top-256 ranking uses the resulting effective weights. Unapplied weight retains
@@ -416,6 +451,54 @@ including a displaced incumbent, rather than charging only the changed candidate
 Rounding and partial remainders must be specified with these transitions before
 `PROD-066` can be completed. These rules do not authorize arbitrary reduction of
 an incumbent's weight merely to make a newcomer fit.
+
+### Economic progress units
+
+An authenticated bond-reduction request specifies a positive whole-atom amount
+of currently usable backing to remove. Its admission amount cannot exceed
+current backing minus the continuing minimum. A registration has at most one
+unfinished such request; a second request is rejected until the first completes.
+Each executed partial amount subtracts from that request's remaining amount;
+later top-ups do not enlarge it. Irreversible exit remains admissible despite
+an unfinished reduction and takes precedence over its remaining amount. This
+request rule does not create a cancellation or amendment operation.
+
+For a bond reduction, progress is a whole number d of usable NAO atoms within
+the request's remaining authorized amount. Set `B' = B - d`, preserve the
+continuing minimum and apply the bootstrap-first backing formulas to obtain
+the resulting weight. Choose the largest valid d whose complete selected-map
+churn fits the remaining budget. Unapplied atoms keep the request's position;
+an allowed weight decrement alone does not authorize rounding up d.
+
+For a single-target delegation portion, progress is a whole number of ordinary
+weight units, bounded by its remaining amount, standing authority, actual owner
+capacity and the destination's combined backing. A reduction changes only that
+portion's designated contribution. Transfers cannot count a source unit twice;
+separate queue entries do not acquire an invented atomic pairing.
+
+For an eligible irreversible exit with current combined weight w, progress is a
+whole weight decrease d from zero through w. Let x=w-d. Surrender bootstrap
+first and apply the owner-reference rule to the surviving ordinary total. For
+x>0 retain exactly `max(10^13, ceil(x/20))` usable backing atoms, removing only
+actual excess backing; the continuing minimum remains binding. For the final
+x=0 exit, retain zero usable backing and complete the effective departure. An
+already-zero-weight registration still has a zero-weight-progress candidate
+that completes its eligible exit. Choose the largest valid d permitted by the
+complete selected-map churn, with the specified backing result determining the
+economic step even when d=0.
+
+All atoms that cease backing move into liable retention under their selected
+exposure/release floors; none becomes immediately withdrawable through these
+formulas. A final exit also permanently removes its remaining bootstrap tag
+weight without redistribution or revival. Recompute selected membership for
+the complete candidate, including replacement of the departing registration.
+If no positive replacement exists, there is no invented replacement weight;
+loss of the last positive agreement weight retains the existing halt rule.
+
+These scalar candidate families select semantic maximality. Their exact
+rank-crossing intervals can support analytical maximum selection; enumerating
+every atom or weight unit is not a production resource bound. Exact operation
+records, source-principal selection and measured work limits remain unfinished.
 
 ## Account authorization and operation identity
 
@@ -703,6 +786,15 @@ in E+2. The originating request's own eligibility must also hold. This fresh
 delay applies to the loss-derived reconciliation, not to the mandatory loss
 projection or cancellation of excess pending portions.
 
+The loss-derived event is the mandatory owner-loss projection for the next
+authorization snapshot at height H, anchored to finalized parent H-1. Its event
+epoch is the epoch containing H, even when the underlying collection executed
+at the preceding epoch's final height. Thus its fresh eligibility is
+`epoch(H) + 2`, not the preceding evidence operation's epoch plus two. Actual
+collection order and H-1's frozen authorization remain unchanged. Permanent
+target-removal events retain their separate finalized exit or tombstone event
+date; this projection-date rule does not move those events.
+
 Only newly required amounts receive this new event's eligibility and priority;
 existing surviving pending portions retain theirs and must not be duplicated
 or renewed. The voluntary source reduction and destination increase obey the
@@ -714,6 +806,88 @@ canonical event coordinates, overlapping target derivation and composition with
 existing pending changes remain to be specified.
 
 ### Maturation during a pending plan amendment
+
+For new availability, retain one currently eligible full-plan backbone and at
+most the latest pending full plan. A superseded pending plan retains only the
+provenance needed by its already-existing surviving queued portions; reaching
+its former eligibility date does not make it a new-growth backbone. When the
+latest pending plan itself becomes eligible, it replaces the backbone for new
+growth. Existing surviving portions retain their authorization evidence,
+eligibility and priority through this replacement.
+
+Before an owner's first plan becomes eligible, its backbone is the empty plan:
+every target and maturation marginal is zero. A first pending plan cannot use
+nonexistent earlier authorization.
+
+Explicit request revocations and cancellation of actual queued amounts retain
+their effects. A later restoration does not recover old eligibility or priority.
+Keep the backbone's original full request vector for counterfactual allocation:
+revocation restricts permissible output and must not renormalize that original
+vector to give another target earlier authority.
+
+Let h_i(L) be the highest-averages target from that original backbone's applicable
+dated authorization view at live capacity L. While it remains the backbone,
+retain a ceiling m_i initially equal
+to its request for i and lowered by each later explicit request reduction for i.
+Restoring a request in a pending plan does not raise m_i. Promoting a new
+backbone resets its ceilings to that plan's requests; it does not renew the
+priority of existing surviving portions.
+
+For genuinely new maturation increasing available capacity from L0 to L1,
+the older-plan support at i is exactly
+`b_i = min(h_i(L1), m_i) - min(h_i(L0), m_i)`.
+Compute both sides with the same original backbone, ceilings and dated
+denominator view for this maturation event. Mandatory old-capacity loss and
+target-removal effects occur separately, before this comparison; do not fold
+their effects into L1-L0 or disguise them as maturation. These b_i are nonnegative by fixed-
+input house monotonicity, and their sum is at most L1-L0.
+
+Likewise compute the latest plan's nonnegative target increments a_i over the
+same capacity increase using the current permanent-target filter. After preserving and normalizing existing portions,
+let g_i be the remaining uncovered increase toward that latest target. At most
+`n_i = min(a_i, g_i)` is new maturation-derived intent for this target. Attribute
+each part to its earliest sufficient dated authorization view as specified below.
+Every part receives this maturation event's fresh priority. Their aggregate
+cannot exceed L1-L0 because each n_i is bounded by a_i. Older uncovered deficits
+keep their own causes and cannot acquire the maturation exception through this
+calculation.
+
+Permanent removal prohibits new output to the removed target immediately, but
+does not remove that target from an older authorization view's denominator until
+the removal event reaches its own E+2 eligibility. Before then, mask the removed
+output without redistributing it. Otherwise removal of A from `(100,100)` would
+incorrectly authorize all fifty new B units at old eligibility during maturation
+from fifty to one hundred; only twenty-five have pre-removal support.
+
+For a maturation event, inspect authorization views in ascending eligibility
+order: the current eligible view, the latest pending plan's eligibility, and
+each pending permanent-removal eligibility. At a date before the latest plan
+becomes eligible use the backbone; at and after that date use the latest plan.
+Each view omits from its denominator only removals eligible by that date, while
+always prohibiting output to every already-removed target. Backbone views keep
+their explicit-revocation ceilings; latest-plan views use that plan's ceilings.
+At coincident dates apply all due changes before computing the single view.
+
+In each view compute the nonnegative clipped target marginal s_i over the same
+L0-to-L1 interval. If q_i of this event's n_i units already have earlier support,
+assign exactly `max(0, min(n_i, s_i) - q_i)` additional units at this view's
+eligibility, then update q_i. The assigned eligibility is the maximum of the
+maturation event's epoch, the view's authorization date and every other
+applicable event floor; an old backbone does not backdate new availability.
+This adds no second E+2 delay to maturation. Earlier assignments are not duplicated or renewed
+if a later view would round differently. The final view is the latest plan with
+all already-finalized removals applied, so it supports the whole n_i. This
+partition gives every new unit one source and never creates more than the
+latest target's new-capacity increment. Subsequent cancellation or supersession
+retains the ordinary normalization and surviving-provenance rules.
+
+Consume each event's support at most once. Cancellation removes or reduces its
+identified pending portion; recomputing a total target does not recreate the
+canceled event's eligibility or priority. A restoration amendment supplies a
+new amendment event, while genuine later maturation has its own fresh event and
+marginal support. Exact authenticated records and canonical event encodings
+remain unfinished; a sum of independent historical-plan maxima is not a valid
+substitute for this attribution.
 
 Attribute maturation-derived increments to full-plan authorization, not merely
 to an unchanged per-registration request field. Separate the increment already
