@@ -719,5 +719,5 @@ impl Error for FixedValidatorAnchorErrorV0 {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests;

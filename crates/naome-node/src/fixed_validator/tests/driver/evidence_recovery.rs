@@ -237,6 +237,14 @@ fn raw_evidence_restore_rejects_malformed_binding_signature_payload_lengths_and_
     let mut trailing = image.clone();
     trailing.push(0);
     cases.push(trailing);
+    // Both authenticated records remain intact, but canonical export groups
+    // proposals before votes within each class. Restore must not normalize an
+    // otherwise well-framed complete image into different canonical bytes.
+    let vote_start = empty.len() + 18 + control.len() + payload.len();
+    let mut reordered = image[..empty.len()].to_vec();
+    reordered.extend_from_slice(&image[vote_start..]);
+    reordered.extend_from_slice(&image[empty.len()..vote_start]);
+    cases.push(reordered);
     let mut duplicate = image.clone();
     duplicate[empty.len() - 8..empty.len()].copy_from_slice(&4u64.to_be_bytes());
     duplicate.extend_from_slice(&image[empty.len()..]);
@@ -505,4 +513,124 @@ fn over_capacity_reuse_preserves_every_source_input_and_blocks_until_explicit_di
             assert_eq!(layout.images(), before);
         })
         .unwrap();
+}
+
+#[test]
+fn all_raw_evidence_classes_have_an_independent_frame_and_mutation_corpus() {
+    let fixture = Fixture::new();
+    let layout = TestLayout::new("raw-evidence-codec-corpus");
+    let branch = fixed_branch(&fixture);
+    let (value, control, payload) = proposal_inputs(&fixture, &branch, 0, ZfcAxiom::Pairing);
+    let (_, higher_control, higher_payload) =
+        proposal_inputs(&fixture, &branch, 2, ZfcAxiom::Union);
+    let (_, higher) = quorum(
+        &fixture,
+        2,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Nil,
+    );
+    let (_, prevote) = quorum(
+        &fixture,
+        0,
+        ConsensusVoteRole::Prevote,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+    );
+    let (_, precommit) = quorum(
+        &fixture,
+        0,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(value.proposal_signing_root()),
+    );
+    let (_, nil) = quorum(
+        &fixture,
+        0,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Nil,
+    );
+    let ready = fixture
+        .provision(&layout, 8)
+        .create(fixture.signing_key())
+        .unwrap();
+    let (empty, actual) = ready
+        .run_with_signing_session(|scope| {
+            let driver = driver(scope, 8, 4);
+            let empty = driver.retained_evidence_image().unwrap();
+            let (mut driver, _) = step_arm(driver);
+            for event in [
+                proposal_event(2, &higher_control, &higher_payload),
+                higher_vote(&higher),
+                current_proposal_event(&control, &payload),
+                current_prevote_event(&prevote),
+                current_finality_proposal_event(&control, &payload),
+                current_finality_precommit_event(&precommit),
+                current_nil_precommit_event(&nil),
+            ] {
+                (driver, _) = admit(driver, event);
+            }
+            (empty, driver.retained_evidence_image().unwrap())
+        })
+        .unwrap();
+    let mut expected = empty.clone();
+    let count_start = expected.len() - 8;
+    expected[count_start..].copy_from_slice(&7_u64.to_be_bytes());
+    let field = |out: &mut Vec<u8>, bytes: &[u8]| {
+        out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        out.extend_from_slice(bytes);
+    };
+    for (class, first, second) in [
+        (
+            0,
+            higher_control.as_slice(),
+            Some(higher_payload.as_slice()),
+        ),
+        (0, higher.as_slice(), None),
+        (1, control.as_slice(), Some(payload.as_slice())),
+        (1, prevote.as_slice(), None),
+        (2, control.as_slice(), Some(payload.as_slice())),
+        (2, precommit.as_slice(), None),
+        (3, nil.as_slice(), None),
+    ] {
+        expected.extend_from_slice(&[class, if second.is_some() { 0 } else { 1 }]);
+        field(&mut expected, first);
+        if let Some(second) = second {
+            field(&mut expected, second);
+        }
+    }
+    assert_eq!(actual, expected);
+    let before = layout.images();
+    let reconstruct = |bytes: &[u8]| {
+        let ready = expect_ready(
+            fixture
+                .provision(&layout, 8)
+                .open(fixture.signing_key())
+                .unwrap(),
+        );
+        ready
+            .run_with_signing_session(|scope| {
+                driver(scope, 8, 4)
+                    .restore_retained_evidence(bytes)
+                    .ok()?
+                    .retained_evidence_image()
+                    .ok()
+            })
+            .unwrap()
+    };
+    crate::codec_corpus::check(
+        "raw retained evidence classes",
+        &[empty.clone(), expected.clone()],
+        reconstruct,
+    );
+    for mask in 0..=15 {
+        let mut image = expected.clone();
+        image[count_start - 1] = mask;
+        assert_eq!(reconstruct(&image), Some(image));
+    }
+    let mut excessive = expected.clone();
+    excessive[count_start..count_start + 8].copy_from_slice(&u64::MAX.to_be_bytes());
+    assert!(reconstruct(&excessive).is_none());
+    assert_eq!(
+        layout.images(),
+        before,
+        "codec acceptance must never write signer or finality authority"
+    );
 }

@@ -1784,3 +1784,57 @@ fn genesis_export_fails_closed_for_missing_or_corrupt_candidate_and_payload_entr
         Err(crate::CanonicalArtifactPayloadStoreError::Poisoned)
     ));
 }
+
+#[test]
+fn recovery_bundle_fields_have_a_digest_repaired_mutation_corpus() {
+    let fixture = BundleFixture::new(2);
+    let encoded = encode_bundle(
+        fixture.definition.id(),
+        fixture.definition.id().virtual_genesis_block_id(),
+        genesis_root(fixture.definition),
+        fixture.blocks.last().unwrap().id(),
+        &fixture.blocks,
+        &fixture.payloads,
+    );
+    let reconstruct = |bytes: &[u8]| -> Option<Vec<u8>> {
+        let decoded =
+            crate::candidate_branch_recovery_bundle::decode_bundle(bytes, fixture.limits).ok()?;
+        let blocks = decoded
+            .entries
+            .iter()
+            .map(|entry| entry.block)
+            .collect::<Vec<_>>();
+        // Bundle framing carries opaque payloads; strict artifact admission is
+        // separately exercised by its own typed canonical codec corpus.
+        let payloads = decoded
+            .entries
+            .iter()
+            .map(|entry| bytes[entry.payload_range.clone()].to_vec())
+            .collect::<Vec<_>>();
+        Some(encode_bundle(
+            decoded.chain_id,
+            decoded.anchor_block_id,
+            decoded.anchor_artifact_set_root,
+            decoded.target_block_id,
+            &blocks,
+            &payloads,
+        ))
+    };
+    crate::codec_corpus::check(
+        "recovery bundle",
+        std::slice::from_ref(&encoded),
+        reconstruct,
+    );
+    let body = &encoded[..encoded.len() - DIGEST_BYTES];
+    crate::codec_corpus::check(
+        "recovery bundle repaired digest",
+        &[body.to_vec()],
+        |body| {
+            let mut bytes = body.to_vec();
+            bytes.extend_from_slice(&bundle_digest(body));
+            let mut encoded = reconstruct(&bytes)?;
+            encoded.truncate(encoded.len() - DIGEST_BYTES);
+            Some(encoded)
+        },
+    );
+}

@@ -6,6 +6,9 @@ use naome_foundation::ZfcAxiom;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 
 use super::*;
+
+#[path = "tests/codec_conformance.rs"]
+mod codec_conformance;
 use crate::{
     ActiveAgreementEntry, AgreementWeight, CONSENSUS_KEY_BYTES, ConsensusRound,
     ConsensusVoteDecodeError, ConsensusVoteVerifyError, FixedConsensusBranchV0,

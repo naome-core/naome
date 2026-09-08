@@ -212,3 +212,7 @@ pub use artifact_chain_journal::{
 
 const LOCK_FILE_NAME: &str = "artifact-chain.lock";
 const JOURNAL_FILE_NAME: &str = "artifact-chain.journal";
+
+#[cfg(test)]
+#[path = "../../../tests/support/codec_corpus.rs"]
+mod codec_corpus;

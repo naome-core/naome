@@ -338,7 +338,16 @@ fn healthy(event: &Value) {
 }
 
 fn pump_until(nodes: &mut [Process; 4], label: &str, predicate: impl Fn(&[Process; 4]) -> bool) {
-    let deadline = Instant::now() + MILESTONE_BOUND;
+    pump_until_with_bound(nodes, label, MILESTONE_BOUND, predicate);
+}
+
+fn pump_until_with_bound(
+    nodes: &mut [Process; 4],
+    label: &str,
+    bound: Duration,
+    predicate: impl Fn(&[Process; 4]) -> bool,
+) {
+    let deadline = Instant::now() + bound;
     while !predicate(nodes) {
         for (actor, node) in nodes.iter_mut().enumerate() {
             if let Some(event) = node.observe(Duration::from_millis(1)) {

@@ -1269,7 +1269,11 @@ conflict proofs retain their existing prompt halt path. These refusal calls
 preserve all raw custody and perform no evidence-file writes.
 
 `retained_evidence_image` exports raw canonical proposal controls, payloads and
-votes, ordered by resource class, plus conservative class refusal bits. Its
+votes, ordered by resource class and then by proposal before vote within each
+class, plus conservative class refusal bits. Within each class and record kind,
+export preserves the retained insertion order; restore accepts that exact order
+and does not sort records. Descending class/kind pairs are rejected rather than
+normalized into another byte string. Its
 binding includes context, fixed set, signer, maximum round and all four inbox
 budgets. Its checked size ceiling is the sum of those canonical-byte budgets
 and bounded per-entry framing. `restore_retained_evidence` consumes a fresh

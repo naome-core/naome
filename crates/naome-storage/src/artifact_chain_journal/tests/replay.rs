@@ -264,3 +264,40 @@ fn assert_replay_parent_failure(
     ));
     assert_eq!(fs::read(directory.journal_path()).unwrap(), image);
 }
+
+#[test]
+fn complete_artifact_journal_frames_have_a_typed_mutation_corpus() {
+    use crate::fault_io::ScriptedIo;
+    let definition = chain_definition(CHAIN_BYTE);
+    let entries = two_block_chain(definition);
+    let seeds = [
+        journal_prefix(definition.id()),
+        journal_image(definition.id(), &entries[..1]),
+        journal_image(definition.id(), &entries),
+    ];
+    crate::codec_corpus::check("artifact journal complete image", &seeds, |bytes| {
+        let io = ScriptedIo::from_images(bytes.to_vec(), bytes.to_vec());
+        let core = JournalCore::replay(io, definition, None).ok()?;
+        // Tail recovery is a different outcome from accepting a complete codec.
+        if core.committed_end as usize != bytes.len() {
+            return None;
+        }
+        let mut offset = JOURNAL_PREFIX_BYTES;
+        let mut reconstructed = Vec::new();
+        while offset < bytes.len() {
+            let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+            let block = ArtifactBlock::from_canonical_bytes(
+                &bytes[offset + 4..offset + 4 + ARTIFACT_BLOCK_BYTES],
+            )
+            .unwrap();
+            let payload = ArtifactPayload::from_canonical_bytes(
+                &bytes[offset + 4 + ARTIFACT_BLOCK_BYTES..offset + 4 + length],
+            )
+            .unwrap()
+            .to_canonical_bytes();
+            reconstructed.push((block, payload, block.artifact_id()));
+            offset += length + ENTRY_FIXED_BYTES as usize;
+        }
+        Some(journal_image(definition.id(), &reconstructed))
+    });
+}

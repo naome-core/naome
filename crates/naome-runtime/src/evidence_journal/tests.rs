@@ -124,3 +124,29 @@ fn identical_raw_custody_skips_disk_replacement_and_capacity_refuses_before_muta
     assert_eq!(dir.bytes(), before);
     assert!(!owner.poisoned);
 }
+
+#[test]
+fn evidence_wrapper_has_an_independent_vector_and_mutation_corpus() {
+    let directory = Directory::new();
+    let raw = (0..192).map(|i| i as u8).collect::<Vec<_>>();
+    let encode = |raw: &[u8]| {
+        let mut hash = Sha256::new();
+        hash.update(b"naome:fixed-validator-retained-evidence-checksum:v0\0");
+        hash.update(raw);
+        let mut bytes = raw.to_vec();
+        bytes.extend_from_slice(&hash.finalize());
+        bytes
+    };
+    let expected = encode(&raw);
+    drop(EvidenceJournal::open(&directory.0, true, raw, 256).unwrap());
+    assert_eq!(directory.bytes(), expected);
+    crate::codec_corpus::check(
+        "raw evidence checksum wrapper",
+        &[encode(&[]), expected],
+        |bytes| {
+            fs::write(directory.0.join(IMAGE), bytes).unwrap();
+            let decoded = EvidenceJournal::open(&directory.0, false, vec![], 256).ok()?;
+            Some(encode(decoded.image()))
+        },
+    );
+}

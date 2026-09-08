@@ -1,7 +1,12 @@
+#[cfg(unix)]
 use std::env;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::SigningKey;
@@ -14,10 +19,13 @@ use sha2::{Digest as _, Sha256 as IndependentSha256};
 
 use super::*;
 
+#[cfg(unix)]
 static DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(unix)]
 struct TestDirectory(PathBuf);
 
+#[cfg(unix)]
 impl TestDirectory {
     fn new(label: &str) -> Self {
         loop {
@@ -35,6 +43,7 @@ impl TestDirectory {
     }
 }
 
+#[cfg(unix)]
 impl Drop for TestDirectory {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).unwrap();
@@ -360,4 +369,74 @@ fn live_anchor_locks_are_independent_by_kind_and_vote_signer() {
     drop(other_vote);
     FixedValidatorAnchorFileV0::open_finality(&directory.0, context, fixed_set_id, 8).unwrap();
     FixedValidatorAnchorFileV0::open_vote(&directory.0, context, fixed_set_id, signer, 16).unwrap();
+}
+
+#[test]
+fn both_anchor_codecs_have_a_mutation_corpus_with_rechecksummed_fields() {
+    let (context, fixed_set, signer) = fixture();
+    let position = AnchorPositionV0 {
+        sequence: 0x0102_0304_0506_0708,
+        state_id: [0x61; 32],
+    };
+    for kind in [AnchorKindV0::Finality, AnchorKindV0::Vote { signer }] {
+        let seed = canonical_bytes(context, fixed_set, 8, kind, position);
+        // Independent fixed layout and literal domains also run on Windows;
+        // filesystem ownership tests below their Unix gates remain separate.
+        let (header, checksum_domain, width): (&[u8], &[u8], usize) = match kind {
+            AnchorKindV0::Finality => (
+                b"naome:fixed-validator-finality-anchor:v0\0",
+                b"naome:fixed-validator-finality-anchor-checksum:v0\0",
+                221,
+            ),
+            AnchorKindV0::Vote { .. } => (
+                b"naome:fixed-validator-vote-safety-anchor:v0\0",
+                b"naome:fixed-validator-vote-safety-anchor-checksum:v0\0",
+                256,
+            ),
+        };
+        let mut expected = header.to_vec();
+        expected.extend_from_slice(context.chain_id().as_bytes());
+        expected.extend_from_slice(&[0x42; 32]);
+        expected.extend_from_slice(&[0, 0, 0, 7]);
+        expected.extend_from_slice(fixed_set.as_bytes());
+        if let AnchorKindV0::Vote { .. } = kind {
+            expected.extend_from_slice(signer.as_bytes());
+        }
+        expected.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 8]);
+        expected.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        expected.extend_from_slice(&[0x61; 32]);
+        let mut expected_hash = IndependentSha256::new();
+        expected_hash.update(checksum_domain);
+        expected_hash.update(&expected);
+        expected.extend_from_slice(&expected_hash.finalize());
+        assert_eq!(expected.len(), width);
+        assert_eq!(seed, expected);
+        let check = |bytes: &[u8]| {
+            decode_bytes(bytes, context, fixed_set, 8, kind)
+                .ok()
+                .map(|position| canonical_bytes(context, fixed_set, 8, kind, position))
+        };
+        crate::codec_corpus::check("journal anchor", std::slice::from_ref(&seed), check);
+        // Reach binding fields through a correct outer checksum as well.
+        let checksum_start = seed.len() - 32;
+        let domain = match kind {
+            AnchorKindV0::Finality => FINALITY_CHECKSUM_DOMAIN,
+            AnchorKindV0::Vote { .. } => VOTE_CHECKSUM_DOMAIN,
+        };
+        for offset in 0..checksum_start {
+            let mut changed = seed.clone();
+            changed[offset] ^= 0x80;
+            let mut hash = IndependentSha256::new();
+            hash.update(domain);
+            hash.update(&changed[..checksum_start]);
+            changed[checksum_start..].copy_from_slice(&hash.finalize());
+            if let Some(encoded) = check(&changed) {
+                assert_eq!(encoded, changed);
+            }
+        }
+        assert!(matches!(
+            decode_bytes(&vec![0xff; seed.len() + 1], context, fixed_set, 8, kind),
+            Err(FixedValidatorAnchorErrorV0::InvalidLength { .. })
+        ));
+    }
 }

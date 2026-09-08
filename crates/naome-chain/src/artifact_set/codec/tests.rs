@@ -442,3 +442,29 @@ fn decoded_proofs_still_require_the_original_root_and_query() {
         );
     }
 }
+
+#[test]
+fn all_artifact_set_terminals_and_full_depth_have_a_mutation_corpus() {
+    let zero = id([0; 32]);
+    let high = single_bit_id(0);
+    let empty = set_for(&[]);
+    let singleton = set_for(&[zero]);
+    let pair = set_for(&[zero, high]);
+    let mut keys = (0..256).map(single_bit_id).collect::<Vec<_>>();
+    keys.push(zero);
+    let full = set_for(&keys);
+    let seeds = [
+        empty.proof(zero),
+        singleton.proof(zero),
+        singleton.proof(high),
+        pair.proof(zero),
+        pair.proof(single_bit_id(1)),
+        full.proof(zero),
+    ]
+    .map(|proof| proof.to_canonical_bytes());
+    crate::codec_corpus::check("artifact set proof", &seeds, |bytes| {
+        ArtifactSetProof::from_canonical_bytes(bytes)
+            .ok()
+            .map(|proof| proof.to_canonical_bytes())
+    });
+}

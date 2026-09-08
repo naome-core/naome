@@ -245,6 +245,17 @@ fn proposal_intent_authors_one_fully_validated_fresh_value() {
             consensus_key(&signing_key),
         )
         .unwrap();
+    crate::fixed_validator_proposal_authoring::check_proposal_intent_corpus(
+        &intent,
+        context,
+        branch.fixed_agreement_set_id(),
+        consensus_key(&signing_key),
+    );
+    assert_eq!(intent.canonical_intent_bytes().len(), 629);
+    assert_eq!(
+        codec_digest(intent.canonical_intent_bytes()),
+        "f374f1246abd665cb2df005c2d1a456bf672cb1958bca87669d6b8bf39226dc4"
+    );
     let observed = ObservedFixedValidatorProposalIntentV0::decode_and_verify(
         intent.canonical_intent_bytes(),
         context,
@@ -368,6 +379,17 @@ fn proposal_intent_reauthors_exact_retained_value_and_prevote_proof() {
             consensus_key(&signing_key),
         )
         .unwrap();
+    crate::fixed_validator_proposal_authoring::check_proposal_intent_corpus(
+        &intent,
+        context,
+        branch.fixed_agreement_set_id(),
+        consensus_key(&signing_key),
+    );
+    assert_eq!(intent.canonical_intent_bytes().len(), 1433);
+    assert_eq!(
+        codec_digest(intent.canonical_intent_bytes()),
+        "48f027ad05501fadfb632f1d19f5637b68f5b743fd8e76f04451abe92ff4bd43"
+    );
     let signature =
         ConsensusSignature::from_bytes(signing_key.sign(&intent.signing_transcript()).to_bytes());
     let completed = intent.complete_with_signature(signature).unwrap();
@@ -1244,6 +1266,34 @@ fn higher_round_quorums_cross_every_phase_role_target_and_preserve_exact_state()
                     assert_eq!(prepared.target(), target);
                     assert_eq!(prepared.canonical_certificate(), certificate);
                     let checkpoint_bytes = prepared.canonical_checkpoint_bytes().to_vec();
+                    if case == 1 {
+                        assert_eq!(checkpoint_bytes.len(), 1410);
+                        assert_eq!(
+                            codec_digest(&checkpoint_bytes),
+                            "5360ed0c4504dc668744323f0395f9163f852d050d1e2712403a3e1a84efdf72"
+                        );
+                    }
+                    crate::codec_corpus::check(
+                        "higher round checkpoint",
+                        std::slice::from_ref(&checkpoint_bytes),
+                        |bytes| {
+                            let decoded =
+                                ObservedFixedValidatorHigherRoundCheckpointV0::decode_and_verify(
+                                    bytes,
+                                    context,
+                                    branch.fixed_agreement_set_id(),
+                                )
+                                .ok()?;
+                            encode_higher_round_checkpoint(
+                                decoded.source_position,
+                                decoded.source_phase,
+                                decoded.source_state_binding,
+                                &decoded.target_snapshot,
+                                &decoded.canonical_certificate,
+                            )
+                            .ok()
+                        },
+                    );
 
                     let target_round = state
                         .apply_prepared_higher_round_quorum_advance(prepared)
@@ -2033,6 +2083,7 @@ fn runtime_vote_intent_round_trips_and_completes_exact_existing_vote() {
         observed.canonical_state_and_vote_intent_bytes(),
         intent.canonical_state_and_vote_intent_bytes()
     );
+    check_vote_intent_corpus(&intent, branch.fixed_agreement_set_id());
     let replay = observed.verify_for_round(&round_zero).unwrap();
     assert_eq!(replay.lock_state().position(), state.position());
     assert_eq!(replay.lock_state().phase(), state.phase());
@@ -2118,6 +2169,7 @@ fn locked_vote_intent_retains_exact_qc_and_reconstructs_only_for_exact_round() {
         Err(FixedValidatorVoteIntentError::RoundPositionMismatch { .. })
     ));
 
+    check_vote_intent_corpus(&intent, branch.fixed_agreement_set_id());
     let mut wrong_id = intent.canonical_state_and_vote_intent_bytes().to_vec();
     let certificate_start = wrong_id
         .windows(certificate_bytes.len())
@@ -2352,4 +2404,105 @@ fn structural_replay_rejects_old_lock_with_newer_different_valid_value() {
         }) if locked_round == ConsensusRound::new(0)
             && valid_round == ConsensusRound::new(1)
     ));
+}
+
+fn check_vote_intent_corpus(intent: &FixedValidatorVoteIntentV0, fixed_set: FixedAgreementSetId) {
+    crate::codec_corpus::check(
+        "vote intent",
+        &[intent.canonical_state_and_vote_intent_bytes().to_vec()],
+        |bytes| {
+            let decoded = ObservedFixedValidatorVoteIntentV0::decode_and_verify(
+                bytes,
+                intent.context(),
+                fixed_set,
+                intent.signer(),
+            )
+            .ok()?;
+            encode_state_and_vote_intent(&decoded.snapshot, &decoded.effect, decoded.signer).ok()
+        },
+    );
+}
+
+#[test]
+fn signing_snapshot_phases_and_vote_roles_have_a_mutation_corpus() {
+    let (branch, key, context) = fixture(0x39);
+    let round = branch.begin_round_zero().unwrap();
+    let mut state = FixedValidatorLockStateV0::try_from_round_zero(&round).unwrap();
+    let mut snapshots = vec![
+        FixedValidatorProposalStateSnapshotV0::from_lock_state(&state)
+            .unwrap()
+            .canonical_bytes()
+            .to_vec(),
+    ];
+    let effect = state.decide_prevote_without_proposal().unwrap();
+    let intent = state
+        .prepare_vote_intent(&round, effect, consensus_key(&key))
+        .unwrap();
+    check_vote_intent_corpus(&intent, branch.fixed_agreement_set_id());
+    snapshots.push(
+        FixedValidatorProposalStateSnapshotV0::from_lock_state(&state)
+            .unwrap()
+            .canonical_bytes()
+            .to_vec(),
+    );
+    let effect = state.decide_precommit_without_quorum().unwrap();
+    let intent = state
+        .prepare_vote_intent(&round, effect, consensus_key(&key))
+        .unwrap();
+    check_vote_intent_corpus(&intent, branch.fixed_agreement_set_id());
+    snapshots.push(
+        FixedValidatorProposalStateSnapshotV0::from_lock_state(&state)
+            .unwrap()
+            .canonical_bytes()
+            .to_vec(),
+    );
+    let mut locked = FixedValidatorLockStateV0::try_from_round_zero(&round).unwrap();
+    lock_current_proposal(&mut locked, value(&round, 0x59), context, &key);
+    snapshots.push(
+        FixedValidatorProposalStateSnapshotV0::from_lock_state(&locked)
+            .unwrap()
+            .canonical_bytes()
+            .to_vec(),
+    );
+    // Fixed complete-byte fingerprints complement the explicit intent layout
+    // vector above and the typed re-encoding oracle below.
+    for (bytes, (length, digest)) in snapshots.iter().zip([
+        (
+            288,
+            "2f633050748493c07718601900c723972d88fc056c42da0cca7bfa6bd51a587f",
+        ),
+        (
+            288,
+            "213e1bb68aa39f159c9461e1b39943ba94ca424aeef25ba176cdf0ce54d7a8e6",
+        ),
+        (
+            288,
+            "90d3292f722d961e1cefb9cfbccbad990909bf8eb2735d7f3155198f2c68c612",
+        ),
+        (
+            1092,
+            "229e6772a09a39558549ce6c7d2e522adedbb61900416a3aeada4aea4f6eccdd",
+        ),
+    ]) {
+        assert_eq!(bytes.len(), length);
+        assert_eq!(codec_digest(bytes), digest);
+    }
+    crate::codec_corpus::check("signing snapshot", &snapshots, |bytes| {
+        let decoded = FixedValidatorProposalStateSnapshotV0::decode_and_verify(
+            bytes,
+            context,
+            branch.fixed_agreement_set_id(),
+        )
+        .ok()?;
+        let mut encoded = Vec::new();
+        append_state_snapshot(&mut encoded, &decoded.snapshot);
+        Some(encoded)
+    });
+}
+
+fn codec_digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }

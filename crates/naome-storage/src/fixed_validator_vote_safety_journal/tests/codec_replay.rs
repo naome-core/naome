@@ -43,6 +43,7 @@ fn finality_stop_codec_has_an_independent_golden_and_strict_adversarial_replay()
     expected_image.extend_from_slice(&body);
     expected_image.extend_from_slice(expected_state.as_bytes());
     assert_eq!(expected_image.len() - prefix.len(), 205);
+    check_vote_journal_image(&fixture, &expected_image);
 
     let mut vote_journal = fixture.create(&vote_directory);
     let conflict = finality
@@ -771,4 +772,253 @@ fn incomplete_tail_is_recovered_only_after_anchor_equality() {
     let reopened = fixture.open(&directory, prepared_state).unwrap();
     assert_eq!(fs::read(journal_path).unwrap(), anchored);
     assert!(reopened.pending_vote().unwrap().is_some());
+}
+
+// Complete journal frames are tested separately from torn-tail recovery. Embedded
+// inert intent/checkpoint fields have their typed re-encoding corpus in consensus;
+// this layer checks the tag, framing, chain, sequence and metadata codecs.
+pub(super) fn check_vote_journal_image(fixture: &Fixture, image: &[u8]) {
+    let mut offset = JOURNAL_PREFIX_BYTES;
+    let mut prior = genesis_state_id(&fixture.prefix());
+    while offset < image.len() {
+        let length = u32::from_be_bytes(image[offset..offset + 4].try_into().unwrap()) as usize;
+        let end = offset + length + ENTRY_FIXED_BYTES as usize;
+        let body = &image[offset + 4..offset + 4 + length];
+        let prefix = &image[..offset];
+        let inspect = |frame: &[u8]| -> Option<Vec<u8>> {
+            let mut full = prefix.to_vec();
+            full.extend_from_slice(frame);
+            let expected = if frame.is_empty() {
+                prior
+            } else {
+                FixedValidatorVoteSafetyJournalStateIdV0::from_bytes(
+                    frame.get(frame.len().checked_sub(32)?..)?.try_into().ok()?,
+                )
+            };
+            let core = fixture
+                .replay_scripted(
+                    ScriptedIo::from_images(full.clone(), full.clone()),
+                    expected,
+                )
+                .ok()?;
+            if core.committed_end as usize != full.len() {
+                return None;
+            }
+            if frame.is_empty() {
+                return Some(Vec::new());
+            }
+            let length = u32::from_be_bytes(frame.get(..4)?.try_into().ok()?) as usize;
+            let reconstructed = reconstruct_vote_record(fixture, &core, frame.get(4..4 + length)?);
+            let mut output = Vec::new();
+            let _ = append_test_record(&mut output, prior, &reconstructed);
+            Some(output)
+        };
+        crate::codec_corpus::check(
+            "vote journal frame",
+            &[image[offset..end].to_vec()],
+            inspect,
+        );
+        crate::codec_corpus::check(
+            "vote journal body with repaired footer",
+            &[body.to_vec()],
+            |body| {
+                let mut frame = Vec::new();
+                let _ = append_test_record(&mut frame, prior, body);
+                let encoded = inspect(&frame)?;
+                Some(encoded[4..encoded.len() - 32].to_vec())
+            },
+        );
+        prior = FixedValidatorVoteSafetyJournalStateIdV0::from_bytes(
+            image[end - 32..end].try_into().unwrap(),
+        );
+        offset = end;
+    }
+}
+
+fn reconstruct_vote_record(
+    fixture: &Fixture,
+    core: &FixedValidatorVoteSafetyJournalCore<ScriptedIo>,
+    body: &[u8],
+) -> Vec<u8> {
+    let (&tag, payload) = body.split_first().unwrap();
+    let encoded = match tag {
+        PREPARE_RECORD | CONFLICT_HALT_RECORD => {
+            ObservedFixedValidatorVoteIntentV0::decode_and_verify(
+                payload,
+                fixture.context,
+                fixture.fixed_set_id(),
+                fixture.signer(),
+            )
+            .unwrap()
+            .canonical_state_and_vote_intent_bytes()
+            .to_vec()
+        }
+        COMPLETE_RECORD => VerifiedConsensusVoteV0::decode_and_verify(payload, fixture.context)
+            .unwrap()
+            .to_canonical_bytes()
+            .to_vec(),
+        SIGNING_LINEAGE_RECORD => {
+            let lineage = core.lineage.unwrap();
+            return signing_lineage_record(lineage.height, lineage.id, 0).unwrap();
+        }
+        FINALITY_CONFLICT_STOP_RECORD | PRESELECTION_CONFLICT_STOP_RECORD => {
+            return finality_conflict_stop_record(core.finality_conflict_stop.unwrap(), 0).unwrap();
+        }
+        HIGHER_ROUND_CHECKPOINT_RECORD => {
+            ObservedFixedValidatorHigherRoundCheckpointV0::decode_and_verify(
+                payload,
+                fixture.context,
+                fixture.fixed_set_id(),
+            )
+            .unwrap()
+            .canonical_checkpoint_bytes()
+            .to_vec()
+        }
+        PROPOSAL_ACTIVATION_RECORD => core
+            .proposal_replay_limit
+            .unwrap()
+            .max_prepared_proposals()
+            .to_be_bytes()
+            .to_vec(),
+        PROPOSAL_PREPARE_RECORD | PROPOSAL_CONFLICT_HALT_RECORD => {
+            ObservedFixedValidatorProposalIntentV0::decode_and_verify(
+                payload,
+                fixture.context,
+                fixture.fixed_set_id(),
+                fixture.signer(),
+            )
+            .unwrap()
+            .canonical_intent_bytes()
+            .to_vec()
+        }
+        PROPOSAL_COMPLETE_RECORD | PROPOSAL_PUBLICATION_COMPLETE_RECORD => {
+            let observed = &core
+                .proposals
+                .iter()
+                .max_by_key(|(position, _)| *position)
+                .unwrap()
+                .1
+                .observed_intent;
+            let width = naome_consensus::VerifiedProducerAuthorizationV0::BYTE_LENGTH;
+            let completed = observed
+                .verify_completed_producer_authorization(&payload[..width])
+                .unwrap();
+            let start = naome_consensus::ConsensusValueV0::BYTE_LENGTH;
+            let mut encoded =
+                completed.canonical_proposal_control_bytes()[start..start + width].to_vec();
+            if tag == PROPOSAL_PUBLICATION_COMPLETE_RECORD {
+                // Journal replay retains bounded opaque artifact bytes. Node recovery
+                // validates this payload later against the historical parent.
+                encoded.extend_from_slice(&payload[width..]);
+            }
+            encoded
+        }
+        _ => panic!("accepted unknown journal tag {tag}"),
+    };
+    tagged_record(tag, &encoded, 0).unwrap()
+}
+
+#[test]
+fn vote_and_proposal_record_tags_have_a_framed_mutation_corpus() {
+    let fixture = Fixture::new(4);
+    let mut votes = fixture.prefix();
+    let mut state = genesis_state_id(&votes);
+    let nil = fixture.nil_prevote_intent();
+    let conflicting = fixture.proposal_prevote_intent();
+    for (tag, payload) in [
+        (
+            PREPARE_RECORD,
+            nil.canonical_state_and_vote_intent_bytes().to_vec(),
+        ),
+        (
+            COMPLETE_RECORD,
+            signed_vote_bytes(&nil, &fixture.signing_key()),
+        ),
+        (
+            CONFLICT_HALT_RECORD,
+            conflicting.canonical_state_and_vote_intent_bytes().to_vec(),
+        ),
+    ] {
+        state = append_test_record(&mut votes, state, &tagged_record(tag, &payload, 0).unwrap());
+    }
+    check_vote_journal_image(&fixture, &votes);
+    let branch = fixture.branch();
+    let round = branch.begin_round_zero().unwrap();
+    let lock = FixedValidatorLockStateV0::try_from_round_zero(&round).unwrap();
+    let make_proposal = |axiom| {
+        let (artifact_block, canonical_artifact_bytes) = fixture.proposal_candidate_for(axiom);
+        lock.prepare_proposal_intent(
+            &round,
+            FixedValidatorProposalSourceV0::Fresh {
+                artifact_block,
+                canonical_artifact_bytes,
+            },
+            fixture.signer(),
+        )
+        .unwrap()
+    };
+    let proposal = make_proposal(ZfcAxiom::Pairing);
+    let other = make_proposal(ZfcAxiom::Union);
+    let signature = ConsensusSignature::from_bytes(
+        fixture
+            .signing_key()
+            .sign(&proposal.signing_transcript())
+            .to_bytes(),
+    );
+    let completed = proposal.clone().complete_with_signature(signature).unwrap();
+    let start = naome_consensus::ConsensusValueV0::BYTE_LENGTH;
+    let authorization = &completed.canonical_proposal_control_bytes()
+        [start..start + naome_consensus::VerifiedProducerAuthorizationV0::BYTE_LENGTH];
+    for tag in [
+        PROPOSAL_COMPLETE_RECORD,
+        PROPOSAL_PUBLICATION_COMPLETE_RECORD,
+    ] {
+        let mut image = fixture.prefix();
+        let mut state = genesis_state_id(&image);
+        state = append_test_record(
+            &mut image,
+            state,
+            &tagged_record(PROPOSAL_ACTIVATION_RECORD, &4_u64.to_be_bytes(), 0).unwrap(),
+        );
+        state = append_test_record(
+            &mut image,
+            state,
+            &signing_lineage_record(
+                round.position().height(),
+                signing_lineage_id(
+                    round.parent_coordinate(),
+                    round.position().height(),
+                    fixture.signer(),
+                ),
+                0,
+            )
+            .unwrap(),
+        );
+        state = append_test_record(
+            &mut image,
+            state,
+            &tagged_record(
+                PROPOSAL_PREPARE_RECORD,
+                proposal.canonical_intent_bytes(),
+                0,
+            )
+            .unwrap(),
+        );
+        let mut payload = authorization.to_vec();
+        if tag == PROPOSAL_PUBLICATION_COMPLETE_RECORD {
+            payload.extend_from_slice(&fixture.proposal_candidate_for(ZfcAxiom::Pairing).1);
+        }
+        state = append_test_record(&mut image, state, &tagged_record(tag, &payload, 0).unwrap());
+        let _ = append_test_record(
+            &mut image,
+            state,
+            &tagged_record(
+                PROPOSAL_CONFLICT_HALT_RECORD,
+                other.canonical_intent_bytes(),
+                0,
+            )
+            .unwrap(),
+        );
+        check_vote_journal_image(&fixture, &image);
+    }
 }

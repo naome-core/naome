@@ -906,3 +906,38 @@ fn replay_recovery_and_stabilization_failures_return_no_handle() {
         Err(CanonicalArtifactPayloadStoreError::Stabilize { .. })
     ));
 }
+
+#[test]
+fn complete_payload_store_frames_have_a_mutation_corpus() {
+    let mut dag = ArtifactDag::new();
+    let proof = axiom_bytes(ZfcAxiom::Pairing);
+    let definition = relation_definition_bytes();
+    let proof_id = admitted(&mut dag, proof.clone());
+    let definition_id = admitted(&mut dag, definition.clone());
+    let seeds = [
+        store_prefix(),
+        store_image(&[(proof_id, proof.clone())]),
+        store_image(&[(proof_id, proof), (definition_id, definition)]),
+    ];
+    crate::codec_corpus::check("payload source journal", &seeds, |bytes| {
+        let core = ArtifactPayloadStoreCore::replay(
+            ScriptedIo::from_images(bytes.to_vec(), bytes.to_vec()),
+            limits(4, 4096),
+        )
+        .ok()?;
+        if core.committed_end as usize != bytes.len() {
+            return None;
+        }
+        let mut offset = STORE_PREFIX_BYTES as usize;
+        let mut entries = Vec::new();
+        while offset < bytes.len() {
+            let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+            let id = ArtifactId::from_bytes(bytes[offset + 4..offset + 36].try_into().unwrap());
+            // Archive replay checks framing/integrity, while contextual payload
+            // validity belongs to admission. Preserve this layer's opaque bytes.
+            entries.push((id, bytes[offset + 36..offset + 36 + length].to_vec()));
+            offset += length + ENTRY_FIXED_BYTES as usize;
+        }
+        Some(store_image(&entries))
+    });
+}

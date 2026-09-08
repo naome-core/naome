@@ -1057,3 +1057,72 @@ async fn responder_request_reader_classifies_eof_invalid_timeout_and_io() {
         .unwrap();
     assert_eq!(encoded.into_inner(), [0]);
 }
+
+fn check_wire_codec<C: Codec<Protocol = libp2p::StreamProtocol>>(
+    name: &str,
+    mut codec: C,
+    protocol: &libp2p::StreamProtocol,
+    requests: &[Vec<u8>],
+    responses: &[Vec<u8>],
+) {
+    crate::codec_corpus::check(name, requests, |bytes| {
+        let request = block_on(codec.read_request(protocol, &mut Cursor::new(bytes))).ok()?;
+        let mut output = Cursor::new(Vec::new());
+        block_on(codec.write_request(protocol, &mut output, request)).ok()?;
+        Some(output.into_inner())
+    });
+    crate::codec_corpus::check(name, responses, |bytes| {
+        let response = block_on(codec.read_response(protocol, &mut Cursor::new(bytes))).ok()?;
+        let mut output = Cursor::new(Vec::new());
+        block_on(codec.write_response(protocol, &mut output, response)).ok()?;
+        Some(output.into_inner())
+    });
+}
+
+#[test]
+fn source_exchange_frames_have_a_deterministic_mutation_corpus() {
+    check_wire_codec(
+        "artifact exchange",
+        ArtifactCodec,
+        &ARTIFACT_PROTOCOL,
+        &[request_bytes().to_vec()],
+        &[vec![0, 0, 0, 0], vec![0, 0, 0, 3, 0xa5, 0x5a, 0xff]],
+    );
+    let mut block = vec![128];
+    block.extend_from_slice(&[0x5a; 128]);
+    check_wire_codec(
+        "block exchange",
+        ArtifactBlockCodec,
+        &ARTIFACT_BLOCK_PROTOCOL,
+        &[block_request_bytes().to_vec()],
+        &[vec![0], block],
+    );
+    check_wire_codec(
+        "head exchange",
+        ArtifactChainHeadCodec,
+        &ARTIFACT_CHAIN_HEAD_PROTOCOL,
+        &[chain_head_request_bytes().to_vec()],
+        &[vec![0], CHAIN_HEAD_FOUND_RESPONSE_GOLDEN.to_vec()],
+    );
+    check_wire_codec(
+        "head announcement",
+        ArtifactChainHeadAnnouncementCodec,
+        &ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
+        &[chain_head_announcement_bytes().to_vec()],
+        &[vec![1]],
+    );
+    check_wire_codec(
+        "recovery push",
+        recovery_bundle_push_codec(),
+        &RECOVERY_BUNDLE_PUSH_PROTOCOL,
+        &[vec![0, 0, 0, 3, 0x5a, 0xa5, 0xff]],
+        &[vec![1]],
+    );
+    check_wire_codec(
+        "peer record framing",
+        PeerRecordCodec,
+        &PEER_RECORD_PROTOCOL,
+        &[vec![]],
+        &[vec![0]],
+    );
+}

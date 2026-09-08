@@ -24,7 +24,7 @@ const CHECKSUM_DOMAIN: &[u8] = b"naome:fixed-validator-publication-deliveries-ch
 const RECORD_BYTES: usize = 32 + 8 * MAX_STATIC_PEERS + 1;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests;
 #[cfg(all(test, unix))]
 mod faults {

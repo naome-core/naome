@@ -267,3 +267,52 @@ fn combined_byte_and_event_capacity_precedes_allocation_and_recovers_on_drop() {
             .is_none()
     );
 }
+
+#[test]
+fn consensus_push_frames_have_a_mutation_corpus_and_release_custody() {
+    let retained = budget();
+    let mut codec = ConsensusPushCodec::new(Arc::clone(&retained));
+    let seeds = [
+        encode(
+            &mut codec,
+            ConsensusPushMessage::Vote {
+                canonical_vote: vec![0xa5; CONSENSUS_PUSH_VOTE_BYTES],
+            },
+        ),
+        encode(
+            &mut codec,
+            ConsensusPushMessage::Proposal {
+                canonical_proposal: vec![0x5a; CONSENSUS_PUSH_MIN_PROPOSAL_BYTES],
+                canonical_artifact: vec![0xa5],
+            },
+        ),
+    ];
+    crate::codec_corpus::check("consensus push request", &seeds, |bytes| {
+        let result = (|| {
+            let message =
+                block_on(codec.read_request(&CONSENSUS_PUSH_PROTOCOL, &mut Cursor::new(bytes)))
+                    .ok()?;
+            let mut output = Cursor::new(Vec::new());
+            block_on(codec.write_request(&CONSENSUS_PUSH_PROTOCOL, &mut output, message)).ok()?;
+            Some(output.into_inner())
+        })();
+        // Reserving the whole byte budget detects any leaked permit after
+        // either rejection or successful read/write and message destruction.
+        assert!(
+            InboundRetentionBudget::try_acquire(
+                &retained,
+                CONSENSUS_PUSH_MAX_RETAINED_INBOUND_BYTES
+            )
+            .is_some()
+        );
+        result
+    });
+    crate::codec_corpus::check("consensus push receipt", &[vec![1]], |bytes| {
+        let receipt =
+            block_on(codec.read_response(&CONSENSUS_PUSH_PROTOCOL, &mut Cursor::new(bytes)))
+                .ok()?;
+        let mut output = Cursor::new(Vec::new());
+        block_on(codec.write_response(&CONSENSUS_PUSH_PROTOCOL, &mut output, receipt)).ok()?;
+        Some(output.into_inner())
+    });
+}
