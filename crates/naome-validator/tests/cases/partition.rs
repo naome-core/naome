@@ -32,6 +32,9 @@ mod proof_catch_up;
 #[path = "proof_following_live.rs"]
 mod proof_following_live;
 
+#[path = "partition_byzantine.rs"]
+mod byzantine;
+
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 const MILESTONE_BOUND: Duration = Duration::from_secs(45);
 type Images = Vec<(PathBuf, Vec<u8>)>;
