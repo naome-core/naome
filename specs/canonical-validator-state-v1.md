@@ -504,8 +504,26 @@ available; the old and new targets cannot count the same unit simultaneously.
 Cancellation of an unactivated intent alone changes no effective active weight.
 Mandatory decay and penalties retain their separate, undelayed treatment.
 
-Canonical request encoding, exact composition of repeated amendments and
-origin-batch assignment remain unfinished. Historical offense-snapshot
+A later authenticated amendment may immediately reduce an earlier unapplied
+reduction of weight that is still effective. The surviving unchanged reduction
+portions retain their existing eligibility and queue priority. This cancellation
+preserves existing effective weight, spends no churn, and does not impose a new
+E+2 delay merely to retain that weight. The additional-amount E+2 rule applies
+to fresh activation, not to this retention of already-effective weight.
+
+For example, effective weight 100 followed by requested targets 60 and then 90,
+with no reduction yet applied, leaves a pending reduction of 10 under its
+existing eligibility and priority. If the first reduction already brought the
+effective weight to 80, changing the target to 90 cancels the remaining old
+reduction and requires a fresh increase of 10 under the later amendment's E+2
+eligibility and churn budget. Previously removed weight is not restored by
+canceling a pending reduction. Previously canceled unactivated portions do not
+recover their old activation authority or priority. Irreversible registration
+exit retains its separate precedence and cannot be canceled by a delegation
+amendment.
+
+Canonical request encoding, exact composition among multiple pending reduction
+portions and origin-batch assignment remain unfinished. Historical offense-snapshot
 obligations and fee-reward checkpoints require their own exact contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
 or `ECON-155`, and staging must never count one owned unit in two simultaneous
 effective allocations.
