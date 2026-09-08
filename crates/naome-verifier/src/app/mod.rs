@@ -93,7 +93,7 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<Stopped> {
                         break Stopped { reason: "finality_halted", success: false };
                     }
                 }
-                Work::Deadline => archive.as_mut().expect("deadline requires an archive").expire(output)?,
+                Work::Deadline => archive.as_mut().expect("deadline requires an archive").elapsed(&journal, output)?,
                 Work::Input(Some(input::Input::Line(bytes))) => {
                     let command = match input::Command::parse(&bytes) {
                         Ok(command) => command,
@@ -107,6 +107,13 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<Stopped> {
                     let executed = match (&mut archive, command) {
                         (Some(archive), input::Command::Sync { id, peer_id, count }) =>
                             archive.start_sync(id, &peer_id, count, &journal).map(|outcome| (outcome, false)),
+                        (Some(archive), input::Command::FollowFinality { id, peer_id, count, interval_millis }) =>
+                            archive.follow(id, &peer_id, count, &interval_millis, &journal).map(|outcome| (outcome, false)),
+                        (Some(archive), command @ input::Command::Status { .. }) =>
+                            commands::execute(command, &config.base, &mut journal).map(|(mut outcome, halted)| {
+                                outcome["sync"] = archive.status();
+                                (outcome, halted)
+                            }),
                         (Some(archive), input::Command::CancelSync { .. }) =>
                             archive.cancel().map(|outcome| (outcome, false)),
                         (Some(archive), input::Command::Import { .. }) if archive.active() =>

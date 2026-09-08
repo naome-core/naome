@@ -9,9 +9,10 @@ It verifies every imported proof independently, retains successful finality,
 and strictly reconstructs that history on restart. Its offline configuration
 loads no private key or network transport. Every configuration creates no vote
 journal and constructs no consensus signer, validator driver, or consensus
-runtime. The optional `SEC-003-002`
+runtime. The optional `SEC-003-002`/`SEC-003-004`
 [archive profile](fixed-validator-archive-v0.md) adds a separate Noise identity,
-explicit bounded complete-proof synchronization, and healthy-history serving.
+explicit bounded complete-proof synchronization, caller-configured continuous
+following, and healthy-history serving.
 
 The caller selects the exact chain definition, consensus context, fixed public
 keys and agreement weights, finality directories, and local replay-round

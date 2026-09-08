@@ -242,6 +242,15 @@ fn retained(fixture: &Fixture, layout: &Layout) -> Vec<ProofBytes> {
 
 #[test]
 fn validator_provider_four_actual_signers_feed_archive_then_both_strictly_reopen_and_relay() {
+    live_archive(false);
+}
+
+#[test]
+fn archive_following_four_actual_signers_feed_successive_proofs_and_strict_reopen_relay() {
+    live_archive(true);
+}
+
+fn live_archive(following: bool) {
     let mut fixture = Fixture::new();
     fixture.entries = fixture
         .keys
@@ -325,6 +334,12 @@ fn validator_provider_four_actual_signers_feed_archive_then_both_strictly_reopen
     archive::listening(&mut consumer);
     connected(&mut consumer, validator_ids[0], false);
     connected(&mut validators[0], archive_id, true);
+    if following {
+        let started = consumer.request(json!({"command":"follow_finality", "id":190, "peer_id":validator_ids[0].to_string(), "count":1, "interval_millis":"50"}));
+        assert_eq!(started["outcome"]["kind"], "follow_started");
+        consumer
+            .until(|event| event["event"] == "follow_waiting" && event["reason"] == "unavailable");
+    }
     let mut selected = ArtifactChainState::new(fixture.definition);
     let mut expected_blocks = Vec::new();
     let mut expected_payloads = Vec::new();
@@ -366,12 +381,24 @@ fn validator_provider_four_actual_signers_feed_archive_then_both_strictly_reopen
             received_publications(owner, 230 + index as u64, index + 2, &targets);
         }
         // The fixture supplies no consensus signatures or complete envelopes.
-        // Remove the author's artifact files before any archive request.
+        // Remove the author's source files after production; strict provider
+        // reopen and archive relay must use only the retained history.
         fs::remove_file(layouts[actor].root.join("block.bin")).unwrap();
         fs::remove_file(layouts[actor].root.join("payload.bin")).unwrap();
-        assert_eq!(consumer.status()["head"]["height"], index.to_string());
+        if !following {
+            assert_eq!(consumer.status()["head"]["height"], index.to_string());
+        }
         let before = authority_images(&layouts[0]);
-        let synchronized = sync(&mut consumer, 200 + index as u64, validator_ids[0], 1);
+        let last_height = (index + 1).to_string();
+        let synchronized = if following {
+            consumer.until(|event| {
+                event["event"] == "sync_completed"
+                    && event["id"] == 190
+                    && event["last_height"] == last_height
+            })
+        } else {
+            sync(&mut consumer, 200 + index as u64, validator_ids[0], 1)
+        };
         assert_eq!(synchronized["event"], "sync_completed", "{synchronized}");
         assert_eq!(synchronized["completed"], "1");
         assert_eq!(consumer.status()["head"]["height"], (index + 1).to_string());
@@ -383,10 +410,19 @@ fn validator_provider_four_actual_signers_feed_archive_then_both_strictly_reopen
         expected_blocks.push(block);
         expected_payloads.push(payload);
     }
-    assert_eq!(
-        sync(&mut consumer, 210, validator_ids[0], 1)["reason"],
-        "unavailable"
-    );
+    if following {
+        consumer
+            .until(|event| event["event"] == "follow_waiting" && event["reason"] == "unavailable");
+        assert_eq!(
+            consumer.request(json!({"command":"cancel_sync", "id":209}))["outcome"]["sync_id"],
+            190
+        );
+    } else {
+        assert_eq!(
+            sync(&mut consumer, 210, validator_ids[0], 1)["reason"],
+            "unavailable"
+        );
+    }
     for owner in &mut validators {
         assert_eq!(validator_status(owner, 220)["driver"]["height"], "3");
         owner.shutdown();
@@ -457,6 +493,7 @@ fn validator_provider_four_actual_signers_feed_archive_then_both_strictly_reopen
     );
     assert_eq!(relay.ready()["head"]["height"], "2");
     let relay_address = archive::listening(&mut relay);
+    assert!(relay.request(json!({"command":"status", "id":299}))["outcome"]["sync"].is_null());
     let mut sink = Process::start(
         &sink_layout,
         &archive::config(

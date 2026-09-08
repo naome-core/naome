@@ -8,8 +8,8 @@ use std::{
 use naome_consensus::{ActiveAgreementEntry, ConsensusHeight};
 use naome_network::{
     FinalityProofRequest, FinalityProofRespondError, FinalityProofResponse, FinalityProofTicket,
-    Keypair, MAX_STATIC_PEERS, Multiaddr, NetworkEvent, OutboundFinalityProofEvent, PeerId,
-    PeerSessionEvent, StaticArtifactNetwork, StaticPeer,
+    Keypair, MAX_STATIC_PEERS, Multiaddr, NetworkEvent, OutboundFinalityProofEvent,
+    OutboundFinalityProofFailure, PeerId, PeerSessionEvent, StaticArtifactNetwork, StaticPeer,
 };
 use naome_storage::FixedValidatorAnchoredFinalityJournalV0 as Journal;
 use serde::Deserialize;
@@ -88,6 +88,7 @@ impl Prepared {
         Ok(Archive {
             network: self.network,
             sync: None,
+            following: None,
         })
     }
 }
@@ -117,9 +118,18 @@ struct Sync {
     deadline: Instant,
 }
 
+struct Following {
+    id: u64,
+    peer: PeerId,
+    count: u64,
+    interval: Duration,
+    due: Instant,
+}
+
 pub(super) struct Archive {
     pub network: StaticArtifactNetwork,
     sync: Option<Sync>,
+    following: Option<Following>,
 }
 
 impl Archive {
@@ -127,10 +137,26 @@ impl Archive {
         self.sync.is_some()
     }
     pub fn deadline(&self) -> Option<Instant> {
-        self.sync.as_ref().map(|sync| sync.deadline)
+        self.sync
+            .as_ref()
+            .map(|sync| sync.deadline)
+            .or_else(|| self.following.as_ref().map(|follow| follow.due))
     }
 
     pub fn start_sync(
+        &mut self,
+        id: u64,
+        peer: &str,
+        count: u64,
+        journal: &Journal,
+    ) -> std::result::Result<Value, Failure> {
+        if self.active() || self.following.is_some() {
+            return Err(Failure::Rejected("sync_busy"));
+        }
+        self.start_pass(id, peer, count, journal)
+    }
+
+    fn start_pass(
         &mut self,
         id: u64,
         peer: &str,
@@ -176,17 +202,125 @@ impl Archive {
         )
     }
 
-    pub fn expire(&mut self, output: &report::Output) -> Result<()> {
+    pub fn follow(
+        &mut self,
+        id: u64,
+        peer: &str,
+        count: u64,
+        millis: &str,
+        journal: &Journal,
+    ) -> std::result::Result<Value, Failure> {
+        use Failure::{Fatal, Rejected};
+        if self.active() || self.following.is_some() {
+            return Err(Rejected("sync_busy"));
+        }
+        if !(1..=MAX_SYNC_HEIGHTS).contains(&count) {
+            return Err(Rejected("sync_count"));
+        }
+        let peer: PeerId = peer.parse().map_err(|_| Rejected("peer_id"))?;
+        if millis.is_empty()
+            || !millis.bytes().all(|byte| byte.is_ascii_digit())
+            || (millis.len() > 1 && millis.starts_with('0'))
+        {
+            return Err(Rejected("follow_interval"));
+        }
+        let millis: u64 = millis.parse().map_err(|_| Rejected("follow_interval"))?;
+        if millis == 0 {
+            return Err(Rejected("follow_interval"));
+        }
+        let interval = Duration::from_millis(millis);
+        let due = Instant::now()
+            .checked_add(interval)
+            .ok_or(Rejected("follow_deadline_overflow"))?;
+        if !self.network.is_configured_peer(&peer) {
+            return Err(Rejected("follow_peer_not_configured"));
+        }
+        journal.head().map_err(|_| Fatal("finality_state"))?;
+        self.following = Some(Following {
+            id,
+            peer,
+            count,
+            interval,
+            due,
+        });
+        Ok(json!({"kind": "follow_started", "job": self.status()}))
+    }
+
+    pub fn status(&self) -> Value {
+        let mut value = if let Some(sync) = &self.sync {
+            json!({"id": sync.id, "peer_id": sync.peer.to_string(),
+                "completed": sync.completed.to_string(), "next_height": sync.ticket.request().height().value().to_string(),
+                "last_height": sync.last.to_string()})
+        } else if let Some(follow) = &self.following {
+            json!({"id": follow.id, "peer_id": follow.peer.to_string()})
+        } else {
+            return Value::Null;
+        };
+        if let Some(follow) = &self.following {
+            value["following"] = json!(true);
+            value["state"] = json!(if self.active() { "active" } else { "waiting" });
+            value["count"] = json!(follow.count);
+            value["interval_millis"] = json!(follow.interval.as_millis().to_string());
+        }
+        value
+    }
+
+    // A waiting intent holds no request. Each new pass derives its heights from
+    // the current anchored head, including any intervening local import.
+    pub fn elapsed(&mut self, journal: &Journal, output: &report::Output) -> Result<()> {
         if let Some(sync) = self.sync.take() {
             Self::stopped(sync, "network_deadline", output)?;
+            return self.finish_follow("network_deadline", true, output);
         }
-        Ok(())
+        let follow = self.following.as_ref().ok_or("sync_inactive")?;
+        let (id, peer, count) = (follow.id, follow.peer.to_string(), follow.count);
+        match self.start_pass(id, &peer, count, journal) {
+            Ok(outcome) => output.emit(json!({"event": "sync_pass_started", "id": id, "outcome": outcome, "job": self.status()})),
+            Err(Failure::Rejected(reason)) => {
+                // Configuration was checked when intent was installed. Only
+                // physical request custody/session absence is retryable here.
+                self.finish_follow(reason, reason == "sync_request_start", output)
+            }
+            Err(Failure::Fatal(reason)) => Err(reason),
+        }
+    }
+
+    fn finish_follow(
+        &mut self,
+        reason: &'static str,
+        retry: bool,
+        output: &report::Output,
+    ) -> Result<()> {
+        let Some(mut follow) = self.following.take() else {
+            return Ok(());
+        };
+        let id = follow.id;
+        if retry {
+            if let Some(due) = Instant::now().checked_add(follow.interval) {
+                follow.due = due;
+                self.following = Some(follow);
+                return output.emit(json!({"event": "follow_waiting", "id": id, "reason": reason, "job": self.status()}));
+            }
+            return output.emit(
+                json!({"event": "follow_stopped", "id": id, "reason": "follow_deadline_overflow"}),
+            );
+        }
+        output.emit(json!({"event": "follow_stopped", "id": id, "reason": reason}))
     }
 
     pub fn cancel(&mut self) -> std::result::Result<Value, Failure> {
-        let sync = self.sync.take().ok_or(Failure::Rejected("sync_inactive"))?;
-        Ok(json!({"kind": "sync_cancelled", "sync_id": sync.id,
-            "completed": sync.completed.to_string(), "next_height": sync.ticket.request().height().value().to_string()}))
+        let job = self.status();
+        let follow = self.following.take();
+        if let Some(sync) = self.sync.take() {
+            let mut outcome = json!({"kind": "sync_cancelled", "sync_id": sync.id,
+                "completed": sync.completed.to_string(), "next_height": sync.ticket.request().height().value().to_string()});
+            if follow.is_some() {
+                outcome["job"] = job;
+            }
+            return Ok(outcome);
+        }
+        let follow = follow.ok_or(Failure::Rejected("sync_inactive"))?;
+        Ok(json!({"kind": "sync_cancelled", "sync_id": follow.id, "job": job}))
     }
 
     fn stopped(sync: Sync, reason: &'static str, output: &report::Output) -> Result<()> {
@@ -249,6 +383,7 @@ impl Archive {
         let sync = self.sync.take().expect("matching active sync");
         if Instant::now() >= sync.deadline {
             Self::stopped(sync, "network_deadline", output)?;
+            self.finish_follow("network_deadline", true, output)?;
             return Ok(false);
         }
         let request = sync.ticket.request();
@@ -263,8 +398,11 @@ impl Archive {
         };
         let response = match response {
             Ok(response) => response.into_response(),
-            Err(_) => {
+            Err(error) => {
+                let retry = !error.is_invalid_response()
+                    && matches!(*error, OutboundFinalityProofFailure::Transport(_));
                 stop("transport_failure")?;
+                self.finish_follow("transport_failure", retry, output)?;
                 return Ok(false);
             }
         };
@@ -274,6 +412,7 @@ impl Archive {
         } = response
         else {
             stop("unavailable")?;
+            self.finish_follow("unavailable", true, output)?;
             return Ok(false);
         };
         let parent_height = journal
@@ -293,6 +432,7 @@ impl Archive {
             Ok(result) => result,
             Err(Failure::Rejected(reason)) => {
                 stop(reason)?;
+                self.finish_follow(reason, false, output)?;
                 return Ok(false);
             }
             Err(Failure::Fatal(code)) => {
@@ -312,6 +452,7 @@ impl Archive {
         if height == sync.last {
             output.emit(json!({"event": "sync_completed", "id": sync.id,
                 "completed": completed.to_string(), "last_height": height.to_string()}))?;
+            self.finish_follow("pass_completed", true, output)?;
             return Ok(false);
         }
         // A synchronous proof/fsync may outlast the network-wait budget; its
@@ -321,15 +462,25 @@ impl Archive {
                 json!({"event": "sync_stopped", "id": sync.id, "reason": "network_deadline",
                 "completed": completed.to_string(), "next_height": (height + 1).to_string()}),
             )?;
+            self.finish_follow("network_deadline", true, output)?;
             return Ok(false);
         }
         let request =
             FinalityProofRequest::new(journal.context(), ConsensusHeight::new(height + 1))
                 .expect("successor below checked last height");
         match self.network.request_finality_proof(sync.peer, request) {
-            Ok(ticket) => self.sync = Some(Sync { completed, ticket, ..sync }),
-            Err(_) => output.emit(json!({"event": "sync_stopped", "id": sync.id, "reason": "request_start",
-                "completed": completed.to_string(), "next_height": request.height().value().to_string()}))?,
+            Ok(ticket) => {
+                self.sync = Some(Sync {
+                    completed,
+                    ticket,
+                    ..sync
+                })
+            }
+            Err(_) => {
+                output.emit(json!({"event": "sync_stopped", "id": sync.id, "reason": "request_start",
+                    "completed": completed.to_string(), "next_height": request.height().value().to_string()}))?;
+                self.finish_follow("request_start", true, output)?;
+            }
         }
         Ok(false)
     }

@@ -2,7 +2,7 @@
 
 ## Scope and authority
 
-`SEC-003-002` extends the Unix `naome-verifier` executable with an optional
+`SEC-003-002` and `SEC-003-004` extend the Unix `naome-verifier` executable with an optional
 archive profile. It retains the [verifier process](fixed-validator-verifier-process-v0.md)
 public configuration, complete-proof verification, independently anchored
 finality journal, strict restart and bounded I/O lifetime. A separately loaded
@@ -23,9 +23,9 @@ can supply the same complete proofs from its live selected history when
 explicitly enabled. The archive requires no new peer-role field or consensus
 observation to use that source.
 
-This archive profile does not itself own live-validator proof serving, continuous following,
+This archive profile does not itself own live-validator proof serving,
 proposal/vote observation or assembly, automatic peer/source choice, head or
-checkpoint discovery, branch selection, data retries, persistent sync intent,
+checkpoint discovery, branch selection, retries outside an explicit following command, persistent sync intent,
 automatic repair, dynamic validators, economics, or general full-node
 conformance. `SEC-003`, `SYNC-001`, `SYNC-002` and `SYNC-004` remain unfinished.
 Configured peers grant transport access only; they cannot replace the public
@@ -85,7 +85,7 @@ check `head_height + count` without overflow. The first address is exactly
 `head_height + 1`; the last address is the checked sum. Start requires that
 configured peer's established session and the existing shared request permit.
 Disconnected, unknown or physically busy peers cause `sync_request_start`
-without a logical sync. There is no queue or automatic start retry.
+without a logical sync. There is no queue or automatic start retry for one-shot `sync`.
 
 `sync_started`, returned as a normal `command_result`, records the exact peer,
 first and last heights. One volatile sync owns the command ID, peer, last
@@ -114,8 +114,9 @@ Unavailable content, wrong address/context, invalid complete proof, transport
 failure, expired deadline or failure to start a successor emits `sync_stopped`
 with ID, reason, `completed` and `next_height`. No later request starts, and
 only the already acknowledged anchored prefix is reported as completed. A
-later explicit command starts from the then-current healthy head. No error
-causes fallback to another peer, response, proof assembly or implicit retry.
+later explicit command starts from the then-current healthy head. One-shot
+sync never retries; explicitly installed following uses only the policy below.
+No error causes peer fallback or proof assembly.
 
 A commit error emits `command_failed` with the original ID, `completed` and
 `strict_restart_required: true`, then terminates ownership with an `error`
@@ -123,6 +124,75 @@ report. It never acknowledges the failed height or promises unchanged file
 images. A synchronized journal suffix may remain ahead of the anchor; strict
 restart refuses that complete gap without repair. State-read failures also
 end ownership. Reports claim released locks only after ownership has dropped.
+
+## Explicit continuous following
+
+`SEC-003-004` applies the caller-selected following policy of
+`PROD-020-063` to the independently verifying archive owner:
+
+```json
+{"command":"follow_finality","id":12,"peer_id":"<configured PeerId>","count":2,"interval_millis":"1000"}
+```
+
+`count` remains an unsigned JSON integer in 1..=16. `interval_millis` is a
+canonical positive decimal `u64` string: no sign, whitespace, leading zero,
+fraction or overflow. Before installing volatile intent, require no sync or
+following job, a parseable configured peer, a representable monotonic deadline
+and a healthy journal. A configured peer need not be connected. An unknown
+peer rejects with `follow_peer_not_configured`; invalid intervals reject with
+`follow_interval`, and a nonrepresentable deadline with
+`follow_deadline_overflow`. The offline configuration rejects this command
+with `network_disabled`.
+
+The first pass waits one full caller interval. Every pass derives its first
+and last heights anew from the then-current independently anchored head and
+uses the unchanged 120-second bounded one-shot verifier/commit path. Successful
+passes, unavailable proofs, interrupted transport, expired network deadlines
+and temporarily unavailable physical request/session custody wait a fresh full
+interval after the pass ends. Missed intervals are skipped; there is no burst
+or accumulated retry queue. Height/deadline arithmetic failures stop following.
+Malformed response framing, correlation failures and invalid complete proofs
+are never transient retry signals. Invalid framing/proofs stop following;
+internal correlation or finality-state errors end ownership. Commit ambiguity
+uses the same fatal `command_failed` and strict-restart refusal as one-shot sync.
+
+`follow_started` returns a `job` with ID, peer, `following: true`, `state:
+"waiting"`, numeric `count` and decimal-string `interval_millis`. Networked
+`status` adds a sibling `sync` field alongside the unchanged finality `state`:
+it is null without intent, or describes the one active sync/following job.
+An active following job has `state: "active"`, `completed`, `next_height` and
+`last_height`. Counts in active progress remain decimal strings. Waiting
+status describes intent only; it does not promise the height of a future pass.
+
+`sync_pass_started` reports the original ID, started height range and active
+job. Existing `sync_progress`, `sync_completed` and `sync_stopped` describe
+only that bounded pass, including its acknowledged prefix. `follow_waiting`
+reports the ID, reason and waiting job after a retryable outcome or successful
+pass; `follow_stopped` reports terminal following refusal. A failure to begin
+a pass has no invented progress and reports only the following outcome. No
+report claims that a future proof exists or that the configured peer is honest.
+
+While either mode owns intent, another `sync` or `follow_finality` rejects
+with `sync_busy`. A waiting following job owns no proof ticket and permits
+local `import`; an active pass excludes local import before file work. Thus
+intervening local progress is observed when the next pass starts, without
+routing a stale response into historical conflict handling. Status, record,
+serving and shutdown remain available. `cancel_sync` cancels either mode;
+an active cancellation retains its existing prefix fields and adds the
+following `job`, while a waiting cancellation reports `sync_id` and the
+waiting `job` without inventing pass progress. Logical cancellation cannot
+release a physical request permit early. A new following command can wait
+through that occupied slot; the old terminal is discarded by its exact ticket
+generation before any new pass can use the released slot.
+
+Following intent is purely volatile. Cancellation, EOF, signals, output or
+listener failure, fatal verification ownership failure and process exit end
+it without retracting acknowledged finality. Strict restart restores anchored
+history and requires a new caller command; it does not restore the peer,
+interval or pending pass. This command adds no consensus signer, vote
+observation/assembly, discovery, peer ranking/fallback, checkpoint or branch
+selection, source population, persistent retry policy, repair, dynamic
+validators or general distributed liveness.
 
 ## Deadline, cancellation and serving lifetime
 
@@ -135,8 +205,8 @@ the deadline and be acknowledged. If it was the last requested height, sync
 completes; otherwise it stops without issuing another request.
 
 `cancel_sync` returns `sync_cancelled` with the original `sync_id`, `completed`
-and `next_height`, and removes that volatile command intent. Without active
-sync it rejects with `sync_inactive`. Cancellation, expiry and shutdown do not
+and `next_height`, and removes that volatile command intent. Without sync or following
+intent it rejects with `sync_inactive`. Cancellation, expiry and shutdown do not
 roll back acknowledged finality. Dropping a ticket does not physically cancel
 libp2p work: its peer slot and shared permit remain occupied until the terminal
 event drains, so an immediate same-peer command can still reject. A late
@@ -175,6 +245,18 @@ prefix, real anchor failure with unrepaired strict-restart refusal, halted
 history refusal, and configuration rejection before authority creation.
 Consensus test keys and proof construction remain in the parent fixture;
 these are complete-proof archive tests, not live validator proof production.
+
+Additional actual Unix following tests cover canonical interval/count and
+configured-peer boundaries, delayed first pass, waiting local import with live
+height re-derivation, absence and occupied-slot retry, partial prefixes,
+active/waiting cancellation, discarded late generations, invalid complete
+proof shutdown, transport loss and same-peer reconnection, actual anchor
+failure with unrepaired suffix refusal, and SIGKILL with a successor request
+outstanding. A separate four-validator execution starts archive following
+before any finality exists, produces two successive heights through ordinary
+consensus signing, checks exact provider envelope/payload bytes and ancestry,
+and strictly reopens and relays the retained history. The archive receives no
+consensus publications or prepared proof from the test parent.
 
 This is finite transport/process/restart evidence. The real 120-second
 whole-command deadline, every crash/syscall schedule, power-loss durability,
