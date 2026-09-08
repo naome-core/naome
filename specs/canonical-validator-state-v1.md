@@ -84,8 +84,9 @@ including retransmission or alternate signature bytes, do not conflict. The
 other signed parent need not be available or valid: ordinary parent-bound vote
 admission is not applied to both halves of this proof as an evidence filter.
 This permits proving a conflict without adopting or executing either supplied
-parent. Exact evidence-operation encoding, offense identity, timely admission
-and destructive-transition integration remain separate requirements.
+parent. The evidence-operation and offense-record component contracts appear
+below; historical-state, resource and destructive-transition integration remain
+separate requirements.
 
 ### V1 value and evidence framing
 
@@ -112,6 +113,7 @@ versions, and a claimed version cannot choose its own resource allowances.
 | Shared-body quorum certificate | 3 |
 | Proposal control | 4 |
 | Finalized envelope | 5 |
+| Equivocation proof | 6 |
 
 ```
 Value = Header(0) || Context || NAT(H) || parentAncestry[32]
@@ -134,7 +136,7 @@ does not prove this relationship or the parent's canonical provenance.
 Operation class 0 is economic and class 1 is validator. Every recognized kind
 has exactly one class: account-management kinds 0 through 5 are economic;
 registration/key-management kinds 6 through 8 are validator; fee-reward claim
-kind 9 is economic. The remaining
+kind 9 is economic; equivocation-evidence kind 10 is validator. The remaining
 inventory must assign every other kind before its admission. Unknown classes,
 unknown kinds, wrong-class kinds and unconsumed nested bytes reject. Derive each
 class's count and byte usage from the sole committed stream rather than carrying
@@ -250,6 +252,199 @@ Structural decoding yields observations only; full parent-bound verification,
 artifact and operation validation, and transactional installation remain
 separate requirements. No current-height evidence is written into proposal
 post-state or used to derive that height's authorization snapshot.
+
+### V1 equivocation proof and offense identity
+
+An equivocation proof contains exactly two complete canonical V1 signed frames:
+
+```
+EquivocationProof = Header(6) || BYTES(firstSignedFrame) || BYTES(secondSignedFrame)
+```
+
+Each frame is a ProducerAuthorization or SignedVote as defined above. Both must
+have the same signed role, Context, height, round and consensus key. For votes,
+their phases must match. Reject mixed roles, keys, contexts or positions rather
+than interpreting them as one offense. Let each unsigned statement be its exact
+frame bytes with the final 64-byte signature removed. The first unsigned
+statement must be lexicographically smaller than the second. Order by these
+bytes, not by signatures, arrival order or a claimed proof identifier. Both
+signatures must verify strictly under their respective complete role transcripts.
+
+Their signed parent ancestries or role-specific targets must differ. Different
+parents suffice even for two nil votes. Identical unsigned statements, including
+different signature encodings or retransmission, are not proof of a conflict.
+The proof supplies no independent signer, registration, weight, position, target,
+offense ID or snapshot that may override its authenticated statements.
+
+At execution height X, the offense height H must satisfy `0 < H < X`. Evidence
+from X or a future height is inadmissible. Thus neither the current proposal's
+signatures nor current-height consensus evidence can enter its value or
+post-state through this operation. Let `E = floor((H - 1) / 8192)`. Its last
+admissible execution height is exactly `(E + 31) * 8192`, the final height of
+epoch E+30. Reject after that height even for a previously penalized lineage or
+an otherwise valid signature pair. No claimed deadline is encoded.
+
+Resolve the common key to its unique active registration through the canonical
+historical snapshot at H in the exact offense Context. Its chain and genesis
+must match execution, while its protocol version must equal the authenticated
+version applicable at H, not necessarily the submission's current version.
+Use that historical active key assignment, not current membership, an
+unactivated reservation, a canceled key
+replacement or a bare assignment-history row. The proof's signed parents need
+not both be valid or available. Authenticating the canonical offense-height
+authority and the conflicting signatures does not adopt either supplied parent
+or require ordinary parent-bound vote or scheduled-proposer admission on either
+side. Producer-role proof verification authenticates the exact role transcript
+and canonical historical active key; it does not require that key to be the
+scheduled proposer for an unavailable, invalid or canonical signed parent.
+Unavailable canonical history remains local unavailability, not a substitute snapshot or
+proof that the signer lacked authority.
+
+An upgrade does not shorten this reporting window. The outer operation uses
+the execution version's authorization and admission rules; the proof retains
+its authenticated offense-height signing rules and version through its original
+deadline. Upgrades must preserve verification of still-admissible historical
+proofs and their offense identities. This component specifies V1 signed frames;
+it does not accept arbitrary unknown formats or specify future wire schemas.
+
+The offense role is the natural value 0 for producer authorization, 1 for
+prevote and 2 for precommit. This table is distinct from the two-phase vote tag.
+After authenticating and resolving the registration, let offenseContext be the
+exact common Context of the two proof frames and derive:
+
+```
+OffenseId = SHA256("naome/consensus/v1/offense-id\0" || offenseContext
+                  || RegistrationId[32] || NAT(H) || NAT(R) || NAT(offenseRole))
+```
+
+One authenticated signing slot has one OffenseId, even when three or more
+conflicting statements permit several proof pairs. Signed parents, targets,
+signatures, pair ordering, reporter, fee payer and execution height are excluded
+from this identity. A different height, round or role gives a distinct slot;
+it does not permit a second destructive transition for the same lineage.
+
+### V1 equivocation-evidence operation
+
+EquivocationEvidence has operation-kind tag 10 in the validator class. Its exact
+payload is:
+
+```
+reporterAccountId[32] || feePayerAccountId[32] || BYTES(EquivocationProof) || NAT(F)
+```
+
+F is positive. The shared intent has exactly one authorization row for the fee
+payer, using its current owner policy, generation and nonce. It authorizes the
+complete proof, reporter destination and fee. The reporter must be an existing
+account but only receives any reward; it supplies no separate signature or nonce.
+If reporter and payer coincide, the same one payer row applies. The accused
+validator, operator and bond beneficiary supply no authorization for reporting.
+Offender signatures are semantic proof payload and therefore enter OperationId;
+only the submitting payer's operation-authorization witness is excluded from it.
+
+The complete operation is:
+
+```
+BYTES(Intent) || BYTES(accountAuthorizationWitnessSection) || BYTES(empty)
+```
+
+The last section is exactly the single byte `00`. No additional consent or
+key-possession witness is accepted. Other operation kinds must not reuse tag 10.
+Decode all nested fields exactly under their authenticated byte and work
+allowances before allocating or verifying them. A proof's claimed large round
+does not enlarge those allowances or bypass bounded acquisition.
+
+After the context, age, historical authority, signatures and complete operation
+authorization checks, consult the canonical processed-offense record. An already
+recorded OffenseId rejects the operation before any fee, nonce, record or economic
+change. A different proof pair or payer for that same slot cannot create a new
+canonical offense. Two operations for one offense in a proposal cannot both
+execute: the second observes the first speculative record, so the proposal's
+existing atomic-rejection rule installs neither. Distinct slots for one lineage
+retain their separate admissibility under the existing bounded evidence rules.
+
+The payer must fund F from its available liquid balance before reporter proceeds;
+it cannot borrow the reward this operation might create. Apply the ordinary
+non-artifact fee partition and consume its one nonce only on successful execution.
+If the lineage has no permanent penalty marker, atomically apply its first
+destructive transition and create that marker. If the marker already exists,
+a previously unrecorded, timely valid offense remains admissible but causes no
+second forfeiture, Knowledge Weight penalty, reporter payout or tombstone change.
+Its ordinary operation fee and nonce still apply. The chosen reporter receives
+no reward merely for proving another slot after the lineage's first penalty.
+
+For the first transition, let B be the total whole-atom principal currently
+liable under ECON-101, summed across all eligible custody portions before
+rounding. Credit `floor(B / 10)` whole atoms to the reporter's liquid balance
+and burn exactly `B - floor(B / 10)`. No fractional atom is created, and no
+per-portion rounding is permitted. For B=11, the reporter receives one atom and
+ten burn. This refines the nominal 90%/10% split for indivisible atoms. It does
+not change the forfeiture set, released-principal exclusion, historical ordinary
+Knowledge Weight assessment or its separate rounding and collection rules.
+
+### Canonical offense and penalty-marker records
+
+Processed offenses and permanent lineage penalty markers occupy distinct typed
+namespaces. Their global namespace tags and ordering remain part of the complete
+state inventory. Genesis has neither record family populated.
+
+| Family | Logical key | Canonical value |
+| --- | --- | --- |
+| Processed offense | `OffenseId[32]` | `RegistrationId[32] || NAT(offenseProtocolVersion) || NAT(offenseHeight) || NAT(offenseRound) || NAT(offenseRole) || NAT(executionHeight) || OperationId[32]` |
+| Permanent penalty marker | `RegistrationId[32]` | `firstOffenseId[32] || NAT(firstOffenseHeight) || NAT(firstExecutionHeight) || firstOperationId[32]` |
+
+A successful evidence operation creates one processed record with its derived
+OffenseId, authenticated slot, accepted operation identity and actual execution
+height. Those coordinates are not supplied by a competing payload header.
+Recompute the key using the containing chain/genesis, stored historical protocol
+version and slot, never the current execution version. Authenticate the stored
+version against the canonical offense-height version history. Require a recognized role,
+positive offenseHeight strictly below executionHeight, and executionHeight no
+greater than the containing finalized height or that offense's deadline.
+Every processed record names a lineage with a permanent penalty marker; its
+presence does not imply that this particular record caused the first penalty.
+
+Create the permanent marker only with the first destructive transition. It binds
+that transition's offense, operation and execution height, remains unchanged
+forever within its genesis, and survives processed-record expiry, key rotation,
+exit and all later evidence. It is not an additional copy of the bond proceeds,
+reporter balance, Knowledge Weight debt or registration key history. The other
+record families retain those separate facts and the permanent tombstone.
+
+The marker key must resolve to that existing permanently tombstoned lineage.
+Require `0 < firstOffenseHeight < firstExecutionHeight`, with firstExecutionHeight
+no greater than the containing finalized height or the first offense's deadline.
+Every processed offense for that lineage executes no earlier than the marker's
+firstExecutionHeight. While the first offense is unexpired, its processed row
+must exist and agree with the marker's lineage, offense height, execution height
+and operation identity. Its logical absence is allowed only after its deadline.
+Canonical replay or installation must establish the marker's actual source
+transition, including after processed-row expiry; a fabricated dangling ID is
+not provenance. Subsequent use may reuse that validation bound to the immutable
+authenticated state and need not fetch the historical block on every lookup.
+
+At the first height after a processed offense's admission deadline, parent-derived
+boundary preparation deletes that processed record. Apply all due deletions
+before evidence operations in that height and install them only with the complete
+accepted transition. At every finalized height, an expired processed record is
+not another canonical representation. A complete derived deadline index may
+enumerate these keys, but it must be bound to the exact authenticated primary
+state; missing index entries cannot authorize a partial expiry set.
+
+Check the offense's execution deadline before treating processed-record absence
+as a new offense. Expiry therefore cannot reopen a slot, clear the permanent
+marker, release historical liability early, or permit another destructive
+transition. It does not remove evidence from retained finalized block history
+or define optional auxiliary-index retention under RES-050. Other unexpired
+offenses keep their own records. Missing physical nodes or unusable indexes
+remain local state unavailability rather than authenticated logical absence.
+
+Wrong key lengths, nonminimal numbers, unknown roles, truncation and trailing
+bytes reject the component encoding. Byte-valid rows do not prove their
+canonical history. Historical snapshot and attribution schemas, exact source
+custody, deadline-indexed admission, pending-evidence bounds, expiry work and
+complete penalty/accounting integration remain required before implementation.
+Every failure preserves fees, nonces, both record families, custody, balances,
+liabilities and registration state under the common atomic-installation rule.
 
 ## Typed authenticated state
 
@@ -569,7 +764,7 @@ liable principal in the registration lineage, including liable top-ups added
 after the proven offense. It is not restricted to principal present at that
 offense position. The selected set does not include principal already validly
 released from liability. The one-transition marker, permanent lineage tombstone,
-and 90% burn/10% reporter split retain their existing requirements.
+and the whole-atom reporter split above retain their existing requirements.
 
 Withdrawal requires the immutable beneficiary's authorization, debits only
 released principal and credits that beneficiary. Cancellation, re-bonding or
