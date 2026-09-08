@@ -677,6 +677,26 @@ appear below. Authenticated historical attribution under `ECON-105` must
 bind the liability to the correct immutable beneficiary account and prevent any
 collected unit from being charged twice.
 
+### Outstanding owner accounting
+
+For a stable owner, let U be its previously outstanding assessed amount, N its
+newly assessed amount and K the units actually collected in the transition.
+The resulting outstanding amount is exactly `U' = U + N - K`, with
+`0 <= K <= U + N`. A later collection uses N=0. Distinct immutable assessment
+and lineage facts remain independently verifiable; the owner's fungible
+outstanding balance does not require a payment priority between assessments.
+This identity neither mandates permanent cumulative counters nor chooses record
+encoding or historical-retention machinery.
+It does not reorder committed evidence operations or pool the separate
+first-stage batch shares of distinct assessments.
+
+After a complete applicable collection phase, positive outstanding liability
+implies zero current live ordinary owner weight: the selected fallback pool
+includes all such available weight. This is a property of the resulting economic
+state, not a rewrite of height H's already frozen authorization snapshot or a
+claim about intermediate preparation. Immature rewards may still exist and will
+be subject to the selected collection-before-allocation rule when they mature.
+
 ### Integer penalty assessment and allocation
 
 Let D be the total effective delegated ordinary Knowledge Weight at the offense
