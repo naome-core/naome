@@ -10,9 +10,10 @@ retain explicit open entries there. This is not an implemented consensus
 profile, a production genesis, or evidence
 that an incomplete rule in `consensus-rules.md` is implemented.
 
-V1 names the successor schema family in this document. Its exact protocol-version
-commitment, remaining domains, complete encodings, and admission limits remain to
-be specified before consensus-facing implementation. The current fixed-validator
+V1 names the successor schema family in this document. Its outer context,
+message framing and hashing contracts are specified below; complete operation
+and state encodings, genesis construction and admission limits remain required
+before consensus-facing implementation. The current fixed-validator
 artifact-only V0 profile remains a separate format.
 
 The foundation supports permissionless account and validator-registration
@@ -30,8 +31,24 @@ the artifact-chain definition, and their existing domains remain unchanged.
 The successor proposal value binds its exact context, finalized-height
 coordinate, parent consensus ancestry, artifact block, post-artifact-state
 commitment, post-consensus-state commitment, prior-height settlement input,
-operation sequence, and applicable definition supporting-proof input. Exact
-field framing remains unfinished.
+operation sequence, and applicable definition supporting-proof input. The
+outer component framing below uses a strict tuple,
+in that exact order: context, height, parent consensus ancestry, unchanged
+artifact block, post-artifact-state commitment, post-consensus-state commitment,
+prior-height settlement, ordered operations, and optional definition supporting
+proof ID. Variable sections use the shared NAT length framing. Unknown fields
+and trailing bytes are rejected; incompatible schema changes require a new
+version rather than optional extension fields. The complete operation inventory,
+resource admission, genesis construction and state-transition integration remain
+unfinished despite these selected outer bytes and hash preimages.
+
+The operation stream commits complete canonical operation bytes, including
+account-authorization, consensus-key-possession and new-policy-consent witnesses
+required by each operation kind. Distinct valid witness subsets preserve the
+unsigned OperationId but produce distinct proposal signing roots and consensus
+ancestry. They are not detached evidence variants of one proposal value. Here,
+evidence-free excludes current-height producer authorization and agreement
+evidence; it does not exclude operation witnesses or prior-height settlement.
 
 At height greater than one, the settlement input is the exact canonical valid
 precommit certificate for the preceding height. The first non-genesis height
@@ -49,6 +66,190 @@ prior-height settlement evidence is committed execution input.
 No state field may introduce a self-reference through the resulting proposal
 root, child ancestry, or final envelope identity. Parent-state verification and
 transition execution precede deriving those child identities.
+
+Every V1 producer authorization, prevote and precommit signs the exact parent
+consensus ancestry in addition to its context, height, round and role-specific
+target. Nil votes also carry and sign that parent. Verification requires the
+parent used to derive the applicable immutable authorization snapshot; evidence
+from another parent is not interchangeable. This added binding does not enlarge
+the signing-safety key: changing parent never authorizes a second conflicting
+signature for the same context, height, round and role.
+
+For equivocation assessment, authenticate the signer's active key and rotation
+lineage through the canonical historical snapshot at the offense height. Two
+strictly verified signatures by that key in the same context, height, round and
+role conflict when their signed parent ancestry or role-specific target differs.
+Different-parent nil votes therefore conflict. Identical semantic statements,
+including retransmission or alternate signature bytes, do not conflict. The
+other signed parent need not be available or valid: ordinary parent-bound vote
+admission is not applied to both halves of this proof as an evidence filter.
+This permits proving a conflict without adopting or executing either supplied
+parent. Exact evidence-operation encoding, offense identity, timely admission
+and destructive-transition integration remain separate requirements.
+
+### V1 value and evidence framing
+
+The following framing fixes the outer component bytes. It does not supply the
+unfinished complete operation inventory, resource schedules, genesis state,
+namespace inventory or transition integration required for canonical admission.
+NAT, BYTES and Context have their shared definitions below. Every displayed
+domain and magic string is exact ASCII; `\0` denotes one final zero byte.
+
+```
+Header(role) = "naome/consensus\0" || NAT(1) || NAT(role)
+```
+
+The fixed 1 is this wire-schema identifier, separate from the protocolVersion
+inside Context. Dispatch requires a recognized schema and role before parsing
+the associated body. The header is not an invitation to accept unknown schema
+versions, and a claimed version cannot choose its own resource allowances.
+
+| Role | NAT value |
+| --- | --- |
+| Proposal value | 0 |
+| Producer authorization | 1 |
+| Individual vote | 2 |
+| Shared-body quorum certificate | 3 |
+| Proposal control | 4 |
+| Finalized envelope | 5 |
+
+```
+Value = Header(0) || Context || NAT(H) || parentAncestry[32]
+        || ArtifactBlock[128] || postArtifactRoot[32] || postConsensusRoot[32]
+        || Settlement || NAT(operationCount) || OperationEntry*operationCount
+        || SupportingProof
+Settlement = NAT(0) | NAT(1) || BYTES(PriorPrecommitCertificate)
+OperationEntry = NAT(operationClass) || BYTES(CompleteOperation)
+SupportingProof = NAT(0) | NAT(1) || ProofId[32]
+```
+
+H is positive. Settlement tag 0 is the entire height-one sentinel and has no
+suffix; it is forbidden at every later height. Tag 1 is required at H greater
+than one. Its certificate must be a valid non-nil precommit at H-1 for the exact
+retained parent value. Verify its signed parent against that value's own parent
+and its signers against its own historical snapshot, not H's snapshot. Its
+proposal target must derive from that exact parent value; a supplied root alone
+does not prove this relationship or the parent's canonical provenance.
+
+Operation class 0 is economic and class 1 is validator. Every recognized kind
+has exactly one class: account-management kinds 0 through 5 are economic;
+registration/key-management kinds 6 through 8 are validator; fee-reward claim
+kind 9 is economic. The remaining
+inventory must assign every other kind before its admission. Unknown classes,
+unknown kinds, wrong-class kinds and unconsumed nested bytes reject. Derive each
+class's count and byte usage from the sole committed stream rather than carrying
+another independently supplied subsequence. Exact fee and resource charging
+remain separate unfinished contracts.
+
+SupportingProof tag 1 is required exactly for a definition with the
+checker-derived supporting-proof obligation; otherwise tag 0 is required.
+Tag 0 has no suffix and tag 1 has exactly one ProofId. This does not move proof
+input into ArtifactBlock or change artifact identity. Validate the artifact and
+its post-artifact root against the exact parent artifact state; neither the
+duplicated observed root nor the proposal's consensus root supplies authority.
+
+The proposal root and non-genesis ancestry are:
+
+```
+ProposalRoot = SHA256("naome/consensus/v1/proposal-root\0" || Value)
+AncestryId   = SHA256("naome/consensus/v1/ancestry\0" || Value)
+GenesisAncestryId = SHA256("naome/consensus/v1/genesis-ancestry\0" || Context)
+```
+
+Value contains no current round or current-height producer or agreement
+evidence. A later-round reproposal preserves Value byte-for-byte, including its
+operation witnesses and prior-height settlement. It uses new authorization
+for the new round outside Value. GenesisAncestryId is the required height-one
+parent and is derived only after the exact final GenesisId is known and
+installed. It is not a genesis-state field or input to unsigned or final genesis
+hashing. Its derivation does not establish genesis validity or installation;
+the reusable genesis construction remains a separate contract.
+
+### V1 consensus signature and certificate bytes
+
+Signer entries contain the exact consensus public key, not a separately supplied
+RegistrationId or claimed weight. Resolve the key to its unique registration
+and weight through the authenticated immutable snapshot for the signed parent
+and height. Permanent reservations and historical key mappings retain their
+existing authority and lifetime rules. Membership, proposer selection, weights
+and the quorum denominator never come from message fields.
+
+Producer authorization additionally requires its key to equal the deterministic
+scheduled proposer for that authenticated parent, height and round. Active
+membership alone is insufficient to authorize a proposal.
+
+```
+Position = Context || NAT(H) || NAT(R) || parentAncestry[32]
+ProducerBody = Position || ProposalRoot[32]
+VoteTarget = NAT(0) | NAT(1) || ProposalRoot[32]
+VoteBody = Position || VoteTarget
+ProducerAuthorization = Header(1) || ProducerBody || key[32] || signature[64]
+SignedVote = Header(2) || NAT(phase) || VoteBody || key[32] || signature[64]
+Certificate = Header(3) || NAT(phase) || VoteBody || NAT(signerCount)
+              || (key[32] || signature[64])*signerCount
+```
+
+H is positive and R is nonnegative. Phase 0 means prevote and phase 1 means
+precommit; no other phase is accepted. VoteTarget tag 0 means nil with no suffix;
+tag 1 has exactly one proposal root. Producer authorization always names a
+proposal root and has no nil alternative.
+
+| Signed role | Exact signing domain |
+| --- | --- |
+| Producer authorization | `naome/consensus/v1/producer-authorization\0` |
+| Prevote | `naome/consensus/v1/prevote\0` |
+| Precommit | `naome/consensus/v1/precommit\0` |
+
+For producer authorization, let Body be ProducerBody; for a vote let Body be
+VoteBody. Each signature is ordinary Ed25519 over the exact 32-byte digest
+`SHA256(signingDomain || Body || key[32])`, using the applicable row's domain.
+It is neither Ed25519ph nor a direct signature over the unhashed transcript.
+Apply the strict V1 key and signature rules below. The role-specific domain
+authenticates the phase selected by the wire tag; changing that tag changes the
+required digest. The fixed wrapper header is not appended to this signing
+transcript. A certificate reconstructs precisely the same transcript for each
+entry; it has no aggregate or separately signed wrapper.
+
+Certificate keys are strictly ascending, distinct and active in that exact
+snapshot. The signer count is between one and the snapshot's active-key count,
+which cannot exceed the selected cap of 256. Verify every signature and sum each
+signer's authenticated weight once. Accept a quorum only when its weight is
+strictly greater than two thirds of the snapshot's complete total; offline
+members remain in that denominator. Non-nil precommit certificates alone can
+serve the settlement and final-envelope roles. Distinct valid signer subsets
+remain distinct complete certificate bytes.
+
+### V1 proposal control and final-envelope bytes
+
+```
+ProposalControl = Header(4) || BYTES(Value) || BYTES(ProducerAuthorization)
+                  || EarlierPrevoteProof
+EarlierPrevoteProof = NAT(0) | NAT(1) || BYTES(PrevoteCertificate)
+FinalEnvelope = Header(5) || BYTES(Value) || BYTES(ProducerAuthorization)
+                || BYTES(CurrentPrecommitCertificate)
+EnvelopeId = SHA256("naome/consensus/v1/envelope-id\0" || FinalEnvelope)
+```
+
+These wrappers reuse producer authorization and introduce no additional wrapper
+signature, independent validRound or independently supplied proposal target.
+Every current-height nested context, height, parent and proposal root must
+match. The final certificate and producer authorization also share the exact
+round. An earlier-proof tag 1 requires a non-nil prevote certificate for this
+same value, parent and height, with its authenticated round P strictly less
+than the producer authorization's R. Tag 0 has no suffix; the selected local
+lock/valid-value rules determine when proposing without an earlier proof is
+permitted. Merely parsing that tag grants no signing permission.
+
+Every fixed field, NAT, section and nested frame must decode canonically and
+consume exactly its assigned bytes. Reject unknown tags, nonminimal lengths,
+truncation and trailing bytes. Before allocating or traversing variable input,
+establish the applicable authenticated resource allowances, including bounded
+length-prefix parsing and the separate large-round acquisition contract. This
+schema supplies no forever-fixed total-byte ceiling or unmeasured work budget.
+Structural decoding yields observations only; full parent-bound verification,
+artifact and operation validation, and transactional installation remain
+separate requirements. No current-height evidence is written into proposal
+post-state or used to derive that height's authorization snapshot.
 
 ## Typed authenticated state
 
@@ -282,7 +483,7 @@ belongs to its immutable beneficiary.
 
 Tail realization and machinery reuse remain open under `ECON-222` and
 `ECON-205`. Empty reserved namespaces cannot resolve those choices. Recovery
-record integration, authenticated reward-cursor records, delegation record integration
+record integration, authenticated reward-cursor integration, delegation record integration
 and deadline accounting retain their unfinished contracts. Grant-vote
 authority, consensus delegation and development-reserve spending remain distinct.
 
@@ -921,6 +1122,11 @@ RegistrationId = SHA256(registration-id-domain || operatorAccountId[32] || NAT(o
 Context        = ChainId[32] || GenesisId[32] || NAT(protocolVersion)
 ```
 
+ChainId is the existing ArtifactChainId, not a separately derived consensus-chain
+identifier. GenesisId is the separately derived and installed final consensus
+genesis identity. Reusing the artifact-chain identity does not establish the
+genesis, version, parent-state or membership authority of an observed context.
+
 The registration nonce is the exact operator nonce consumed by that registration,
 including when the operator occupies other authorizing roles. Neither identity
 contains authorization witnesses, a resulting state root or final genesis ID.
@@ -1222,9 +1428,9 @@ produce different complete operation bytes. Every signer authorizes the full
 semantic operation, including both account-role and proposed-policy information,
 under its existing role-bound digest.
 
-This framing does not assign these operations to an unfinished outer stream
-encoding, supply complete fee coefficients or prove valid state transitions.
-Canonical proposal framing, per-class budgets, exact record lookups, rejection
+The outer V1 stream assigns these operations to the economic class. These
+component bytes do not supply complete fee coefficients or prove valid state
+transitions. Per-class budgets, exact record lookups, rejection
 ordering and transactional parent-bound installation remain required. Isolated
 codec or transition measurements must state their synthetic bounds and cannot
 turn caller-provided limits or roots into consensus authority.
@@ -1384,8 +1590,8 @@ the operations are implemented.
 ### Canonical registration and consensus-key operation bytes
 
 Tags 6 through 8 extend the same V1 natural operation-kind space as account
-management tags 0 through 5. They do not select an unfinished outer class or
-block-stream encoding. All account/registration IDs and consensus keys occupy
+management tags 0 through 5. The outer V1 stream assigns them to the validator
+class. All account/registration IDs and consensus keys occupy
 32 bytes. Bond principal B and positive fee F use NAT; initial commission b uses
 NAT and must be at most 2000. Registration requires B at least `10^13` NAO atoms,
 independently of the still-unselected complete fee and resource schedules.
@@ -2381,8 +2587,9 @@ canonical installation and operation/resource admission remain unfinished.
 
 This section selects the fee-funded accumulator, fractional ownership, historical
 checkpoints and claim semantics for `ECON-139` and `ECON-152`–`ECON-155`.
-It does not select tail-reward reuse or complete authenticated records, codecs,
-resource bounds or measured admission costs. Existing `ECON-084` settlement
+It does not select tail-reward reuse or complete the namespace inventory,
+state integration, resource bounds or measured admission costs. The exact record
+and claim component bytes appear below. Existing `ECON-084` settlement
 still assigns each included signer its integer share
 `R = floor(P * w / W)` and burns `P - sum(R)` immediately, using that reward
 height's validator pool P and total active agreement weight W. This section
@@ -2489,8 +2696,13 @@ operation. An empty list is valid when already-realized credit covers Q. An
 unlisted source is untouched. Deduct exactly Q from realized credit and reserve,
 credit Q to the owner's liquid balance, and retain every residual fraction.
 Partial claims are permitted and claiming frequency cannot alter total earned
-value. Closed sources with no outstanding rights may be removed only after their
-credit has been realized; active sources retain their exact checkpoint.
+value. When a contribution closes to zero, realize its complete outstanding
+credit and immediately delete that cursor in the same transition; retaining a
+zero-weight cursor is not another canonical representation. Active sources
+retain their exact checkpoint. A later claim omits the deleted source and may
+claim its already-pooled credit directly, including through an empty source
+list. Reopening that contribution starts at the then-current accumulator and
+cannot recover previously realized rewards a second time.
 
 The fee payer must fund the full authorized positive fee from its liquid balance
 before claim proceeds. A distinct sponsor is permitted. No claim may borrow its
@@ -2500,13 +2712,87 @@ claim entitlement. Invalid source, amount, policy, nonce or funding checks leave
 credits, checkpoints, reserve, balances, fees and nonces unchanged, including
 when an earlier source was speculatively synchronized.
 
-Exact source-list bounds, authenticated lookup and cursor-update records,
+Exact source-list bounds, authenticated lookup and cursor-update integration,
 commission scheduling and adversarial growing-denominator work remain required.
-Rational record fields use the selected canonical RAT framing; that framing
-does not supply their work bounds or complete cursor layouts. Unchanged-owner laziness does not make large sets of changed
+The record and claim bytes below supply neither those work bounds nor complete
+transition integration. Unchanged-owner laziness does not make large sets of changed
 owners free. Measure those boundary writes and rational normalization as well as
 claims before selecting admission allowances. Tail accounting remains separate
 until its own rules explicitly choose any reuse.
+
+### Canonical fee-reward records and claim bytes
+
+The fee-reward accumulator and owner-cursor families have distinct typed
+namespaces. Their global tags and positions remain part of the complete state
+inventory; the following definitions fix their logical keys and values.
+
+| Family | Logical key | Canonical value |
+| --- | --- | --- |
+| Registration accumulator | `RegistrationId[32]` | `RAT(A)` |
+| Ordinary-owner cursor | `AccountId[32] || RegistrationId[32]` | `NAT(q) || RAT(a)` |
+
+RAT has the exact reduced, nonnegative encoding specified for the account
+record. Each admitted registration has exactly one accumulator, initialized to
+`0/1` when its registration is created and retained across unselected periods,
+exit, tombstone and key changes. It increases only by the selected fee-settlement
+increments. These fields do not include bootstrap-only synthetic owner cursors;
+the historical reward account receives commission and bootstrap credit directly.
+
+A cursor exists exactly for a positive ordinary-owner reward contribution in
+the applicable height's immutable reward view. Thus q must be positive and a
+must be no greater than that registration's current A. At finalized height H,
+q is the owner's aggregated effective contribution in H's selected snapshot;
+operations inside H do not rewrite it for H. Genesis has no cursor records.
+Opening a contribution creates `(q, A)` with no retroactive accrual. Changing it
+first realizes `q * (A - a)`, then replaces it with `(newQ, A)` if newQ is
+positive, or deletes it when newQ is zero. An unchanged positive contribution
+keeps its checkpoint unless explicitly synchronized by a successful claim.
+There are no zero-weight, orphan-account or orphan-registration cursor records.
+
+Synchronization adds its exact accrued amount to the account's pooled realized
+fee-reward credit, then sets a to A. It does not change the integer fee-reward
+reserve. The account record owns realized credit and accounting key `01` owns
+the reserve; neither is duplicated in these namespaces. Across all accounts
+and cursors, that reserve equals realized credits plus unrealized
+`q * (A - a)` obligations. This is a transition conservation invariant, not a
+requirement to rescan every account on each claim. Derivation, boundary updates
+and any complete lookup indexes must preserve that invariant atomically.
+
+Reject nonminimal integers, noncanonical rationals, wrong key lengths, zero q,
+truncation and trailing bytes. A well-formed row does not establish its snapshot
+weight, authorization history or canonical provenance. Complete authenticated
+state must establish the required membership and cross-record relations;
+missing physical state or unusable indexes retain the local-unavailability
+classification rather than proving that an obligation is absent.
+
+FeeRewardClaim has operation-kind tag 9 in the economic class. Its exact payload
+is:
+
+```
+ownerAccountId[32] || feePayerAccountId[32] || NAT(sourceCount)
+|| RegistrationId[32]*sourceCount || NAT(Q) || NAT(F)
+```
+
+Source IDs are strictly ascending and distinct; sourceCount may be zero. Q and
+F are positive. The shared intent has exactly the distinct owner and payer
+authorization rows, each using its current owner policy, generation and nonce.
+Aliased owner and payer consume one nonce. There is no alternate recipient,
+consensus-key authority or proposed-policy consent. Its complete frame is:
+
+```
+BYTES(Intent) || BYTES(accountAuthorizationWitnessSection) || BYTES(empty)
+```
+
+The final empty section is exactly the single byte `00`. Extra evidence or
+missing sections reject. Other kinds must not reuse tag 9. For every named
+registration, resolve the owner's exact cursor and that registration's
+accumulator; authenticated logical absence fails even when other pooled credit
+is sufficient. Unavailable physical state or indexes remain local unavailability,
+not proof of logical absence.
+Synchronize only the named sources and apply the preceding whole-amount,
+pre-proceeds fee-funding, conservation and atomic-rejection rules. The source
+count and rational operands require authenticated byte and work bounds before
+allocation, lookup or arithmetic; this codec selects none of those limits.
 
 ## Ordered transactional execution
 
@@ -2656,6 +2942,25 @@ round admission and growing role budgets must resolve these obligations before
 implementation.
 
 ## Genesis and integration boundary
+
+The reusable bootstrap-attribution descriptor is exactly:
+
+```
+BootstrapDescriptor = ArtifactChainId[32] || NAT(protocolVersion)
+                      || ceremonyInstanceId[32]
+BootstrapAttributionDomain = SHA256(
+    "naome/consensus/v1/bootstrap-attribution\0" || BootstrapDescriptor)
+```
+
+The public ceremony freezes one unique 32-byte ceremonyInstanceId and the exact
+chain and version inputs before deriving this domain. A distinct conforming
+genesis ceremony must use a fresh instance identifier; reusing the descriptor
+is not a way to create a second genesis. The identifier is an external ceremony
+fact, not a timestamp, node-selected value, final-genesis hash or hash of an
+unfinished ceremony transcript. Strict encoding and hashing do not establish
+global non-reuse of an externally supplied identifier. The complete genesis
+schema must retain these exact derivation inputs and bind the derived domain
+in its unsigned root. This contract chooses no production instance bytes.
 
 The reusable genesis schema must preserve the selected construction sequence:
 bootstrap-attribution domain, unsigned genesis root, exact ceremony-frozen
