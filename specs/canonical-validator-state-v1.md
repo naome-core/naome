@@ -570,6 +570,15 @@ create an increase to fill a newly exposed gap, or revive removed effective
 weight. Exact derivation of applicable targets with overlapping amendments and
 other boundary events remains part of the integration contract.
 
+An unchanged standing request can expose a new target deficit solely through
+mandatory-loss rounding. With requests `(1,2)`, capacity two has effective
+allocations `(1,1)` and no pending change. Loss to one projects those effective
+allocations to `(1,0)`, but recomputing the request targets yields `(0,1)`.
+Reaching that target would require a voluntary transfer costing two churn units.
+Whether this loss-derived transfer is automatically queued, and its fresh-event
+eligibility if so, remain unselected. Neither maturation-only automatic growth
+nor amendment-triggered activation supplies those missing semantics.
+
 ### Delegation-plan amendments
 
 An authenticated owner amendment preserves unchanged amounts and their existing
