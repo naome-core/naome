@@ -465,6 +465,27 @@ without another E+2 wait. The exact derived-event identity and total queue
 ordering remain unspecified. Automatic queuing grants no immediate active
 weight and remains subject to staged churn.
 
+For maturation-derived growth, the chronological queue comparison uses the
+canonical finalized-state availability coordinate in place of an ordinary
+request's finalized-operation coordinate. An automatic event is not a signed
+ordinary operation and must not manufacture an operation position or reuse an
+ordinary operation identity. The common ordering still starts with eligibility
+and age: a separate event-kind-first pass must not put newly available growth
+ahead of older eligible requests.
+
+Simultaneous maturation effects for an owner are aggregated before computing its
+new allocation targets, so origin-batch enumeration cannot choose which target
+receives a rounding unit or earlier priority. Derive at most one new increment
+per owner and registration at that coordinate. Their total ordering must be
+independent of input arrival or origin-batch enumeration; its exact simultaneous-
+event tie rule remains to be specified. Previously queued unchanged portions remain distinct
+with their retained priority; aggregation must not renew or backdate them.
+
+The exact event encoding and coordinate derivation must still cover interaction
+with mandatory decay, penalties, target eligibility and concurrent amendments.
+These ordering constraints neither complete that integration nor grant earlier
+activation than the original request eligibility and capacity maturity.
+
 Canonical request encoding, request amendments, and origin-batch assignment
 remain unfinished. Historical
 offense-snapshot obligations and fee-reward checkpoints require their own exact
