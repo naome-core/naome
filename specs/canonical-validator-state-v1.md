@@ -634,6 +634,41 @@ older-looking plan does not restore those canceled portions' old eligibility
 or priority or negate an explicit revocation. The latest authorized plan must
 still permit the proposed increase.
 
+### General pending-change normalization
+
+After every delegation-target recomputation, including maturation and changes
+in plan eligibility, normalize pending portions toward the applicable target.
+For current effective amount e and target t of one owner and registration, the
+required direction and amount are given by t-e. Cancel all pending portions in
+the opposite direction. In the required direction, cancel any excess newest-first
+in reverse canonical queue order and preserve surviving portions' eligibility
+and priority, including partial survivors. If t=e, neither direction remains.
+Only the still-uncovered difference may generate a new queued amount.
+
+For e=50 with a pending reduction of 12 toward t=38, maturation that raises t
+to 56 cancels the obsolete reduction and requires only six new increase units.
+Do not keep a twelve-unit reduction followed by an eighteen-unit increase.
+Retaining the twelve already-effective units creates no activation or churn;
+the six-unit increase retains its separate activation and churn requirements.
+This general normalization refines the selected amendment and mandatory-loss
+cleanup without changing their phase order or granting earlier activation.
+
+New amounts retain their event-specific authorization, minimum delay and fresh
+priority. Where multiple full-plan authorizations demonstrably cover a new
+increase, use the earliest applicable eligibility first, bounded by the amount
+each authorization actually proves, and bind only the uncovered remainder to
+later eligibility. Include every applicable event floor when comparing
+eligibility: an old plan cannot remove a loss-derived event's fresh E+2 delay.
+An unchanged old pending portion is not a new amount and is not reprioritized.
+
+For a new net increase of six units fully supported by an older eligible plan,
+do not bind it to a later plan merely because that plan also supports it.
+Earlier authorization does not backdate the new availability event's priority
+or remove capacity and churn requirements. Attribution must not count the same
+capacity or authorization support twice. Exact joint attribution records,
+equal-eligibility source canonicalization and overlapping-plan target derivation
+remain part of the unfinished integration contract.
+
 ### Delegation-plan amendments
 
 An authenticated owner amendment preserves unchanged amounts and their existing
