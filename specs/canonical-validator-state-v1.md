@@ -618,6 +618,22 @@ surviving portions separately from their fresh availability priority. Exact
 attribution across multiple overlapping plan versions and capacity events must
 be specified without summing the same capacity or authorization increment twice.
 
+A never-eligible intermediate plan does not by itself permanently revoke unused
+older authorization merely because it would hypothetically route future weight
+differently. For eligible old requests `(100,0)` at capacity zero, pending plans
+`(100,100)` and then `(100,0)` cancel no actual pending weight and never reduce
+the first registration's explicit request. If 50 units mature before those
+amendments become eligible, all 50 may use the old eligible full plan for the
+first registration, with fresh maturation priority and normal capacity and churn
+requirements. Do not treat the intermediate hypothetical 25-unit share as an
+already executed revocation of the other 25.
+
+This preserves only unused authorization: cancellation of actual pending amounts
+and explicit request reductions retain their selected effects. Returning to an
+older-looking plan does not restore those canceled portions' old eligibility
+or priority or negate an explicit revocation. The latest authorized plan must
+still permit the proposed increase.
+
 ### Delegation-plan amendments
 
 An authenticated owner amendment preserves unchanged amounts and their existing
