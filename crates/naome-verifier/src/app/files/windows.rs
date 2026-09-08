@@ -130,6 +130,26 @@ mod tests {
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+    fn security_metadata(file: &File) -> String {
+        let descriptor = wrappers::GetSecurityInfo(
+            file,
+            SeObjectType::SE_FILE_OBJECT,
+            SecurityInformation::Owner | SecurityInformation::Dacl,
+        );
+        match descriptor {
+            Ok(descriptor) => format!(
+                "process={:?}, owner={:?}, dacl={:?}",
+                windows_permissions::utilities::current_process_sid(),
+                wrappers::GetSecurityDescriptorOwner(&descriptor),
+                wrappers::ConvertSecurityDescriptorToStringSecurityDescriptor(
+                    &descriptor,
+                    SecurityInformation::Dacl,
+                ),
+            ),
+            Err(error) => format!("security query failed: {error}"),
+        }
+    }
+
     fn fixture(path: &Path, private_acl: bool, byte: u8) {
         let owner = windows_permissions::utilities::current_process_sid().unwrap();
         let broad = if private_acl { "" } else { "(A;;FR;;;WD)" };
@@ -174,8 +194,19 @@ mod tests {
             let mut opened = regular(&path).unwrap();
             fs::rename(&path, root.join("original")).unwrap();
             fixture(&path, !original_private, 0x93);
-            assert_eq!(private(&opened).is_ok(), original_private);
-            assert_eq!(super::super::seed(&path).is_ok(), !original_private);
+            assert_eq!(
+                private(&opened).is_ok(),
+                original_private,
+                "{}",
+                security_metadata(&opened),
+            );
+            let replacement = super::super::seed(&path).map(|_| ());
+            assert_eq!(
+                replacement.is_ok(),
+                !original_private,
+                "seed={replacement:?}; {}",
+                security_metadata(&regular(&path).unwrap()),
+            );
             let mut bytes = Vec::new();
             opened.read_to_end(&mut bytes).unwrap();
             assert_eq!(bytes, [0x42; 32]);

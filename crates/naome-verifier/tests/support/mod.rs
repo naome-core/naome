@@ -120,10 +120,19 @@ impl Layout {
         for directory in ["finality-journal", "finality-anchor"] {
             for entry in fs::read_dir(self.root.join(directory)).unwrap() {
                 let path = entry.unwrap().path();
-                images.push((
-                    path.strip_prefix(&self.root).unwrap().to_path_buf(),
-                    fs::read(&path).unwrap(),
-                ));
+                // Windows enforces byte-range locks even for reads. Lock files
+                // contain no authority bytes; verify their length while still
+                // comparing every journal and anchor byte below.
+                let bytes = if path
+                    .extension()
+                    .is_some_and(|extension| extension == "lock")
+                {
+                    assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+                    Vec::new()
+                } else {
+                    fs::read(&path).unwrap()
+                };
+                images.push((path.strip_prefix(&self.root).unwrap().to_path_buf(), bytes));
             }
         }
         images.sort_by(|a, b| a.0.cmp(&b.0));

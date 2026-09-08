@@ -1,12 +1,12 @@
-use std::fs;
 #[cfg(unix)]
-use std::{fs::File, os::unix::fs::symlink, process::Command};
+use std::{fs, fs::File, os::unix::fs::symlink, process::Command};
 
 use ed25519_dalek::SigningKey;
 use naome_chain::{ArtifactBlockApplyError, ArtifactChainState, ArtifactDag};
+#[cfg(unix)]
+use naome_consensus::VerifiedFixedConsensusTransitionV0;
 use naome_consensus::{
     ConsensusAncestryId, ConsensusEnvelopeVerifyError, ConsensusStateCommitment, ConsensusValueV0,
-    VerifiedFixedConsensusTransitionV0,
 };
 use naome_ledger::LedgerError;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
