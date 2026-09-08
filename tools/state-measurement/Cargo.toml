@@ -1,0 +1,16 @@
+[package]
+name = "naome-state-measurement"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
+num-bigint = { version = "=0.4.8", default-features = false, features = ["std"] }
+
+[profile.release]
+debug = false
+overflow-checks = true
+
+# Deliberately isolated from the production workspace.
+[workspace]
