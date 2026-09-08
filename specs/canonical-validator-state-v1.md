@@ -544,7 +544,7 @@ does not use its no-second-wait exception. Retention of already-effective weight
 through cancellation of a pending reduction retains its separate rule above.
 
 Canonical request encoding, integration with simultaneous capacity and target-
-eligibility changes, and origin-batch assignment remain unfinished. Historical offense-snapshot
+eligibility changes, and canonical origin-attribution records remain unfinished. Historical offense-snapshot
 obligations and fee-reward checkpoints require their own exact contracts. Computing aggregate targets does not settle `ECON-105`, `ECON-146`
 or `ECON-155`, and staging must never count one owned unit in two simultaneous
 effective allocations.
@@ -576,14 +576,65 @@ retained expired batches, historical snapshots, outstanding debt or canonical
 history. Exact batch-identity bytes, pending accumulation records and historical
 contribution/delegation attribution remain part of the canonical state contract.
 
+## Historical origin attribution
+
+For one owner in a consistent effective snapshot, let b_i be each positive live
+ordinary origin-batch amount and let L be their sum. Use one column for each
+registration with a positive actually effective allocation from that owner,
+plus an undelegated column containing `L - sum(effective allocations)`. The
+column totals a_j must be nonnegative and sum to L. Requested or queued capacity
+does not enter these columns. This calculation consumes the effective snapshot;
+it does not decide activation, bond capacity, active membership or provenance.
+
+The attribution matrix X has nonnegative integer entries, exact row sums b_i,
+and exact column sums a_j. For L>0, each cell is between the floor and ceiling
+of `b_i * a_j / L`. Independent rounding of columns is forbidden: two one-unit
+rows and two one-unit columns could otherwise both allocate their remainder to
+the first row, counting that batch's single unit twice. L=0 requires zero
+effective allocations and no positive batch rows, producing no attribution
+entries without division.
+
+Let `q_ij = floor(b_i * a_j / L)` and `m_ij = (b_i * a_j) mod L`. The remaining
+row and column demands are their required sums minus the q sums. Write
+`X_ij = q_ij + z_ij`, where z_ij is zero or one and must be zero when m_ij is
+zero. The residual additions satisfy every remaining row and column demand.
+A feasible integer residual exists: the fractional remainders themselves are a
+feasible fractional flow between rows and columns, and the corresponding
+integer-capacity bipartite network admits an integral solution.
+
+Among feasible residual matrices, maximize the exact integer sum
+`sum(z_ij * m_ij)`. This minimizes the total absolute rounding error while
+respecting all row, column and cell bounds. It also minimizes the corresponding
+sum of squared rounding errors. Among equal optima, prefer an extra unit at the
+earliest differing cell in row-major order: rows by ascending canonical origin-
+batch identity, registration columns by ascending canonical RegistrationId,
+and the undelegated column last. Equivalently, choose the lexicographically
+greatest residual bit vector in that order. This optimum and tie rule define
+the result; an implementation's flow traversal order does not.
+
+For fixed margins the number K of residual additions is fixed, and scaled total
+absolute error is `sum(m_ij) + K*L - 2*sum(z_ij*m_ij)`. For rows `(1,2)` and
+columns `(1,2)`, the selected matrix is `[[0,1],[1,1]]`, with scaled error four;
+the first-feasible diagonal matrix `[[1,0],[0,2]]` has scaled error eight.
+
+Freeze the attribution with the corresponding effective snapshot. An offense's
+implicated batch contribution is its entry in the offending registration's
+column, accumulated across owners without changing their immutable batch
+ownership. Later decay, amendments or collection must not reconstruct the
+historical attribution from current state. Exact snapshot records, proofs and
+retention remain to be specified. The 730-batch per-owner limit does not bound
+column count or prove complete execution cost; matrix construction, exact
+optimization and optimum tie selection require measured resource bounds.
+
 ## Delayed Knowledge Weight liability
 
 The offense-snapshot Knowledge Weight penalty is assessed once by the timely
 canonical destructive equivocation transition. The assessed liability and the
 amount of live weight immediately available for destruction are distinct. The
 aggregate calculation and deterministic origin-batch allocation use the selected
-rounding contract below. Exact implicated-batch inputs and their integration
-remain unfinished under `ECON-105`.
+rounding contract below and the frozen attribution matrix above. Authenticated
+snapshot records, proof binding and canonical integration remain unfinished
+under `ECON-105`.
 
 For example, an origin batch with original weight 7,300 has live weight 10 at
 age 729 and zero at age 730. If its ten units were delegated at the offense
@@ -605,9 +656,9 @@ admit late evidence or reopen an offense for another assessment. Each later
 collection reduces the existing outstanding amount rather than assessing a
 new penalty or creating another reporter reward.
 
-Exact implicated-batch encumbrance, collection order across available batches,
-collection timing, debt records and future-maturation accounting remain to be
-specified under `ECON-146`, `ECON-163` and `ECON-164`. Historical attribution must
+Exact implicated-batch encumbrance, available-source accounting and debt records
+remain to be specified under `ECON-146`, `ECON-163` and `ECON-164`; the selected
+collection order and maturation phase appear below. Historical attribution must
 bind the liability to the correct immutable beneficiary account and prevent any
 collected unit from being charged twice.
 
@@ -679,8 +730,8 @@ earliest original expiry, with equal expiry resolved by ascending canonical
 origin-batch identity. Each collection is bounded by both the outstanding amount
 and that batch's current live amount and uses the proportional-basis update
 above. A changed delegation does not transfer ownership or erase liability.
-Exact implicated-batch attribution, encumbrance and available-source accounting
-remain part of `ECON-105`, `ECON-146` and `ECON-163`.
+Authenticated historical attribution records, encumbrance and available-source
+accounting remain part of `ECON-105`, `ECON-146` and `ECON-163`.
 
 Available fallback owner weight is collected during the canonical assessment
 transition. At later maturation, count the full original first-matured amount,
