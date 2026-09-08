@@ -244,10 +244,18 @@ Exit takes precedence over unapplied backing and weight increases. Finalizing
 exit cancels their future activation, and later increase requests are rejected.
 Canceling activation does not refund principal or remove its liability. The
 already effective state changes only through the delayed transition and its
-remaining churn budget. Exact disposition and release horizons of canceled
-pending principal must be specified; it must not become a spendable duplicate.
-Repeated exit requests cannot acquire a new effective date for the same exit;
-their exact rejection or no-op classification remains to be specified.
+remaining churn budget. Canceled pending top-ups and pending re-bonds remain held until full effective
+exit. For a previously exposed registration, these amounts remain liable through
+30 complete epochs after its last effective active epoch, preserving any later
+pre-existing release floor. An amount with no previous release floor uses the
+exit-derived floor alone. The never-exposed-registration exception remains
+applicable only without erasing an existing exposure obligation. Independent
+cooling reductions retain their own release clocks and are not re-locked by this
+rule. Release also requires completion of the effective exit and the applicable
+boundary release phase; canceling activation creates no spendable duplicate.
+
+A repeated exit request for an already-exiting registration is rejected. It
+changes no fee, nonce, queue position, effective date or other state.
 
 An explicitly beneficiary-authorized direct re-bonding operation moves retained
 principal into a disjoint pending-rebond category. It preserves the amount's
@@ -259,10 +267,10 @@ On subsequent effective reduction or exit, its release floor must preserve both
 the old obligation and the new complete exposure window.
 
 Partial re-bonding splits amounts without duplicating atoms. Records may merge
-only when their remaining rights and conditions are identical. Independent
-cancellation of pending re-bonding and its interaction with irreversible exit
-require exact lifecycle rules; an unspecified cancellation path cannot bypass
-the selected liability hold.
+only when their remaining rights and conditions are identical. V1 provides no standalone pending re-bond cancellation operation. The amount
+proceeds through activation and subsequent ordinary reduction or exit, or follows
+the irreversible-exit cancellation and retention rules above. Canceling a
+re-bond intent cannot independently unlock the principal.
 
 ### Voluntary churn refinement
 
