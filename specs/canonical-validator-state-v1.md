@@ -282,6 +282,34 @@ proceeds through activation and subsequent ordinary reduction or exit, or follow
 the irreversible-exit cancellation and retention rules above. Canceling a
 re-bond intent cannot independently unlock the principal.
 
+### Owner allocation during voluntary bond reduction
+
+When a valid voluntary bond reduction reduces a registration's effective ordinary
+delegation, distribute its surviving ordinary total by highest averages over
+the existing effective owner contributions. Let c_i be each positive current
+owner contribution, C their sum and K the admissible surviving ordinary total,
+with `0 <= K <= C`. Use the floor-seeded highest-averages procedure with inputs
+c_i, denominator C and house size K. Compare quotient ties by ascending
+lexicographic canonical stable owner-account identifier bytes.
+
+C=0 permits only K=0 and requires no division. K=0 produces all zero owner
+contributions; K=C preserves every contribution. For a smaller K, fixed-input
+house monotonicity ensures no result exceeds its corresponding c_i. No new
+owner receives a contribution through this reduction. The contributions sum
+exactly to K; rounded proportional quotas are not promised.
+
+This allocates an already admissible surviving ordinary total; it does not
+choose the bond-atom decrement, remove the continuing minimum bond, bypass E+2
+or gross churn, or determine how ordinary and bootstrap components fit within
+combined backing. The removed effective delegation frees owner allocation
+capacity without destroying ordinary Knowledge Weight, changing its decay
+basis, or transferring ownership. Historical snapshots retain their original
+contributions.
+
+The exact contribution reference across multiple partial steps, composition
+with intervening changes and the treatment of resulting pending delegation
+remain to be specified under the coupled transition contract.
+
 ### Voluntary churn refinement
 
 For an epoch following a completed non-genesis epoch, W is the total agreement
