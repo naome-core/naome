@@ -488,6 +488,24 @@ with mandatory decay, penalties, target eligibility and concurrent amendments.
 These ordering constraints neither complete that integration nor grant earlier
 activation than the original request eligibility and capacity maturity.
 
+### Mandatory owner-capacity loss
+
+A mandatory loss of live owner capacity from decay or collection cannot itself
+activate delegated weight. Let e_i be the owner's currently effective ordinary
+allocation to registration i before that loss and L' its surviving capacity.
+The loss-only result must satisfy `0 <= e'_i <= e_i` for every registration and
+`sum(e'_i) <= L'`. A registration with e_i=0 receives no new effective allocation
+from this phase. Other independently eligible changes retain their own staged
+execution and cannot be disguised as a consequence of the loss.
+
+New or waiting requested maxima are not inputs that authorize this reduction.
+For example, effective allocations `(5,5)` with capacity falling from ten to six
+cannot become `(0,6)` through the loss-only phase, even if a pending amendment
+requests `(100,1000)`. The second allocation would increase before its separate
+activation requirements were met. The exact loss distribution among existing
+allocations and undelegated capacity remains to be selected; these bounds alone
+do not choose that economic policy.
+
 ### Delegation-plan amendments
 
 An authenticated owner amendment preserves unchanged amounts and their existing
