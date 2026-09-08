@@ -592,6 +592,32 @@ no-second-wait exception does not apply to this loss-derived event. Exact
 canonical event coordinates, overlapping target derivation and composition with
 existing pending changes remain to be specified.
 
+### Maturation during a pending plan amendment
+
+Attribute maturation-derived increments to full-plan authorization, not merely
+to an unchanged per-registration request field. Separate the increment already
+justified by an eligible older full plan from the additional increment that
+depends on a not-yet-eligible amendment. The former may use the older plan's
+eligibility; the latter must also await the amendment's eligibility. Both remain
+subject to actual capacity and voluntary churn. Maturation adds no second E+2
+wait, and both newly available portions receive fresh maturation-event priority.
+
+For an eligible old plan `(100,100)` and capacity 50, effective allocations may
+be `(25,25)`. Amending the first request to zero in epoch E creates an additional
+25-unit target for the second registration that remains pending until E+2. If
+50 more units mature in E+1, the old full plan alone would increase the second
+target by 25, whereas the amended plan increases it by 50. Of those newly matured
+increments, 25 may use the older eligible authorization and the additional 25
+await the amendment's E+2 eligibility. The preexisting pending 25 keeps its own
+eligibility and priority; it is not accelerated or counted again.
+
+An older plan cannot revive increases revoked by the latest authorized amendment.
+In the example, no new first-registration increase is permitted through the
+older plan after its request is revoked. Track authorization dependencies for
+surviving portions separately from their fresh availability priority. Exact
+attribution across multiple overlapping plan versions and capacity events must
+be specified without summing the same capacity or authorization increment twice.
+
 ### Delegation-plan amendments
 
 An authenticated owner amendment preserves unchanged amounts and their existing
