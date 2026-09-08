@@ -1195,8 +1195,8 @@ formula; applied bootstrap may lie below that target because surrendered weight
 cannot be restored or redistributed. Every tag remains independently
 nonincreasing, and the independent linear cap and epoch-730 sunset still apply.
 The fixed original-tag schedule below defines queued growth-driven replacement
-and global per-tag remainder allocation. Exact authenticated event records and
-bounded execution remain separate unfinished requirements.
+and global per-tag remainder allocation. The component records below fix the
+authenticated event bytes; bounded full execution remains unfinished.
 
 ### Original-tag bootstrap schedule
 
@@ -1244,7 +1244,114 @@ churn, or below it because nominal shares of surrendered or retired tags are
 never redistributed. An applied aggregate below T does not cancel another tag's
 own still-owed reduction to its nominal share. Per-tag applied weight never
 increases; target recomputation neither restores a surrendered unit nor mints
-ordinary weight. Exact event encoding and measured work bounds remain unfinished.
+ordinary weight. The component records below fix exact event encoding; measured
+work bounds and full transition installation remain unfinished.
+
+### Canonical original-tag state and growth queue
+
+The bootstrap-roster namespace has exactly one mandatory key, the single byte
+`00`, with value:
+
+```
+RegistrationId[32]*32
+```
+
+There is no variable count: exactly 32 strictly ascending distinct IDs occupy
+slots zero through 31. Each resolves to its original genesis registration, not
+a later registration controlled by the same account or key. Genesis initializes
+this immutable roster from its 32 admitted original registrations. Complete
+genesis construction must establish those facts; a caller-supplied list or a
+bootstrap-attribution domain alone cannot establish membership. The roster
+survives exit, tombstone, key rotation and terminal sunset unchanged.
+
+The applied-bootstrap namespace has exactly one row for each roster member,
+with RegistrationId[32] as key and NAT(S) as its complete value. Zero is an
+explicit retained value in this namespace, not absence. No non-roster
+registration has a row or receives bootstrap weight; its bootstrap contribution
+is zero by this closed membership rule. A missing roster-member row is
+inconsistent authenticated state, not an implicitly zero allocation. Physical
+unavailability cannot establish either membership or absence.
+
+Genesis initializes each S to 312,500,000,000,000. Thereafter each S is
+non-increasing and no greater than its slot's nominal current linear-cap share.
+An exited or permanently tombstoned tag has S=0, and all rows have S=0 at and
+after epoch 730. An exit request alone does not zero a tag before its selected
+effective steps. Positive bootstrap and ordinary components jointly retain the
+registration's backing and eligibility rules; these record bytes grant no
+extra capacity or selected-set membership. Preserve the roster and all zero
+rows after sunset, so a later registration, top-up or restart cannot recreate
+an original allocation.
+
+The current epoch and the mandatory first-matured accumulator M determine C(E),
+T and each nominal share under the preceding formulas (F there is exactly M).
+No independently writable target, cap, surrendered-total or nominal-share
+record is introduced. The applied total is the sum of the 32 S values; it is
+not another authority counter. Historical snapshots retain the bootstrap
+component actually used for that height, not a target recomputed at settlement.
+
+A growth-driven bootstrap portion occupies its own namespace with PortionId[32]
+as key and the exact value:
+
+```
+BYTES(Event) || NAT(originalAmount) || NAT(remainingAmount)
+```
+
+Its Event has sourcePhase=2, empty PhaseCoordinate, effectKind=4, absent owner
+and the roster registration as its present registration subject. direction=0
+and sourceViewOrdinal=0 are fixed and used in PortionId derivation; they are
+not extra encoded fields in this body. Eligibility is the source height's
+epoch, derived from the canonical height rules, with no extra E+2. Every amount
+is positive and remainingAmount<=originalAmount. originalAmount is immutable;
+only remainingAmount decreases. Delete the row when no amount remains.
+Unknown or inappropriate event fields, nonminimal numbers, wrong subjects,
+trailing bytes, duplicate keys and a mismatching derived key reject.
+
+The actual source is the canonical bootstrap-target derivation after aggregating
+all first-matured increments at that coordinate. It binds the authenticated
+parent, context and positive source height under the shared Event contract.
+One source coordinate creates at most one new portion per tag, for the uncovered
+positive owed amount. An automatic portion has no account signature, fee,
+ordinary operation ID or fabricated maturation-batch ordering. Its amount is
+weight to remove, not pending principal, newly matured ordinary weight or a
+second copy of applied bootstrap. A valid hash or record does not prove the
+source transition occurred or authorize a repeated creation.
+
+After the mandatory cap and each selected target derivation, normalize each
+tag's surviving queue sum to `max(0, S - share_i(T))`: cancel any excess
+newest-first in reverse logical queue order, preserving original amounts,
+identities and all surviving priority. Only the canonical maturation-derived
+target event can create the uncovered new amount. With non-decreasing M and
+non-increasing S, cap loss, voluntary surrender, tombstone and final exit cannot
+create a new growth obligation; normalize their excess away atomically with
+their effective change. At sunset S and all remaining growth portions are zero;
+the portions are deleted while roster and applied-zero rows remain.
+
+During the shared frozen one-pass staged traversal, a visited surviving portion
+may remove the maximal valid whole amount d from zero through its remaining
+amount, subject to the complete selected-map churn and other existing rules.
+Set S'=S-d and remainingAmount'=remainingAmount-d together. The positive owed
+bound prevents taking S below its nominal target through this growth-only
+step; independently authorized surrender or exit may do so. Recompute selected
+membership for the complete candidate, including any displaced or replacement
+registration. A skipped or zero-progress portion retains its identity and
+priority; later changes do not give it a second visit in the same pass.
+
+Mandatory cap reductions, tombstone removal and terminal sunset do not consume
+or wait for this voluntary growth queue. Voluntary bond/exit surrender keeps
+its own churn treatment. None of these bootstrap changes creates ordinary
+Knowledge Weight, edits M or moves bond principal by itself. Coupled bond and
+exit transitions still own their separately specified custody changes.
+Every accepted cause, applied-weight update and queue change belongs to the
+same atomic canonical transition; failed preparation installs none of them.
+
+These exact component records close bootstrap state and portion framing only.
+Global namespace assignment, complete genesis admission, ordering among all
+boundary families, full-map maximum execution and measured byte/work limits
+remain required. Future validation must independently cover fixed-slot sum and
+remainder vectors, explicit zero versus absence, non-roster rejection, cap and
+sunset under exhausted churn, aggregate maturation, partial progress, newest
+cancellation, surrender below target, no resurrection, historical rewards and
+atomic rollback. No runtime implementation evidence is supplied by these bytes.
 
 ### Owner allocation during voluntary bond reduction
 
@@ -1374,7 +1481,7 @@ primary roots and custody images. These are future implementation obligations,
 not runtime tests executed by this specification change.
 
 These component contracts refine ECON-144, PROD-066 and PROD-112/113/114. Complete
-boundary ordering, the remaining bootstrap and other queue bodies, global
+boundary ordering, the remaining non-bootstrap queue families, global
 namespace ordering, genesis construction, durable installation and measured
 count/byte/work admission remain required. Parsing a record or executing an
 isolated arithmetic helper does not satisfy those integration dependencies.
@@ -1452,7 +1559,7 @@ does not authorize counting one owned unit in multiple effective allocations.
 
 The following queue, economic-progress and pending-change sections refine
 eligibility, conflicts, cancellation and supersession. The delegation component
-records below leave other non-bond, non-delegation bodies and bounded full execution unfinished. Partial economic changes must preserve
+records below leave other non-bootstrap, non-bond, non-delegation bodies and bounded full execution unfinished. Partial economic changes must preserve
 integer bond backing and Knowledge Weight ownership; a permitted weight delta
 alone does not determine the exact bond atoms that cease exposure. A partial
 transition must account for the complete selected registration-weight change,
@@ -1523,7 +1630,7 @@ part of the same canonical atomic overlay as its cause. Rejected speculative
 work creates no retained event, consumes no support and gives no authority;
 canonical replay cannot create a second copy of an already-produced portion.
 The component framing below encodes these distinctions injectively; exact
-other non-bond, non-delegation portion bodies, resource bounds and full installation remain
+other non-bootstrap, non-bond, non-delegation portion bodies, resource bounds and full installation remain
 separate requirements.
 
 After all pre-pass boundary-derived portions have been created and normalized,
@@ -1664,7 +1771,7 @@ and newly created in-pass portions wait for a later pass as already specified.
 These records start empty in genesis. Their logical order, source binding and
 atomic update rules do not select count/byte/work ceilings, grant a local queue
 or recovered cache canonical authority, or complete the remaining shared
-other non-bond, non-delegation bodies and full boundary/custody installation contract.
+other non-bootstrap, non-bond, non-delegation bodies and full boundary/custody installation contract.
 
 ### Economic progress units
 
