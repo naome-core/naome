@@ -126,7 +126,7 @@ authority, consensus delegation and development-reserve spending remain distinct
 
 An account ID derives from a domain-separated hash of its immutable creation
 descriptor: its initial canonical authorization policy and an explicit 32-byte
-creation discriminator. Exact descriptor and preimage bytes remain unfinished.
+creation discriminator. Their exact shared preimages are defined below.
 The initial descriptor remains immutable; current account authorization policy
 is separate state. Key rotation preserves account identity, ownership of
 balances and Knowledge Weight, registration references, and historical
@@ -152,7 +152,8 @@ subset. Consensus-key rotation preserves the registration and liability lineage.
 These identifiers belong to their containing genesis state. Their derivation
 does not depend on the final genesis identity. Ordinary operation authorization
 still binds the full chain, genesis, protocol-version, and operation-role
-context. Exact identifier domains and integer encodings remain unfinished.
+context. The shared framing below defines the identifier domains and integer
+encodings without changing that containing-genesis boundary.
 
 ### Bond reduction and liability refinement
 
@@ -641,7 +642,9 @@ current backing minus the continuing minimum. A registration has at most one
 unfinished such request; a second request is rejected until the first completes.
 Each executed partial amount subtracts from that request's remaining amount;
 later top-ups do not enlarge it. Irreversible exit remains admissible despite
-an unfinished reduction and takes precedence over its remaining amount. This
+an unfinished reduction. Finalizing exit cancels that request's remaining amount
+and makes the exit govern still-usable backing; already executed reductions
+retain their independent cooling clocks. This
 request rule does not create a cancellation or amendment operation.
 
 For a bond reduction, progress is a whole number d of usable NAO atoms within
@@ -686,8 +689,8 @@ the principal-class rules above.
 
 An account policy has one normalized representation: a threshold `M` and sorted,
 distinct Ed25519 keys, with `1 <= M <= N`. A single-key account is the `M = N = 1`
-case. Exact policy bytes, key-admission checks, and the benchmark-selected maximum
-`N` remain unfinished.
+case. The shared framing below fixes policy bytes and key admission; the
+benchmark-selected maximum `N` remains unfinished.
 
 Each authorization contains exactly `M` distinct signer entries in ascending
 policy-index order. Every supplied signature is verified. Duplicate indices,
@@ -704,10 +707,125 @@ an authorization nor a nonce for registration.
 
 Operation identity and signing intent exclude signature evidence. All identity
 and possession-proof targets are derived before the signatures that authorize
-them, without a signature/identity cycle. The exact operation, policy-binding,
-account-specific authorization, and proof-of-possession transcripts remain to
-be specified. Validation uses the applicable evolving execution state; signing
+them, without a signature/identity cycle. The shared preimages below fix operation,
+policy-binding, account-specific authorization and key-possession transcripts;
+complete typed payloads and outer framing remain separate codec requirements.
+Validation uses the applicable evolving execution state; signing
 does not require committing an intermediate global state root.
+
+### Shared V1 identity and authorization bytes
+
+This section fixes shared preimages for ordinary post-genesis operations.
+Genesis preauthorizations retain their separately specified unsigned-genesis-root
+transcripts; requiring the final genesis identity in those pre-finalization
+signatures would introduce a forbidden cycle. This section does not complete
+typed operation payloads, genesis transcripts or the successor block envelope.
+
+`NAT(x)` is exactly the successor natural encoding in CODEC-117. Define
+`BYTES(x) = NAT(byte_length(x)) || x`, where `||` concatenates bytes. Fixed
+identifiers, hashes and Ed25519 keys occupy exactly 32 bytes, and signatures
+exactly 64 bytes. All counts, indices, nonces, operation-kind tags and the V1
+context's protocol version use NAT. Every parser enforces authenticated resource
+allowances before allocation; this encoding chooses no policy-size or work cap.
+
+The following domain strings are exact ASCII bytes. Each displayed `\0` denotes
+one final zero byte, not a backslash and digit; quotation marks are not encoded.
+
+| Purpose | Exact domain |
+| --- | --- |
+| Policy commitment | `naome/consensus/v1/account-policy\0` |
+| Stable account ID | `naome/consensus/v1/account-id\0` |
+| Stable registration ID | `naome/consensus/v1/registration-id\0` |
+| Operation ID | `naome/consensus/v1/operation-id\0` |
+| Account authorization | `naome/consensus/v1/account-authorization\0` |
+| Registration key possession | `naome/consensus/v1/registration-key-possession\0` |
+| Rotation key possession | `naome/consensus/v1/rotation-key-possession\0` |
+
+Let P be `NAT(M) || NAT(N) || key[0] || ... || key[N-1]`, with the normalized
+threshold and ascending distinct key bytes required above. Then:
+
+```
+PolicyHash     = SHA256(policy-domain || P)
+AccountId      = SHA256(account-id-domain || BYTES(P_initial) || discriminator[32])
+RegistrationId = SHA256(registration-id-domain || operatorAccountId[32] || NAT(operatorNonce))
+Context        = ChainId[32] || GenesisId[32] || NAT(protocolVersion)
+```
+
+The registration nonce is the exact operator nonce consumed by that registration,
+including when the operator occupies other authorizing roles. Neither identity
+contains authorization witnesses, a resulting state root or final genesis ID.
+Current policy updates do not rewrite the account's immutable initial descriptor.
+
+A typed operation determines its exact distinct required authorizing-account
+set. Sort those accounts by AccountId and encode each authorization-intent row
+as `AccountId[32] || PolicyHash[32] || NAT(nonce)`. The common intent is:
+
+```
+Intent = Context || NAT(operationKind) || BYTES(canonicalTypedPayload)
+         || NAT(authorizingAccountCount) || orderedAuthorizationIntentRows
+OperationId = SHA256(operation-id-domain || Intent)
+```
+
+The typed payload binds every semantic role, amount, destination, fee and
+supporting-proof or offense-evidence reference required by that operation.
+Encode each semantic role and fee once in that typed payload, without a second
+competing role or fee header. Only the operation's account-signature and new-key
+possession witnesses are excluded from Intent; proof identifiers, evidence
+statements and other semantic payload content are not excluded. The active
+protocol's typed codec must recognize the kind and validate the complete payload;
+hashing an arbitrary payload grants no admission or execution authority.
+
+Reject missing, extra or duplicate authorization rows. Every row must match the
+required account's policy commitment and exact nonce in evolving execution state.
+Aliased roles share one row and one nonce consumption. Receiving-only roles add
+none. For account creation alone, the new account's row uses its initial policy
+hash and nonce zero; its sponsor already exists and cannot alias that new account.
+
+For each row, compute:
+
+```
+AccountAuthDigest = SHA256(account-authorization-domain || Context
+                          || OperationId[32] || AccountId[32] || PolicyHash[32])
+```
+
+Each qualifying account key signs exactly those 32 digest bytes with ordinary
+Ed25519. This is not Ed25519ph and does not sign a textual hexadecimal digest.
+An account's witness row is `NAT(M) || (NAT(policyIndex) || signature[64])*M`,
+with zero-based distinct ascending indices. Witness rows occur in the intent's
+account order, preceded by NAT of the exact authorizing-account count. Validate
+every supplied signature against its indexed key and this account-specific
+digest. Extra or missing rows or signatures, out-of-range indices and trailing
+bytes are invalid. Different valid qualifying signer subsets leave OperationId
+unchanged; changing policies, nonces, roles or semantic payloads changes the
+committed preimage, subject to the hash's cryptographic assumptions.
+
+Registration and rotation use their respective possession domain to compute
+`SHA256(domain || Context || OperationId[32] || RegistrationId[32] || newKey[32])`.
+The new consensus key signs exactly that 32-byte digest with ordinary Ed25519.
+Registration derives RegistrationId from the operator row before obtaining this
+signature; rotation uses the existing registration named in its typed payload.
+The payload determines whether exactly one such witness is required and which
+key and role it proves. This witness grants no account-spending authority and
+does not enter OperationId. Exact outer operation/witness-section framing remains
+part of the complete successor codec.
+
+### V1 Ed25519 admission and verification
+
+Every V1 account-policy key and newly admitted consensus key must be a canonical
+compressed Edwards25519 point in the prime-order subgroup, excluding identity.
+Decompress the point, require recompression to reproduce the input bytes, and
+require nonidentity prime-order subgroup membership. Merely round-tripping a
+key object's stored input bytes does not establish canonical encoding. Reject
+noncanonical encodings, invalid points, small-order keys and mixed-torsion keys
+before installing a policy or reserving a consensus key. This is a V1 admission
+rule and does not change V0 framing or claim V0 already enforces it.
+
+Signature verification uses canonical Ed25519 encodings, a canonical scalar and
+the strict uncofactored verification equation, rejecting small-order R. Together
+with prime-order admitted keys this rejects torsion-based witness alternatives.
+Admission of a key alone proves neither possession nor operation authorization;
+the required signatures still verify under the selected transcript. Exact
+benchmark-derived limits and implementation verification remain unfinished.
 
 ## Bonded validator registration
 
