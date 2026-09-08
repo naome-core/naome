@@ -549,13 +549,41 @@ obligations and fee-reward checkpoints require their own exact contracts. Comput
 or `ECON-155`, and staging must never count one owned unit in two simultaneous
 effective allocations.
 
+## Ordinary Knowledge Weight origin batches
+
+One canonical origin batch is identified logically by the stable owner account
+and the epoch E in which its qualifying citation-reward value was earned.
+Accumulate the owner's actual qualifying rewards from that earning epoch before
+maturation, with each contribution counted once. At E+2 the batch matures with
+original amount S equal to that accumulated value at the selected one-atom-to-
+one-unit ratio. Its original amount and activation epoch are then immutable;
+the original amount contributes once to the first-matured accumulator.
+
+Later earning epochs create distinct batches. Do not add later rewards to an
+already activated batch, combine different earning epochs, or merge distinct
+post-collection bases to recover rounding units or refresh age. Collection
+changes only the separate remaining basis under the rule below. Account-key
+rotation does not change the batch owner identity.
+
+Batch granularity is part of the arithmetic contract, not just storage layout.
+Two separately rounded one-unit batches would both reach zero at age one, while
+the selected combined two-unit batch has `floor(2 * 729 / 730) = 1` live unit.
+Per-reward-event batching is therefore not an equivalent implementation.
+
+There are at most 730 unexpired matured batch identities per owner at a time,
+with ages zero through 729. This is not a bound on owners, pending contributions,
+retained expired batches, historical snapshots, outstanding debt or canonical
+history. Exact batch-identity bytes, pending accumulation records and historical
+contribution/delegation attribution remain part of the canonical state contract.
+
 ## Delayed Knowledge Weight liability
 
 The offense-snapshot Knowledge Weight penalty is assessed once by the timely
 canonical destructive equivocation transition. The assessed liability and the
 amount of live weight immediately available for destruction are distinct. The
-aggregate ten-percent calculation and deterministic origin-batch allocation
-retain `ECON-049` and the still-unfinished integer contract of `ECON-105`.
+aggregate calculation and deterministic origin-batch allocation use the selected
+rounding contract below. Exact implicated-batch inputs and their integration
+remain unfinished under `ECON-105`.
 
 For example, an origin batch with original weight 7,300 has live weight 10 at
 age 729 and zero at age 730. If its ten units were delegated at the offense
@@ -582,6 +610,29 @@ collection timing, debt records and future-maturation accounting remain to be
 specified under `ECON-146`, `ECON-163` and `ECON-164`. Historical attribution must
 bind the liability to the correct immutable beneficiary account and prevent any
 collected unit from being charged twice.
+
+### Integer penalty assessment and allocation
+
+Let D be the total effective delegated ordinary Knowledge Weight at the offense
+snapshot. Assess the aggregate penalty `C = ceil(D / 10)` once for that validator
+lineage's first destructive transition. D=0 produces C=0. For D>0, C is positive,
+never exceeds D, and exceeds exact ten percent by less than one weight unit.
+Do not round ten percent separately for each owner or origin batch.
+
+For each distinct implicated origin batch i, let b_i be its positive effective
+delegated amount in that snapshot, so `sum(b_i) = D`. When D=0 there are no
+positive implicated amounts and every allocation is zero, without division.
+Otherwise compute exact integers `q_i = floor(C * b_i / D)` and
+`m_i = (C * b_i) mod D`. Give one additional unit to each of the
+`C - sum(q_i)` batches with greatest m_i, breaking equal remainders by ascending
+canonical origin-batch identity. No batch receives more than one remainder unit.
+
+The shares sum exactly to C. Each share lies between the floor and ceiling of
+its exact proportional value and is no greater than b_i. This is quota-preserving
+largest-remainder allocation, distinct from the selected highest-averages method
+for delegation targets. Each immutable owner is assessed the sum of its batch
+shares; neither later decay nor collection-source selection recomputes those
+historical shares or transfers liability to another owner.
 
 ### Proportional decay after collection
 
