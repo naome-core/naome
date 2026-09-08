@@ -118,7 +118,7 @@ belongs to its immutable beneficiary.
 
 Tail realization and machinery reuse remain open under `ECON-222` and
 `ECON-205`. Empty reserved namespaces cannot resolve those choices. Recovery
-activation, authenticated reward-cursor records, delegation record integration
+record integration, authenticated reward-cursor records, delegation record integration
 and deadline accounting retain their unfinished contracts. Grant-vote
 authority, consensus delegation and development-reserve spending remain distinct.
 
@@ -740,6 +740,8 @@ one final zero byte, not a backslash and digit; quotation marks are not encoded.
 | Account authorization | `naome/consensus/v1/account-authorization\0` |
 | Registration key possession | `naome/consensus/v1/registration-key-possession\0` |
 | Rotation key possession | `naome/consensus/v1/rotation-key-possession\0` |
+| New owner-policy consent | `naome/consensus/v1/new-owner-policy-consent\0` |
+| New recovery-policy consent | `naome/consensus/v1/new-recovery-policy-consent\0` |
 
 Let P be `NAT(M) || NAT(N) || key[0] || ... || key[N-1]`, with the normalized
 threshold and ascending distinct key bytes required above. Then:
@@ -758,7 +760,9 @@ Current policy updates do not rewrite the account's immutable initial descriptor
 
 A typed operation determines its exact distinct required authorizing-account
 set. Sort those accounts by AccountId and encode each authorization-intent row
-as `AccountId[32] || PolicyHash[32] || NAT(nonce)`. The common intent is:
+as `AccountId[32] || PolicyHash[32] || NAT(authorizationGeneration) || NAT(nonce)`.
+The applicable policy is selected by the operation contract, never by a caller-
+supplied policy-role switch. The common intent is:
 
 ```
 Intent = Context || NAT(operationKind) || BYTES(canonicalTypedPayload)
@@ -769,17 +773,21 @@ OperationId = SHA256(operation-id-domain || Intent)
 The typed payload binds every semantic role, amount, destination, fee and
 supporting-proof or offense-evidence reference required by that operation.
 Encode each semantic role and fee once in that typed payload, without a second
-competing role or fee header. Only the operation's account-signature and new-key
-possession witnesses are excluded from Intent; proof identifiers, evidence
+competing role or fee header. Only the operation's account-signature, new-key
+possession and new-policy consent witnesses are excluded from Intent; proof identifiers, evidence
 statements and other semantic payload content are not excluded. The active
 protocol's typed codec must recognize the kind and validate the complete payload;
 hashing an arbitrary payload grants no admission or execution authority.
 
 Reject missing, extra or duplicate authorization rows. Every row must match the
-required account's policy commitment and exact nonce in evolving execution state.
+required account's applicable policy commitment, current authorization generation
+and exact nonce in evolving execution state. The applicable policy is its current
+owner policy, except that RecoveryStart uses the target account's already
+committed recovery policy for that target row as specified below.
 Aliased roles share one row and one nonce consumption. Receiving-only roles add
 none. For account creation alone, the new account's row uses its initial policy
-hash and nonce zero; its sponsor already exists and cannot alias that new account.
+hash, authorization generation zero and nonce zero; its sponsor already exists
+and cannot alias that new account.
 
 For each row, compute:
 
@@ -808,6 +816,126 @@ The payload determines whether exactly one such witness is required and which
 key and role it proves. This witness grants no account-spending authority and
 does not enter OperationId. Exact outer operation/witness-section framing remains
 part of the complete successor codec.
+
+### Account-policy rotation and precommitted recovery
+
+Each account retains a current owner policy, optional committed recovery policy,
+exact growing natural authorization generation g, and its ordinary exact nonce n.
+Post-genesis creation starts with g zero and no recovery policy. The immutable
+creation descriptor and AccountId never change. Genesis setup remains governed
+by its separate ceremony and installation contract.
+
+Every successful owner-policy or recovery-policy installation, replacement or
+disabling advances g by one, including a successful installation of identical
+policy content. Each ordinary accepted operation still consumes one nonce per
+distinct authorizing account. Generation and nonce never reset or wrap. A
+signature for an earlier generation cannot become usable merely because the
+account later restores the same policy keys. Scheduled recovery activation
+advances g but is not an additional user operation and consumes no nonce.
+
+#### Consent and ordinary rotation
+
+OwnerPolicyRotate binds the complete proposed owner policy, target account and
+fee roles. The current owner policy authorizes its target row using current g
+and n; a distinct fee payer authorizes its own row, while an aliased payer uses
+the target's one row. The proposed new owner policy separately gives threshold
+consent over the same operation. Do not add a duplicate account row or consume
+a second target nonce for that consent.
+
+New-policy consent uses the same normalized policy, exact threshold witness and
+strict signature rules as account authorization. Use the exact new-owner or
+new-recovery consent domain listed above according to the typed operation:
+
+```
+NewPolicyConsentDigest = SHA256(consent-domain || Context || OperationId[32]
+                               || targetAccountId[32] || newPolicyHash[32])
+```
+
+Every qualifying new-policy key signs exactly these 32 bytes with ordinary
+Ed25519. The witness is `NAT(M) || (NAT(policyIndex) || signature[64])*M` in
+strictly ascending distinct policy-index order, verified under the complete
+new policy bound in the typed payload. It is authentication evidence excluded
+from OperationId; the proposed policy itself is semantic intent and is included.
+The operation kind fixes which consent is required; missing, extra or wrong-role
+consent is invalid. Consent grants no separate spending or consensus-key authority.
+
+Successful ordinary rotation activates immediately at its operation position,
+advances g, consumes n once, and cancels any pending recovery. Later operations
+in the same block must use the new owner policy and advanced generation/nonce.
+There is no queued ordinary owner-policy rotation. Rejection installs none of
+these effects, fees or nonce changes. This account-policy timing does not change
+the separate epoch delay for validator consensus-key rotation.
+
+#### Recovery-policy setup and lost-key scope
+
+Recovery is a lost-owner-key path only. The current owner retains ordinary
+spending and cancellation authority during its delay; no account freeze is
+introduced. An adversary controlling the current owner threshold can spend,
+rotate, disable recovery or cancel it. This contract does not promise recovery
+against that adversary and grants no emergency or privileged override.
+
+RecoveryPolicySet requires current owner authorization plus new-recovery-policy
+threshold consent. It installs or replaces that optional policy immediately at
+its operation position and advances g. RecoveryPolicyDisable requires current
+owner authorization and immediately removes the policy and advances g. Both
+cancel any pending recovery. Their ordinary fee payer may alias the owner or
+be a separately authorizing sponsor. Recovery-policy keys alone cannot install,
+replace or disable that policy, rotate the owner immediately, transfer assets,
+or authorize validator operations. The owner can set up recovery after explicit
+account creation; uncommitted or external identity evidence supplies no authority.
+
+#### One pending recovery and activation
+
+RecoveryStart binds the target account, complete new owner policy, distinct
+fee-payer account and fee. Its target authorization row uses the already committed
+recovery PolicyHash with that account's current g and n. Its sponsor row uses
+the sponsor's current owner policy, generation and nonce. The target and sponsor
+must be distinct: recovery keys acquire no right to debit the target account's
+fee balance. The new owner policy supplies the separate new-owner consent.
+Successful admission consumes the target nonce and sponsor nonce once and charges
+the sponsor from available liquid funds, using the ordinary non-artifact fee
+partition. Missing recovery policy or an existing pending recovery rejects a new
+request without replacement, fee or nonce changes.
+
+A successful request finalized in epoch E stores its OperationId, admitted
+recovery-policy commitment and generation, complete accepted target policy and
+first activation epoch E+2. It remains pending throughout E and E+1. Ordinary
+operations may advance n while it waits; they neither restart its delay nor
+invalidate its accepted authorization. RecoveryStart itself does not advance g
+or change owner authority. Repeating the consumed nonce cannot create another
+request. Current recovery keys do not gain an independent cancellation path.
+
+RecoveryCancel binds the exact pending request OperationId and requires current
+owner authorization and ordinary fee payment. Success removes that request and
+consumes the required account nonces without advancing g; missing or mismatched
+requests reject atomically. Owner rotation, RecoveryPolicySet and
+RecoveryPolicyDisable also cancel a pending request as part of their successful
+transition. These owner-authorized actions are the veto; there is no silent
+replacement of one pending recovery by another. A later accepted request gets
+its own fresh E+2 date.
+
+At the first height of E+2, parent-derived boundary preparation activates the
+still-pending target owner policy, advances g and removes the request before
+that height's operations. It preserves the committed recovery policy. The
+request must still match its admitted recovery policy and generation; ordinary
+nonce advances alone are not a mismatch. Do not reauthorize against its old
+consumed nonce or require signatures from the lost owner policy. Any authority
+change that could invalidate that match must already have canceled the pending
+request atomically; an inconsistent pending record is invalid state, not a
+reason to install an attacker-selected policy. An operation included at the
+activation height uses the newly activated policy and cannot veto the boundary
+retroactively. Boundary preparation and installation retain the full proposal's
+existing atomicity and canonical-parent checks.
+
+All policy transitions preserve stable account and registration identities,
+asset ownership, reward credits, Knowledge Weight origins and debt, delegations,
+liability, and independently scheduled economic or consensus changes apart from
+explicit fees and the recovery-request cancellations above. Account recovery
+does not automatically rotate a validator consensus key, restore a tombstoned
+registration, reset exposure or forgive a penalty. Historical verification uses
+its historical policy/context rather than substituting a current policy.
+Exact typed kind tags, payload/record framing, consent-section framing and
+resource limits remain required before canonical implementation.
 
 ### V1 Ed25519 admission and verification
 
@@ -1766,7 +1894,7 @@ the no-mutation rule of `ECON-171` and does not acquire the payer's forfeiture
 authority. A reveal requires a commitment from a strict ancestor, although a
 valid reveal may precede its artifact in the same block.
 
-Exact epoch-boundary, expiry, penalty, exposure, account-policy activation, and
+Exact epoch-boundary, expiry, penalty, exposure, account-policy activation integration, and
 tail-settlement rules remain unfinished. The ordering above does not supply
 those missing transitions or complete `CODEC-068` by itself.
 
