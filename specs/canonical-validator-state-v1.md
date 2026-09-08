@@ -282,6 +282,34 @@ proceeds through activation and subsequent ordinary reduction or exit, or follow
 the irreversible-exit cancellation and retention rules above. Canceling a
 re-bond intent cannot independently unlock the principal.
 
+### Bootstrap allocation during voluntary bond reduction
+
+A valid voluntary bond reduction uses spare combined backing first, then
+permanently surrenders this registration's bootstrap weight before reducing
+ordinary delegation. For current bootstrap weight S, current ordinary total O
+and proposed surviving usable backing B in NAO atoms, let
+`D = max(0, S + O - 20 * B)`. The surviving components are
+`S' = S - min(S, D)` and `O' = O - (D - min(S, D))`.
+These are exact nonnegative integers; `S' + O' <= 20 * B`. A backing change
+that already covers S+O removes no weight. Only the ordinary reduction, if any,
+uses the owner-reference allocation below with surviving total K=O'.
+
+This is an authorized voluntary effective transition, retaining E+2 eligibility,
+gross churn, the continuing minimum bond, and liability/release requirements.
+It is not a mandatory bootstrap-cap exception to churn. The exact admissible
+bond-atom step still depends on those constraints; the formulas alone do not
+authorize an otherwise invalid step or removal below the continuing minimum.
+
+Voluntarily surrendered bootstrap weight never returns through a bond top-up,
+key rotation or later target recomputation, and is never redistributed to another
+genesis allocation. It does not mint ordinary Knowledge Weight or increment the
+first-matured accumulator. The nominal aggregate target in GOV-033 retains its
+formula; applied bootstrap may lie below that target because surrendered weight
+cannot be restored or redistributed. Every tag remains independently
+nonincreasing, and the independent linear cap and epoch-730 sunset still apply.
+Exact integration with queued growth-driven replacement and global per-tag
+remainder allocation remains unfinished under GOV-083 and GOV-106.
+
 ### Owner allocation during voluntary bond reduction
 
 When a valid voluntary bond reduction reduces a registration's effective ordinary
@@ -300,8 +328,8 @@ exactly to K; rounded proportional quotas are not promised.
 
 This allocates an already admissible surviving ordinary total; it does not
 choose the bond-atom decrement, remove the continuing minimum bond, bypass E+2
-or gross churn, or determine how ordinary and bootstrap components fit within
-combined backing. The removed effective delegation frees owner allocation
+or gross churn. The bootstrap-first rule above determines the surviving ordinary
+total within combined backing. The removed effective delegation frees owner allocation
 capacity without destroying ordinary Knowledge Weight, changing its decay
 basis, or transferring ownership. Historical snapshots retain their original
 contributions.
