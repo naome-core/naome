@@ -1,14 +1,12 @@
-use std::{
-    fs::{self, File},
-    os::unix::fs::symlink,
-    process::Command,
-};
+#[cfg(unix)]
+use std::{fs, fs::File, os::unix::fs::symlink, process::Command};
 
 use ed25519_dalek::SigningKey;
 use naome_chain::{ArtifactBlockApplyError, ArtifactChainState, ArtifactDag};
+#[cfg(unix)]
+use naome_consensus::VerifiedFixedConsensusTransitionV0;
 use naome_consensus::{
     ConsensusAncestryId, ConsensusEnvelopeVerifyError, ConsensusStateCommitment, ConsensusValueV0,
-    VerifiedFixedConsensusTransitionV0,
 };
 use naome_ledger::LedgerError;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
@@ -351,6 +349,7 @@ fn strict_command_objects_and_record_bounds_do_not_mutate_history() {
 }
 
 #[test]
+#[cfg(unix)]
 fn bounded_regular_sources_reject_symlinks_fifos_directories_and_oversized_envelopes() {
     let fixture = Fixture::new();
     let layout = Layout::new();

@@ -101,7 +101,7 @@ fn candidate_backed_finality_installs_one_exact_direct_child_without_mutating_so
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn candidate_backed_anchored_finality_keeps_the_safe_product_path_composable() {
     let fixture = Fixture::new();
@@ -152,7 +152,7 @@ fn candidate_backed_anchored_finality_keeps_the_safe_product_path_composable() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn candidate_backed_historical_sibling_terminal_case(
     label: &str,
     use_vote_batch: bool,
@@ -248,7 +248,7 @@ pub(super) fn candidate_backed_historical_sibling_terminal_case(
     (halt, images)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn candidate_backed_historical_sibling_batch_matches_envelope_terminal_evidence() {
     let (envelope_halt, envelope_images) =
@@ -259,7 +259,7 @@ fn candidate_backed_historical_sibling_batch_matches_envelope_terminal_evidence(
     assert_eq!(batch_images, envelope_images);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn candidate_backed_historical_sibling_halts_anchored_finality_without_mutating_sources() {
     let fixture = Fixture::new();

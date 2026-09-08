@@ -16,6 +16,10 @@ naome-ledger = { path = "../naome-ledger" }
 naome-proof = { path = "../naome-proof" }
 sha2.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "0.4.4"
+winsafe = { version = "0.0.28", features = ["kernel"] }
+
 [dev-dependencies]
 naome-checker = { path = "../naome-checker" }
 

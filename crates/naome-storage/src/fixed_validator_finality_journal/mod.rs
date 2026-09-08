@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 
 use super::fixed_validator_anchor::{
     AnchorPositionV0, FixedValidatorAnchorErrorV0, FixedValidatorAnchorFileV0,
-    JournalAnchorTransitionV0, sync_directory,
+    JournalAnchorTransitionV0, durable_open_options, require_finality_platform, sync_finality_file,
 };
 use super::fixed_validator_vote_safety_journal::{
     FixedValidatorAnchoredSignerRecoveryV0, FixedValidatorRecoveredSignerBranchV0,

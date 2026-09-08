@@ -8,10 +8,14 @@ use naome_consensus::{
     ActiveAgreementEntry, AgreementWeight, ConsensusContextV0, ConsensusGenesisId, ConsensusKey,
     ConsensusProtocolVersion,
 };
+#[cfg(not(windows))]
+use naome_storage::FixedValidatorAnchoredFinalityJournalErrorV0;
+#[cfg(windows)]
+use naome_storage::FixedValidatorAnchoredVoteSafetyJournalErrorV0;
 use naome_storage::{
-    FixedValidatorAnchorErrorV0, FixedValidatorAnchoredFinalityJournalErrorV0,
-    FixedValidatorFinalityReplayLimitV0, FixedValidatorProposalReplayLimitV0,
-    FixedValidatorSignerRecoveryRoundLimitV0, FixedValidatorVoteSafetyReplayLimitV0,
+    FixedValidatorAnchorErrorV0, FixedValidatorFinalityReplayLimitV0,
+    FixedValidatorProposalReplayLimitV0, FixedValidatorSignerRecoveryRoundLimitV0,
+    FixedValidatorVoteSafetyReplayLimitV0,
 };
 
 use super::*;
@@ -66,12 +70,26 @@ fn non_unix_anchor_startup_is_typed_unsupported_and_never_ready() {
         FixedValidatorSignerRecoveryRoundLimitV0::new(8),
         FixedValidatorSignerCatchUpHeightLimitV0::new(8),
     );
+    let result = provision.create(signing_key);
+    #[cfg(not(windows))]
     assert!(matches!(
-        provision.create(signing_key),
+        result,
         Err(FixedValidatorNodeStartupErrorV0::FinalityPair(source))
             if matches!(
                 source.as_ref(),
                 FixedValidatorAnchoredFinalityJournalErrorV0::Anchor(
+                    FixedValidatorAnchorErrorV0::UnsupportedDurableDirectorySync
+                )
+            )
+    ));
+    // Local NTFS supports finality, but signer vote-safety remains unsupported.
+    #[cfg(windows)]
+    assert!(matches!(
+        result,
+        Err(FixedValidatorNodeStartupErrorV0::VotePair(source))
+            if matches!(
+                source.as_ref(),
+                FixedValidatorAnchoredVoteSafetyJournalErrorV0::Anchor(
                     FixedValidatorAnchorErrorV0::UnsupportedDurableDirectorySync
                 )
             )

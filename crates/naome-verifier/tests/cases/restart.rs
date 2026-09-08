@@ -1,7 +1,6 @@
 use std::{
     fs,
     io::Write,
-    os::{fd::OwnedFd, unix::net::UnixStream},
     process::{Command, Stdio},
 };
 
@@ -200,36 +199,40 @@ fn real_anchor_install_failure_stops_without_a_success_report_or_implicit_gap_re
 
 #[test]
 fn partial_stdin_signal_termination_preserves_history_and_releases_owners() {
-    for (signal, reason) in [
-        (rustix::process::Signal::INT, "sigint"),
-        (rustix::process::Signal::TERM, "sigterm"),
-    ] {
-        let fixture = Fixture::new();
-        let layout = Layout::new();
-        let first = fixture.proof(&[], 0, 1);
-        let second = fixture.proof(&[&first], 0, 2);
-        first.write(&layout, "first");
-        second.write(&layout, "second");
-        let mut process = Process::start(&layout, &fixture.config("create"));
-        process.ready();
-        assert_eq!(
-            process.request(Proof::command(1, "first"))["outcome"]["kind"],
-            "finalized"
-        );
-        let state = process.status();
-        let images = layout.images();
-        process.write(Proof::command(2, "second").to_string().as_bytes());
-        process.signal(signal);
-        let stopped = process.event("stopped");
-        assert_eq!(stopped["reason"], reason);
-        assert_eq!(stopped["locks_released"], true);
-        assert!(process.exit().success());
-        assert!(process.observed.iter().all(|event| event["id"] != 2));
-        let mut reopened = Process::start(&layout, &fixture.config("open"));
-        assert_eq!(reopened.ready(), state);
-        reopened.shutdown();
-        assert_eq!(layout.images(), images);
-    }
+    partial_stdin_signal(StopSignal::Interrupt);
+}
+
+#[test]
+fn partial_stdin_terminate_signal_preserves_history_and_releases_owners() {
+    partial_stdin_signal(StopSignal::Terminate);
+}
+
+fn partial_stdin_signal(signal: StopSignal) {
+    let fixture = Fixture::new();
+    let layout = Layout::new();
+    let first = fixture.proof(&[], 0, 1);
+    let second = fixture.proof(&[&first], 0, 2);
+    first.write(&layout, "first");
+    second.write(&layout, "second");
+    let mut process = Process::start(&layout, &fixture.config("create"));
+    process.ready();
+    assert_eq!(
+        process.request(Proof::command(1, "first"))["outcome"]["kind"],
+        "finalized"
+    );
+    let state = process.status();
+    let images = layout.images();
+    process.write(Proof::command(2, "second").to_string().as_bytes());
+    process.signal(signal);
+    let stopped = process.event("stopped");
+    assert_eq!(stopped["reason"], signal.reason());
+    assert_eq!(stopped["locks_released"], true);
+    assert!(process.exit().success());
+    assert!(process.observed.iter().all(|event| event["id"] != 2));
+    let mut reopened = Process::start(&layout, &fixture.config("open"));
+    assert_eq!(reopened.ready(), state);
+    reopened.shutdown();
+    assert_eq!(layout.images(), images);
 }
 
 #[test]
@@ -287,7 +290,7 @@ fn closed_stdout_with_idle_open_stdin_releases_finality_ownership() {
     initial.shutdown();
     let images = layout.images();
     let path = layout.write("verifier.toml", fixture.config("open"));
-    let (stdout, peer) = UnixStream::pair().unwrap();
+    let (peer, stdout) = std::io::pipe().unwrap();
     // Close the peer before spawn: even if the child runs first, its initial
     // ready write must fail rather than succeeding before a parent-side close.
     drop(peer);
@@ -295,7 +298,7 @@ fn closed_stdout_with_idle_open_stdin_releases_finality_ownership() {
         Command::new(env!("CARGO_BIN_EXE_naome-verifier"))
             .arg(path)
             .stdin(Stdio::piped())
-            .stdout(Stdio::from(OwnedFd::from(stdout)))
+            .stdout(Stdio::from(stdout))
             .stderr(Stdio::inherit()),
     );
     // Keep stdin open without sending any command: only the writer's failed

@@ -1,4 +1,4 @@
-use std::{fs, os::unix::fs::PermissionsExt};
+use std::fs;
 
 use naome_network::{Keypair, PeerId};
 use serde_json::{Value, json};
@@ -22,7 +22,7 @@ pub(super) fn config(
     peers: &[(PeerId, String)],
 ) -> String {
     let path = layout.write("noise.seed", seed);
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    seed_permissions(&path, true);
     let peers = if peers.is_empty() {
         "peers = []\n".to_string()
     } else {
@@ -258,7 +258,7 @@ fn archive_configuration_rejects_key_reuse_and_invalid_network_before_authority_
             std::slice::from_ref(&peer),
         );
         let path = layout.write("noise.seed", &bytes);
-        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        seed_permissions(&path, mode == 0o600);
         let mut rejected = Process::start(&layout, &configuration);
         assert_eq!(rejected.event("error")["code"], reason);
         assert!(!rejected.exit().success());

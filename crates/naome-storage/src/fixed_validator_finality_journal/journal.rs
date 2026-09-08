@@ -31,7 +31,7 @@ impl FixedValidatorFinalityJournalV0 {
 
         let directory = directory.as_ref();
         let lock = open_shared_lock(directory)?;
-        let mut file = OpenOptions::new()
+        let mut file = durable_open_options()
             .read(true)
             .write(true)
             .create_new(true)

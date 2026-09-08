@@ -33,7 +33,55 @@ static PARENT_JOURNALS: RwLock<()> = RwLock::new(());
 
 pub fn spawn(command: &mut Command) -> Child {
     let _guard = PARENT_JOURNALS.write().unwrap();
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // A signal test must never broadcast into Cargo's console or another
+        // verifier. Redirected pipes are still inherited explicitly.
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        command.creation_flags(CREATE_NEW_CONSOLE);
+    }
     command.spawn().unwrap()
+}
+
+pub fn seed_permissions(path: &Path, private: bool) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            path,
+            fs::Permissions::from_mode(if private { 0o600 } else { 0o644 }),
+        )
+        .unwrap();
+    }
+    #[cfg(windows)]
+    windows::seed_acl(path, if private { "private" } else { "broad" });
+}
+
+#[cfg(windows)]
+pub use windows::seed_acl;
+
+#[derive(Clone, Copy)]
+pub enum StopSignal {
+    Interrupt,
+    Terminate,
+}
+
+impl StopSignal {
+    pub const ALL: [Self; 2] = [Self::Interrupt, Self::Terminate];
+
+    pub const fn reason(self) -> &'static str {
+        match self {
+            #[cfg(unix)]
+            Self::Interrupt => "sigint",
+            #[cfg(unix)]
+            Self::Terminate => "sigterm",
+            #[cfg(windows)]
+            Self::Interrupt => "ctrl_c",
+            #[cfg(windows)]
+            Self::Terminate => "ctrl_break",
+        }
+    }
 }
 
 pub struct Layout {
@@ -72,10 +120,19 @@ impl Layout {
         for directory in ["finality-journal", "finality-anchor"] {
             for entry in fs::read_dir(self.root.join(directory)).unwrap() {
                 let path = entry.unwrap().path();
-                images.push((
-                    path.strip_prefix(&self.root).unwrap().to_path_buf(),
-                    fs::read(&path).unwrap(),
-                ));
+                // Windows enforces byte-range locks even for reads. Lock files
+                // contain no authority bytes; verify their length while still
+                // comparing every journal and anchor byte below.
+                let bytes = if path
+                    .extension()
+                    .is_some_and(|extension| extension == "lock")
+                {
+                    assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+                    Vec::new()
+                } else {
+                    fs::read(&path).unwrap()
+                };
+                images.push((path.strip_prefix(&self.root).unwrap().to_path_buf(), bytes));
             }
         }
         images.sort_by(|a, b| a.0.cmp(&b.0));
@@ -297,12 +354,28 @@ impl Process {
         assert!(self.exit().success());
     }
 
-    pub fn signal(&self, signal: rustix::process::Signal) {
-        rustix::process::kill_process(
-            rustix::process::Pid::from_raw(self.child.id() as i32).unwrap(),
-            signal,
-        )
-        .unwrap();
+    pub fn signal(&self, signal: StopSignal) {
+        #[cfg(unix)]
+        {
+            let signal = match signal {
+                StopSignal::Interrupt => rustix::process::Signal::INT,
+                StopSignal::Terminate => rustix::process::Signal::TERM,
+            };
+            rustix::process::kill_process(
+                rustix::process::Pid::from_raw(self.child.id() as i32).unwrap(),
+                signal,
+            )
+            .unwrap();
+        }
+        #[cfg(windows)]
+        windows::signal(self.child.id(), signal).unwrap_or_else(|error| {
+            panic!(
+                "{}: {error}; observed {:?}; pending {:?}",
+                signal.reason(),
+                self.observed,
+                self.receiver.try_iter().take(4096).collect::<Vec<_>>(),
+            );
+        });
     }
 
     pub fn exit(&mut self) -> ExitStatus {
@@ -319,6 +392,9 @@ impl Process {
         }
     }
 }
+
+#[cfg(windows)]
+mod windows;
 
 impl Drop for Process {
     fn drop(&mut self) {

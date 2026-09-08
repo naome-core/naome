@@ -1,7 +1,7 @@
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::*;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn anchored_preselection_conflict_writes_one_canonical_terminal_pair_without_selection() {
     let fixture = Fixture::new();
@@ -152,7 +152,7 @@ fn anchored_preselection_conflict_writes_one_canonical_terminal_pair_without_sel
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn preselection_conflict_replay_rejects_reordered_lengths_framing_and_payload_tampering() {
     let fixture = Fixture::new();
@@ -271,7 +271,7 @@ fn preselection_conflict_replay_rejects_reordered_lengths_framing_and_payload_ta
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn preselection_conflict_rejects_mismatched_or_duplicate_evidence_without_write() {
     let fixture = Fixture::new();

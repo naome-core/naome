@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn anchor_operation_failures_withhold_finality_until_exact_stabilized_reopen() {
     use crate::fixed_validator_anchor::faults::{Operation, REPLACEMENT_OPERATIONS, inject};

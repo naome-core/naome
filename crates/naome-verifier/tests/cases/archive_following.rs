@@ -1,5 +1,6 @@
 //! Following reuses a real Noise peer, independent proofs and the actual child.
 use super::*;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use tokio::time::Instant;
 
@@ -219,7 +220,7 @@ async fn archive_following_invalid_complete_proofs_stop_without_retry_or_authori
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn archive_following_sigkill_retains_only_acknowledged_prefix_and_no_intent() {
+async fn archive_following_process_kill_retains_only_acknowledged_prefix_and_no_intent() {
     let fixture = Fixture::new();
     let first = fixture.proof(&[], 0, 1);
     let mut peer = Peer::new(&fixture).await;
@@ -230,11 +231,10 @@ async fn archive_following_sigkill_retains_only_acknowledged_prefix_and_no_inten
     assert_eq!(held.request().height().value(), 2);
     let images = peer.layout.images();
     peer.process.child.kill().unwrap();
-    assert_eq!(
-        peer.process.exit().signal(),
-        Some(9),
-        "actual SIGKILL termination"
-    );
+    let killed = peer.process.exit();
+    assert!(!killed.success());
+    #[cfg(unix)]
+    assert_eq!(killed.signal(), Some(9), "actual SIGKILL termination");
     drop(held);
     drop(peer.network.take());
     let [(_, seed), _, _] = identities();
@@ -337,7 +337,7 @@ fn archive_following_offline_rejection_and_waiting_signal_teardown_preserve_hist
         "network_disabled"
     );
     offline.shutdown();
-    for signal in [rustix::process::Signal::INT, rustix::process::Signal::TERM] {
+    for signal in StopSignal::ALL {
         let mut waiting = Process::start(
             &layout,
             &config(
@@ -363,7 +363,9 @@ fn archive_following_offline_rejection_and_waiting_signal_teardown_preserve_hist
         }
         assert_ne!(local.public().to_peer_id(), remote);
         waiting.signal(signal);
-        assert_eq!(waiting.event("stopped")["locks_released"], true);
+        let stopped = waiting.event("stopped");
+        assert_eq!(stopped["locks_released"], true);
+        assert_eq!(stopped["reason"], signal.reason());
         assert!(waiting.exit().success());
         assert_eq!(layout.images(), images);
     }
