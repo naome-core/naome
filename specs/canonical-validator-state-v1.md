@@ -620,6 +620,30 @@ multiplying a new independent denominator at each collection. This mathematical
 bound does not select a canonical record encoding, resource maximum or measured
 execution cost; numerator growth still follows the amount domain.
 
+### Collection order and execution phase
+
+Collection first addresses the implicated origin batches. For a remaining owner
+shortfall, other available live batches of that same owner are consumed by
+earliest original expiry, with equal expiry resolved by ascending canonical
+origin-batch identity. Each collection is bounded by both the outstanding amount
+and that batch's current live amount and uses the proportional-basis update
+above. A changed delegation does not transfer ownership or erase liability.
+Exact implicated-batch attribution, encumbrance and available-source accounting
+remain part of `ECON-105`, `ECON-146` and `ECON-163`.
+
+Available fallback owner weight is collected during the canonical assessment
+transition. At later maturation, count the full original first-matured amount,
+collect outstanding account liability, and only then expose surviving owner
+capacity to delegation allocation and staging. No additional assessment or
+reporter reward is created by that collection.
+
+Assessment and collection inside height H's proposal do not change H's frozen
+authorization snapshot; their weight consequences apply to the next snapshot.
+Collection of previously assessed debt during parent-derived maturity preparation
+precedes deriving that boundary height's surviving capacity and authorization
+snapshot. These prepared effects install only atomically with the complete
+finalized transition, preserving the existing parent-provenance boundary.
+
 ## Ordered transactional execution
 
 The proposal commits one ordered operation stream with economic and validator
