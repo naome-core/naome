@@ -128,6 +128,20 @@ are deduplicated; reconnection during an active failed attempt still leaves that
 completion eligible after its pass finishes. No reconnect retry repeats local
 admission. Strict restart also retries this debt.
 
+`PROD-020-068` gives ordinary runtime work one opportunity after each completed
+live historical message, for both reconnect and periodic passes. Startup replay
+retains whole-queue priority and does not open these opportunities. The live
+opportunity uses ordinary ordering: pending arms and commands, one retained
+driver step, then an exact due timeout before input. A command produced by that
+step transfers before another historical message can take publication custody;
+a newly prepared publication completes its existing attempt pass first.
+Between calls, ordinary proposal authoring may use the same opportunity under
+the existing busy and signing checks. An idle opportunity polls transport once
+without waiting, retaining input if a due timeout wins, then immediately resumes
+the historical queue if no ordinary event is ready. An active publication or
+transport ticket is never preempted. This is bounded interleaving, not a deadline
+or general fairness guarantee across all classes of work.
+
 ### Explicit periodic retry policy
 
 The optional interval has no default. The library accepts a positive `Duration`
@@ -157,7 +171,8 @@ Periodic delivery skips local admission; diagnostics distinguish that skip from
 an attempted admission. In-flight ticket custody, aggregate-capacity waits,
 persist-before-attempt and receipt-before-success ordering remain unchanged.
 
-The periodic timer is suspended while its pass drains. Afterward the next
+The periodic timer is suspended while its finite queue and intervening active
+publication drain, including ordinary opportunities between messages. Afterward the next
 deadline is the current monotonic time plus the full configured interval.
 An empty pass also starts a fresh interval and reports zero queued messages.
 Missed intervals coalesce into one observation, including across long caller
