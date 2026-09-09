@@ -470,6 +470,24 @@ fn direct_lower_proofs_select_from_each_due_phase_and_preserve_buffered_input() 
 fn retained_current_finality_precedes_all_seven_explicit_positive_proofs_without_a_step() {
     let fixture = Fixture::new();
     let input = lower_proof(&fixture);
+    let branch = FixedConsensusBranchV0::try_from_virtual_genesis(
+        fixture.context,
+        &fixture.entries,
+        ArtifactChainState::new(fixture.definition).branch_snapshot(),
+    )
+    .unwrap();
+    let round = branch.begin_round_zero().unwrap();
+    let envelope = round
+        .decode_and_verify_proposal_control(&input.control, input.payload.clone())
+        .unwrap()
+        .seal_with_precommit_certificate(&input.certificate)
+        .unwrap()
+        .to_canonical_bytes();
+    let recovered_control =
+        naome_consensus::UnverifiedFixedConsensusProposalRouteV0::proposal_control_from_envelope(
+            &envelope,
+        )
+        .unwrap();
     let layout = TestLayout::new("runtime-proof-priority");
     let (mut candidates, mut payloads) = super::store_authoring::sources(&layout, &fixture);
     let block = ArtifactChainState::new(fixture.definition)
@@ -488,10 +506,11 @@ fn retained_current_finality_precedes_all_seven_explicit_positive_proofs_without
         let driver = admit_driver(arm_driver(node_driver(scope)), Input::CurrentRoundProposalPrecommit { canonical_signed_precommit: input.vote.clone().into_boxed_slice() });
         let ticket = driver.active_timeout();
         let mut owner = Runtime::new(driver, isolated_network(), vec![], timeouts(Duration::from_secs(60))).unwrap();
-        owner.queue_input(ConsensusPushMessage::Proposal { canonical_proposal: input.control.clone(), canonical_artifact: input.payload.clone() }).unwrap();
+        owner.queue_input(ConsensusPushMessage::Proposal { canonical_proposal: recovered_control, canonical_artifact: input.payload.clone() }).unwrap();
         let images = layout.authority_images();
         let source_images = layout.source_images();
         assert!(matches!(owner.advance_to_higher_round_quorum(&[0]).unwrap(), Event::CurrentFinalityUnresolved));
+        assert!(matches!(owner.commit_finality_envelope(&envelope, input.payload.clone()).unwrap(), Event::CurrentFinalityUnresolved));
         assert!(matches!(owner.advance_to_higher_round_vote_batch(&[&[0]], ConsensusRound::new(2), ConsensusVoteRole::Prevote, ConsensusVoteTarget::Nil).unwrap(), Event::CurrentFinalityUnresolved));
         assert!(matches!(owner.commit_current_round_finality(&[0], vec![0], &[0]).unwrap(), Event::CurrentFinalityUnresolved));
         assert!(matches!(owner.commit_current_round_finality_vote_batch(&[0], vec![0], &[&[0]]).unwrap(), Event::CurrentFinalityUnresolved));

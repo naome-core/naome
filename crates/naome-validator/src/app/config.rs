@@ -20,7 +20,7 @@ use naome_runtime::{
 use naome_storage::*;
 use serde::Deserialize;
 
-use super::{Result, files, sources};
+use super::{Result, files, sources, supervisor};
 
 pub(super) const CONFIG_MAX_BYTES: usize = 65_536;
 
@@ -40,6 +40,7 @@ pub(super) struct Config {
     timeouts: Timeouts,
     sources: Option<sources::Config>,
     evidence: Option<Evidence>,
+    supervisor: Option<supervisor::Config>,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +147,7 @@ pub(super) struct Prepared {
     pub publication_retry: Option<FixedValidatorPublicationRetryIntervalV0>,
     pub sources: Option<sources::Prepared>,
     pub evidence: Option<(PathBuf, bool)>,
+    pub supervisor: Option<supervisor::Supervisor>,
     pub timeouts: FixedValidatorRuntimeTimeoutsV0,
     pub driver_max_round: ConsensusRound,
     pub higher: FixedValidatorNodeHigherRoundInboxLimitsV0,
@@ -285,6 +287,15 @@ impl Config {
             }
             targets.push(target);
         }
+        let supervisor = self
+            .supervisor
+            .map(|policy| {
+                if self.sources.is_none() || evidence.is_none() || publication_retry.is_none() {
+                    return Err("supervisor_requires_durable_sources_evidence_retry");
+                }
+                policy.prepare(&peers.iter().map(StaticPeer::peer_id).collect::<Vec<_>>())
+            })
+            .transpose()?;
         let network = StaticArtifactNetwork::new(identity, peers).map_err(|_| "network_config")?;
         let listen = tcp_address(&self.network.listen, true)?;
         let limits = self.limits;
@@ -327,6 +338,7 @@ impl Config {
             .map(|sources| sources.prepare(&base))
             .transpose()?;
         Ok(Prepared {
+            supervisor,
             base,
             mode: self.mode,
             definition,

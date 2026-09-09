@@ -211,7 +211,9 @@ pub(super) fn event(event: Event<'_>) -> (Value, bool) {
             json!({"event": "listener_failed"})
         }
         Event::Network(_) => json!({"event": "network_event_discarded"}),
-        Event::DriverBlocked(_) => json!({"event": "driver_blocked"}),
+        Event::DriverBlocked(reason) => {
+            json!({"event": "driver_blocked", "reason": format!("{reason:?}")})
+        }
         Event::DriverRejected(_) => json!({"event": "driver_rejected"}),
         Event::ProposalAuthored => json!({"event": "proposal_authored"}),
         Event::ProposalRejected(_) => json!({"event": "proposal_rejected"}),

@@ -39,6 +39,14 @@ impl ProposalJob {
         })
     }
 
+    pub fn needs_sources(&self) -> bool {
+        self.state == "source_unavailable"
+    }
+
+    pub fn target(&self) -> ArtifactBlockId {
+        self.target
+    }
+
     pub fn status(&self) -> Value {
         json!({"id": self.id, "height": self.height.to_string(),
             "target": report::hex(self.target.as_bytes()), "state": self.state,
@@ -77,6 +85,7 @@ impl ProposalJob {
         runtime: &mut Runtime<'_>,
         sources: &mut Sources,
         output: &report::Output,
+        local_failure_is_fatal: bool,
     ) -> Result<Step> {
         if let Some(reason) = self.changed(runtime) {
             self.stopped(reason, output)?;
@@ -93,7 +102,11 @@ impl ProposalJob {
                 Ok(history) => history,
                 Err(_) => {
                     self.stopped("publication_history", output)?;
-                    return Ok(Step::Stopped);
+                    return Ok(if local_failure_is_fatal {
+                        Step::Fatal
+                    } else {
+                        Step::Stopped
+                    });
                 }
             };
             self.finished_round = history.entries().any(|entry| {
@@ -154,7 +167,13 @@ impl ProposalJob {
             _ => {}
         }
         let authored = matches!(event, Event::ProposalAuthored);
+        let source_fatal = local_failure_is_fatal
+            && matches!(&event,
+            Event::ProposalRejected(rejection) if matches!(rejection.as_ref(),
+                Rejection::CandidateStore(_) | Rejection::PayloadStore(_)
+                | Rejection::CandidateChainMismatch { .. }));
         let (outcome, fatal) = report::event(event);
+        let fatal = fatal || source_fatal;
         if authored {
             self.finished_round = true;
             self.state = "authored";

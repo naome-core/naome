@@ -14,11 +14,14 @@ use super::{
     proposal_job::{ProposalJob, Step as ProposalStep},
     provider, report, source_provider,
     sources::Sources,
+    supervisor::Supervisor,
 };
 
 type Stop = (&'static str, bool);
 
 pub(super) struct Session<'io, 'node> {
+    pub supervisor: Option<Supervisor>,
+    pub input_closed: bool,
     pub proposal_job: Option<ProposalJob>,
     pub runtime: Runtime<'node>,
     pub proof_sync: Option<ProofSync>,
@@ -33,6 +36,7 @@ pub(super) struct Session<'io, 'node> {
 }
 
 enum Poll<'node> {
+    WakeSupervisor,
     Command(Command),
     Runtime(Event<'node>),
     Stop(Stop),
@@ -41,17 +45,51 @@ enum Poll<'node> {
 impl<'node> Session<'_, 'node> {
     pub async fn run(mut self, mut sources: Option<Sources>) -> Result<(Value, bool)> {
         let (reason, success) = loop {
+            if let Some(command) = self.supervise()? {
+                let started = match sources.as_mut() {
+                    Some(sources) => Acquisition::start(command, &mut self.runtime, sources, true),
+                    None => Err("sources_disabled"),
+                };
+                match started {
+                    Ok(job) => {
+                        self.acquiring = true;
+                        let outcome = self.run_acquisition(0, job).await;
+                        self.acquiring = false;
+                        if let Some(stop) = outcome? {
+                            break stop;
+                        }
+                    }
+                    Err(code) => {
+                        self.output
+                            .emit(json!({"event":"supervisor_acquisition_waiting", "code":code}))?;
+                        if code == "source_candidate_store" || code == "source_local_store" {
+                            return Err(code);
+                        }
+                    }
+                }
+            }
             if let Some(mut job) = self.proposal_job.take() {
                 match sources.as_mut() {
-                    Some(sources) => match job.advance(&mut self.runtime, sources, self.output)? {
+                    Some(sources) => match job.advance(
+                        &mut self.runtime,
+                        sources,
+                        self.output,
+                        self.supervisor.is_some(),
+                    )? {
                         ProposalStep::Waiting => self.proposal_job = Some(job),
-                        ProposalStep::Stopped => {}
+                        ProposalStep::Stopped => {
+                            if let Some(supervisor) = self.supervisor.as_mut() {
+                                supervisor.fresh_stopped = true;
+                                supervisor.stopped_target = Some(job.target());
+                            }
+                        }
                         ProposalStep::Fatal => break ("proposal_job_fatal", false),
                     },
                     None => job.stopped("sources_disabled", self.output)?,
                 }
             }
             let stop = match self.poll().await? {
+                Poll::WakeSupervisor => None,
                 Poll::Command(Command::ProposeHeight { id, target }) => {
                     if self.proposal_job.is_some() {
                         self.rejected(id, "proposal_busy")?;
@@ -74,7 +112,9 @@ impl<'node> Session<'_, 'node> {
                 Poll::Command(command) if command.starts_acquisition() => {
                     let id = command.id();
                     let started = match sources.as_mut() {
-                        Some(sources) => Acquisition::start(command, &mut self.runtime, sources),
+                        Some(sources) => {
+                            Acquisition::start(command, &mut self.runtime, sources, false)
+                        }
                         None => Err("sources_disabled"),
                     };
                     match started {
@@ -161,12 +201,18 @@ impl<'node> Session<'_, 'node> {
         )?;
         loop {
             let stop = match self.poll().await? {
+                Poll::WakeSupervisor => None,
                 Poll::Runtime(Event::Network(event)) if job.accepts_event(&event) => {
                     let prior = job.status();
                     job = match job.advance(&mut self.runtime, event) {
                         Ok(job) => job,
                         Err(code) => {
                             self.output.emit(json!({"event": "acquisition_failed", "id": id, "code": code, "job": prior}))?;
+                            if self.supervisor.is_some()
+                                && matches!(code, "source_candidate_store" | "source_local_store")
+                            {
+                                return Err(code);
+                            }
                             return Ok(None);
                         }
                     };
@@ -210,6 +256,100 @@ impl<'node> Session<'_, 'node> {
         }
     }
 
+    fn supervise(&mut self) -> Result<Option<Command>> {
+        let Some(supervisor) = self.supervisor.as_mut() else {
+            return Ok(None);
+        };
+        let Some(driver) = self.runtime.driver() else {
+            return Err("supervisor_driver_unavailable");
+        };
+        let height = driver.position().height().value();
+        if supervisor.height != Some(height) {
+            self.proposal_job = None;
+            supervisor.height = Some(height);
+            supervisor.acquire_payloads = false;
+            supervisor.fresh_stopped = false;
+            supervisor.stopped_target = None;
+            self.output
+                .emit(json!({"event":"supervisor_height", "height":height.to_string()}))?;
+        }
+        let index = usize::try_from(height - 1).map_err(|_| "supervisor_height")?;
+        let head = driver
+            .selected_artifact_history()
+            .selected_head_block_id()
+            .map_err(|_| "supervisor_selected_history")?;
+        let parent_matches = index == 0 || supervisor.targets.get(index - 1) == Some(&head);
+        let target = driver
+            .retained_proposal_block()
+            .map(|b| b.id())
+            .or_else(|| {
+                if parent_matches && !supervisor.fresh_stopped {
+                    supervisor.targets.get(index).copied()
+                } else {
+                    None
+                }
+            })
+            .filter(|target| Some(*target) != supervisor.stopped_target);
+        if let Some(target) = target
+            && self
+                .proposal_job
+                .as_ref()
+                .is_none_or(|job| job.target() != target)
+        {
+            self.proposal_job = Some(ProposalJob::start(
+                0,
+                &report::hex(target.as_bytes()),
+                &self.runtime,
+            )?);
+        }
+        if tokio::time::Instant::now() < supervisor.due {
+            return Ok(None);
+        }
+        supervisor.postpone()?;
+        if self.proof_sync.is_some() || self.acquiring {
+            return Ok(None);
+        }
+        supervisor.next_is_sync = !supervisor.next_is_sync;
+        if supervisor.next_is_sync
+            || !self
+                .proposal_job
+                .as_ref()
+                .is_some_and(ProposalJob::needs_sources)
+        {
+            let peer = supervisor.peer(0);
+            match ProofSync::start(0, &peer, 1, &mut self.runtime) {
+                Ok(job) => self.proof_sync = Some(job),
+                Err(code) => self.output.emit(
+                    json!({"event":"supervisor_sync_waiting", "code":code, "peer_id":peer}),
+                )?,
+            }
+            return Ok(None);
+        }
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let peer_id = supervisor.peer(if supervisor.acquire_payloads { 2 } else { 1 });
+        let target = report::hex(target.as_bytes());
+        self.output.emit(json!({"event":"supervisor_acquisition_selected", "peer_id":peer_id,
+            "target":target, "kind":if supervisor.acquire_payloads { "payloads" } else { "ancestry" }}))?;
+        let command = if supervisor.acquire_payloads {
+            Command::AcquirePayloads {
+                id: 0,
+                target,
+                peer_id,
+                max_blocks: supervisor.acquisition_blocks,
+            }
+        } else {
+            Command::AcquireAncestry {
+                id: 0,
+                target,
+                peer_id,
+            }
+        };
+        supervisor.acquire_payloads = !supervisor.acquire_payloads;
+        Ok(Some(command))
+    }
+
     async fn poll(&mut self) -> Result<Poll<'node>> {
         loop {
             if let Some(reason) = self
@@ -230,7 +370,13 @@ impl<'node> Session<'_, 'node> {
                 self.proof_sync = self.proof_sync.take().unwrap().head_changed(self.output)?;
             }
             let deadline = self.proof_sync.as_ref().map(ProofSync::deadline);
+            let supervisor_due = self
+                .supervisor
+                .as_ref()
+                .filter(|_| !self.acquiring)
+                .map(|s| s.due);
             let polled = tokio::select! {
+                _ = async { if let Some(due) = supervisor_due { tokio::time::sleep_until(due).await } else { std::future::pending::<()>().await } } => Poll::WakeSupervisor,
                 _ = async { if let Some(deadline) = deadline { tokio::time::sleep_until(deadline).await } else { std::future::pending::<()>().await } } => {
                     self.proof_sync = self.proof_sync.take().unwrap().elapsed(&mut self.runtime, self.acquiring, self.output)?;
                     continue;
@@ -238,13 +384,17 @@ impl<'node> Session<'_, 'node> {
                 _ = self.output.failed() => return Err("output_write"),
                 _ = self.interrupt.recv() => Poll::Stop(("sigint", true)),
                 _ = self.terminate.recv() => Poll::Stop(("sigterm", true)),
-                input = self.input.recv() => match input {
+                input = self.input.recv(), if !self.input_closed => match input {
                     Some(Input::Line(bytes)) => match Command::parse(&bytes) {
                         Ok(command) => Poll::Command(command),
                         Err(_) => {
                             self.output.emit(json!({"event": "command_rejected", "id": null, "code": "command_schema"}))?;
                             continue;
                         }
+                    },
+                    Some(Input::End("eof")) | None if self.supervisor.is_some() => {
+                        self.input_closed = true;
+                        continue;
                     },
                     Some(Input::End(reason)) => Poll::Stop((reason, reason == "eof")),
                     None => Poll::Stop(("input_closed", false)),
@@ -259,6 +409,11 @@ impl<'node> Session<'_, 'node> {
 
     fn handle_sync(&mut self, polled: Poll<'node>) -> Result<Option<Poll<'node>>> {
         match polled {
+            Poll::Command(command) if self.supervisor.is_some() && !matches!(&command,
+                Command::Status { .. } | Command::SourcesStatus { .. } | Command::ProposalStatus { .. }
+                | Command::SyncStatus { .. } | Command::Shutdown { .. }) => {
+                self.rejected(command.id(), "supervisor_owns_work")?;
+            }
             Poll::Command(Command::ProposalStatus { id }) => self.result(
                 id, json!({"event": "proposal_job_status", "job": self.proposal_job.as_ref().map(ProposalJob::status)})
             )?,
@@ -313,7 +468,7 @@ impl<'node> Session<'_, 'node> {
             }
             Poll::Runtime(Event::Network(NetworkEvent::OutboundFinalityProof(event))) => {
                 if self.proof_sync.as_ref().is_some_and(|job| job.accepts(&event)) {
-                    let (job, event) = self.proof_sync.take().unwrap().complete(event, &mut self.runtime, self.output)?;
+                    let (job, event) = self.proof_sync.take().unwrap().complete(event, &mut self.runtime, self.output, self.supervisor.is_some())?;
                     self.proof_sync = job;
                     if let Some(event) = event {
                         return Ok(Some(Poll::Runtime(event)));
@@ -394,6 +549,13 @@ impl<'node> Session<'_, 'node> {
         if event["event"] == "finality" {
             event["state"] = report::status(&self.runtime);
         }
+        let fatal = fatal
+            || (self.supervisor.is_some()
+                && event["event"] == "source_response_failed"
+                && matches!(
+                    event["reason"].as_str(),
+                    Some("candidate_store" | "payload_store")
+                ));
         self.output.emit(event)?;
         Ok(fatal.then_some(("runtime_fatal", false)))
     }

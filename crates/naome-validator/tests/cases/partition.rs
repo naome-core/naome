@@ -35,6 +35,9 @@ mod proof_following_live;
 #[path = "partition_byzantine.rs"]
 mod byzantine;
 
+#[path = "autonomous_supervisor.rs"]
+mod autonomous_supervisor;
+
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 const MILESTONE_BOUND: Duration = Duration::from_secs(45);
 type Images = Vec<(PathBuf, Vec<u8>)>;
@@ -246,6 +249,16 @@ round_increment_millis = "1"
     }
 
     fn verify(&self, layout: &Layout, height: usize) -> Vec<ConsensusAncestryId> {
+        self.verify_with_limit(layout, height, 8, true)
+    }
+
+    fn verify_with_limit(
+        &self,
+        layout: &Layout,
+        height: usize,
+        maximum_round: u64,
+        round_zero: bool,
+    ) -> Vec<ConsensusAncestryId> {
         let before = layout.images();
         let _guard = PARENT_JOURNALS.read().unwrap();
         let journal = FixedValidatorAnchoredFinalityJournalV0::open(
@@ -254,7 +267,7 @@ round_increment_millis = "1"
             self.definition,
             self.context,
             &self.entries,
-            FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
+            FixedValidatorFinalityReplayLimitV0::new(maximum_round).unwrap(),
         )
         .unwrap();
         assert!(journal.halt().unwrap().is_none());
@@ -275,7 +288,9 @@ round_increment_millis = "1"
                 .finality_record(ConsensusHeight::new(index as u64 + 1))
                 .unwrap()
                 .unwrap();
-            assert_eq!(record.position().round().value(), 0);
+            if round_zero {
+                assert_eq!(record.position().round().value(), 0);
+            }
             assert_eq!(record.value().artifact_block(), self.blocks[index]);
             assert_eq!(record.canonical_artifact_bytes(), self.payloads[index]);
             if let Some(ancestry) = previous {

@@ -21,6 +21,7 @@ mod report;
 mod session;
 mod source_provider;
 mod sources;
+mod supervisor;
 
 type Result<T> = std::result::Result<T, &'static str>;
 
@@ -101,6 +102,20 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
                 config.driver_max_round,
             )
             .map_err(|_| "driver_create")?;
+            if let Some(supervisor) = &config.supervisor {
+                supervisor.bind(
+                    &publication_directory,
+                    matches!(config.mode, config::Mode::Create),
+                )?;
+            } else {
+                match std::fs::symlink_metadata(
+                    publication_directory.join("supervisor-policy-v0.json"),
+                ) {
+                    Ok(_) => return Err("supervisor_policy_missing"),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return Err("supervisor_policy_metadata"),
+                }
+            }
             let mut network = config.network;
             network
                 .listen_on(config.listen)
@@ -127,6 +142,8 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
             };
             output.emit(json!({"event": "ready", "state": report::status(&runtime)}))?;
             session::Session {
+                supervisor: config.supervisor,
+                input_closed: false,
                 proposal_job: None,
                 proof_sync: None,
                 acquiring: false,

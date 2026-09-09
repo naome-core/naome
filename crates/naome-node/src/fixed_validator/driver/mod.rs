@@ -279,6 +279,15 @@ impl<'node> FixedValidatorNodeDriverV0<'node> {
         self.scope().signing_session.phase()
     }
 
+    /// Exact retained candidate for local source acquisition only. This projection
+    /// grants no authoring permission; the sealed coordinator rechecks all gates.
+    pub fn retained_proposal_block(&self) -> Option<naome_chain::ArtifactBlock> {
+        self.scope()
+            .signing_session
+            .valid_value()
+            .map(|v| v.value().artifact_block())
+    }
+
     /// Returns this driver's inclusive local round-work ceiling.
     pub const fn inclusive_maximum_round(&self) -> ConsensusRound {
         self.inclusive_maximum_round
