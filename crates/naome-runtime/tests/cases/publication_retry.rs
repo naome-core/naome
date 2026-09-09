@@ -437,3 +437,110 @@ fn continuously_due_periodic_ticks_still_poll_and_admit_authenticated_network_in
         })
         .unwrap();
 }
+
+#[test]
+fn live_retry_gaps_admit_input_observe_due_and_transfer_new_vote_before_remaining_debt() {
+    for due in [false, true] {
+        let fixture = Fixture::new();
+        let layout = TestLayout::new("live-retry-gap");
+        let ready = provision(
+            fixture.definition,
+            fixture.context,
+            &fixture.entries,
+            &layout,
+        )
+        .create(fixture.keys[0].clone())
+        .unwrap();
+        let executor = Builder::new_current_thread().enable_all().build().unwrap();
+        ready.run_with_signing_session(|scope| executor.block_on(async {
+            tokio::time::pause();
+            let peer_id = Keypair::generate_ed25519().public().to_peer_id();
+            let network = StaticArtifactNetwork::new(Keypair::generate_ed25519(), [
+                StaticPeer::new(peer_id, "/ip4/127.0.0.1/tcp/1".parse().unwrap()),
+            ]).unwrap();
+            let mut owner = Runtime::new(node_driver(scope), network, vec![peer_id], timeouts(Duration::from_secs(60))).unwrap()
+                .with_publication_journal(&layout.candidate_store, true).unwrap()
+                .with_publication_retry_interval(Interval::new(Duration::from_secs(1)).unwrap()).unwrap();
+            assert!(matches!(owner.next_event().await, Event::TimerArmed(_)));
+            let payload = pairing_payload();
+            let block = ArtifactChainState::new(fixture.definition).prepare_block(artifact_id(&payload)).unwrap();
+            assert!(matches!(owner.author_proposal(FixedValidatorProposalSourceV0::Fresh {
+                artifact_block: block, canonical_artifact_bytes: payload,
+            }), Event::ProposalAuthored));
+            let mut originals = Vec::new();
+            for _ in 0..40 {
+                match owner.next_event().await {
+                    Event::PublicationComplete(publication) => {
+                        assert!(!publication.recovered());
+                        assert!(publication.deliveries().all(|delivery| matches!(delivery.state(), Delivery::Refused(_))));
+                        originals.push((publication.message().state_id(), publication.message().copy_message().unwrap()));
+                    }
+                    Event::PeerAttempted { started: false, .. } => {},
+                    Event::Finality(_) => break,
+                    event => check_local(event),
+                }
+            }
+            assert_eq!(originals.len(), 3);
+            assert!(matches!(owner.next_event().await, Event::TimerArmed(_)));
+            assert!(poll_once(&mut owner).await.is_none());
+            tokio::time::advance(Duration::from_secs(1)).await;
+            let mut scheduled = false;
+            for _ in 0..10 {
+                match owner.next_event().await {
+                    Event::PublicationRetryScheduled { queued: 3 } => { scheduled = true; break; }
+                    Event::Network(_) => {},
+                    _ => panic!("expected one finite three-message pass"),
+                }
+            }
+            assert!(scheduled);
+            let before = layout.authority_images();
+            assert!(matches!(owner.next_event().await, Event::PublicationRecovered { state_id, .. } if state_id == originals[0].0));
+            assert!(matches!(owner.next_event().await, Event::PeerAttempted { started: false, .. }));
+            assert!(matches!(owner.next_event().await, Event::PublicationComplete(_)));
+            assert_eq!(owner.publication_recovery_remaining(), 2);
+            let raw = ConsensusPushMessage::Vote { canonical_vote: vec![0; naome_network::CONSENSUS_PUSH_VOTE_BYTES] };
+            owner.queue_input(raw).unwrap();
+            if due {
+                tokio::time::advance(Duration::from_secs(60)).await;
+                assert!(matches!(owner.next_event().await, Event::TimerDue { result: Ok(_), .. }), "exact due observation must precede the second historical message and retain input");
+            } else {
+                let Event::Admission(report) = owner.next_event().await else { panic!("queued input must precede the second historical message") };
+                assert_eq!(report.source, InputSource::CallerInput);
+                assert!(!report.all_admitted());
+                assert!(report.input.is_some());
+            }
+            assert_eq!(layout.authority_images(), before, "gap input and timer observation alone must not sign");
+            assert!(matches!(owner.next_event().await, Event::PublicationRecovered { state_id, .. } if state_id == originals[1].0));
+            // A buffered input may be handled while the publication waits, but
+            // its exact original bytes and sole publication custody stay intact.
+            assert_eq!(owner.pending_publication().unwrap().message().copy_message().unwrap(), originals[1].1);
+            for _ in 0..10 {
+                match owner.next_event().await {
+                    Event::PublicationComplete(_) => break,
+                    Event::Admission(report) => assert_eq!(report.source, InputSource::CallerInput),
+                    Event::PeerAttempted { started: false, .. } => {},
+                    _ => panic!("historical publication must finish without a new driver step"),
+                }
+            }
+            assert_eq!(owner.publication_recovery_remaining(), 1);
+            if due {
+                assert!(matches!(owner.next_event().await, Event::Transitioned { phase: FixedValidatorLockPhaseV0::Prevote, .. }));
+                assert!(matches!(owner.next_event().await, Event::PublicationPrepared(_)), "new vote command must transfer before the third historical message");
+                assert!(!owner.pending_publication().unwrap().recovered());
+                for _ in 0..10 {
+                    match owner.next_event().await {
+                        Event::PublicationComplete(_) => break,
+                        Event::PeerAttempted { started: false, .. } => {},
+                        event => check_local(event),
+                    }
+                }
+            }
+            // An idle ordinary opportunity must not wait for input or a timer.
+            assert!(matches!(poll_once(&mut owner).await, Some(Event::PublicationRecovered { state_id, .. }) if state_id == originals[2].0));
+            assert_eq!(owner.pending_publication().unwrap().message().copy_message().unwrap(), originals[2].1);
+            assert!(matches!(owner.next_event().await, Event::PeerAttempted { started: false, .. }));
+            assert!(matches!(owner.next_event().await, Event::PublicationComplete(_)));
+            assert_eq!(owner.publication_recovery_remaining(), 0);
+        })).unwrap();
+    }
+}

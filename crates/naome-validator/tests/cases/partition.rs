@@ -49,12 +49,17 @@ struct Corpus {
     entries: [ActiveAgreementEntry; 4],
     noise: [[u8; 32]; 4],
     peers: [PeerId; 4],
-    proposers: [usize; 3],
-    blocks: [ArtifactBlock; 3],
-    payloads: [Vec<u8>; 3],
+    proposers: Vec<usize>,
+    blocks: Vec<ArtifactBlock>,
+    payloads: Vec<Vec<u8>>,
 }
 impl Corpus {
     fn new(weights: [u16; 4]) -> Self {
+        Self::with_heights(weights, 3)
+    }
+
+    fn with_heights(weights: [u16; 4], heights: u8) -> Self {
+        assert!((1..=16).contains(&heights));
         let definition = ArtifactChainDefinition::new([0x91; 32]);
         let context = ConsensusContextV0::new(
             definition.id(),
@@ -84,30 +89,37 @@ impl Corpus {
             PreselectedProposerStateV0::from_zeroed_preselected_snapshot(&snapshot);
         // Schedule prediction grants no authority: the real owners must accept
         // author_fresh and establish H1 before the second command is issued.
-        let proposers = std::array::from_fn(|_| {
-            let (key, successor) = arithmetic.select_next().unwrap();
-            arithmetic = successor;
-            entries
-                .iter()
-                .position(|entry| entry.consensus_key() == key)
-                .unwrap()
-        });
+        let proposers: Vec<_> = (0..heights)
+            .map(|_| {
+                let (key, successor) = arithmetic.select_next().unwrap();
+                arithmetic = successor;
+                entries
+                    .iter()
+                    .position(|entry| entry.consensus_key() == key)
+                    .unwrap()
+            })
+            .collect();
         assert_eq!(entries[proposers[0]].consensus_key(), round.proposer());
-        let payloads = [1, 2, 3].map(|value| {
-            ArtifactPayload::Proof(
-                ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, 0x10, value]).unwrap(),
-            )
-            .to_canonical_bytes()
-        });
-        let blocks = payloads.each_ref().map(|payload| {
-            let artifact = ArtifactDag::new()
-                .apply_canonical_artifact_bytes(payload.clone())
-                .unwrap()
-                .artifact_id();
-            let block = selected.prepare_block(artifact).unwrap();
-            selected.apply_block(&block, payload.clone()).unwrap();
-            block
-        });
+        let payloads: Vec<_> = (1..=heights)
+            .map(|value| {
+                ArtifactPayload::Proof(
+                    ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, 0x10, value]).unwrap(),
+                )
+                .to_canonical_bytes()
+            })
+            .collect();
+        let blocks = payloads
+            .iter()
+            .map(|payload| {
+                let artifact = ArtifactDag::new()
+                    .apply_canonical_artifact_bytes(payload.clone())
+                    .unwrap()
+                    .artifact_id();
+                let block = selected.prepare_block(artifact).unwrap();
+                selected.apply_block(&block, payload.clone()).unwrap();
+                block
+            })
+            .collect();
         let mut noise = [[101; 32], [102; 32], [103; 32], [104; 32]];
         let identity = |mut seed| {
             Keypair::ed25519_from_bytes(&mut seed)

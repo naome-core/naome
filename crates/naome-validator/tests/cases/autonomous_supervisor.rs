@@ -417,9 +417,9 @@ fn autonomous_supervisor_live_source_corruption_stops_before_authoring() {
 }
 
 #[test]
-fn autonomous_supervisor_majority_progresses_and_isolated_peer_catches_up() {
+fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_catches_up() {
     let _fixture_guard = process_fixture_guard();
-    let corpus = Corpus::new([1; 4]);
+    let corpus = Corpus::with_heights([1; 4], 6);
     let layouts = std::array::from_fn(|_| Layout::new());
     let mut gates = std::array::from_fn(|_| Gate::bind());
     let isolated = 3;
@@ -428,19 +428,15 @@ fn autonomous_supervisor_majority_progresses_and_isolated_peer_catches_up() {
             gate.cut();
         }
     }
-    // Startup and minority disconnection retain signed retries. Leave more
-    // time for ordinary work between passes through that growing queue.
+    // Keep an offline recipient throughout six heights. Retry debt must give
+    // ordinary work opportunities while the finite queue is still nonempty.
     let configs = std::array::from_fn(|i| {
         configured(&corpus, &layouts[i], i, &gates)
             .replace("base_millis = \"1000\"", "base_millis = \"3000\"")
-            .replace(
-                "publication_retry_millis = \"100\"",
-                "publication_retry_millis = \"500\"",
-            )
     });
     let mut nodes = spawn(&layouts, &configs, &mut gates);
     pump_until(&mut nodes, "autonomous strict-majority prefix", |nodes| {
-        nodes[..isolated].iter().all(|n| reached(n, &corpus, 2))
+        nodes[..isolated].iter().all(|n| reached(n, &corpus, 5))
     });
     assert!(
         !nodes[isolated]
@@ -452,7 +448,7 @@ fn autonomous_supervisor_majority_progresses_and_isolated_peer_catches_up() {
         gate.heal();
     }
     pump_until(&mut nodes, "autonomous isolated peer catch-up", |nodes| {
-        reached(&nodes[isolated], &corpus, 2)
+        reached(&nodes[isolated], &corpus, 5)
     });
     assert!(
         nodes[isolated]
@@ -465,7 +461,71 @@ fn autonomous_supervisor_majority_progresses_and_isolated_peer_catches_up() {
         node.observed
             .iter()
             .filter(|e| e["event"] == "proposal_job_attempt")
-            .all(|e| e["job"]["height"].as_str().unwrap().parse::<u64>().unwrap() <= 3)
+            .all(|e| e["job"]["height"].as_str().unwrap().parse::<u64>().unwrap() <= 6)
     }));
-    verify(&corpus, &layouts);
+    let mut interleaved = false;
+    for node in &nodes[..isolated] {
+        let mut originals = std::collections::BTreeMap::new();
+        let mut gap = false;
+        for event in &node.observed {
+            match event["event"].as_str().unwrap() {
+                "publication_prepared" => {
+                    if gap {
+                        interleaved = true;
+                    }
+                    gap = false;
+                }
+                "publication_recovered" => gap = false,
+                "publication_complete" => {
+                    let publication = &event["disposed"];
+                    let id = publication["signer_state"].as_str().unwrap();
+                    if publication["recovered"] == true {
+                        assert_eq!(
+                            originals.get(id),
+                            Some(&publication["message_sha256"]),
+                            "live retries must retain the original signed message"
+                        );
+                    } else {
+                        assert!(
+                            originals
+                                .insert(id.to_owned(), publication["message_sha256"].clone())
+                                .is_none()
+                        );
+                    }
+                    gap = publication["local_admission_skipped"] == true
+                        && event["publication_recovery_remaining"].as_u64().unwrap() > 0;
+                }
+                "timer_due" | "transitioned" | "admission" | "finality" if gap => {
+                    interleaved = true
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        interleaved,
+        "ordinary work must run between historical messages before the retry queue empties"
+    );
+    let ancestry = layouts
+        .each_ref()
+        .map(|layout| corpus.verify_with_limit(layout, 6, 32, false));
+    assert!(ancestry.iter().all(|prefix| prefix == &ancestry[0]));
+    drop(gates);
+    for i in 0..4 {
+        let before =
+            publication_restart::signed_with_limits(&corpus, &layouts[i], i, 6, (32, 256, 32));
+        let mut node = Process::start(
+            &layouts[i],
+            &configs[i].replace("mode = \"create\"", "mode = \"open\""),
+        );
+        drop(node.child.stdin.take());
+        assert_eq!(node.ready()["driver"]["height"], "7");
+        node.signal(rustix::process::Signal::TERM);
+        node.event("stopped");
+        assert!(node.exit().success());
+        assert_eq!(
+            publication_restart::signed_with_limits(&corpus, &layouts[i], i, 6, (32, 256, 32)),
+            before
+        );
+    }
 }

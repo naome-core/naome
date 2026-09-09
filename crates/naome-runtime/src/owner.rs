@@ -82,6 +82,7 @@ pub struct FixedValidatorRuntimeV0<'node> {
     evidence_journal: Option<crate::evidence_journal::EvidenceJournal>,
     evidence_failure: Option<crate::FixedValidatorEvidenceJournalErrorV0>,
     recovery: VecDeque<(FixedValidatorVoteSafetyJournalStateIdV0, bool)>,
+    live_retry_yield: bool,
     retry: Option<retry::PublicationRetry>,
     reconnected_peers: u8,
 }
@@ -121,6 +122,7 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
             evidence_journal: None,
             evidence_failure: None,
             recovery: VecDeque::new(),
+            live_retry_yield: false,
             retry: None,
             reconnected_peers: 0,
         })
@@ -481,7 +483,7 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
     }
 
     fn authoring_busy(&self, driver: &Driver<'_>) -> bool {
-        !self.recovery.is_empty()
+        (!self.recovery.is_empty() && !self.live_retry_yield)
             || self.publication.is_some()
             || self.pending_arm.is_some()
             || self.pending_input.is_some()
@@ -897,7 +899,15 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         if let Err(error) = self.finish_retry_pass() {
             return self.publication_failure(error);
         }
-        if let Some(event) = self.recover_next_publication() {
+        let live_retry_yield = std::mem::take(&mut self.live_retry_yield);
+        // Commands created by the intervening ordinary step must transfer before
+        // another historical publication takes custody. Startup keeps priority.
+        let live_command = self.recovery.front().is_some_and(|entry| !entry.1)
+            && self.driver.as_ref().unwrap().has_pending_command();
+        if !live_retry_yield
+            && !live_command
+            && let Some(event) = self.recover_next_publication()
+        {
             return event;
         }
         if self.publication.is_some() {
@@ -912,7 +922,10 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
                 return self.admit_local_publication();
             }
             if self.publication.as_ref().unwrap().is_complete() {
-                return Event::PublicationComplete(Box::new(self.publication.take().unwrap()));
+                let publication = self.publication.take().unwrap();
+                self.live_retry_yield =
+                    publication.recovered() && publication.local_admission_skipped();
+                return Event::PublicationComplete(Box::new(publication));
             }
             if self.pending_input.is_none()
                 && let Some(event) = self.start_next_peer()
@@ -948,6 +961,20 @@ impl<'node> FixedValidatorRuntimeV0<'node> {
         }
         if let Err(error) = self.queue_reconnected_debt() {
             return self.publication_failure(error);
+        }
+        if live_retry_yield && !self.recovery.is_empty() {
+            // Do not wait for new input while retry debt is ready. A returned
+            // input remains buffered when an exact deadline wins the tie.
+            let _ = self.poll_transport_once().await;
+            if self
+                .observable_timer()
+                .is_some_and(|timer| Instant::now() >= timer.deadline())
+            {
+                return self.observe_due();
+            }
+            if let Some(input) = self.pending_input.take() {
+                return self.handle_input(input);
+            }
         }
         if let Some(event) = self.recover_next_publication() {
             return event;

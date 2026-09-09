@@ -549,6 +549,10 @@ impl<'node> Session<'_, 'node> {
         if event["event"] == "finality" {
             event["state"] = report::status(&self.runtime);
         }
+        if event["event"] == "publication_complete" {
+            event["publication_recovery_remaining"] =
+                json!(self.runtime.publication_recovery_remaining());
+        }
         let fatal = fatal
             || (self.supervisor.is_some()
                 && event["event"] == "source_response_failed"

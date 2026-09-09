@@ -94,9 +94,12 @@ retains the opaque ticket's context, position, phase, generation, and lineage.
 These process-local deadlines do not define canonical validity, establish a
 production timing recommendation, or prove elapsed time to another node.
 
-`next_event` first transfers a pending arm. Durable recovery queues original
-publications before ordinary driver work, then transfers any pending driver
-command through the publication gate. Without recovery or an owned
+`next_event` first transfers a pending arm. Strict startup recovery queues original
+publications before ordinary driver work. Live reconnect and periodic retry
+passes give ordinary work one opportunity after each completed historical
+message under `PROD-020-068`, as specified in the publication lifecycle. Commands
+produced by that opportunity transfer through the publication gate before the
+next historical message. Without recovery or an owned
 publication, ordinary retained driver work is stepped before a new timeout or
 input observation. A transition that supersedes an active ticket discards
 only its old runtime deadline. A newly installed ticket receives a new deadline;

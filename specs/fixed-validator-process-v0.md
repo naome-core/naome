@@ -87,9 +87,11 @@ the original signed publication in ordinary runtime custody. Only another live
 round at the same height can allow another attempt.
 
 Every attempt uses the unchanged store-backed runtime and driver authoring
-coordinators. Runtime recovery, publication, pending arm/input, observed or
+coordinators. Startup recovery, active publication, pending arm/input, observed or
 elapsed deadline, and driver work retain their existing priority before source
-access or signing. The job first offers its exact fresh target; only the sealed
+access or signing. A completed live historical retry opens the bounded ordinary
+opportunity specified by `PROD-020-068`, including these existing authoring checks.
+The job first offers its exact fresh target; only the sealed
 `RetainedValidValueRequired` result redirects it to the signer's retained valid
 value and complete earlier-round certificate. This result precedes fresh-source
 reads. Missing retained payload never permits fallback to the fresh candidate.
@@ -567,7 +569,9 @@ caller/local-publication/peer provenance, and `finality` with selected head and
 next position. A peer receipt is neither admission nor finality. A
 `publication_complete` report includes failed/refused delivery states and any
 released proposal-token custody being discarded; completion alone proves no
-successful delivery.
+successful delivery. It also reports the remaining historical queue length as
+`publication_recovery_remaining`, so interleaving before queue exhaustion can
+be observed without inferring delivery or signing authority.
 
 The dedicated output thread receives at most 32 reports, each at most 16,384
 bytes excluding newline, plus one frame currently being written. It owns no
