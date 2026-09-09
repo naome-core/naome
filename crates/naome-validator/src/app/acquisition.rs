@@ -1,6 +1,7 @@
 use naome_chain::ArtifactBlockId;
 use naome_network::{
     ArtifactBlockCandidateAncestryFill, ArtifactBlockCandidateAncestryFillError as AncestryError,
+    ArtifactBlockCandidateBranchPayloadFillError as PayloadError,
     ArtifactBlockCandidateBranchPayloadFillProgress as PayloadProgress, MAX_STATIC_PEERS,
     NetworkEvent, PeerId,
 };
@@ -10,7 +11,9 @@ use naome_runtime::{
     FixedValidatorRuntimePayloadFillAdvanceErrorV0 as PayloadAdvanceError,
     FixedValidatorRuntimeV0 as Runtime,
 };
-use naome_storage::CandidateBranchReconstructionLimits;
+use naome_storage::{
+    CandidateBranchReconstructionError as ReconstructionError, CandidateBranchReconstructionLimits,
+};
 use serde_json::{Value, json};
 
 use super::{Result, config, input::Command, sources::Sources};
@@ -18,6 +21,7 @@ use super::{Result, config, input::Command, sources::Sources};
 pub(super) struct Acquisition<'store> {
     target: ArtifactBlockId,
     phase: Phase<'store>,
+    supervised: bool,
 }
 
 enum Phase<'store> {
@@ -35,6 +39,7 @@ impl Acquisition<'_> {
         command: Command,
         runtime: &mut Runtime<'_>,
         sources: &'store mut Sources,
+        supervised: bool,
     ) -> Result<Acquisition<'store>> {
         let (target, anchor, peers, blocks) = match command {
             Command::AcquireAncestry {
@@ -102,7 +107,7 @@ impl Acquisition<'_> {
                         limit,
                     ),
             }
-            .map_err(start_error)?;
+            .map_err(|error| start_error(error, supervised))?;
             Phase::Payload(progress)
         } else {
             let progress = match (anchor, peers) {
@@ -118,10 +123,14 @@ impl Acquisition<'_> {
                 (Some(anchor), Peers::Fallback(peers)) => runtime.start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback(
                     &mut sources.candidates, &peers, anchor, target,
                 ),
-            }.map_err(start_error)?;
+            }.map_err(|error| start_error(error, supervised))?;
             Phase::Ancestry(progress)
         };
-        Ok(Acquisition { target, phase })
+        Ok(Acquisition {
+            target,
+            phase,
+            supervised,
+        })
     }
 
     pub fn complete(&self) -> bool {
@@ -177,7 +186,9 @@ impl Acquisition<'_> {
                 runtime
                     .advance_artifact_block_candidate_ancestry_fill(progress, event)
                     .map_err(|error| match *error {
-                        AncestryAdvanceError::Operation(error) => ancestry_error(&error),
+                        AncestryAdvanceError::Operation(error) => {
+                            ancestry_error(&error, self.supervised)
+                        }
                         AncestryAdvanceError::Refused {
                             progress, event, ..
                         } => {
@@ -193,7 +204,9 @@ impl Acquisition<'_> {
                 runtime
                     .advance_artifact_block_candidate_branch_payload_fill(progress, event)
                     .map_err(|error| match *error {
-                        PayloadAdvanceError::Operation(_) => "source_payload_failure",
+                        PayloadAdvanceError::Operation(error) => {
+                            payload_error(&error, self.supervised)
+                        }
                         PayloadAdvanceError::Refused {
                             progress, event, ..
                         } => {
@@ -208,6 +221,7 @@ impl Acquisition<'_> {
         Ok(Self {
             target: self.target,
             phase,
+            supervised: self.supervised,
         })
     }
 
@@ -220,16 +234,43 @@ impl Acquisition<'_> {
     }
 }
 
-fn start_error(error: StartError) -> &'static str {
+fn start_error(error: StartError, supervised: bool) -> &'static str {
     match error {
         StartError::DriverUnavailable => "driver_unavailable",
-        StartError::Ancestry(error) => ancestry_error(&error),
-        StartError::Payload(_) => "source_payload_failure",
+        StartError::Ancestry(error) => ancestry_error(&error, supervised),
+        StartError::Payload(error) => payload_error(&error, supervised),
     }
 }
 
-fn ancestry_error(error: &AncestryError) -> &'static str {
+fn payload_error(error: &PayloadError, supervised: bool) -> &'static str {
     match error {
+        PayloadError::Reconstruction { source }
+            if supervised
+                && matches!(
+                    source.as_ref(),
+                    ReconstructionError::CandidateStoreRead { .. }
+                        | ReconstructionError::PayloadStoreRead { .. }
+                        | ReconstructionError::PayloadArchive { .. }
+                        | ReconstructionError::SelectedState { .. }
+                        | ReconstructionError::SelectedHistoryState { .. }
+                        | ReconstructionError::ChainIdMismatch { .. }
+                ) =>
+        {
+            "source_local_store"
+        }
+        _ => "source_payload_failure",
+    }
+}
+
+fn ancestry_error(error: &AncestryError, supervised: bool) -> &'static str {
+    match error {
+        AncestryError::SelectedState { .. }
+        | AncestryError::SelectedHistoryState { .. }
+        | AncestryError::ChainIdMismatch { .. }
+            if supervised =>
+        {
+            "source_local_store"
+        }
         AncestryError::SelectedHeadChanged { .. } => "source_selected_head_changed",
         AncestryError::CandidateStoreRead { .. } | AncestryError::CandidateStoreInsert { .. } => {
             "source_candidate_store"

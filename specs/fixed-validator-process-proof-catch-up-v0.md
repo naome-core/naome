@@ -26,6 +26,14 @@ its existing priority, including a complete retained pair after saturation.
 The caller must return to ordinary driver processing or explicitly dispose of
 inbox custody; a downloaded proof cannot supersede those gates.
 
+The opt-in `PROD-020-067` [process supervisor](fixed-validator-process-v0.md)
+can supply a response's bounded raw proposal and payload through ordinary input
+when the gate reports unresolved current finality. The codec extraction returns
+unverified bytes; normal routing, full proposal verification and durable evidence
+admission still precede any resulting finality. This neither clears custody nor
+weakens the complete-envelope gate. Explicit one-shot and following commands
+retain their original behavior.
+
 Checked successor timer generation precedes scope transfer and proof work.
 Existing signer/branch height coherence and persisted signer-round ceiling
 checks remain fatal. Exceeding the driver's caller-local signer-round ceiling

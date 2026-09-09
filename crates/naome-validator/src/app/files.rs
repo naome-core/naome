@@ -19,6 +19,21 @@ fn regular(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+/// Compare and stabilize the same regular descriptor before authorizing reuse.
+pub(super) fn match_and_sync(path: &Path, expected: &[u8]) -> Result<bool> {
+    let mut file = regular(path)?;
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(expected.len() as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "file_read")?;
+    if bytes != expected {
+        return Ok(false);
+    }
+    file.sync_all().map_err(|_| "file_sync")?;
+    Ok(true)
+}
+
 pub(super) fn bytes(path: &Path, maximum: usize) -> Result<Vec<u8>> {
     bytes_u64(path, maximum as u64)
 }

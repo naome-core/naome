@@ -14,6 +14,16 @@ pub(super) type Signed = BTreeMap<(u64, u64, u8), (Vec<u8>, Vec<u8>, [u8; 32])>;
 // An independent oracle reads only stopped owners, verifies actual signatures,
 // and compares all old completion identities as well as exact message bytes.
 pub(super) fn signed(corpus: &Corpus, layout: &Layout, actor: usize, through: u64) -> Signed {
+    signed_with_limits(corpus, layout, actor, through, (8, 64, 4))
+}
+
+pub(super) fn signed_with_limits(
+    corpus: &Corpus,
+    layout: &Layout,
+    actor: usize,
+    through: u64,
+    limits: (u64, u64, u64),
+) -> Signed {
     let before = layout.images();
     let result = {
         let _guard = PARENT_JOURNALS.read().unwrap();
@@ -23,7 +33,7 @@ pub(super) fn signed(corpus: &Corpus, layout: &Layout, actor: usize, through: u6
             corpus.definition,
             corpus.context,
             &corpus.entries,
-            FixedValidatorFinalityReplayLimitV0::new(8).unwrap(),
+            FixedValidatorFinalityReplayLimitV0::new(limits.0).unwrap(),
         )
         .unwrap();
         let journal = FixedValidatorAnchoredVoteSafetyJournalV0::open(
@@ -32,7 +42,7 @@ pub(super) fn signed(corpus: &Corpus, layout: &Layout, actor: usize, through: u6
             corpus.context,
             finality.fixed_agreement_set_id(),
             corpus.keys[actor].clone(),
-            FixedValidatorVoteSafetyReplayLimitV0::new(64).unwrap(),
+            FixedValidatorVoteSafetyReplayLimitV0::new(limits.1).unwrap(),
         )
         .unwrap();
         assert!(journal.pending_vote().unwrap().is_none());
@@ -42,7 +52,7 @@ pub(super) fn signed(corpus: &Corpus, layout: &Layout, actor: usize, through: u6
         assert!(journal.finality_conflict_stop().unwrap().is_none());
         let mut signed = BTreeMap::new();
         for height in 1..=through {
-            for round in 0..=4 {
+            for round in 0..=limits.2 {
                 let position = ConsensusPosition::new(
                     ConsensusHeight::new(height),
                     ConsensusRound::new(round),

@@ -54,10 +54,11 @@ unavailability during exclusive acquisition.
 The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. `PROD-020-066` additionally
 permits one explicitly started current-height proposal job, as specified below.
-It grants no candidate discovery or ranking, certificate acquisition beyond the explicit
-bounded catch-up job, artifact serving beyond
+`PROD-020-067` adds the optional finite-plan supervisor described below.
+It grants no candidate discovery or ranking, certificate acquisition beyond the
+bounded configured-peer catch-up paths, artifact serving beyond
 the separately opted-in retained complete-proof and artifact-source responses,
-automatic source fallback policy, automatic inbox clearing, repair, dynamic
+automatic inbox clearing, repair, dynamic
 validator, key rotation, production timeout calibration, hardware custody, or
 distributed-liveness authority. In accordance with `PROD-023`, no remote
 consensus-signer service or configuration is supported. This implements only
@@ -72,7 +73,8 @@ requires a live runtime and enabled, currently available source ownership; it
 binds the job to the runtime's current consensus height. There is at most one
 job. Starting another reports `proposal_busy`. This command does not accept a
 caller height, round, signer, signature, or deadline and does not acquire data.
-No job is installed by configuration or restored after process restart.
+This explicit command's job is not restored after process restart; the separate
+supervisor can derive a new job from its bound configuration and recovered state.
 
 Between ordinary session polls, an active job may make at most one bounded
 authoring attempt. It waits outside Proposal phase and while acquisition
@@ -130,6 +132,67 @@ command exclusion, acquisition/deadline contention, cancellation with held
 publication, and strict restart without job resumption. This is bounded local
 process evidence, not a production-timeout, candidate-ranking, dynamic-validator
 or general distributed-liveness claim.
+
+## Optional autonomous height supervisor
+
+`[supervisor]` opts the process into one bounded local scheduling policy:
+
+```toml
+[supervisor]
+targets = ["<height-1 block ID>", "<height-2 block ID>"]
+peers = ["<configured peer ID>", "<next configured peer ID>"]
+interval_millis = "1000"
+acquisition_blocks = "16"
+```
+
+`targets` contains 1–256 canonical block IDs in height order starting at height
+1. The supervisor neither discovers nor ranks candidates. `peers` is a nonempty,
+duplicate-free ordered subset of the static configured peers, bounded by the
+existing static-peer limit. `interval_millis` is a positive canonical `u64`
+decimal string with checked monotonic deadline addition. `acquisition_blocks`
+is a canonical decimal string in 1–256. Source stores, durable evidence, and
+publication retry must also be configured. Source/proof serving remains a
+separate explicit opt-in.
+
+Before the first runtime poll, the exclusive signer owner creates and syncs
+`vote_journal/supervisor-policy-v0.json`, then syncs its directory. Strict reopen
+requires byte-identical serialized supervisor fields and stabilizes the matched
+regular file and directory again. Missing, changed, nonregular or corrupt policy
+refuses startup; omitting supervisor configuration while its policy file exists
+also refuses startup. No migration, cursor, acknowledgement, signature or
+selected-history authority is stored in this file.
+
+Recovered driver height and selected history determine the next job. A retained
+valid value takes precedence over configured fresh targets and requires its own
+payload; it never falls back to another candidate. Fresh work requires the
+configured predecessor to equal the selected head. Plan exhaustion, divergence,
+or an invalid fresh target stops fresh authoring while ordinary voting,
+publication retry and complete-proof following continue. A height change derives
+the next job. All proposal attempts retain the existing role, round, phase,
+retained-proof, source-validation and anchored signing gates.
+
+One periodic scheduler alternates single-height complete-proof requests with
+ancestry/payload acquisition for a missing proposal source. Each request class
+has its own cursor through configured peers, and existing request/work limits
+and deadlines remain binding. An unavailable or invalid remote response permits
+the next peer on a later interval. Local source read/archive failures and
+detected source corruption, including authoring and serving paths, stop the
+autonomous owner; they never repair the source or substitute empty state.
+
+When current finality is waiting for a proposal, an envelope response may supply
+its bounded raw proposal and payload to the existing one-slot input queue.
+Extraction grants no proof authority: ordinary routing, signature and branch
+verification, durable evidence admission, and finality priority still apply.
+Queue acceptance is not committed progress. No inbox is cleared and no conflict,
+refusal, saturation, or unresolved-finality guard is bypassed.
+
+EOF closes command input without stopping the supervisor. Status commands and
+explicit shutdown remain available; commands that would replace or compete with
+supervised work are rejected. Signals and output failure preserve their existing
+shutdown behavior. Restart rederives volatile jobs and retries requests; completed
+signed publications recover through their original durable bytes. Pending signing
+preparations and anchored terminal states retain existing fail-closed startup:
+this does not promise recovery from every arbitrary crash point.
 
 ## Invocation and configuration
 

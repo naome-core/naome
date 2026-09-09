@@ -344,6 +344,22 @@ pub struct UnverifiedFixedConsensusProposalRouteV0 {
 }
 
 impl UnverifiedFixedConsensusProposalRouteV0 {
+    /// Extracts a raw no-valid-round proposal from a bounded V0 envelope.
+    ///
+    /// This checks only the envelope width and value framing. Neither the
+    /// producer authorization nor the precommit certificate is authenticated.
+    /// The returned bytes and artifact must pass ordinary proposal admission;
+    /// this conversion grants no voting or finality authority.
+    pub fn proposal_control_from_envelope(
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, ConsensusEnvelopeVerifyError> {
+        let _ = VerifiedConsensusEnvelopeV0::decode_value(bytes)?;
+        let mut proposal = Vec::with_capacity(MIN_PROPOSAL_CONTROL_BYTES);
+        proposal.extend_from_slice(&bytes[..PRECOMMIT_CERTIFICATE_OFFSET]);
+        proposal.push(NO_VALID_ROUND_PROOF_TAG);
+        Ok(proposal)
+    }
+
     pub fn inspect(bytes: &[u8]) -> Result<Self, ConsensusProposalVerifyError> {
         let _ = VerifiedConsensusProposalV0::decode_value(bytes)?;
         let (context, position) = super::producer_authorization::inspect_authorization_route(

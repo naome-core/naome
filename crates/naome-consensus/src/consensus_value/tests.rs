@@ -439,6 +439,35 @@ fn value_rejects_every_other_length_and_reserved_height() {
 }
 
 #[test]
+fn envelope_proposal_extraction_is_bounded_and_requires_independent_admission() {
+    let fixture = fixture(9);
+    let proposal =
+        UnverifiedFixedConsensusProposalRouteV0::proposal_control_from_envelope(&fixture.bytes)
+            .unwrap();
+    let admitted = verify_proposal_fixture(&fixture, &proposal, fixture.payload.clone()).unwrap();
+    assert_eq!(admitted.value(), fixture.value);
+    assert_eq!(
+        admitted.producer_authorization().position(),
+        fixture.position
+    );
+    // Framing an envelope never authenticates the extracted producer signature.
+    let mut forged = fixture.bytes.clone();
+    forged[PRODUCER_AUTHORIZATION_OFFSET + AUTHORIZATION_SIGNATURE_OFFSET] ^= 1;
+    let proposal =
+        UnverifiedFixedConsensusProposalRouteV0::proposal_control_from_envelope(&forged).unwrap();
+    assert!(verify_proposal_fixture(&fixture, &proposal, fixture.payload.clone()).is_err());
+    for length in [0, MIN_ENVELOPE_BYTES - 1, MAX_ENVELOPE_BYTES + 1] {
+        assert!(
+            UnverifiedFixedConsensusProposalRouteV0::proposal_control_from_envelope(&vec![
+                0;
+                length
+            ])
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn minimum_envelope_verifies_reencodes_and_advances_only_its_snapshot() {
     let fixture = fixture(9);
     let predecessor_head = fixture.parent.head_block_id();

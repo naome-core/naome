@@ -12,6 +12,8 @@ use naome_storage::{
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+#[path = "autonomous_byzantine.rs"]
+mod autonomous;
 #[path = "partition_byzantine_peer.rs"]
 mod peer;
 use peer::{Bridge, Wire};

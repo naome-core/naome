@@ -1,9 +1,9 @@
 //! One volatile proof owner: one bounded pass, or explicit periodic following.
 use super::{Result, config, report};
-use naome_consensus::ConsensusHeight;
+use naome_consensus::{ConsensusHeight, UnverifiedFixedConsensusProposalRouteV0};
 use naome_network::{
-    FinalityProofRequest, FinalityProofResponse, FinalityProofTicket, OutboundFinalityProofEvent,
-    OutboundFinalityProofFailure, PeerId, RequestStartError,
+    ConsensusPushMessage, FinalityProofRequest, FinalityProofResponse, FinalityProofTicket,
+    OutboundFinalityProofEvent, OutboundFinalityProofFailure, PeerId, RequestStartError,
 };
 use naome_runtime::{
     FixedValidatorRuntimeEventV0 as Event,
@@ -241,6 +241,7 @@ impl ProofSync {
         event: OutboundFinalityProofEvent,
         runtime: &mut Runtime<'node>,
         output: &report::Output,
+        supply_missing_proposal: bool,
     ) -> Result<(Option<Self>, Option<Event<'node>>)> {
         let failure = if Instant::now() >= self.deadline() {
             Some(Failure::retry("network_deadline"))
@@ -280,6 +281,17 @@ impl ProofSync {
                 None,
             ));
         };
+        // Preserve one bounded raw proposal only for the autonomous owner.
+        // Queueing it below never counts as verified proof or finality progress.
+        let proposal = supply_missing_proposal.then(|| {
+            UnverifiedFixedConsensusProposalRouteV0::proposal_control_from_envelope(
+                &canonical_envelope,
+            )
+            .map(|canonical_proposal| ConsensusPushMessage::Proposal {
+                canonical_proposal,
+                canonical_artifact: canonical_artifact.clone(),
+            })
+        });
         let event = match runtime.commit_finality_envelope(&canonical_envelope, canonical_artifact)
         {
             Ok(event) => event,
@@ -292,6 +304,13 @@ impl ProofSync {
             }
         };
         if !matches!(&event, Event::Finality(_)) {
+            if matches!(&event, Event::CurrentFinalityUnresolved)
+                && let Some(Ok(proposal)) = proposal
+            {
+                let queued = runtime.queue_input(proposal).is_ok();
+                output
+                    .emit(json!({"event":"sync_proposal_input", "id":self.id, "queued":queued}))?;
+            }
             let failure = if matches!(
                 &event,
                 Event::ExplicitCommandPending | Event::CurrentFinalityUnresolved
