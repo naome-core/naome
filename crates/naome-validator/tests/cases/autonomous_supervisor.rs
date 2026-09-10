@@ -5,6 +5,9 @@ use naome_storage::{
     CanonicalArtifactPayloadStore,
 };
 
+#[path = "continuous_supervisor.rs"]
+mod continuous;
+
 // Each fixture drives four durable signers with short protocol deadlines.
 // Bound their aggregate process and fsync load without reducing any oracle.
 pub(super) fn process_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -37,12 +40,12 @@ fn configured_with_sources(
     let mut candidates = ArtifactBlockCandidateStore::create(
         layout.root.join("candidates"),
         corpus.definition,
-        ArtifactBlockCandidateStoreLimits::new(16).unwrap(),
+        ArtifactBlockCandidateStoreLimits::new(128).unwrap(),
     )
     .unwrap();
     let mut payloads = CanonicalArtifactPayloadStore::create(
         layout.root.join("payloads"),
-        ArtifactPayloadStoreLimits::new(16, 1_048_576).unwrap(),
+        ArtifactPayloadStoreLimits::new(128, 1_048_576).unwrap(),
     )
     .unwrap();
     let mut dag = ArtifactDag::new();
@@ -77,7 +80,7 @@ fn configured_with_sources(
     // Leave headroom below the shared responder budget's one-request/second
     // refill; proof polling and multi-request source fills share that budget.
     format!(
-        "{base}\n[sources]\nmode = \"open\"\ncandidate_directory = \"candidates\"\npayload_directory = \"payloads\"\ncandidate_entries = \"16\"\npayload_entries = \"16\"\npayload_bytes = \"1048576\"\n[evidence]\nmode = \"create\"\ndirectory = \"evidence\"\n[supervisor]\ntargets = [{targets}]\npeers = [{peers}]\ninterval_millis = \"1500\"\nacquisition_blocks = \"16\"\n"
+        "{base}\n[sources]\nmode = \"open\"\ncandidate_directory = \"candidates\"\npayload_directory = \"payloads\"\ncandidate_entries = \"128\"\npayload_entries = \"128\"\npayload_bytes = \"1048576\"\n[evidence]\nmode = \"create\"\ndirectory = \"evidence\"\n[supervisor]\ntargets = [{targets}]\npeers = [{peers}]\ninterval_millis = \"1500\"\nacquisition_blocks = \"16\"\n"
     )
 }
 
@@ -122,7 +125,17 @@ fn stop(nodes: &mut [Process; 4]) {
     for node in nodes.iter_mut() {
         assert_eq!(node.event("stopped")["reason"], "sigterm");
         assert!(node.exit().success());
-        assert!(!node.observed.iter().any(|e| e["event"] == "command_result"));
+        assert!(
+            node.observed.iter().all(|e| {
+                e["event"] != "command_result"
+                    || (e["id"] == 0
+                        && matches!(
+                            e["outcome"]["event"].as_str(),
+                            Some("acquisition_started" | "acquisition_complete")
+                        ))
+            }),
+            "closed-input owners may report only internal acquisition command results"
+        );
     }
 }
 
@@ -164,6 +177,15 @@ fn autonomous_supervisor_finalizes_three_heights_with_closed_stdin_and_strictly_
 
 #[test]
 fn autonomous_supervisor_equal_partition_stalls_then_heals_without_commands() {
+    equal_partition(false);
+}
+
+#[test]
+fn continuous_supervisor_equal_partition_stalls_then_heals_without_commands() {
+    equal_partition(true);
+}
+
+fn equal_partition(continuous: bool) {
     let _fixture_guard = process_fixture_guard();
     let corpus = Corpus::new([1; 4]);
     let layouts = std::array::from_fn(|_| Layout::new());
@@ -173,8 +195,25 @@ fn autonomous_supervisor_equal_partition_stalls_then_heals_without_commands() {
             gate.cut();
         }
     }
-    let configs = std::array::from_fn(|i| configured(&corpus, &layouts[i], i, &gates));
+    let configs = std::array::from_fn(|i| {
+        let config = configured(&corpus, &layouts[i], i, &gates);
+        if continuous {
+            continuous::continuous(config)
+        } else {
+            config
+        }
+    });
     let mut nodes = spawn(&layouts, &configs, &mut gates);
+    if continuous {
+        let ids = corpus
+            .blocks
+            .iter()
+            .map(ArtifactBlock::id)
+            .collect::<Vec<_>>();
+        for layout in &layouts {
+            continuous::publish(layout, &ids);
+        }
+    }
     pump_until(&mut nodes, "partitioned round progress", |nodes| {
         nodes
             .iter()
@@ -303,6 +342,15 @@ fn autonomous_supervisor_rejects_changed_missing_and_corrupt_restart_policy() {
 
 #[test]
 fn autonomous_supervisor_sigkill_replays_completed_publications_without_new_commands() {
+    completed_publication_restart(false);
+}
+
+#[test]
+fn continuous_supervisor_sigkill_replays_completed_publications_without_new_commands() {
+    completed_publication_restart(true);
+}
+
+fn completed_publication_restart(continuous: bool) {
     let _fixture_guard = process_fixture_guard();
     use std::os::unix::process::ExitStatusExt;
     let corpus = Corpus::new([1; 4]);
@@ -313,10 +361,25 @@ fn autonomous_supervisor_sigkill_replays_completed_publications_without_new_comm
         gate.allow_backend_restart();
     }
     let configs = std::array::from_fn(|i| {
-        configured(&corpus, &layouts[i], i, &gates)
-            .replace("base_millis = \"1000\"", "base_millis = \"120000\"")
+        let config = configured(&corpus, &layouts[i], i, &gates)
+            .replace("base_millis = \"1000\"", "base_millis = \"120000\"");
+        if continuous {
+            continuous::continuous(config)
+        } else {
+            config
+        }
     });
     let mut nodes = spawn(&layouts, &configs, &mut gates);
+    if continuous {
+        let ids = corpus
+            .blocks
+            .iter()
+            .map(ArtifactBlock::id)
+            .collect::<Vec<_>>();
+        for layout in &layouts {
+            continuous::publish(layout, &ids);
+        }
+    }
     let actor = corpus.proposers[0];
     // With every path cut, the proposer durably completes its proposal and
     // prevote and then waits without a quorum. No fault lands in preparation.
@@ -373,6 +436,15 @@ fn autonomous_supervisor_sigkill_replays_completed_publications_without_new_comm
 
 #[test]
 fn autonomous_supervisor_live_source_corruption_stops_before_authoring() {
+    live_source_corruption(false);
+}
+
+#[test]
+fn continuous_supervisor_live_source_corruption_refuses_choice() {
+    live_source_corruption(true);
+}
+
+fn live_source_corruption(continuous: bool) {
     let _fixture_guard = process_fixture_guard();
     let corpus = Corpus::new([1; 4]);
     for candidate in [true, false] {
@@ -381,12 +453,20 @@ fn autonomous_supervisor_live_source_corruption_stops_before_authoring() {
         let actor = (corpus.proposers[0] + 1) % 4;
         let config = configured(&corpus, &layout, actor, &gates)
             .replace("base_millis = \"1000\"", "base_millis = \"200\"");
+        let config = if continuous {
+            continuous::continuous(config)
+                .replace("base_millis = \"200\"", "base_millis = \"120000\"")
+        } else {
+            config
+        };
         let mut node = Process::start(&layout, &config);
         drop(node.child.stdin.take());
         node.ready();
-        node.until(|e| {
-            e["event"] == "proposal_job_waiting" && e["job"]["state"] == "not_scheduled"
-        });
+        if !continuous {
+            node.until(|e| {
+                e["event"] == "proposal_job_waiting" && e["job"]["state"] == "not_scheduled"
+            });
+        }
         let path = layout.root.join(if candidate {
             "candidates/artifact-block-candidate-store.log"
         } else {
@@ -395,7 +475,25 @@ fn autonomous_supervisor_live_source_corruption_stops_before_authoring() {
         let mut damaged = fs::read(&path).unwrap();
         damaged.fill(0);
         fs::write(&path, &damaged).unwrap();
-        assert_eq!(node.event("stopped")["reason"], "proposal_job_fatal");
+        if continuous {
+            continuous::publish(&layout, &[corpus.blocks[0].id()]);
+            assert_eq!(
+                node.event("error")["code"],
+                if candidate {
+                    "source_candidate_store"
+                } else {
+                    "source_local_store"
+                }
+            );
+            assert!(
+                !node
+                    .observed
+                    .iter()
+                    .any(|e| e["event"] == "supervisor_candidate_selected")
+            );
+        } else {
+            assert_eq!(node.event("stopped")["reason"], "proposal_job_fatal");
+        }
         assert!(!node.exit().success());
         assert_eq!(fs::read(&path).unwrap(), damaged);
         assert!(
@@ -417,7 +515,7 @@ fn autonomous_supervisor_live_source_corruption_stops_before_authoring() {
 }
 
 #[test]
-fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_catches_up() {
+fn autonomous_supervisor_six_heights_progress_with_retry_debt_and_isolated_peer_catches_up() {
     let _fixture_guard = process_fixture_guard();
     let corpus = Corpus::with_heights([1; 4], 6);
     let layouts = std::array::from_fn(|_| Layout::new());
@@ -428,13 +526,19 @@ fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_cat
             gate.cut();
         }
     }
-    // Keep an offline recipient throughout six heights. Retry debt must give
-    // ordinary work opportunities while the finite queue is still nonempty.
+    // Keep an offline recipient throughout six heights. Periodic replay must
+    // coexist with fresh publication while its delivery debt remains outstanding.
     let configs = std::array::from_fn(|i| {
         configured(&corpus, &layouts[i], i, &gates)
             .replace("base_millis = \"1000\"", "base_millis = \"3000\"")
     });
     let mut nodes = spawn(&layouts, &configs, &mut gates);
+    // Retain the full replay transcript across both milestones within a fixed
+    // bound. Consume stdout promptly: slow-reader survival is not this fixture's
+    // contract, and the process intentionally stops on output backpressure.
+    for node in &mut nodes {
+        node.transcript_limit = 65_536;
+    }
     pump_until(&mut nodes, "autonomous strict-majority prefix", |nodes| {
         nodes[..isolated].iter().all(|n| reached(n, &corpus, 5))
     });
@@ -444,6 +548,7 @@ fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_cat
             .iter()
             .any(|e| e["event"] == "finality")
     );
+    let before_heal = nodes.each_ref().map(|node| node.observed.len());
     for gate in &gates {
         gate.heal();
     }
@@ -463,48 +568,64 @@ fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_cat
             .filter(|e| e["event"] == "proposal_job_attempt")
             .all(|e| e["job"]["height"].as_str().unwrap().parse::<u64>().unwrap() <= 6)
     }));
-    let mut interleaved = false;
-    for node in &nodes[..isolated] {
+    let isolated_peer = corpus.peers[isolated].to_string();
+    let mut progressed_with_debt = false;
+    let mut multi_item_retry = false;
+    for (actor, node) in nodes[..isolated].iter().enumerate() {
         let mut originals = std::collections::BTreeMap::new();
-        let mut gap = false;
-        for event in &node.observed {
-            match event["event"].as_str().unwrap() {
-                "publication_prepared" => {
-                    if gap {
-                        interleaved = true;
-                    }
-                    gap = false;
+        let mut replayed_missing = false;
+        assert!(!node.observed[..before_heal[actor]].iter().any(|event| {
+            event["event"] == "peer_completed"
+                && event["peer"] == isolated_peer
+                && event["received"] == true
+        }));
+        for (index, event) in node.observed.iter().enumerate() {
+            if event["event"] != "publication_complete" {
+                continue;
+            }
+            let publication = &event["disposed"];
+            let id = publication["signer_state"].as_str().unwrap();
+            if publication["recovered"] == true {
+                assert_eq!(
+                    originals.get(id),
+                    Some(&publication["message_sha256"]),
+                    "live retries must retain the original signed message"
+                );
+                if index < before_heal[actor] {
+                    assert_eq!(publication["local_admission_skipped"], true);
+                    let delivery = publication["deliveries"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|delivery| delivery["peer"] == isolated_peer)
+                        .unwrap();
+                    assert!(matches!(
+                        delivery["state"].as_str(),
+                        Some("refused" | "failed")
+                    ));
+                    let remaining = event["publication_recovery_remaining"].as_u64().unwrap() > 0;
+                    replayed_missing |= remaining;
+                    multi_item_retry |= remaining;
                 }
-                "publication_recovered" => gap = false,
-                "publication_complete" => {
-                    let publication = &event["disposed"];
-                    let id = publication["signer_state"].as_str().unwrap();
-                    if publication["recovered"] == true {
-                        assert_eq!(
-                            originals.get(id),
-                            Some(&publication["message_sha256"]),
-                            "live retries must retain the original signed message"
-                        );
-                    } else {
-                        assert!(
-                            originals
-                                .insert(id.to_owned(), publication["message_sha256"].clone())
-                                .is_none()
-                        );
-                    }
-                    gap = publication["local_admission_skipped"] == true
-                        && event["publication_recovery_remaining"].as_u64().unwrap() > 0;
-                }
-                "timer_due" | "transitioned" | "admission" | "finality" if gap => {
-                    interleaved = true
-                }
-                _ => {}
+            } else {
+                assert!(
+                    originals
+                        .insert(id.to_owned(), publication["message_sha256"].clone())
+                        .is_none()
+                );
+                progressed_with_debt |= index < before_heal[actor] && replayed_missing;
             }
         }
     }
     assert!(
-        interleaved,
-        "ordinary work must run between historical messages before the retry queue empties"
+        multi_item_retry,
+        "the fixture must replay a multi-message debt queue"
+    );
+    // Exact within-pass ordering is tested with queued input and a paused clock
+    // in the runtime regression. An idle process gap need not emit new work.
+    assert!(
+        progressed_with_debt,
+        "fresh publication must progress after live replay while the isolated recipient remains unacknowledged"
     );
     let ancestry = layouts
         .each_ref()

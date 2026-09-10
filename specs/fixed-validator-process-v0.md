@@ -55,7 +55,9 @@ The executable supplies local process ownership, seed-file loading, JSONL
 commands, and diagnostic disposal on shutdown. `PROD-020-066` additionally
 permits one explicitly started current-height proposal job, as specified below.
 `PROD-020-067` adds the optional finite-plan supervisor described below.
-It grants no candidate discovery or ranking, certificate acquisition beyond the
+`PROD-020-069` extends it with a bounded post-startup candidate inbox and a durable
+local preference among fully validated candidates. It grants no network candidate
+discovery, globally agreed candidate ranking, certificate acquisition beyond the
 bounded configured-peer catch-up paths, artifact serving beyond
 the separately opted-in retained complete-proof and artifact-source responses,
 automatic inbox clearing, repair, dynamic
@@ -148,7 +150,7 @@ acquisition_blocks = "16"
 ```
 
 `targets` contains 1–256 canonical block IDs in height order starting at height
-1. The supervisor neither discovers nor ranks candidates. `peers` is a nonempty,
+1. This finite-plan mode neither discovers nor ranks candidates. `peers` is a nonempty,
 duplicate-free ordered subset of the static configured peers, bounded by the
 existing static-peer limit. `interval_millis` is a positive canonical `u64`
 decimal string with checked monotonic deadline addition. `acquisition_blocks`
@@ -195,6 +197,72 @@ shutdown behavior. Restart rederives volatile jobs and retries requests; complet
 signed publications recover through their original durable bytes. Pending signing
 preparations and anchored terminal states retain existing fail-closed startup:
 this does not promise recovery from every arbitrary crash point.
+
+### Continuous candidate inbox
+
+Instead of nonempty `targets`, the supervisor may configure
+`candidate_inbox = "candidate-inbox.json"`. The path resolves against the
+configuration directory; an empty path is rejected. This mode accepts new local
+hints after startup without a height-ordered startup plan. The same immutable
+policy binding includes the inbox path; finite-plan policy bytes remain
+unchanged. Switching modes on an existing signer is not a migration path.
+
+An external publisher atomically replaces a bounded regular JSON file:
+
+```json
+{"candidates":["<canonical block ID>","<another canonical block ID>"]}
+```
+
+Each observation reads at most 20,000 bytes from one nonblocking, no-follow
+regular descriptor and accepts at most 256 entries before deduplication. Every
+ID must be canonical; unknown or duplicate object fields are rejected. Empty,
+absent, malformed, oversized or nonregular intake provides no eligible batch.
+Read/parse refusal emits `supervisor_inbox_waiting` without exposing input bytes
+or changing durable preference. The publisher owns replacement and retention;
+the validator never edits, acknowledges or deletes this inbox.
+
+At most once per supervisor interval, with idle source ownership and no retained
+value or stopped fresh job, the owner observes the batch in ascending canonical
+block-ID order. Candidates must belong to the configured source chain, extend
+the exact replay-verified selected head, have a complete local canonical payload,
+and pass the selected snapshot's full child validation, including proof admission
+and artifact-set roots. Invalid or nonextending candidates are skipped. The first
+fully validated candidate is the lowest ID in this local observed eligible set;
+unavailable candidates are not members of that set. This is local proposer
+preference, not globally agreed candidate ordering, finality, or peer authority.
+Role, phase, round, retained-value and signing gates still apply when authoring.
+
+When no eligible candidate exists, missing candidate or payload bytes use the
+existing bounded configured-peer acquisition path. Complete-proof polling still
+alternates with acquisition. The missing-hint cursor advances after a configured
+peer cycle, so equal hint and peer counts cannot permanently bind a hint to one
+unavailable peer. Cursors are volatile and restart from the configured order;
+changing external batches carries no fairness or response-time guarantee.
+Source integrity failures remain fatal and are not repaired by inbox intake.
+
+Before any job may author the chosen fresh value, the exclusive signer owner
+syncs `vote_journal/supervisor-choice-v0.json`. Its bytes are canonical JSON for
+`null` or `{height,parent,target}` (canonical decimal height and canonical IDs),
+followed by one newline and the lowercase SHA-256 of those JSON bytes. Create
+syncs `null` and the directory. Replacement writes and syncs a newly created
+`supervisor-choice-v0.pending`, renames it over the choice file, and syncs the
+directory before exposing the preference. An interrupted temporary entry may
+be unlinked under the owner lock before another replacement; it is never read
+as authority. Any replacement failure stops the owner before fresh authoring.
+
+Strict reopen requires the bounded regular choice file, verifies exact canonical
+encoding and checksum, and stabilizes the file and directory. A future height or
+a different parent at the current height refuses work. An older choice is
+superseded by journal-derived height advancement; a current choice survives inbox
+replacement, omission and round changes. Retained consensus values always take
+precedence. Only the latest local preference is retained here: this file is not
+a signing journal, rollback anchor, selection certificate or source of consensus
+position, and authoring revalidates its bytes through the original source gates.
+
+Continuous intake removes the finite startup target horizon. Existing source,
+evidence, signer-journal, round and runtime limits remain binding; it does not
+provide unbounded retention, live source-store mutation by another owner,
+automatic corruption repair or recovery of interrupted signing preparations.
 
 ## Invocation and configuration
 

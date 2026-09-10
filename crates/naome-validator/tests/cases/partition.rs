@@ -40,6 +40,7 @@ mod autonomous_supervisor;
 
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 const MILESTONE_BOUND: Duration = Duration::from_secs(45);
+const PUMP_EVENT_BURST: usize = 32;
 type Images = Vec<(PathBuf, Vec<u8>)>;
 
 struct Corpus {
@@ -59,7 +60,7 @@ impl Corpus {
     }
 
     fn with_heights(weights: [u16; 4], heights: u8) -> Self {
-        assert!((1..=16).contains(&heights));
+        assert!((1..=64).contains(&heights));
         let definition = ArtifactChainDefinition::new([0x91; 32]);
         let context = ConsensusContextV0::new(
             definition.id(),
@@ -102,8 +103,23 @@ impl Corpus {
         assert_eq!(entries[proposers[0]].consensus_key(), round.proposer());
         let payloads: Vec<_> = (1..=heights)
             .map(|value| {
+                let certificate = if value <= 6 {
+                    vec![0, 0, 0, 1, 0x10, value]
+                } else {
+                    // Distinct checked conclusions with successively more
+                    // universal binders; each inference uses its predecessor.
+                    let steps = u32::from(value - 5);
+                    let mut bytes = steps.to_be_bytes().to_vec();
+                    bytes.extend_from_slice(&[0x06, 0, 0, 0, 0]);
+                    for premise in 0..steps - 1 {
+                        bytes.push(0x21);
+                        bytes.extend_from_slice(&premise.to_be_bytes());
+                        bytes.extend_from_slice(&0u32.to_be_bytes());
+                    }
+                    bytes
+                };
                 ArtifactPayload::Proof(
-                    ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, 0x10, value]).unwrap(),
+                    ProofCertificate::from_canonical_bytes(&certificate).unwrap(),
                 )
                 .to_canonical_bytes()
             })
@@ -380,19 +396,36 @@ fn pump_until_with_bound(
     let deadline = Instant::now() + bound;
     while !predicate(nodes) {
         for (actor, node) in nodes.iter_mut().enumerate() {
-            if let Some(event) = node.observe(Duration::from_millis(1)) {
+            // Drain a bounded burst so a quiet actor cannot throttle every
+            // busy peer's stdout reader during publication replay.
+            for index in 0..PUMP_EVENT_BURST {
+                let wait = if index == 0 {
+                    Duration::from_millis(1)
+                } else {
+                    Duration::ZERO
+                };
+                let Some(event) = node.observe(wait) else {
+                    break;
+                };
                 healthy(&event);
                 assert_ne!(event["event"], "stopped", "{label}: actor {actor}");
             }
+            let exit = node.child.try_wait().unwrap();
             assert!(
-                node.child.try_wait().unwrap().is_none(),
-                "{label}: actor {actor} exited"
+                exit.is_none(),
+                "{label}: actor {actor} exited {exit:?}; latest events: {:?}",
+                node.observed.iter().rev().take(12).collect::<Vec<_>>()
             );
         }
         assert!(
             Instant::now() < deadline,
-            "{label}: timed out; transcripts: {:?}",
-            nodes.each_ref().map(|node| &node.observed)
+            "{label}: timed out; latest state: {}",
+            serde_json::to_string_pretty(&nodes.each_ref().map(|node| json!({
+                "finality": node.observed.iter().rev().find(|e| e["event"] == "finality"),
+                "choice": node.observed.iter().rev().find(|e| e["event"] == "supervisor_candidate_selected"),
+                "proposal": node.observed.iter().rev().find(|e| e["event"].as_str().is_some_and(|name| name.starts_with("proposal_job"))),
+                "recent": node.observed.iter().rev().filter(|e| e["event"] != "publication_retry_scheduled").take(12).collect::<Vec<_>>(),
+            }))).unwrap()
         );
     }
 }

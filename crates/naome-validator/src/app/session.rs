@@ -45,7 +45,7 @@ enum Poll<'node> {
 impl<'node> Session<'_, 'node> {
     pub async fn run(mut self, mut sources: Option<Sources>) -> Result<(Value, bool)> {
         let (reason, success) = loop {
-            if let Some(command) = self.supervise()? {
+            if let Some(command) = self.supervise(sources.as_mut())? {
                 let started = match sources.as_mut() {
                     Some(sources) => Acquisition::start(command, &mut self.runtime, sources, true),
                     None => Err("sources_disabled"),
@@ -256,7 +256,7 @@ impl<'node> Session<'_, 'node> {
         }
     }
 
-    fn supervise(&mut self) -> Result<Option<Command>> {
+    fn supervise(&mut self, sources: Option<&mut Sources>) -> Result<Option<Command>> {
         let Some(supervisor) = self.supervisor.as_mut() else {
             return Ok(None);
         };
@@ -278,17 +278,43 @@ impl<'node> Session<'_, 'node> {
             .selected_artifact_history()
             .selected_head_block_id()
             .map_err(|_| "supervisor_selected_history")?;
+        let due = tokio::time::Instant::now() >= supervisor.due;
+        let fresh = if let Some(inbox) = &mut supervisor.inbox {
+            let previous = inbox.target(height, head)?;
+            if due
+                && driver.retained_proposal_block().is_none()
+                && !supervisor.fresh_stopped
+                && let Some(code) = inbox.scan(
+                    height,
+                    driver.selected_artifact_history(),
+                    sources.ok_or("sources_disabled")?,
+                )?
+            {
+                self.output
+                    .emit(json!({"event":"supervisor_inbox_waiting", "code":code}))?;
+            }
+            let target = inbox.target(height, head)?;
+            if previous.is_none()
+                && let Some(target) = target
+            {
+                self.output.emit(json!({"event":"supervisor_candidate_selected", "height":height.to_string(), "target":report::hex(target.as_bytes())}))?;
+            }
+            target
+        } else {
+            None
+        };
         let parent_matches = index == 0 || supervisor.targets.get(index - 1) == Some(&head);
+        let fresh = if supervisor.fresh_stopped {
+            None
+        } else if parent_matches {
+            fresh.or(supervisor.targets.get(index).copied())
+        } else {
+            fresh
+        };
         let target = driver
             .retained_proposal_block()
             .map(|b| b.id())
-            .or_else(|| {
-                if parent_matches && !supervisor.fresh_stopped {
-                    supervisor.targets.get(index).copied()
-                } else {
-                    None
-                }
-            })
+            .or(fresh)
             .filter(|target| Some(*target) != supervisor.stopped_target);
         if let Some(target) = target
             && self
@@ -302,7 +328,7 @@ impl<'node> Session<'_, 'node> {
                 &self.runtime,
             )?);
         }
-        if tokio::time::Instant::now() < supervisor.due {
+        if !due {
             return Ok(None);
         }
         supervisor.postpone()?;
@@ -310,11 +336,17 @@ impl<'node> Session<'_, 'node> {
             return Ok(None);
         }
         supervisor.next_is_sync = !supervisor.next_is_sync;
+        let intake = supervisor
+            .inbox
+            .as_ref()
+            .and_then(|inbox| inbox.missing)
+            .filter(|_| target.is_none() && !supervisor.fresh_stopped);
         if supervisor.next_is_sync
-            || !self
-                .proposal_job
-                .as_ref()
-                .is_some_and(ProposalJob::needs_sources)
+            || (intake.is_none()
+                && !self
+                    .proposal_job
+                    .as_ref()
+                    .is_some_and(ProposalJob::needs_sources))
         {
             let peer = supervisor.peer(0);
             match ProofSync::start(0, &peer, 1, &mut self.runtime) {
@@ -325,14 +357,24 @@ impl<'node> Session<'_, 'node> {
             }
             return Ok(None);
         }
-        let Some(target) = target else {
+        let Some(target) = intake.map(|(id, _)| id).or(target) else {
             return Ok(None);
         };
-        let peer_id = supervisor.peer(if supervisor.acquire_payloads { 2 } else { 1 });
+        let payloads = intake.map_or(supervisor.acquire_payloads, |(_, payloads)| payloads);
+        if intake.is_some() {
+            supervisor
+                .inbox
+                .as_mut()
+                .unwrap()
+                .acquired(supervisor.peers.len());
+        }
+        let peer_id = supervisor.peer(if payloads { 2 } else { 1 });
         let target = report::hex(target.as_bytes());
-        self.output.emit(json!({"event":"supervisor_acquisition_selected", "peer_id":peer_id,
-            "target":target, "kind":if supervisor.acquire_payloads { "payloads" } else { "ancestry" }}))?;
-        let command = if supervisor.acquire_payloads {
+        self.output.emit(
+            json!({"event":"supervisor_acquisition_selected", "peer_id":peer_id,
+            "target":target, "kind":if payloads { "payloads" } else { "ancestry" }}),
+        )?;
+        let command = if payloads {
             Command::AcquirePayloads {
                 id: 0,
                 target,

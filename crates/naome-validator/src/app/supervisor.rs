@@ -8,10 +8,15 @@ use tokio::time::Instant;
 
 use super::{Result, acquisition, config, files};
 
+mod inbox;
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Config {
+    #[serde(default)]
     pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_inbox: Option<std::path::PathBuf>,
     pub peers: Vec<String>,
     pub interval_millis: String,
     pub acquisition_blocks: String,
@@ -29,13 +34,21 @@ pub(super) struct Supervisor {
     pub stopped_target: Option<ArtifactBlockId>,
     pub acquire_payloads: bool,
     pub next_is_sync: bool,
+    pub inbox: Option<inbox::Inbox>,
     binding: Vec<u8>,
 }
 
 impl Config {
-    pub fn prepare(self, configured: &[PeerId]) -> Result<Supervisor> {
-        if self.targets.is_empty() || self.targets.len() > 256 {
+    pub fn prepare(self, configured: &[PeerId], base: &Path) -> Result<Supervisor> {
+        if (self.targets.is_empty() == self.candidate_inbox.is_none()) || self.targets.len() > 256 {
             return Err("supervisor_targets_limit");
+        }
+        if self
+            .candidate_inbox
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err("supervisor_inbox_path");
         }
         let targets = self
             .targets
@@ -75,6 +88,9 @@ impl Config {
             stopped_target: None,
             acquire_payloads: false,
             next_is_sync: true,
+            inbox: self
+                .candidate_inbox
+                .map(|path| inbox::Inbox::new(base.join(path))),
             binding,
         })
     }
@@ -83,7 +99,7 @@ impl Config {
 impl Supervisor {
     /// Written under the existing exclusive signer owner before any runtime poll.
     /// This is immutable scheduling policy, never an acknowledgement or cursor.
-    pub fn bind(&self, directory: &Path, create: bool) -> Result<()> {
+    pub fn bind(&mut self, directory: &Path, create: bool) -> Result<()> {
         let path = directory.join("supervisor-policy-v0.json");
         if create {
             let mut file = File::options()
@@ -101,6 +117,9 @@ impl Supervisor {
         File::open(directory)
             .and_then(|f| f.sync_all())
             .map_err(|_| "supervisor_policy_sync")?;
+        if let Some(inbox) = &mut self.inbox {
+            inbox.bind(directory, create)?;
+        }
         Ok(())
     }
 

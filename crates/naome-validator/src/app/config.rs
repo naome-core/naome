@@ -293,7 +293,10 @@ impl Config {
                 if self.sources.is_none() || evidence.is_none() || publication_retry.is_none() {
                     return Err("supervisor_requires_durable_sources_evidence_retry");
                 }
-                policy.prepare(&peers.iter().map(StaticPeer::peer_id).collect::<Vec<_>>())
+                policy.prepare(
+                    &peers.iter().map(StaticPeer::peer_id).collect::<Vec<_>>(),
+                    &base,
+                )
             })
             .transpose()?;
         let network = StaticArtifactNetwork::new(identity, peers).map_err(|_| "network_config")?;
