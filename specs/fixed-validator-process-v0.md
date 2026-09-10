@@ -182,6 +182,8 @@ and deadlines remain binding. An unavailable or invalid remote response permits
 the next peer on a later interval. Local source read/archive failures and
 detected source corruption, including authoring and serving paths, stop the
 autonomous owner; they never repair the source or substitute empty state.
+The separate explicit source recovery restart below may provision a new source
+generation after this owner has stopped; it does not continue the failed owner.
 
 When current finality is waiting for a proposal, an envelope response may supply
 its bounded raw proposal and payload to the existing one-slot input queue.
@@ -263,6 +265,71 @@ Continuous intake removes the finite startup target horizon. Existing source,
 evidence, signer-journal, round and runtime limits remain binding; it does not
 provide unbounded retention, live source-store mutation by another owner,
 automatic corruption repair or recovery of interrupted signing preparations.
+
+### Explicit source recovery restart
+
+`PROD-020-070` permits an operator-requested restart with both process and source
+`mode = "open"`, an existing supervisor, and an additional source field:
+
+```toml
+[sources]
+mode = "open"
+candidate_directory = "candidates"
+payload_directory = "payloads"
+candidate_entries = "128"
+payload_entries = "128"
+payload_bytes = "1048576"
+recovery_directory = "source-recovery-1"
+```
+
+The operator provisions the recovery directory before starting the process.
+The named original candidate and payload directories remain present and are
+never opened, repaired, moved, truncated or deleted by this recovery path.
+Their complete corrupt generation remains available for inspection. Recovery
+starts fresh bounded source retention, not a salvage scan or a promise to
+restore every old cache entry. No configuration value is a signing, finality,
+branch-selection or source-validity authority.
+
+Named original source, recovery and protected directories must be real
+directories. The recovery directory's canonical path must
+neither contain nor lie within either original source directory, any of the four
+authority directories, or the configured evidence directory. Directory aliases
+are checked after canonicalization; a symlink used as a named recovery or child
+directory is rejected. One no-follow regular `source-generation.lock` holds an
+exclusive lock for the complete source-owner lifetime. Only an otherwise empty
+recovery directory may initialize. It creates fixed `candidates` and `payloads`
+subdirectories and uses the ordinary bounded store constructors. After both
+store files and their directories are synchronized, it creates and synchronizes
+`source-generation-v0.json`, then synchronizes the recovery directory before
+returning sources to ordinary startup.
+
+The seal is the exact compact JSON tuple
+`[0,[chain-ID bytes],"canonical original candidate path","canonical original payload path"]`
+with no trailing newline. It binds provenance and format, not consensus
+authority. Subsequent starts with the same configuration acquire the generation
+lock, require exactly these four directory entries, match and synchronize the
+same bounded regular seal descriptor, and strictly open both existing child
+stores under the supplied limits. A changed binding, malformed or missing seal
+on a populated generation, partial store construction, unexpected entry,
+nonregular file, exceeded retention bound or corrupt replacement store refuses
+startup. Such a generation is retained; another replacement requires another
+explicitly configured fresh directory. There is no automatic generation loop,
+in-place repair, silent retry with empty stores or cross-file atomicity claim.
+
+Source initialization may finish even if subsequent authority startup refuses;
+it confers no ready state or right to sign. Finality and signer journals and
+anchors, publication/evidence custody, immutable supervisor policy and the
+persisted current-height choice retain their normal strict reopen rules.
+Pending signing preparations and terminal signer/finality states remain denied.
+Retained valid values and completed publication history still take precedence
+over fresh authoring. Missing exact bytes use the existing supervisor's bounded
+configured-peer ancestry/payload acquisition and complete-proof following;
+structural candidates remain raw input, while payload admission and eventual
+authoring still require complete branch-relative validation. Peers gain no
+validity or selection authority. A crash after generation sealing reopens that
+same generation and reconstructs only ordinary journal-derived runtime state;
+volatile requests restart through normal acquisition. Detected live corruption
+still stops the process, including corruption in a recovery generation.
 
 ## Invocation and configuration
 
