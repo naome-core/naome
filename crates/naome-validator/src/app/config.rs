@@ -336,9 +336,24 @@ impl Config {
                 return Err("authority_directory");
             }
         }
+        let mut protected = vec![
+            directories.finality_journal.as_path(),
+            directories.finality_anchor.as_path(),
+            directories.vote_journal.as_path(),
+            directories.vote_anchor.as_path(),
+        ];
+        if let Some((directory, _)) = &evidence {
+            protected.push(directory);
+        }
         let sources = self
             .sources
-            .map(|sources| sources.prepare(&base))
+            .map(|sources| {
+                sources.prepare(
+                    &base,
+                    matches!(self.mode, Mode::Open) && supervisor.is_some(),
+                    &protected,
+                )
+            })
             .transpose()?;
         Ok(Prepared {
             supervisor,

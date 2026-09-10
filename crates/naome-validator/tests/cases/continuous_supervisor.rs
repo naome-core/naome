@@ -295,12 +295,9 @@ fn continuous_supervisor_acquires_untrusted_hints_with_ordered_peer_fallback() {
         for layout in &layouts {
             publish(layout, &hints);
         }
-        pump_until_with_bound(
-            &mut nodes,
-            "continuous source fallback",
-            Duration::from_secs(90),
-            |nodes| nodes.iter().all(|n| reached(n, &corpus, index)),
-        );
+        pump_recovery_until(&mut nodes, "continuous source fallback", |nodes| {
+            nodes.iter().all(|n| reached(n, &corpus, index))
+        });
     }
     assert!(
         nodes[proposer]
@@ -405,12 +402,9 @@ fn continuous_supervisor_sigkill_with_outstanding_acquisition_retries_after_rest
     for layout in &layouts {
         publish(layout, &hints);
     }
-    pump_until_with_bound(
-        &mut nodes,
-        "continuous acquisition restart",
-        Duration::from_secs(90),
-        |nodes| nodes.iter().all(|n| reached(n, &corpus, 2)),
-    );
+    pump_recovery_until(&mut nodes, "continuous acquisition restart", |nodes| {
+        nodes.iter().all(|n| reached(n, &corpus, 2))
+    });
     assert!(
         nodes[actor]
             .observed

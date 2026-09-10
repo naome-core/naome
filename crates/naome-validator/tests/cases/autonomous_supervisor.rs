@@ -8,6 +8,9 @@ use naome_storage::{
 #[path = "continuous_supervisor.rs"]
 mod continuous;
 
+#[path = "source_recovery.rs"]
+mod source_recovery;
+
 // Each fixture drives four durable signers with short protocol deadlines.
 // Bound their aggregate process and fsync load without reducing any oracle.
 pub(super) fn process_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -15,6 +18,20 @@ pub(super) fn process_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
     ACTIVE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+// Long phases keep the controlled crash before another signing phase. Once
+// peers heal, allow one full 120-second three-phase round plus a 60-second
+// margin; this bounded fixture allowance is not an arbitrary liveness claim.
+fn pump_recovery_until(
+    nodes: &mut [Process; 4],
+    label: &str,
+    predicate: impl Fn(&[Process; 4]) -> bool,
+) {
+    for node in nodes.iter_mut() {
+        node.transcript_limit = node.transcript_limit.max(65_536);
+    }
+    pump_until_with_bound(nodes, label, Duration::from_secs(420), predicate);
 }
 
 pub(super) fn configured(
@@ -253,12 +270,9 @@ fn autonomous_supervisor_acquires_missing_sources_from_configured_peers() {
     let mut nodes = spawn(&layouts, &configs, &mut gates);
     // Three heights include ordered fallback and multiple bounded source
     // requests at the sustainable polling cadence configured above.
-    pump_until_with_bound(
-        &mut nodes,
-        "autonomous source acquisition",
-        Duration::from_secs(90),
-        |nodes| nodes.iter().all(|n| reached(n, &corpus, 2)),
-    );
+    pump_recovery_until(&mut nodes, "autonomous source acquisition", |nodes| {
+        nodes.iter().all(|n| reached(n, &corpus, 2))
+    });
     assert!(
         nodes[proposer]
             .observed
@@ -422,7 +436,7 @@ fn completed_publication_restart(continuous: bool) {
     for gate in &gates {
         gate.heal();
     }
-    pump_until(&mut nodes, "autonomous publication recovery", |nodes| {
+    pump_recovery_until(&mut nodes, "autonomous publication recovery", |nodes| {
         nodes.iter().all(|n| reached(n, &corpus, 2))
     });
     stop(&mut nodes);

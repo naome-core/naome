@@ -86,7 +86,7 @@ impl Layout {
     pub fn finality_images(&self) -> Vec<(PathBuf, Vec<u8>)> {
         self.images_in(&["finality-journal", "finality-anchor"])
     }
-    fn images_in(&self, directories: &[&str]) -> Vec<(PathBuf, Vec<u8>)> {
+    pub fn images_in(&self, directories: &[&str]) -> Vec<(PathBuf, Vec<u8>)> {
         let mut images = Vec::new();
         for directory in directories {
             for entry in fs::read_dir(self.root.join(directory)).unwrap() {

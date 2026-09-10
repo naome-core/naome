@@ -16,6 +16,8 @@ use super::{
     config::{Mode, decimal},
 };
 
+mod recovery;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Config {
@@ -25,6 +27,7 @@ pub(super) struct Config {
     candidate_entries: String,
     payload_entries: String,
     payload_bytes: String,
+    recovery_directory: Option<PathBuf>,
 }
 
 pub(super) struct Prepared {
@@ -33,15 +36,35 @@ pub(super) struct Prepared {
     payload_directory: PathBuf,
     candidate_limit: ArtifactBlockCandidateStoreLimits,
     payload_limit: ArtifactPayloadStoreLimits,
+    recovery: Option<recovery::Generation>,
 }
 
 impl Config {
-    pub fn prepare(self, base: &Path) -> Result<Prepared> {
+    pub fn prepare(
+        self,
+        base: &Path,
+        recovery_allowed: bool,
+        protected: &[&Path],
+    ) -> Result<Prepared> {
         let candidate_directory = base.join(self.candidate_directory);
         let payload_directory = base.join(self.payload_directory);
         if !candidate_directory.is_dir() || !payload_directory.is_dir() {
             return Err("source_directory");
         }
+        let recovery = self
+            .recovery_directory
+            .map(|directory| {
+                if !recovery_allowed || !matches!(self.mode, Mode::Open) {
+                    return Err("source_recovery_requires_supervised_restart");
+                }
+                recovery::Generation::prepare(
+                    &base.join(directory),
+                    &candidate_directory,
+                    &payload_directory,
+                    protected,
+                )
+            })
+            .transpose()?;
         Ok(Prepared {
             mode: self.mode,
             candidate_directory,
@@ -55,6 +78,7 @@ impl Config {
                 decimal(&self.payload_bytes)?,
             )
             .map_err(|_| "source_payload_limit")?,
+            recovery,
         })
     }
 }
@@ -62,18 +86,31 @@ impl Config {
 pub(super) struct Sources {
     pub candidates: ArtifactBlockCandidateStore,
     pub payloads: CanonicalArtifactPayloadStore,
+    _generation: Option<recovery::Owner>,
 }
 
 impl Prepared {
     pub fn open(self, definition: ArtifactChainDefinition) -> Result<Sources> {
-        let candidates = match self.mode {
+        let generation = self
+            .recovery
+            .map(|generation| generation.open(definition))
+            .transpose()?;
+        let (mode, candidate_directory, payload_directory) = match &generation {
+            Some(generation) => (
+                generation.mode(),
+                generation.candidate_directory(),
+                generation.payload_directory(),
+            ),
+            None => (self.mode, self.candidate_directory, self.payload_directory),
+        };
+        let candidates = match mode {
             Mode::Create => ArtifactBlockCandidateStore::create(
-                &self.candidate_directory,
+                &candidate_directory,
                 definition,
                 self.candidate_limit,
             ),
             Mode::Open => ArtifactBlockCandidateStore::open(
-                &self.candidate_directory,
+                &candidate_directory,
                 definition,
                 self.candidate_limit,
             ),
@@ -81,20 +118,24 @@ impl Prepared {
         .map_err(|_| "source_candidates_open")?;
         // The lower stores synchronize their contents. The process also owns
         // stabilization of the caller-provisioned directory entries.
-        stabilize(&self.candidate_directory)?;
-        let payloads = match self.mode {
+        stabilize(&candidate_directory)?;
+        let payloads = match mode {
             Mode::Create => {
-                CanonicalArtifactPayloadStore::create(&self.payload_directory, self.payload_limit)
+                CanonicalArtifactPayloadStore::create(&payload_directory, self.payload_limit)
             }
             Mode::Open => {
-                CanonicalArtifactPayloadStore::open(&self.payload_directory, self.payload_limit)
+                CanonicalArtifactPayloadStore::open(&payload_directory, self.payload_limit)
             }
         }
         .map_err(|_| "source_payloads_open")?;
-        stabilize(&self.payload_directory)?;
+        stabilize(&payload_directory)?;
+        if let Some(generation) = &generation {
+            generation.seal()?;
+        }
         Ok(Sources {
             candidates,
             payloads,
+            _generation: generation,
         })
     }
 }
