@@ -40,6 +40,7 @@ mod autonomous_supervisor;
 
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 const MILESTONE_BOUND: Duration = Duration::from_secs(45);
+const PUMP_EVENT_BURST: usize = 32;
 type Images = Vec<(PathBuf, Vec<u8>)>;
 
 struct Corpus {
@@ -397,7 +398,7 @@ fn pump_until_with_bound(
         for (actor, node) in nodes.iter_mut().enumerate() {
             // Drain a bounded burst so a quiet actor cannot throttle every
             // busy peer's stdout reader during publication replay.
-            for index in 0..32 {
+            for index in 0..PUMP_EVENT_BURST {
                 let wait = if index == 0 {
                     Duration::from_millis(1)
                 } else {

@@ -515,7 +515,7 @@ fn live_source_corruption(continuous: bool) {
 }
 
 #[test]
-fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_catches_up() {
+fn autonomous_supervisor_six_heights_progress_with_retry_debt_and_isolated_peer_catches_up() {
     let _fixture_guard = process_fixture_guard();
     let corpus = Corpus::with_heights([1; 4], 6);
     let layouts = std::array::from_fn(|_| Layout::new());
@@ -526,17 +526,26 @@ fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_cat
             gate.cut();
         }
     }
-    // Keep an offline recipient throughout six heights. Retry debt must give
-    // ordinary work opportunities while the finite queue is still nonempty.
+    // Keep an offline recipient throughout six heights. Periodic replay must
+    // coexist with fresh publication while its delivery debt remains outstanding.
     let configs = std::array::from_fn(|i| {
         configured(&corpus, &layouts[i], i, &gates)
             .replace("base_millis = \"1000\"", "base_millis = \"3000\"")
     });
     let mut nodes = spawn(&layouts, &configs, &mut gates);
+    let observer_delay = Duration::from_millis(50);
+    let max_passes =
+        usize::try_from(MILESTONE_BOUND.as_millis() / observer_delay.as_millis() + 1).unwrap();
+    // Retain every replay event for both bounded milestones, plus the normal
+    // startup/shutdown allowance, so fast retry schedules cannot truncate the
+    // fingerprint and progress evidence before either deadline.
+    for node in &mut nodes {
+        node.transcript_limit += 2 * max_passes * PUMP_EVENT_BURST;
+    }
     pump_until(&mut nodes, "autonomous strict-majority prefix", |nodes| {
         // A lagging observer must drain replay bursts without filling the
         // bounded stdout channel and stopping an otherwise healthy signer.
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(observer_delay);
         nodes[..isolated].iter().all(|n| reached(n, &corpus, 5))
     });
     assert!(
@@ -545,11 +554,12 @@ fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_cat
             .iter()
             .any(|e| e["event"] == "finality")
     );
+    let before_heal = nodes.each_ref().map(|node| node.observed.len());
     for gate in &gates {
         gate.heal();
     }
     pump_until(&mut nodes, "autonomous isolated peer catch-up", |nodes| {
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(observer_delay);
         reached(&nodes[isolated], &corpus, 5)
     });
     assert!(
@@ -565,48 +575,64 @@ fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_cat
             .filter(|e| e["event"] == "proposal_job_attempt")
             .all(|e| e["job"]["height"].as_str().unwrap().parse::<u64>().unwrap() <= 6)
     }));
-    let mut interleaved = false;
-    for node in &nodes[..isolated] {
+    let isolated_peer = corpus.peers[isolated].to_string();
+    let mut progressed_with_debt = false;
+    let mut multi_item_retry = false;
+    for (actor, node) in nodes[..isolated].iter().enumerate() {
         let mut originals = std::collections::BTreeMap::new();
-        let mut gap = false;
-        for event in &node.observed {
-            match event["event"].as_str().unwrap() {
-                "publication_prepared" => {
-                    if gap {
-                        interleaved = true;
-                    }
-                    gap = false;
+        let mut replayed_missing = false;
+        assert!(!node.observed[..before_heal[actor]].iter().any(|event| {
+            event["event"] == "peer_completed"
+                && event["peer"] == isolated_peer
+                && event["received"] == true
+        }));
+        for (index, event) in node.observed.iter().enumerate() {
+            if event["event"] != "publication_complete" {
+                continue;
+            }
+            let publication = &event["disposed"];
+            let id = publication["signer_state"].as_str().unwrap();
+            if publication["recovered"] == true {
+                assert_eq!(
+                    originals.get(id),
+                    Some(&publication["message_sha256"]),
+                    "live retries must retain the original signed message"
+                );
+                if index < before_heal[actor] {
+                    assert_eq!(publication["local_admission_skipped"], true);
+                    let delivery = publication["deliveries"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|delivery| delivery["peer"] == isolated_peer)
+                        .unwrap();
+                    assert!(matches!(
+                        delivery["state"].as_str(),
+                        Some("refused" | "failed")
+                    ));
+                    let remaining = event["publication_recovery_remaining"].as_u64().unwrap() > 0;
+                    replayed_missing |= remaining;
+                    multi_item_retry |= remaining;
                 }
-                "publication_recovered" => gap = false,
-                "publication_complete" => {
-                    let publication = &event["disposed"];
-                    let id = publication["signer_state"].as_str().unwrap();
-                    if publication["recovered"] == true {
-                        assert_eq!(
-                            originals.get(id),
-                            Some(&publication["message_sha256"]),
-                            "live retries must retain the original signed message"
-                        );
-                    } else {
-                        assert!(
-                            originals
-                                .insert(id.to_owned(), publication["message_sha256"].clone())
-                                .is_none()
-                        );
-                    }
-                    gap = publication["local_admission_skipped"] == true
-                        && event["publication_recovery_remaining"].as_u64().unwrap() > 0;
-                }
-                "timer_due" | "transitioned" | "admission" | "finality" if gap => {
-                    interleaved = true
-                }
-                _ => {}
+            } else {
+                assert!(
+                    originals
+                        .insert(id.to_owned(), publication["message_sha256"].clone())
+                        .is_none()
+                );
+                progressed_with_debt |= index < before_heal[actor] && replayed_missing;
             }
         }
     }
     assert!(
-        interleaved,
-        "ordinary work must run between historical messages before the retry queue empties"
+        multi_item_retry,
+        "the fixture must replay a multi-message debt queue"
+    );
+    // Exact within-pass ordering is tested with queued input and a paused clock
+    // in the runtime regression. An idle process gap need not emit new work.
+    assert!(
+        progressed_with_debt,
+        "fresh publication must progress after live replay while the isolated recipient remains unacknowledged"
     );
     let ancestry = layouts
         .each_ref()
