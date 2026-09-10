@@ -395,13 +395,25 @@ fn pump_until_with_bound(
     let deadline = Instant::now() + bound;
     while !predicate(nodes) {
         for (actor, node) in nodes.iter_mut().enumerate() {
-            if let Some(event) = node.observe(Duration::from_millis(1)) {
+            // Drain a bounded burst so a quiet actor cannot throttle every
+            // busy peer's stdout reader during publication replay.
+            for index in 0..32 {
+                let wait = if index == 0 {
+                    Duration::from_millis(1)
+                } else {
+                    Duration::ZERO
+                };
+                let Some(event) = node.observe(wait) else {
+                    break;
+                };
                 healthy(&event);
                 assert_ne!(event["event"], "stopped", "{label}: actor {actor}");
             }
+            let exit = node.child.try_wait().unwrap();
             assert!(
-                node.child.try_wait().unwrap().is_none(),
-                "{label}: actor {actor} exited"
+                exit.is_none(),
+                "{label}: actor {actor} exited {exit:?}; latest events: {:?}",
+                node.observed.iter().rev().take(12).collect::<Vec<_>>()
             );
         }
         assert!(

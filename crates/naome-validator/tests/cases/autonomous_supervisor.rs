@@ -534,6 +534,9 @@ fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_cat
     });
     let mut nodes = spawn(&layouts, &configs, &mut gates);
     pump_until(&mut nodes, "autonomous strict-majority prefix", |nodes| {
+        // A lagging observer must drain replay bursts without filling the
+        // bounded stdout channel and stopping an otherwise healthy signer.
+        std::thread::sleep(Duration::from_millis(50));
         nodes[..isolated].iter().all(|n| reached(n, &corpus, 5))
     });
     assert!(
@@ -546,6 +549,7 @@ fn autonomous_supervisor_six_heights_interleave_retry_debt_and_isolated_peer_cat
         gate.heal();
     }
     pump_until(&mut nodes, "autonomous isolated peer catch-up", |nodes| {
+        std::thread::sleep(Duration::from_millis(50));
         reached(&nodes[isolated], &corpus, 5)
     });
     assert!(
