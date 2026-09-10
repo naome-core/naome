@@ -3,6 +3,15 @@ use super::*;
 
 #[test]
 fn autonomous_supervisor_survives_byzantine_equivocation_and_finalizes_three_heights() {
+    run(false);
+}
+
+#[test]
+fn continuous_supervisor_survives_byzantine_equivocation_and_finalizes_three_heights() {
+    run(true);
+}
+
+fn run(continuous: bool) {
     let _fixture_guard = super::super::autonomous_supervisor::process_fixture_guard();
     let fixture = Fixture::new();
     let layouts: [Layout; 4] = std::array::from_fn(|_| Layout::new());
@@ -20,6 +29,8 @@ fn autonomous_supervisor_survives_byzantine_equivocation_and_finalizes_three_hei
             .map(|line| {
                 if line.starts_with("peers = ") {
                     format!("peers = [{:?}]", fixture.peer.to_string())
+                } else if continuous && line.starts_with("targets = ") {
+                    "candidate_inbox = \"candidate-inbox.json\"".to_owned()
                 } else {
                     line.to_owned()
                 }
@@ -56,6 +67,11 @@ fn autonomous_supervisor_survives_byzantine_equivocation_and_finalizes_three_hei
             .to_owned()
     });
     let bridge = Bridge::start(&fixture, addresses);
+    if continuous {
+        for layout in &layouts {
+            fs::write(layout.root.join("candidate-inbox.json"), serde_json::to_vec(&json!({"candidates":fixture.corpus.blocks.iter().map(|block| hex(block.id().as_bytes())).collect::<Vec<_>>()})).unwrap()).unwrap();
+        }
+    }
     pump_until(&mut nodes, "autonomous Byzantine sessions", |nodes| {
         nodes.iter().all(|node| {
             node.observed

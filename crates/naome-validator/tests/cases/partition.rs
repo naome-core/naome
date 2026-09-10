@@ -59,7 +59,7 @@ impl Corpus {
     }
 
     fn with_heights(weights: [u16; 4], heights: u8) -> Self {
-        assert!((1..=16).contains(&heights));
+        assert!((1..=64).contains(&heights));
         let definition = ArtifactChainDefinition::new([0x91; 32]);
         let context = ConsensusContextV0::new(
             definition.id(),
@@ -102,8 +102,23 @@ impl Corpus {
         assert_eq!(entries[proposers[0]].consensus_key(), round.proposer());
         let payloads: Vec<_> = (1..=heights)
             .map(|value| {
+                let certificate = if value <= 6 {
+                    vec![0, 0, 0, 1, 0x10, value]
+                } else {
+                    // Distinct checked conclusions with successively more
+                    // universal binders; each inference uses its predecessor.
+                    let steps = u32::from(value - 5);
+                    let mut bytes = steps.to_be_bytes().to_vec();
+                    bytes.extend_from_slice(&[0x06, 0, 0, 0, 0]);
+                    for premise in 0..steps - 1 {
+                        bytes.push(0x21);
+                        bytes.extend_from_slice(&premise.to_be_bytes());
+                        bytes.extend_from_slice(&0u32.to_be_bytes());
+                    }
+                    bytes
+                };
                 ArtifactPayload::Proof(
-                    ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, 0x10, value]).unwrap(),
+                    ProofCertificate::from_canonical_bytes(&certificate).unwrap(),
                 )
                 .to_canonical_bytes()
             })
@@ -391,8 +406,13 @@ fn pump_until_with_bound(
         }
         assert!(
             Instant::now() < deadline,
-            "{label}: timed out; transcripts: {:?}",
-            nodes.each_ref().map(|node| &node.observed)
+            "{label}: timed out; latest state: {}",
+            serde_json::to_string_pretty(&nodes.each_ref().map(|node| json!({
+                "finality": node.observed.iter().rev().find(|e| e["event"] == "finality"),
+                "choice": node.observed.iter().rev().find(|e| e["event"] == "supervisor_candidate_selected"),
+                "proposal": node.observed.iter().rev().find(|e| e["event"].as_str().is_some_and(|name| name.starts_with("proposal_job"))),
+                "recent": node.observed.iter().rev().filter(|e| e["event"] != "publication_retry_scheduled").take(12).collect::<Vec<_>>(),
+            }))).unwrap()
         );
     }
 }

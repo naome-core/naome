@@ -102,7 +102,7 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
                 config.driver_max_round,
             )
             .map_err(|_| "driver_create")?;
-            if let Some(supervisor) = &config.supervisor {
+            if let Some(supervisor) = &mut config.supervisor {
                 supervisor.bind(
                     &publication_directory,
                     matches!(config.mode, config::Mode::Create),

@@ -433,6 +433,7 @@ fn identity(mut seed: [u8; 32]) -> PeerId {
 pub struct Process {
     pub child: Child,
     pub observed: Vec<Value>,
+    pub transcript_limit: usize,
     receiver: mpsc::Receiver<Value>,
 }
 
@@ -441,6 +442,7 @@ impl Process {
         Self {
             child,
             observed: Vec::new(),
+            transcript_limit: 4096,
             receiver: mpsc::channel().1,
         }
     }
@@ -471,6 +473,7 @@ impl Process {
         Self {
             child,
             observed: Vec::new(),
+            transcript_limit: 4096,
             receiver,
         }
     }
@@ -495,7 +498,10 @@ impl Process {
                     )
                 });
             self.observed.push(value.clone());
-            assert!(self.observed.len() < 4096, "bounded test transcript");
+            assert!(
+                self.observed.len() < self.transcript_limit,
+                "bounded test transcript"
+            );
             if predicate(&value) {
                 return value;
             }
@@ -508,7 +514,10 @@ impl Process {
         match self.receiver.recv_timeout(wait) {
             Ok(value) => {
                 self.observed.push(value.clone());
-                assert!(self.observed.len() < 4096, "bounded test transcript");
+                assert!(
+                    self.observed.len() < self.transcript_limit,
+                    "bounded test transcript"
+                );
                 Some(value)
             }
             Err(mpsc::RecvTimeoutError::Timeout) => None,
