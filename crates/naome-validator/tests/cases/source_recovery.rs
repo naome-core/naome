@@ -212,7 +212,7 @@ fn explicit_source_recovery_rejects_invalid_replacement_and_reacquires_after_sig
     for layout in &layouts {
         let _guard = PARENT_JOURNALS.read().unwrap();
         let inserted = ArtifactBlockCandidateStore::open(
-            &layout.root.join("candidates"),
+            layout.root.join("candidates"),
             corpus.definition,
             ArtifactBlockCandidateStoreLimits::new(128).unwrap(),
         )
