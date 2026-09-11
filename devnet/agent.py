@@ -31,8 +31,8 @@ EVENTS = {
 }
 
 
-def atomic(path, value):
-    """One agent owns this diagnostic file; it is never signing authority."""
+def atomic(path, value, *, durable=True):
+    """Atomically replace one owned file; startup markers require durable=True."""
     path = Path(path)
     temporary = path.with_suffix(".pending")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
@@ -40,13 +40,15 @@ def atomic(path, value):
         json.dump(value, output, sort_keys=True, separators=(",", ":"))
         output.write("\n")
         output.flush()
-        os.fsync(output.fileno())
+        if durable:
+            os.fsync(output.fileno())
     os.replace(temporary, path)
-    descriptor = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    if durable:
+        descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def resources(pid, root):
@@ -284,7 +286,7 @@ def run(args):
             if values["disk_bytes"] > MAX_DISK:
                 state.failure("sampled role disk limit exceeded")
                 break
-            atomic(root / "status.json", state.snapshot())
+            atomic(root / "status.json", state.snapshot(), durable=False)
             if child.poll() is not None:
                 break
     finally:
@@ -300,7 +302,7 @@ def run(args):
             for reader in readers:
                 reader.join(timeout=2)
             state.sample(resources(child.pid, root), child.returncode)
-        atomic(root / "status.json", state.snapshot())
+        atomic(root / "status.json", state.snapshot(), durable=False)
         web.shutdown()
         web.server_close()
         if proxy is not None:

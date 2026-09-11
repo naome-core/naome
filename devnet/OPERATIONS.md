@@ -79,6 +79,15 @@ participating validators before advancing. The default schedule includes:
 - a publisher SIGKILL and strict reopen halfway through the run;
 - a graceful validator restart and strict reopen three quarters through the run.
 
+The devnet supervisor polls every 100 ms so source discovery and retry turns do
+not routinely consume the ten-second consensus phase budget. The phase timers,
+network delay, rate limits, 100-height CI workload and fault schedule are retained.
+Independent publisher tools and read-only health probes run in bounded parallel
+workers; every role's result, both publisher receipts and all replay checks remain
+mandatory. Periodic `status.json` snapshots use atomic replacement without disk
+synchronization because they are regenerated diagnostics. Startup markers,
+source offers, journal/anchor state and the qualification report remain durable.
+
 The process smoke path substitutes SIGSTOP/SIGCONT of the validator child for
 network disconnection. It does not claim liveness while a peer remains offline.
 There is no unsafe signing-recovery test disguised as a restart: the validator
@@ -91,7 +100,9 @@ reports must agree on height, head and ancestry digest. A pass also requires
 observed completed network acquisition, no unknown or regressing finalized heads,
 no unexpected child exit, no reported errors, and completed cleanup.
 
-`report.json` records each height, injected faults, replay results, source and
+`report.json` separates publication and finality/receipt wait time per height,
+aggregate health-probe time and final replay time. It also records injected
+faults, replay results, source and
 runtime binary provenance, sample counts, observed event totals, peak sampled
 resident memory on Linux, peak sampled role disk use, and connection counts.
 Sampling is every half-second; these are observations, not precise allocation
@@ -212,6 +223,8 @@ this devnet supplies no repair or safe arbitrary validator SIGKILL-resume promis
 
 CI's `Devnet qualification` job performs the 100-height container run and is a
 dependency of the required `Rust CI` result, alongside the full Linux, macOS and
-Windows test/release matrices. The Docker configuration follows the documented
+Windows test/release matrices. Qualification jobs may restore the matching main
+release cache, but still run every build and qualification command; only the
+existing successful main matrix writes caches. The Docker configuration follows the documented
 [Compose service controls](https://docs.docker.com/reference/compose-file/services/)
 and [network reconnect behavior](https://docs.docker.com/reference/cli/docker/network/connect/).

@@ -161,6 +161,14 @@ jobs:
         run: |
           rustup show active-toolchain
           python3 -B -m unittest discover -s devnet -p 'test_*.py'
+      - name: Restore validated main release cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: cargo-v1-ubuntu-24.04-${{ runner.os }}-${{ runner.arch }}-release-all-features-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', '.cargo/config', '.cargo/config.toml', '.github/workflows/*.yml') }}
       - name: Build release test targets and devnet binaries
         run: cargo test -p naome-devnet -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-run
       - name: Package exact Linux binaries
@@ -185,6 +193,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore validated main release cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: cargo-v1-ubuntu-24.04-${{ runner.os }}-${{ runner.arch }}-release-all-features-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', '.cargo/config', '.cargo/config.toml', '.github/workflows/*.yml') }}
       - name: Compile membership qualification with pinned toolchain
         run: cargo test -p naome-runtime --profile release --all-targets --all-features --locked --no-run
       - name: Qualify actual epochs, live activation and independent durable replay

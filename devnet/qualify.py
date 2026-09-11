@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Create, exercise, verify, and clean up one bounded fixed-validator devnet."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
@@ -44,9 +45,17 @@ class Qualification:
 
     def observe(self, names, starting=False):
         current = {}
+        beginning = time.monotonic()
+        # Each probe is read-only and independently bounded by its backend.
+        # Validate and update observations in role order after all probes finish.
+        with ThreadPoolExecutor(max_workers=min(6, max(1, len(names)))) as workers:
+            probes = {name: workers.submit(self.backend.status, name) for name in names}
+        timings = self.report.setdefault("timings", {})
+        timings["status_seconds"] = timings.get("status_seconds", 0) + time.monotonic() - beginning
+        timings["status_calls"] = timings.get("status_calls", 0) + len(names)
         for name in names:
             try:
-                value = self.backend.status(name)
+                value = probes[name].result()
             except (urllib.error.URLError, TimeoutError, OSError):
                 if starting:
                     continue
@@ -132,7 +141,16 @@ class Qualification:
         self.wait("initial healthy processes", self.backend.roles, lambda v: all(s["publisher"] or s["finalized_height"] == 0 for s in v.values()), starting=True)
         for height in range(1, self.args.heights + 1):
             beginning = time.monotonic()
-            first = self.backend.tool("publisher-0", "publish", height)
+            # Publisher owners and source stores are independent. Both must
+            # produce the same workload and both exact receipts remain required.
+            if self.args.faults and height == 2:
+                first = self.backend.tool("publisher-0", "publish", height)
+            else:
+                with ThreadPoolExecutor(max_workers=2) as workers:
+                    first_work = workers.submit(self.backend.tool, "publisher-0", "publish", height)
+                    second_work = workers.submit(self.backend.tool, "publisher-1", "publish", height)
+                first, second = first_work.result(), second_work.result()
+            publication_seconds = time.monotonic() - beginning
             self.expected[height] = first["head"]
             receipts = {"publisher-0": first["offer_sha256"]}
             if self.args.faults and height == 2:
@@ -141,7 +159,6 @@ class Qualification:
                 wire = bytes.fromhex(first["chain_id"]) + bytes([32]) + b"".join(bytes.fromhex(value) for value in candidates)
                 receipts["publisher-1"] = hashlib.sha256(wire).hexdigest()
             else:
-                second = self.backend.tool("publisher-1", "publish", height)
                 if second["head"] != first["head"]:
                     raise RuntimeError("independent publishers produced different workloads")
                 receipts["publisher-1"] = second["offer_sha256"]
@@ -153,10 +170,12 @@ class Qualification:
                     all(values[publisher]["last_receipts"].get(peers[name]) == digest for name in validators)
                     for publisher, digest in receipts.items())
 
+            waiting = time.monotonic()
             self.wait(f"height {height} finality and durable intake receipts", active, reached)
+            wait_seconds = time.monotonic() - waiting
             if self.args.faults and height == 2:
                 self.report["faults"].append({"operation": "invalid_candidate_offer", "count": 32, "receivers_acked": len(validators)})
-            self.report["heights"].append({"height": height, "head": first["head"], "seconds": round(time.monotonic() - beginning, 3), "validators": validators})
+            self.report["heights"].append({"height": height, "head": first["head"], "seconds": round(time.monotonic() - beginning, 3), "publish_seconds": round(publication_seconds, 3), "wait_seconds": round(wait_seconds, 3), "validators": validators})
             print(json.dumps({"event": "devnet_height", **self.report["heights"][-1]}), flush=True)
             if self.args.faults and height == 3:
                 self.offline = "validator-3"
@@ -175,7 +194,9 @@ class Qualification:
             if self.args.interval_seconds and height != self.args.heights:
                 time.sleep(self.args.interval_seconds)
         self.backend.stop()
+        replay_started = time.monotonic()
         verified = [self.backend.tool(name, "verify", self.args.heights) for name in self.backend.roles[:4]]
+        self.report.setdefault("timings", {})["independent_replay_seconds"] = time.monotonic() - replay_started
         if len({(v["height"], v["head"], v["ancestry_sha256"]) for v in verified}) != 1:
             raise RuntimeError("replayed validator histories disagree")
         self.report["verified"] = verified

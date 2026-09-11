@@ -153,10 +153,17 @@ async fn full_epochs_join_removal_and_independent_durable_replay() {
         if [16384, 16385, 32768, 32769].contains(&height) {
             (nodes, proof) = live_boundary(nodes, &proof, height == 16385 || height == 32769).await;
         } else {
-            for node in &mut nodes {
-                node.receive(MembershipPublication::Finality(proof.clone()))
-                    .unwrap();
-            }
+            // Distinct journal/anchor owners verify and synchronize every
+            // height independently; overlap their I/O instead of serializing it.
+            std::thread::scope(|workers| {
+                for node in &mut nodes {
+                    let proof = &proof;
+                    workers.spawn(move || {
+                        node.receive(MembershipPublication::Finality(proof.clone()))
+                            .unwrap();
+                    });
+                }
+            });
         }
         branch = branch
             .verify_finality(
@@ -185,41 +192,56 @@ async fn full_epochs_join_removal_and_independent_durable_replay() {
         }
     }
     drop(nodes);
-    for id in 1..=5 {
-        let journal = MembershipJournal::open(
-            &directory.0.join(format!("j{id}")),
-            &directory.0.join(format!("a{id}")),
-            genesis(),
-            Some(keys(id)[0].clone()),
-            limits(),
-        )
-        .unwrap();
-        assert_eq!(
-            journal.machine().unwrap().branch().ancestry(),
-            branch.ancestry()
-        );
-        assert_eq!(journal.machine().unwrap().is_active(), id != 1);
-        assert_eq!(
-            journal
-                .machine()
-                .unwrap()
-                .branch()
-                .next_snapshot()
-                .unwrap()
-                .members()
-                .len(),
-            4
-        );
-        assert_eq!(
-            journal
-                .machine()
-                .unwrap()
-                .branch()
-                .membership()
-                .pending_activation(),
-            None
-        );
-    }
+    eprintln!(
+        "membership prefix complete seconds={:.1}",
+        start.elapsed().as_secs_f64()
+    );
+    let expected_ancestry = branch.ancestry();
+    std::thread::scope(|workers| {
+        for id in 1..=5 {
+            let directory = &directory.0;
+            workers.spawn(move || {
+                let replay_started = std::time::Instant::now();
+                let journal = MembershipJournal::open(
+                    &directory.join(format!("j{id}")),
+                    &directory.join(format!("a{id}")),
+                    genesis(),
+                    Some(keys(id)[0].clone()),
+                    limits(),
+                )
+                .unwrap();
+                assert_eq!(
+                    journal.machine().unwrap().branch().ancestry(),
+                    expected_ancestry
+                );
+                assert_eq!(journal.machine().unwrap().is_active(), id != 1);
+                assert_eq!(
+                    journal
+                        .machine()
+                        .unwrap()
+                        .branch()
+                        .next_snapshot()
+                        .unwrap()
+                        .members()
+                        .len(),
+                    4
+                );
+                assert_eq!(
+                    journal
+                        .machine()
+                        .unwrap()
+                        .branch()
+                        .membership()
+                        .pending_activation(),
+                    None
+                );
+                eprintln!(
+                    "membership independent replay organization={id} seconds={:.1}",
+                    replay_started.elapsed().as_secs_f64()
+                );
+            });
+        }
+    });
     eprintln!(
         "membership qualification complete seconds={:.1}",
         start.elapsed().as_secs_f64()

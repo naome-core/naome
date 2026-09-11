@@ -224,11 +224,14 @@ five separate validator processes for application, explicit approvals, artifact
 finalization, proof export and strict observer restart.
 
 The explicit release qualification replays 32,770 actual finalized heights into
-five independent journal/anchor pairs. Prefix blocks use generated canonical
+five independent journal/anchor pairs, using at most five parallel owners to
+overlap I/O without skipping any signature, artifact or synchronization check.
+Prefix blocks use generated canonical
 proofs and fully verified quorum certificates; they do not replace height or
 epoch constants. At H16384/H16385 and H32768/H32769, real Noise/TCP runtimes
 finalize candidates, with a partition at activation and subsequent verified
-catch-up. The test finally reopens all five journals from trusted genesis.
+catch-up. The test finally reopens all five journals independently from trusted genesis
+in parallel.
 This is local multi-node evidence, not a geographic deployment or a claim that
 every prefix height was finalized by live network processes.
 

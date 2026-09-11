@@ -89,6 +89,43 @@ class Diagnostics(unittest.TestCase):
             self.assertTrue(json.loads((root / "status.json").read_text())["ok"])
             self.assertGreater(resources(os.getpid(), root)["disk_bytes"], 0)
 
+    def test_only_diagnostic_snapshots_skip_disk_synchronization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("agent.os.fsync", wraps=os.fsync) as flush:
+                atomic(root / "status.json", {"height": 1}, durable=False)
+                self.assertEqual(flush.call_count, 0)
+                self.assertEqual(json.loads((root / "status.json").read_text()), {"height": 1})
+                atomic(root / "initialized.json", {"binding": "trusted"})
+                self.assertEqual(flush.call_count, 2)
+
+
+class ParallelObservation(unittest.TestCase):
+    def test_all_health_probes_overlap_but_a_failed_role_still_fails_qualification(self):
+        from types import SimpleNamespace
+        names = [f"validator-{i}" for i in range(6)]
+        run = Qualification.__new__(Qualification)
+        run.args = SimpleNamespace(backend="process")
+        run.report = {"limits": {"role_disk_bytes_sampled": 100}}
+        run.latest, run.expected, run.samples = {}, {}, {}
+        gate = threading.Barrier(6)
+        bad = set()
+
+        def status(name):
+            # A serialized implementation times out here instead of passing.
+            gate.wait(timeout=3)
+            return {"errors": ["failed"] if name in bad else [], "child_exit": None,
+                    "ready": True, "stalled": False, "publisher": True,
+                    "generation": "one", "events": {}, "connected_peers": [],
+                    "resources": {"disk_bytes": 1, "rss_bytes": None}}
+
+        run.backend = SimpleNamespace(status=status)
+        self.assertEqual(list(run.observe(names)), names)
+        self.assertEqual(run.report["timings"]["status_calls"], 6)
+        bad.add(names[-1])
+        with self.assertRaisesRegex(RuntimeError, "stopped or failed"):
+            run.observe(names)
+
 
 class DelayedTransport(unittest.TestCase):
     def test_delayed_proxy_transfers_exact_bytes_and_releases_listener(self):
