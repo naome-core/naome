@@ -17,6 +17,7 @@ mod input;
 mod proof_sync;
 mod proposal_job;
 mod provider;
+mod publisher;
 mod report;
 mod session;
 mod source_provider;
@@ -45,7 +46,13 @@ pub(super) fn main() -> ExitCode {
 
 fn run(output: &report::Output) -> Result<()> {
     let mut args = env::args_os().skip(1);
-    let path = PathBuf::from(args.next().ok_or("usage_config_path")?);
+    let first = args.next().ok_or("usage_config_path")?;
+    let publisher = first == "--publisher";
+    let path = PathBuf::from(if publisher {
+        args.next().ok_or("usage_config_path")?
+    } else {
+        first
+    });
     if args.next().is_some() {
         return Err("usage_config_path");
     }
@@ -53,7 +60,11 @@ fn run(output: &report::Output) -> Result<()> {
         .enable_all()
         .build()
         .map_err(|_| "executor")?;
-    executor.block_on(run_async(path, output))
+    if publisher {
+        executor.block_on(publisher::run(path, output))
+    } else {
+        executor.block_on(run_async(path, output))
+    }
 }
 
 async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
@@ -106,6 +117,7 @@ async fn run_async(path: PathBuf, output: &report::Output) -> Result<()> {
                 supervisor.bind(
                     &publication_directory,
                     matches!(config.mode, config::Mode::Create),
+                    config.definition.id(),
                 )?;
             } else {
                 match std::fs::symlink_metadata(

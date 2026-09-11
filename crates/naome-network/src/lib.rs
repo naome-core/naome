@@ -223,3 +223,9 @@ pub use acquisition::recovery_bundle_staging::{
 #[cfg(test)]
 #[path = "../../../tests/support/codec_corpus.rs"]
 mod codec_corpus;
+
+pub use transport::candidate_offer::{
+    CANDIDATE_OFFER_INTERVAL, CANDIDATE_OFFER_MAX_BYTES, CANDIDATE_OFFER_MAX_IDS, CandidateOffer,
+    CandidateOfferError, CandidateOfferEvent, CandidateOfferFailure, CandidateOfferMismatch,
+    CandidateOfferTicket, InboundCandidateOffer,
+};

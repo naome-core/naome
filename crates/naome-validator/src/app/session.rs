@@ -565,6 +565,16 @@ impl<'node> Session<'_, 'node> {
         sources: Option<&mut Sources>,
     ) -> Result<Option<Stop>> {
         let (mut event, fatal) = match event {
+            Event::Network(NetworkEvent::InboundCandidateOffer(inbound)) => {
+                if let Some(inbox) = self.supervisor.as_mut().and_then(|s| s.inbox.as_mut())
+                    && inbox.accept(&inbound)?
+                {
+                    // Durable acceptance precedes the receipt; a lost receipt is
+                    // retried idempotently. Invalid or unauthorized offers stay quiet.
+                    let _ = self.runtime.acknowledge_candidate_offer(inbound);
+                }
+                return Ok(None);
+            }
             Event::Network(NetworkEvent::InboundFinalityProof(inbound))
                 if self.serve_finality_proofs =>
             {

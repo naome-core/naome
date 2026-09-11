@@ -29,5 +29,6 @@ pub mod validator_fee_share;
 
 // Compatibility paths for the transport-neutral protocol contracts.
 pub use naome_protocol::{
-    artifact_exchange, block_exchange, chain_head_announcement, chain_head_exchange,
+    artifact_exchange, block_exchange, candidate_offer, chain_head_announcement,
+    chain_head_exchange,
 };

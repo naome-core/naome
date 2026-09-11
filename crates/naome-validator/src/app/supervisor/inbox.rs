@@ -31,8 +31,13 @@ struct Choice {
     target: String,
 }
 
+enum Intake {
+    File(PathBuf),
+    Network(super::offers::Offers),
+}
+
 pub(in crate::app) struct Inbox {
-    path: PathBuf,
+    intake: Intake,
     state: PathBuf,
     choice: Option<Choice>,
     missing_cursor: usize,
@@ -42,8 +47,12 @@ pub(in crate::app) struct Inbox {
 
 impl Inbox {
     pub fn new(path: PathBuf) -> Self {
+        Self::from_intake(Intake::File(path))
+    }
+
+    fn from_intake(intake: Intake) -> Self {
         Self {
-            path,
+            intake,
             state: PathBuf::new(),
             choice: None,
             missing_cursor: 0,
@@ -52,7 +61,26 @@ impl Inbox {
         }
     }
 
-    pub fn bind(&mut self, directory: &Path, create: bool) -> Result<()> {
+    pub fn network(publishers: Vec<naome_network::PeerId>) -> Self {
+        Self::from_intake(Intake::Network(super::offers::Offers::new(publishers)))
+    }
+
+    pub fn accept(&mut self, inbound: &naome_network::InboundCandidateOffer) -> Result<bool> {
+        match &mut self.intake {
+            Intake::Network(offers) => offers.accept(inbound.peer_id(), inbound.offer()),
+            Intake::File(_) => Ok(false),
+        }
+    }
+
+    pub fn bind(
+        &mut self,
+        directory: &Path,
+        create: bool,
+        chain: naome_chain::ArtifactChainId,
+    ) -> Result<()> {
+        if let Intake::Network(offers) = &mut self.intake {
+            offers.bind(directory, create, chain)?;
+        }
         self.state = directory.join("supervisor-choice-v0.json");
         if create {
             let bytes = encode(&None)?;
@@ -108,7 +136,11 @@ impl Inbox {
         if sources.candidates.chain_id() != history.selected_chain_id() {
             return Err("supervisor_source_chain");
         }
-        let ids = match read_batch(&self.path) {
+        let batch = match &self.intake {
+            Intake::File(path) => read_batch(path),
+            Intake::Network(offers) => Ok(offers.candidates()),
+        };
+        let ids = match batch {
             Ok(ids) => ids,
             // External intake is untrusted and may be temporarily incomplete.
             // Invalid batches never change the durable preference.
@@ -153,14 +185,22 @@ impl Inbox {
                 return Ok(None);
             }
         }
-        if !missing.is_empty() {
-            self.missing_cursor %= missing.len();
-            self.missing = Some(missing[self.missing_cursor]);
-        }
+        self.missing = match &mut self.intake {
+            Intake::Network(offers) => offers.missing(&missing),
+            Intake::File(_) if !missing.is_empty() => {
+                self.missing_cursor %= missing.len();
+                Some(missing[self.missing_cursor])
+            }
+            Intake::File(_) => None,
+        };
         Ok(None)
     }
 
     pub fn acquired(&mut self, peers: usize) {
+        if let Intake::Network(offers) = &mut self.intake {
+            offers.acquired(peers);
+            return;
+        }
         // Exhaust a peer cycle before advancing the hint. Advancing both
         // cursors on every request could pin each hint to one unavailable peer
         // when the number of hints shares a factor with the peer count.

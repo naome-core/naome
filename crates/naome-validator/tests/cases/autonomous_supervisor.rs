@@ -11,6 +11,9 @@ mod continuous;
 #[path = "source_recovery.rs"]
 mod source_recovery;
 
+#[path = "network_intake.rs"]
+mod network_intake;
+
 // Each fixture drives four durable signers with short protocol deadlines.
 // Bound their aggregate process and fsync load without reducing any oracle.
 pub(super) fn process_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -102,9 +105,20 @@ fn configured_with_sources(
 }
 
 fn spawn(layouts: &[Layout; 4], configs: &[String; 4], gates: &mut [Gate; 6]) -> [Process; 4] {
+    spawn_with_probe(layouts, configs, gates, None)
+}
+
+fn spawn_with_probe(
+    layouts: &[Layout; 4],
+    configs: &[String; 4],
+    gates: &mut [Gate; 6],
+    probe_actor: Option<usize>,
+) -> [Process; 4] {
     let mut nodes = std::array::from_fn(|i| {
         let mut node = Process::start(&layouts[i], &configs[i]);
-        drop(node.child.stdin.take());
+        if probe_actor != Some(i) {
+            drop(node.child.stdin.take());
+        }
         node
     });
     let addresses = nodes.each_mut().map(|node| {

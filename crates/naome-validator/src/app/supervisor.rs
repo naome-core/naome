@@ -9,6 +9,7 @@ use tokio::time::Instant;
 use super::{Result, acquisition, config, files};
 
 mod inbox;
+mod offers;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +18,8 @@ pub(super) struct Config {
     pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_inbox: Option<std::path::PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_publishers: Option<Vec<String>>,
     pub peers: Vec<String>,
     pub interval_millis: String,
     pub acquisition_blocks: String,
@@ -40,7 +43,12 @@ pub(super) struct Supervisor {
 
 impl Config {
     pub fn prepare(self, configured: &[PeerId], base: &Path) -> Result<Supervisor> {
-        if (self.targets.is_empty() == self.candidate_inbox.is_none()) || self.targets.len() > 256 {
+        if usize::from(!self.targets.is_empty())
+            + usize::from(self.candidate_inbox.is_some())
+            + usize::from(self.candidate_publishers.is_some())
+            != 1
+            || self.targets.len() > 256
+        {
             return Err("supervisor_targets_limit");
         }
         if self
@@ -66,6 +74,24 @@ impl Config {
             }
             seen.push(peer);
         }
+        let publishers = self
+            .candidate_publishers
+            .as_ref()
+            .map(|texts| {
+                if texts.is_empty() || texts.len() > MAX_STATIC_PEERS {
+                    return Err("supervisor_publishers_limit");
+                }
+                let mut publishers = Vec::new();
+                for text in texts {
+                    let peer: PeerId = text.parse().map_err(|_| "supervisor_publisher")?;
+                    if !seen.contains(&peer) || publishers.contains(&peer) {
+                        return Err("supervisor_publisher");
+                    }
+                    publishers.push(peer);
+                }
+                Ok(publishers)
+            })
+            .transpose()?;
         let millis = config::decimal::<u64>(&self.interval_millis)?;
         let blocks = config::decimal::<u64>(&self.acquisition_blocks)?;
         if millis == 0 || !(1..=256).contains(&blocks) {
@@ -90,7 +116,8 @@ impl Config {
             next_is_sync: true,
             inbox: self
                 .candidate_inbox
-                .map(|path| inbox::Inbox::new(base.join(path))),
+                .map(|path| inbox::Inbox::new(base.join(path)))
+                .or_else(|| publishers.map(inbox::Inbox::network)),
             binding,
         })
     }
@@ -99,7 +126,12 @@ impl Config {
 impl Supervisor {
     /// Written under the existing exclusive signer owner before any runtime poll.
     /// This is immutable scheduling policy, never an acknowledgement or cursor.
-    pub fn bind(&mut self, directory: &Path, create: bool) -> Result<()> {
+    pub fn bind(
+        &mut self,
+        directory: &Path,
+        create: bool,
+        chain: naome_chain::ArtifactChainId,
+    ) -> Result<()> {
         let path = directory.join("supervisor-policy-v0.json");
         if create {
             let mut file = File::options()
@@ -118,7 +150,7 @@ impl Supervisor {
             .and_then(|f| f.sync_all())
             .map_err(|_| "supervisor_policy_sync")?;
         if let Some(inbox) = &mut self.inbox {
-            inbox.bind(directory, create)?;
+            inbox.bind(directory, create, chain)?;
         }
         Ok(())
     }

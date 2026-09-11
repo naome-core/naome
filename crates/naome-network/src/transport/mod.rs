@@ -1,5 +1,7 @@
 //! Managed authenticated transport, request custody, and exchange lifecycles.
 
+pub(crate) mod candidate_offer;
+
 use crate::*;
 
 pub(crate) mod batch;
@@ -140,6 +142,7 @@ struct Behaviour {
     block_exchange: request_response::Behaviour<ArtifactBlockCodec>,
     head_exchange: request_response::Behaviour<ArtifactChainHeadCodec>,
     head_announcement: request_response::Behaviour<ArtifactChainHeadAnnouncementCodec>,
+    candidate_offer: candidate_offer::Behaviour,
     recovery_bundle_push: request_response::Behaviour<RecoveryBundlePushCodec>,
     consensus_push: request_response::Behaviour<ConsensusPushCodec>,
     finality_exchange: request_response::Behaviour<FinalityProofCodec>,
@@ -158,6 +161,7 @@ enum ExchangeRequestId {
     Block(request_response::OutboundRequestId),
     Head(request_response::OutboundRequestId),
     Announcement(request_response::OutboundRequestId),
+    CandidateOffer(PeerId, request_response::OutboundRequestId),
     RecoveryBundlePush(request_response::OutboundRequestId),
     ConsensusPush(request_response::OutboundRequestId),
     Finality(request_response::OutboundRequestId),
@@ -168,6 +172,7 @@ enum PendingRequest {
     Block(PendingArtifactBlockRequest),
     Head(PendingArtifactChainHeadRequest),
     Announcement(PendingArtifactChainHeadAnnouncement),
+    CandidateOffer(candidate_offer::PendingOffer),
     RecoveryBundlePush(recovery_bundle_push::PendingRecoveryBundlePush),
     ConsensusPush(consensus_push::PendingConsensusPush),
     Finality(finality_exchange::PendingFinalityProof),
@@ -180,6 +185,7 @@ impl PendingRequest {
             Self::Block(pending) => pending.peer_index,
             Self::Head(pending) => pending.peer_index,
             Self::Announcement(pending) => pending.peer_index,
+            Self::CandidateOffer(pending) => pending.peer_index,
             Self::RecoveryBundlePush(pending) => pending.peer_index,
             Self::ConsensusPush(pending) => pending.peer_index,
             Self::Finality(pending) => pending.peer_index,
@@ -218,6 +224,7 @@ pub struct StaticArtifactNetwork {
     pending: HashMap<ExchangeRequestId, PendingRequest>,
     pending_budget: Arc<PendingBudget>,
     inbound_application_request_budget: rate_limit::TokenBucket,
+    candidate_offer_due: HashMap<PeerId, Instant>,
 }
 
 impl StaticArtifactNetwork {
@@ -294,6 +301,8 @@ impl StaticArtifactNetwork {
         for peer in &static_peers {
             allowed.allow_peer(peer.peer_id);
         }
+        let candidate_offer =
+            candidate_offer::Behaviour::new(static_peers.iter().map(StaticPeer::peer_id));
         let sessions = SessionBehaviour::new(local_peer_id, static_peers);
 
         let exchange_config = request_response::Config::default()
@@ -386,6 +395,7 @@ impl StaticArtifactNetwork {
             block_exchange,
             head_exchange,
             head_announcement,
+            candidate_offer,
             recovery_bundle_push,
             consensus_push,
             finality_exchange,
@@ -414,6 +424,7 @@ impl StaticArtifactNetwork {
             swarm,
             finality_response_budget,
             pending: HashMap::new(),
+            candidate_offer_due: HashMap::new(),
             pending_budget: Arc::new(PendingBudget::default()),
             inbound_application_request_budget: rate_limit::TokenBucket::new(
                 INBOUND_APPLICATION_REQUEST_BURST,
@@ -534,6 +545,10 @@ impl StaticArtifactNetwork {
                     PendingRequest::ConsensusPush(_)
                 )
                 | (ExchangeRequestId::Finality(_), PendingRequest::Finality(_))
+                | (
+                    ExchangeRequestId::CandidateOffer(_, _),
+                    PendingRequest::CandidateOffer(_)
+                )
         ));
         let replaced = self.pending.insert(key, pending);
         debug_assert!(replaced.is_none());
@@ -565,7 +580,15 @@ impl StaticArtifactNetwork {
 
     /// Waits for the next artifact-network event.
     pub async fn next_event(&mut self) -> NetworkEvent {
+        let mut suppressed = 0usize;
         loop {
+            // Bound uninterrupted work even when malformed or paced offers
+            // are discarded without producing application diagnostics.
+            if suppressed == 32 {
+                tokio::task::yield_now().await;
+                suppressed = 0;
+            }
+            suppressed += 1;
             if let Some(event) = self.take_due_artifact_request_deadline(Instant::now()) {
                 return event;
             }
@@ -593,6 +616,11 @@ impl StaticArtifactNetwork {
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::HeadExchange(event)) => {
                     if let Some(event) = self.handle_head_exchange_event(event) {
+                        return event;
+                    }
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::CandidateOffer(event)) => {
+                    if let Some(event) = self.handle_candidate_offer_event(event) {
                         return event;
                     }
                 }
@@ -652,6 +680,7 @@ impl StaticArtifactNetwork {
                 | PendingRequest::Block(_)
                 | PendingRequest::Head(_)
                 | PendingRequest::Announcement(_)
+                | PendingRequest::CandidateOffer(_)
                 | PendingRequest::RecoveryBundlePush(_)
                 | PendingRequest::ConsensusPush(_)
                 | PendingRequest::Finality(_) => None,
@@ -1050,6 +1079,8 @@ pub enum NetworkEvent {
     OutboundBlock(OutboundArtifactBlockEvent),
     InboundChainHeadRequest(InboundArtifactChainHeadRequest),
     OutboundChainHead(OutboundArtifactChainHeadEvent),
+    InboundCandidateOffer(candidate_offer::InboundCandidateOffer),
+    OutboundCandidateOffer(candidate_offer::CandidateOfferEvent),
     InboundChainHeadAnnouncement(InboundArtifactChainHeadAnnouncement),
     OutboundChainHeadAnnouncement(OutboundArtifactChainHeadAnnouncementEvent),
     InboundRecoveryBundlePush(InboundRecoveryBundlePush),
