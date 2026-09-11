@@ -194,6 +194,7 @@ pub use responder::{
     PeerRecordBootstrapResponderEvent, PeerRecordBootstrapResponderFailure,
     PeerRecordBootstrapResponderListenError,
 };
+pub use transport::verified_membership;
 
 pub use transport::{
     ARTIFACT_BLOCK_IMPORT_TIMEOUT, BuildError, CONNECTION_TIMEOUT, CancellationDrainOutcome,

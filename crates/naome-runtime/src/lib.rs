@@ -49,3 +49,4 @@ pub use types::{
 #[cfg(test)]
 #[path = "../../../tests/support/codec_corpus.rs"]
 mod codec_corpus;
+pub mod verified_membership;

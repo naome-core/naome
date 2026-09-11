@@ -377,7 +377,7 @@ directory = "evidence"
 [supervisor]
 candidate_publishers = [{publishers}]
 peers = [{source_peers}]
-interval_millis = "1250"
+interval_millis = "100"
 acquisition_blocks = "128"
 "#,
         deployment = d.deployment,
