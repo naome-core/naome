@@ -56,8 +56,10 @@ commands, and diagnostic disposal on shutdown. `PROD-020-066` additionally
 permits one explicitly started current-height proposal job, as specified below.
 `PROD-020-067` adds the optional finite-plan supervisor described below.
 `PROD-020-069` extends it with a bounded post-startup candidate inbox and a durable
-local preference among fully validated candidates. It grants no network candidate
-discovery, globally agreed candidate ranking, certificate acquisition beyond the
+local preference among fully validated candidates. `PROD-020-071` adds
+[direct configured-publisher offers](candidate-offer-intake-v0.md), durable
+per-publisher intake and a source-only publisher process. It grants no automatic
+network discovery, relay, globally agreed candidate ranking, certificate acquisition beyond the
 bounded configured-peer catch-up paths, artifact serving beyond
 the separately opted-in retained complete-proof and artifact-source responses,
 automatic inbox clearing, repair, dynamic
@@ -265,6 +267,13 @@ Continuous intake removes the finite startup target horizon. Existing source,
 evidence, signer-journal, round and runtime limits remain binding; it does not
 provide unbounded retention, live source-store mutation by another owner,
 automatic corruption repair or recovery of interrupted signing preparations.
+
+### Direct configured-publisher intake
+
+The [Direct Candidate Offer Intake V0](candidate-offer-intake-v0.md) contract
+defines the mutually exclusive network intake mode, exact durable-receipt
+boundary, per-publisher replacement bounds and source-only publisher invocation.
+It reuses the validation, durable choice and retained-value precedence above.
 
 ### Explicit source recovery restart
 

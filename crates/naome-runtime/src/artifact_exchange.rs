@@ -102,6 +102,15 @@ impl fmt::Display for FixedValidatorRuntimeFinalityProofResponseErrorV0 {
 impl Error for FixedValidatorRuntimeFinalityProofResponseErrorV0 {}
 
 impl FixedValidatorRuntimeV0<'_> {
+    /// Sends an exact offer receipt only after the caller has persisted acceptance.
+    /// This changes no consensus, timer, signing, or publication custody.
+    pub fn acknowledge_candidate_offer(
+        &mut self,
+        inbound: naome_network::InboundCandidateOffer,
+    ) -> Result<(), RespondError> {
+        self.network.acknowledge_candidate_offer(inbound)
+    }
+
     /// Explicitly responds from the live driver's narrow selected-proof reader.
     /// This performs no driver step or mutation of timer, inbox, input, pending
     /// command, or publication custody. It creates no signer acknowledgement.

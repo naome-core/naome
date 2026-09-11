@@ -452,8 +452,15 @@ impl Process {
         Self::start_path(&path)
     }
     pub fn start_path(path: &Path) -> Self {
+        Self::start_mode(path, false)
+    }
+    pub fn start_publisher(layout: &Layout, config: &str) -> Self {
+        Self::start_mode(&layout.write("publisher.toml", config), true)
+    }
+    fn start_mode(path: &Path, publisher: bool) -> Self {
         let mut child = spawn(
             Command::new(env!("CARGO_BIN_EXE_naome-validator"))
+                .args(publisher.then_some("--publisher"))
                 .arg(path)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())

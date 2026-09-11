@@ -60,7 +60,7 @@ impl Corpus {
     }
 
     fn with_heights(weights: [u16; 4], heights: u8) -> Self {
-        assert!((1..=64).contains(&heights));
+        assert!((1..=100).contains(&heights));
         let definition = ArtifactChainDefinition::new([0x91; 32]);
         let context = ConsensusContextV0::new(
             definition.id(),

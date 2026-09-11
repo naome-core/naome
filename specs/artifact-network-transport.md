@@ -11,6 +11,8 @@ survey, broadcast, ancestry, import, and catch-up workflows. The
 [Fixed-Validator Consensus Transport V0](fixed-validator-consensus-transport-v0.md)
 contract owns explicit one-hop opaque proposal and vote delivery on the same
 static transport.
+The [Direct Candidate Offer Intake V0](candidate-offer-intake-v0.md) contract
+defines separately bounded publisher offers and their durable application receipts.
 The [Fixed-Validator Archive V0](fixed-validator-archive-v0.md) profile composes
 the complete-finality-proof exchange defined here with full local verification.
 
@@ -50,6 +52,7 @@ The exact application protocol identifiers are:
 /naome/recovery-bundle-push-v0
 /naome/fixed-validator-consensus-push-v0
 /naome/fixed-validator-finality-proof-v0
+/naome/candidate-offer-v0
 ```
 
 Protocol-local request identifiers are namespaced and cannot alias across these
@@ -216,7 +219,7 @@ One network instance enforces:
 | Pre-Noise inbound authentication burst/refill | 8 / 1 per second |
 | Store- or journal-response attempt burst/refill | 8 / 1 per second |
 
-Per-exchange stream ceilings sum to twelve and contend for the existing eight
+Per-exchange stream ceilings sum to thirteen and contend for the existing eight
 Yamux substreams, including negotiation and cleanup occupancy. No consensus
 capacity is reserved. Exhaustion can fail an exchange or the connection; it
 does not promise queued backpressure or fairness.

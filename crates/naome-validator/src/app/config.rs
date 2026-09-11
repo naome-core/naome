@@ -436,7 +436,7 @@ pub(super) fn decimal<T: std::str::FromStr>(value: &str) -> Result<T> {
     value.parse().map_err(|_| "config_decimal_range")
 }
 
-fn tcp_address(value: &str, listener: bool) -> Result<Multiaddr> {
+pub(super) fn tcp_address(value: &str, listener: bool) -> Result<Multiaddr> {
     // V0 exposes literal IP/TCP endpoints only; no implicit DNS or transport
     // choice. Parsing alone would also accept unsupported UDP endpoints.
     let fields = value.split('/').collect::<Vec<_>>();
