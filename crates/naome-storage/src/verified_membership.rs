@@ -20,8 +20,11 @@ use sha2::{Digest, Sha256};
 use crate::store_io::{ExclusiveLock, lock_open_file};
 
 mod records;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
+#[cfg(all(test, not(unix)))]
+#[path = "verified_membership/unsupported_tests.rs"]
+mod unsupported_tests;
 
 const HEADER: &[u8] = b"naome/verified-membership/v0/journal\0";
 const ANCHOR_HEADER: &[u8] = b"naome/verified-membership/v0/anchor\0";
@@ -39,6 +42,7 @@ pub struct MembershipJournalLimits {
 
 #[derive(Debug)]
 pub enum MembershipJournalError {
+    UnsupportedDurableDirectorySync,
     Io(io::Error),
     InvalidPath,
     Locked,
@@ -77,6 +81,8 @@ impl From<MembershipConsensusError> for MembershipJournalError {
 }
 
 /// Selected state is private to a single locked journal/anchor pair.
+/// Durable membership ownership requires Unix directory synchronization. Other
+/// platforms refuse creation, opening and recovery before touching owner files.
 pub struct MembershipJournal {
     genesis: MembershipBranch,
     snapshots: BTreeMap<u64, MembershipSnapshot>,
@@ -105,6 +111,7 @@ impl MembershipJournal {
         key: Option<SigningKey>,
         limits: MembershipJournalLimits,
     ) -> Result<Self, MembershipJournalError> {
+        require_platform()?;
         validate_limits(limits)?;
         if genesis.height() != 0 {
             return Err(MembershipJournalError::Binding);
@@ -200,6 +207,7 @@ impl MembershipJournal {
         limits: MembershipJournalLimits,
         recover: bool,
     ) -> Result<Self, MembershipJournalError> {
+        require_platform()?;
         validate_limits(limits)?;
         if genesis.height() != 0 {
             return Err(MembershipJournalError::Binding);
@@ -653,6 +661,13 @@ fn validate_file(file: &File) -> Result<(), MembershipJournalError> {
         }
     }
     Ok(())
+}
+fn require_platform() -> Result<(), MembershipJournalError> {
+    if cfg!(unix) {
+        Ok(())
+    } else {
+        Err(MembershipJournalError::UnsupportedDurableDirectorySync)
+    }
 }
 fn sync_directory(path: &Path) -> Result<(), MembershipJournalError> {
     crate::fixed_validator_anchor::sync_directory(path).map_err(|_| MembershipJournalError::Anchor)

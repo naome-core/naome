@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use ed25519_dalek::SigningKey;
 use naome_chain::{ArtifactChainDefinition, ArtifactChainState, ArtifactDag};
 use naome_consensus::verified_membership::*;

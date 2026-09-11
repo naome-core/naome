@@ -1,7 +1,9 @@
 # Running a verified-membership node
 
-The executable runs on Unix platforms. The consensus, storage and network
-libraries are also checked by the Windows test matrix. Obtain the complete
+The executable and durable membership journal run on Unix platforms. The
+consensus and network libraries also run in the Windows test matrix; Windows
+checks additionally verify that journal creation, opening and recovery refuse
+before writing any files because durable directory synchronization is unavailable. Obtain the complete
 trusted genesis organization list and deployment discriminator from the network
 operators, and at least one reachable bootstrap peer/address. Compare the
 resulting context with those operators before approving anything. The source

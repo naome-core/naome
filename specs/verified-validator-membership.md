@@ -172,8 +172,10 @@ authority. Historical nonfinal votes alone are not a finality-conflict proof.
 
 Proof serving reads indexed committed proof bytes and checks their recorded
 digest. Source mutation poisons the owner. Journal, anchor and lock files are
-opened with platform no-follow protections and descriptor checks; Unix writable
-files must be regular and single-linked. Parent directory ownership and custody
+opened with no-follow protections and descriptor checks; Unix writable
+files must be regular and single-linked. Durable membership ownership requires
+Unix directory synchronization; other platforms refuse creation, opening and
+recovery before touching owner files. Parent directory ownership and custody
 of both independently retained stores remain operator responsibilities. The
 pair detects inconsistent truncation; restoring both to a matching old backup
 is not a safe way to restore a live signing key.

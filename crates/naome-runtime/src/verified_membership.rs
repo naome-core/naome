@@ -660,6 +660,6 @@ fn packet_id(message: &MembershipRequestMessage) -> [u8; 32] {
     hash.finalize().into()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "verified_membership_tests.rs"]
 mod tests;
