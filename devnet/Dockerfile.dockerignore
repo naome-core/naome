@@ -1,0 +1,23 @@
+# A source build never uploads operator directories, keys, logs, or git data.
+**
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!crates/
+!crates/**
+!src/
+!src/**
+!specs/
+!specs/**
+!tests/
+!tests/**
+!examples/
+!examples/**
+!devnet/
+!devnet/agent.py
+!devnet/proxy.py
+!devnet/Dockerfile
+**/*.seed
+**/roles/**
+**/logs/**
+**/__pycache__/**

@@ -1,0 +1,8 @@
+# Used only with the minimal context assembled by image.py from Linux binaries.
+FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY naome-devnet naome-validator /usr/local/bin/
+COPY agent.py proxy.py /opt/naome/devnet/
+COPY provenance.json /opt/naome/provenance.json
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+CMD ["python3", "-B", "/opt/naome/devnet/agent.py", "run", "--role", "/data"]
