@@ -176,10 +176,33 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  membership:
+    name: Membership qualification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile membership qualification with pinned toolchain
+        run: cargo test -p naome-runtime --profile release --all-targets --all-features --locked --no-run
+      - name: Qualify actual epochs, live activation and independent durable replay
+        shell: bash
+        run: cargo test -p naome-runtime --profile release --all-targets --all-features --locked full_epochs_join_removal_and_independent_durable_replay -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/membership-qualification.log"
+      - name: Retain public membership qualification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: membership-qualification
+          path: ${{ runner.temp }}/membership-qualification.log
+          if-no-files-found: warn
+          retention-days: 14
+
   required:
     name: Rust CI
     if: ${{ always() }}
-    needs: [quality, linux, macos, windows, devnet]
+    needs: [quality, linux, macos, windows, devnet, membership]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -191,12 +214,13 @@ jobs:
           MACOS_RESULT: ${{ needs.macos.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
           DEVNET_RESULT: ${{ needs.devnet.result }}
+          MEMBERSHIP_RESULT: ${{ needs.membership.result }}
         run: |
           if [ "$QUALITY_RESULT" != "success" ] || [ "$LINUX_RESULT" != "success" ] || \
              [ "$MACOS_RESULT" != "success" ] || [ "$WINDOWS_RESULT" != "success" ] || \
-             [ "$DEVNET_RESULT" != "success" ]; then
+             [ "$DEVNET_RESULT" != "success" ] || [ "$MEMBERSHIP_RESULT" != "success" ]; then
             echo "Required CI jobs did not all succeed."
-            echo "quality=$QUALITY_RESULT linux=$LINUX_RESULT macos=$MACOS_RESULT windows=$WINDOWS_RESULT devnet=$DEVNET_RESULT"
+            echo "quality=$QUALITY_RESULT linux=$LINUX_RESULT macos=$MACOS_RESULT windows=$WINDOWS_RESULT devnet=$DEVNET_RESULT membership=$MEMBERSHIP_RESULT"
             exit 1
           fi
       - name: Reject workflow cancellation

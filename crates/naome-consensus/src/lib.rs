@@ -40,6 +40,7 @@ mod fixed_validator_lock_state;
 mod fixed_validator_proposal_authoring;
 mod producer_authorization;
 mod proposer_selection;
+pub mod verified_membership;
 
 pub use agreement_evidence::{
     CONSENSUS_SIGNATURE_BYTES, ConsensusContextV0, ConsensusGenesisId, ConsensusProtocolVersion,

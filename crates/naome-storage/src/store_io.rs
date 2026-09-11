@@ -38,6 +38,10 @@ pub(crate) fn open_exclusive_lock(
         .open(lock_path)
         .map_err(ExclusiveLockError::LockFile)?;
 
+    lock_open_file(lock)
+}
+
+pub(crate) fn lock_open_file(lock: File) -> Result<ExclusiveLock, ExclusiveLockError> {
     match lock.try_lock() {
         Ok(()) => Ok(ExclusiveLock(lock)),
         Err(TryLockError::WouldBlock) => Err(ExclusiveLockError::Locked),

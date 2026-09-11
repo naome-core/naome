@@ -175,7 +175,7 @@ impl FixedProposerStateV0 {
     ///
     /// This arithmetic does not establish snapshot provenance, canonicality,
     /// activation, branch selection, finality, persistence, or network trust.
-    fn transition_to_preselected_snapshot(
+    pub(crate) fn transition_to_preselected_snapshot(
         &self,
         final_snapshot: &ActiveAgreementSnapshot,
     ) -> Result<Self, ProposerSelectionError> {

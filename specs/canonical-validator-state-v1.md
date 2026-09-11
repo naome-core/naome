@@ -2,24 +2,22 @@
 
 ## Status and applicability
 
-This is a draft protocol contract for the canonical account and validator-state
-foundation. It records selected semantics and identifies the byte-level,
-resource, economic, and integration requirements that remain unspecified.
-Selected decisions are mirrored in `consensus-rules.md`; remaining decisions
-retain explicit open entries there. This is not an implemented consensus
-profile, a production genesis, or evidence
-that an incomplete rule in `consensus-rules.md` is implemented.
+This document retains unfinished account and economic design work. Its former
+Knowledge Weight, bonded top-256, delegation and bootstrap-weight voting policy
+is superseded for the selected consensus profile by
+[verified validator membership](verified-validator-membership.md), as recorded
+in `META-011` of `consensus-rules.md`. Those retained draft mechanisms cannot
+grant validator admission, proposer, voting, finality, branch-selection or
+canonical-state installation authority in that profile.
 
-V1 names the successor schema family in this document. Its outer context,
-message framing and hashing contracts are specified below; complete operation
-and state encodings, genesis construction and admission limits remain required
-before consensus-facing implementation. The current fixed-validator
-artifact-only V0 profile remains a separate format.
-
-The foundation supports permissionless account and validator-registration
-admission under authenticated state transitions. Registration alone grants no
-active membership, proposer authority, consensus-signing authority, finality,
-branch selection, or canonical-state installation authority.
+The implemented pre-release feature is named `verified_membership`; it has its
+own initial wire encoding and caller-trusted organization genesis. The V1 label
+below identifies this unimplemented draft schema only. It does not imply a
+released product, a migration path, an implemented account/economic protocol,
+or a production genesis. The fixed-validator development profile also remains
+a separate format. Economic work still needs its own complete specification,
+implementation and integration evidence; this membership change does not close
+those unfinished rules.
 
 ## Consensus framing and commitments
 

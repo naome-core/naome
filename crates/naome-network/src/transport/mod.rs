@@ -17,6 +17,7 @@ pub(crate) mod rate_limit;
 pub(crate) mod recovery_bundle_push;
 pub(crate) mod request_correlation;
 pub(crate) mod session;
+pub mod verified_membership;
 
 use std::collections::HashMap;
 use std::error::Error;
