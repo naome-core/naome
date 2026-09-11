@@ -6,6 +6,7 @@ import signal
 import socket
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 import uuid
 
@@ -56,6 +57,9 @@ class Backend:
 
     def tool(self, name, operation, height):
         raise NotImplementedError
+
+    def diagnostics(self):
+        return {}
 
 
 class ProcessBackend(Backend):
@@ -161,6 +165,37 @@ class DockerBackend(Backend):
     def compose(self, *args):
         return command(["docker", "compose", "--project-name", self.project, "--file", self.compose_path, *args], timeout=120)
 
+    def status(self, name):
+        # Internal-only bridges do not reliably publish host ports. Keep the
+        # network isolated and use the role's own read-only HTTP endpoint.
+        try:
+            raw = command(["docker", "exec", self.containers[name], "python3", "-B", "-c",
+                           "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/status',timeout=2).read().decode())"], timeout=10)
+        except RuntimeError as error:
+            state = json.loads(command(["docker", "inspect", self.containers[name]]))[0]["State"]
+            if not state["Running"]:
+                raise RuntimeError(f"{name}: container exited {state['ExitCode']}") from error
+            raise urllib.error.URLError(f"{name}: internal status not ready") from error
+        value = json.loads(raw)
+        if value.get("role") != name or value.get("schema_version") != 0:
+            raise RuntimeError("status endpoint role/schema mismatch")
+        return value
+
+    def diagnostics(self):
+        result = {}
+        for name, identifier in self.containers.items():
+            try:
+                state = json.loads(command(["docker", "inspect", identifier], timeout=5))[0]["State"]
+                logs = subprocess.run(["docker", "logs", "--tail", "20", identifier], capture_output=True, text=True, timeout=5)
+                # Only the wrapper's bounded error reports, never native private
+                # state, keys, full inspect output, or the role's process log.
+                result[name] = {"running": state["Running"], "exit_code": state["ExitCode"],
+                                "oom_killed": state["OOMKilled"], "health": state.get("Health", {}).get("Status"),
+                                "wrapper_log": (logs.stdout + logs.stderr)[-4096:]}
+            except Exception as error:
+                result[name] = {"diagnostic_error": str(error)[:200]}
+        return result
+
     def remove_controls(self):
         identifiers = command(["docker", "ps", "--all", "--quiet", "--filter", f"label={self.control_label}"]).split()
         if identifiers:
@@ -198,7 +233,6 @@ class DockerBackend(Backend):
                     "tmpfs": ["/tmp:rw,noexec,nosuid,size=64m"], "stdin_open": False,
                     "restart": "no", "stop_grace_period": "20s",
                     "volumes": [{"type": "bind", "source": str(self.role_dir(name)), "target": "/data", "bind": {"create_host_path": False}}],
-                    "ports": [f"127.0.0.1:{self.health_ports[name]}:8080"],
                     "networks": {"devnet": {"ipv4_address": self.ips[name]}},
                     "command": ["python3", "-B", "/opt/naome/devnet/agent.py", "run", "--role", "/data", "--bind", "0.0.0.0", "--delay-ms", str(self.args.delay_ms), "--stall-seconds", str(self.args.height_timeout)],
                     "healthcheck": {"test": ["CMD", "python3", "-B", "/opt/naome/devnet/agent.py", "health"], "interval": "5s", "timeout": "4s", "start_period": "20s", "retries": 3},

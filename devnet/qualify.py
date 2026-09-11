@@ -220,6 +220,10 @@ def main():
     except BaseException as error:
         qualification.report["outcome"] = "failed"
         qualification.report["failure"] = str(error)[:2000]
+        try:
+            qualification.report["failure_diagnostics"] = qualification.backend.diagnostics()
+        except Exception as diagnostic_error:
+            qualification.report["diagnostic_error"] = str(diagnostic_error)[:200]
     finally:
         try:
             qualification.backend.cleanup()

@@ -51,8 +51,10 @@ Choose a new output directory each time. Existing output is refused. Use
 local network. The generated `compose.json` mounts only each role's directory in
 its respective container. Containers use a read-only root filesystem, no Linux
 capabilities, no additional privileges, a private internal bridge, and bounds of
-512 MiB memory, no swap, two CPUs and 128 processes. Health endpoints are published
-only on host loopback. The qualifier owns and removes its uniquely named
+512 MiB memory, no swap, two CPUs and 128 processes. Health endpoints stay inside
+the containers; the qualifier queries each role's loopback HTTP endpoint through
+`docker exec`, since host port publication is not reliable on an internal-only
+bridge. The qualifier owns and removes its uniquely named
 containers/network on success, failure or a handled interrupt. It retains role
 state and the report for inspection; it never resets a failed validator.
 
@@ -96,7 +98,9 @@ Sampling is every half-second; these are observations, not precise allocation
 maxima. The role disk limit is a sampled 512 MiB stop threshold, not a filesystem
 quota. macOS process RSS/CPU values are unavailable and remain null, not zero.
 Logs rotate at 8 MiB with two backups; Docker logs have their own bounded rotation.
-Only `report.json` is uploaded by CI. Never upload the private role tree.
+Failure reports also contain bounded wrapper error output and container exit,
+health and OOM status. Only `report.json` is uploaded by CI. Never upload the
+private role tree.
 
 `--height-timeout` defaults to 180 seconds, `--deadline-seconds` to 3600, and
 `--partition-seconds` to 30. `--interval-seconds` can add up to 60 seconds between

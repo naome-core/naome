@@ -205,5 +205,43 @@ class Cleanup(unittest.TestCase):
                 output.close()
 
 
+class InternalContainerHealth(unittest.TestCase):
+    def backend(self):
+        result = DockerBackend.__new__(DockerBackend)
+        result.containers = {"validator-0": "owned-container"}
+        return result
+
+    def test_status_uses_container_loopback_without_a_host_port(self):
+        backend = self.backend()
+        value = {"schema_version": 0, "role": "validator-0", "ready": True}
+        with patch("backend.command", return_value=json.dumps(value)) as invoke:
+            self.assertEqual(backend.status("validator-0"), value)
+        args = invoke.call_args.args[0]
+        self.assertEqual(args[:3], ["docker", "exec", "owned-container"])
+        self.assertIn("http://127.0.0.1:8080/status", args[-1])
+        self.assertEqual(invoke.call_args.kwargs["timeout"], 10)
+
+    def test_starting_endpoint_is_retryable_but_exited_container_is_a_failure(self):
+        backend = self.backend()
+        for running, expected in [(True, urllib.error.URLError), (False, RuntimeError)]:
+            state = json.dumps([{"State": {"Running": running, "ExitCode": 17}}])
+            with self.subTest(running=running), patch("backend.command", side_effect=[RuntimeError("connection refused"), state]):
+                with self.assertRaises(expected):
+                    backend.status("validator-0")
+
+    def test_failure_diagnostics_exclude_full_inspection_and_bound_wrapper_output(self):
+        backend = self.backend()
+        inspected = [{"Config": {"Env": ["SECRET=private-seed"]}, "State": {
+            "Running": False, "ExitCode": 1, "OOMKilled": False,
+            "Health": {"Status": "unhealthy", "Log": [{"Output": "private-seed"}]}}}]
+        logs = subprocess.CompletedProcess([], 0, stdout="wrapper " * 1000, stderr="failure")
+        with patch("backend.command", return_value=json.dumps(inspected)), patch("backend.subprocess.run", return_value=logs):
+            result = backend.diagnostics()["validator-0"]
+        self.assertEqual(result["exit_code"], 1)
+        self.assertEqual(result["health"], "unhealthy")
+        self.assertEqual(len(result["wrapper_log"]), 4096)
+        self.assertNotIn("private-seed", json.dumps(result))
+
+
 if __name__ == "__main__":
     unittest.main()
