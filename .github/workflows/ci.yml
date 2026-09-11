@@ -148,10 +148,38 @@ jobs:
         if: ${{ always() && cancelled() }}
         run: exit 1
 
+  devnet:
+    name: Devnet qualification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify pinned toolchain and devnet tooling
+        run: |
+          rustup show active-toolchain
+          python3 -B -m unittest discover -s devnet -p 'test_*.py'
+      - name: Build release test targets and devnet binaries
+        run: cargo test -p naome-devnet -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-run
+      - name: Package exact Linux binaries
+        run: python3 -B devnet/image.py --bin-dir target/release --tag naome-devnet:ci
+      - name: Qualify 100 network-fed heights with isolation, delay, and faults
+        run: python3 -B devnet/qualify.py --backend docker --image naome-devnet:ci --bin-dir target/release --directory "$RUNNER_TEMP/naome-devnet" --heights 100 --delay-ms 50 --deadline-seconds 2400
+      - name: Retain public qualification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: devnet-qualification
+          path: ${{ runner.temp }}/naome-devnet/report.json
+          if-no-files-found: warn
+          retention-days: 14
+
   required:
     name: Rust CI
     if: ${{ always() }}
-    needs: [quality, linux, macos, windows]
+    needs: [quality, linux, macos, windows, devnet]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -162,11 +190,13 @@ jobs:
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
+          DEVNET_RESULT: ${{ needs.devnet.result }}
         run: |
           if [ "$QUALITY_RESULT" != "success" ] || [ "$LINUX_RESULT" != "success" ] || \
-             [ "$MACOS_RESULT" != "success" ] || [ "$WINDOWS_RESULT" != "success" ]; then
+             [ "$MACOS_RESULT" != "success" ] || [ "$WINDOWS_RESULT" != "success" ] || \
+             [ "$DEVNET_RESULT" != "success" ]; then
             echo "Required CI jobs did not all succeed."
-            echo "quality=$QUALITY_RESULT linux=$LINUX_RESULT macos=$MACOS_RESULT windows=$WINDOWS_RESULT"
+            echo "quality=$QUALITY_RESULT linux=$LINUX_RESULT macos=$MACOS_RESULT windows=$WINDOWS_RESULT devnet=$DEVNET_RESULT"
             exit 1
           fi
       - name: Reject workflow cancellation
