@@ -29,9 +29,8 @@ Without a `network` table this is the approved offline complete-proof consumer
 profile. That configuration grants no
 signing, automatic proof acquisition or assembly, peer trust, network
 participation, history serving, checkpoint selection, dynamic validator,
-economics, or automatic recovery authority. `SEC-003` remains `IN_PROGRESS`:
-this bounded profile does not satisfy the broader full-node requirements in
-`SYNC-001`, `SYNC-002`, and `SYNC-004`.
+economics, or automatic recovery authority. This bounded profile does not
+establish general full-node conformance.
 
 ## Invocation and public configuration
 

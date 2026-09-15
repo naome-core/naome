@@ -891,8 +891,8 @@ before the private key signs it. The handle first durably appends the `0x03`
 halt record and its chained footer, then enters a permanent local halt. A
 different target at the same slot is a conflicting local signing intent, not
 objective equivocation evidence, because the second intent is never signed.
-Objective equivocation remains the separate signed-conflicting-message contract
-defined by `PROD-015`. The same target with a different lock, valid-value,
+This fixed profile does not define public processing of signed equivocation
+proofs. The same target with a different lock, valid-value,
 phase, branch, or intent byte is not a second objective vote target, but it is
 still a local restart-safety inconsistency and halts rather than silently
 replacing the state that authorized the first vote.

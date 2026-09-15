@@ -3,7 +3,6 @@ FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019b
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
-COPY src ./src
 COPY specs ./specs
 COPY tests ./tests
 COPY examples ./examples

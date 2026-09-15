@@ -87,6 +87,5 @@ consensus production followed by explicit proof catch-up and necessary resumed
 signing, including one process kill. They do not establish arbitrary partition
 healing or scheduling, general distributed safety or liveness, automatic proof
 acquisition or job resumption, dynamic-validator transitions, power-loss or
-partial-write recovery, production custody, or deployment readiness. `PROD-020`
-remains `IN_PROGRESS`; the narrower previously implemented components retain
-their own authority and evidence boundaries.
+partial-write recovery, production custody, or deployment readiness. The narrower
+implemented components retain their own authority and evidence boundaries.

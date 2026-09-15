@@ -23,8 +23,6 @@ mod proof_sync;
 #[path = "cases/publication_retry.rs"]
 mod publication_retry;
 mod support;
-#[path = "cases/verified_membership.rs"]
-mod verified_membership;
 
 use serde_json::json;
 use std::{

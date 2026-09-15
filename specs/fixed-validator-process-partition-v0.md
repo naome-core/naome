@@ -118,8 +118,8 @@ finality-journal reopening here establishes healthy retained finality, not
 process restart or complete vote-journal recovery. The corpus does not cover
 arbitrary schedules, topologies, weights, Byzantine behavior, in-flight
 precommit cuts, healing, crash faults, dynamic validators, general partition
-safety or liveness, deployment, or production readiness. `SEC-012` remains
-`IN_PROGRESS`. The independent driver and caller-input runtime corpora retain
+safety or liveness, deployment, or production readiness. The independent
+driver and caller-input runtime corpora retain
 their separately documented evidence boundaries.
 
 The separate [process-kill restart corpus](fixed-validator-process-partition-restart-v0.md)

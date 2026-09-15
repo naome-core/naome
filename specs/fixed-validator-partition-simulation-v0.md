@@ -26,8 +26,8 @@ strict-quorum evidence. Honest timeout progression and nil votes remain allowed;
 this is not a durable terminal halt.
 
 The simulation grants no production authority and changes no production API,
-signing, persistence, wire, proposer, quorum, or finality rule. `SEC-012` remains
-`IN_PROGRESS`; general safety and liveness requirements remain separate.
+signing, persistence, wire, proposer, quorum, or finality rule. It does not
+establish general safety or liveness.
 
 ## Executions
 

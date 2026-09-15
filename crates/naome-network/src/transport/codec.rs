@@ -1,6 +1,5 @@
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use libp2p::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -19,10 +18,6 @@ use naome_protocol::chain_head_exchange::{
     ArtifactChainHeadExchangeWireError, ArtifactChainHeadRequest, ArtifactChainHeadResponse,
 };
 
-use crate::address_store::MAX_SIGNED_PEER_RECORD_BYTES;
-use crate::record_exchange::{
-    MAX_PEER_RECORDS_PER_BATCH, PeerRecordBatch, PeerRecordExchangeWireError, PeerRecordPullRequest,
-};
 use crate::recovery_bundle_push::{
     RECOVERY_BUNDLE_PUSH_MAX_BYTES, RecoveryBundlePushReceipt, RecoveryBundlePushRequest,
 };
@@ -36,8 +31,6 @@ pub(super) const ARTIFACT_CHAIN_HEAD_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/artifact-chain-head-exchange");
 pub(super) const ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/artifact-chain-head-announcement");
-pub(crate) const PEER_RECORD_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/peer-record-exchange");
 pub(super) const RECOVERY_BUNDLE_PUSH_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/recovery-bundle-push-v0");
 
@@ -59,11 +52,6 @@ pub(super) struct ArtifactChainHeadAnnouncementReceipt;
 const ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT: u8 = 0x01;
 
 #[derive(Clone)]
-pub(crate) struct PeerRecordCodec;
-
-#[derive(Clone)]
-pub(crate) struct PeerRecordResponderCodec;
-#[derive(Clone)]
 pub(super) struct RecoveryBundlePushCodec {
     inbound_budget: Arc<InboundRetentionBudget>,
 }
@@ -73,16 +61,6 @@ impl RecoveryBundlePushCodec {
         Self { inbound_budget }
     }
 }
-
-#[derive(Debug)]
-pub(crate) enum PeerRecordResponderRequest {
-    Valid,
-    Invalid,
-    ReadTimedOut,
-    ReadFailed(io::Error),
-}
-
-const RESPONDER_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub(super) struct ArtifactBlockWireResponse {
@@ -445,176 +423,6 @@ impl request_response::Codec for ArtifactChainHeadAnnouncementCodec {
     {
         io.write_all(&[ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_RECEIPT])
             .await
-    }
-}
-
-#[async_trait]
-impl request_response::Codec for PeerRecordCodec {
-    type Protocol = StreamProtocol;
-    type Request = PeerRecordPullRequest;
-    type Response = PeerRecordBatch;
-
-    async fn read_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Request>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        require_eof(io, "peer-record pull request has trailing bytes").await?;
-        Ok(PeerRecordPullRequest)
-    }
-
-    async fn read_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Response>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        let mut count = [0_u8; 1];
-        io.read_exact(&mut count).await?;
-        let count = usize::from(count[0]);
-        if count > MAX_PEER_RECORDS_PER_BATCH {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                PeerRecordExchangeWireError::RecordCount {
-                    actual: count,
-                    maximum: MAX_PEER_RECORDS_PER_BATCH,
-                },
-            ));
-        }
-
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(1 + count * size_of::<u16>())
-            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        bytes.push(u8::try_from(count).expect("the peer-record batch count fits u8"));
-        for index in 0..count {
-            let mut length_bytes = [0_u8; size_of::<u16>()];
-            io.read_exact(&mut length_bytes).await?;
-            let length = usize::from(u16::from_be_bytes(length_bytes));
-            if length == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    PeerRecordExchangeWireError::EmptyRecord { index },
-                ));
-            }
-            if length > MAX_SIGNED_PEER_RECORD_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    PeerRecordExchangeWireError::RecordTooLong {
-                        index,
-                        actual: length,
-                        maximum: MAX_SIGNED_PEER_RECORD_BYTES,
-                    },
-                ));
-            }
-            bytes
-                .try_reserve(length_bytes.len() + length)
-                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            bytes.extend_from_slice(&length_bytes);
-            let start = bytes.len();
-            bytes.resize(start + length, 0);
-            io.read_exact(&mut bytes[start..]).await?;
-        }
-        require_eof(io, "peer-record batch has trailing bytes").await?;
-        PeerRecordBatch::from_wire_bytes(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    }
-
-    async fn write_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-        _request: Self::Request,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        Ok(())
-    }
-
-    async fn write_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        response: Self::Response,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        let bytes = response
-            .to_wire_bytes()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        io.write_all(&bytes).await
-    }
-}
-
-#[async_trait]
-impl request_response::Codec for PeerRecordResponderCodec {
-    type Protocol = StreamProtocol;
-    type Request = PeerRecordResponderRequest;
-    type Response = Arc<Vec<u8>>;
-
-    async fn read_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Request>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        let mut trailing = [0_u8; 1];
-        match tokio::time::timeout(RESPONDER_REQUEST_READ_TIMEOUT, io.read(&mut trailing)).await {
-            Ok(Ok(0)) => Ok(PeerRecordResponderRequest::Valid),
-            Ok(Ok(_)) => Ok(PeerRecordResponderRequest::Invalid),
-            Ok(Err(source)) => Ok(PeerRecordResponderRequest::ReadFailed(source)),
-            Err(_) => Ok(PeerRecordResponderRequest::ReadTimedOut),
-        }
-    }
-
-    async fn read_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-    ) -> io::Result<Self::Response>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "the inbound-only peer-record responder cannot read responses",
-        ))
-    }
-
-    async fn write_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-        _request: Self::Request,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "the inbound-only peer-record responder cannot write requests",
-        ))
-    }
-
-    async fn write_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        response: Self::Response,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        io.write_all(&response).await
     }
 }
 

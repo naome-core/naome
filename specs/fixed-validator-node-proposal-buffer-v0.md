@@ -147,8 +147,8 @@ that the broader product does not require those capabilities. In particular,
 the separately specified exact caller-addressed coordinator may borrow this
 buffer for one certificate-coupled use and success-only release without adding
 authority to the buffer itself. Automatic observation and pairing, durable
-recovery, routing, daemon orchestration, and networking remain separate backlog
-work.
+recovery, routing, daemon orchestration, and networking require their own
+owners; the buffer grants none of those capabilities.
 
 The separately specified higher-round inbox may privately compose this buffer
 with individually admitted proposal prevotes under one stricter combined local

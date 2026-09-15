@@ -20,8 +20,8 @@ timeout a source of finality authority.
 This is a test of the existing runtime composition, including its single raw
 input slot, self-admission, publication custody, and deadline ordering. It
 changes no production code, protocol rule, API, signing boundary, persistence
-format, proposer rule, routing policy, or timeout policy. `SEC-012` remains
-`IN_PROGRESS`.
+format, proposer rule, routing policy, or timeout policy. It does not
+establish general network resilience.
 
 ## Corpus and finite bounds
 

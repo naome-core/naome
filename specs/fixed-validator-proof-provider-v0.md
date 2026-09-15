@@ -12,8 +12,7 @@ not cause proposal creation, voting, finalization or signer acknowledgement.
 This is one provider-to-archive capability. It does not add a proof wire format,
 head discovery, source selection, vote assembly, continuous following, retries,
 general artifact/block serving, recovery, pruning or dynamic validators. It
-does not complete general full-node conformance or close `SEC-003`, `SYNC-001`,
-`SYNC-002` or `SYNC-004`.
+does not establish general full-node conformance.
 
 ## Explicit process configuration
 

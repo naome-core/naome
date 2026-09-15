@@ -32,8 +32,8 @@ or economic authority.
 A configured peer binds one expected `PeerId` and dial `Multiaddr`. Local and
 duplicate peer identities are rejected. Noise must authenticate the configured
 identity before an application request can be delivered. The address is routing
-data, not identity; learned peer records and dial candidates never authorize
-artifact sessions.
+data, not identity. Only the explicitly configured peer set authorizes
+artifact sessions; there is no peer-discovery subsystem in this MVP foundation.
 
 For a configured pair, the endpoint with lexicographically lower raw
 `PeerId::to_bytes()` is the sole dial owner. It maintains at most one connection
@@ -62,8 +62,7 @@ behaviours.
 
 `naome-protocol` owns the four transport-neutral message contracts:
 `artifact_exchange`, `block_exchange`, `chain_head_exchange`, and
-`chain_head_announcement`. The workspace root reexports their existing module
-paths for compatibility. `naome-network` depends directly on `naome-protocol`;
+`chain_head_announcement`. `naome-network` depends directly on `naome-protocol`;
 it owns authenticated sessions, framing, request custody, and resource limits.
 The message crate owns no runtime, socket, selected state, or economic authority.
 

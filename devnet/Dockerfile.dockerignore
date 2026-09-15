@@ -5,8 +5,6 @@
 !rust-toolchain.toml
 !crates/
 !crates/**
-!src/
-!src/**
 !specs/
 !specs/**
 !tests/

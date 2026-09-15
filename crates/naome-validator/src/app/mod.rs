@@ -14,7 +14,6 @@ mod commands;
 mod config;
 mod files;
 mod input;
-mod membership;
 mod proof_sync;
 mod proposal_job;
 mod provider;
@@ -49,9 +48,7 @@ fn run(output: &report::Output) -> Result<()> {
     let mut args = env::args_os().skip(1);
     let first = args.next().ok_or("usage_config_path")?;
     let publisher = first == "--publisher";
-    let membership = first == "--membership";
-    let membership_init = first == "--membership-init";
-    let path = PathBuf::from(if publisher || membership || membership_init {
+    let path = PathBuf::from(if publisher {
         args.next().ok_or("usage_config_path")?
     } else {
         first
@@ -59,16 +56,11 @@ fn run(output: &report::Output) -> Result<()> {
     if args.next().is_some() {
         return Err("usage_config_path");
     }
-    if membership_init {
-        return membership::initialize(&path, output);
-    }
     let executor = Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| "executor")?;
-    if membership {
-        executor.block_on(membership::run(path, output))
-    } else if publisher {
+    if publisher {
         executor.block_on(publisher::run(path, output))
     } else {
         executor.block_on(run_async(path, output))

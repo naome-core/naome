@@ -1,12 +1,3 @@
-[package]
-name = "naome"
-version.workspace = true
-edition.workspace = true
-description = "Protocol and Rust reference implementation for machine-verifiable mathematical proofs."
-license.workspace = true
-repository.workspace = true
-publish.workspace = true
-
 [workspace]
 members = [
     "crates/naome-authoring",
@@ -14,7 +5,6 @@ members = [
     "crates/naome-checker",
     "crates/naome-consensus",
     "crates/naome-devnet",
-    "crates/naome-economy",
     "crates/naome-foundation",
     "crates/naome-ledger",
     "crates/naome-network",
@@ -40,22 +30,8 @@ ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std"
 num-bigint = { version = "0.4.8", default-features = false, features = ["std"] }
 sha2 = { version = "0.11.0", default-features = false }
 
-[dependencies]
-naome-chain = { path = "crates/naome-chain" }
-naome-checker = { path = "crates/naome-checker" }
-naome-consensus = { path = "crates/naome-consensus" }
-naome-economy = { path = "crates/naome-economy" }
-naome-proof = { path = "crates/naome-proof" }
-naome-protocol = { path = "crates/naome-protocol" }
-
-[dev-dependencies]
-naome-foundation = { path = "crates/naome-foundation" }
-
 [workspace.lints.rust]
 unsafe_code = "forbid"
-
-[lints]
-workspace = true
 
 # Optimize model exploration and repeated signature/hash checks in test builds.
 # Keep debug assertions and overflow checks enabled in these packages.

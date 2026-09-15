@@ -457,12 +457,6 @@ impl Process {
     pub fn start_publisher(layout: &Layout, config: &str) -> Self {
         Self::start_mode(&layout.write("publisher.toml", config), Some("--publisher"))
     }
-    pub fn start_membership(layout: &Layout, config: &str) -> Self {
-        Self::start_mode(
-            &layout.write("membership.toml", config),
-            Some("--membership"),
-        )
-    }
     fn start_mode(path: &Path, mode: Option<&str>) -> Self {
         let mut child = spawn(
             Command::new(env!("CARGO_BIN_EXE_naome-validator"))

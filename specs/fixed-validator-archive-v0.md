@@ -27,7 +27,7 @@ This archive profile does not itself own live-validator proof serving,
 proposal/vote observation or assembly, automatic peer/source choice, head or
 checkpoint discovery, branch selection, retries outside an explicit following command, persistent sync intent,
 automatic repair, dynamic validators, economics, or general full-node
-conformance. `SEC-003`, `SYNC-001`, `SYNC-002` and `SYNC-004` remain unfinished.
+conformance.
 Configured peers grant transport access only; they cannot replace the public
 configuration, expected context, selected parent or complete verifier.
 

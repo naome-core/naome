@@ -1,11 +1,7 @@
 use crate::transport::inbound_retention::InboundRetentionBudget;
 use std::io;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
 
-use libp2p::futures::AsyncRead;
 use libp2p::futures::executor::block_on;
 use libp2p::futures::io::Cursor;
 use libp2p::request_response::Codec;
@@ -29,15 +25,12 @@ use crate::recovery_bundle_push::{
     RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS, RecoveryBundlePushReceipt,
     RecoveryBundlePushRequest,
 };
-use crate::{MAX_PEER_RECORDS_PER_BATCH, MAX_SIGNED_PEER_RECORD_BYTES, PeerRecordBatch};
 
 use super::{
     ARTIFACT_BLOCK_PROTOCOL, ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
     ARTIFACT_CHAIN_HEAD_PROTOCOL, ARTIFACT_PROTOCOL, ArtifactBlockCodec, ArtifactBlockWireResponse,
     ArtifactChainHeadAnnouncementCodec, ArtifactChainHeadAnnouncementReceipt,
-    ArtifactChainHeadCodec, ArtifactCodec, PEER_RECORD_PROTOCOL, PeerRecordCodec,
-    PeerRecordResponderCodec, PeerRecordResponderRequest, RECOVERY_BUNDLE_PUSH_PROTOCOL,
-    RecoveryBundlePushCodec,
+    ArtifactChainHeadCodec, ArtifactCodec, RECOVERY_BUNDLE_PUSH_PROTOCOL, RecoveryBundlePushCodec,
 };
 
 fn recovery_bundle_push_codec() -> RecoveryBundlePushCodec {
@@ -45,33 +38,6 @@ fn recovery_bundle_push_codec() -> RecoveryBundlePushCodec {
         RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS,
         RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
     )))
-}
-
-struct PendingReader;
-
-impl AsyncRead for PendingReader {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _: &mut Context<'_>,
-        _: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Pending
-    }
-}
-
-struct FailingReader;
-
-impl AsyncRead for FailingReader {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _: &mut Context<'_>,
-        _: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(Err(io::Error::new(
-            io::ErrorKind::ConnectionReset,
-            "synthetic reset",
-        )))
-    }
 }
 
 fn request_bytes() -> [u8; ARTIFACT_REQUEST_BYTES] {
@@ -888,176 +854,6 @@ fn canonical_128_byte_block_has_the_normative_found_frame() {
     assert_eq!(encoded.into_inner(), expected);
 }
 
-#[test]
-fn peer_record_request_and_empty_response_have_exact_framing() {
-    assert_eq!(PEER_RECORD_PROTOCOL.as_ref(), "/naome/peer-record-exchange");
-    let mut codec = PeerRecordCodec;
-
-    let mut request = Cursor::new(Vec::new());
-    assert_eq!(
-        block_on(codec.read_request(&PEER_RECORD_PROTOCOL, &mut request)).unwrap(),
-        crate::PeerRecordPullRequest
-    );
-    let mut trailing = Cursor::new(vec![0xff]);
-    assert_eq!(
-        block_on(codec.read_request(&PEER_RECORD_PROTOCOL, &mut trailing))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::InvalidData
-    );
-    let mut encoded_request = Cursor::new(Vec::new());
-    block_on(codec.write_request(
-        &PEER_RECORD_PROTOCOL,
-        &mut encoded_request,
-        crate::PeerRecordPullRequest,
-    ))
-    .unwrap();
-    assert!(encoded_request.into_inner().is_empty());
-
-    let mut response = Cursor::new(vec![0]);
-    assert!(
-        block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut response))
-            .unwrap()
-            .is_empty()
-    );
-    let mut encoded_response = Cursor::new(Vec::new());
-    block_on(codec.write_response(
-        &PEER_RECORD_PROTOCOL,
-        &mut encoded_response,
-        PeerRecordBatch::new([]).unwrap(),
-    ))
-    .unwrap();
-    assert_eq!(encoded_response.into_inner(), [0]);
-}
-
-#[test]
-fn peer_record_response_preflights_each_declared_bound() {
-    let mut codec = PeerRecordCodec;
-    let mut excess_count = Cursor::new(vec![
-        u8::try_from(MAX_PEER_RECORDS_PER_BATCH + 1).unwrap(),
-        0xff,
-    ]);
-    assert_eq!(
-        block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut excess_count))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::InvalidData
-    );
-    assert_eq!(excess_count.position(), 1);
-
-    for (bytes, position) in [(vec![1, 0, 0], 3), (vec![1, 0x10, 0x01, 0xff], 3)] {
-        let mut input = Cursor::new(bytes);
-        assert_eq!(
-            block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut input))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
-        assert_eq!(input.position(), position);
-    }
-
-    for bytes in [vec![1], vec![1, 0, 1]] {
-        let mut input = Cursor::new(bytes);
-        assert_eq!(
-            block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut input))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::UnexpectedEof
-        );
-    }
-}
-
-#[test]
-fn peer_record_response_rejects_trailing_and_reaches_the_exact_body_cap() {
-    let mut codec = PeerRecordCodec;
-    let mut trailing = Cursor::new(vec![0, 0xff]);
-    assert_eq!(
-        block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut trailing))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::InvalidData
-    );
-
-    let mut maximum = Vec::with_capacity(crate::PEER_RECORD_BATCH_MAX_BYTES);
-    maximum.push(u8::try_from(MAX_PEER_RECORDS_PER_BATCH).unwrap());
-    for _ in 0..MAX_PEER_RECORDS_PER_BATCH {
-        maximum.extend_from_slice(
-            &u16::try_from(MAX_SIGNED_PEER_RECORD_BYTES)
-                .unwrap()
-                .to_be_bytes(),
-        );
-        maximum.resize(maximum.len() + MAX_SIGNED_PEER_RECORD_BYTES, 0xa5);
-    }
-    assert_eq!(maximum.len(), crate::PEER_RECORD_BATCH_MAX_BYTES);
-    let mut maximum = Cursor::new(maximum);
-    assert_eq!(
-        block_on(codec.read_response(&PEER_RECORD_PROTOCOL, &mut maximum))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::InvalidData
-    );
-    assert_eq!(
-        maximum.position(),
-        u64::try_from(crate::PEER_RECORD_BATCH_MAX_BYTES).unwrap()
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn responder_request_reader_classifies_eof_invalid_timeout_and_io() {
-    let mut codec = PeerRecordResponderCodec;
-
-    let mut exact = Cursor::new(Vec::new());
-    assert!(matches!(
-        codec
-            .read_request(&PEER_RECORD_PROTOCOL, &mut exact)
-            .await
-            .unwrap(),
-        PeerRecordResponderRequest::Valid
-    ));
-
-    let mut nonempty = Cursor::new(vec![0xff; 64]);
-    assert!(matches!(
-        codec
-            .read_request(&PEER_RECORD_PROTOCOL, &mut nonempty)
-            .await
-            .unwrap(),
-        PeerRecordResponderRequest::Invalid
-    ));
-    assert_eq!(nonempty.position(), 1);
-
-    let started = tokio::time::Instant::now();
-    let mut pending = PendingReader;
-    assert!(matches!(
-        codec
-            .read_request(&PEER_RECORD_PROTOCOL, &mut pending)
-            .await
-            .unwrap(),
-        PeerRecordResponderRequest::ReadTimedOut
-    ));
-    assert_eq!(
-        tokio::time::Instant::now() - started,
-        Duration::from_secs(10)
-    );
-
-    let mut failing = FailingReader;
-    let PeerRecordResponderRequest::ReadFailed(source) = codec
-        .read_request(&PEER_RECORD_PROTOCOL, &mut failing)
-        .await
-        .unwrap()
-    else {
-        panic!("expected the exact read failure")
-    };
-    assert_eq!(source.kind(), io::ErrorKind::ConnectionReset);
-
-    let publication = Arc::new(vec![0_u8]);
-    let mut encoded = Cursor::new(Vec::new());
-    codec
-        .write_response(&PEER_RECORD_PROTOCOL, &mut encoded, publication)
-        .await
-        .unwrap();
-    assert_eq!(encoded.into_inner(), [0]);
-}
-
 fn check_wire_codec<C: Codec<Protocol = libp2p::StreamProtocol>>(
     name: &str,
     mut codec: C,
@@ -1117,12 +913,5 @@ fn source_exchange_frames_have_a_deterministic_mutation_corpus() {
         &RECOVERY_BUNDLE_PUSH_PROTOCOL,
         &[vec![0, 0, 0, 3, 0x5a, 0xa5, 0xff]],
         &[vec![1]],
-    );
-    check_wire_codec(
-        "peer record framing",
-        PeerRecordCodec,
-        &PEER_RECORD_PROTOCOL,
-        &[vec![]],
-        &[vec![0]],
     );
 }

@@ -64,10 +64,8 @@ bounded configured-peer catch-up paths, artifact serving beyond
 the separately opted-in retained complete-proof and artifact-source responses,
 automatic inbox clearing, repair, dynamic
 validator, key rotation, production timeout calibration, hardware custody, or
-distributed-liveness authority. In accordance with `PROD-023`, no remote
-consensus-signer service or configuration is supported. This implements only
-the process's local-key boundary; it does not close `PROD-023`'s dependency on
-the complete `PROD-020` parent.
+distributed-liveness authority. No remote consensus-signer service or
+configuration is supported; the process uses only local keys.
 
 ## Bounded current-height proposal job
 
@@ -94,7 +92,8 @@ Every attempt uses the unchanged store-backed runtime and driver authoring
 coordinators. Startup recovery, active publication, pending arm/input, observed or
 elapsed deadline, and driver work retain their existing priority before source
 access or signing. A completed live historical retry opens the bounded ordinary
-opportunity specified by `PROD-020-068`, including these existing authoring checks.
+opportunity specified by the [publication lifecycle](fixed-validator-publication-lifecycle-v0.md),
+including these existing authoring checks.
 The job first offers its exact fresh target; only the sealed
 `RetainedValidValueRequired` result redirects it to the signer's retained valid
 value and complete earlier-round certificate. This result precedes fresh-source

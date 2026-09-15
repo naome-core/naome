@@ -11,8 +11,8 @@ finality, or agreement. Source acquisition and full local validation remain
 required before the existing durable proposer preference can be established.
 
 This is a bounded fixed-validator V0 profile. General admission, eviction,
-retention, traffic and relay policies under `NET-008`, `NET-010`, `NET-011`,
-`NET-015`, `NET-016` and `NET-021` remain unresolved outside this profile.
+retention, traffic and relay policies outside the configured fixed-peer
+profile are not defined here.
 
 ## Wire and receipt
 

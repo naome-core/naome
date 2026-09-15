@@ -233,8 +233,8 @@ SHA256(
 
 The retained and conflicting roots and intent digests are local diagnostics.
 They are not by themselves objective equivocation proof, signer attribution,
-peer evidence, branch selection, or finality authority; `PROD-015` remains
-separately unfinished.
+peer evidence, branch selection, or finality authority. This fixed profile
+does not define public processing of signed equivocation proofs.
 
 ## Startup and node outcomes
 

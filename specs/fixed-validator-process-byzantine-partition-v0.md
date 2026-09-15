@@ -93,4 +93,4 @@ The test does not claim arbitrary Byzantine schedules, physical TCP cuts,
 reconnection, crash/restart, partial writes, dynamic validators, general safety
 or liveness, deployment, or production readiness. The separate honest physical
 partition and process-kill corpora retain their own evidence boundaries.
-`SEC-012` remains `IN_PROGRESS`.
+General network resilience is not established by this corpus.

@@ -1753,19 +1753,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "naome"
-version = "0.1.0"
-dependencies = [
- "naome-chain",
- "naome-checker",
- "naome-consensus",
- "naome-economy",
- "naome-foundation",
- "naome-proof",
- "naome-protocol",
-]
-
-[[package]]
 name = "naome-authoring"
 version = "0.1.0"
 dependencies = [
@@ -1827,10 +1814,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "naome-economy"
-version = "0.1.0"
-
-[[package]]
 name = "naome-foundation"
 version = "0.1.0"
 
@@ -1849,7 +1832,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
- "getrandom 0.3.4",
  "libp2p",
  "naome-chain",
  "naome-consensus",
@@ -1921,7 +1903,6 @@ dependencies = [
  "naome-foundation",
  "naome-ledger",
  "naome-proof",
- "rustix 1.1.4",
  "sha2 0.11.0",
  "winsafe",
 ]

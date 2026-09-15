@@ -104,6 +104,6 @@ This is one finite local Unix process-kill and loopback partition execution.
 It adds no automatic restart, retry, evidence resupply, inbox disposal, healing,
 general crash or power-loss recovery, partial-write fault injection, Byzantine
 schedule, dynamic validators, general safety or liveness, deployment, or
-production-readiness claim. `SEC-012` remains `IN_PROGRESS`. The separate
+production-readiness claim. The separate
 [runtime-owner restart corpus](fixed-validator-partition-restart-v0.md) retains
 its own delivery and lifecycle evidence boundary.

@@ -149,8 +149,7 @@ This coordinator does not define or perform:
 - cross-file atomicity, automatic crash-gap repair, hardware monotonicity, or
   non-Unix file-anchor runtime guarantees.
 
-These remain required product capabilities where the consensus ledger says so;
-this boundary only applies an exact caller-classified Precommit close or fully
+This boundary only applies an exact caller-classified Precommit close or fully
 verified certificate derived from one prebuilt certificate or one complete
 caller-supplied batch to the already-decided local round and phase progression.
 A separately retained proposal token cannot by itself invoke or replace this

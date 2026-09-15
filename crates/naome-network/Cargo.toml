@@ -2,14 +2,13 @@
 name = "naome-network"
 version.workspace = true
 edition.workspace = true
-description = "Bounded authenticated artifact-chain transport and peer-address management for NAOME."
+description = "Bounded authenticated artifact-chain transport over fixed peers for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
 [dependencies]
 async-trait = "0.1.91"
-getrandom = "0.3.4"
 libp2p = { version = "0.56.0", default-features = false, features = [
     "ed25519",
     "macros",

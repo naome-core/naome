@@ -12,7 +12,8 @@ The test in `crates/naome-runtime/tests/cases/partition_restart.rs` uses the
 ordinary startup and runtime APIs. It supplies no driver event, timeout ticket,
 lock, signing state, finality proof, or manufactured honest signature. It adds
 no production behavior, retry, evidence resupply, inbox disposal, healing,
-automatic recovery, or protocol policy. General `SEC-012` remains unfinished.
+automatic recovery, or protocol policy. General network resilience is not
+established by this corpus.
 
 ## Execution
 

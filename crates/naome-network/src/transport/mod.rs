@@ -17,7 +17,6 @@ pub(crate) mod rate_limit;
 pub(crate) mod recovery_bundle_push;
 pub(crate) mod request_correlation;
 pub(crate) mod session;
-pub mod verified_membership;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -50,8 +49,6 @@ use session::Behaviour as SessionBehaviour;
 use tokio::time::Instant;
 
 const MANAGED_SESSION_IDLE_TIMEOUT: Duration = Duration::MAX;
-pub(crate) const PEER_RECORD_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
-pub(crate) const MAX_PEER_RECORD_STREAMS_PER_CONNECTION: usize = 1;
 pub(crate) const MAX_NEGOTIATING_INBOUND_STREAMS_PER_CONNECTION: usize = 2;
 const DIAL_RETRY_DELAYS: [Duration; 7] = [
     Duration::from_secs(1),
