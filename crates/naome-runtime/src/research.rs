@@ -30,8 +30,11 @@ use tokio::time::Instant;
 #[derive(Clone, Debug)]
 pub struct ResearchRuntimeConfig {
     pub tick_interval: Duration,
+    /// Round-zero delay; later rounds double it up to a sixteen-fold cap.
     pub proposal_timeout: Duration,
+    /// Round-zero delay, with the same bounded consensus-round growth.
     pub prevote_timeout: Duration,
+    /// Round-zero delay, with the same bounded consensus-round growth.
     pub precommit_timeout: Duration,
     /// Enables only explicit local fault-injection controls; canonical genesis
     /// and the fixed quorum denominator remain unchanged.

@@ -210,14 +210,16 @@ fn proof_following_retries_after_publication_or_current_finality_owner_releases(
         }
         let images = layout.images();
         peer.reply(proof.envelope.clone().unwrap(), proof.payload.clone());
-        assert_eq!(
-            node.event("follow_waiting")["reason"],
-            if publication {
-                "proof_backpressure"
-            } else {
+        if publication {
+            let deferred = node.event("sync_deferred");
+            assert_eq!(deferred["reason"], "proof_backpressure");
+            assert_eq!(deferred["job"]["response_retained"], true);
+        } else {
+            assert_eq!(
+                node.event("follow_waiting")["reason"],
                 "proof_not_committed"
-            }
-        );
+            );
+        }
         if !publication {
             node.event("current_finality_unresolved");
         }
@@ -231,8 +233,10 @@ fn proof_following_retries_after_publication_or_current_finality_owner_releases(
                 json!({"command":"discard_inbox", "id":132, "inbox":"finality"}),
             );
         }
-        peer.held("proof");
-        peer.reply(proof.envelope.clone().unwrap(), proof.payload.clone());
+        if !publication {
+            peer.held("proof");
+            peer.reply(proof.envelope.clone().unwrap(), proof.payload.clone());
+        }
         node.event("sync_completed");
         assert_eq!(node.event("finality")["state"]["driver"]["height"], "2");
         cancel(&mut node);

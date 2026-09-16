@@ -1,6 +1,9 @@
 //! One volatile proof owner: one bounded pass, or explicit periodic following.
 use super::{Result, config, report};
-use naome_consensus::{ConsensusHeight, UnverifiedFixedConsensusProposalRouteV0};
+use naome_chain::ArtifactBlockId;
+use naome_consensus::{
+    ConsensusContextV0, ConsensusHeight, UnverifiedFixedConsensusProposalRouteV0,
+};
 use naome_network::{
     ConsensusPushMessage, FinalityProofRequest, FinalityProofResponse, FinalityProofTicket,
     OutboundFinalityProofEvent, OutboundFinalityProofFailure, PeerId, RequestStartError,
@@ -24,7 +27,7 @@ pub(super) struct ProofSync {
 
 enum State {
     Waiting(Instant),
-    Active(Pass),
+    Active(Box<Pass>),
 }
 
 struct Pass {
@@ -33,6 +36,18 @@ struct Pass {
     completed: u64,
     deadline: Instant,
     ticket: Option<FinalityProofTicket>,
+    context: ConsensusContextV0,
+    parent: ArtifactBlockId,
+    retained: Option<RetainedProof>,
+}
+
+// One already bounded and correlated response. Retention grants no verification
+// or authority; every attempt still enters the unchanged runtime custody gate.
+struct RetainedProof {
+    envelope: Vec<u8>,
+    payload: Vec<u8>,
+    supply_missing_proposal: bool,
+    reported: bool,
 }
 
 struct Failure {
@@ -64,7 +79,7 @@ impl ProofSync {
             peer,
             count,
             interval: None,
-            state: State::Active(pass),
+            state: State::Active(Box::new(pass)),
         })
     }
 
@@ -111,7 +126,7 @@ impl ProofSync {
     pub fn status(&self) -> Value {
         let mut status = match &self.state {
             State::Active(pass) => {
-                json!({"id": self.id, "peer_id": self.peer.to_string(), "next_height": pass.next.to_string(), "last_height": pass.last.to_string(), "completed": pass.completed.to_string()})
+                json!({"id": self.id, "peer_id": self.peer.to_string(), "next_height": pass.next.to_string(), "last_height": pass.last.to_string(), "completed": pass.completed.to_string(), "response_retained": pass.retained.is_some()})
             }
             State::Waiting(_) => {
                 json!({"id": self.id, "peer_id": self.peer.to_string(), "state": "waiting"})
@@ -169,9 +184,15 @@ impl ProofSync {
     pub fn changed(&self, runtime: &Runtime<'_>) -> bool {
         match &self.state {
             State::Waiting(_) => false,
-            State::Active(pass) => runtime
-                .driver()
-                .is_none_or(|driver| driver.position().height().value() != pass.next),
+            State::Active(pass) => runtime.driver().is_none_or(|driver| {
+                driver.position().height().value() != pass.next
+                    || driver.context() != pass.context
+                    || driver
+                        .selected_artifact_history()
+                        .selected_head_block_id()
+                        .ok()
+                        != Some(pass.parent)
+            }),
         }
     }
 
@@ -203,7 +224,7 @@ impl ProofSync {
         }
         match Pass::start(self.peer, self.count, runtime) {
             Ok(pass) => {
-                self.state = State::Active(pass);
+                self.state = State::Active(Box::new(pass));
                 output.emit(
                     json!({"event":"sync_pass_started", "id":self.id, "job":self.status()}),
                 )?;
@@ -225,7 +246,7 @@ impl ProofSync {
         };
         let failure = if Instant::now() >= pass.deadline {
             Some(Failure::retry("network_deadline"))
-        } else if pass.ticket.is_none() {
+        } else if pass.ticket.is_none() && pass.retained.is_none() {
             pass.request(self.peer, runtime).err()
         } else {
             None
@@ -281,26 +302,72 @@ impl ProofSync {
                 None,
             ));
         };
-        // Preserve one bounded raw proposal only for the autonomous owner.
-        // Queueing it below never counts as verified proof or finality progress.
-        let proposal = supply_missing_proposal.then(|| {
+        pass.retained = Some(RetainedProof {
+            envelope: canonical_envelope,
+            payload: canonical_artifact,
+            supply_missing_proposal,
+            reported: false,
+        });
+        self.retry_retained(runtime, output)
+    }
+
+    pub fn has_retained_proof(&self) -> bool {
+        matches!(&self.state, State::Active(pass) if pass.retained.is_some())
+    }
+
+    /// Retry local admission only after ordinary runtime scheduling has had the
+    /// opportunity to release custody. The original deadline and parent remain
+    /// binding, and no additional network request or signing action is created.
+    pub fn retry_retained<'node>(
+        mut self,
+        runtime: &mut Runtime<'node>,
+        output: &report::Output,
+    ) -> Result<(Option<Self>, Option<Event<'node>>)> {
+        let failure = if Instant::now() >= self.deadline() {
+            Some(Failure::retry("network_deadline"))
+        } else if self.changed(runtime) {
+            Some(Failure::retry("sync_head_changed"))
+        } else {
+            None
+        };
+        if let Some(failure) = failure {
+            return Ok((self.finish(Some(failure), output)?, None));
+        }
+        let State::Active(pass) = &mut self.state else {
+            return Ok((Some(self), None));
+        };
+        let Some(mut retained) = pass.retained.take() else {
+            return Ok((Some(self), None));
+        };
+        // Preserve the existing autonomous raw-proposal fallback. These bytes
+        // still require normal admission and are not proof authority.
+        let proposal = retained.supply_missing_proposal.then(|| {
             UnverifiedFixedConsensusProposalRouteV0::proposal_control_from_envelope(
-                &canonical_envelope,
+                &retained.envelope,
             )
             .map(|canonical_proposal| ConsensusPushMessage::Proposal {
                 canonical_proposal,
-                canonical_artifact: canonical_artifact.clone(),
+                canonical_artifact: retained.payload.clone(),
             })
         });
-        let event = match runtime.commit_finality_envelope(&canonical_envelope, canonical_artifact)
-        {
+        let event = match runtime.commit_finality_envelope(&retained.envelope, retained.payload) {
             Ok(event) => event,
-            Err((reason, _payload)) => {
-                let failure = match reason {
-                    Refusal::Busy => Failure::retry("proof_backpressure"),
-                    Refusal::DriverUnavailable => Failure::stop("proof_backpressure"),
-                };
-                return Ok((self.finish(Some(failure), output)?, None));
+            Err((Refusal::Busy, payload)) => {
+                retained.payload = payload;
+                let report = !retained.reported;
+                retained.reported = true;
+                pass.retained = Some(retained);
+                if report {
+                    output.emit(json!({"event":"sync_deferred", "id":self.id,
+                        "reason":"proof_backpressure", "job":self.status()}))?;
+                }
+                return Ok((Some(self), None));
+            }
+            Err((Refusal::DriverUnavailable, _)) => {
+                return Ok((
+                    self.finish(Some(Failure::stop("proof_backpressure")), output)?,
+                    None,
+                ));
             }
         };
         if !matches!(&event, Event::Finality(_)) {
@@ -328,6 +395,12 @@ impl ProofSync {
             return Ok((self.finish(None, output)?, Some(event)));
         }
         pass.next += 1;
+        pass.parent = runtime
+            .driver()
+            .ok_or("driver_unavailable")?
+            .selected_artifact_history()
+            .selected_head_block_id()
+            .map_err(|_| "sync_selected_history")?;
         if Instant::now() >= pass.deadline {
             return Ok((
                 self.finish(Some(Failure::retry("network_deadline")), output)?,
@@ -360,6 +433,12 @@ impl Pass {
             completed: 0,
             deadline,
             ticket: None,
+            context: driver.context(),
+            parent: driver
+                .selected_artifact_history()
+                .selected_head_block_id()
+                .map_err(|_| Failure::stop("sync_selected_history"))?,
+            retained: None,
         };
         pass.request(peer, runtime)?;
         Ok(pass)

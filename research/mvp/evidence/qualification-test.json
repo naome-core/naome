@@ -1,52 +1,13 @@
 {
   "rust": "1.97.1",
   "platform": "macOS-27.0-arm64-arm-64bit",
-  "scope": "Actual valid proof-package normalization and authenticated envelopes only; 16-candidate measurement is not a finalized reveal record, timing is descriptive under concurrent workspace/release/lab load.",
-  "research_tests_passed": 76,
+  "scope": "Actual valid proof-package normalization and authenticated envelopes only; 16-candidate measurement is not a finalized reveal record. Qualification tests ran serially under concurrent workspace and lab load; timings are descriptive, not thresholds.",
+  "research_tests_passed": 77,
   "measurements": [
-    {
-      "scenario": "64_verified_older_dependencies_and_citations",
-      "profile": "test",
-      "elapsed_us": 50661,
-      "package_bytes": 9350,
-      "largest_certificate_bytes": 9244,
-      "new_proofs": 1,
-      "citations": 64,
-      "checker_calls": 130,
-      "checker_input_bytes": 32184,
-      "dag_steps": 1660,
-      "normalization_steps": 254
-    },
-    {
-      "scenario": "4096_reachable_steps",
-      "profile": "test",
-      "elapsed_us": 127860,
-      "package_bytes": 36986,
-      "largest_certificate_bytes": 36880,
-      "new_proofs": 1,
-      "citations": 0,
-      "checker_calls": 2,
-      "checker_input_bytes": 73760,
-      "dag_steps": 8192,
-      "normalization_steps": 4096
-    },
-    {
-      "scenario": "near_64k_reachable_certificate",
-      "profile": "test",
-      "elapsed_us": 71187,
-      "package_bytes": 65615,
-      "largest_certificate_bytes": 65509,
-      "new_proofs": 1,
-      "citations": 0,
-      "checker_calls": 2,
-      "checker_input_bytes": 131018,
-      "dag_steps": 22,
-      "normalization_steps": 11
-    },
     {
       "scenario": "17_nodes_near_64k_package",
       "profile": "test",
-      "elapsed_us": 84597,
+      "elapsed_us": 27735,
       "package_bytes": 64959,
       "largest_certificate_bytes": 3812,
       "new_proofs": 17,
@@ -59,7 +20,7 @@
     {
       "scenario": "17_nodes_near_256k_package",
       "profile": "test",
-      "elapsed_us": 338474,
+      "elapsed_us": 107935,
       "package_bytes": 261315,
       "largest_certificate_bytes": 15376,
       "new_proofs": 17,
@@ -70,9 +31,48 @@
       "normalization_steps": 171
     },
     {
+      "scenario": "64_verified_older_dependencies_and_citations",
+      "profile": "test",
+      "elapsed_us": 11158,
+      "package_bytes": 9350,
+      "largest_certificate_bytes": 9244,
+      "new_proofs": 1,
+      "citations": 64,
+      "checker_calls": 130,
+      "checker_input_bytes": 32184,
+      "dag_steps": 1660,
+      "normalization_steps": 254
+    },
+    {
+      "scenario": "4096_reachable_steps",
+      "profile": "test",
+      "elapsed_us": 36695,
+      "package_bytes": 36986,
+      "largest_certificate_bytes": 36880,
+      "new_proofs": 1,
+      "citations": 0,
+      "checker_calls": 2,
+      "checker_input_bytes": 73760,
+      "dag_steps": 8192,
+      "normalization_steps": 4096
+    },
+    {
+      "scenario": "near_64k_reachable_certificate",
+      "profile": "test",
+      "elapsed_us": 18280,
+      "package_bytes": 65615,
+      "largest_certificate_bytes": 65509,
+      "new_proofs": 1,
+      "citations": 0,
+      "checker_calls": 2,
+      "checker_input_bytes": 131018,
+      "dag_steps": 22,
+      "normalization_steps": 11
+    },
+    {
       "scenario": "16_candidates_near_2mib_older_closure",
       "profile": "test",
-      "elapsed_us": 8015917,
+      "elapsed_us": 7189969,
       "older_proofs": 64,
       "older_dependency_depth": 2,
       "older_certificate_bytes": 2071968,
@@ -86,9 +86,10 @@
       "normalization_steps": 544
     }
   ],
-  "source_commit": "4728ee6be8d114c8325620a797943794910b31e5",
+  "source_commit": "c0bfaf26bd51a03a096d89b636f98d5565fefbf9",
   "reproduce_build": "cargo test --workspace --profile test --all-targets --all-features --locked --no-run",
-  "reproduce_measurement": "cargo test --workspace --profile test --all-targets --all-features --locked --no-fail-fast qualification_ -- --nocapture",
-  "actual_execution": "Direct matching research test binary emitted by the full-workspace build; full suite and qualifier timing scope recorded below.",
-  "source_log_sha256": "fd718d538f3e837a4292cbeed20909d7b74ef312df96ea86f29cc70eb10eff04"
+  "reproduce_measurement": "cargo test -p naome-research --profile test --lib --all-features --locked qualification_ -- --test-threads=1 --nocapture",
+  "actual_execution": "target/debug/deps/naome_research-25dfea985e761570 qualification_ --test-threads=1 --nocapture",
+  "source_log_sha256": "24e617f2410bcd69aa8c6d3b0246dad5479973c84a7d571a17e34902898de493",
+  "full_research_log_sha256": "e909ea8b4c87930c7ee7b32715071685a410323ab656bac931c66c81e9389cce"
 }

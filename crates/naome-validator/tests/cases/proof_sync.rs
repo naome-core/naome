@@ -415,7 +415,7 @@ fn proof_sync_live_head_change_discards_in_flight_response_without_historical_ro
 }
 
 #[test]
-fn proof_sync_retained_finality_and_live_publication_backpressure_dispose_response() {
+fn proof_sync_retains_fetched_response_until_live_publication_releases() {
     let fixture = Fixture::new();
     let proof = Proof::new(&fixture, false, 1, Role::Precommit);
     for publication in [false, true] {
@@ -443,14 +443,13 @@ fn proof_sync_retained_finality_and_live_publication_backpressure_dispose_respon
         }
         let images = layout.images();
         peer.reply(proof.envelope.clone().unwrap(), proof.payload.clone());
-        assert_eq!(
-            node.event("sync_stopped")["reason"],
-            if publication {
-                "proof_backpressure"
-            } else {
-                "proof_not_committed"
-            }
-        );
+        if publication {
+            let deferred = node.event("sync_deferred");
+            assert_eq!(deferred["reason"], "proof_backpressure");
+            assert_eq!(deferred["job"]["response_retained"], true);
+        } else {
+            assert_eq!(node.event("sync_stopped")["reason"], "proof_not_committed");
+        }
         if !publication {
             node.event("current_finality_unresolved");
         }
@@ -464,16 +463,68 @@ fn proof_sync_retained_finality_and_live_publication_backpressure_dispose_respon
                 json!({"command":"discard_inbox", "id":62, "inbox":"finality"}),
             );
         }
-        assert_eq!(
-            sync(&mut node, fixture.peers[0], 63, 1)["event"],
-            "sync_started"
-        );
-        peer.held("proof");
-        peer.reply(proof.envelope.clone().unwrap(), proof.payload.clone());
+        if !publication {
+            assert_eq!(
+                sync(&mut node, fixture.peers[0], 63, 1)["event"],
+                "sync_started"
+            );
+            peer.held("proof");
+            peer.reply(proof.envelope.clone().unwrap(), proof.payload.clone());
+        }
+        // Busy preserves one exact response. Releasing the publication must
+        // complete from those bytes without a second request or peer reply.
         node.event("sync_completed");
         assert_eq!(node.event("finality")["state"]["driver"]["height"], "2");
         node.shutdown();
         drop(peer);
         drop(guard);
     }
+}
+
+#[test]
+fn proof_sync_cancellation_drops_retained_response_without_authority_change() {
+    let fixture = Fixture::new();
+    let proof = Proof::new(&fixture, false, 1, Role::Precommit);
+    let layout = Layout::new();
+    proof.write(&layout, "proof");
+    let (mut node, _, address) = waiting_node(&fixture, &layout, true);
+    let guard = PARENT_JOURNALS.read().unwrap();
+    let peer = Peer::start(&guard, &fixture, &address);
+    established(&mut node);
+    sync(&mut node, fixture.peers[0], 70, 1);
+    peer.held("proof");
+    assert_eq!(
+        result(
+            &mut node,
+            json!({"command":"submit_proposal", "id":71,
+        "control_file":"proof.control", "payload_file":"proof.payload"})
+        )["event"],
+        "input_queued"
+    );
+    node.event("admission");
+    node.event("publication_prepared");
+    node.event("peer_attempted");
+    peer.held("consensus");
+    let images = layout.images();
+    peer.reply(proof.envelope.unwrap(), proof.payload);
+    assert_eq!(
+        node.event("sync_deferred")["job"]["response_retained"],
+        true
+    );
+    assert_eq!(layout.images(), images);
+    assert!(!result(&mut node, json!({"command":"cancel_sync", "id":72}))["job"].is_null());
+    assert_eq!(node.event("sync_stopped")["reason"], "cancelled");
+    peer.ack();
+    node.event("publication_complete");
+    assert_eq!(state(&mut node)["driver"]["height"], "1");
+    assert!(result(&mut node, json!({"command":"sync_status", "id":73}))["job"].is_null());
+    node.shutdown();
+    assert!(
+        !node
+            .observed
+            .iter()
+            .any(|e| e["event"] == "finality" || e["event"] == "sync_progress")
+    );
+    drop(peer);
+    drop(guard);
 }

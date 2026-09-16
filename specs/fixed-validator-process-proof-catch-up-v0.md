@@ -105,11 +105,18 @@ stops the job. Round or phase advancement at the same height does not by itself
 invalidate a proof. Complete envelope verification still rechecks the actual
 live branch and context at the moment of delegation.
 
-`Unavailable`, transport failure, selected-head drift, runtime refusal or
-continuing driver rejection ends the job and disposes the response. No busy
-proof is retained for a later attempt. Driver diagnostic events distinguish
-continuing rejection/priority from fatal loss of authority. Fatal outcomes
-end the process through its existing teardown path.
+`Unavailable`, transport failure, selected-head drift, driver unavailability or
+continuing driver rejection ends the job and disposes the response. Runtime
+`Busy` instead retains one exact, already bounded response and emits
+`sync_deferred`; status reports `response_retained: true`. After ordinary
+publication, arm or command custody clears, the owner retries local admission
+through the same runtime gate without fetching again. It rechecks the original
+whole-job deadline, next height, context and selected parent before each attempt;
+it never advances authority while the gate is busy. The pending response excludes
+another request. Cancellation, deadline, selected-head change or teardown disposes
+it; a peer disconnect after complete receipt does not invalidate its proof bytes.
+Driver diagnostic events distinguish continuing rejection/priority from fatal
+loss of authority. Fatal outcomes end the process through existing teardown.
 
 After each completed anchored handoff, `sync_progress` reports the exact height
 and completed count. Its ordinary `finality` event still reports the new driver
@@ -210,7 +217,9 @@ commit only a bounded prefix, retain that prefix when the next proof is absent,
 and strictly reopen without input files or a resumed job. A separate controlled
 Noise-only peer supplies already prepared proofs to exercise invalid responses,
 cancellation and late replies, SIGKILL, concurrent head change, retained-finality
-priority and a real outstanding consensus publication. Those prepared fixtures
+priority, a real outstanding consensus publication, same-response admission
+once that publication completes, and cancellation while a response is retained.
+Those prepared fixtures
 are not attributed to honest live consensus production by the serving peer.
 These vectors establish this bounded profile, not arbitrary network scheduling,
 exhaustive I/O cuts or general partition/liveness guarantees.

@@ -177,12 +177,103 @@ fn pump(
         }
         assert!(
             Instant::now() < deadline,
-            "{label}: {:?}",
-            nodes
-                .each_ref()
-                .map(|n| n.observed.iter().rev().take(10).collect::<Vec<_>>())
+            "{label}: {}",
+            timeout_diagnostics(nodes, publishers)
         );
     }
+}
+
+// Read only the already observed transcript; diagnostics must not issue new
+// commands, change delivery, or hide which half of the pump predicate stalled.
+fn timeout_diagnostics(nodes: &[Process; 4], publishers: &[Process]) -> serde_json::Value {
+    fn outcome(event: &serde_json::Value) -> &serde_json::Value {
+        if event["event"] == "command_result" {
+            &event["outcome"]
+        } else {
+            event
+        }
+    }
+    fn latest(process: &Process, prefix: &str) -> Option<serde_json::Value> {
+        process
+            .observed
+            .iter()
+            .rev()
+            .find(|event| {
+                outcome(event)["event"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with(prefix))
+            })
+            .cloned()
+    }
+    fn recent(process: &Process) -> Vec<&serde_json::Value> {
+        process
+            .observed
+            .iter()
+            .rev()
+            .filter(|event| outcome(event)["event"] != "publication_retry_scheduled")
+            .take(12)
+            .collect()
+    }
+    let nodes = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let driver = node.observed.iter().rev().find_map(|event| {
+                let event = outcome(event);
+                event["state"].get("driver").or_else(|| event.get("driver"))
+            });
+            json!({
+                "node":index,
+                "latest_finality":node.observed.iter().rev().find(|event| event["event"] == "finality"),
+                "latest_observed_driver":driver,
+                "latest_height":latest(node, "supervisor_height"),
+                "latest_choice":latest(node, "supervisor_candidate_selected"),
+                "latest_proposal":latest(node, "proposal_job_"),
+                "latest_acquisition":latest(node, "acquisition_"),
+                "latest_acquisition_selection":latest(node, "supervisor_acquisition_"),
+                "recent_non_retry_newest_first":recent(node),
+            })
+        })
+        .collect::<Vec<_>>();
+    let publishers = publishers
+        .iter()
+        .enumerate()
+        .map(|(index, publisher)| {
+            let mut digests = Vec::new();
+            for event in publisher.observed.iter().rev() {
+                if event["event"] == "publisher_offer_receipted"
+                    && let Some(digest) = event["offer_sha256"].as_str()
+                    && !digests.contains(&digest)
+                {
+                    digests.push(digest);
+                    if digests.len() == 4 {
+                        break;
+                    }
+                }
+            }
+            let receipts = digests
+                .into_iter()
+                .map(|digest| {
+                    let matching = publisher.observed.iter().filter(|event| {
+                        event["event"] == "publisher_offer_receipted"
+                            && event["offer_sha256"] == digest
+                    });
+                    let count = matching.clone().count();
+                    let peers = matching
+                        .filter_map(|event| event["peer_id"].as_str())
+                        .collect::<std::collections::BTreeSet<_>>();
+                    json!({"offer_sha256":digest, "event_count":count, "distinct_peers":peers})
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "publisher":index,
+                "latest_loaded":latest(publisher, "publisher_offer_loaded"),
+                "latest_four_receipted_digests":receipts,
+                "recent_non_retry_newest_first":recent(publisher),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({"nodes":nodes, "publishers":publishers})
 }
 fn stop_publishers(publishers: &mut [Process]) {
     for p in publishers {

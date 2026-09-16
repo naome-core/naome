@@ -1,11 +1,12 @@
 # Trusted research MVP verification map
 
 This is an evidence map for the 35 requirements and seven acceptance scenarios
-in [requirements.md](requirements.md). It identifies executable checks; it does
-not mark those requirements complete. The current full workspace test/release
-runs, required cross-platform CI, and real lab-window acceptance are **pending**.
-Record their exact source commit, executable/source hashes, command, result and
-retained output before completing the acceptance checklist.
+in [requirements.md](requirements.md). It identifies executable checks; it separates
+component checks, actual lab execution, and whole-workspace qualification. The
+[lab acceptance report](evidence/lab-acceptance.json) passed all three real-window
+attempts in 1,673.114 seconds. Full workspace test/release executions and
+final-commit cross-platform CI remain **pending**; the checklist will be completed
+only after the remaining evidence is recorded.
 
 Component tests establish specific rule and recovery behavior. The accelerated
 process test establishes interaction among four separate executables, stores and
@@ -14,6 +15,41 @@ Storage fault injection supplies settlement crash-boundary evidence; graceful
 process shutdown is not an abrupt settlement crash. Local four-process evidence
 does not establish operation on two machines. The seven-day research profile
 remains separate later qualification.
+
+## Recorded qualification
+
+| Evidence | Source and result |
+|---|---|
+| Real lab windows | [Public report](evidence/lab-acceptance.json): four distinct local validators; actual Codex review; three 300/120/120-second attempts; reversed reveals; missing earlier reveal; authenticated helper retrieval with its original provider offline; positive citation payment; known-unpaid question; 2:2 partition; all-node cold restart; full offline replay, proof checks, and corrupt-export rejection. |
+| Exact lab binary | Commit `4d3ee7caad316b8eb01dddb3c67a4ab057ab271a`, binary SHA-256 `fe6ed8d4750df00cf694b201fd5c03eb23f23358873667b6ee9b3179905fe774`. The source-manifest hash also records uncommitted test-only additions present at startup. |
+| Final-source replay | The release executable built from `c0bfaf26bd51a03a096d89b636f98d5565fefbf9` independently replayed the completed lab archive and matched every reported final-state field. The sole intervening production change expands ShortTest timing; LAB timing and behavior are unchanged. |
+| Accelerated processes | On `c0bfaf2`, the four-process scenario passed in test (94.60 seconds) and release (123.47 seconds). Every intended vote, commitment, and reveal requires a finalized receipt. |
+| Actual mathematical workloads | [Test measurements](evidence/qualification-test.json) and [release measurements](evidence/qualification-release.json): six measurements, four qualification tests, and 77 research tests per profile, tied to `c0bfaf2`, exact commands and output hashes. |
+| Existing network qualification | [100-height local devnet report](evidence/devnet-local-100.json): 50 ms delay in each direction, outage/healing, process restarts, malformed offers, and independent replay. It records its earlier source snapshot and binary hashes; final CI also runs devnet qualification. |
+| Intermediate cross-platform CI | [Run 35041312402](https://github.com/naome-core/naome/actions/runs/35041312402) on `c0bfaf2`: five platform/profile jobs, quality and devnet passed. Linux release timed out in the existing 100-height candidate-intake process test; that same case passed in the local full release execution. Added timeout diagnostics preserve the test's predicates, schedules and limits. This run is not a successful final CI gate. |
+| Intermediate local workspace | On `c0bfaf2`, the complete release workspace passed 1,722 tests after its separate build barrier. The test-profile execution exhausted the accelerated research process's finite consensus round budget; the isolated diagnostic intake run also timed out. Both failures remain acceptance blockers while their fixes and fresh complete qualification are pending. |
+
+The lab issued exactly 3,000,000,000 atoms across account balances and reserve,
+recorded three passive eligibility claims, and reached the same complete state
+commitment on all four validators and the independent observer. It did not
+activate voting rights. Raw histories, archives, keys, commitment secrets and
+provider diagnostics remain private. The public report includes the intentionally
+published fixture profile and the actual agent decision and reason.
+
+Independent subagents reviewed mathematical normalization and attribution,
+protocol/state behavior, durable custody/replay, runtime integration, and the
+acceptance map. Material findings were fixed: bounded future-evidence retention,
+authentication before historical replay, bounded proof-fetch result retention,
+durable exact retries and agent budgets, explicit lock release, and retransmission
+of preceding-round votes after asymmetric quorum delivery. The final bounded
+integration review of `4728..c0bfaf2` found no new actionable issue. Later loaded
+runs exposed the need for longer research retry rounds and retention of fetched
+V0 finality during publication backpressure. Both bounded recovery changes have
+independent source review and focused regression coverage; their complete
+workspace, lab and CI qualification remains pending. Regression tests and the
+actual process runs validate their recorded snapshots within the documented
+trusted, bounded profile; this is not an arbitrary-delay or permissionless-network
+security proof.
 
 ## Executable evidence locations
 
@@ -108,5 +144,5 @@ throughput or multi-machine performance.
 The final verification record must separately identify the completed pinned
 workspace `test` and `release` builds/executions, required Linux/macOS/Windows CI,
 accelerated process evidence, actual LAB report, actual-agent provenance and
-fault-injection evidence. This draft supplies the map; those outcomes remain
-pending until the coordinator records them.
+fault-injection evidence. The reports above supply the completed focused and lab evidence. Whole-workspace
+execution and final-commit CI results remain pending until recorded below.

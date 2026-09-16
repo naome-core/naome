@@ -414,6 +414,22 @@ impl<'node> Session<'_, 'node> {
             {
                 self.proof_sync = self.proof_sync.take().unwrap().head_changed(self.output)?;
             }
+            if self
+                .proof_sync
+                .as_ref()
+                .is_some_and(ProofSync::has_retained_proof)
+                && self.runtime.pending_publication().is_none()
+            {
+                let (job, event) = self
+                    .proof_sync
+                    .take()
+                    .unwrap()
+                    .retry_retained(&mut self.runtime, self.output)?;
+                self.proof_sync = job;
+                if let Some(event) = event {
+                    return Ok(Poll::Runtime(event));
+                }
+            }
             let deadline = self.proof_sync.as_ref().map(ProofSync::deadline);
             let supervisor_due = self
                 .supervisor

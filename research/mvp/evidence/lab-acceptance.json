@@ -1,0 +1,2215 @@
+{
+  "version": 1,
+  "result": "passed",
+  "qualification": "four independent local processes using authenticated TCP; not multi-machine evidence",
+  "timing": {
+    "profile": "lab",
+    "voting_seconds": 300,
+    "commitment_seconds": 120,
+    "reveal_seconds": 120
+  },
+  "run_records": 128,
+  "compact": true,
+  "host": {
+    "system": "Darwin",
+    "release": "27.0.0",
+    "machine": "arm64",
+    "logical_cpus": 10
+  },
+  "binary": "naome-mvp-lab-4d3ee7c",
+  "binary_sha256": "fe6ed8d4750df00cf694b201fd5c03eb23f23358873667b6ee9b3179905fe774",
+  "runner_sha256": "b8c42bde58744ab3b8a4df001c42a53a5d5639b95f58eb05cb5180ff92109c1f",
+  "started_utc": "2026-09-16T00:32:38Z",
+  "commands": [
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "setup",
+        "$RUN/network",
+        "lab",
+        "128",
+        "59990",
+        "compact"
+      ],
+      "elapsed_seconds": 0.715,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "profile-info",
+        "$RUN/network/genesis.bin"
+      ],
+      "elapsed_seconds": 0.014,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "profile",
+        "$RUN/network/node-0/node.json",
+        "$RUN/operator-profile.txt"
+      ],
+      "elapsed_seconds": 0.014,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "profile-info",
+        "$RUN/network/genesis.bin"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/a4.package",
+        "$REPO/examples/research-mvp/solution-a.nao",
+        "--helper",
+        "$REPO/examples/research-mvp/helper-h.nao"
+      ],
+      "elapsed_seconds": 0.016,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/a5.package",
+        "$RUN/a-alternate.nao",
+        "--helper",
+        "$REPO/examples/research-mvp/helper-h.nao"
+      ],
+      "elapsed_seconds": 0.017,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "start",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "start",
+        "$RUN/network/node-1/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "start",
+        "$RUN/network/node-2/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "start",
+        "$RUN/network/node-3/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "submit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$REPO/examples/research-mvp/question-a.nao",
+        "Reusable foundational mathematical result A",
+        "$RUN/A.submit"
+      ],
+      "elapsed_seconds": 0.017,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "vote",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-1.key",
+        "YES",
+        "$RUN/A-vote-1.action"
+      ],
+      "elapsed_seconds": 0.028,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "vote",
+        "$RUN/network/node-2/node.json",
+        "$RUN/network/accounts/account-2.key",
+        "YES",
+        "$RUN/A-vote-2.action"
+      ],
+      "elapsed_seconds": 0.033,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "vote",
+        "$RUN/network/node-3/node.json",
+        "$RUN/network/accounts/account-3.key",
+        "YES",
+        "$RUN/A-vote-3.action"
+      ],
+      "elapsed_seconds": 0.019,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "agent-vote",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-0.key",
+        "$RUN/A-agent.action",
+        "$RUN/A-agent.report",
+        "$REPO/tools/research_agent_codex.py"
+      ],
+      "elapsed_seconds": 6.942,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/a4.package",
+        "$RUN/a4.secret",
+        "$RUN/a4.commit"
+      ],
+      "elapsed_seconds": 0.034,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/a4.package",
+        "$RUN/a4.secret",
+        "$RUN/a4.commit"
+      ],
+      "elapsed_seconds": 0.016,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/a5.package",
+        "$RUN/a5.secret",
+        "$RUN/a5.commit"
+      ],
+      "elapsed_seconds": 0.035,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "reveal",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/a5.secret",
+        "$RUN/a5.reveal"
+      ],
+      "elapsed_seconds": 0.028,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "reveal",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/a4.secret",
+        "$RUN/a4.reveal"
+      ],
+      "elapsed_seconds": 0.05,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "question",
+        "$RUN/network/node-0/node.json",
+        "75217c236357d8c9097a066f905aedf29dbdbf435a0d33b0de59f6917e4d5574"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "shutdown",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "fetch-proof-from",
+        "$RUN/network/node-1/node.json",
+        "1",
+        "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.122,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "check-proof",
+        "$RUN/network/genesis.bin",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/b5.package",
+        "$REPO/examples/research-mvp/solution-b-original.nao",
+        "--reference",
+        "$RUN/h.proof",
+        "--helper",
+        "$REPO/examples/research-mvp/helper-h-duplicate.nao"
+      ],
+      "elapsed_seconds": 0.023,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "submit",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$REPO/examples/research-mvp/question-b.nao",
+        "Reusable foundational mathematical result B",
+        "$RUN/B.submit"
+      ],
+      "elapsed_seconds": 0.02,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "vote",
+        "$RUN/network/node-2/node.json",
+        "$RUN/network/accounts/account-2.key",
+        "YES",
+        "$RUN/B-vote-2.action"
+      ],
+      "elapsed_seconds": 0.033,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "vote",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-1.key",
+        "YES",
+        "$RUN/B-vote-1.action"
+      ],
+      "elapsed_seconds": 0.041,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "vote",
+        "$RUN/network/node-3/node.json",
+        "$RUN/network/accounts/account-3.key",
+        "YES",
+        "$RUN/B-vote-3.action"
+      ],
+      "elapsed_seconds": 0.044,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "commit",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/b5.package",
+        "$RUN/b5.secret",
+        "$RUN/b5.commit"
+      ],
+      "elapsed_seconds": 0.101,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "reveal",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/b5.secret",
+        "$RUN/b5.reveal"
+      ],
+      "elapsed_seconds": 0.083,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "question",
+        "$RUN/network/node-1/node.json",
+        "787ac11f0aa3e59d826d02a8b143a3474c4256f4ebcf3ec507ebfb40576df4c0"
+      ],
+      "elapsed_seconds": 0.007,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "fetch-proof",
+        "$RUN/network/node-2/node.json",
+        "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+        "$RUN/h-again.proof"
+      ],
+      "elapsed_seconds": 0.019,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "submit",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$REPO/examples/research-mvp/question-c.nao",
+        "Reusable foundational mathematical result C",
+        "$RUN/C.submit"
+      ],
+      "elapsed_seconds": 0.02,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "question",
+        "$RUN/network/node-1/node.json",
+        "de3edbb21b2bd5eca56fcb37d26272b19319b2c6ddc91b87628ce3c28534c03a"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "start",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-0/node.json",
+        "1",
+        "off"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-0/node.json",
+        "0",
+        "off"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-1/node.json",
+        "1",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-1/node.json",
+        "0",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-2/node.json",
+        "2",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-2/node.json",
+        "3",
+        "off"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-3/node.json",
+        "2",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-3/node.json",
+        "3",
+        "off"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "submit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/question-d.nao",
+        "Reusable foundational mathematical result D",
+        "$RUN/D.submit"
+      ],
+      "elapsed_seconds": 0.019,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-0/node.json",
+        "1",
+        "on"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-0/node.json",
+        "0",
+        "on"
+      ],
+      "elapsed_seconds": 0.006,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-1/node.json",
+        "1",
+        "on"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-1/node.json",
+        "0",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-2/node.json",
+        "2",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-2/node.json",
+        "3",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-3/node.json",
+        "2",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "peer",
+        "$RUN/network/node-3/node.json",
+        "3",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "vote",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-0.key",
+        "YES",
+        "$RUN/D-vote-0.action"
+      ],
+      "elapsed_seconds": 0.037,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "vote",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-1.key",
+        "YES",
+        "$RUN/D-vote-1.action"
+      ],
+      "elapsed_seconds": 0.041,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "vote",
+        "$RUN/network/node-2/node.json",
+        "$RUN/network/accounts/account-2.key",
+        "YES",
+        "$RUN/D-vote-2.action"
+      ],
+      "elapsed_seconds": 0.045,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/d4.package",
+        "$RUN/d4.nao",
+        "--reference",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.02,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/d5.package",
+        "$RUN/d5.nao",
+        "--reference",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.018,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/d4.package",
+        "$RUN/d4.secret",
+        "$RUN/d4.commit"
+      ],
+      "elapsed_seconds": 0.081,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/d5.package",
+        "$RUN/d5.secret",
+        "$RUN/d5.commit"
+      ],
+      "elapsed_seconds": 0.068,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "reveal",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/d5.secret",
+        "$RUN/d5.reveal"
+      ],
+      "elapsed_seconds": 0.054,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "question",
+        "$RUN/network/node-0/node.json",
+        "6bd5252fa30275756eb3bc6dedb1e690fd28516bde131257035ecad7411e2405"
+      ],
+      "elapsed_seconds": 0.006,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "shutdown",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0.009,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "shutdown",
+        "$RUN/network/node-1/node.json"
+      ],
+      "elapsed_seconds": 0.007,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "shutdown",
+        "$RUN/network/node-2/node.json"
+      ],
+      "elapsed_seconds": 0.008,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "shutdown",
+        "$RUN/network/node-3/node.json"
+      ],
+      "elapsed_seconds": 0.012,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "start",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "start",
+        "$RUN/network/node-1/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "start",
+        "$RUN/network/node-2/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "start",
+        "$RUN/network/node-3/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "export",
+        "$RUN/network/node-2/node.json",
+        "$RUN/observer"
+      ],
+      "elapsed_seconds": 2.715,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "verify",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer"
+      ],
+      "elapsed_seconds": 0.13,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "inspect",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer",
+        "75217c236357d8c9097a066f905aedf29dbdbf435a0d33b0de59f6917e4d5574",
+        "$RUN/inspect-A"
+      ],
+      "elapsed_seconds": 0.292,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "fetch-proof",
+        "$RUN/network/node-2/node.json",
+        "5fa8519d6b675c69e6519add6e69d84d4abb7886412cac0b0f069e79f1896f29",
+        "$RUN/A.proof"
+      ],
+      "elapsed_seconds": 0.05,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "check-proof",
+        "$RUN/network/genesis.bin",
+        "$RUN/A.proof",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.006,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "inspect",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer",
+        "787ac11f0aa3e59d826d02a8b143a3474c4256f4ebcf3ec507ebfb40576df4c0",
+        "$RUN/inspect-B"
+      ],
+      "elapsed_seconds": 0.31,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "fetch-proof",
+        "$RUN/network/node-2/node.json",
+        "4ee688c1c7627e5a22e9033012b5d5e2e9e8329cc4f363a631bc495c3442ab8e",
+        "$RUN/B.proof"
+      ],
+      "elapsed_seconds": 0.055,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "check-proof",
+        "$RUN/network/genesis.bin",
+        "$RUN/B.proof",
+        "$RUN/h.proof",
+        "$RUN/A.proof"
+      ],
+      "elapsed_seconds": 0.007,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "inspect",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer",
+        "6bd5252fa30275756eb3bc6dedb1e690fd28516bde131257035ecad7411e2405",
+        "$RUN/inspect-D"
+      ],
+      "elapsed_seconds": 0.314,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "fetch-proof",
+        "$RUN/network/node-2/node.json",
+        "7e21fd47195b73efa719092969a443fcf4ab5dd669c2a6e526a3427b7c4833c0",
+        "$RUN/D.proof"
+      ],
+      "elapsed_seconds": 0.05,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "check-proof",
+        "$RUN/network/genesis.bin",
+        "$RUN/D.proof",
+        "$RUN/h.proof",
+        "$RUN/A.proof",
+        "$RUN/B.proof"
+      ],
+      "elapsed_seconds": 0.011,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "verify",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer"
+      ],
+      "elapsed_seconds": 0.01,
+      "exit_code": 1
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "shutdown",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0.006,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "shutdown",
+        "$RUN/network/node-1/node.json"
+      ],
+      "elapsed_seconds": 0.007,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "shutdown",
+        "$RUN/network/node-2/node.json"
+      ],
+      "elapsed_seconds": 0.008,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "naome-mvp-lab-4d3ee7c",
+        "shutdown",
+        "$RUN/network/node-3/node.json"
+      ],
+      "elapsed_seconds": 0.01,
+      "exit_code": 0
+    }
+  ],
+  "observations": [
+    {
+      "event": "configured",
+      "elapsed_seconds": 0.8,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "directory": "$RUN/network",
+        "genesis": "4f322b9fe21747f827c7bec87caf3f9e756a6a557c80ac101d74f9cebac72526",
+        "profile": "d43f8592c007c7a27d3ad6bb7c8758b82c9cebbd73174fd4e0c76351f13bae4e",
+        "required_storage_bytes": 5162628712,
+        "run_records": 128,
+        "status": "configured",
+        "timing": "lab",
+        "validators_started": false
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 3.944,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 0,
+        "phase": "Voting",
+        "height": 2,
+        "certified_time": 1789518761,
+        "deadline": 1789519061
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 3.949,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 1,
+        "phase": "Voting",
+        "height": 2,
+        "certified_time": 1789518761,
+        "deadline": 1789519061
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 3.955,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 2,
+        "phase": "Voting",
+        "height": 2,
+        "certified_time": 1789518761,
+        "deadline": 1789519061
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 3.96,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 3,
+        "phase": "Voting",
+        "height": 2,
+        "certified_time": 1789518761,
+        "deadline": 1789519061
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 12.087,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "6fe5ba570f261115ae3a77998ce9acf550e079efae0889610b83902d8f0fea92",
+        "height": 4,
+        "nonce": 1,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 12.116,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "55c20bf7e851dac11ee1b69511329244eec0241cca9f409ff0cbc7d80e0e5a01",
+        "height": 3,
+        "nonce": 1,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 12.149,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "aee3cb7994c6e9779df4bb34d8e523162ebc0c0c3d14b11977e800da5f8e9562",
+        "height": 3,
+        "nonce": 1,
+        "operation_index": 2,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 12.199,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "6cf8a25a9871368d2d5c5187dce54f897eab2ed83c54ac2a44e370444ded6bbb",
+        "height": 3,
+        "nonce": 1,
+        "operation_index": 1,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 304.276,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 0,
+        "phase": "Commit",
+        "height": 6,
+        "certified_time": 1789519062,
+        "deadline": 1789519182
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 305.455,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "7313daabc8b3770e2903b3645ce6b6328b688a395fc9d3f639bab3606798ee88",
+        "height": 7,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 305.486,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "7313daabc8b3770e2903b3645ce6b6328b688a395fc9d3f639bab3606798ee88",
+        "height": 7,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 306.894,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "4f466120dde44aeb1ceefad27c3c8cb81308f3b94ff6783cc7ffca55fdcb850e",
+        "height": 8,
+        "nonce": 1,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 425.42,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 0,
+        "phase": "Reveal",
+        "height": 10,
+        "certified_time": 1789519183,
+        "deadline": 1789519303
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 426.295,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "df0abbd3fd1d9958cdf0996e6951d90b272f8cc601921a6ddaa1a9b1be03dfb4",
+        "height": 11,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 427.452,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "11fbcee59e69ca883827d4cf3b4aea31b99a78e5673c263fe75fc2fc0ed3b46e",
+        "height": 12,
+        "nonce": 3,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 546.524,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "state": "02f7c1eaac562f853635b7b76a9baad76ddd2b5c2a5f7775f34a876d1b15391e",
+        "head": "70bef581720fc8d6a3014ee8f4ccd428cdeae8eeba497daba35646dc5ee04247",
+        "height": 14,
+        "accounts": [
+          {
+            "account": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "balance_atoms": "700000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "7a371b3bba43e61db17affa320adb9d0c912df1546fa0cbc37b0da89066e1d7b",
+            "balance_atoms": "50000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "c2fa8f642b0b2585af0c337d4ee4238b9c31e28473999f083db2cb0e8151b3b1",
+            "balance_atoms": "50000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "c559bb9a0b161c9dbe58cf32e7caea517e1ee9a13c603f3fbf9ce945a7e650eb",
+            "balance_atoms": "50000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "f17be85ccccf59f17f1a22cf5e5a16be973817c4f5219ec09640ea4ba556932b",
+            "balance_atoms": "50000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "balance_atoms": "0",
+            "next_nonce": 3
+          }
+        ],
+        "reserve_atoms": "100000000",
+        "claims": [
+          {
+            "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "family": "9836275f970cb3f5ec8257671906b851653ceda68f105a3e59759d629620dd7c",
+            "ordinal": 1
+          }
+        ],
+        "library_root": "b48aca1ede292c1f50bc1c3dbd1bbda52c5f8fb817f9a44c8dee79a8ded64562",
+        "paid_completions": 1
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 553.947,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 1,
+        "phase": "Voting",
+        "height": 16,
+        "certified_time": 1789519311,
+        "deadline": 1789519611
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 553.953,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 2,
+        "phase": "Voting",
+        "height": 16,
+        "certified_time": 1789519311,
+        "deadline": 1789519611
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 553.959,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 3,
+        "phase": "Voting",
+        "height": 16,
+        "certified_time": 1789519311,
+        "deadline": 1789519611
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 555.059,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "6e31511761133a7e1f5b19615090d18628fef2f3ab9a33d3139d4e48ddfdd7f8",
+        "height": 17,
+        "nonce": 2,
+        "operation_index": 1,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 555.066,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "e2abbdcaadf5efe370105e3c06e189cbf9cc4e894b459fd992e41a27c3574506",
+        "height": 17,
+        "nonce": 2,
+        "operation_index": 2,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 555.072,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "33e9b11785c6ed509945a0b548cb5a59c0609fbe957edaec71aa46f95eaba2ee",
+        "height": 17,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 860.681,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 1,
+        "phase": "Commit",
+        "height": 19,
+        "certified_time": 1789519617,
+        "deadline": 1789519737
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 863.102,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "b1551a9ee36264d9a08c6cee8393f0edba74a1f484c0291a84c50bf9e3dce5a9",
+        "height": 20,
+        "nonce": 4,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 981.225,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 1,
+        "phase": "Reveal",
+        "height": 22,
+        "certified_time": 1789519738,
+        "deadline": 1789519858
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 987.797,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "0d43b6d1b2b87343e6b2bc94459f377f2e02da836fdd0bbfd372b7180a8a4aac",
+        "height": 23,
+        "nonce": 5,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 1101.754,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "state": "9b61bc1c62c9bcf4a82488284fa8daddf35f40d22ccf6f9734415e75dcb9da97",
+        "head": "a6e2afc06d99ea4e1414c4673f44e6ce857aad5e33c0bd888391e3ddae67581f",
+        "height": 25,
+        "accounts": [
+          {
+            "account": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "balance_atoms": "800000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "7a371b3bba43e61db17affa320adb9d0c912df1546fa0cbc37b0da89066e1d7b",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "c2fa8f642b0b2585af0c337d4ee4238b9c31e28473999f083db2cb0e8151b3b1",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "c559bb9a0b161c9dbe58cf32e7caea517e1ee9a13c603f3fbf9ce945a7e650eb",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "f17be85ccccf59f17f1a22cf5e5a16be973817c4f5219ec09640ea4ba556932b",
+            "balance_atoms": "100000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "balance_atoms": "600000000",
+            "next_nonce": 6
+          }
+        ],
+        "reserve_atoms": "200000000",
+        "claims": [
+          {
+            "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "family": "3de06f97505e7536826a64be11ccb189771dc60fc259c9b0988708461583e9a1",
+            "ordinal": 2
+          },
+          {
+            "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "family": "9836275f970cb3f5ec8257671906b851653ceda68f105a3e59759d629620dd7c",
+            "ordinal": 1
+          }
+        ],
+        "library_root": "975ef6fd928876a3cbf3159b307f80ac4414a2ff2a6382d506eb69582c602ce4",
+        "paid_completions": 2
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 1114.865,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "state": "2dbaae42f0f97c3ff798a504d1421dd163bfcab611bda55d3653ac135ee52d72",
+        "head": "90614baa7f1ee48fbb7b6a541681936eaac60a2b6f2db5bc5aed5cc34868605d",
+        "height": 27,
+        "accounts": [
+          {
+            "account": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "balance_atoms": "800000000",
+            "next_nonce": 5
+          },
+          {
+            "account": "7a371b3bba43e61db17affa320adb9d0c912df1546fa0cbc37b0da89066e1d7b",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "c2fa8f642b0b2585af0c337d4ee4238b9c31e28473999f083db2cb0e8151b3b1",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "c559bb9a0b161c9dbe58cf32e7caea517e1ee9a13c603f3fbf9ce945a7e650eb",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "f17be85ccccf59f17f1a22cf5e5a16be973817c4f5219ec09640ea4ba556932b",
+            "balance_atoms": "100000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "balance_atoms": "600000000",
+            "next_nonce": 6
+          }
+        ],
+        "reserve_atoms": "200000000",
+        "claims": [
+          {
+            "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "family": "3de06f97505e7536826a64be11ccb189771dc60fc259c9b0988708461583e9a1",
+            "ordinal": 2
+          },
+          {
+            "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "family": "9836275f970cb3f5ec8257671906b851653ceda68f105a3e59759d629620dd7c",
+            "ordinal": 1
+          }
+        ],
+        "library_root": "975ef6fd928876a3cbf3159b307f80ac4414a2ff2a6382d506eb69582c602ce4",
+        "paid_completions": 2
+      }
+    },
+    {
+      "event": "partition_no_progress",
+      "elapsed_seconds": 1119.964,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "seconds": 5,
+        "state": "2dbaae42f0f97c3ff798a504d1421dd163bfcab611bda55d3653ac135ee52d72"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1123.274,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 0,
+        "phase": "Voting",
+        "height": 29,
+        "certified_time": 1789519881,
+        "deadline": 1789520181
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1123.281,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 1,
+        "phase": "Voting",
+        "height": 29,
+        "certified_time": 1789519881,
+        "deadline": 1789520181
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1123.287,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 2,
+        "phase": "Voting",
+        "height": 29,
+        "certified_time": 1789519881,
+        "deadline": 1789520181
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1124.407,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "10fa90d47ff77575d878d7fe9b1998559048d7a54a2c6f105f8201abd46ea967",
+        "height": 30,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1124.413,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "7bac11657c2de84830253874d3e968567f9a51fcaa7a40fb35a0d8b0f34b0734",
+        "height": 30,
+        "nonce": 3,
+        "operation_index": 2,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1124.419,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "447d7c6e371978c90ff8bc835122522ca9a474d573921165f15a1c403d0d77dc",
+        "height": 30,
+        "nonce": 3,
+        "operation_index": 1,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1424.569,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 0,
+        "phase": "Commit",
+        "height": 32,
+        "certified_time": 1789520182,
+        "deadline": 1789520302
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1426.365,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "16413bd7f3aa1599508f526806ea948f840ec4dfca229171626d26c664c9a72a",
+        "height": 33,
+        "nonce": 6,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1427.703,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "e299fe00e366894689b816f046f453340b383df30192bd7e8fcb28f5db01e370",
+        "height": 34,
+        "nonce": 6,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1545.663,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "node": 0,
+        "phase": "Reveal",
+        "height": 36,
+        "certified_time": 1789520303,
+        "deadline": 1789520423
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1547.201,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "operation": "f81ff020c0b81dff713c6f032aa58e595bb667b2b499c3cef21728e81e2f1492",
+        "height": 37,
+        "nonce": 7,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 1667.419,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "state": "04cd93a7d4fc4e9024d617e72fcec796145a6acad3742a419919cdb59e8b550c",
+        "head": "0cd421d62f15199526904a434cb11bdf16723aa1d844f87eb47c99b4c416fde0",
+        "height": 39,
+        "accounts": [
+          {
+            "account": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "balance_atoms": "900000000",
+            "next_nonce": 7
+          },
+          {
+            "account": "7a371b3bba43e61db17affa320adb9d0c912df1546fa0cbc37b0da89066e1d7b",
+            "balance_atoms": "150000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "c2fa8f642b0b2585af0c337d4ee4238b9c31e28473999f083db2cb0e8151b3b1",
+            "balance_atoms": "150000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "c559bb9a0b161c9dbe58cf32e7caea517e1ee9a13c603f3fbf9ce945a7e650eb",
+            "balance_atoms": "150000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "f17be85ccccf59f17f1a22cf5e5a16be973817c4f5219ec09640ea4ba556932b",
+            "balance_atoms": "150000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "balance_atoms": "1200000000",
+            "next_nonce": 8
+          }
+        ],
+        "reserve_atoms": "300000000",
+        "claims": [
+          {
+            "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "family": "3de06f97505e7536826a64be11ccb189771dc60fc259c9b0988708461583e9a1",
+            "ordinal": 2
+          },
+          {
+            "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "family": "9836275f970cb3f5ec8257671906b851653ceda68f105a3e59759d629620dd7c",
+            "ordinal": 1
+          },
+          {
+            "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "family": "c8b3253d4d8081bf44f785ae48008e1a3a264816ff7882da293bc4132646d6a8",
+            "ordinal": 3
+          }
+        ],
+        "library_root": "20ce1c6c189ef4eb13b95b2dff04c2f086e4aab51d2c953f8d40a303ec1c5bf6",
+        "paid_completions": 3
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 1668.519,
+      "free_bytes": 42598400000,
+      "evidence": {
+        "state": "04cd93a7d4fc4e9024d617e72fcec796145a6acad3742a419919cdb59e8b550c",
+        "head": "0cd421d62f15199526904a434cb11bdf16723aa1d844f87eb47c99b4c416fde0",
+        "height": 39,
+        "accounts": [
+          {
+            "account": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "balance_atoms": "900000000",
+            "next_nonce": 7
+          },
+          {
+            "account": "7a371b3bba43e61db17affa320adb9d0c912df1546fa0cbc37b0da89066e1d7b",
+            "balance_atoms": "150000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "c2fa8f642b0b2585af0c337d4ee4238b9c31e28473999f083db2cb0e8151b3b1",
+            "balance_atoms": "150000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "c559bb9a0b161c9dbe58cf32e7caea517e1ee9a13c603f3fbf9ce945a7e650eb",
+            "balance_atoms": "150000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "f17be85ccccf59f17f1a22cf5e5a16be973817c4f5219ec09640ea4ba556932b",
+            "balance_atoms": "150000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "balance_atoms": "1200000000",
+            "next_nonce": 8
+          }
+        ],
+        "reserve_atoms": "300000000",
+        "claims": [
+          {
+            "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "family": "3de06f97505e7536826a64be11ccb189771dc60fc259c9b0988708461583e9a1",
+            "ordinal": 2
+          },
+          {
+            "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+            "family": "9836275f970cb3f5ec8257671906b851653ceda68f105a3e59759d629620dd7c",
+            "ordinal": 1
+          },
+          {
+            "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+            "family": "c8b3253d4d8081bf44f785ae48008e1a3a264816ff7882da293bc4132646d6a8",
+            "ordinal": 3
+          }
+        ],
+        "library_root": "20ce1c6c189ef4eb13b95b2dff04c2f086e4aab51d2c953f8d40a303ec1c5bf6",
+        "paid_completions": 3
+      }
+    }
+  ],
+  "checks": {
+    "independent_process_custody": {
+      "validators": 4,
+      "separate_histories": true,
+      "separate_signer_journals": true,
+      "separate_consensus_keys": true,
+      "separate_transport_keys": true
+    },
+    "local_profile_edit": {
+      "operator": 0,
+      "text": "Prioritize precise foundational mathematics and reusable equality lemmas. Approve well-defined formal questions that build a reusable library; reject unrelated or unclear questions.\n",
+      "immutable_profile_unchanged": true
+    },
+    "actual_agent_review": {
+      "attempts": 1,
+      "authority": "operator agenda vote only; no proof-validity authority",
+      "decision": {
+        "decision": "YES",
+        "provider": "codex-cli",
+        "reason": "The formal question precisely states universally quantified self-equality, a foundational equality lemma aligned with the profile\u2019s reusable-library priorities.",
+        "tool_calls": 0
+      },
+      "elapsed_ms": 6808,
+      "genesis": "4f322b9fe21747f827c7bec87caf3f9e756a6a557c80ac101d74f9cebac72526",
+      "kind": "actual_agent_review",
+      "operation": "6fe5ba570f261115ae3a77998ce9acf550e079efae0889610b83902d8f0fea92",
+      "question_id": "7c00f16c027416c28a179c9efc7724373d1aac0430d21c3689308dfec69b1f6f",
+      "request_sha256": "0e140baf1242b9fd5ead312c4ffe68608988f5bcd893d51d26b190594b013902"
+    },
+    "durable_commitment_retry": {
+      "operation": "7313daabc8b3770e2903b3645ce6b6328b688a395fc9d3f639bab3606798ee88",
+      "receipt": {
+        "height": 7,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      },
+      "unchanged_accounts_and_nonces": true
+    },
+    "AB02_reverse_reveal": {
+      "earlier_commit": "7313daabc8b3770e2903b3645ce6b6328b688a395fc9d3f639bab3606798ee88",
+      "later_commit": "4f466120dde44aeb1ceefad27c3c8cb81308f3b94ff6783cc7ffca55fdcb850e",
+      "different_roots": [
+        "5fa8519d6b675c69e6519add6e69d84d4abb7886412cac0b0f069e79f1896f29",
+        "08223b978a4456413a9b77d11ab9e9e42191a0b791503cda591bccf8b5306304"
+      ],
+      "question": {
+        "admission": {
+          "height": 1,
+          "operation_index": 0
+        },
+        "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+        "checked_conclusion": "forall(b0, forall(b1, equal(b1, b1)))",
+        "completion_ordinal": 1,
+        "eligibility_claim": {
+          "active_voting_rights": false,
+          "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+          "ordinal": 1
+        },
+        "expires": 1789520560,
+        "family": "9836275f970cb3f5ec8257671906b851653ceda68f105a3e59759d629620dd7c",
+        "formal_targets": {
+          "R": "forall(b0, forall(b1, equal(b1, b1)))",
+          "not_R": "not_(forall(b0, forall(b1, equal(b1, b1))))",
+          "submitted_negation_parity": false
+        },
+        "normalization": {
+          "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+          "citation_payments": [],
+          "commitment": "79ea1ff1b3706e2aaa7b3becf1f230bf9a30ad9fef31bb853441c25d74ff40a0",
+          "credits": [
+            {
+              "account": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+              "atoms": "700000000"
+            },
+            {
+              "account": "7a371b3bba43e61db17affa320adb9d0c912df1546fa0cbc37b0da89066e1d7b",
+              "atoms": "50000000"
+            },
+            {
+              "account": "c2fa8f642b0b2585af0c337d4ee4238b9c31e28473999f083db2cb0e8151b3b1",
+              "atoms": "50000000"
+            },
+            {
+              "account": "c559bb9a0b161c9dbe58cf32e7caea517e1ee9a13c603f3fbf9ce945a7e650eb",
+              "atoms": "50000000"
+            },
+            {
+              "account": "f17be85ccccf59f17f1a22cf5e5a16be973817c4f5219ec09640ea4ba556932b",
+              "atoms": "50000000"
+            }
+          ],
+          "new_proofs": [
+            {
+              "proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+              "recipient": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9"
+            },
+            {
+              "proof": "5fa8519d6b675c69e6519add6e69d84d4abb7886412cac0b0f069e79f1896f29",
+              "recipient": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9"
+            }
+          ],
+          "normalized_root": "5fa8519d6b675c69e6519add6e69d84d4abb7886412cac0b0f069e79f1896f29",
+          "original_hash": "8b7f1693f0e00d293653b48bc96d267f7aec735d88b956cbb4f366c3f679fb9b",
+          "parent_state": "afbcef3954ec6662fc9b01e8dcac9ab1a07cad35017fbd8e7b2770c12bfac896",
+          "profile": "d43f8592c007c7a27d3ad6bb7c8758b82c9cebbd73174fd4e0c76351f13bae4e",
+          "reserve_atoms": "100000000",
+          "round": "5977c54b6df6d57dc28ebc0698093e1c426296bd61eaa12d53617081089bad51",
+          "substitutions": [],
+          "winning_commit": {
+            "height": 7,
+            "operation": "7313daabc8b3770e2903b3645ce6b6328b688a395fc9d3f639bab3606798ee88",
+            "operation_index": 0
+          }
+        },
+        "outcome": "PROVED",
+        "purpose": "Reusable foundational mathematical result A",
+        "question": "7c00f16c027416c28a179c9efc7724373d1aac0430d21c3689308dfec69b1f6f",
+        "source": "# Proof obligation A: universally quantified self-equality.\nfoundation = \"naome:zfc\"\nstatement = forall(y, forall(x, equal(x, x)))\n",
+        "status": "Completed"
+      }
+    },
+    "helper_normalization_citation_known": {
+      "helper": {
+        "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+        "height": 14,
+        "operation_index": 16,
+        "proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+        "recipient": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+        "retrieval": "authenticated peer-to-peer network",
+        "source_validator": 1,
+        "status": "finalized_library"
+      },
+      "B": {
+        "admission": {
+          "height": 15,
+          "operation_index": 0
+        },
+        "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+        "checked_conclusion": "implies(forall(b0, equal(b0, b0)), forall(b0, equal(b0, b0)))",
+        "completion_ordinal": 2,
+        "eligibility_claim": {
+          "active_voting_rights": false,
+          "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+          "ordinal": 2
+        },
+        "expires": 1789521110,
+        "family": "3de06f97505e7536826a64be11ccb189771dc60fc259c9b0988708461583e9a1",
+        "formal_targets": {
+          "R": "implies(forall(b0, equal(b0, b0)), forall(b0, equal(b0, b0)))",
+          "not_R": "not_(implies(forall(b0, equal(b0, b0)), forall(b0, equal(b0, b0))))",
+          "submitted_negation_parity": true
+        },
+        "normalization": {
+          "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+          "citation_payments": [
+            {
+              "atoms": "100000000",
+              "proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+              "recipient": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9"
+            }
+          ],
+          "commitment": "92b3837ff4adcf5e5f52df3b873e328e8a60ea84549d0ef01249482075a07c37",
+          "credits": [
+            {
+              "account": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+              "atoms": "100000000"
+            },
+            {
+              "account": "7a371b3bba43e61db17affa320adb9d0c912df1546fa0cbc37b0da89066e1d7b",
+              "atoms": "50000000"
+            },
+            {
+              "account": "c2fa8f642b0b2585af0c337d4ee4238b9c31e28473999f083db2cb0e8151b3b1",
+              "atoms": "50000000"
+            },
+            {
+              "account": "c559bb9a0b161c9dbe58cf32e7caea517e1ee9a13c603f3fbf9ce945a7e650eb",
+              "atoms": "50000000"
+            },
+            {
+              "account": "f17be85ccccf59f17f1a22cf5e5a16be973817c4f5219ec09640ea4ba556932b",
+              "atoms": "50000000"
+            },
+            {
+              "account": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+              "atoms": "600000000"
+            }
+          ],
+          "new_proofs": [
+            {
+              "proof": "4ee688c1c7627e5a22e9033012b5d5e2e9e8329cc4f363a631bc495c3442ab8e",
+              "recipient": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd"
+            }
+          ],
+          "normalized_root": "4ee688c1c7627e5a22e9033012b5d5e2e9e8329cc4f363a631bc495c3442ab8e",
+          "original_hash": "ab746e6f50be90e10a4288dff58363376736ae882da18959d85b3b7c95bb66ef",
+          "parent_state": "9a94c59024bf41d26c5957b1eea1a2e5c0b1b8df1f87ae205079d29e44d54175",
+          "profile": "d43f8592c007c7a27d3ad6bb7c8758b82c9cebbd73174fd4e0c76351f13bae4e",
+          "reserve_atoms": "100000000",
+          "round": "b7f96f79cda0a792ac8ec0718c703a2614d5a80278442585312ab4ceb461fde8",
+          "substitutions": [
+            {
+              "original": "4a9b8d6beabb010e33fddcec0000b66c257eb87e05fda21342e39dd4e7ec534a",
+              "replacement": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73"
+            }
+          ],
+          "winning_commit": {
+            "height": 20,
+            "operation": "b1551a9ee36264d9a08c6cee8393f0edba74a1f484c0291a84c50bf9e3dce5a9",
+            "operation_index": 0
+          }
+        },
+        "outcome": "REFUTED",
+        "purpose": "Reusable foundational mathematical result B",
+        "question": "0672c6fa21132eb9f4b117a51b39f014d9ea13644f15b0ec40a6d8bd0c5972d1",
+        "source": "# Proof obligation B: negative orientation; solution-b.nao refutes this.\nfoundation = \"naome:zfc\"\nstatement = not_(implies(forall(x, equal(x, x)), forall(x, equal(x, x))))\n",
+        "status": "Completed"
+      },
+      "C": {
+        "admission": {
+          "height": 26,
+          "operation_index": 0
+        },
+        "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+        "completion_reward_atoms": "0",
+        "expires": 1789521660,
+        "family": "4bc14b6670c1095419d264499575b0b7e0bcbb24ab3d578a11f0631105c60317",
+        "formal_targets": {
+          "R": "forall(b0, equal(b0, b0))",
+          "not_R": "not_(forall(b0, equal(b0, b0)))",
+          "submitted_negation_parity": false
+        },
+        "known_proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+        "purpose": "Reusable foundational mathematical result C",
+        "question": null,
+        "source": "# Proof obligation C is exactly helper H, already known after A settles.\nfoundation = \"naome:zfc\"\nstatement = forall(x, equal(x, x))\n",
+        "status": "KnownUnpaid"
+      }
+    },
+    "AB02_missing_earlier": {
+      "missing_commit": "16413bd7f3aa1599508f526806ea948f840ec4dfca229171626d26c664c9a72a",
+      "winning_commit": "e299fe00e366894689b816f046f453340b383df30192bd7e8fcb28f5db01e370",
+      "different_roots": [
+        "be13051ea62536272aba4942d297a6e708e98679e12458dd505092e1de595d57",
+        "7e21fd47195b73efa719092969a443fcf4ab5dd669c2a6e526a3427b7c4833c0"
+      ],
+      "question": {
+        "admission": {
+          "height": 28,
+          "operation_index": 0
+        },
+        "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+        "checked_conclusion": "forall(b0, forall(b1, forall(b2, equal(b2, b2))))",
+        "completion_ordinal": 3,
+        "eligibility_claim": {
+          "active_voting_rights": false,
+          "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+          "ordinal": 3
+        },
+        "expires": 1789521673,
+        "family": "c8b3253d4d8081bf44f785ae48008e1a3a264816ff7882da293bc4132646d6a8",
+        "formal_targets": {
+          "R": "forall(b0, forall(b1, forall(b2, equal(b2, b2))))",
+          "not_R": "not_(forall(b0, forall(b1, forall(b2, equal(b2, b2)))))",
+          "submitted_negation_parity": false
+        },
+        "normalization": {
+          "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+          "citation_payments": [
+            {
+              "atoms": "100000000",
+              "proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+              "recipient": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9"
+            }
+          ],
+          "commitment": "98d3a7f5d74b205ea6f50816cad47e89307327c438efba87ee30a8b0f5f6b537",
+          "credits": [
+            {
+              "account": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+              "atoms": "100000000"
+            },
+            {
+              "account": "7a371b3bba43e61db17affa320adb9d0c912df1546fa0cbc37b0da89066e1d7b",
+              "atoms": "50000000"
+            },
+            {
+              "account": "c2fa8f642b0b2585af0c337d4ee4238b9c31e28473999f083db2cb0e8151b3b1",
+              "atoms": "50000000"
+            },
+            {
+              "account": "c559bb9a0b161c9dbe58cf32e7caea517e1ee9a13c603f3fbf9ce945a7e650eb",
+              "atoms": "50000000"
+            },
+            {
+              "account": "f17be85ccccf59f17f1a22cf5e5a16be973817c4f5219ec09640ea4ba556932b",
+              "atoms": "50000000"
+            },
+            {
+              "account": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+              "atoms": "600000000"
+            }
+          ],
+          "new_proofs": [
+            {
+              "proof": "7e21fd47195b73efa719092969a443fcf4ab5dd669c2a6e526a3427b7c4833c0",
+              "recipient": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd"
+            }
+          ],
+          "normalized_root": "7e21fd47195b73efa719092969a443fcf4ab5dd669c2a6e526a3427b7c4833c0",
+          "original_hash": "430e4a0707d1d2802cb376c485314a93ebb132929bba6080aecd6587223074b3",
+          "parent_state": "94f2683f0699f90e91fe183cde2e4ae712c3d7f667b5c03d5919e5d5b06733e9",
+          "profile": "d43f8592c007c7a27d3ad6bb7c8758b82c9cebbd73174fd4e0c76351f13bae4e",
+          "reserve_atoms": "100000000",
+          "round": "1e668d30a7e1f29b2ede08e5b39e9673961b98dfbb8b33db6bcd9eb64fc605c9",
+          "substitutions": [],
+          "winning_commit": {
+            "height": 34,
+            "operation": "e299fe00e366894689b816f046f453340b383df30192bd7e8fcb28f5db01e370",
+            "operation_index": 0
+          }
+        },
+        "outcome": "PROVED",
+        "purpose": "Reusable foundational mathematical result D",
+        "question": "f420a7bd0c690285f3e0bcd57651a327c3be517ebe88edafe17951e235d389a8",
+        "source": "foundation = \"naome:zfc\"\nstatement = forall(z, forall(y, forall(x, equal(x, x))))\n",
+        "status": "Completed"
+      }
+    },
+    "partition_restart_export": {
+      "partition_seconds": 5,
+      "cold_restart_nodes": 4,
+      "verified_state": "04cd93a7d4fc4e9024d617e72fcec796145a6acad3742a419919cdb59e8b550c",
+      "corrupt_export_rejected": true
+    }
+  },
+  "source_snapshot": {
+    "file_count": 551,
+    "manifest_sha256": "0b4658636160ec820cf41184ff643ef98f7dee599ea55c090b59bfd063e893c7",
+    "git_head": "4d3ee7caad316b8eb01dddb3c67a4ab057ab271a",
+    "scope": "Cargo manifests/lock, pinned toolchain, Rust crate sources, research Python tools and example fixtures at runner startup; includes uncommitted files",
+    "provider_sha256": "6a485056eac4a745f44809fb979f18d13b50444f72dfd93af4a0f4246ec5ed4b"
+  },
+  "genesis": "4f322b9fe21747f827c7bec87caf3f9e756a6a557c80ac101d74f9cebac72526",
+  "profile": "d43f8592c007c7a27d3ad6bb7c8758b82c9cebbd73174fd4e0c76351f13bae4e",
+  "required_storage_bytes": 5162628712,
+  "immutable_profile": {
+    "canonical_profile": "4e414f524d56503100000000000000012c0000000000000078000000000000007800000000000007080000000000000002000000000000003c0000000000000001000000000000002000000000000000100000000000000001000000000000400000000000000004000000000000000020000000000000001000000000000100000000000000010000000000000000100000000000000000400000000000200000000000000000002000000000000000400000000000000010000000000000000100000000000200000000000000000080000000000000004000000000000000010000000000000002000000000000000400000000004000000000000000000a2000000000048000000000000000a2000000000000001100000000000000030000000000000000004000000000000000080000000000000000000000003b9aca0000000000000000000000000029b9270000000000000000000000000023c3460000000000000000000000000005f5e10000000000000000000000000002faf08000000000000000000000000005f5e100",
+    "genesis": "4f322b9fe21747f827c7bec87caf3f9e756a6a557c80ac101d74f9cebac72526",
+    "kind": "Lab",
+    "limits": {
+      "accounts": 16,
+      "active_attempts": 1,
+      "agent_inference_attempts": 2,
+      "agent_tool_calls": 4,
+      "certificate_bytes": 65536,
+      "certificate_steps": 4096,
+      "checker_calls_per_record": 2592,
+      "checker_input_bytes_per_record": 75497472,
+      "citation_proofs": 64,
+      "commitments_per_account": 1,
+      "completion_records": 64,
+      "consensus_rounds": 8,
+      "dag_steps_per_record": 10616832,
+      "dependency_bytes": 2097152,
+      "dependency_depth": 32,
+      "dependency_proofs": 64,
+      "formula_work_bytes_per_call": 4194304,
+      "new_helpers": 16,
+      "normalization_steps_per_record": 1114112,
+      "operations_per_record": 16,
+      "package_bytes": 65536,
+      "question_source_bytes": 16384,
+      "queued_questions": 32,
+      "record_bytes": 131072,
+      "run_records": 128,
+      "settlements_per_record": 1,
+      "target_depth": 32,
+      "target_nodes": 1024,
+      "terminal_records": 1,
+      "transport_buffer_frames": 64,
+      "transport_frame_bytes": 196608
+    },
+    "profile": "d43f8592c007c7a27d3ad6bb7c8758b82c9cebbd73174fd4e0c76351f13bae4e",
+    "required_storage_bytes_per_node": 1290657178,
+    "rewards": {
+      "author_with_citations_atoms": "600000000",
+      "author_without_citations_atoms": "700000000",
+      "citation_pool_atoms": "100000000",
+      "issuance_atoms": "1000000000",
+      "reserve_atoms": "100000000",
+      "validator_atoms_each": "50000000"
+    },
+    "timing": {
+      "agent_call_seconds": 60,
+      "clock_error_seconds": 2,
+      "commitment_seconds": 120,
+      "queue_seconds": 1800,
+      "reveal_seconds": 120,
+      "voting_seconds": 300
+    }
+  },
+  "final_state": {
+    "state": "04cd93a7d4fc4e9024d617e72fcec796145a6acad3742a419919cdb59e8b550c",
+    "head": "0cd421d62f15199526904a434cb11bdf16723aa1d844f87eb47c99b4c416fde0",
+    "height": 39,
+    "accounts": [
+      {
+        "account": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+        "balance_atoms": "900000000",
+        "next_nonce": 7
+      },
+      {
+        "account": "7a371b3bba43e61db17affa320adb9d0c912df1546fa0cbc37b0da89066e1d7b",
+        "balance_atoms": "150000000",
+        "next_nonce": 3
+      },
+      {
+        "account": "c2fa8f642b0b2585af0c337d4ee4238b9c31e28473999f083db2cb0e8151b3b1",
+        "balance_atoms": "150000000",
+        "next_nonce": 4
+      },
+      {
+        "account": "c559bb9a0b161c9dbe58cf32e7caea517e1ee9a13c603f3fbf9ce945a7e650eb",
+        "balance_atoms": "150000000",
+        "next_nonce": 4
+      },
+      {
+        "account": "f17be85ccccf59f17f1a22cf5e5a16be973817c4f5219ec09640ea4ba556932b",
+        "balance_atoms": "150000000",
+        "next_nonce": 3
+      },
+      {
+        "account": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+        "balance_atoms": "1200000000",
+        "next_nonce": 8
+      }
+    ],
+    "reserve_atoms": "300000000",
+    "claims": [
+      {
+        "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+        "family": "3de06f97505e7536826a64be11ccb189771dc60fc259c9b0988708461583e9a1",
+        "ordinal": 2
+      },
+      {
+        "author": "280625276b7a60bfaed3be20f7ff601db0df98be0307b1a0650ee513a4f1f8b9",
+        "family": "9836275f970cb3f5ec8257671906b851653ceda68f105a3e59759d629620dd7c",
+        "ordinal": 1
+      },
+      {
+        "author": "f41d038c106a667f626dd159c92dbeecfa02953c255a4564232ee504b5962ccd",
+        "family": "c8b3253d4d8081bf44f785ae48008e1a3a264816ff7882da293bc4132646d6a8",
+        "ordinal": 3
+      }
+    ],
+    "library_root": "20ce1c6c189ef4eb13b95b2dff04c2f086e4aab51d2c953f8d40a303ec1c5bf6",
+    "paid_completions": 3
+  },
+  "resources": {
+    "elapsed_seconds": 1673.114,
+    "children_user_cpu_seconds": 210.393192,
+    "children_system_cpu_seconds": 28.519694,
+    "children_maxrss_native_units": 101875712,
+    "platform": "darwin",
+    "retained_file_bytes": 2024163,
+    "free_bytes_end": 42598400000
+  },
+  "final_source_replay": {
+    "source_commit": "c0bfaf26bd51a03a096d89b636f98d5565fefbf9",
+    "binary_sha256": "98aaecd9eacd9e6ceb6db47204b4b54f2620fdac73094e184c6f98a411c43bd4",
+    "command": "naome-research verify $RUN/network/genesis.bin $RUN/observer",
+    "result": "passed; every final_state field equals the completed lab report",
+    "output_sha256": "0295b87789796f2594dfb0896644e15cfe3325e72152dd71eaee267ceb54c1fe",
+    "changed_source_snapshot_paths": [
+      "crates/naome-research-cli/tests/research_process.rs",
+      "crates/naome-research/src/profile.rs",
+      "crates/naome-research/src/state/tests.rs",
+      "crates/naome-runtime/src/research/tests/proof_fetch.rs",
+      "crates/naome-storage/src/research/tests.rs"
+    ],
+    "lab_timing_unchanged": true
+  },
+  "publication_note": "Only the immutable executable path was reduced to its basename. Private state, keys, commitment secrets, raw logs and archives are not included."
+}

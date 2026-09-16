@@ -49,12 +49,13 @@ impl ResearchRuntime {
                 }
             }
             self.drive()?;
-            if let Some((_, _, phase)) = self.node.position()? {
-                let duration = match phase {
+            if let Some((_, round, phase)) = self.node.position()? {
+                let base = match phase {
                     ResearchPhase::Proposal => self.config.proposal_timeout,
                     ResearchPhase::Prevote => self.config.prevote_timeout,
                     ResearchPhase::Precommit => self.config.precommit_timeout,
                 };
+                let duration = round_timeout(base, round);
                 if (self.work_ready || phase != ResearchPhase::Proposal)
                     && self.phase_started.elapsed() >= duration
                 {
@@ -122,6 +123,13 @@ impl ResearchRuntime {
     }
 }
 
+// A later consensus round gives authenticated delivery and durable signing more
+// time to complete. The replayed round determines the delay; duplicate traffic
+// cannot reset it, and the finite round/journal budgets remain unchanged.
+fn round_timeout(base: Duration, round: u64) -> Duration {
+    base.saturating_mul(1u32 << round.min(4))
+}
+
 fn check_clock_progress(
     previous: SystemTime,
     current: SystemTime,
@@ -141,6 +149,27 @@ fn check_clock_progress(
 #[cfg(test)]
 mod clock_tests {
     use super::*;
+    #[test]
+    fn consensus_round_timeout_grows_caps_and_saturates_without_overflow() {
+        let base = Duration::from_millis(350);
+        for (round, millis) in [
+            (0, 350),
+            (1, 700),
+            (2, 1400),
+            (3, 2800),
+            (4, 5600),
+            (8, 5600),
+        ] {
+            assert_eq!(round_timeout(base, round), Duration::from_millis(millis));
+        }
+        assert_eq!(round_timeout(base, u64::MAX), Duration::from_millis(5600));
+        assert_eq!(
+            round_timeout(Duration::from_secs(4), 4),
+            Duration::from_secs(64)
+        );
+        assert_eq!(round_timeout(Duration::MAX, 0), Duration::MAX);
+        assert_eq!(round_timeout(Duration::MAX, u64::MAX), Duration::MAX);
+    }
     #[test]
     fn detectable_clock_jumps_halt_before_reporting() {
         let previous = UNIX_EPOCH + Duration::from_secs(100);

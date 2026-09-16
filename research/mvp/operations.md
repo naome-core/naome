@@ -2,10 +2,11 @@
 
 These commands operate a separate four-validator research genesis on Unix. The
 current qualification target is four independent local processes with separate
-keys, journals, anchors, and authenticated network connections. **Lab-window
-acceptance remains pending.** Accelerated tests and fake-provider adapter tests
-are supplementary evidence; they do not establish lab timing, real AI review,
-multi-machine operation, or public-network security. Track acceptance separately
+keys, journals, anchors, and authenticated network connections. The [completed lab report](evidence/lab-acceptance.json) records actual
+300/120/120-second windows, a real agent review, and four local processes.
+Accelerated tests and fake-provider adapter tests remain supplementary evidence.
+This qualification does not establish multi-machine operation or public-network
+security. Track acceptance separately
 in [requirements.md](requirements.md).
 
 ## Build and choose an immutable run
@@ -28,8 +29,8 @@ Setup accepts `lab`, `research`, or `short-test`. `lab` uses 300-second voting,
 `research` uses seven days of voting, one day for commitments, one day for
 reveals, and a 30-day queue lifetime. That long-running profile is a separate
 later qualification; the initial MVP acceptance uses `lab`. `short-test` uses
-15/8/8/120 seconds and must be labeled accelerated testing. `compact` changes resource limits before genesis, while
-preserving the selected timing windows and reward rules:
+15/8/8/120 seconds and must be labeled accelerated testing. `compact` changes
+resource limits before genesis, while preserving the selected timing windows and reward rules:
 
 | Bound | Default, 8,192 records | Compact, 256 records |
 |---|---:|---:|
@@ -55,6 +56,10 @@ directory, including retained commitment secrets, private and backed up.
 
 Consensus retries also have a finite per-height round and journal budget. A
 partition without a quorum cannot consume rounds merely through elapsed time.
+Consensus phase timeouts double with each round, up to sixteen times their base
+duration, to allow slower authenticated delivery and durable signing to finish.
+This does not extend the voting, commitment, or reveal windows. The multiplier
+comes from the durable round; duplicate messages do not reset the phase timer.
 Repeated quorum-backed failed rounds can exhaust that budget, however, causing a
 visible local halt. Restart does not reset the genesis-bound budget. This does
 not expire or pay a protected attempt, and confirmed history remains intact, but
@@ -338,7 +343,8 @@ the progress log wholesale. The report records
 local four-process evidence; it does not establish operation on two physical
 machines or completion of the seven-day research profile.
 
-**Lab acceptance remains pending until the recorded run finishes successfully.**
+The [recorded lab run](evidence/lab-acceptance.json) completed successfully.
+Each new run supplies acceptance evidence only after it finishes successfully.
 The [verification map](verification.md) separates component tests, process tests,
 lab evidence, and repository/CI gates. A successful lab run does not replace the
 complete pinned test/release workspace checks or required platform CI.
