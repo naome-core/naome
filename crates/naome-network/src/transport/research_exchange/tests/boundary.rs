@@ -57,8 +57,8 @@ fn exact_64k_proof_payload_accepts_and_next_byte_rejects_before_body() {
     assert_eq!(received.response, response);
     drop(received);
     bytes.push(0x5a);
-    bytes[68..72]
-        .copy_from_slice(&((bytes.len() - RESEARCH_FRAME_HEADER_BYTES) as u32).to_be_bytes());
+    let payload_length = (bytes.len() - RESEARCH_FRAME_HEADER_BYTES) as u32;
+    bytes[68..72].copy_from_slice(&payload_length.to_be_bytes());
     let mut input = Cursor::new(&bytes);
     assert_eq!(
         block_on(codec.read_response(&RESEARCH_PROTOCOL, &mut input))

@@ -23,9 +23,12 @@ Run this from the repository root. `RUN` must name a new directory; setup never
 overwrites an existing run. A short absolute path also leaves room for Unix
 control-socket path limits. The four ports beginning at `44100` must be available.
 
-`lab` uses 300-second voting, 120-second commitment, 120-second reveal, and
-1,800-second queue windows. `short-test` uses 3/2/2/30 seconds and must be labeled
-accelerated testing. `compact` changes resource limits before genesis, while
+Setup accepts `lab`, `research`, or `short-test`. `lab` uses 300-second voting,
+120-second commitment, 120-second reveal, and 1,800-second queue windows.
+`research` uses seven days of voting, one day for commitments, one day for
+reveals, and a 30-day queue lifetime. That long-running profile is a separate
+later qualification; the initial MVP acceptance uses `lab`. `short-test` uses
+3/2/2/30 seconds and must be labeled accelerated testing. `compact` changes resource limits before genesis, while
 preserving the selected timing windows and reward rules:
 
 | Bound | Default, 8,192 records | Compact, 256 records |
@@ -110,7 +113,7 @@ An explicitly configured provider executable can supply an agenda decision:
 ```sh
 "$BIN" agent-vote "$C0" "$RUN/accounts/account-0.key" \
   "$RUN/a-agent-vote-0.bin" "$RUN/a-agent-report-0.json" \
-  /absolute/path/research-agent-provider
+  "$PWD/tools/research_agent_codex.py"
 ```
 
 The executable receives one JSON request on stdin containing `version`, `profile`,
@@ -129,6 +132,15 @@ which do not invoke the provider again. Configure the actual provider to enforce
 descendants are terminated when an invocation finishes or times out. Malformed,
 failed, excessive, or late decisions create no vote. The CLI rechecks the active
 question/phase and local voting deadline before signing.
+
+The supplied [Codex bridge](../../tools/research_agent_codex.py) requires an
+independently logged-in `codex` command on PATH. It uses a strict structured
+decision, an empty temporary working directory, no enabled tools, bounded event
+output, and a 55-second inner timeout. It receives the public question and
+operator profile, never account keys or commitment secrets. Its reported tool
+count is zero, even when the outer allowance is positive. A missing login or
+provider failure produces no vote. Operators can instead supply another
+executable that implements the exact bounded contract.
 
 The executable is an operator-selected integration, not an automatically selected
 AI service. A provider label or JSON report is not proof that an AI service ran.
@@ -270,3 +282,50 @@ the normal lab-window run, real-provider agent evidence, full two-profile worksp
 checks, and cross-platform CI are separate qualification states. Record the exact
 genesis/profile, commit, executed commands, timing, outcomes, and retained reports
 for each. No acceptance checkbox is completed by this operating guide.
+
+
+## Reproduce the lab acceptance run
+
+Build once, copy the executable outside Cargo's output directory, and run the
+acceptance harness against that preserved executable. Concurrent later builds
+must not replace this copy. The runner uses a new private directory and its own
+available ports; it does not reuse the manual example above.
+
+```sh
+cargo build -p naome-research-cli --bin naome-research --profile release --locked
+umask 077
+QUALIFICATION=$(mktemp -d /tmp/naome-qualification.XXXXXX)
+cp target/release/naome-research "$QUALIFICATION/naome-research"
+chmod 500 "$QUALIFICATION/naome-research"
+python3 tools/research_lab_acceptance.py \
+  --binary "$QUALIFICATION/naome-research" \
+  --provider "$PWD/tools/research_agent_codex.py" \
+  >"$QUALIFICATION/progress.jsonl" 2>&1
+```
+
+This takes approximately three nine-minute research attempts, plus startup,
+network recovery, checking and export. It uses actual 300/120/120-second lab
+windows and a real agent invocation. The actual agent's YES or NO is retained;
+separately signed manual YES votes from the other three owners exercise approval.
+A successful inference is an agenda judgment, not mathematical evidence.
+
+The runner records the executable hash, source manifest hash, Git head, provider
+and runner hashes, immutable genesis/profile, commands, timings, outcomes and
+resource observations. Follow `progress.jsonl` for the private run directory and
+final report path. The process exit code and the report's `result` must both
+indicate success before using the run as acceptance evidence. Source files may
+include uncommitted changes; use the manifest as well as the Git head when
+identifying the tested source. Keep the executable copy and manifest with the
+run's local evidence.
+
+Only `acceptance-report.json` is designated for publication. Private keys,
+commitment secrets, original reveals, node logs, exported histories, provider
+reports, source manifests and diagnostic stderr stay in the private run directory.
+Do not publish that directory or the progress log wholesale. The report records
+local four-process evidence; it does not establish operation on two physical
+machines or completion of the seven-day research profile.
+
+**Lab acceptance remains pending until the recorded run finishes successfully.**
+The [verification map](verification.md) separates component tests, process tests,
+lab evidence, and repository/CI gates. A successful lab run does not replace the
+complete pinned test/release workspace checks or required platform CI.

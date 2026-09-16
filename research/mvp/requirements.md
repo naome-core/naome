@@ -8,19 +8,19 @@ Origin: Consolidated from the locally backed-up branch `task/whitepaper-rule-inv
 
 **Goal:** Known, trusted participants jointly operate a small research network. They submit formal questions, select tasks, check proofs or refutations, publish reusable results, and record the same rewards on every machine. They use the command line to operate the system.
 
-This file contains the complete proposed MVP design: 35 open requirements, seven acceptance scenarios, five implementation stages, and rules R1–R11 with their parameters. An unchecked box means “must be demonstrated before MVP acceptance,” not “no reusable code exists.” No MVP has been implemented yet. The preparatory research models check selected rules; they satisfy none of these integration requirements. The whitepaper remains the research reference. The retained component contracts describe the existing fixed-validator foundation; they do not implement this proposed research workflow.
+This file is the trusted MVP implementation and acceptance contract: 35 requirements, seven acceptance scenarios, five implementation stages, and rules R1–R11 with their parameters. An unchecked box means acceptance evidence is still being completed. The integrated research implementation is present on `task/mvp-start`; [verification evidence](verification.md) separates component tests, process tests, lab execution, and cross-platform CI. The whitepaper remains the broader research reference.
 
 Statements about existing code come from the preparatory review against repository commit `02855decfcbd7ec4e152e4debd4ebb7f2de54d93`. They provide a documented starting point, not evidence about later branch states. The following plan requires no additional accompanying model scripts, review reports, or manuscript sources.
 
 The code foundation retains the mathematical libraries and authoring CLI, strict artifact admission, fixed-validator consensus, authenticated static-peer networking, durable storage and recovery, validator/verifier processes, and devnet qualification. The former fee/bond/reward-weight projections, dynamic organization membership, validator-set replacement, peer discovery, and isolated V1 state-measurement prototype have been removed with their dedicated tests and obsolete specifications. Their source remains available in Git history. The remaining component ownership is indexed in [Specification and implementation ownership](../../specs/ownership.md).
 
-This is preparation for implementation: the retained V0 path still finalizes individual artifacts. The complete research records, phases, proof groups, rewards, and passive eligibility claims specified below still need to be built and tested. Mathematical fixtures, codec checks, and fixed-validator restart, partition, and recovery tests remain part of the foundation.
+The retained V0 path continues to finalize individual artifacts. The separate research path adds complete research records, phases, proof groups, rewards, and passive eligibility claims. Mathematical fixtures, codec checks, fixed-validator restart, partition, and recovery tests support its acceptance; implementation alone does not establish that every acceptance gate has passed.
 
 Navigation: [Checklist](#checklist) · [Acceptance scenarios](#acceptance) · [Implementation stages](#implementation) · [Rules and parameters](#rules) · [Research status and remaining work](#r11).
 
 ## 1. Established Scope and Recommended Limits
 
-The user specified the trusted participant group, “Survival of the first,” the command line as sufficient for the initial version, and this research and planning phase. The following concrete simplifications are reasoned **R&D recommendations for the MVP profile**, not already adopted changes to the public protocol. Their precise meaning is defined in [rules R1–R11](#rules); the acceptance cases make their effects testable.
+The user specified the trusted participant group, “Survival of the first,” and a command-line interface, then adopted the following simplifications for this trusted MVP. These rules do not adopt a public-network protocol. Their precise meaning is defined in [rules R1–R11](#rules); the acceptance cases make their effects testable.
 
 | Area | Proposed scope |
 |---|---|

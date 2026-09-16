@@ -14,6 +14,15 @@ pub(super) struct Budget {
     maximum: u64,
     tools: u64,
 }
+impl Drop for Budget {
+    fn drop(&mut self) {
+        // An incidental fork can retain this shared file description until
+        // exec, even though the descriptor is close-on-exec. Release the owning
+        // review's lock explicitly, as storage's ExclusiveLock does, before the
+        // File close fallback. A forked provider never owns budget authority.
+        let _ = self._lock.unlock();
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reservation {
@@ -157,5 +166,44 @@ impl Budget {
             return Err("agent result exceeds durable limit".into());
         }
         files::create(&self.path(&format!("{index}.result")), &bytes, true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_budget_releases_lock_even_while_inherited_description_survives() {
+        let directory = std::env::temp_dir().join(format!(
+            "nr-agent-lock-{}-{}",
+            std::process::id(),
+            files::hex(files::random().unwrap().as_ref())
+        ));
+        files::directory(&directory).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let question = "11".repeat(32);
+        let open = || Budget::open(&directory, &question, 1, "context".into(), 2, 4);
+        let budget = open().unwrap();
+        // Duplication models the shared open-file description inherited by an
+        // unrelated fork. Production never exposes or duplicates the lock.
+        let inherited = budget._lock.try_clone().unwrap();
+        assert!(open().is_err());
+        drop(budget);
+        let next = open().expect("finished review releases authority despite inherited descriptor");
+        assert!(open().is_err());
+        drop(inherited);
+        assert!(
+            open().is_err(),
+            "closing an old descriptor must not release the new owner"
+        );
+        drop(next);
+        assert!(open().is_ok());
     }
 }
