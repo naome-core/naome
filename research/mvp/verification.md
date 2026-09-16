@@ -4,7 +4,7 @@ This is an evidence map for the 35 requirements and seven acceptance scenarios
 in [requirements.md](requirements.md). It identifies executable checks; it separates
 component checks, actual lab execution, and whole-workspace qualification. The
 [lab acceptance report](evidence/lab-acceptance.json) passed all three real-window
-attempts in 1,673.114 seconds. Full workspace test/release executions and
+attempts in 1,677.630 seconds. Full workspace test/release executions and
 final-commit cross-platform CI remain **pending**; the checklist will be completed
 only after the remaining evidence is recorded.
 
@@ -21,12 +21,14 @@ remains separate later qualification.
 | Evidence | Source and result |
 |---|---|
 | Real lab windows | [Public report](evidence/lab-acceptance.json): four distinct local validators; actual Codex review; three 300/120/120-second attempts; reversed reveals; missing earlier reveal; authenticated helper retrieval with its original provider offline; positive citation payment; known-unpaid question; 2:2 partition; all-node cold restart; full offline replay, proof checks, and corrupt-export rejection. |
-| Exact lab binary | Commit `4d3ee7caad316b8eb01dddb3c67a4ab057ab271a`, binary SHA-256 `fe6ed8d4750df00cf694b201fd5c03eb23f23358873667b6ee9b3179905fe774`. The source-manifest hash also records uncommitted test-only additions present at startup. |
-| Final-source replay | The release executable built from `c0bfaf26bd51a03a096d89b636f98d5565fefbf9` independently replayed the completed lab archive and matched every reported final-state field. The sole intervening production change expands ShortTest timing; LAB timing and behavior are unchanged. |
-| Accelerated processes | On `c0bfaf2`, the four-process scenario passed in test (94.60 seconds) and release (123.47 seconds). Every intended vote, commitment, and reveal requires a finalized receipt. |
+| Exact lab binary | Release binary from clean commit `25238b8bec56baf12070ee87945268e5752837bf`, SHA-256 `b225465d6a26d1ba5709f1a71d209d6c313fc7530e0fc82b4bb82ca34b9c47ae`. The report includes the 551-file source-manifest hash, runner hash, provider hash, and exact configuration. |
+| Independent replay | The same `25238b8` release executable replayed the completed lab archive offline, matched every final-state field, checked downloaded proofs, and rejected a corrupted export. Later `4b245b4` changes only test failure diagnostics. |
+| Accelerated processes | On `25238b8`, the four-process scenario passed in test (102.15 seconds) and release (99.76 seconds). Every intended vote, commitment, and reveal requires a finalized receipt. |
 | Actual mathematical workloads | [Test measurements](evidence/qualification-test.json) and [release measurements](evidence/qualification-release.json): six measurements, four qualification tests, and 77 research tests per profile, tied to `c0bfaf2`, exact commands and output hashes. |
 | Existing network qualification | [100-height local devnet report](evidence/devnet-local-100.json): 50 ms delay in each direction, outage/healing, process restarts, malformed offers, and independent replay. It records its earlier source snapshot and binary hashes; final CI also runs devnet qualification. |
 | Intermediate cross-platform CI | [Run 35041312402](https://github.com/naome-core/naome/actions/runs/35041312402) on `c0bfaf2`: five platform/profile jobs, quality and devnet passed. Linux release timed out in the existing 100-height candidate-intake process test; that same case passed in the local full release execution. Added timeout diagnostics preserve the test's predicates, schedules and limits. This run is not a successful final CI gate. |
+| Recovery cross-platform CI | [Run 35044241825](https://github.com/naome-core/naome/actions/runs/35044241825) on `25238b8`: five platform/profile jobs, quality and devnet passed; macOS test failed when a validator exited during the 100-height intake case. Diagnostic-only commit `4b245b4` preserves all assertions and limits while recording terminal process state. Its [CI run](https://github.com/naome-core/naome/actions/runs/35045844162) passed all six platform/profile jobs, quality, devnet, and aggregate gates. This precedes the additional supervisor scheduling correction. |
+| Recovery local workspace | On `25238b8`, the complete release workspace passed 1,727 tests after its separate release build barrier. The full test-profile run remains active. The diagnostic-only focused test on `4b245b4` timed out at height 7, with one live validator behind and proof-request failures; this remains a qualification blocker while the supervisor scheduling correction is validated. |
 | Intermediate local workspace | On `c0bfaf2`, the complete release workspace passed 1,722 tests after its separate build barrier. The test-profile execution exhausted the accelerated research process's finite consensus round budget; the isolated diagnostic intake run also timed out. Both failures remain acceptance blockers while their fixes and fresh complete qualification are pending. |
 
 The lab issued exactly 3,000,000,000 atoms across account balances and reserve,
@@ -41,12 +43,13 @@ protocol/state behavior, durable custody/replay, runtime integration, and the
 acceptance map. Material findings were fixed: bounded future-evidence retention,
 authentication before historical replay, bounded proof-fetch result retention,
 durable exact retries and agent budgets, explicit lock release, and retransmission
-of preceding-round votes after asymmetric quorum delivery. The final bounded
-integration review of `4728..c0bfaf2` found no new actionable issue. Later loaded
+of preceding-round votes after asymmetric quorum delivery. The bounded
+integration review of `4728..c0bfaf2` and final acceptance/source audit at
+`4b245b4` found no new actionable issue. Later loaded
 runs exposed the need for longer research retry rounds and retention of fetched
 V0 finality during publication backpressure. Both bounded recovery changes have
-independent source review and focused regression coverage; their complete
-workspace, lab and CI qualification remains pending. Regression tests and the
+independent source review and focused regression coverage; their fresh actual LAB qualification passed. Complete workspace and final CI
+qualification remains pending. Regression tests and the
 actual process runs validate their recorded snapshots within the documented
 trusted, bounded profile; this is not an arbitrary-delay or permissionless-network
 security proof.

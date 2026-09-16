@@ -461,8 +461,8 @@ impl Pass {
             runtime
                 .request_finality_proof(peer, request)
                 .map_err(|error| match error {
-                    RequestError::Refused(Refusal::Busy)
-                    | RequestError::Network(
+                    RequestError::Refused(Refusal::Busy) => Failure::retry("sync_runtime_busy"),
+                    RequestError::Network(
                         RequestStartError::AlreadyPending(_)
                         | RequestStartError::PeerDisconnected(_)
                         | RequestStartError::GlobalLimit { .. },

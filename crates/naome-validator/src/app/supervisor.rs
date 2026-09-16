@@ -37,6 +37,7 @@ pub(super) struct Supervisor {
     pub stopped_target: Option<ArtifactBlockId>,
     pub acquire_payloads: bool,
     pub next_is_sync: bool,
+    pub sync_deferred: bool,
     pub inbox: Option<inbox::Inbox>,
     binding: Vec<u8>,
 }
@@ -114,6 +115,7 @@ impl Config {
             stopped_target: None,
             acquire_payloads: false,
             next_is_sync: true,
+            sync_deferred: false,
             inbox: self
                 .candidate_inbox
                 .map(|path| inbox::Inbox::new(base.join(path)))

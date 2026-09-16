@@ -184,6 +184,7 @@ struct Peer<'guard> {
     _guard: &'guard std::sync::RwLockReadGuard<'static, ()>,
 }
 enum Control {
+    Proposal(Vec<u8>, Vec<u8>),
     Reply(Vec<u8>, Vec<u8>),
     Unavailable,
     DropProof,
@@ -207,9 +208,16 @@ impl<'guard> Peer<'guard> {
             tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
                 let mut network = StaticArtifactNetwork::new(key, [StaticPeer::new(consumer, address)]).unwrap();
                 let mut proof = None; let mut consensus = None;
+                let mut proposal: Option<naome_network::ConsensusPushTicket> = None;
                 loop {
                     tokio::select! {
                         command = commands.recv() => match command {
+                            Some(Control::Proposal(canonical_proposal, canonical_artifact)) => {
+                                let ticket = network.push_consensus(consumer, naome_network::ConsensusPushMessage::Proposal {
+                                    canonical_proposal, canonical_artifact,
+                                }).unwrap();
+                                assert!(proposal.replace(ticket).is_none());
+                            }
                             Some(Control::Reply(envelope, payload)) => {
                                 network.respond_finality_proof(proof.take().expect("one held request"), Some((&envelope, &payload))).unwrap();
                             }
@@ -219,6 +227,10 @@ impl<'guard> Peer<'guard> {
                             Some(Control::Stop) | None => break,
                         },
                         event = network.next_event() => match event {
+                            NetworkEvent::OutboundConsensusPush(event) => {
+                                let receipt = proposal.take().expect("one injected proposal").complete(event).unwrap().unwrap();
+                                assert_eq!(receipt.peer_id(), consumer);
+                            }
                             NetworkEvent::InboundFinalityProof(request) => { assert!(proof.replace(request).is_none()); send.try_send("proof").unwrap(); }
                             NetworkEvent::InboundConsensusPush(request) => { assert!(consensus.replace(request).is_none()); send.try_send("consensus").unwrap(); }
                             _ => {},
@@ -525,6 +537,145 @@ fn proof_sync_cancellation_drops_retained_response_without_authority_change() {
             .iter()
             .any(|e| e["event"] == "finality" || e["event"] == "sync_progress")
     );
+    drop(peer);
+    drop(guard);
+}
+
+fn supervised_proof_node(
+    fixture: &Fixture,
+    layout: &Layout,
+    disconnected_first: bool,
+    interval: u64,
+) -> (Process, String, naome_network::PeerId) {
+    let mut seed = [77; 32];
+    let disconnected = naome_network::Keypair::ed25519_from_bytes(&mut seed)
+        .unwrap()
+        .public()
+        .to_peer_id();
+    let server = fixture.peers[0];
+    let mut config = fixture.config(layout, 1, "create", Some("/ip4/127.0.0.1/tcp/1"), true);
+    let network_peers = format!(
+        "peers = [{{ peer_id = {server:?}, address = \"/ip4/127.0.0.1/tcp/1\" }}, {{ peer_id = {disconnected:?}, address = \"/ip4/127.0.0.1/tcp/2\" }}]",
+        server = server.to_string(),
+        disconnected = disconnected.to_string(),
+    );
+    config = config
+        .lines()
+        .map(|line| {
+            if line.starts_with("peers =") {
+                network_peers.as_str()
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    config = config.replace(
+        "[network]",
+        "[network]\npublication_retry_millis = \"60000\"",
+    );
+    for directory in ["candidates", "payloads", "evidence"] {
+        fs::create_dir(layout.root.join(directory)).unwrap();
+    }
+    let peers = if disconnected_first {
+        [disconnected, server]
+    } else {
+        [server, disconnected]
+    };
+    config.push_str(&format!(
+        "\n[sources]\nmode = \"create\"\ncandidate_directory = \"candidates\"\npayload_directory = \"payloads\"\ncandidate_entries = \"8\"\npayload_entries = \"8\"\npayload_bytes = \"1048576\"\n[evidence]\nmode = \"create\"\ndirectory = \"evidence\"\n[supervisor]\ncandidate_publishers = [{server:?}]\npeers = [{first:?}, {second:?}]\ninterval_millis = \"{interval}\"\nacquisition_blocks = \"1\"\n",
+        server = server.to_string(), first = peers[0].to_string(), second = peers[1].to_string(),
+    ));
+    let mut node = Process::start(layout, &config);
+    node.ready();
+    node.event("timer_armed");
+    let address = node.event("listening")["address"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (node, address, disconnected)
+}
+
+#[test]
+fn proof_sync_supervisor_retains_busy_peer_and_retries_on_custody_release() {
+    let fixture = Fixture::new();
+    let proof = Proof::new(&fixture, false, 1, Role::Precommit);
+    let layout = Layout::new();
+    proof.write(&layout, "proof");
+    // Two ordinary ticks occur while a real Noise publication is held. The
+    // release retry must then occur well before the next six-second tick.
+    let (mut node, address, _) = supervised_proof_node(&fixture, &layout, false, 6000);
+    let guard = PARENT_JOURNALS.read().unwrap();
+    let peer = Peer::start(&guard, &fixture, &address);
+    established(&mut node);
+    peer.controls
+        .blocking_send(Control::Proposal(
+            proof.control.clone(),
+            proof.payload.clone(),
+        ))
+        .unwrap();
+    node.event("admission");
+    node.event("publication_prepared");
+    node.event("peer_attempted");
+    peer.held("consensus");
+    let images = layout.images();
+    for _ in 0..2 {
+        let waiting = node.event("supervisor_sync_waiting");
+        assert_eq!(waiting["code"], "sync_runtime_busy");
+        assert_eq!(waiting["peer_id"], fixture.peers[0].to_string());
+    }
+    assert_eq!(layout.images(), images);
+    assert_eq!(state(&mut node)["driver"]["height"], "1");
+    assert!(
+        peer.reports.try_recv().is_err(),
+        "Busy must not issue a proof request"
+    );
+    peer.ack();
+    assert_eq!(
+        peer.reports
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap(),
+        "proof",
+        "custody release must retry without the next supervisor interval"
+    );
+    peer.reply(proof.envelope.unwrap(), proof.payload);
+    node.event("sync_completed");
+    assert_eq!(node.event("finality")["state"]["driver"]["height"], "2");
+    node.shutdown();
+    drop(peer);
+    drop(guard);
+}
+
+#[test]
+fn proof_sync_supervisor_advances_past_disconnected_peer() {
+    let fixture = Fixture::new();
+    let proof = Proof::new(&fixture, false, 1, Role::Precommit);
+    let layout = Layout::new();
+    let (mut node, address, disconnected) = supervised_proof_node(&fixture, &layout, true, 500);
+    let guard = PARENT_JOURNALS.read().unwrap();
+    let peer = Peer::start(&guard, &fixture, &address);
+    established(&mut node);
+    let before = layout.images();
+    let disconnected_wait = |event: &Value| {
+        event["event"] == "supervisor_sync_waiting"
+            && event["code"] == "sync_request_start"
+            && event["peer_id"] == disconnected.to_string()
+    };
+    // Connection setup may already have consumed the first supervisor tick.
+    let waiting = node
+        .observed
+        .iter()
+        .find(|event| disconnected_wait(event))
+        .cloned()
+        .unwrap_or_else(|| node.until(disconnected_wait));
+    assert_eq!(waiting["code"], "sync_request_start");
+    assert_eq!(waiting["peer_id"], disconnected.to_string());
+    assert_eq!(layout.images(), before);
+    peer.held("proof");
+    peer.reply(proof.envelope.unwrap(), proof.payload);
+    node.event("sync_completed");
+    assert_eq!(node.event("finality")["state"]["driver"]["height"], "2");
+    node.shutdown();
     drop(peer);
     drop(guard);
 }

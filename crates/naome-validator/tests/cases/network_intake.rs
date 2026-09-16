@@ -242,12 +242,19 @@ fn timeout_diagnostics(nodes: &[Process; 4], publishers: &[Process]) -> serde_js
         for event in &process.observed {
             let event = outcome(event);
             if let Some(name) = event["event"].as_str()
-                && (name.starts_with("sync_") || name.starts_with("follow_"))
+                && (name.starts_with("sync_")
+                    || name.starts_with("follow_")
+                    || name == "supervisor_sync_waiting")
             {
-                let key = match event["reason"].as_str() {
+                let reason = event["reason"].as_str().or_else(|| event["code"].as_str());
+                let key = match reason {
                     Some(reason) => format!("{name}:{reason}"),
                     None => name.to_owned(),
                 };
+                let peer = event["peer_id"]
+                    .as_str()
+                    .or_else(|| event["job"]["peer_id"].as_str());
+                let key = peer.map_or_else(|| key.clone(), |peer| format!("{key}:{peer}"));
                 *counts.entry(key).or_insert(0) += 1;
             }
         }

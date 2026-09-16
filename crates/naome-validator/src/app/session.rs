@@ -344,20 +344,15 @@ impl<'node> Session<'_, 'node> {
             .as_ref()
             .and_then(|inbox| inbox.missing)
             .filter(|_| target.is_none() && !supervisor.fresh_stopped);
-        if supervisor.next_is_sync
+        if supervisor.sync_deferred
+            || supervisor.next_is_sync
             || (intake.is_none()
                 && !self
                     .proposal_job
                     .as_ref()
                     .is_some_and(ProposalJob::needs_sources))
         {
-            let peer = supervisor.peer(0);
-            match ProofSync::start(0, &peer, 1, &mut self.runtime) {
-                Ok(job) => self.proof_sync = Some(job),
-                Err(code) => self.output.emit(
-                    json!({"event":"supervisor_sync_waiting", "code":code, "peer_id":peer}),
-                )?,
-            }
+            self.start_supervisor_sync_turn()?;
             return Ok(None);
         }
         let Some(target) = intake.map(|(id, _)| id).or(target) else {
@@ -393,6 +388,39 @@ impl<'node> Session<'_, 'node> {
         };
         supervisor.acquire_payloads = !supervisor.acquire_payloads;
         Ok(Some(command))
+    }
+
+    fn start_supervisor_sync_turn(&mut self) -> Result<()> {
+        let supervisor = self.supervisor.as_mut().unwrap();
+        let peer = supervisor.peers[supervisor.peer_index[0]].clone();
+        let result = ProofSync::start(0, &peer, 1, &mut self.runtime);
+        supervisor.sync_deferred = matches!(result, Err("sync_runtime_busy"));
+        if supervisor.sync_deferred {
+            // Local custody did not attempt this peer. Retain this turn until
+            // a release event or the next ordinary supervisor interval.
+            supervisor.next_is_sync = false;
+        } else {
+            supervisor.peer(0);
+            supervisor.next_is_sync = true;
+        }
+        match result {
+            Ok(job) => self.proof_sync = Some(job),
+            Err(code) => self
+                .output
+                .emit(json!({"event":"supervisor_sync_waiting", "code":code, "peer_id":peer}))?,
+        }
+        Ok(())
+    }
+
+    fn retry_supervisor_sync_turn(&mut self) -> Result<()> {
+        if !self.acquiring
+            && self.proof_sync.is_none()
+            && self.supervisor.as_ref().is_some_and(|s| s.sync_deferred)
+        {
+            // One attempt per real custody release; a renewed Busy cannot spin.
+            self.start_supervisor_sync_turn()?;
+        }
+        Ok(())
     }
 
     async fn poll(&mut self) -> Result<Poll<'node>> {
@@ -542,6 +570,11 @@ impl<'node> Session<'_, 'node> {
                 if let Some(job) = self.proof_sync.take() {
                     self.proof_sync = job.successor(&mut self.runtime, self.output)?;
                 }
+                self.retry_supervisor_sync_turn()?;
+                return Ok(Some(Poll::Runtime(event)));
+            }
+            Poll::Runtime(event @ Event::PublicationComplete(_)) => {
+                self.retry_supervisor_sync_turn()?;
                 return Ok(Some(Poll::Runtime(event)));
             }
             other => return Ok(Some(other)),

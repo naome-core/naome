@@ -118,6 +118,15 @@ it; a peer disconnect after complete receipt does not invalidate its proof bytes
 Driver diagnostic events distinguish continuing rejection/priority from fatal
 loss of authority. Fatal outcomes end the process through existing teardown.
 
+For an autonomous supervisor, local runtime `Busy` before a request starts is
+reported as `sync_runtime_busy`. That refusal preserves one volatile sync turn
+and its next peer; it does not allocate a pass or start a deadline. The next
+ordinary interval, or one publication/arm release event, retries through the
+unchanged request gate using the then-current context. A successful start or a
+non-Busy refusal consumes that peer turn, so an unavailable peer cannot pin the
+cursor. Completing the turn restores normal sync/source-acquisition alternation.
+This scheduling intent grants no authority and is not durable across restart.
+
 After each completed anchored handoff, `sync_progress` reports the exact height
 and completed count. Its ordinary `finality` event still reports the new driver
 state. After the final requested height, `sync_completed` ends the job even
