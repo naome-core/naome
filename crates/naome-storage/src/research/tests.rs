@@ -542,7 +542,12 @@ fn actual_settlement_journal_crash_images_recover_only_old_complete_or_halted_st
         for &cut in &cuts {
             let crash_bytes = &full_journal[..old_journal.len() + cut];
             fs::write(&journal, crash_bytes).unwrap();
-            fs::File::open(&journal).unwrap().sync_all().unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&journal)
+                .unwrap()
+                .sync_all()
+                .unwrap();
             fs::write(
                 &anchor,
                 if new_anchor_visible {
@@ -552,7 +557,12 @@ fn actual_settlement_journal_crash_images_recover_only_old_complete_or_halted_st
                 },
             )
             .unwrap();
-            fs::File::open(&anchor).unwrap().sync_all().unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&anchor)
+                .unwrap()
+                .sync_all()
+                .unwrap();
             let observed = ResearchObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND);
             // Observation never repairs even a harmless uncommitted tail.
             assert_eq!(fs::read(&journal).unwrap(), crash_bytes);
@@ -1022,6 +1032,13 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
         assert_eq!(signer.current_publications().unwrap(), expected);
     }
     assert_eq!(expected.len(), 3);
+    assert_eq!(signer.retry_publications().unwrap(), expected);
+    let previous_votes: Vec<_> = expected
+        .iter()
+        .filter(|p| matches!(p, ResearchPublication::Vote(_)))
+        .cloned()
+        .collect();
+    assert_eq!(previous_votes.len(), 2);
     drop(signer);
     let mut recovered = ResearchSigner::open(
         &dir.0,
@@ -1039,11 +1056,35 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
         })
         .unwrap();
     assert!(recovered.current_publications().unwrap().is_empty());
+    assert_eq!(recovered.retry_publications().unwrap(), previous_votes);
+    drop(recovered);
+    let mut recovered = ResearchSigner::open(
+        &dir.0,
+        &anchors.0,
+        g.clone(),
+        signing_key(scheduled),
+        MAX_ROUND,
+    )
+    .unwrap();
+    assert_eq!(recovered.round().unwrap(), 1);
+    assert!(recovered.current_publications().unwrap().is_empty());
+    assert_eq!(recovered.retry_publications().unwrap(), previous_votes);
+    assert_eq!(recovered.key_use_count(), 0);
+    let history_dir = Directory::new();
+    let history_anchors = Directory::new();
+    let mut history =
+        ResearchHistory::create(&history_dir.0, &history_anchors.0, g.clone(), MAX_ROUND).unwrap();
+    history
+        .append_finality(&finality.encode().unwrap())
+        .unwrap();
+    recovered.advance_to_history(&mut history).unwrap();
+    assert!(recovered.retry_publications().unwrap().is_empty());
+    assert_eq!(recovered.key_use_count(), 0);
     drop(recovered);
     let recovered =
         ResearchSigner::open(&dir.0, &anchors.0, g, signing_key(scheduled), MAX_ROUND).unwrap();
-    assert_eq!(recovered.round().unwrap(), 1);
-    assert!(recovered.current_publications().unwrap().is_empty());
+    assert_eq!(recovered.height().unwrap(), 2);
+    assert!(recovered.retry_publications().unwrap().is_empty());
 }
 
 #[cfg(unix)]
@@ -1082,8 +1123,14 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
         .unwrap();
     assert_eq!(signer.retained_record().unwrap(), Some(record.as_slice()));
     drop(signer);
-    let mut signer =
-        ResearchSigner::open(&dir.0, &anchors.0, g, signing_key(scheduled), MAX_ROUND).unwrap();
+    let mut signer = ResearchSigner::open(
+        &dir.0,
+        &anchors.0,
+        g.clone(),
+        signing_key(scheduled),
+        MAX_ROUND,
+    )
+    .unwrap();
     assert_eq!(signer.retained_record().unwrap(), Some(record.as_slice()));
     assert_eq!(signer.retained_quorum().unwrap(), Some(&prevotes));
     assert!(
@@ -1106,6 +1153,7 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
         .apply_and_sign(&ResearchLockEvent::Author { record: None })
         .unwrap()
         .unwrap();
+    let round_one_proposal = publication.encode().unwrap();
     match publication {
         ResearchPublication::Proposal(p) => {
             assert_eq!(p.record_bytes(), record);
@@ -1114,6 +1162,72 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
         }
         _ => panic!("retained proposal"),
     }
+    let prior = signer.retry_publications().unwrap();
+    assert_eq!(prior.len(), 3); // current proposal plus two preceding-round votes
+    signer
+        .apply_and_sign(&ResearchLockEvent::Prevote {
+            proposal: Some(round_one_proposal.clone()),
+        })
+        .unwrap();
+    let mut round_one_votes = Vec::new();
+    for i in 0..3 {
+        let mut kernel = ResearchLockState::new(&branch, key(i)).unwrap();
+        kernel
+            .apply(
+                &branch,
+                &ResearchLockEvent::Prevote {
+                    proposal: Some(finality.proposal().encode().unwrap()),
+                },
+                MAX_ROUND,
+            )
+            .unwrap();
+        kernel
+            .apply(
+                &branch,
+                &ResearchLockEvent::Precommit {
+                    proposal: Some(finality.proposal().encode().unwrap()),
+                    quorum: prevotes.encode(),
+                },
+                MAX_ROUND,
+            )
+            .unwrap();
+        kernel
+            .apply(
+                &branch,
+                &ResearchLockEvent::PrecommitTimeout {
+                    votes: finality.quorum().encode(),
+                },
+                MAX_ROUND,
+            )
+            .unwrap();
+        let intent = kernel
+            .apply(
+                &branch,
+                &ResearchLockEvent::Prevote {
+                    proposal: Some(round_one_proposal.clone()),
+                },
+                MAX_ROUND,
+            )
+            .unwrap();
+        round_one_votes.push(finish_vote(intent, &branch, i));
+    }
+    let round_one_quorum = ResearchQuorum::from_votes(round_one_votes, &g).unwrap();
+    signer
+        .apply_and_sign(&ResearchLockEvent::Precommit {
+            proposal: Some(round_one_proposal),
+            quorum: round_one_quorum.encode(),
+        })
+        .unwrap();
+    assert_eq!(signer.current_publications().unwrap().len(), 3);
+    let exact_retry = signer.retry_publications().unwrap();
+    assert_eq!(exact_retry.len(), 5);
+    assert_eq!(&exact_retry[3..], &prior[1..]);
+    drop(signer);
+    let signer =
+        ResearchSigner::open(&dir.0, &anchors.0, g, signing_key(scheduled), MAX_ROUND).unwrap();
+    assert_eq!(signer.retry_publications().unwrap(), exact_retry);
+    assert_eq!(signer.current_publications().unwrap().len(), 3);
+    assert_eq!(signer.key_use_count(), 0);
 }
 
 #[cfg(not(unix))]

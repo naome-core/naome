@@ -225,6 +225,137 @@ fn absent_proposer_advances_by_nil_quorums_then_three_nodes_finalize_and_fourth_
 }
 
 #[test]
+fn clean_two_two_partition_does_not_consume_round_budget_and_heals() {
+    let g = genesis();
+    let mut directories = Vec::new();
+    let mut nodes = Vec::new();
+    for i in 0..4 {
+        let (dir, anchors, n) = node(i, &g);
+        directories.push((dir, anchors));
+        nodes.push(n);
+    }
+    for n in &mut nodes {
+        assert!(n.timeout().unwrap());
+    }
+    let (left, right) = nodes.split_at_mut(2);
+    for _ in 0..32 {
+        for half in [&mut *left, &mut *right] {
+            relay(half, None);
+            for n in half {
+                assert!(!n.timeout().unwrap());
+                assert_eq!(
+                    n.position().unwrap().unwrap(),
+                    (1, 0, ResearchPhase::Prevote)
+                );
+                assert_eq!(n.state().unwrap().height(), 0);
+            }
+        }
+    }
+    relay(&mut nodes, None);
+    relay(&mut nodes, None);
+    assert!(nodes.iter().all(|n| n.position().unwrap().unwrap().1 == 1));
+    let bytes = record(nodes[0].state().unwrap());
+    let proposer = nodes.iter().position(|n| n.is_proposer().unwrap()).unwrap();
+    nodes[proposer].author(Some(bytes)).unwrap();
+    for _ in 0..4 {
+        relay(&mut nodes, None);
+    }
+    assert!(nodes.iter().all(|n| n.state().unwrap().height() == 1));
+    assert!(
+        nodes
+            .iter()
+            .all(|n| { n.state().unwrap().commitment() == nodes[0].state().unwrap().commitment() })
+    );
+}
+
+#[test]
+fn asymmetric_nil_quorum_delivery_recovers_after_full_cold_restart() {
+    for restart in [false, true] {
+        let g = genesis();
+        let mut directories = Vec::new();
+        let mut live = Vec::new();
+        let mut identities = Vec::new();
+        for i in 0..4 {
+            let (dir, anchors, n) = node(i, &g);
+            if n.is_proposer().unwrap() {
+                // Round zero's proposer stays offline for the entire test.
+                continue;
+            }
+            directories.push((dir, anchors));
+            identities.push(i);
+            live.push(n);
+        }
+        assert_eq!(live.len(), 3);
+        for n in &mut live {
+            assert!(n.timeout().unwrap());
+        }
+        relay(&mut live, Some(ConsensusVoteRole::Prevote));
+        assert!(
+            live.iter()
+                .all(|n| { n.position().unwrap().unwrap() == (1, 0, ResearchPhase::Precommit) })
+        );
+        let precommits: Vec<_> = live
+            .iter()
+            .flat_map(|n| n.publications().unwrap())
+            .filter_map(|p| match p {
+                ResearchPublication::Vote(v) if v.role() == ConsensusVoteRole::Precommit => {
+                    assert_eq!(v.target(), ConsensusVoteTarget::Nil);
+                    Some(v.encode())
+                }
+                _ => None,
+            })
+            .collect();
+        // Only node zero receives the complete nil quorum. The other two
+        // cannot advance from its single future-round identity.
+        for bytes in &precommits {
+            live[0].accept_vote(bytes).unwrap();
+        }
+        live[0].drive().unwrap();
+        assert_eq!(live[0].position().unwrap().unwrap().1, 1);
+        assert!(
+            live[1..]
+                .iter()
+                .all(|n| n.position().unwrap().unwrap().1 == 0)
+        );
+        if restart {
+            drop(live);
+            live = directories
+                .iter()
+                .zip(&identities)
+                .map(|((dir, anchors), i)| {
+                    let history =
+                        ResearchHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+                    let signer =
+                        ResearchSigner::open(&dir.0, &anchors.0, g.clone(), key(*i), MAX_ROUND)
+                            .unwrap();
+                    ResearchNode::new(history, Some(signer)).unwrap()
+                })
+                .collect();
+        }
+        assert!(live[0].publications().unwrap().iter().any(|p| {
+            matches!(p, ResearchPublication::Vote(v)
+                if v.encode() == precommits[0])
+        }));
+        // Periodic publication alone must heal the asymmetric delivery. No
+        // artificial quorum, reduced threshold, or saved peer messages help.
+        relay(&mut live, None);
+        assert!(live.iter().all(|n| n.position().unwrap().unwrap().1 == 1));
+        let bytes = record(live[0].state().unwrap());
+        let proposer = live.iter().position(|n| n.is_proposer().unwrap()).unwrap();
+        live[proposer].author(Some(bytes)).unwrap();
+        for _ in 0..4 {
+            relay(&mut live, None);
+        }
+        assert!(live.iter().all(|n| n.state().unwrap().height() == 1));
+        assert!(
+            live.iter().all(|n| {
+                n.state().unwrap().commitment() == live[0].state().unwrap().commitment()
+            })
+        );
+    }
+}
+
+#[test]
 fn cold_restart_resends_identical_completed_precommit_and_retains_record() {
     let g = genesis();
     let mut directories = Vec::new();

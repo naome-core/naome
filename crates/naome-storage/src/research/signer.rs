@@ -71,6 +71,7 @@ struct Replay {
     pending: Option<Pending>,
     completed: Option<Completed>,
     publications: Vec<ResearchPublication>,
+    previous_votes: Vec<ResearchPublication>,
     sequence: u64,
     stopped: bool,
     used_height_bytes: u64,
@@ -96,6 +97,7 @@ impl Replay {
             pending: None,
             completed: None,
             publications: Vec::with_capacity(3),
+            previous_votes: Vec::with_capacity(2),
             sequence: 0,
             stopped: false,
             used_height_bytes: 0,
@@ -134,9 +136,7 @@ impl Replay {
                         "intent checkpoint or transcript differs from replay",
                     ));
                 }
-                if next.round() != self.lock.round() {
-                    self.publications.clear();
-                }
+                self.retain_previous_votes(next.round());
                 self.lock = next;
                 self.completed = None;
                 self.pending = intent.signing_bytes().map(|_| Pending {
@@ -192,6 +192,7 @@ impl Replay {
                 self.lock = next;
                 self.completed = None;
                 self.publications.clear();
+                self.previous_votes.clear();
             }
             STOP => {
                 // This only removes signing rights. The operational API requires
@@ -203,6 +204,7 @@ impl Replay {
                 self.pending = None;
                 self.completed = None;
                 self.publications.clear();
+                self.previous_votes.clear();
                 self.stopped = true;
             }
             _ => return Err(Error::Invalid("signer record kind")),
@@ -211,6 +213,25 @@ impl Replay {
         self.used_height_bytes = usage.0;
         self.used_height_frames = usage.1;
         Ok(())
+    }
+    // This cache is derived only from anchored COMPLETE records. A peer still
+    // in the immediately preceding round needs these exact votes to assemble
+    // the quorum that lets it follow us; no new signing authority is created.
+    fn retain_previous_votes(&mut self, next_round: u64) {
+        if next_round == self.lock.round() {
+            return;
+        }
+        self.previous_votes.clear();
+        if self.lock.round().checked_add(1) == Some(next_round) {
+            self.previous_votes.extend(
+                self.publications
+                    .iter()
+                    .filter(|publication| matches!(publication, ResearchPublication::Vote(_)))
+                    .take(2)
+                    .cloned(),
+            );
+        }
+        self.publications.clear();
     }
     fn frame_usage(&self, kind: u8, bytes: usize, context: &Context) -> Result<(u64, u64), Error> {
         if kind == STOP {
@@ -379,6 +400,20 @@ impl ResearchSigner {
         self.ensure()?;
         Ok(self.state.publications.clone())
     }
+    /// Exact retry messages: at most three current-round messages and the
+    /// immediately preceding round's two own votes. Previous-round proposals
+    /// are excluded, and height changes, skipped rounds, and terminal stop
+    /// remove the previous votes. Replay reconstructs this cache without key use.
+    pub fn retry_publications(&self) -> Result<Vec<ResearchPublication>, Error> {
+        self.ensure()?;
+        Ok(self
+            .state
+            .publications
+            .iter()
+            .chain(&self.state.previous_votes)
+            .cloned()
+            .collect())
+    }
     /// Retained exact record and QC survive process restart through event replay.
     pub fn retained_record(&self) -> Result<Option<&[u8]>, Error> {
         self.ensure()?;
@@ -494,9 +529,7 @@ impl ResearchSigner {
         let position = self.log.core.append(&body)?;
         self.state.used_height_bytes = usage.0;
         self.state.used_height_frames = usage.1;
-        if next.round() != self.state.lock.round() {
-            self.state.publications.clear();
-        }
+        self.state.retain_previous_votes(next.round());
         self.state.lock = next;
         self.state.sequence = position.sequence;
         self.state.completed = None;
@@ -630,6 +663,7 @@ impl ResearchSigner {
             self.state.lock = next;
             self.state.completed = None;
             self.state.publications.clear();
+            self.state.previous_votes.clear();
             self.state.sequence = position.sequence;
         }
         Ok(())
@@ -642,6 +676,7 @@ impl ResearchSigner {
         self.state.pending = None;
         self.state.completed = None;
         self.state.publications.clear();
+        self.state.previous_votes.clear();
         self.state.stopped = true;
         self.state.sequence = position.sequence;
         Ok(())

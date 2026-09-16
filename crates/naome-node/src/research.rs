@@ -71,7 +71,7 @@ impl ResearchNode {
                 let _ = signer.sign_prepared()?;
             }
             signer.advance_to_history(&mut history)?;
-            signer.current_publications()?
+            signer.retry_publications()?
         } else {
             Vec::new()
         };
@@ -140,8 +140,9 @@ impl ResearchNode {
         Ok(self.history.finality_bytes(height)?)
     }
     pub fn publications(&self) -> Result<Vec<ResearchPublication>> {
-        // Retry current proposals and this key's exact votes. Old rounds remain
-        // available to finality admission without flooding the live send queue.
+        // Retry current proposals and this key's current/previous-round votes.
+        // A sole advanced node must still let lagging peers finish the quorum
+        // that advanced it; one future signer cannot trigger their round jump.
         let round = self
             .signer
             .as_ref()
@@ -158,7 +159,7 @@ impl ResearchNode {
                 self.votes
                     .values()
                     .filter(|v| {
-                        round.is_none_or(|r| v.round() == r)
+                        round.is_none_or(|r| v.round() >= r.saturating_sub(1) && v.round() <= r)
                             && signer.is_none_or(|s| v.signer() == s)
                     })
                     .cloned()

@@ -53,6 +53,15 @@ keys, public `genesis.bin`, and `node-0` through `node-3` configurations. Accoun
 research authors. Private files use owner-only permissions. Keep the entire run
 directory, including retained commitment secrets, private and backed up.
 
+Consensus retries also have a finite per-height round and journal budget. A
+partition without a quorum cannot consume rounds merely through elapsed time.
+Repeated quorum-backed failed rounds can exhaust that budget, however, causing a
+visible local halt. Restart does not reset the genesis-bound budget. This does
+not expire or pay a protected attempt, and confirmed history remains intact, but
+these bounded qualification runs do not establish recovery from every possible
+sequence of delays or exhausted retry budgets. Preserve the failed run and its
+anchors for diagnosis; never discard signing history to obtain fresh signatures.
+
 Inspect every committed bound and preview exact question identity before use:
 
 ```sh
