@@ -1791,6 +1791,7 @@ dependencies = [
  "naome-chain",
  "naome-foundation",
  "naome-proof",
+ "naome-research",
  "num-bigint",
  "sha2 0.11.0",
 ]
@@ -1840,6 +1841,7 @@ dependencies = [
  "naome-node",
  "naome-proof",
  "naome-protocol",
+ "naome-research",
  "naome-storage",
  "sha2 0.11.0",
  "tokio",
@@ -1854,6 +1856,7 @@ dependencies = [
  "naome-consensus",
  "naome-foundation",
  "naome-proof",
+ "naome-research",
  "naome-storage",
 ]
 
@@ -1875,16 +1878,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-research"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "naome-checker",
+ "naome-foundation",
+ "naome-ledger",
+ "naome-proof",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "naome-research-cli"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.3.4",
+ "naome-authoring",
+ "naome-checker",
+ "naome-consensus",
+ "naome-network",
+ "naome-proof",
+ "naome-research",
+ "naome-runtime",
+ "naome-storage",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "naome-runtime"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "naome-chain",
+ "naome-checker",
  "naome-consensus",
  "naome-foundation",
  "naome-network",
  "naome-node",
  "naome-proof",
+ "naome-protocol",
+ "naome-research",
  "naome-storage",
  "rustix 1.1.4",
  "sha2 0.11.0",
@@ -1903,6 +1943,7 @@ dependencies = [
  "naome-foundation",
  "naome-ledger",
  "naome-proof",
+ "naome-research",
  "sha2 0.11.0",
  "winsafe",
 ]

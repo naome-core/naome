@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+naome-research = { path = "../naome-research" }
 async-trait = "0.1.91"
 libp2p = { version = "0.56.0", default-features = false, features = [
     "ed25519",

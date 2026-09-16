@@ -35,6 +35,9 @@ pub(super) struct Session<'io, 'node> {
     pub serve_artifact_sources: bool,
 }
 
+// One select result is handled immediately; these values are never queued.
+// Keep event custody inline rather than allocating on every runtime poll.
+#[allow(clippy::large_enum_variant)]
 enum Poll<'node> {
     WakeSupervisor,
     Command(Command),

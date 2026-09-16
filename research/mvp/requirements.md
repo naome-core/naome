@@ -2,6 +2,8 @@
 
 As of 15 September 2026. The research basis is the accompanying [English whitepaper](whitepaper-en.pdf), edition `concise-v10` dated 14 September 2026.
 
+Implementation was authorized on 15 September 2026 with R1–R11 and their proposed parameters adopted as the trusted MVP baseline. The user subsequently requested local network simulation because a second machine is not yet available. Current acceptance therefore uses four independent local validator processes with separate keys and durable stores, including simulated network partitions and failures. A real two-machine run remains later qualification and must not be claimed from this evidence. All other requirements and acceptance scenarios remain in scope.
+
 Origin: Consolidated from the locally backed-up branch `task/whitepaper-rule-inventory`, commit `0d6259badd6575d681ebdf2c3b42bff24e396ebc`. The new starting branch `task/mvp-start` was created from `origin/main` commit `d29f0776aecd1b1d9eca8bb5056f25912a91c17c`.
 
 **Goal:** Known, trusted participants jointly operate a small research network. They submit formal questions, select tasks, check proofs or refutations, publish reusable results, and record the same rewards on every machine. They use the command line to operate the system.
@@ -40,7 +42,7 @@ Initial acceptance does not include public registration, automatic membership ro
 ## 2. Startup and Shared State
 
 - [ ] **MVP-01 – Reproducible startup.** A shared genesis describes the four validators, accounts, peer mappings, Foundation, protocol version, parameters, and initially empty research library. Different genesis configurations or parameters are detected when establishing connections or starting the protocol. Private keys are not included in the shared genesis.
-- [ ] **MVP-02 – Actual distribution.** Four independent validator processes run with separate keys and data directories on at least two machines. A single-process simulation or four views of the same database do not satisfy acceptance.
+- [ ] **MVP-02 – Independent validator operation.** Four independent validator processes run with separate keys and data directories under the user-authorized local network simulation. A single-process state-machine simulation or four views of the same database do not satisfy acceptance. Execution on at least two actual machines is separately deferred qualification.
 - [ ] **MVP-03 – Complete consensus state.** Finality binds questions, votes, phases, commitments, reveals, proofs, authors, completions, eligibility claims, balances, and the reserve. Additional local status alongside an unchanged artifact chain is insufficient.
 - [ ] **MVP-04 – Records without proofs.** Votes, phase transitions, and other control operations can be finalized even when no new research result is available.
 - [ ] **MVP-05 – Determinism.** The same genesis and finalized history produce identical identifiers and the same complete state commitment on all target systems. The local clock, AI output, and order of arrival do not change any decision during replay.
@@ -111,7 +113,7 @@ The mathematical example certificates must be verified with the actual checker b
 | 2 | Research state and atomic local transitions | Questions, phases, priority, normalization, and monetary entries satisfy the local positive and negative acceptance cases. |
 | 3 | Consensus, durable storage, and catch-up | Actual validators jointly finalize the complete state, which is independently replayed; control-only records work. |
 | 4 | CLI, signed intake, and agent integration | Known users can complete the entire workflow without manual data changes. |
-| 5 | Acceptance across multiple machines and operating instructions | AB-01 through AB-07 and the appropriate repository checks pass with traceable evidence. |
+| 5 | Acceptance in the authorized local network simulation and operating instructions | AB-01 through AB-07 and the appropriate repository checks pass with traceable evidence; real multi-machine qualification is listed separately as deferred. |
 
 The existing mathematical core libraries, transport components, and operational components are reused. Proposal/finality formats, research state, and their replay require substantial extensions. Existing fee arithmetic and selection of the candidate with the lowest ID must not be adopted as the new reward or priority rule without checking them. This code review belongs to the preparatory research status described below.
 

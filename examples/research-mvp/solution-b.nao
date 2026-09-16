@@ -1,0 +1,11 @@
+# B asks NOT (H implies H). This proves its positive core and REFUTES B.
+# The later author cites the exact stored H; H keeps A's attribution.
+foundation = "naome:zfc"
+formulas:
+    h = forall(x, equal(x, x))
+statement = implies(h, h)
+proof:
+    p0 = cite("c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73")
+    p1 = simplification(h, h)
+    p2 = modus_ponens(p0, p1)
+    return p2

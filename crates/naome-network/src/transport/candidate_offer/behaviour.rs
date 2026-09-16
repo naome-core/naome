@@ -23,7 +23,7 @@ pub(in crate::transport) struct Behaviour {
     cursor: usize,
 }
 impl Behaviour {
-    pub(in crate::transport) fn new(peers: impl Iterator<Item = PeerId>) -> Self {
+    pub(in crate::transport) fn new(peers: impl Iterator<Item = PeerId>, enabled: bool) -> Self {
         Self {
             peers: peers
                 .map(|peer| {
@@ -37,7 +37,9 @@ impl Behaviour {
                             [(
                                 CANDIDATE_OFFER_PROTOCOL,
                                 request_response::ProtocolSupport::Full,
-                            )],
+                            )]
+                            .into_iter()
+                            .filter(|_| enabled),
                             request_response::Config::default()
                                 .with_request_timeout(REQUEST_TIMEOUT)
                                 .with_max_concurrent_streams(1),

@@ -1,0 +1,34 @@
+[package]
+name = "naome-research-cli"
+version.workspace = true
+edition.workspace = true
+description = "Trusted research MVP setup, operation, and independent verification."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "naome-research"
+path = "src/main.rs"
+doc = false
+
+[target.'cfg(unix)'.dependencies]
+ed25519-dalek.workspace = true
+getrandom = "0.3"
+naome-authoring = { path = "../naome-authoring" }
+naome-checker = { path = "../naome-checker" }
+naome-consensus = { path = "../naome-consensus" }
+naome-network = { path = "../naome-network" }
+naome-proof = { path = "../naome-proof" }
+naome-research = { path = "../naome-research" }
+naome-runtime = { path = "../naome-runtime" }
+naome-storage = { path = "../naome-storage" }
+rustix = { version = "1.1", features = ["fs", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2.workspace = true
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "signal", "sync", "time", "io-util", "process"] }
+zeroize = "1"
+
+[lints]
+workspace = true

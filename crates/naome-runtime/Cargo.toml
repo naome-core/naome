@@ -12,6 +12,9 @@ naome-chain = { path = "../naome-chain" }
 naome-consensus = { path = "../naome-consensus" }
 naome-network = { path = "../naome-network" }
 naome-node = { path = "../naome-node" }
+naome-protocol = { path = "../naome-protocol" }
+naome-proof = { path = "../naome-proof" }
+naome-research = { path = "../naome-research" }
 naome-storage = { path = "../naome-storage" }
 sha2.workspace = true
 tokio = { version = "1", default-features = false, features = ["macros", "time"] }
@@ -20,9 +23,9 @@ tokio = { version = "1", default-features = false, features = ["macros", "time"]
 rustix = { version = "1.1", features = ["fs"] }
 
 [dev-dependencies]
+naome-checker = { path = "../naome-checker" }
 ed25519-dalek.workspace = true
 naome-foundation = { path = "../naome-foundation" }
-naome-proof = { path = "../naome-proof" }
 tokio = { version = "1", default-features = false, features = ["rt", "test-util"] }
 
 [lints]

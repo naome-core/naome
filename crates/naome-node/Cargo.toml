@@ -12,6 +12,7 @@ ed25519-dalek = { workspace = true, features = ["zeroize"] }
 naome-chain = { path = "../naome-chain" }
 naome-consensus = { path = "../naome-consensus" }
 naome-proof = { path = "../naome-proof" }
+naome-research = { path = "../naome-research" }
 naome-storage = { path = "../naome-storage" }
 
 [dev-dependencies]

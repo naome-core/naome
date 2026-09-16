@@ -1,0 +1,7 @@
+# Helper H: every set equals itself. New material belongs to A's author.
+foundation = "naome:zfc"
+statement = forall(x, equal(x, x))
+proof:
+    p0 = equality_reflexivity(x)
+    p1 = generalization(p0, x)
+    return p1

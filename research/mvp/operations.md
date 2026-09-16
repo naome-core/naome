@@ -1,0 +1,272 @@
+# Operating the trusted research MVP
+
+These commands operate a separate four-validator research genesis on Unix. The
+current qualification target is four independent local processes with separate
+keys, journals, anchors, and authenticated network connections. **Lab-window
+acceptance remains pending.** Accelerated tests and fake-provider adapter tests
+are supplementary evidence; they do not establish lab timing, real AI review,
+multi-machine operation, or public-network security. Track acceptance separately
+in [requirements.md](requirements.md).
+
+## Build and choose an immutable run
+
+Use the Rust toolchain selected by `rust-toolchain.toml`:
+
+```sh
+cargo build -p naome-research-cli --bin naome-research --profile release --locked
+BIN="$PWD/target/release/naome-research"
+RUN=/tmp/naome-lab-001
+"$BIN" setup "$RUN" lab 256 44100 compact
+```
+
+Run this from the repository root. `RUN` must name a new directory; setup never
+overwrites an existing run. A short absolute path also leaves room for Unix
+control-socket path limits. The four ports beginning at `44100` must be available.
+
+`lab` uses 300-second voting, 120-second commitment, 120-second reveal, and
+1,800-second queue windows. `short-test` uses 3/2/2/30 seconds and must be labeled
+accelerated testing. `compact` changes resource limits before genesis, while
+preserving the selected timing windows and reward rules:
+
+| Bound | Default, 8,192 records | Compact, 256 records |
+|---|---:|---:|
+| Complete record | 1 MiB | 128 KiB |
+| Original/final package | 256 KiB each | 64 KiB each |
+| Transport frame | 1,088 KiB | 192 KiB |
+| Maximum consensus round index | 64, allowing 65 rounds | 8, allowing 9 rounds |
+| Conservative storage floor per node | 3,453,995,466,906 bytes | 2,441,919,130 bytes |
+
+The compact example requires 9,767,676,520 free bytes across its four node
+reservations, approximately 9.10 GiB. The calculation includes worst-case
+signing history, archives, staged reveals, metadata, and a safety margin; it is
+not a measured storage-consumption or throughput claim. Different record counts
+produce a different calculation. Setup prints the actual genesis/profile IDs
+and required bytes and rejects insufficient space. Nodes also halt visibly if
+free space later falls below their profile floor.
+
+Setup creates six account keys, four consensus keys, four separate transport
+keys, public `genesis.bin`, and `node-0` through `node-3` configurations. Accounts
+0–3 are the fixed validator owners; accounts 4–5 are available for independent
+research authors. Private files use owner-only permissions. Keep the entire run
+directory, including retained commitment secrets, private and backed up.
+
+Inspect every committed bound and preview exact question identity before use:
+
+```sh
+"$BIN" profile-info "$RUN/genesis.bin"
+"$BIN" compile-question "$RUN/genesis.bin" examples/research-mvp/question-a.nao
+```
+
+The question preview shows its normalized statement, negation parity, and shared
+resolution family. The submit command also displays its compiled preview.
+
+## Start, inspect, and restart
+
+```sh
+C0="$RUN/node-0/node.json"
+C1="$RUN/node-1/node.json"
+C2="$RUN/node-2/node.json"
+C3="$RUN/node-3/node.json"
+"$BIN" start "$C0" >"$RUN/node-0.log" 2>&1 &
+"$BIN" start "$C1" >"$RUN/node-1.log" 2>&1 &
+"$BIN" start "$C2" >"$RUN/node-2.log" 2>&1 &
+"$BIN" start "$C3" >"$RUN/node-3.log" 2>&1 &
+"$BIN" status "$C0"
+```
+
+Status reports finalized height, head/state/library commitments, certified time,
+active phase and deadline, account balances/nonces, claims, and remaining/reserved
+record capacity. Pending operations are local intake, not finality. A submission
+response of `transported` does not promise eventual admission. Query its operation
+ID using `receipt`; responses distinguish `finalized`, `not_finalized`, and
+`rejected` with a reason. Identical saved actions can be resent with `send`.
+
+```sh
+"$BIN" receipt "$C0" "$OPERATION_ID"
+"$BIN" send "$C0" "$RUN/saved-action.bin"
+"$BIN" shutdown "$C0"
+"$BIN" start "$C0" >>"$RUN/node-0.log" 2>&1 &
+```
+
+Restart with the same configuration, keys, history, and independent anchors.
+Incomplete final writes are recovered only when the complete prefix matches its
+anchor. Complete corruption, missing/mismatched anchors, conflicting verified
+finality, or uncertain live writes halt the affected path. Do not delete anchors
+or regenerate keys to clear an error. Preserve the failed run for diagnosis;
+`setup` at a different unused directory creates a new run with a new identity.
+
+## Local research preferences and agent votes
+
+Each node has its own editable agenda text. This changes operator preferences,
+not the genesis profile, protocol parameters, mathematical checker, or voting
+weight:
+
+```sh
+"$BIN" profile "$C0" /absolute/path/research-preferences.txt
+```
+
+An explicitly configured provider executable can supply an agenda decision:
+
+```sh
+"$BIN" agent-vote "$C0" "$RUN/accounts/account-0.key" \
+  "$RUN/a-agent-vote-0.bin" "$RUN/a-agent-report-0.json" \
+  /absolute/path/research-agent-provider
+```
+
+The executable receives one JSON request on stdin containing `version`, `profile`,
+`question`, `purpose`, `question_id`, `attempt`, `genesis`, `author`, and
+`agent_budget` (the inference index, maximum attempts, and remaining tool calls).
+It must return one JSON object
+on stdout with exactly `decision` (`YES` or `NO`), nonempty `reason`, nonempty
+`provider`, and integer `tool_calls`. The adapter allows at most two inference
+attempts per node/question/attempt, 60 seconds per inference, 8,192 output bytes,
+a 4,096-byte reason, a 128-byte provider label, and four reported tool calls
+across those attempts. Exclusive durable reservations survive CLI restarts; a
+crashed or malformed call consumes its reservation and the remaining tool budget.
+Changing the local profile cannot reset a reservation for the same question
+attempt. Accepted decisions and exact signed votes are retained for retries,
+which do not invoke the provider again. Configure the actual provider to enforce its tool-use limit as well. Provider processes and remaining
+descendants are terminated when an invocation finishes or times out. Malformed,
+failed, excessive, or late decisions create no vote. The CLI rechecks the active
+question/phase and local voting deadline before signing.
+
+The executable is an operator-selected integration, not an automatically selected
+AI service. A provider label or JSON report is not proof that an AI service ran.
+The test suite's fake executables qualify parsing, deadlines, retries, and process
+cleanup only. Real-agent qualification must retain the actual provider invocation
+and its report. These votes express agenda preferences; mathematical validity is
+determined separately by the deterministic checker.
+
+## Submit, approve, commit, and reveal A
+
+The checked examples are described in
+[the fixture notes](../../examples/research-mvp/fixtures.md). A publishes its root
+and helper H together under account 4. Use a fresh output path for each distinct
+action:
+
+```sh
+"$BIN" submit "$C0" "$RUN/accounts/account-4.key" \
+  examples/research-mvp/question-a.nao 'Develop a reusable reflexivity helper' \
+  "$RUN/a-submit.bin"
+"$BIN" status "$C0"
+```
+
+Save the returned operation ID as `A_SUBMISSION`. Once the finalized phase is
+`Voting`, three or four distinct validator owners may vote. These explicit votes
+are a manual alternative to agent votes; an owner may vote only once per attempt.
+
+```sh
+"$BIN" vote "$C0" "$RUN/accounts/account-0.key" YES "$RUN/a-vote-0.bin"
+"$BIN" vote "$C1" "$RUN/accounts/account-1.key" YES "$RUN/a-vote-1.bin"
+"$BIN" vote "$C2" "$RUN/accounts/account-2.key" YES "$RUN/a-vote-2.bin"
+"$BIN" question "$C0" "$A_SUBMISSION"
+```
+
+An early three-YES quorum does not shorten the voting window. Wait for a finalized
+`Commit` phase, then use the unchanged original package:
+
+```sh
+"$BIN" package "$RUN/genesis.bin" "$RUN/accounts/account-4.key" \
+  "$RUN/a.package" examples/research-mvp/solution-a.nao \
+  --helper examples/research-mvp/helper-h.nao
+"$BIN" commit "$C0" "$RUN/accounts/account-4.key" \
+  "$RUN/a.package" "$RUN/a.secret" "$RUN/a-commit.bin"
+```
+
+The commit command durably stores the random secret, signed original, and exact
+commit action before submitting. Keep `a.secret`: restarting `commit` with the
+same package/secret paths resends that original commitment. Do not replace the
+secret or original bytes. Wait for a finalized `Reveal` phase and reveal before
+its deadline:
+
+```sh
+"$BIN" reveal "$C0" "$RUN/accounts/account-4.key" \
+  "$RUN/a.secret" "$RUN/a-reveal.bin"
+"$BIN" status "$C0"
+"$BIN" question "$C0" "$A_SUBMISSION"
+```
+
+Receipt queries establish final admission. A locally sent reveal is not timely
+merely because it reached a process before the deadline. `SettlementPending`
+retains the active slot until the next finalized settlement; a finalized timely
+reveal does not expire while settlement waits for quorum.
+
+## Reuse H, normalize B, and recognize C
+
+After A completes, H's fixed fixture ProofId is
+`c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73`.
+Stop node 0 to exercise retrieval from another provider. From node 1's
+`status.validators`, set `PROVIDER_INDEX` to the genesis-sorted index whose
+endpoint is node 2 (`127.0.0.1:44102` in this example):
+
+```sh
+"$BIN" shutdown "$C0"
+H=c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73
+"$BIN" status "$C1"
+"$BIN" fetch-proof-from "$C1" "$PROVIDER_INDEX" "$H" "$RUN/h.proof"
+"$BIN" check-proof "$RUN/genesis.bin" "$RUN/h.proof"
+```
+
+Submit `question-b.nao` using account 5 and node 1. Repeat the phase workflow with
+fresh `b-*` action/secret paths and votes from the three live owners 1, 2, and 3.
+To demonstrate duplicate-helper substitution, construct its original package as:
+
+```sh
+"$BIN" package "$RUN/genesis.bin" "$RUN/accounts/account-5.key" \
+  "$RUN/b.package" examples/research-mvp/solution-b-original.nao \
+  --helper examples/research-mvp/helper-h-duplicate.nao
+```
+
+The original duplicate helper remains subject to full checking. Settlement reuses
+the earlier H, preserves H's original recipient, recomputes B's normalized proof
+and citation payment, and reports `REFUTED` for B's submitted negative formula.
+An alternative package using the already selected H directly uses
+`solution-b.nao --reference "$RUN/h.proof"`.
+
+After B settles, submit `question-c.nao`. Its target is exactly the selected H;
+opening records `KnownUnpaid`, with no new completion payment or eligibility
+claim. Query all three submitted questions and compare balances, claims, and
+`paid_completions`. Manual execution of these commands is a procedure, not by
+itself a recorded acceptance result.
+
+## Independent verification and inspection
+
+```sh
+"$BIN" export "$C1" "$RUN/export-after-b"
+"$BIN" verify "$RUN/genesis.bin" "$RUN/export-after-b"
+"$BIN" inspect "$RUN/genesis.bin" "$RUN/export-after-b" \
+  "$B_SUBMISSION" "$RUN/inspect-b"
+```
+
+Export verifies each selected finality while writing a new directory. Verification
+requires no signing key and replays the complete history, mathematical checks,
+balances, phases, claims, and resource budgets against the manifest. Inspection
+also exposes formal targets, outcome, winning commitment coordinate, original
+hash, substitutions, normalized root, citation payments, and eligibility claim.
+For a completed question it writes the signed original, original and normalized
+packages, canonical normalization receipt, and a JSON report. Full history
+archives include finalized reveal material and are kept private.
+
+`fetch-proof` saves a locally selected canonical certificate.
+`fetch-proof-from` obtains and validates the requested certificate through the
+named validator's authenticated network connection. To check a root that needs
+older proofs offline, use `check-proof GENESIS ROOT_PROOF DEPENDENCY_PROOF...`,
+listing dependencies before their dependents. Mathematical checking alone does
+not establish authorship, payment, or finality; archive replay supplies those
+additional checks.
+
+## Simulation controls and qualification
+
+`peer CONFIG VALIDATOR_INDEX on|off` changes one local simulated peer link. The
+index is the **genesis-sorted index printed by `status.validators`**, not necessarily
+the `node-N` directory number; match its endpoint before changing a link. A 2:2
+partition requires disabling every cross-group link in both groups. Restore those
+same links with `on`. Two validators must never finalize; no command reduces the
+four-owner denominator. Shutdown/restart uses the existing durable state.
+
+The process test is
+`crates/naome-research-cli/tests/research_process.rs`. Its accelerated execution,
+the normal lab-window run, real-provider agent evidence, full two-profile workspace
+checks, and cross-platform CI are separate qualification states. Record the exact
+genesis/profile, commit, executed commands, timing, outcomes, and retained reports
+for each. No acceptance checkbox is completed by this operating guide.

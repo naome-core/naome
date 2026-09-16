@@ -11,3 +11,5 @@ pub mod chain_head_announcement;
 pub mod chain_head_exchange;
 
 pub mod candidate_offer;
+
+pub mod research_exchange;

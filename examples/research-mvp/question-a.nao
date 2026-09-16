@@ -1,0 +1,3 @@
+# Proof obligation A: universally quantified self-equality.
+foundation = "naome:zfc"
+statement = forall(y, forall(x, equal(x, x)))

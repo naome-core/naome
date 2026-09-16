@@ -46,6 +46,20 @@ pub fn compile_artifact(source: &str) -> Result<CompiledArtifact, CompileError> 
     compile_with_artifact_state(source, &ArtifactState::new())
 }
 
+/// Compiles a proof against an explicitly supplied, checker-validated context.
+/// This supports offline research packages and downloaded helper certificates.
+/// Compilation establishes mathematical validity only; it does not establish
+/// that these references belong to a selected research library or earn rewards.
+pub fn compile_against_proof_context(
+    source: &str,
+    context: &ArtifactState,
+) -> Result<CompiledProof, CompileError> {
+    match compile_with_artifact_state(source, context)? {
+        CompiledArtifact::Proof(proof) => Ok(proof),
+        CompiledArtifact::Definition(_) => Err(CompileError::ExpectedProof { offset: 0 }),
+    }
+}
+
 fn compile_with_artifact_state(
     source: &str,
     artifact_state: &ArtifactState,
