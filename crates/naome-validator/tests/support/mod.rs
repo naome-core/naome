@@ -518,6 +518,15 @@ impl Process {
         self.until(|value| value["event"] == event)
     }
     pub fn observe(&mut self, wait: Duration) -> Option<Value> {
+        self.observe_or_closed(wait).expect("process output closed")
+    }
+
+    /// The diagnostic pump distinguishes a closed stdout reader from a quiet
+    /// live process so its failure report can include the child's exit status.
+    pub fn observe_or_closed(
+        &mut self,
+        wait: Duration,
+    ) -> Result<Option<Value>, mpsc::RecvTimeoutError> {
         match self.receiver.recv_timeout(wait) {
             Ok(value) => {
                 self.observed.push(value.clone());
@@ -525,11 +534,44 @@ impl Process {
                     self.observed.len() < self.transcript_limit,
                     "bounded test transcript"
                 );
-                Some(value)
+                Ok(Some(value))
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("process output closed"),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(error @ mpsc::RecvTimeoutError::Disconnected) => Err(error),
         }
+    }
+
+    /// Diagnostic-only drain after the caller has observed process exit. The
+    /// reader thread may still have final JSONL queued behind its bounded
+    /// channel. This never drives a live child or extends a milestone timeout.
+    pub fn drain_after_exit(&mut self) -> Value {
+        assert!(self.child.try_wait().unwrap().is_some());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let limit = 4096.min(
+            self.transcript_limit
+                .saturating_sub(self.observed.len() + 1),
+        );
+        let mut drained = 0;
+        let mut closed = false;
+        while drained < limit && Instant::now() < deadline {
+            match self
+                .receiver
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(value) => {
+                    self.observed.push(value);
+                    drained += 1;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    closed = true;
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+            }
+        }
+        json!({"drained_events":drained, "output_closed":closed,
+            "event_limit_reached":!closed && drained == limit,
+            "deadline_reached":!closed && Instant::now() >= deadline})
     }
     pub fn ready(&mut self) -> Value {
         self.event("ready")["state"].clone()

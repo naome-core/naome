@@ -160,18 +160,50 @@ fn pump(
 ) {
     let deadline = Instant::now() + bound;
     loop {
-        for node in nodes.iter_mut().chain(publishers.iter_mut()) {
-            for _ in 0..16 {
-                let Some(event) = node.observe(Duration::from_millis(1)) else {
-                    break;
-                };
-                assert_ne!(event["event"], "error", "{label}: {event}");
+        let mut process_failure = None;
+        for (index, node) in nodes.iter_mut().chain(publishers.iter_mut()).enumerate() {
+            let mut output_closed = false;
+            let mut error = None;
+            if node.child.try_wait().unwrap().is_none() {
+                for _ in 0..16 {
+                    match node.observe_or_closed(Duration::from_millis(1)) {
+                        Ok(Some(event)) if event["event"] == "error" => {
+                            error = Some(event);
+                            break;
+                        }
+                        Ok(Some(_)) => {}
+                        Ok(None) => break,
+                        Err(_) => {
+                            output_closed = true;
+                            break;
+                        }
+                    }
+                }
             }
-            assert!(
-                node.child.try_wait().unwrap().is_none(),
-                "{label}: process exited"
-            );
+            let exit = node.child.try_wait().unwrap();
+            let drain = exit.as_ref().map(|_| node.drain_after_exit());
+            if exit.is_some() || output_closed || error.is_some() {
+                use std::os::unix::process::ExitStatusExt;
+                process_failure = Some(json!({
+                    "process_type":if index < 4 { "validator" } else { "publisher" },
+                    "process_index":if index < 4 { index } else { index - 4 },
+                    "pid":node.child.id(),
+                    "exit_status":exit.as_ref().map(ToString::to_string),
+                    "exit_code":exit.as_ref().and_then(|status| status.code()),
+                    "exit_signal":exit.as_ref().and_then(|status| status.signal()),
+                    "output_closed":output_closed,
+                    "observed_error":error,
+                    "post_exit_drain":drain,
+                }));
+                break;
+            }
         }
+        assert!(
+            process_failure.is_none(),
+            "{label}: process failure: {}; diagnostics: {}",
+            process_failure.unwrap_or(serde_json::Value::Null),
+            timeout_diagnostics(nodes, publishers)
+        );
         if predicate(nodes, publishers) {
             return;
         }
@@ -205,6 +237,22 @@ fn timeout_diagnostics(nodes: &[Process; 4], publishers: &[Process]) -> serde_js
             })
             .cloned()
     }
+    fn sync_counts(process: &Process) -> std::collections::BTreeMap<String, usize> {
+        let mut counts = std::collections::BTreeMap::new();
+        for event in &process.observed {
+            let event = outcome(event);
+            if let Some(name) = event["event"].as_str()
+                && (name.starts_with("sync_") || name.starts_with("follow_"))
+            {
+                let key = match event["reason"].as_str() {
+                    Some(reason) => format!("{name}:{reason}"),
+                    None => name.to_owned(),
+                };
+                *counts.entry(key).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
     fn recent(process: &Process) -> Vec<&serde_json::Value> {
         process
             .observed
@@ -231,6 +279,21 @@ fn timeout_diagnostics(nodes: &[Process; 4], publishers: &[Process]) -> serde_js
                 "latest_proposal":latest(node, "proposal_job_"),
                 "latest_acquisition":latest(node, "acquisition_"),
                 "latest_acquisition_selection":latest(node, "supervisor_acquisition_"),
+                "latest_sync_stopped":latest(node, "sync_stopped"),
+                "latest_sync_deferred":latest(node, "sync_deferred"),
+                "latest_sync_progress":latest(node, "sync_progress"),
+                "latest_sync_response":latest(node, "sync_response_"),
+                "sync_event_reason_counts":sync_counts(node),
+                "latest_error":latest(node, "error"),
+                "latest_stopped":latest(node, "stopped"),
+                "latest_fatal":node.observed.iter().rev().find(|event| {
+                    matches!(outcome(event)["event"].as_str(), Some(
+                        "listener_failed" | "allocation_failed" | "timing_failed" |
+                        "finality_stopped" | "proof_failed" | "driver_unavailable" |
+                        "unsupported_runtime_event"
+                    ))
+                }),
+
                 "recent_non_retry_newest_first":recent(node),
             })
         })
@@ -268,6 +331,9 @@ fn timeout_diagnostics(nodes: &[Process; 4], publishers: &[Process]) -> serde_js
             json!({
                 "publisher":index,
                 "latest_loaded":latest(publisher, "publisher_offer_loaded"),
+                "latest_error":latest(publisher, "error"),
+                "latest_stopped":latest(publisher, "publisher_stopped"),
+
                 "latest_four_receipted_digests":receipts,
                 "recent_non_retry_newest_first":recent(publisher),
             })
