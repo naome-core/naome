@@ -1,10 +1,11 @@
 # Specification and implementation ownership
 
 This index routes readers to the retained component contracts. The
-[MVP requirements](../research/mvp/requirements.md) define the proposed research
-workflow and its open acceptance criteria. The contracts below describe the
-existing mathematical and fixed-validator foundation; they do not establish
-that the research workflow is already implemented. The former public-network
+[MVP requirements](../research/mvp/requirements.md) define the trusted research
+workflow and its acceptance criteria. The research implementation and the retained
+mathematical and fixed-validator foundation are indexed below. The
+[verification map](../research/mvp/verification.md) records acceptance evidence
+separately from implementation. The former public-network
 backlog, dynamic-membership profile, and economic projections are not part of
 this MVP branch. Historical rule IDs in retained contracts identify their
 original implementation slices; they are not an active MVP backlog or an
@@ -12,6 +13,11 @@ additional source of authority.
 
 | Responsibility | Owning crate | Normative contracts |
 | --- | --- | --- |
+| Immutable research profile/genesis, questions, deterministic phases, normalized proof library, settlement, rewards, and passive claims | `naome-research` | [MVP requirements and R1–R11](../research/mvp/requirements.md) |
+| Full research-record agreement and bounded round transitions | `naome-consensus::research` | [MVP full research records](../research/mvp/requirements.md#r8) |
+| Research history, independent replay, exclusive signer custody, and anchored crash recovery | `naome-storage::research`, `naome-node::research` | [MVP operational rules](../research/mvp/requirements.md), [Recovery procedures](../research/mvp/operations.md) |
+| Authenticated research records, history and proof transfer, bounded request custody, and live scheduling | `naome-protocol::research_exchange`, `naome-network::transport::research_exchange`, `naome-runtime::research` | [MVP authentication and limits](../research/mvp/requirements.md) |
+| Research CLI, durable local actions, bounded operator-agent review, inspection and offline verification | `naome-research-cli` | [Operating guide](../research/mvp/operations.md), [Acceptance evidence](../research/mvp/verification.md) |
 | Primitive language, axioms, and proof rules | `naome-foundation` | [Foundation](foundation.md) |
 | Proof and definition representations, canonical bytes, and identities | `naome-proof` | [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
 | Foundation-relative proof checking and conservative definition checking | `naome-checker` | [Foundation](foundation.md), [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |

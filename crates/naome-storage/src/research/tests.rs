@@ -307,7 +307,8 @@ fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, ResearchHis
         .collect();
     append(&mut history, 100, ops);
     append(&mut history, active.deadline.unwrap(), vec![]);
-    append(&mut history, 103, vec![]);
+    let now = history.head().unwrap().state().time();
+    append(&mut history, now, vec![]);
     let round = history
         .head()
         .unwrap()
@@ -361,7 +362,8 @@ fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, ResearchHis
         4,
         OperationBody::Commit { round, commitment },
     );
-    append(&mut history, 103, vec![op]);
+    let now = history.head().unwrap().state().time();
+    append(&mut history, now, vec![op]);
     let deadline = history
         .head()
         .unwrap()

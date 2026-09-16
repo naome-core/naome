@@ -28,7 +28,7 @@ Setup accepts `lab`, `research`, or `short-test`. `lab` uses 300-second voting,
 `research` uses seven days of voting, one day for commitments, one day for
 reveals, and a 30-day queue lifetime. That long-running profile is a separate
 later qualification; the initial MVP acceptance uses `lab`. `short-test` uses
-3/2/2/30 seconds and must be labeled accelerated testing. `compact` changes resource limits before genesis, while
+15/8/8/120 seconds and must be labeled accelerated testing. `compact` changes resource limits before genesis, while
 preserving the selected timing windows and reward rules:
 
 | Bound | Default, 8,192 records | Compact, 256 records |
@@ -327,10 +327,14 @@ include uncommitted changes; use the manifest as well as the Git head when
 identifying the tested source. Keep the executable copy and manifest with the
 run's local evidence.
 
-Only `acceptance-report.json` is designated for publication. Private keys,
-commitment secrets, original reveals, node logs, exported histories, provider
-reports, source manifests and diagnostic stderr stay in the private run directory.
-Do not publish that directory or the progress log wholesale. The report records
+Only `acceptance-report.json` is designated for publication. It intentionally
+includes the fixture operator-profile text and the agent decision, reason,
+provider label and request hash, alongside public protocol identifiers and
+outcomes. The same agent review is also retained as a local report. Private
+keys, commitment secrets, original reveals, node logs, exported histories and
+source manifests stay in the private run directory. Any retained raw
+provider/command diagnostics are also private. Do not publish that directory or
+the progress log wholesale. The report records
 local four-process evidence; it does not establish operation on two physical
 machines or completion of the seven-day research profile.
 

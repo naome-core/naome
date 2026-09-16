@@ -207,7 +207,9 @@ impl Profile {
         let (voting_seconds, commitment_seconds, reveal_seconds, queue_seconds) = match kind {
             TimingKind::Lab => (300, 120, 120, 1800),
             TimingKind::Research => (604800, 86400, 86400, 2592000),
-            TimingKind::ShortTest => (3, 2, 2, 30),
+            // Leave room for independent CLI commands and durable quorum
+            // delivery under concurrent CI compilation and process scheduling.
+            TimingKind::ShortTest => (15, 8, 8, 120),
         };
         Self {
             kind,

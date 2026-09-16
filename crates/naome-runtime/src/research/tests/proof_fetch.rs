@@ -169,8 +169,9 @@ fn selected_history(
         })
         .collect();
     append(&mut history, 100, votes);
-    append(&mut history, 103, vec![]);
-    append(&mut history, 103, vec![]);
+    let voting_deadline = active.deadline.unwrap();
+    append(&mut history, voting_deadline, vec![]);
+    append(&mut history, voting_deadline, vec![]);
     let round = history
         .head()
         .unwrap()
@@ -227,9 +228,18 @@ fn selected_history(
     let commitment =
         CommitmentId::for_original(&g, round, author, original.original_hash(), &secret);
     let op = sign(&history, 4, OperationBody::Commit { round, commitment });
-    append(&mut history, 103, vec![op]);
-    append(&mut history, 105, vec![]);
-    append(&mut history, 105, vec![]);
+    let now = history.head().unwrap().state().time();
+    append(&mut history, now, vec![op]);
+    let commitment_deadline = history
+        .head()
+        .unwrap()
+        .state()
+        .active()
+        .unwrap()
+        .deadline
+        .unwrap();
+    append(&mut history, commitment_deadline, vec![]);
+    append(&mut history, commitment_deadline, vec![]);
     let op = sign(
         &history,
         4,
@@ -239,9 +249,17 @@ fn selected_history(
             original,
         },
     );
-    append(&mut history, 105, vec![op]);
-    append(&mut history, 107, vec![]);
-    append(&mut history, 107, vec![]);
+    append(&mut history, commitment_deadline, vec![op]);
+    let reveal_deadline = history
+        .head()
+        .unwrap()
+        .state()
+        .active()
+        .unwrap()
+        .deadline
+        .unwrap();
+    append(&mut history, reveal_deadline, vec![]);
+    append(&mut history, reveal_deadline, vec![]);
     assert_eq!(
         history
             .head()

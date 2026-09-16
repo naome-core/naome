@@ -145,7 +145,8 @@ fn complete_real_proof_settlement_and_replay_are_atomic() {
         &secret,
     );
     let op = signed(&state, 4, OperationBody::Commit { round, commitment });
-    apply(&mut state, 103, vec![op]);
+    let now = state.time();
+    apply(&mut state, now, vec![op]);
     start_reveal(&mut state);
     let op = signed(
         &state,
@@ -1067,3 +1068,5 @@ fn actual_queue_limit_and_exact_expiry_preserve_state_on_rejection() {
 mod golden;
 
 mod queue_boundary;
+
+mod capacity_sixteen;

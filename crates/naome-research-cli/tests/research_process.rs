@@ -154,11 +154,45 @@ impl Lab {
         ]);
         result["operation"].as_str().unwrap().to_owned()
     }
-    fn approve(&self, owners: &[usize], label: &str) {
-        for &index in owners {
-            self.wait(index, |s| s["active"]["phase"] == "Voting");
+    fn assert_question_can_progress(&self, node: usize, submission: &str) {
+        let output = raw(&["question".into(), self.config(node), submission.into()]);
+        if output.status.success() {
+            let question: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(
+                matches!(question["status"].as_str(), Some("Queued" | "Active")),
+                "question {submission} reached terminal state before the expected phase: {question}"
+            );
         }
-        thread::scope(|scope| {
+    }
+    fn wait_phase(&self, node: usize, submission: &str, phase: &str) {
+        self.wait(node, |s| {
+            if s["active"]["submission"] == submission && s["active"]["phase"] == phase {
+                return true;
+            }
+            self.assert_question_can_progress(node, submission);
+            false
+        });
+    }
+    fn wait_receipt(&self, node: usize, submission: &str, operation: &Value) {
+        let id = operation["operation"]
+            .as_str()
+            .expect("signed operation ID");
+        self.wait(node, |_| {
+            let receipt = command(&["receipt".into(), self.config(node), id.into()]);
+            if receipt["status"] == "finalized" {
+                return true;
+            }
+            assert_ne!(receipt["status"], "rejected", "operation {id}: {receipt}");
+            self.assert_question_can_progress(node, submission);
+            false
+        });
+    }
+    fn approve(&self, owners: &[usize], label: &str, submission: &str) {
+        for &index in owners {
+            self.wait_phase(index, submission, "Voting");
+        }
+        let votes = thread::scope(|scope| {
+            let mut handles = Vec::new();
             for &index in owners {
                 let args = [
                     "vote".into(),
@@ -167,12 +201,21 @@ impl Lab {
                     "YES".into(),
                     self.file(&format!("{label}-vote-{index}")),
                 ];
-                scope.spawn(move || command(&args));
+                handles.push(scope.spawn(move || (index, command(&args))));
             }
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
         });
+        // Every intended YES must be finalized, not merely accepted by a
+        // transport socket, before the test claims successful approval.
+        for (index, vote) in votes {
+            self.wait_receipt(index, submission, &vote);
+        }
     }
-    fn solve(&self, node: usize, author: usize, package: &str, label: &str) {
-        self.wait(node, |s| s["active"]["phase"] == "Commit");
+    fn solve(&self, node: usize, author: usize, package: &str, label: &str, submission: &str) {
+        self.wait_phase(node, submission, "Commit");
         let commit = command(&[
             "commit".into(),
             self.config(node),
@@ -181,15 +224,16 @@ impl Lab {
             self.file(&format!("{label}.secret")),
             self.file(&format!("{label}.commit")),
         ]);
-        assert_eq!(commit["result"]["status"], "transported");
-        self.wait(node, |s| s["active"]["phase"] == "Reveal");
-        command(&[
+        self.wait_receipt(node, submission, &commit);
+        self.wait_phase(node, submission, "Reveal");
+        let reveal = command(&[
             "reveal".into(),
             self.config(node),
             self.key(author),
             self.file(&format!("{label}.secret")),
             self.file(&format!("{label}.reveal")),
         ]);
+        self.wait_receipt(node, submission, &reveal);
     }
     fn assert_same(&self, indices: &[usize], expected: &Value) {
         for &index in indices {
@@ -246,8 +290,8 @@ fn four_process_research_recovery_partition_and_independent_replay() {
         lab.wait(index, |s| s["height"] == 0);
     }
     let a = lab.submit(0, 4, example("question-a.nao"), "a");
-    lab.approve(&[0, 1, 2], "a");
-    lab.solve(0, 4, &a_package, "a");
+    lab.approve(&[0, 1, 2], "a", &a);
+    lab.solve(0, 4, &a_package, "a", &a);
     let first = lab.wait(0, |s| s["paid_completions"] == 1);
     lab.assert_same(&[0, 1, 2, 3], &first);
     assert_eq!(
@@ -300,8 +344,8 @@ fn four_process_research_recovery_partition_and_independent_replay() {
         path(example("helper-h-duplicate.nao")),
     ]);
     let b = lab.submit(1, 5, example("question-b.nao"), "b");
-    lab.approve(&[1, 2, 3], "b");
-    lab.solve(1, 5, &b_package, "b");
+    lab.approve(&[1, 2, 3], "b", &b);
+    lab.solve(1, 5, &b_package, "b", &b);
     let second = lab.wait(1, |s| s["paid_completions"] == 2);
     lab.assert_same(&[1, 2, 3], &second);
     assert_eq!(
