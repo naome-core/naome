@@ -106,7 +106,7 @@ mod fixed_validator_anchor;
 mod fixed_validator_finality_journal;
 mod fixed_validator_vote_safety_journal;
 mod payload_store;
-pub mod research;
+pub mod state;
 mod store_io;
 use store_io::{AppendPhase, ExclusiveLock, ExclusiveLockError, StoreIo, open_exclusive_lock};
 

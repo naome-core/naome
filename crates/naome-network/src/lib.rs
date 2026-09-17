@@ -138,7 +138,7 @@ pub use transport::candidate_offer::{
     CandidateOfferTicket, InboundCandidateOffer,
 };
 
-pub use transport::research_exchange::{
+pub use transport::state_exchange::{
     InboundResearch, ResearchContext, ResearchEvent, ResearchFailure, ResearchHistoryItem,
     ResearchMismatch, ResearchNetworkBuildError, ResearchReceivedResponse, ResearchRejection,
     ResearchRequest, ResearchRequestBody, ResearchRespondError, ResearchResponse,

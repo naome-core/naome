@@ -82,7 +82,7 @@ fn proof_command_emits_exact_identities_from_primitive_derived_and_bound_sources
         let example = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples")
             .join(file);
-        let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
             .arg("proof")
             .arg(example)
             .output()
@@ -105,7 +105,7 @@ fn proof_command_emits_exact_identities_from_primitive_derived_and_bound_sources
 fn proof_command_emits_the_exact_typed_definition_output() {
     let example =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/reflexive-relation.nao");
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+    let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
         .arg("proof")
         .arg(example)
         .output()
@@ -357,7 +357,7 @@ fn proof_path_is_opaque_even_when_it_matches_a_command_word() {
     .unwrap();
     let source = TemporarySource::named("compile", &source);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+    let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
         .args(["proof", "compile"])
         .current_dir(&source.directory)
         .output()
@@ -377,7 +377,7 @@ fn proof_path_is_opaque_even_when_it_matches_a_command_word() {
 #[test]
 fn legacy_compile_command_is_rejected_without_a_compatibility_alias() {
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/self-equality.nao");
-    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+    let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
         .args(["proof", "compile"])
         .arg(example)
         .output()
@@ -397,7 +397,7 @@ struct TemporarySource {
 }
 
 fn run_proof(path: &Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_naome"))
+    Command::new(env!("CARGO_BIN_EXE_naome-author"))
         .arg("proof")
         .arg(path)
         .output()

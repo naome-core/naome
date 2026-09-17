@@ -5,7 +5,7 @@ This is local network simulation, not multi-machine qualification. The default
 requires a real Codex agenda review. Nothing is mocked or clock-accelerated.
 Private keys, reveal material, histories and archives remain in a mode-0700
 temporary directory. Only acceptance-report.json is suitable for publication.
-Run after building naome-research with the repository-pinned Rust toolchain.
+Run after building naome with the repository-pinned Rust toolchain.
 """
 
 import argparse
@@ -441,7 +441,7 @@ proof:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", type=Path, default=REPO / "target/debug/naome-research")
+    parser.add_argument("--binary", type=Path, default=REPO / "target/debug/naome")
     parser.add_argument("--provider", type=Path, default=REPO / "tools/research_agent_codex.py")
     args = parser.parse_args()
     os.umask(0o077)

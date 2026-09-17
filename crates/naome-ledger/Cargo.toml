@@ -2,17 +2,19 @@
 name = "naome-ledger"
 version.workspace = true
 edition.workspace = true
-description = "Deterministic proof and definition artifact admission for NAOME."
+description = "Deterministic canonical ledger state and artifact admission for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
 [dependencies]
 naome-checker = { path = "../naome-checker" }
+naome-foundation = { path = "../naome-foundation" }
 naome-proof = { path = "../naome-proof" }
+ed25519-dalek.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
-naome-foundation = { path = "../naome-foundation" }
 
 [lints]
 workspace = true

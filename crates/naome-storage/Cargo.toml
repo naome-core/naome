@@ -14,7 +14,6 @@ naome-consensus = { path = "../naome-consensus" }
 naome-foundation = { path = "../naome-foundation" }
 naome-ledger = { path = "../naome-ledger" }
 naome-proof = { path = "../naome-proof" }
-naome-research = { path = "../naome-research" }
 sha2.workspace = true
 
 [target.'cfg(windows)'.dependencies]

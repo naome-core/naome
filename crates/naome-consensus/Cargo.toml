@@ -11,7 +11,7 @@ publish.workspace = true
 ed25519-dalek.workspace = true
 naome-chain = { path = "../naome-chain" }
 naome-proof = { path = "../naome-proof" }
-naome-research = { path = "../naome-research" }
+naome-ledger = { path = "../naome-ledger" }
 num-bigint.workspace = true
 sha2.workspace = true
 

@@ -60,18 +60,18 @@ permissionless-network security.
 
 | Label | Source and scope |
 |---|---|
-| Profile | [Profile/genesis tests](../../crates/naome-research/src/profile/tests.rs) |
-| Questions | [Question compilation tests](../../crates/naome-research/src/question/tests.rs) |
-| State | [Research state transitions](../../crates/naome-research/src/state/tests.rs), [wire/replay vectors](../../crates/naome-research/src/state/tests/golden.rs), [default queue boundary](../../crates/naome-research/src/state/tests/queue_boundary.rs), [all-sixteen-author reservation](../../crates/naome-research/src/state/tests/capacity_sixteen.rs) |
-| Library | [Mathematical normalization/reuse tests](../../crates/naome-research/src/library/tests.rs), [workload qualification](../../crates/naome-research/src/library/tests/qualification.rs), [older-depth boundary](../../crates/naome-research/src/library/tests/depth_boundary.rs) |
-| Accounting | [Exact monetary distribution](../../crates/naome-research/src/accounting/tests.rs) |
-| Receipts | [Settlement inspection and canonical receipt tests](../../crates/naome-research/src/receipt/tests.rs) |
-| Authentication/time | [Action authentication](../../crates/naome-research/src/authentication/tests.rs), [signed time](../../crates/naome-research/src/time/tests.rs) |
-| Consensus/node | [Consensus kernel](../../crates/naome-consensus/src/research/tests.rs), [node recovery](../../crates/naome-node/src/research/tests.rs) |
-| Storage | [Research history/signer/settlement recovery](../../crates/naome-storage/src/research/tests.rs), [journal I/O faults](../../crates/naome-storage/src/research/log_tests.rs) |
-| Transport/runtime | [Network exchange](../../crates/naome-network/src/transport/research_exchange/tests.rs), [exact frame limits](../../crates/naome-network/src/transport/research_exchange/tests/boundary.rs), [wire protocol](../../crates/naome-protocol/src/research_exchange/tests.rs), [runtime intake](../../crates/naome-runtime/src/research/tests.rs) |
-| CLI | [Agent](../../crates/naome-research-cli/src/app/agent/tests.rs), [durable actions](../../crates/naome-research-cli/src/app/actions/tests.rs), [private files](../../crates/naome-research-cli/src/app/files/tests.rs), [setup/local profile](../../crates/naome-research-cli/src/app/setup/tests.rs) |
-| Process | [four_process_research_recovery_partition_and_independent_replay](../../crates/naome-research-cli/tests/research_process.rs): accelerated independent processes |
+| Profile | [Profile/genesis tests](../../crates/naome-ledger/src/profile/tests.rs) |
+| Questions | [Question compilation tests](../../crates/naome-ledger/src/question/tests.rs) |
+| State | [Research state transitions](../../crates/naome-ledger/src/state/tests.rs), [wire/replay vectors](../../crates/naome-ledger/src/state/tests/golden.rs), [default queue boundary](../../crates/naome-ledger/src/state/tests/queue_boundary.rs), [all-sixteen-author reservation](../../crates/naome-ledger/src/state/tests/capacity_sixteen.rs) |
+| Library | [Mathematical normalization/reuse tests](../../crates/naome-ledger/src/library/tests.rs), [workload qualification](../../crates/naome-ledger/src/library/tests/qualification.rs), [older-depth boundary](../../crates/naome-ledger/src/library/tests/depth_boundary.rs) |
+| Accounting | [Exact monetary distribution](../../crates/naome-ledger/src/accounting/tests.rs) |
+| Receipts | [Settlement inspection and canonical receipt tests](../../crates/naome-ledger/src/receipt/tests.rs) |
+| Authentication/time | [Action authentication](../../crates/naome-ledger/src/authentication/tests.rs), [signed time](../../crates/naome-ledger/src/time/tests.rs) |
+| Consensus/node | [Consensus kernel](../../crates/naome-consensus/src/state/tests.rs), [node recovery](../../crates/naome-node/src/state/tests.rs) |
+| Storage | [Research history/signer/settlement recovery](../../crates/naome-storage/src/state/tests.rs), [journal I/O faults](../../crates/naome-storage/src/state/log_tests.rs) |
+| Transport/runtime | [Network exchange](../../crates/naome-network/src/transport/state_exchange/tests.rs), [exact frame limits](../../crates/naome-network/src/transport/state_exchange/tests/boundary.rs), [wire protocol](../../crates/naome-protocol/src/state_exchange/tests.rs), [runtime intake](../../crates/naome-runtime/src/state/tests.rs) |
+| CLI | [Agent](../../crates/naome-cli/src/app/agent/tests.rs), [durable actions](../../crates/naome-cli/src/app/actions/tests.rs), [private files](../../crates/naome-cli/src/app/files/tests.rs), [setup/local profile](../../crates/naome-cli/src/app/setup/tests.rs) |
+| Process | [four_process_research_recovery_partition_and_independent_replay](../../crates/naome-cli/tests/research_process.rs): accelerated independent processes |
 | LAB | [research_lab_acceptance.py](../../tools/research_lab_acceptance.py): real windows, actual provider, separate four-process state; report required |
 
 ## Requirement mapping

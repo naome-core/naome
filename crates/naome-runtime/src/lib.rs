@@ -7,7 +7,7 @@
 //! journal recovers exact signed bytes and durable per-peer transport receipts.
 
 mod evidence_journal;
-pub mod research;
+pub mod state;
 pub use evidence_journal::FixedValidatorEvidenceJournalErrorV0;
 mod owner;
 mod publication_journal;

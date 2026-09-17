@@ -13,11 +13,11 @@ additional source of authority.
 
 | Responsibility | Owning crate | Normative contracts |
 | --- | --- | --- |
-| Immutable research profile/genesis, questions, deterministic phases, normalized proof library, settlement, rewards, and passive claims | `naome-research` | [MVP requirements and R1–R11](../research/mvp/requirements.md) |
-| Full research-record agreement and bounded round transitions | `naome-consensus::research` | [MVP full research records](../research/mvp/requirements.md#r8) |
-| Research history, independent replay, exclusive signer custody, and anchored crash recovery | `naome-storage::research`, `naome-node::research` | [MVP operational rules](../research/mvp/requirements.md), [Recovery procedures](../research/mvp/operations.md) |
-| Authenticated research records, history and proof transfer, bounded request custody, and live scheduling | `naome-protocol::research_exchange`, `naome-network::transport::research_exchange`, `naome-runtime::research` | [MVP authentication and limits](../research/mvp/requirements.md) |
-| Research CLI, durable local actions, bounded operator-agent review, inspection and offline verification | `naome-research-cli` | [Operating guide](../research/mvp/operations.md), [Acceptance evidence](../research/mvp/verification.md) |
+| Immutable research profile/genesis, questions, deterministic phases, normalized proof library, settlement, rewards, and passive claims | `naome-ledger` | [MVP requirements and R1–R11](../research/mvp/requirements.md) |
+| Full research-record agreement and bounded round transitions | `naome-consensus::state` | [MVP full research records](../research/mvp/requirements.md#r8) |
+| Research history, independent replay, exclusive signer custody, and anchored crash recovery | `naome-storage::state`, `naome-node::state` | [MVP operational rules](../research/mvp/requirements.md), [Recovery procedures](../research/mvp/operations.md) |
+| Authenticated research records, history and proof transfer, bounded request custody, and live scheduling | `naome-protocol::state_exchange`, `naome-network::transport::state_exchange`, `naome-runtime::state` | [MVP authentication and limits](../research/mvp/requirements.md) |
+| Research CLI, durable local actions, bounded operator-agent review, inspection and offline verification | `naome-cli` | [Operating guide](../research/mvp/operations.md), [Acceptance evidence](../research/mvp/verification.md) |
 | Primitive language, axioms, and proof rules | `naome-foundation` | [Foundation](foundation.md) |
 | Proof and definition representations, canonical bytes, and identities | `naome-proof` | [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
 | Foundation-relative proof checking and conservative definition checking | `naome-checker` | [Foundation](foundation.md), [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
@@ -50,4 +50,4 @@ and finality. Driver work classification has one shared precedence definition.
 Storage journal families separate their private mutation owners from replay,
 record encoding, durable append, and error reporting. These internal modules
 preserve the fixed-validator authority boundaries. The repository root is a
-virtual Cargo workspace; the `naome` authoring CLI remains in `naome-authoring`.
+virtual Cargo workspace; the `naome-author` source-authoring CLI remains in `naome-authoring`; the canonical state CLI is `naome-cli` (`naome`).

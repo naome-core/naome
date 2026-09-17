@@ -14,7 +14,7 @@ naome-network = { path = "../naome-network" }
 naome-node = { path = "../naome-node" }
 naome-protocol = { path = "../naome-protocol" }
 naome-proof = { path = "../naome-proof" }
-naome-research = { path = "../naome-research" }
+naome-ledger = { path = "../naome-ledger" }
 naome-storage = { path = "../naome-storage" }
 sha2.workspace = true
 tokio = { version = "1", default-features = false, features = ["macros", "time"] }

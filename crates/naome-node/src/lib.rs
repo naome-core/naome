@@ -52,7 +52,7 @@
 //! broader finality routing, and branch-selection policy to later components.
 
 mod fixed_validator;
-pub mod research;
+pub mod state;
 
 pub use fixed_validator::{
     FixedValidatorNodeBufferedProposalPrecommitErrorV0,

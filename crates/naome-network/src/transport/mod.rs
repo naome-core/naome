@@ -1,7 +1,7 @@
 //! Managed authenticated transport, request custody, and exchange lifecycles.
 
 pub(crate) mod candidate_offer;
-pub(crate) mod research_exchange;
+pub(crate) mod state_exchange;
 
 use crate::*;
 
@@ -142,7 +142,7 @@ struct Behaviour {
     head_exchange: request_response::Behaviour<ArtifactChainHeadCodec>,
     head_announcement: request_response::Behaviour<ArtifactChainHeadAnnouncementCodec>,
     candidate_offer: candidate_offer::Behaviour,
-    research_exchange: research_exchange::Behaviour,
+    state_exchange: state_exchange::Behaviour,
     recovery_bundle_push: request_response::Behaviour<RecoveryBundlePushCodec>,
     consensus_push: request_response::Behaviour<ConsensusPushCodec>,
     finality_exchange: request_response::Behaviour<FinalityProofCodec>,
@@ -174,7 +174,7 @@ enum PendingRequest {
     Head(PendingArtifactChainHeadRequest),
     Announcement(PendingArtifactChainHeadAnnouncement),
     CandidateOffer(candidate_offer::PendingOffer),
-    Research(research_exchange::PendingResearch),
+    Research(state_exchange::PendingResearch),
     RecoveryBundlePush(recovery_bundle_push::PendingRecoveryBundlePush),
     ConsensusPush(consensus_push::PendingConsensusPush),
     Finality(finality_exchange::PendingFinalityProof),
@@ -228,7 +228,7 @@ pub struct StaticArtifactNetwork {
     pending_budget: Arc<PendingBudget>,
     inbound_application_request_budget: rate_limit::TokenBucket,
     candidate_offer_due: HashMap<PeerId, Instant>,
-    research: Option<research_exchange::ResearchConfig>,
+    research: Option<state_exchange::ResearchConfig>,
 }
 
 impl StaticArtifactNetwork {
@@ -317,8 +317,8 @@ impl StaticArtifactNetwork {
             static_peers.iter().map(StaticPeer::peer_id),
             !research_only,
         );
-        let research_exchange =
-            research_exchange::Behaviour::new(static_peers.iter().map(StaticPeer::peer_id), None);
+        let state_exchange =
+            state_exchange::Behaviour::new(static_peers.iter().map(StaticPeer::peer_id), None);
         let sessions = SessionBehaviour::new(local_peer_id, static_peers);
 
         let exchange_config = request_response::Config::default()
@@ -426,7 +426,7 @@ impl StaticArtifactNetwork {
             head_exchange,
             head_announcement,
             candidate_offer,
-            research_exchange,
+            state_exchange,
             recovery_bundle_push,
             consensus_push,
             finality_exchange,
@@ -655,7 +655,7 @@ impl StaticArtifactNetwork {
                         return event;
                     }
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::ResearchExchange(event)) => {
+                SwarmEvent::Behaviour(BehaviourEvent::StateExchange(event)) => {
                     if let Some(event) = self.handle_research_event(event) {
                         return event;
                     }
@@ -1121,8 +1121,8 @@ pub enum NetworkEvent {
     OutboundBlock(OutboundArtifactBlockEvent),
     InboundChainHeadRequest(InboundArtifactChainHeadRequest),
     OutboundChainHead(OutboundArtifactChainHeadEvent),
-    InboundResearch(research_exchange::InboundResearch),
-    OutboundResearch(research_exchange::ResearchEvent),
+    InboundResearch(state_exchange::InboundResearch),
+    OutboundResearch(state_exchange::ResearchEvent),
     InboundCandidateOffer(candidate_offer::InboundCandidateOffer),
     OutboundCandidateOffer(candidate_offer::CandidateOfferEvent),
     InboundChainHeadAnnouncement(InboundArtifactChainHeadAnnouncement),

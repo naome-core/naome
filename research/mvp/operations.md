@@ -14,14 +14,17 @@ in [requirements.md](requirements.md).
 Use the Rust toolchain selected by `rust-toolchain.toml`:
 
 ```sh
-cargo build -p naome-research-cli --bin naome-research --profile release --locked
-BIN="$PWD/target/release/naome-research"
+cargo build -p naome-cli --bin naome --profile release --locked
+BIN="$PWD/target/release/naome"
 RUN=/tmp/naome-lab-001
 "$BIN" setup "$RUN" lab 256 44100 compact
 ```
 
 Run this from the repository root. `RUN` must name a new directory; setup never
-overwrites an existing run. A short absolute path also leaves room for Unix
+overwrites an existing run. A non-signing observer can independently replay an
+exported completed run with `naome-verifier state verify GENESIS EXPORT_DIRECTORY`;
+that entry point accepts only offline verification of the canonical state history.
+A short absolute path also leaves room for Unix
 control-socket path limits. The four ports beginning at `44100` must be available.
 
 Setup accepts `lab`, `research`, or `short-test`. `lab` uses 300-second voting,
@@ -291,7 +294,7 @@ same links with `on`. Two validators must never finalize; no command reduces the
 four-owner denominator. Shutdown/restart uses the existing durable state.
 
 The process test is
-`crates/naome-research-cli/tests/research_process.rs`. Its accelerated execution,
+`crates/naome-cli/tests/research_process.rs`. Its accelerated execution,
 the normal lab-window run, real-provider agent evidence, full two-profile workspace
 checks, and cross-platform CI are separate qualification states. Record the exact
 genesis/profile, commit, executed commands, timing, outcomes, and retained reports
@@ -306,13 +309,13 @@ must not replace this copy. The runner uses a new private directory and its own
 available ports; it does not reuse the manual example above.
 
 ```sh
-cargo build -p naome-research-cli --bin naome-research --profile release --locked
+cargo build -p naome-cli --bin naome --profile release --locked
 umask 077
 QUALIFICATION=$(mktemp -d /tmp/naome-qualification.XXXXXX)
-cp target/release/naome-research "$QUALIFICATION/naome-research"
-chmod 500 "$QUALIFICATION/naome-research"
+cp target/release/naome "$QUALIFICATION/naome"
+chmod 500 "$QUALIFICATION/naome"
 python3 tools/research_lab_acceptance.py \
-  --binary "$QUALIFICATION/naome-research" \
+  --binary "$QUALIFICATION/naome" \
   --provider "$PWD/tools/research_agent_codex.py" \
   >"$QUALIFICATION/progress.jsonl" 2>&1
 ```
