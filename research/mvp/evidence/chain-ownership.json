@@ -14,7 +14,7 @@
     "result": "clear",
     "limitations": "No independent runtime execution"
   },
-  "validation_status": "Canonical chain/ledger tests, complete workspace compile barriers in both profiles, Clippy, docs and doctests passed. Full workspace executions are still in progress with one process failure in each; not a green workspace claim.",
+  "validation_status": "Both complete workspace compile barriers passed. Complete local executions finished with one legacy process failure each: busy sync start in test and a concurrent-fixture timeout in release. The focused busy-start tests passed in both profiles; isolated release Byzantine test passed. Milestone CI passed all platform/profile, quality, devnet, and aggregate jobs.",
   "remaining": [
     "Retire V0 executable authority and shared legacy transport/history paths",
     "Integrate proof DAG inside canonical ledger library",
@@ -26,8 +26,8 @@
       "results": []
     },
     "test": {
-      "status": "in_progress_snapshot",
-      "sha256": "b72f1f346bed2cbf9dc553c57de92da6d03f65d9eddb3260ec15c983cbde545a",
+      "status": "completed_with_one_process_failure",
+      "sha256": "96139c81f08c22d79941d77e2069c54f43663c245d09b52e97f5c35a11ca18c3",
       "results": [
         "test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s",
         "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
@@ -55,7 +55,10 @@
         "test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 93.03s",
         "test result: ok. 275 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 36.58s",
         "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s",
-        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s"
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s",
+        "test result: FAILED. 141 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 976.85s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.01s"
       ]
     },
     "release-build": {
@@ -63,8 +66,8 @@
       "results": []
     },
     "release-test": {
-      "status": "in_progress_snapshot",
-      "sha256": "9fecacc973bc836977ce1dfc1a5150f2448c287a44a6bd712aeb04cdfceb948e",
+      "status": "completed_with_one_process_failure",
+      "sha256": "000006700cdaa02a8375441dd9b32ca8e924679c2530430f72d2642821670ad0",
       "results": [
         "test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s",
         "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
@@ -92,7 +95,10 @@
         "test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.67s",
         "test result: ok. 275 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.67s",
         "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s",
-        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s"
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s",
+        "test result: FAILED. 141 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 998.77s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.76s"
       ]
     },
     "chain_ledger": {
@@ -169,5 +175,61 @@
     "test": "Older test binary reproduced catch-up failure; bounded Busy retry added and independently reviewed, focused test/release passed66.99/68.92 seconds. Full-suite diagnostics still pending.",
     "release": "Byzantine bridge process test failed in concurrent full profile runs; isolated release passed22.65 seconds. Full-suite diagnostics pending; not resolved by the retry."
   },
-  "golden_vectors": "Both golden-v1.txt and legacy-research-v1.txt in chain equal their exact HEAD ledger predecessors byte for byte."
+  "golden_vectors": "Both golden-v1.txt and legacy-research-v1.txt in chain equal their exact HEAD ledger predecessors byte for byte.",
+  "ci": {
+    "head": "73e1156099cfb69f74cdb99f590c4990e8d754aa",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/naome-core/naome/actions/runs/35344852555",
+    "jobs": [
+      {
+        "name": "Rust quality",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Windows x86_64, test) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Devnet qualification",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (macOS ARM64, release) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Linux x86_64, test) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Linux x86_64, release) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (macOS ARM64, test) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Windows x86_64, release) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust platform (Windows x86_64)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust platform (Linux x86_64)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust platform (macOS ARM64)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust CI",
+        "conclusion": "success"
+      }
+    ]
+  }
 }

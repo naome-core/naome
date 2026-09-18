@@ -22,6 +22,12 @@ process shutdown is not an abrupt settlement crash. Local four-process evidence
 does not establish operation on two machines. The seven-day research profile
 remains separate later qualification.
 
+The [chain ownership milestone](evidence/chain-ownership.json) passed all platform
+CI gates at `73e1156`. The [main executable milestone](evidence/main-executables.json)
+records direct validator execution, portable verifier replay, and process-level
+crash, conflict and corrupt-start checks. These do not qualify the still-pending
+retirement of V0 authority or replace the final real-window lab.
+
 ## Recorded qualification
 
 | Evidence | Source and result |

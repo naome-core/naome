@@ -5,71 +5,25 @@ use super::{
     node::decode_bytes,
     setup::NodeConfig,
 };
+use crate::archive::Manifest;
 use naome_consensus::state::ResearchBranch;
-use naome_ledger::{ResearchState, profile::Genesis};
-use serde::{Deserialize, Serialize};
+use naome_ledger::ResearchState;
 use serde_json::json;
 use std::path::Path;
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Manifest {
-    version: u16,
-    genesis: String,
-    head: String,
-    state: String,
-    height: u64,
-    maximum_round: u64,
-}
 
 pub async fn run(args: &[String]) -> Result<()> {
     if args[0] == "verify" || args[0] == "inspect" {
         if (args[0] == "verify" && args.len() != 3) || (args[0] == "inspect" && args.len() != 5) {
             return Err("usage: verify GENESIS EXPORT_DIRECTORY; inspect GENESIS EXPORT_DIRECTORY SUBMISSION_ID OUTPUT_DIRECTORY".into());
         }
-        let genesis = Genesis::decode(&files::read(Path::new(&args[1]), 16384, false)?)?;
-        let root = Path::new(&args[2]);
-        let manifest: Manifest =
-            serde_json::from_slice(&files::read(&root.join("manifest.json"), 16384, false)?)?;
-        if manifest.version != 1
-            || manifest.genesis != files::hex(genesis.id().as_bytes())
-            || manifest.height > genesis.profile().limits().run_records
-            || manifest.maximum_round > genesis.profile().limits().consensus_rounds
-        {
-            return Err("archive manifest context or bounds mismatch".into());
-        }
-        let maximum = genesis.profile().limits().transport_frame_bytes as usize;
-        let mut branch = ResearchBranch::from_genesis(ResearchState::new(genesis.clone()))?;
-        let mut originals = std::collections::BTreeMap::new();
-        for height in 1..=manifest.height {
-            let bytes = files::read(&root.join(format!("{height:08}.finality")), maximum, false)?;
-            let finality = branch.decode_finality(&bytes, manifest.maximum_round)?;
-            if args[0] == "inspect"
-                && branch
-                    .state()
-                    .active()
-                    .is_some_and(|a| files::hex(a.submission.as_bytes()) == args[3])
-            {
-                let record =
-                    naome_chain::StateRecord::decode(finality.proposal().record_bytes(), &genesis)?;
-                for operation in record.operations() {
-                    if let naome_ledger::operations::OperationBody::Reveal { original, .. } =
-                        naome_ledger::operations::OperationBody::decode(
-                            operation.payload(),
-                            &genesis,
-                        )?
-                    {
-                        originals.insert(original.original_hash(), original);
-                    }
-                }
-            }
-            branch = finality.into_branch();
-        }
-        if manifest.head != files::hex(branch.state().head().as_bytes())
-            || manifest.state != files::hex(branch.state().commitment().as_bytes())
-        {
-            return Err("replayed tip does not match archive manifest".into());
-        }
+        let archive = crate::archive::replay(
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+            (args[0] == "inspect").then(|| args[3].as_str()),
+        )?;
+        let branch = archive.branch;
+        let originals = archive.originals;
+        let genesis = branch.state().genesis();
         if args[0] == "inspect" {
             let id = naome_ledger::OperationId::from_bytes(files::unhex(&args[3])?);
             let report = super::inspect::question(branch.state(), id)?;
@@ -83,12 +37,12 @@ pub async fn run(args: &[String]) -> Result<()> {
             {
                 let receipt = naome_ledger::receipt::NormalizationReceipt::decode(
                     normalization_receipt,
-                    &genesis,
+                    genesis,
                 )?;
                 let original = originals
                     .get(&receipt.original_hash)
                     .ok_or("winning original absent from replayed history")?;
-                original.verify(&genesis, receipt.round, receipt.author)?;
+                original.verify(genesis, receipt.round, receipt.author)?;
                 if original.original_hash() != receipt.original_hash {
                     return Err("winning original hash mismatch".into());
                 }

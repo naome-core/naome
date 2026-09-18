@@ -1,7 +1,46 @@
 //! Shared command entry point for the canonical trusted NAOME state machine.
 
+mod archive;
+
 #[cfg(unix)]
 mod app;
+
+/// Independently replays a public archive without opening signing or node state.
+pub fn verify_archive(
+    genesis: &std::path::Path,
+    directory: &std::path::Path,
+) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    archive::verify(genesis, directory)
+}
+
+/// Read-only verifier process interface. Operator commands are never dispatched.
+pub fn run_verifier_args(args: Vec<String>) -> std::process::ExitCode {
+    match args.first().map(String::as_str) {
+        None | Some("help" | "--help") => {
+            println!("Usage: naome-verifier verify GENESIS EXPORT_DIRECTORY");
+            std::process::ExitCode::SUCCESS
+        }
+        Some("verify") if args.len() == 3 => {
+            match verify_archive(
+                std::path::Path::new(&args[1]),
+                std::path::Path::new(&args[2]),
+            ) {
+                Ok(report) => {
+                    println!("{report}");
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("naome-verifier: {error}");
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+        _ => {
+            eprintln!("naome-verifier only supports: verify GENESIS EXPORT_DIRECTORY");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
 
 /// Runs canonical-state commands with the program name already removed.
 #[cfg(unix)]

@@ -12,13 +12,18 @@ static ALLOCATOR: std::alloc::System = std::alloc::System;
 fn main() -> std::process::ExitCode {
     #[cfg(any(unix, windows))]
     {
-        #[cfg(unix)]
         let args: Vec<_> = std::env::args().skip(1).collect();
-        #[cfg(unix)]
+        if args.is_empty()
+            || args
+                .first()
+                .is_some_and(|arg| matches!(arg.as_str(), "verify" | "help" | "--help"))
+        {
+            return naome_cli::run_verifier_args(args);
+        }
         if args.first().is_some_and(|arg| arg == "state") {
             let state_args: Vec<_> = args.into_iter().skip(1).collect();
             if state_args.first().is_some_and(|arg| arg == "verify") {
-                return naome_cli::run_args(state_args);
+                return naome_cli::run_verifier_args(state_args);
             }
             eprintln!("naome-verifier: state only supports independent offline verification");
             return std::process::ExitCode::FAILURE;

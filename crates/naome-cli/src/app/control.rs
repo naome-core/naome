@@ -1,7 +1,6 @@
-use super::{Result, files, setup::NodeConfig};
-use naome_ledger::ResearchState;
+use super::{Result, setup::NodeConfig};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -58,7 +57,4 @@ pub async fn call(config: &NodeConfig, request: Request) -> Result<Value> {
         |_| "node control request timed out; operation may still finalize, query its receipt",
     )?
 }
-pub fn status(state: &ResearchState) -> Value {
-    let active=state.active().map(|a|json!({"submission":files::hex(a.submission.as_bytes()),"question":files::hex(a.question.as_bytes()),"family":files::hex(a.family.as_bytes()),"attempt":a.number,"phase":format!("{:?}",a.phase),"deadline":a.deadline,"round":a.solution_round.map(|r|files::hex(r.as_bytes())),"votes":a.votes.iter().map(|(id,yes)|json!({"owner":files::hex(id.as_bytes()),"yes":yes})).collect::<Vec<_>>(),"commitments":a.commitments,"reveals":a.reveals}));
-    json!({"status":"finalized","genesis":files::hex(state.genesis().id().as_bytes()),"profile":files::hex(state.genesis().profile().id().as_bytes()),"height":state.height(),"head":files::hex(state.head().as_bytes()),"state":files::hex(state.commitment().as_bytes()),"time":state.time(),"active":active,"library_root":files::hex(&state.library().root()),"proof_count":state.library().len(),"queued":state.queued().count(),"accounts":state.balances().accounts().iter().map(|(id,balance)|json!({"account":files::hex(id.as_bytes()),"balance_atoms":balance.to_string(),"next_nonce":state.next_nonce(*id)})).collect::<Vec<_>>(),"validators":state.genesis().validators().iter().enumerate().map(|(i,v)|json!({"index":i,"owner":files::hex(v.owner.as_bytes()),"endpoint":v.endpoint})).collect::<Vec<_>>(),"reserve_atoms":state.balances().reserve().to_string(),"paid_completions":state.balances().paid_completions(),"claims":state.claims().values().map(|c|json!({"family":files::hex(c.family.as_bytes()),"author":files::hex(c.author.as_bytes()),"ordinal":c.completion_ordinal})).collect::<Vec<_>>(),"remaining_records":state.remaining_records(),"reserved_records":state.reserved_records(),"remaining_bytes":state.remaining_bytes(),"reserved_bytes":state.reserved_bytes(),"terminated":state.terminated()})
-}
+pub(crate) use crate::archive::status;

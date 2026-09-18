@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [target.'cfg(any(unix, windows))'.dependencies]
+naome-cli = { path = "../naome-cli" }
 naome-chain = { path = "../naome-chain" }
 naome-consensus = { path = "../naome-consensus" }
 naome-network = { path = "../naome-network" }
@@ -24,7 +25,6 @@ windows-permissions = "=0.2.4"
 winconsole = { version = "=0.11.1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
-naome-cli = { path = "../naome-cli" }
 rustix = { version = "1.1", features = ["fs", "process"] }
 
 [target.'cfg(any(unix, windows))'.dev-dependencies]

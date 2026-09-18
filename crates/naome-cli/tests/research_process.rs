@@ -11,14 +11,40 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "cases/state_safety.rs"]
+mod state_safety;
+
+fn process_guard() -> std::sync::MutexGuard<'static, ()> {
+    static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ACTIVE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 const BIN: &str = env!("CARGO_BIN_EXE_naome");
+// Compile all three process packages in one matching-profile --no-run barrier.
+// A missing sibling is a qualification failure, never a fallback to `naome`.
+fn process_binary(name: &str) -> PathBuf {
+    let binary = Path::new(BIN).with_file_name(name);
+    assert!(
+        binary.is_file(),
+        "required process binary absent: {}",
+        binary.display()
+    );
+    binary
+}
 fn example(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/research-mvp")
         .join(name)
 }
 fn raw(args: &[String]) -> Output {
-    Command::new(BIN).args(args).output().unwrap()
+    let binary = if args.first().is_some_and(|arg| arg == "verify") {
+        process_binary("naome-verifier")
+    } else {
+        PathBuf::from(BIN)
+    };
+    Command::new(binary).args(args).output().unwrap()
 }
 fn command(args: &[String]) -> Value {
     let output = raw(args);
@@ -90,7 +116,7 @@ impl Lab {
         let stdout = File::create(self.root.join(format!("node-{index}.events"))).unwrap();
         let stderr = File::create(self.root.join(format!("node-{index}.errors"))).unwrap();
         self.nodes[index] = Some(
-            Command::new(BIN)
+            Command::new(process_binary("naome-validator"))
                 .args(["start", &self.config(index)])
                 .stdout(stdout)
                 .stderr(stderr)
@@ -272,6 +298,7 @@ impl Drop for Lab {
 
 #[test]
 fn four_process_research_recovery_partition_and_independent_replay() {
+    let _guard = process_guard();
     let mut lab = Lab::new();
     let a_package = lab.file("a.package");
     command(&[

@@ -386,6 +386,9 @@ fn verify_stopped(
 
 #[test]
 fn byzantine_bridge_equivocation_cannot_finalize_partitioned_honest_processes() {
+    // Share the existing four-signer fixture budget. Startup and Noise sessions
+    // must fit within real phase deadlines even in a complete workspace run.
+    let _fixture_guard = super::autonomous_supervisor::process_fixture_guard();
     let fixture = Fixture::new();
     let layouts: [Layout; 4] = std::array::from_fn(|_| Layout::new());
     let configs = std::array::from_fn::<_, 4, _>(|actor| fixture.config(&layouts[actor], actor));

@@ -1,6 +1,6 @@
 # Operating the trusted research MVP
 
-These commands operate a separate four-validator research genesis on Unix. The
+These commands operate a four-validator canonical state genesis on Unix. The
 current qualification target is four independent local processes with separate
 keys, journals, anchors, and authenticated network connections. The [completed lab report](evidence/lab-acceptance.json) records actual
 300/120/120-second windows, a real agent review, and four local processes.
@@ -20,16 +20,19 @@ The linked lab results qualify the earlier MVP baseline, not this new format.
 Use the Rust toolchain selected by `rust-toolchain.toml`:
 
 ```sh
-cargo build -p naome-cli --bin naome --profile release --locked
+cargo build -p naome-cli -p naome-validator -p naome-verifier --bins --profile release --locked
 BIN="$PWD/target/release/naome"
+VALIDATOR="$PWD/target/release/naome-validator"
 RUN=/tmp/naome-lab-001
 "$BIN" setup "$RUN" lab 256 44100 compact
 ```
 
 Run this from the repository root. `RUN` must name a new directory; setup never
 overwrites an existing run. A non-signing observer can independently replay an
-exported completed run with `naome-verifier state verify GENESIS EXPORT_DIRECTORY`;
-that entry point accepts only offline verification of the canonical state history.
+exported completed run with `naome-verifier verify GENESIS EXPORT_DIRECTORY`;
+that entry point accepts only offline verification of the canonical state history
+on Unix and Windows. Validator operation still requires Unix durable custody.
+Legacy V0 commands remain during integration; their retirement is not yet complete.
 A short absolute path also leaves room for Unix
 control-socket path limits. The four ports beginning at `44100` must be available.
 
@@ -93,10 +96,10 @@ C0="$RUN/node-0/node.json"
 C1="$RUN/node-1/node.json"
 C2="$RUN/node-2/node.json"
 C3="$RUN/node-3/node.json"
-"$BIN" start "$C0" >"$RUN/node-0.log" 2>&1 &
-"$BIN" start "$C1" >"$RUN/node-1.log" 2>&1 &
-"$BIN" start "$C2" >"$RUN/node-2.log" 2>&1 &
-"$BIN" start "$C3" >"$RUN/node-3.log" 2>&1 &
+"$VALIDATOR" start "$C0" >"$RUN/node-0.log" 2>&1 &
+"$VALIDATOR" start "$C1" >"$RUN/node-1.log" 2>&1 &
+"$VALIDATOR" start "$C2" >"$RUN/node-2.log" 2>&1 &
+"$VALIDATOR" start "$C3" >"$RUN/node-3.log" 2>&1 &
 "$BIN" status "$C0"
 ```
 
@@ -111,7 +114,7 @@ ID using `receipt`; responses distinguish `finalized`, `not_finalized`, and
 "$BIN" receipt "$C0" "$OPERATION_ID"
 "$BIN" send "$C0" "$RUN/saved-action.bin"
 "$BIN" shutdown "$C0"
-"$BIN" start "$C0" >>"$RUN/node-0.log" 2>&1 &
+"$VALIDATOR" start "$C0" >>"$RUN/node-0.log" 2>&1 &
 ```
 
 Restart with the same configuration, keys, history, and independent anchors.
