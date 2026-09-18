@@ -50,10 +50,8 @@ pub async fn run(args: &[String]) -> Result<()> {
                     .active()
                     .is_some_and(|a| files::hex(a.submission.as_bytes()) == args[3])
             {
-                let record = naome_ledger::ResearchRecord::decode(
-                    finality.proposal().record_bytes(),
-                    &genesis,
-                )?;
+                let record =
+                    naome_chain::StateRecord::decode(finality.proposal().record_bytes(), &genesis)?;
                 for operation in record.operations() {
                     if let naome_ledger::operations::OperationBody::Reveal { original, .. } =
                         naome_ledger::operations::OperationBody::decode(

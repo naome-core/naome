@@ -148,9 +148,9 @@ fn legacy_research_authority_is_not_reinterpreted_as_state_history() {
     assert!(Genesis::decode(&legacy_vector("genesis")).is_err());
     for name in ["submit-record", "settlement-record"] {
         let mut bytes = legacy_vector(name);
-        assert!(ResearchRecord::decode(&bytes, state.genesis()).is_err());
+        assert!(StateRecord::decode(&bytes, state.genesis()).is_err());
         bytes[..4].copy_from_slice(b"NSRC");
-        assert!(ResearchRecord::decode(&bytes, state.genesis()).is_err());
+        assert!(StateRecord::decode(&bytes, state.genesis()).is_err());
     }
     for name in ["signed-submit", "signed-commit", "signed-reveal"] {
         let mut bytes = legacy_vector(name);

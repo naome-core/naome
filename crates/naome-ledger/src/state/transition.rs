@@ -6,7 +6,7 @@ impl ResearchState {
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
-    ) -> Result<ResearchTransition, ResearchError> {
+    ) -> Result<LedgerExecution, ResearchError> {
         if self.terminated {
             return Err(ResearchError::Invalid("research run terminated"));
         }
@@ -92,9 +92,12 @@ impl ResearchState {
         for effect in effects {
             derived.bytes(&effect)?;
         }
-        let record = ResearchRecord::new(self, &next, certificate, operations, derived.finish())?;
-        next.head = record.id();
-        Ok(ResearchTransition { record, next })
+        Ok(LedgerExecution {
+            next,
+            time: certificate,
+            operations,
+            effects: derived.finish(),
+        })
     }
 
     fn set_question_status(

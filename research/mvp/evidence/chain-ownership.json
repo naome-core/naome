@@ -1,0 +1,173 @@
+{
+  "scope": "Canonical complete record ownership in naome-chain; old artifact executable authority retirement remains incomplete",
+  "source_base": "f7a7001ae3fdc0c3ef4dae6377c6376f7704e9d7",
+  "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+  "cargo_incremental": "0",
+  "implementation": [
+    "Ledger execution produces provisional state, operations, certified time, and effects without constructing history records.",
+    "Chain owns StateRecord, FinalizedStateRecord framing, exact-parent replay, full byte-limit enforcement, and provisional successor binding.",
+    "Consensus authenticates and reexecutes full records before storage selection; non-genesis provisional states cannot initialize a branch.",
+    "Existing state and receipt suites moved with record ownership; current and legacy golden bytes unchanged."
+  ],
+  "review": {
+    "mode": "independent read-only static review",
+    "result": "clear",
+    "limitations": "No independent runtime execution"
+  },
+  "validation_status": "Canonical chain/ledger tests, complete workspace compile barriers in both profiles, Clippy, docs and doctests passed. Full workspace executions are still in progress with one process failure in each; not a green workspace claim.",
+  "remaining": [
+    "Retire V0 executable authority and shared legacy transport/history paths",
+    "Integrate proof DAG inside canonical ledger library",
+    "Run final platform CI and real-window lab using final main executables"
+  ],
+  "logs": {
+    "build": {
+      "sha256": "afa97d79e1e3de147ed99e5989df53e424b76dda04be83018fb3c69a5ba0157d",
+      "results": []
+    },
+    "test": {
+      "status": "in_progress_snapshot",
+      "sha256": "b72f1f346bed2cbf9dc553c57de92da6d03f65d9eddb3260ec15c983cbde545a",
+      "results": [
+        "test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s",
+        "test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.27s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.48s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 91.60s",
+        "test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.92s",
+        "test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 77 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.27s",
+        "test result: ok. 281 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.83s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s",
+        "test result: ok. 319 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 305.85s",
+        "test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s",
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
+        "test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.08s",
+        "test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 93.03s",
+        "test result: ok. 275 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 36.58s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s"
+      ]
+    },
+    "release-build": {
+      "sha256": "6d18b8fe81dafc76d15481168bce1aa1ea590d521ace1a8df5113c8ece7ff4bd",
+      "results": []
+    },
+    "release-test": {
+      "status": "in_progress_snapshot",
+      "sha256": "9fecacc973bc836977ce1dfc1a5150f2448c287a44a6bd712aeb04cdfceb948e",
+      "results": [
+        "test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
+        "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s",
+        "test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 134.94s",
+        "test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.10s",
+        "test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 77 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.50s",
+        "test result: ok. 281 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.10s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.33s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.78s",
+        "test result: ok. 319 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 274.54s",
+        "test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s",
+        "test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.67s",
+        "test result: ok. 275 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.67s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s"
+      ]
+    },
+    "chain_ledger": {
+      "sha256": "c15ce21b370e0310d6efe812c90cf30a1c15223595bf02a2071f2c2e868f688f",
+      "results": [
+        "test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+        "test result: ok. 77 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.66s"
+      ]
+    },
+    "clippy": {
+      "sha256": "f24ca534d0d71563e3010929f144d1738faeee3c3217f59ee193235ce3a309ff",
+      "results": []
+    },
+    "docs": {
+      "sha256": "93a870fed5e099f8e269c03940c3fc22d3eac9dca1876710dc72f23edae254db",
+      "results": []
+    },
+    "doctests": {
+      "sha256": "f052a09f0425c157195e4336326240b9e8c18e1e4c5fd9d979a928a956a5f735",
+      "results": [
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s"
+      ]
+    },
+    "ci_fix_test": {
+      "sha256": "3fd0230aae4d49cccd6a5133243024bed0bbec8062dbb9fddc0564f49c4ce5ec",
+      "results": [
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 66.99s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s"
+      ]
+    },
+    "ci_fix_release": {
+      "sha256": "efdd6e7958d4cd83c7c954ae2c41a695f1c38754d6d0eb5f5078ab23e16c7e23",
+      "results": [
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 68.92s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s"
+      ]
+    },
+    "isolated_byzantine_release": {
+      "sha256": "a9289dde627411c5689155a896cb77702f3fd6c1132774aa2411604b844d7b20",
+      "results": [
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 22.65s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s"
+      ]
+    }
+  },
+  "commands": {
+    "test": "cargo test --workspace --profile test --all-targets --all-features --locked --no-fail-fast",
+    "release": "cargo test --workspace --profile release --all-targets --all-features --locked --no-fail-fast",
+    "barriers": "Matching --no-run before each execution",
+    "quality": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+    "docs": "RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --all-features --locked --no-deps",
+    "doctests": "cargo test --workspace --doc --all-features --locked"
+  },
+  "process_failures": {
+    "test": "Older test binary reproduced catch-up failure; bounded Busy retry added and independently reviewed, focused test/release passed66.99/68.92 seconds. Full-suite diagnostics still pending.",
+    "release": "Byzantine bridge process test failed in concurrent full profile runs; isolated release passed22.65 seconds. Full-suite diagnostics pending; not resolved by the retry."
+  },
+  "golden_vectors": "Both golden-v1.txt and legacy-research-v1.txt in chain equal their exact HEAD ledger predecessors byte for byte."
+}

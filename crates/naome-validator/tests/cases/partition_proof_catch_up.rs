@@ -41,8 +41,16 @@ fn quiescent(nodes: &mut [Process; 4], actor: usize, id: &mut u64) -> Value {
 }
 
 // A status response is not a reservation against the next real deadline or
-// publication. Retry only this exact start refusal; every other failure remains
+// publication. Retry only these transient start refusals; every other failure remains
 // fatal to the harness and an accepted pass must still commit its exact proof.
+fn retryable_sync_start(event: &Value) -> bool {
+    event["event"] == "command_rejected"
+        && matches!(
+            event["code"].as_str(),
+            Some("sync_request_start" | "sync_runtime_busy")
+        )
+}
+
 fn start_sync(
     nodes: &mut [Process; 4],
     actor: usize,
@@ -60,11 +68,7 @@ fn start_sync(
             let mut result = None;
             for (index, node) in nodes.iter_mut().enumerate() {
                 if let Some(event) = node.observe(Duration::from_millis(1)) {
-                    if index == actor
-                        && event["id"] == current
-                        && event["event"] == "command_rejected"
-                        && event["code"] == "sync_request_start"
-                    {
+                    if index == actor && event["id"] == current && retryable_sync_start(&event) {
                         refused.push((actor, current));
                         result = Some(false);
                     } else {
@@ -474,8 +478,7 @@ fn run(kill_minority: bool) {
         );
         assert_eq!(node.shutdown()["locks_released"], true);
         for event in &node.observed {
-            if event["event"] == "command_rejected"
-                && event["code"] == "sync_request_start"
+            if retryable_sync_start(event)
                 && event["id"]
                     .as_u64()
                     .is_some_and(|id| refused_sync_starts.contains(&(actor, id)))

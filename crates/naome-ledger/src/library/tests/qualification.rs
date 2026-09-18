@@ -638,7 +638,7 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
     )
     .unwrap();
     assert!(matches!(
-        state.prepare_record(time, actions),
+        state.execute(time, actions),
         Err(ResearchError::Limit("operations per record"))
     ));
     // The real default aggregate checker-call ceiling is now exhausted. The

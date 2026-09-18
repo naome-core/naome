@@ -14,6 +14,7 @@ additional source of authority.
 | Responsibility | Owning crate | Normative contracts |
 | --- | --- | --- |
 | Immutable research profile/genesis, questions, deterministic phases, normalized proof library, settlement, rewards, and passive claims | `naome-ledger` | [MVP requirements and R1–R11](../research/mvp/requirements.md) |
+| Canonical complete state record, finalized envelope framing, exact-parent replay and provisional successor binding | `naome-chain::state` | [State-format boundary](#state-format-integration-boundary) |
 | Full research-record agreement and bounded round transitions | `naome-consensus::state` | [MVP full research records](../research/mvp/requirements.md#r8) |
 | Research history, independent replay, exclusive signer custody, and anchored crash recovery | `naome-storage::state`, `naome-node::state` | [MVP operational rules](../research/mvp/requirements.md), [Recovery procedures](../research/mvp/operations.md) |
 | Authenticated research records, history and proof transfer, bounded request custody, and live scheduling | `naome-protocol::state_exchange`, `naome-network::transport::state_exchange`, `naome-runtime::state` | [MVP authentication and limits](../research/mvp/requirements.md) |
@@ -56,18 +57,18 @@ virtual Cargo workspace; the `naome-author` source-authoring CLI remains in `nao
 
 The state integration introduces a fresh `state-v1` genesis and encoding family.
 This is an explicit compatibility break, not a conversion of an existing run.
-The former research-v1 golden bytes remain immutable negative fixtures in ledger
+The former research-v1 golden bytes remain immutable negative fixtures in chain
 and consensus tests. They must not acquire authority through a renamed header,
 new filename, or imported signer snapshot. The V0 artifact path is still present
-at this intermediate milestone; moving canonical history authority into
-`naome-chain` and removing the old executable path remain integration work.
+at this intermediate milestone; the complete state record and finalized envelope now belong to `naome-chain`;
+removing the old executable path remains integration work.
 
 | Surface | Previous encoding | State integration encoding / owner |
 | --- | --- | --- |
 | Profile and genesis | `NAORMVP1`, `NAORGEN1`, research checker/profile identity | `NAOPROF1`, `NAOGENS1`, `state-v1`; ledger profile |
-| Complete application record | `NRRC` plus version 1 | `NSRC` plus version 1; ledger record pending chain ownership transfer |
+| Complete application record | `NRRC` plus version 1 | `NSRC` plus version 1; `naome-chain::StateRecord` |
 | Signed actions, originals, certified time reports | `NRUA`, `NROR`, `NRTM` | `NSUA`, `NSOR`, `NSTM`; ledger authentication/operations/time |
-| Consensus value, proposal, vote, finality | `NRCB1`, `NRCP1`, `NRCV1`, `NRCF1` | `NSCB1`, `NSCP1`, `NSCV1`, `NSCF1`; consensus |
+| Consensus value, proposal, vote, finality | `NRCB1`, `NRCP1`, `NRCV1`, `NRCF1` | `NSCB1`, `NSCP1`, `NSCV1`; consensus; `NSCF1` outer framing in chain, authenticated by consensus |
 | Lock events and checked snapshots | `NRCE1`, `NRCS1` | `NSCE1`, `NSCS1`; consensus |
 | History, signing journal, external anchor | `NAORHIS1`, `NAORSIG1`, `NAORANC1` | `NAOSHIS1`, `NAOSSIG1`, `NAOSANC1`; storage |
 | Authenticated exchange | `/naome/research-mvp-v1`, envelope version 1 | `/naome/state-v1`, envelope version 2; network/protocol |
@@ -84,7 +85,17 @@ provision an explicitly new directory and genesis for this format.
 
 Existing Rust `Research*` API names, CLI `state` dispatch, and V0 executables and
 tests are inventoried by the ownership table above and are not yet removed by
-this format milestone. Ledger and consensus golden vectors cover the new wire
+this integration milestone. Chain and consensus golden vectors cover the new wire
 identities and a full submit/vote/commit/reveal/settlement replay. Negative vectors
 cover old records, signed operations, time, proposals, votes, and finality;
 storage and transport tests reject old framing without rewriting history.
+
+`naome-ledger::ResearchState::execute` returns provisional `LedgerExecution`
+without constructing a record. Only `naome-chain::StateRecordExecution`
+constructs a complete record, enforces its total byte limit, replays claimed
+records against their exact parent, and compares every encoded effect and state
+commitment. Binding an identifier onto provisional ledger output grants no
+finality: consensus branches cannot be initialized from a non-genesis successor.
+Consensus authenticates `FinalizedStateRecord` evidence before mathematical
+replay, and storage installs only that verified result. The format vectors are
+unchanged by this ownership transfer.

@@ -20,7 +20,7 @@ pub mod state;
 pub mod time;
 
 pub use identity::*;
-pub use state::{ResearchRecord, ResearchState, ResearchTransition};
+pub use state::{LedgerExecution, ResearchState};
 
 /// A rejected research value. Rejection must leave selected state unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]

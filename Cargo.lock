@@ -1767,6 +1767,7 @@ dependencies = [
 name = "naome-chain"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "naome-checker",
  "naome-foundation",
  "naome-ledger",
@@ -1790,6 +1791,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.3.4",
  "naome-authoring",
+ "naome-chain",
  "naome-checker",
  "naome-consensus",
  "naome-ledger",

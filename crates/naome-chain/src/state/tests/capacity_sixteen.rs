@@ -1,5 +1,5 @@
 use super::*;
-use crate::profile::{Genesis, Limits, Profile, TimingKind};
+use naome_ledger::profile::{Genesis, Limits, Profile, TimingKind};
 
 #[test]
 fn minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement() {

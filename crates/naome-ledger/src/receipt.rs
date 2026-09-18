@@ -162,6 +162,3 @@ fn read_count(r: &mut Reader<'_>, maximum: u64) -> Result<usize, ResearchError> 
     }
     Ok(count as usize)
 }
-
-#[cfg(test)]
-mod tests;

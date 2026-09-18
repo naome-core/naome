@@ -1,15 +1,18 @@
+use super::test_support::{account, genesis, validator};
 use super::*;
-use crate::{
+use naome_checker::{ArtifactState, check_normal_form_with_state};
+use naome_foundation::{Formula, FreeVariable};
+use naome_ledger::receipt::*;
+use naome_ledger::{AccountId, CommitmentId, PackageHash, library::ProofPackage};
+use naome_ledger::{
     ResearchState,
     authentication::SignedOperation,
     operations::{OperationBody, SignedOriginal},
     question::CompiledQuestion,
     state::FamilyResult,
-    test_support::{account, genesis, validator},
     time::{SignedTimeReport, TimeCertificate},
 };
-use naome_checker::{ArtifactState, check_normal_form_with_state};
-use naome_foundation::{Formula, FreeVariable};
+use naome_proof::ProofId;
 use naome_proof::{ProofCertificate, ProofStep};
 
 fn author(index: u8) -> AccountId {
@@ -266,9 +269,13 @@ fn receipt_reads_actual_settlements_and_rejects_truncation_and_reward_mutations(
         &[(h.0, author(4), 100_000_000)]
     );
     assert_eq!(receipt.rewards.credits()[&author(5)], 600_000_000);
-    let mut reward_bytes = Writer::new();
-    receipt.rewards.encode_into(&mut reward_bytes);
-    let reward_len = reward_bytes.finish().len();
+    // Fixed canonical widths: genesis, credit count/entries, reserve, citation count/entries.
+    let reward_len = 32
+        + 4
+        + 48 * receipt.rewards.credits().len()
+        + 16
+        + 4
+        + 80 * receipt.rewards.citations().len();
     for offset in bytes.len() - reward_len..bytes.len() {
         let mut mutated = bytes.clone();
         mutated[offset] ^= 1;
@@ -281,7 +288,7 @@ fn receipt_reads_actual_settlements_and_rejects_truncation_and_reward_mutations(
 
 #[test]
 fn rendered_closed_targets_round_trip_without_changing_canonical_formula() {
-    let profile = crate::profile::Profile::short_test();
+    let profile = naome_ledger::profile::Profile::short_test();
     for source in [
         "forall(x,forall(y,implies(member(x,y),not_(equal(y,x)))))",
         "not_(forall(x,forall(y,equal(y,y))))",

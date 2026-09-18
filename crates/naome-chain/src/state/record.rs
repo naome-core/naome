@@ -1,12 +1,20 @@
-use super::*;
-use crate::{GenesisId, codec::Reader, time::TIME_CERTIFICATE_MAX_BYTES};
+use super::{
+    codec::{Reader, Writer},
+    hash,
+};
+use naome_ledger::{
+    GenesisId, RecordId, ResearchError, ResearchState, StateCommitment,
+    authentication::SignedOperation,
+    profile::Genesis,
+    time::{TIME_CERTIFICATE_MAX_BYTES, TimeCertificate},
+};
 
 const MAGIC: &[u8; 4] = b"NSRC";
 
 /// Bounded canonical application content. Finality signatures are a separate
 /// envelope; changing its sufficient signer subset never changes this identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResearchRecord {
+pub struct StateRecord {
     genesis: GenesisId,
     height: u64,
     parent: RecordId,
@@ -17,7 +25,7 @@ pub struct ResearchRecord {
     pub(super) operations: Vec<SignedOperation>,
     effects: Vec<u8>,
 }
-impl ResearchRecord {
+impl StateRecord {
     pub(super) fn new(
         parent: &ResearchState,
         next: &ResearchState,
@@ -26,17 +34,17 @@ impl ResearchRecord {
         effects: Vec<u8>,
     ) -> Result<Self, ResearchError> {
         let record = Self {
-            genesis: parent.genesis.id(),
-            height: next.height,
-            parent: parent.head,
+            genesis: parent.genesis().id(),
+            height: next.height(),
+            parent: parent.head(),
             previous: parent.commitment(),
             next: next.commitment(),
-            time: next.time,
+            time: next.time(),
             time_certificate,
             operations,
             effects,
         };
-        if record.encode()?.len() as u64 > parent.genesis.profile().limits().record_bytes {
+        if record.encode()?.len() as u64 > parent.genesis().profile().limits().record_bytes {
             return Err(ResearchError::Limit("complete research record"));
         }
         Ok(record)

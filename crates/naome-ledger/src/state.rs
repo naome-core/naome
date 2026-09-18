@@ -21,9 +21,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 mod encoding;
-mod record;
 mod transition;
-pub use record::ResearchRecord;
 
 /// An attempt phase advances only through a validated finalized record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,57 +302,53 @@ impl ResearchState {
         self.write_state(&mut digest);
         StateCommitment::from_bytes(digest.finish_hash())
     }
-    /// Executes a proposed next record on temporary state. Nothing is selected.
-    pub fn prepare_record(
+    /// Materializes the canonical application state for independent inspection.
+    /// Ordinary commitment calculation streams these bytes without allocating them.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut writer = Writer::new();
+        self.write_state(&mut writer);
+        writer.finish()
+    }
+
+    /// Executes operations provisionally against this exact parent. This does
+    /// not construct a chain record, select history, or grant finality.
+    pub fn execute(
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
-    ) -> Result<ResearchTransition, ResearchError> {
+    ) -> Result<LedgerExecution, ResearchError> {
         self.prepare(time, operations)
-    }
-    /// Re-executes against this exact parent, comparing all claimed effects and
-    /// the complete successor. Raw decoders never supply this verified result.
-    pub fn validate_record(
-        &self,
-        record: &ResearchRecord,
-    ) -> Result<ResearchTransition, ResearchError> {
-        if record.parent() != self.head
-            || record.height() != self.height.checked_add(1).ok_or(ResearchError::Overflow)?
-            || record.previous_state() != self.commitment()
-        {
-            return Err(ResearchError::Invalid("research record parent"));
-        }
-        let transition =
-            self.prepare(record.time_certificate.clone(), record.operations.clone())?;
-        if transition.record.encode()? != record.encode()? {
-            return Err(ResearchError::Invalid(
-                "research record effects or successor",
-            ));
-        }
-        Ok(transition)
     }
 }
 
-/// A mathematically and deterministically valid application successor. It still
-/// needs consensus evidence and durable installation before external publication.
-pub struct ResearchTransition {
-    record: ResearchRecord,
+/// Deterministically checked ledger effects awaiting a canonical chain record.
+/// The provisional successor retains its parent's record identity until bound
+/// by the chain layer. Consensus must still verify and finalize that record.
+pub struct LedgerExecution {
     next: ResearchState,
+    time: TimeCertificate,
+    operations: Vec<SignedOperation>,
+    effects: Vec<u8>,
 }
-impl ResearchTransition {
-    pub fn record(&self) -> &ResearchRecord {
-        &self.record
-    }
+impl LedgerExecution {
     pub fn state(&self) -> &ResearchState {
         &self.next
     }
-    pub fn into_state(self) -> ResearchState {
+    pub fn time_certificate(&self) -> &TimeCertificate {
+        &self.time
+    }
+    pub fn operations(&self) -> &[SignedOperation] {
+        &self.operations
+    }
+    pub fn effects(&self) -> &[u8] {
+        &self.effects
+    }
+
+    /// Binds an externally constructed chain identity to a provisional result.
+    /// This supplies no proof that the identifier is a valid record and grants
+    /// no selected-history authority; consensus must replay the chain record.
+    pub fn bind_record(mut self, record: RecordId) -> ResearchState {
+        self.next.head = record;
         self.next
     }
-    pub fn into_parts(self) -> (ResearchRecord, ResearchState) {
-        (self.record, self.next)
-    }
 }
-
-#[cfg(test)]
-mod tests;

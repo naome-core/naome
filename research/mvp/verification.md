@@ -68,10 +68,10 @@ permissionless-network security.
 |---|---|
 | Profile | [Profile/genesis tests](../../crates/naome-ledger/src/profile/tests.rs) |
 | Questions | [Question compilation tests](../../crates/naome-ledger/src/question/tests.rs) |
-| State | [Research state transitions](../../crates/naome-ledger/src/state/tests.rs), [wire/replay vectors](../../crates/naome-ledger/src/state/tests/golden.rs), [default queue boundary](../../crates/naome-ledger/src/state/tests/queue_boundary.rs), [all-sixteen-author reservation](../../crates/naome-ledger/src/state/tests/capacity_sixteen.rs) |
+| State | [Research state transitions](../../crates/naome-chain/src/state/tests.rs), [wire/replay vectors](../../crates/naome-chain/src/state/tests/golden.rs), [default queue boundary](../../crates/naome-chain/src/state/tests/queue_boundary.rs), [all-sixteen-author reservation](../../crates/naome-chain/src/state/tests/capacity_sixteen.rs) |
 | Library | [Mathematical normalization/reuse tests](../../crates/naome-ledger/src/library/tests.rs), [workload qualification](../../crates/naome-ledger/src/library/tests/qualification.rs), [older-depth boundary](../../crates/naome-ledger/src/library/tests/depth_boundary.rs) |
 | Accounting | [Exact monetary distribution](../../crates/naome-ledger/src/accounting/tests.rs) |
-| Receipts | [Settlement inspection and canonical receipt tests](../../crates/naome-ledger/src/receipt/tests.rs) |
+| Receipts | [Settlement inspection and canonical receipt tests](../../crates/naome-chain/src/state/receipt_tests.rs) |
 | Authentication/time | [Action authentication](../../crates/naome-ledger/src/authentication/tests.rs), [signed time](../../crates/naome-ledger/src/time/tests.rs) |
 | Consensus/node | [Consensus kernel](../../crates/naome-consensus/src/state/tests.rs), [node recovery](../../crates/naome-node/src/state/tests.rs) |
 | Storage | [Research history/signer/settlement recovery](../../crates/naome-storage/src/state/tests.rs), [journal I/O faults](../../crates/naome-storage/src/state/log_tests.rs) |

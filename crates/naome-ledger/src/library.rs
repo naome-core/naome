@@ -284,7 +284,9 @@ impl ProofLibrary {
 
     /// Shares one record budget across every original and normalized package,
     /// charging before each checker call rather than after a whole reveal.
-    pub(crate) fn normalize_with_work(
+    /// Checks and normalizes against this immutable library while charging a
+    /// caller-owned cumulative record budget. This grants no publication authority.
+    pub fn normalize_with_work(
         &self,
         package: &ProofPackage,
         question: &CompiledQuestion,

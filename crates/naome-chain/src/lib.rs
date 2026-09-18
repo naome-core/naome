@@ -1,19 +1,18 @@
-//! Content-addressed in-memory state for the NAOME artifact DAG.
+//! Canonical complete state records and exact-parent replay for NAOME.
 //!
-//! Each admitted node is exactly one canonical proof or conservative definition.
-//! Its [`ArtifactId`] is the node address and its checked external references are
-//! the outgoing dependency edges. Admission delegates all decoding,
-//! canonicality, semantic checking, and identity validation to [`LedgerState`]
-//! before retaining the resulting record.
-//! Each [`ArtifactBlock`] binds exactly one artifact identity to exact before-and-
-//! after [`ArtifactSetRoot`] values and one parent. [`ArtifactChainState`] places
-//! those single-artifact blocks in one canonical exact-parent execution history
-//! without claiming consensus inclusion or finality. Read-only validation runs
-//! the same checks without selection; later application revalidates one direct
-//! child against the then-current state.
+//! [`StateRecord`] binds authenticated operations, certified time, deterministic
+//! effects, and the complete ledger commitment. [`FinalizedStateRecord`] owns
+//! the wire envelope binding that proposal to consensus evidence. Consensus
+//! authenticates and verifies the envelope; storage owns durable selection.
+//! Decoding or provisional execution alone never grants finality.
 //!
-//! This crate defines no consensus selection, fork choice, reorganization,
-//! finality, persistence, economy, or peer-to-peer synchronization.
+//! The artifact DAG and legacy single-artifact block APIs below remain during
+//! integration. Their callers must be removed before the complete state history
+//! becomes the sole executable authority. They are not an additional component
+//! of the complete state record.
+
+pub mod state;
+pub use state::{FinalizedStateRecord, StateRecord, StateRecordExecution, StateTransition};
 
 mod artifact_set;
 mod block;

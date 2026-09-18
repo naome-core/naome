@@ -117,5 +117,22 @@
     "crates/naome-storage/src/state/log.rs": "9a25366c3cd5db3dc0b037efb28939cd57560e794a677df324a0e2917345b96d",
     "crates/naome-storage/src/state/signer.rs": "d3af3e9d4a1cb20ad762ff3ef892d7466b3fcc37be7abd43b9fb526aef076f55",
     "crates/naome-storage/src/state/tests.rs": "7ef4b6bf930084e74b8032b446280e470f6e5c943e3ea724b4a0e2d4ef415f2f"
+  },
+  "ci": {
+    "run_id": 35342146305,
+    "head": "f7a7001ae3fdc0c3ef4dae6377c6376f7704e9d7",
+    "url": "https://github.com/naome-core/naome/actions/runs/35342146305",
+    "result": "failure",
+    "passed": [
+      "Linux test",
+      "Linux release",
+      "macOS release",
+      "Windows test",
+      "Windows release",
+      "Rust quality",
+      "Devnet qualification"
+    ],
+    "failed": "macOS test: partition::proof_catch_up::actual_partitioned_signers_catch_up_live_proof_and_form_next_quorum rejected transient sync_runtime_busy; harness only retried sync_request_start",
+    "follow_up": "Next ownership milestone includes a bounded, actor/request-correlated harness retry for this production-classified retryable refusal. All proof/finality/replay assertions and deadline remain unchanged; independent static review clear. Fresh CI still required."
   }
 }

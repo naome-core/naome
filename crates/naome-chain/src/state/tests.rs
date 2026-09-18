@@ -1,11 +1,16 @@
+use super::test_support::{account, genesis, validator};
 use super::*;
-use crate::{
-    library::ProofPackage,
-    test_support::{account, genesis, validator},
-    time::SignedTimeReport,
-};
 use naome_checker::{ArtifactState, check_normal_form_with_state};
 use naome_foundation::FreeVariable;
+use naome_ledger::library::{ProofOutcome, VerificationWork};
+use naome_ledger::{
+    AccountId, CommitmentId, OperationId, QuestionId, SolutionRoundId,
+    operations::{OperationBody, SignedOriginal},
+    profile::Genesis,
+    question::CompiledQuestion,
+    state::{FamilyResult, Phase, QuestionEntry, QuestionStatus},
+};
+use naome_ledger::{library::ProofPackage, time::SignedTimeReport};
 use naome_proof::{ProofCertificate, ProofStep};
 
 fn author(index: u8) -> AccountId {
@@ -32,12 +37,12 @@ fn time(state: &ResearchState, utc: u64) -> TimeCertificate {
     )
     .unwrap()
 }
-fn apply(state: &mut ResearchState, utc: u64, ops: Vec<SignedOperation>) -> ResearchRecord {
+fn apply(state: &mut ResearchState, utc: u64, ops: Vec<SignedOperation>) -> StateRecord {
     let before = state.commitment();
     let transition = state.prepare_record(time(state, utc), ops).unwrap();
     assert_eq!(state.commitment(), before);
     let record = transition.record().clone();
-    let decoded = ResearchRecord::decode(&record.encode().unwrap(), state.genesis()).unwrap();
+    let decoded = StateRecord::decode(&record.encode().unwrap(), state.genesis()).unwrap();
     let replay = state.validate_record(&decoded).unwrap().into_state();
     assert_eq!(replay.commitment(), transition.state().commitment());
     assert_eq!(replay.head(), record.id());
@@ -551,26 +556,26 @@ fn record_roundtrip_preserves_parent_time_clamp_and_rejects_claimed_effect_tampe
     let record = transition.record();
     assert_eq!(record.time(), 100);
     assert_eq!(
-        &ResearchRecord::decode(&record.encode().unwrap(), state.genesis()).unwrap(),
+        &StateRecord::decode(&record.encode().unwrap(), state.genesis()).unwrap(),
         record
     );
     let mut changed = record.encode().unwrap();
     *changed.last_mut().unwrap() ^= 1;
     assert!(
         state
-            .validate_record(&ResearchRecord::decode(&changed, state.genesis()).unwrap())
+            .validate_record(&StateRecord::decode(&changed, state.genesis()).unwrap())
             .is_err()
     );
     let mut changed = record.encode().unwrap();
     changed[110] ^= 1;
     assert!(
         state
-            .validate_record(&ResearchRecord::decode(&changed, state.genesis()).unwrap())
+            .validate_record(&StateRecord::decode(&changed, state.genesis()).unwrap())
             .is_err()
     );
     let mut trailing = record.encode().unwrap();
     trailing.push(0);
-    assert!(ResearchRecord::decode(&trailing, state.genesis()).is_err());
+    assert!(StateRecord::decode(&trailing, state.genesis()).is_err());
 }
 
 #[test]
@@ -595,11 +600,10 @@ fn streaming_state_commitment_matches_materialized_canonical_bytes() {
         finish(&mut state);
         state
     }] {
-        let mut writer = Writer::new();
-        snapshot.write_state(&mut writer);
+        let bytes = snapshot.canonical_bytes();
         assert_eq!(
             snapshot.commitment().as_bytes(),
-            &hash(b"naome:state:state:v1\0", &[&writer.finish()])
+            &hash(b"naome:state:state:v1\0", &[&bytes])
         );
     }
 }
@@ -754,7 +758,7 @@ fn complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuan
 
 #[test]
 fn multiple_reveals_share_budget_before_any_additional_checker_call() {
-    use crate::profile::{Limits, Profile, TimingKind};
+    use naome_ledger::profile::{Limits, Profile, TimingKind};
     let profile = Profile::with_limits(
         TimingKind::ShortTest,
         Limits {
@@ -763,7 +767,7 @@ fn multiple_reveals_share_budget_before_any_additional_checker_call() {
         },
     )
     .unwrap();
-    let mut state = ResearchState::new(crate::test_support::genesis_with_profile(profile));
+    let mut state = ResearchState::new(super::test_support::genesis_with_profile(profile));
     submit(&mut state, "forall(x,equal(x,x))");
     let round = open_and_approve(&mut state);
     let first = commit_original(&mut state, 4, round, [4; 32]);
@@ -831,7 +835,7 @@ fn multiple_reveals_share_budget_before_any_additional_checker_call() {
 
 #[test]
 fn minimum_65_record_run_terminates_before_unfunded_opening_and_preserves_reads() {
-    use crate::profile::{Limits, Profile, TimingKind};
+    use naome_ledger::profile::{Limits, Profile, TimingKind};
     let profile = Profile::with_limits(
         TimingKind::ShortTest,
         Limits {
@@ -840,7 +844,7 @@ fn minimum_65_record_run_terminates_before_unfunded_opening_and_preserves_reads(
         },
     )
     .unwrap();
-    let mut state = ResearchState::new(crate::test_support::genesis_with_profile(profile));
+    let mut state = ResearchState::new(super::test_support::genesis_with_profile(profile));
     let submitted = submit(&mut state, "forall(x,equal(x,x))");
     assert_eq!(state.remaining_records(), 64);
     assert_eq!(state.reserved_records(), 0);
@@ -896,7 +900,7 @@ fn minimum_65_record_run_terminates_before_unfunded_opening_and_preserves_reads(
 
 #[test]
 fn minimum_66_record_run_protects_active_slots_and_settles_timely_reveal_after_pause() {
-    use crate::profile::{Limits, Profile, TimingKind};
+    use naome_ledger::profile::{Limits, Profile, TimingKind};
     let profile = Profile::with_limits(
         TimingKind::ShortTest,
         Limits {
@@ -905,7 +909,7 @@ fn minimum_66_record_run_protects_active_slots_and_settles_timely_reveal_after_p
         },
     )
     .unwrap();
-    let mut state = ResearchState::new(crate::test_support::genesis_with_profile(profile));
+    let mut state = ResearchState::new(super::test_support::genesis_with_profile(profile));
     let submitted = submit(&mut state, "forall(x,equal(x,x))");
     let now = state.time();
     apply(&mut state, now, vec![]);
@@ -1014,7 +1018,7 @@ fn minimum_66_record_run_protects_active_slots_and_settles_timely_reveal_after_p
 
 #[test]
 fn actual_queue_limit_and_exact_expiry_preserve_state_on_rejection() {
-    use crate::profile::{Limits, Profile, TimingKind};
+    use naome_ledger::profile::{Limits, Profile, TimingKind};
     let profile = Profile::with_limits(
         TimingKind::ShortTest,
         Limits {
@@ -1023,7 +1027,7 @@ fn actual_queue_limit_and_exact_expiry_preserve_state_on_rejection() {
         },
     )
     .unwrap();
-    let mut state = ResearchState::new(crate::test_support::genesis_with_profile(profile));
+    let mut state = ResearchState::new(super::test_support::genesis_with_profile(profile));
     let active = submit(&mut state, "forall(x,equal(x,x))");
     let queued = submit(&mut state, "forall(x,member(x,x))");
     assert_eq!(

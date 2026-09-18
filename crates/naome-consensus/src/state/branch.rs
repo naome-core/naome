@@ -8,14 +8,13 @@ use crate::{
     ActiveAgreementEntry, AgreementWeight, ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget,
     ProposalSigningRoot, proposer_selection::FixedProposerStateV0,
 };
-use naome_ledger::{
-    GenesisId, ProfileId, RecordId, ResearchRecord, ResearchState, StateCommitment,
-};
+use naome_chain::StateRecordExecution;
+use naome_chain::{FinalizedStateRecord, StateRecord};
+use naome_ledger::{GenesisId, ProfileId, RecordId, ResearchState, StateCommitment};
 
 const VALUE_MAGIC: &[u8; 5] = b"NSCB1";
 const VALUE_BYTES: usize = 5 + 8 * 32 + 8;
 const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP1";
-const FINALITY_MAGIC: &[u8; 5] = b"NSCF1";
 
 /// Evidence-free header binding a complete research record and proposer state.
 /// Neither observing nor decoding this header grants application authority.
@@ -189,7 +188,7 @@ impl ResearchBranch {
             .map_err(|_| Error::Invalid("proposer successor"))
     }
     fn validate_record_bytes(&self, record_bytes: &[u8]) -> Result<(ResearchValue, ResearchState)> {
-        let record = ResearchRecord::decode(record_bytes, self.state.genesis())?;
+        let record = StateRecord::decode(record_bytes, self.state.genesis())?;
         if record.encode()?.as_slice() != record_bytes {
             return Err(Error::Invalid("noncanonical research record"));
         }
@@ -343,14 +342,9 @@ impl ResearchBranch {
             .profile()
             .limits()
             .transport_frame_bytes as usize;
-        let mut r = Reader::new(input, maximum)?;
-        if r.fixed::<5>()? != *FINALITY_MAGIC {
-            return Err(Error::Invalid("research finality version"));
-        }
-        let proposal = self.verify_proposal(r.bytes(maximum)?, maximum_round)?;
-        let quorum =
-            ResearchQuorum::decode(r.bytes(RESEARCH_QUORUM_MAX_BYTES)?, self.state.genesis())?;
-        r.finish()?;
+        let record = FinalizedStateRecord::decode(input, maximum, RESEARCH_QUORUM_MAX_BYTES)?;
+        let proposal = self.verify_proposal(record.proposal(), maximum_round)?;
+        let quorum = ResearchQuorum::decode(record.quorum(), self.state.genesis())?;
         self.verify_finality(&proposal, &quorum, maximum_round)
     }
 }
@@ -508,13 +502,9 @@ impl ResearchFinality {
         maximum_round: u64,
     ) -> Result<ResearchValue> {
         let maximum = genesis.profile().limits().transport_frame_bytes as usize;
-        let mut r = Reader::new(input, maximum)?;
-        if r.fixed::<5>()? != *FINALITY_MAGIC {
-            return Err(Error::Invalid("research finality version"));
-        }
-        let proposal = r.bytes(maximum)?;
-        let finality_quorum = r.bytes(RESEARCH_QUORUM_MAX_BYTES)?;
-        r.finish()?;
+        let record = FinalizedStateRecord::decode(input, maximum, RESEARCH_QUORUM_MAX_BYTES)?;
+        let proposal = record.proposal();
+        let finality_quorum = record.quorum();
         let mut p = Reader::new(proposal, maximum)?;
         if p.fixed::<5>()? != *PROPOSAL_MAGIC {
             return Err(Error::Invalid("research proposal version"));
@@ -569,7 +559,7 @@ impl ResearchFinality {
         )?;
         // Only quorum-authenticated content reaches even the bounded record
         // decoder. This performs no proof checking or historical reconstruction.
-        let record = ResearchRecord::decode(record_bytes, genesis)?;
+        let record = StateRecord::decode(record_bytes, genesis)?;
         if record.encode()?.as_slice() != record_bytes
             || record.id() != value.record
             || record.height() != value.height
@@ -585,13 +575,8 @@ impl ResearchFinality {
     /// Untrusted routing hint only. The receiver must still verify the complete
     /// proof against the selected parent at this height before using any field.
     pub fn claimed_height(input: &[u8], maximum_bytes: usize) -> Result<u64> {
-        let mut r = Reader::new(input, maximum_bytes)?;
-        if r.fixed::<5>()? != *FINALITY_MAGIC {
-            return Err(Error::Invalid("research finality version"));
-        }
-        let proposal = r.bytes(maximum_bytes)?;
-        let _ = r.bytes(RESEARCH_QUORUM_MAX_BYTES)?;
-        r.finish()?;
+        let record = FinalizedStateRecord::decode(input, maximum_bytes, RESEARCH_QUORUM_MAX_BYTES)?;
+        let proposal = record.proposal();
         let mut p = Reader::new(proposal, maximum_bytes)?;
         if p.fixed::<5>()? != *PROPOSAL_MAGIC {
             return Err(Error::Invalid("research proposal version"));
@@ -612,9 +597,9 @@ impl ResearchFinality {
         self.child
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
-        let mut out = FINALITY_MAGIC.to_vec();
-        bytes(&mut out, &self.proposal.encode()?)?;
-        bytes(&mut out, &self.quorum.encode())?;
-        Ok(out)
+        Ok(FinalizedStateRecord::encode_evidence(
+            &self.proposal.encode()?,
+            &self.quorum.encode(),
+        )?)
     }
 }

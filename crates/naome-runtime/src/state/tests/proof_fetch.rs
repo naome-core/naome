@@ -1,5 +1,6 @@
 use super::*;
 use ed25519_dalek::Signer;
+use naome_chain::StateRecordExecution;
 use naome_consensus::state::{
     ResearchLockEvent, ResearchLockState, ResearchPublication, ResearchQuorum,
 };

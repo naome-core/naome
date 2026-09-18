@@ -13,6 +13,7 @@ path = "src/main.rs"
 doc = false
 
 [target.'cfg(unix)'.dependencies]
+naome-chain = { path = "../naome-chain" }
 ed25519-dalek.workspace = true
 getrandom = "0.3"
 naome-authoring = { path = "../naome-authoring" }

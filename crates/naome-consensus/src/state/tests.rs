@@ -2,6 +2,7 @@ use super::evidence::VoteBody;
 use super::*;
 use crate::{ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget, ProposalSigningRoot};
 use ed25519_dalek::{Signer, SigningKey};
+use naome_chain::StateRecordExecution;
 use naome_ledger::{
     AccountId, ResearchState,
     operations::OperationBody,
@@ -779,3 +780,23 @@ fn finality_authentication_rejects_missing_quorum_before_record_decoding() {
 }
 
 mod golden;
+
+#[test]
+fn provisional_ledger_execution_cannot_initialize_a_finalized_branch() {
+    let branch = branch();
+    let bytes = record(&branch, "provisional successor is not finality");
+    let record = naome_chain::StateRecord::decode(&bytes, branch.state().genesis()).unwrap();
+    let execution = branch
+        .state()
+        .execute(
+            record.time_certificate().clone(),
+            record.operations().to_vec(),
+        )
+        .unwrap();
+    // Even an arbitrary externally bound identity cannot manufacture a selected
+    // branch. A successor must enter through verified consensus and chain replay.
+    let provisional = execution.bind_record(naome_ledger::RecordId::from_bytes([0; 32]));
+    assert!(ResearchBranch::from_genesis(provisional).is_err());
+    assert_eq!(branch.state().height(), 0);
+    assert_eq!(branch.state().library().len(), 0);
+}
