@@ -170,7 +170,7 @@ fn response_shape(body: &ResearchResponseBody) -> Result<(u8, usize), ResearchWi
 
 fn header(context: ResearchContext, response: bool, tag: u8, body_length: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(RESEARCH_FRAME_HEADER_BYTES + body_length);
-    out.extend_from_slice(&1u16.to_be_bytes());
+    out.extend_from_slice(&2u16.to_be_bytes());
     out.push(u8::from(response));
     out.extend_from_slice(&context.genesis);
     out.extend_from_slice(&context.profile);
@@ -189,7 +189,7 @@ pub fn research_frame_length(
     if header.len() != RESEARCH_FRAME_HEADER_BYTES {
         return Err(ResearchWireError::Length);
     }
-    if header[..2] != 1u16.to_be_bytes() {
+    if header[..2] != 2u16.to_be_bytes() {
         return Err(ResearchWireError::Version);
     }
     if header[2] != u8::from(response) {

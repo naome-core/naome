@@ -6,7 +6,7 @@ use crate::{
 use ed25519_dalek::{Signature, VerifyingKey};
 use naome_ledger::{GenesisId, ProfileId, profile::Genesis};
 
-const MAGIC: &[u8; 5] = b"NRCV1";
+const MAGIC: &[u8; 5] = b"NSCV1";
 /// Fixed width of one versioned research vote, including key and signature.
 pub const RESEARCH_VOTE_BYTES: usize = 5 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64;
 /// A research quorum carries at most four complete signed votes.
@@ -46,8 +46,8 @@ impl VoteBody {
     }
     pub(super) fn signing_bytes(self, signer: ConsensusKey) -> Vec<u8> {
         let domain: &[u8] = match self.role {
-            ConsensusVoteRole::Prevote => b"naome:research:prevote:v1\0",
-            ConsensusVoteRole::Precommit => b"naome:research:precommit:v1\0",
+            ConsensusVoteRole::Prevote => b"naome:state:prevote:v1\0",
+            ConsensusVoteRole::Precommit => b"naome:state:precommit:v1\0",
         };
         let mut bytes = domain.to_vec();
         bytes.extend(self.encode());

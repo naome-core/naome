@@ -76,7 +76,7 @@ fn header_rejects_wrong_context_direction_version_tag_and_excess_before_body() {
     let bytes = ResearchRequest::new(context(), ResearchRequestBody::Handshake, MAX)
         .unwrap()
         .to_wire_bytes();
-    assert_eq!(&bytes[..3], &[0, 1, 0]);
+    assert_eq!(&bytes[..3], &[0, 2, 0]);
     assert_eq!(&bytes[3..35], &[1; 32]);
     assert_eq!(&bytes[35..67], &[2; 32]);
     assert_eq!(&bytes[67..], &[0, 0, 0, 0, 0]);
@@ -183,11 +183,11 @@ fn bounded_history_and_response_correlation() {
 }
 
 #[test]
-fn fixed_v1_proof_and_history_wire_vectors() {
+fn fixed_v2_proof_and_history_wire_vectors() {
     // Explicit byte layouts independent of the production writer: v1, request,
     // genesis/profile, Proof tag, 32-byte body length, concrete ProofId.
     let expected = [
-        &[0, 1, 0][..],
+        &[0, 2, 0][..],
         &[1; 32],
         &[2; 32],
         &[7, 0, 0, 0, 32],
@@ -210,7 +210,7 @@ fn fixed_v1_proof_and_history_wire_vectors() {
     // Response body includes its exact 32-byte request digest, followed by ID
     // and the opaque three-byte test certificate. Decoding grants no authority.
     let expected = [
-        &[0, 1, 1][..],
+        &[0, 2, 1][..],
         &[1; 32],
         &[2; 32],
         &[5, 0, 0, 0, 67],
@@ -235,7 +235,7 @@ fn fixed_v1_proof_and_history_wire_vectors() {
         response
     );
     let expected = [
-        &[0, 1, 1][..],
+        &[0, 2, 1][..],
         &[1; 32],
         &[2; 32],
         &[4, 0, 0, 0, 47],
@@ -260,4 +260,13 @@ fn fixed_v1_proof_and_history_wire_vectors() {
         ResearchResponse::from_wire_bytes(&expected, context(), MAX).unwrap(),
         response
     );
+}
+
+#[test]
+fn legacy_research_frame_version_is_rejected_before_body() {
+    let mut bytes = ResearchRequest::new(context(), ResearchRequestBody::Handshake, MAX)
+        .unwrap()
+        .to_wire_bytes();
+    bytes[..2].copy_from_slice(&1u16.to_be_bytes());
+    assert!(research_frame_length(&bytes, false, context(), MAX).is_err());
 }

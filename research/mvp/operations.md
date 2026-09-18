@@ -9,6 +9,12 @@ This qualification does not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
+The current integration format is `state-v1`. Existing research-v1 runs cannot
+be reopened or converted with this executable. Retain their directories and use
+the original executable for historical inspection. Start a new directory and
+genesis for state-v1; see the [format boundary](../../specs/ownership.md#state-format-integration-boundary).
+The linked lab results qualify the earlier MVP baseline, not this new format.
+
 ## Build and choose an immutable run
 
 Use the Rust toolchain selected by `rust-toolchain.toml`:

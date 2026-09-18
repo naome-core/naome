@@ -8,7 +8,7 @@ use super::{
     log::{self, FileLog, Limits, Position},
 };
 
-const MAGIC: &[u8; 8] = b"NAORHIS1";
+const MAGIC: &[u8; 8] = b"NAOSHIS1";
 const ANCHOR: &str = "research-finality.anchor";
 const FINALITY: u8 = 1;
 const CONFLICT: u8 = 2;

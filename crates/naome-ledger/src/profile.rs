@@ -15,7 +15,7 @@ use crate::identity::{AccountId, GenesisId, ProfileId, ValidatorId, hash};
 
 /// Supported checker and research normalization contract. Unknown namespaces
 /// require a distinct implementation and are rejected before a run starts.
-pub const RESEARCH_CHECKER_PROFILE: &str = "naome:zfc:checker:research-mvp-v1";
+pub const RESEARCH_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
 
 /// Reserved space around one maximum user payload for canonical record headers,
 /// four time reports, operation authentication, and finality signatures. The
@@ -39,8 +39,8 @@ pub const SIGNER_COMPLETION_BYTES: u64 = 1 + 8 + 64 + 32;
 /// Terminal signer stop plus its chained frame header/footer.
 pub const SIGNER_STOP_FRAME_BYTES: u64 = 1 + 8 + 32 + 36;
 
-const PROFILE_MAGIC: &[u8; 8] = b"NAORMVP1";
-const GENESIS_MAGIC: &[u8; 8] = b"NAORGEN1";
+const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF1";
+const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS1";
 const MAX_PROFILE_BYTES: usize = 4096;
 const MAX_GENESIS_BYTES: usize = 16384;
 
@@ -248,9 +248,9 @@ impl Profile {
     }
     pub fn name(&self) -> &'static str {
         match self.kind {
-            TimingKind::Lab => "research-mvp-v1-lab",
-            TimingKind::Research => "research-mvp-v1-research",
-            TimingKind::ShortTest => "research-mvp-v1-short-test",
+            TimingKind::Lab => "state-v1-lab",
+            TimingKind::Research => "state-v1-research",
+            TimingKind::ShortTest => "state-v1-short-test",
         }
     }
     fn validate(&self) -> Result<(), ResearchError> {
@@ -409,7 +409,7 @@ impl Profile {
         Ok(result)
     }
     pub fn id(&self) -> ProfileId {
-        ProfileId::from_bytes(hash(b"naome:research:profile:v1\0", &[&self.encode()]))
+        ProfileId::from_bytes(hash(b"naome:state:profile:v1\0", &[&self.encode()]))
     }
 }
 
@@ -681,7 +681,7 @@ impl Genesis {
         Ok(result)
     }
     pub fn id(&self) -> GenesisId {
-        GenesisId::from_bytes(hash(b"naome:research:genesis:v1\0", &[&self.encode()]))
+        GenesisId::from_bytes(hash(b"naome:state:genesis:v1\0", &[&self.encode()]))
     }
 }
 

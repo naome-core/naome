@@ -226,7 +226,7 @@ impl ProofLibrary {
         let mut count = Writer::counting();
         self.encode_into(&mut count)
             .expect("verified library fields fit canonical encoding");
-        let mut digest = Writer::hashing(b"naome:research:proof-library:v1\0", count.len());
+        let mut digest = Writer::hashing(b"naome:state:proof-library:v1\0", count.len());
         self.encode_into(&mut digest)
             .expect("verified library fields fit canonical encoding");
         let root = digest.finish_hash();

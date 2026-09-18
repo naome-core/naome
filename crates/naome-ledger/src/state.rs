@@ -189,7 +189,7 @@ impl ResearchState {
     /// Constructs the empty adopted test genesis. All balances and proof sets are zero.
     pub fn new(genesis: Genesis) -> Self {
         let head = RecordId::from_bytes(hash(
-            b"naome:research:genesis-record:v1\0",
+            b"naome:state:genesis-record:v1\0",
             &[genesis.id().as_bytes()],
         ));
         let time = genesis.start_utc();
@@ -300,7 +300,7 @@ impl ResearchState {
     pub fn commitment(&self) -> StateCommitment {
         let mut count = Writer::counting();
         self.write_state(&mut count);
-        let mut digest = Writer::hashing(b"naome:research:state:v1\0", count.len());
+        let mut digest = Writer::hashing(b"naome:state:state:v1\0", count.len());
         self.write_state(&mut digest);
         StateCommitment::from_bytes(digest.finish_hash())
     }

@@ -56,7 +56,7 @@ pub enum ResearchLockEvent {
 }
 impl ResearchLockEvent {
     pub fn encode(&self) -> Result<Vec<u8>> {
-        let mut out = b"NRCE1".to_vec();
+        let mut out = b"NSCE1".to_vec();
         match self {
             Self::Author { record } => {
                 out.push(0);
@@ -94,7 +94,7 @@ impl ResearchLockEvent {
     pub fn decode(input: &[u8], genesis: &Genesis) -> Result<Self> {
         let maximum = genesis.profile().limits().transport_frame_bytes as usize;
         let mut r = Reader::new(input, maximum + RESEARCH_QUORUM_MAX_BYTES + 32)?;
-        if r.fixed::<5>()? != *b"NRCE1" {
+        if r.fixed::<5>()? != *b"NSCE1" {
             return Err(Error::Invalid("research event version"));
         }
         let event = match r.u8()? {
@@ -638,7 +638,7 @@ impl ResearchLockState {
     /// Raw snapshot bytes alone intentionally have no restoration constructor.
     pub fn snapshot(&self) -> Result<Vec<u8>> {
         self.check_invariants()?;
-        let mut out = b"NRCS1".to_vec();
+        let mut out = b"NSCS1".to_vec();
         out.extend_from_slice(&self.parent);
         out.extend_from_slice(self.signer.as_bytes());
         out.extend_from_slice(&self.height.to_be_bytes());
@@ -665,7 +665,7 @@ impl ResearchLockState {
                 bytes(&mut out, &valid.quorum.encode())?;
                 out.extend_from_slice(&(valid.record.len() as u64).to_be_bytes());
                 out.extend_from_slice(&digest(
-                    b"naome:research:retained-record:v1\0",
+                    b"naome:state:retained-record:v1\0",
                     &[&valid.record],
                 ));
             }
@@ -677,7 +677,7 @@ impl ResearchLockState {
                 out.extend(intent.value.encode());
                 out.extend_from_slice(&intent.round.to_be_bytes());
                 out.extend_from_slice(&digest(
-                    b"naome:research:authored-intent:v1\0",
+                    b"naome:state:authored-intent:v1\0",
                     &[&intent.encode()?],
                 ));
             }

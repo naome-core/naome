@@ -599,7 +599,7 @@ fn streaming_state_commitment_matches_materialized_canonical_bytes() {
         snapshot.write_state(&mut writer);
         assert_eq!(
             snapshot.commitment().as_bytes(),
-            &hash(b"naome:research:state:v1\0", &[&writer.finish()])
+            &hash(b"naome:state:state:v1\0", &[&writer.finish()])
         );
     }
 }

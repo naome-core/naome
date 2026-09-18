@@ -1,0 +1,121 @@
+{
+  "scope": "Neutral state-v1 encoding prerequisite; canonical chain ownership and V0 authority removal remain incomplete",
+  "source_base": "5b5926659d08a3972d63ae6501c21cbe429c54e1",
+  "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+  "cargo_incremental": "0",
+  "commands": {
+    "test_core": "cargo test -p naome-ledger -p naome-consensus -p naome-protocol -p naome-storage --profile test --all-targets --all-features --locked --no-fail-fast",
+    "test_integration": "cargo test -p naome-protocol -p naome-cli -p naome-network -p naome-node -p naome-runtime --profile test --all-targets --all-features --locked --no-fail-fast",
+    "release_core": "cargo test -p naome-ledger -p naome-consensus -p naome-protocol -p naome-storage --profile release --all-targets --all-features --locked --no-fail-fast",
+    "quality": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+  },
+  "compile_barriers": "Each package/profile command was preceded by matching --no-run; reviewer corrections rebuilt and reran consensus/storage legacy_ tests.",
+  "results": {
+    "test_core": {
+      "sha256": "0a158763f3e74d2559a5cfcec0eebe5dcdf44c6c6adcbdf8edb848fb8b8cd921",
+      "results": [
+        "test result: ok. 172 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s",
+        "test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.96s",
+        "test result: FAILED. 16 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 275 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.77s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s"
+      ]
+    },
+    "test_integration": {
+      "sha256": "bd1c4de699d1dbecaf4c3097b41fd34f24b6fdc2d5d23736dc343f8d7447e3f7",
+      "results": [
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.48s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 92.44s",
+        "test result: ok. 281 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.07s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s",
+        "test result: ok. 319 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 200.56s",
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s",
+        "test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 41.43s"
+      ]
+    },
+    "review_fixes": {
+      "sha256": "82356d7b2d368dba69e2bb0ffef2f10dbede867f6eb1bc685f40be4c7e3bfa46",
+      "results": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 168 filtered out; finished in 0.04s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 273 filtered out; finished in 0.22s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s"
+      ]
+    },
+    "release_core": {
+      "sha256": "c2b8d99e2766a4d38fa90634fbab19470cde7f6255d11c0b713f6d6f92c54378",
+      "results": [
+        "test result: ok. 172 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+        "test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.28s",
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 275 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.93s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s"
+      ]
+    },
+    "workspace_clippy": {
+      "sha256": "4619153dfbf8d0ca4a55cbcfa02e35bf12b15e5b165da2f56d96055edd500d24",
+      "results": []
+    }
+  },
+  "initial_failure": "Initial test_core protocol golden still contained old response envelope version. Corrected both response vectors and verified all 17 protocol tests in test_integration and release_core. No tests removed or limits relaxed.",
+  "process_evidence": {
+    "scenario": "four_process_research_recovery_partition_and_independent_replay",
+    "profile": "test",
+    "seconds": 92.44,
+    "result": "passed",
+    "qualification": "accelerated four-local-process regression; not real-window lab qualification"
+  },
+  "review": {
+    "mode": "independent read-only static review",
+    "findings": "Missing Unix guard on new signer test and mismatched-state identity assertion corrected; rereview clear.",
+    "limitations": "No independent runtime execution; excludes subsequent authority migration."
+  },
+  "remaining": [
+    "Canonical naome-chain record ownership",
+    "Removal of parallel V0 authority and integrated main executable routing",
+    "Final complete workspace test/release and documentation gates",
+    "Milestone and final platform CI",
+    "Fresh actual-window four-validator lab"
+  ],
+  "changed_source_sha256": {
+    "crates/naome-cli/src/app/actions.rs": "5342c8fe03d50da1821a729923302b0e329f937d2965576c5c7bbc93ba9b742f",
+    "crates/naome-cli/src/app/actions/tests.rs": "692d7fb60c242c3dfaa4a06d7009a171fe36e23b1f9e206e23098f8ff72876a8",
+    "crates/naome-cli/src/app/files.rs": "3e422e07e56b86507fc3bba4c53d4d5a808eba3efbdce512e72abed51b9f979f",
+    "crates/naome-cli/src/app/files/tests.rs": "bad71a9d4fca1cc727d1fb285fd9b14849dcd7aa0efa0618462a9b5e8dd6e7b7",
+    "crates/naome-consensus/src/state/branch.rs": "d93834058763f045ee959f9cac812f5d12f0e10856f9ea247aedb0515e4f7596",
+    "crates/naome-consensus/src/state/evidence.rs": "539bf66f2d8b6eac0975b12575abc236b6d63f683e00f642a807ba06690a95a8",
+    "crates/naome-consensus/src/state/lock.rs": "b58ee1d0be954783bf53eb975354ef5f5412bdaa1d19edbae1c40ffef4164fa3",
+    "crates/naome-consensus/src/state/tests.rs": "a3a8d443a9dd697e4a0bdbd24dbbb4e80cd2d42b2643ceeedf7d559278c3faa8",
+    "crates/naome-consensus/src/state/tests/golden-v1.txt": "89963712081cdd20e9329a92a8f782ffffc40c26247ee8a1c9340ebc80fa9083",
+    "crates/naome-consensus/src/state/tests/golden.rs": "c68d8231c37876fb2ab6136989b56c2a2173321473a83a8d3ff8f8cc98db028c",
+    "crates/naome-consensus/src/state/tests/legacy-research-v1.txt": "665c72f672e1f941f51b6fbfcabbbe284aaf8615a575b97f5c040f078a89e5b4",
+    "crates/naome-ledger/src/authentication.rs": "10824184f27e26f334b543439b80ddd4369c90e170f77c33379e63f1da2d1bae",
+    "crates/naome-ledger/src/identity.rs": "9a5e52b17236543497c1e3517beb1896eba56d41a77d228f96b81e4933baa88b",
+    "crates/naome-ledger/src/library.rs": "c32c7730093819b6eef0b9b42616ac35aa84af119aa4e8734760b21087e824ab",
+    "crates/naome-ledger/src/library/package.rs": "4a808a384e27d2590d0b41cc37358b29f83e440b73b6f83a669211f34cd902b0",
+    "crates/naome-ledger/src/library/tests.rs": "72ba019e858d4561293122894818994c4de23e049a46545671d2b87616651be8",
+    "crates/naome-ledger/src/operations.rs": "5b55fda9b2e045a953df769cbba4a91ddc644abea47f7420eb16b34b292b7c66",
+    "crates/naome-ledger/src/profile.rs": "918a8a6e820e5ba3ecdf44bdf492f4eb068aa5b009aab554584043475f4ed6df",
+    "crates/naome-ledger/src/profile/tests.rs": "eed7b25110651245ee49ef94632d0540edb82b9d57668c51084b8da07d74a3fa",
+    "crates/naome-ledger/src/question.rs": "de8f186143881a0da3fcd97edce4df5c53f451b10df4b81030c2847856b9f6b1",
+    "crates/naome-ledger/src/question/tests.rs": "95794e6d139342c2bbba0ec78cb8006ff9d023b9456937a73ffc40c729bb81a4",
+    "crates/naome-ledger/src/state.rs": "eeed5b59a73c7f13a371966bed782dbe7ef7e5324a2df7a78f998076417d7d13",
+    "crates/naome-ledger/src/state/encoding.rs": "6e3c3b2907b05e160814e9250e71f241ec53761e168e9126cdd079b09502eaae",
+    "crates/naome-ledger/src/state/record.rs": "e0757d69a0a1077dc8fcc68d7b098245493679ee65d985d35b587d0f27aca148",
+    "crates/naome-ledger/src/state/tests.rs": "151d185f4bf5029c6359d1ba2802ef69755d1754cbd56acb22a46a0404e3da30",
+    "crates/naome-ledger/src/state/tests/golden-v1.txt": "f5a44c866960cf1947645b9b89b7b08259f7f3c1c8db97cce55d5edeb6e30e1e",
+    "crates/naome-ledger/src/state/tests/golden.rs": "039ae2dac0a7a19f0d5a244f73fe3dc3a2bc60d155ead91b764752004a1e86ee",
+    "crates/naome-ledger/src/state/tests/legacy-research-v1.txt": "9da6ccdc6bb310c8b10a81f53a3dd81855e4051a652c49d82e3009b794471131",
+    "crates/naome-ledger/src/time.rs": "6ddaee8e65907946c6b02168d95a1f441137f57a2d42d3e18bf9f848bf8219b3",
+    "crates/naome-network/src/transport/state_exchange/codec.rs": "82a369198c7ed96471da441fcb90641a73ea4d4f60d9e34dbe9422915de1b1fe",
+    "crates/naome-node/src/state/tests.rs": "555bdb7b61cc1fdebec542acb39da6af5e8f23fa0f991b4a772221e925bced2b",
+    "crates/naome-protocol/src/state_exchange.rs": "c99fa1daae761bf90da7477eb1098c063b62c845118c8b01e0be3bead73b54dd",
+    "crates/naome-protocol/src/state_exchange/tests.rs": "7a5b1f04c294c20907b2829e85ab4320a0e293bfb52d7dabc237f723a641f1f2",
+    "crates/naome-storage/src/state/history.rs": "57fdca5f0e411aa6b8111ca68d212dbd93f57645bd1eb09173109c80183b5570",
+    "crates/naome-storage/src/state/log.rs": "9a25366c3cd5db3dc0b037efb28939cd57560e794a677df324a0e2917345b96d",
+    "crates/naome-storage/src/state/signer.rs": "d3af3e9d4a1cb20ad762ff3ef892d7466b3fcc37be7abd43b9fb526aef076f55",
+    "crates/naome-storage/src/state/tests.rs": "7ef4b6bf930084e74b8032b446280e470f6e5c943e3ea724b4a0e2d4ef415f2f"
+  }
+}

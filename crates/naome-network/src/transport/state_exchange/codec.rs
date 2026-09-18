@@ -11,7 +11,7 @@ use libp2p::{
 };
 use std::{io, sync::Arc};
 pub(in crate::transport) const RESEARCH_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/research-mvp-v1");
+    StreamProtocol::new("/naome/state-v1");
 #[derive(Clone)]
 pub(in crate::transport) struct ResearchCodec {
     pub(super) context: Option<ResearchContext>,

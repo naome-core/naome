@@ -16,7 +16,7 @@ use crate::store_io::{
     ExclusiveLock, ExclusiveLockError, StoreIo, append_body_and_commit, open_exclusive_lock,
 };
 
-const ANCHOR_MAGIC: &[u8; 8] = b"NAORANC1";
+const ANCHOR_MAGIC: &[u8; 8] = b"NAOSANC1";
 const ANCHOR_BYTES: usize = 8 + 32 + 8 + 32 + 32;
 const FRAME_OVERHEAD: u64 = 4 + 32;
 
@@ -456,12 +456,12 @@ pub(super) fn hash(domain: &[u8], fields: &[&[u8]]) -> [u8; 32] {
 fn genesis_position(prefix: &[u8]) -> Position {
     Position {
         sequence: 0,
-        digest: hash(b"naome:research:journal:genesis:v1\0", &[prefix]),
+        digest: hash(b"naome:state:journal:genesis:v1\0", &[prefix]),
     }
 }
 fn step_digest(prior: [u8; 32], length: u32, body: &[u8]) -> [u8; 32] {
     hash(
-        b"naome:research:journal:step:v1\0",
+        b"naome:state:journal:step:v1\0",
         &[&prior, &length.to_be_bytes(), body],
     )
 }
@@ -482,7 +482,7 @@ impl FileAnchor {
         let result = Self {
             directory: directory.to_owned(),
             name: name.to_owned(),
-            context: hash(b"naome:research:anchor:context:v1\0", &[prefix]),
+            context: hash(b"naome:state:anchor:context:v1\0", &[prefix]),
             position,
         };
         let mut file = durable_open_options()
@@ -495,7 +495,7 @@ impl FileAnchor {
         Ok(result)
     }
     fn open(directory: &Path, name: &str, prefix: &[u8]) -> Result<Self, Error> {
-        let context = hash(b"naome:research:anchor:context:v1\0", &[prefix]);
+        let context = hash(b"naome:state:anchor:context:v1\0", &[prefix]);
         let mut file = File::open(directory.join(name))?;
         let mut bytes = Vec::new();
         Read::by_ref(&mut file)
@@ -504,7 +504,7 @@ impl FileAnchor {
         if bytes.len() != ANCHOR_BYTES || &bytes[..8] != ANCHOR_MAGIC || bytes[8..40] != context {
             return Err(Error::Invalid("anchor encoding or context"));
         }
-        if bytes[80..] != hash(b"naome:research:anchor:checksum:v1\0", &[&bytes[..80]]) {
+        if bytes[80..] != hash(b"naome:state:anchor:checksum:v1\0", &[&bytes[..80]]) {
             return Err(Error::Invalid("anchor checksum"));
         }
         let sequence = u64::from_be_bytes(bytes[40..48].try_into().expect("fixed slice"));
@@ -522,7 +522,7 @@ impl FileAnchor {
         bytes.extend_from_slice(&self.context);
         bytes.extend_from_slice(&position.sequence.to_be_bytes());
         bytes.extend_from_slice(&position.digest);
-        bytes.extend_from_slice(&hash(b"naome:research:anchor:checksum:v1\0", &[&bytes]));
+        bytes.extend_from_slice(&hash(b"naome:state:anchor:checksum:v1\0", &[&bytes]));
         bytes
     }
 }

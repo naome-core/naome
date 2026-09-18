@@ -1,7 +1,7 @@
 use super::*;
 use crate::{GenesisId, codec::Reader, time::TIME_CERTIFICATE_MAX_BYTES};
 
-const MAGIC: &[u8; 4] = b"NRRC";
+const MAGIC: &[u8; 4] = b"NSRC";
 
 /// Bounded canonical application content. Finality signatures are a separate
 /// envelope; changing its sufficient signer subset never changes this identity.
@@ -70,7 +70,7 @@ impl ResearchRecord {
     }
     pub fn id(&self) -> RecordId {
         RecordId::from_bytes(hash(
-            b"naome:research:record:v1\0",
+            b"naome:state:record:v1\0",
             &[&self.encode().expect("private bounded record content")],
         ))
     }

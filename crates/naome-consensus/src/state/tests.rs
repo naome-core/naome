@@ -762,14 +762,14 @@ fn finality_authentication_rejects_missing_quorum_before_record_decoding() {
     let record_length = p.record_bytes().len();
     let first = proposal.len() - record_length;
     proposal[first] ^= 1;
-    let mut bytes = b"NRCF1".to_vec();
+    let mut bytes = b"NSCF1".to_vec();
     super::codec::bytes(&mut bytes, &proposal).unwrap();
     super::codec::bytes(&mut bytes, &[0]).unwrap();
     assert_eq!(
         ResearchFinality::authenticate(&bytes, branch.state().genesis(), MAX_ROUND),
         Err(ResearchConsensusError::Limit("vote set"))
     );
-    let mut authenticated_bad = b"NRCF1".to_vec();
+    let mut authenticated_bad = b"NSCF1".to_vec();
     super::codec::bytes(&mut authenticated_bad, &proposal).unwrap();
     super::codec::bytes(&mut authenticated_bad, &qc.encode()).unwrap();
     assert!(matches!(

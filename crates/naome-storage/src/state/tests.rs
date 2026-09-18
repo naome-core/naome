@@ -697,7 +697,7 @@ fn historical_replay_requires_complete_authenticated_finality_first() {
     // A complete outer envelope containing only an unsigned proposal header
     // used to pass claimed_height and trigger historical mathematical replay.
     let header_length = 5 + value_bytes;
-    let mut unsigned = b"NRCF1".to_vec();
+    let mut unsigned = b"NSCF1".to_vec();
     unsigned.extend_from_slice(&(header_length as u32).to_be_bytes());
     unsigned.extend_from_slice(&valid[9..9 + header_length]);
     unsigned.extend_from_slice(&0u32.to_be_bytes());
@@ -1239,4 +1239,34 @@ fn signing_remains_fail_closed_on_unsupported_platform() {
         Err(ResearchStorageError::Platform(_))
     ));
     assert!(fs::read_dir(&dir.0).unwrap().next().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_history_and_signer_prefixes_fail_closed_without_rewriting() {
+    for signing in [false, true] {
+        let dir = Directory::new();
+        let anchors = Directory::new();
+        let g = genesis();
+        let (path, old_magic) = if signing {
+            let signer =
+                ResearchSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND)
+                    .unwrap();
+            (dir.0.join(signer.journal_file_name()), b"NAORSIG1")
+        } else {
+            let history =
+                ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+            drop(history);
+            (dir.0.join(crate::JOURNAL_FILE_NAME), b"NAORHIS1")
+        };
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[..8].copy_from_slice(old_magic);
+        fs::write(&path, &bytes).unwrap();
+        if signing {
+            assert!(ResearchSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND).is_err());
+        } else {
+            assert!(ResearchHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).is_err());
+        }
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
 }

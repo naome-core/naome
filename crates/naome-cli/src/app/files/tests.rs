@@ -91,11 +91,23 @@ fn generated_keys_require_exact_role_shape_and_private_permissions() {
         original.verifying_key()
     );
     let malformed = dir.0.join("malformed.key");
-    create(&malformed, b"NRKEY001\x01", true).unwrap();
+    create(&malformed, b"NSKEY001\x01", true).unwrap();
     assert!(key(&malformed, 1).is_err());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(key(&path, 1).is_err());
     assert!(unhex::<32>("01").is_err());
     assert!(unhex::<1>("gg").is_err());
     assert_eq!(unhex::<3>(&hex(&[0, 17, 255])).unwrap(), [0, 17, 255]);
+}
+
+#[test]
+fn legacy_private_key_format_is_rejected_without_rewriting() {
+    let dir = Directory::new();
+    let path = dir.0.join("legacy.key");
+    let mut bytes = b"NRKEY001".to_vec();
+    bytes.push(1);
+    bytes.extend_from_slice(&[17; 32]); // Public test seed only.
+    create(&path, &bytes, true).unwrap();
+    assert!(key(&path, 1).is_err());
+    assert_eq!(read(&path, 41, true).unwrap(), bytes);
 }

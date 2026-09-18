@@ -51,3 +51,40 @@ Storage journal families separate their private mutation owners from replay,
 record encoding, durable append, and error reporting. These internal modules
 preserve the fixed-validator authority boundaries. The repository root is a
 virtual Cargo workspace; the `naome-author` source-authoring CLI remains in `naome-authoring`; the canonical state CLI is `naome-cli` (`naome`).
+
+## State-format integration boundary
+
+The state integration introduces a fresh `state-v1` genesis and encoding family.
+This is an explicit compatibility break, not a conversion of an existing run.
+The former research-v1 golden bytes remain immutable negative fixtures in ledger
+and consensus tests. They must not acquire authority through a renamed header,
+new filename, or imported signer snapshot. The V0 artifact path is still present
+at this intermediate milestone; moving canonical history authority into
+`naome-chain` and removing the old executable path remain integration work.
+
+| Surface | Previous encoding | State integration encoding / owner |
+| --- | --- | --- |
+| Profile and genesis | `NAORMVP1`, `NAORGEN1`, research checker/profile identity | `NAOPROF1`, `NAOGENS1`, `state-v1`; ledger profile |
+| Complete application record | `NRRC` plus version 1 | `NSRC` plus version 1; ledger record pending chain ownership transfer |
+| Signed actions, originals, certified time reports | `NRUA`, `NROR`, `NRTM` | `NSUA`, `NSOR`, `NSTM`; ledger authentication/operations/time |
+| Consensus value, proposal, vote, finality | `NRCB1`, `NRCP1`, `NRCV1`, `NRCF1` | `NSCB1`, `NSCP1`, `NSCV1`, `NSCF1`; consensus |
+| Lock events and checked snapshots | `NRCE1`, `NRCS1` | `NSCE1`, `NSCS1`; consensus |
+| History, signing journal, external anchor | `NAORHIS1`, `NAORSIG1`, `NAORANC1` | `NAOSHIS1`, `NAOSSIG1`, `NAOSANC1`; storage |
+| Authenticated exchange | `/naome/research-mvp-v1`, envelope version 1 | `/naome/state-v1`, envelope version 2; network/protocol |
+| Private key and durable commitment bundle | `NRKEY001`, `NRSEC001` | `NSKEY001`, `NSSEC001`; CLI |
+| Hash and signature domains | `naome:research:*:v1` | `naome:state:*:v1`; corresponding owning component |
+
+Field order, integer widths, limits, signature roles, fixed membership, reward
+arithmetic, and deterministic execution rules are preserved. Mathematical proof
+and Foundation encodings are unchanged. State identities and signatures are
+intentionally different, including the genesis, account, resolution, library,
+record, and branch commitments. Old history is not silently discarded, migrated,
+or resumed: operators must retain old runs with their original executable and
+provision an explicitly new directory and genesis for this format.
+
+Existing Rust `Research*` API names, CLI `state` dispatch, and V0 executables and
+tests are inventoried by the ownership table above and are not yet removed by
+this format milestone. Ledger and consensus golden vectors cover the new wire
+identities and a full submit/vote/commit/reveal/settlement replay. Negative vectors
+cover old records, signed operations, time, proposals, votes, and finality;
+storage and transport tests reject old framing without rewriting history.

@@ -129,7 +129,7 @@ The following rules make the preceding requirements concrete for the proposed MV
 
 ### R1. A separate, immutable test configuration
 
-The profile is provisionally named `research-mvp-v1` and starts with its own genesis. It neither reinterprets old V0 messages nor migrates existing production balances. Four distinct known owners each hold one fixed vote. Both the research quorum and the consensus quorum require strictly more than two thirds, meaning three of four; absent participants remain in the denominator. No registration or reward changes these weights.
+The integrated profile is named `state-v1` and starts with a new genesis. The former `research-mvp-v1` bytes are rejected; no history or signing authority is automatically converted. It neither reinterprets old V0 messages nor migrates existing production balances. Four distinct known owners each hold one fixed vote. Both the research quorum and the consensus quorum require strictly more than two thirds, meaning three of four; absent participants remain in the denominator. No registration or reward changes these weights.
 
 Genesis binds the Foundation and checker profile, the four validators and their account assignments, at most 16 registered research accounts, transport assignments, timing profile, limits, and reward rules. Initial balances and the reserve are zero. Research accounts need no balance to submit a question, vote, commitment, or reveal. Account keys and consensus/transport keys are handled separately by role; representing the same operator more than once does not grant an additional vote. Key rotation and changes to genesis or parameters during a run are outside the MVP.
 

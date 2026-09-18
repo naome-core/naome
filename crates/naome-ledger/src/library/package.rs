@@ -77,7 +77,7 @@ impl ProofPackage {
     }
     pub fn original_hash(&self) -> PackageHash {
         PackageHash::from_bytes(hash(
-            b"naome:research:package:v1\0",
+            b"naome:state:package:v1\0",
             &[&self
                 .encode()
                 .expect("bounded package fields fit canonical framing")],

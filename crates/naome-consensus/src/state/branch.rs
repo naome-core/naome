@@ -12,10 +12,10 @@ use naome_ledger::{
     GenesisId, ProfileId, RecordId, ResearchRecord, ResearchState, StateCommitment,
 };
 
-const VALUE_MAGIC: &[u8; 5] = b"NRCB1";
+const VALUE_MAGIC: &[u8; 5] = b"NSCB1";
 const VALUE_BYTES: usize = 5 + 8 * 32 + 8;
-const PROPOSAL_MAGIC: &[u8; 5] = b"NRCP1";
-const FINALITY_MAGIC: &[u8; 5] = b"NRCF1";
+const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP1";
+const FINALITY_MAGIC: &[u8; 5] = b"NSCF1";
 
 /// Evidence-free header binding a complete research record and proposer state.
 /// Neither observing nor decoding this header grants application authority.
@@ -101,7 +101,7 @@ impl ResearchValue {
     }
     pub fn signing_root(&self) -> ProposalSigningRoot {
         ProposalSigningRoot::from_bytes(digest(
-            b"naome:research:consensus-value:v1\0",
+            b"naome:state:consensus-value:v1\0",
             &[&self.encode()],
         ))
     }
@@ -363,7 +363,7 @@ fn branch_commitment(
     proposer: [u8; 32],
 ) -> [u8; 32] {
     digest(
-        b"naome:research:consensus-state:v1\0",
+        b"naome:state:consensus-state:v1\0",
         &[
             genesis.as_bytes(),
             &height.to_be_bytes(),
@@ -395,7 +395,7 @@ fn validate_valid_quorum(
     Ok(())
 }
 fn proposal_signing_bytes(value: ResearchValue, round: u64, proposer: ConsensusKey) -> Vec<u8> {
-    let mut bytes = b"naome:research:proposal:v1\0".to_vec();
+    let mut bytes = b"naome:state:proposal:v1\0".to_vec();
     bytes.extend(value.encode());
     bytes.extend_from_slice(&round.to_be_bytes());
     bytes.extend_from_slice(proposer.as_bytes());

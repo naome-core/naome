@@ -1,6 +1,12 @@
 # Trusted research MVP verification map
 
-This records completed acceptance for the 35 requirements and seven acceptance
+The state-v1 architecture integration is in progress. The evidence below remains
+tied to its recorded commits and does not qualify the new format or establish
+that the remaining parallel authority paths have been removed. Fresh complete
+workspace, platform CI, and real-window lab evidence are required for integration
+acceptance.
+
+This records historical MVP baseline acceptance for the 35 requirements and seven acceptance
 scenarios in [requirements.md](requirements.md), within the authorized trusted,
 bounded four-process local simulation. Component checks, storage faults, actual
 lab execution, complete workspace qualification, and platform CI are separate

@@ -537,9 +537,9 @@ fn one_faulty_future_vote_and_proposal_flood_cannot_starve_three_honest_signers(
             encoded[round_offset + 8] = role_;
             let signature_offset = encoded.len() - 64;
             let mut transcript = if role_ == 1 {
-                b"naome:research:prevote:v1\0".to_vec()
+                b"naome:state:prevote:v1\0".to_vec()
             } else {
-                b"naome:research:precommit:v1\0".to_vec()
+                b"naome:state:precommit:v1\0".to_vec()
             };
             transcript.extend_from_slice(&encoded[..signature_offset]);
             encoded[signature_offset..].copy_from_slice(&key(faulty).sign(&transcript).to_bytes());
@@ -553,7 +553,7 @@ fn one_faulty_future_vote_and_proposal_flood_cannot_starve_three_honest_signers(
             let offset = 5 + naome_consensus::state::ResearchValue::BYTE_LENGTH;
             encoded[offset..offset + 8].copy_from_slice(&round.to_be_bytes());
             encoded[offset + 8..offset + 40].copy_from_slice(faulty_key.as_bytes());
-            let mut transcript = b"naome:research:proposal:v1\0".to_vec();
+            let mut transcript = b"naome:state:proposal:v1\0".to_vec();
             transcript.extend_from_slice(&encoded[5..offset + 40]);
             encoded[offset + 40..offset + 104]
                 .copy_from_slice(&key(faulty).sign(&transcript).to_bytes());

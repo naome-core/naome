@@ -706,7 +706,7 @@ fn same_derivation_original_alias_is_verified_then_removed_before_publication() 
 fn streamed_library_root_matches_full_canonical_encoding() {
     for library in [ProofLibrary::new(), publish_a().0] {
         let expected = hash(
-            b"naome:research:proof-library:v1\0",
+            b"naome:state:proof-library:v1\0",
             &[&library.encode().unwrap()],
         );
         assert_eq!(library.root(), expected);

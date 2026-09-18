@@ -25,7 +25,7 @@ use super::{
     log::{FileLog, Limits},
 };
 
-const MAGIC: &[u8; 8] = b"NAORSIG1";
+const MAGIC: &[u8; 8] = b"NAOSSIG1";
 const PREPARE: u8 = 1;
 const COMPLETE: u8 = 2;
 const ADVANCE: u8 = 3;
@@ -768,7 +768,7 @@ fn event_bounds(event: &ResearchLockEvent, genesis: &Genesis) -> Result<(), Erro
 
 fn publication_hash(publication: &ResearchPublication) -> Result<[u8; 32], Error> {
     Ok(super::log::hash(
-        b"naome:research:publication:v1\0",
+        b"naome:state:publication:v1\0",
         &[&publication.encode()?],
     ))
 }

@@ -106,13 +106,13 @@ impl CompiledQuestion {
                 .map_err(|error| ResearchError::Mathematical(error.to_string()))?
                 .0;
         let resolution_id = ResolutionId::from_bytes(hash(
-            b"naome:research:resolution:v1\0",
+            b"naome:state:resolution:v1\0",
             &[FOUNDATION_ID.as_bytes(), &canonical_core],
         ));
         Ok(Self {
             profile_id: profile.id(),
             source: source.to_owned(),
-            source_hash: hash(b"naome:research:question-source:v1\0", &[source.as_bytes()]),
+            source_hash: hash(b"naome:state:question-source:v1\0", &[source.as_bytes()]),
             formula: parsed.formula,
             negative_target: Formula::negate(core.clone()),
             core,
@@ -191,7 +191,7 @@ impl CompiledQuestion {
             .encode_canonical()
             .map_err(|error| ResearchError::Mathematical(error.to_string()))?;
         Ok(QuestionId::from_bytes(hash(
-            b"naome:research:question:v1\0",
+            b"naome:state:question:v1\0",
             &[
                 context.genesis.as_bytes(),
                 context.profile.as_bytes(),
@@ -231,10 +231,7 @@ impl CompiledQuestion {
 
 /// Derives a checker namespace fingerprint for question context binding.
 pub fn checker_profile_id(namespace: &str) -> [u8; 32] {
-    hash(
-        b"naome:research:checker-profile:v1\0",
-        &[namespace.as_bytes()],
-    )
+    hash(b"naome:state:checker-profile:v1\0", &[namespace.as_bytes()])
 }
 
 /// Derives the solution attempt at COMMIT start from an already finalized
@@ -249,7 +246,7 @@ pub fn solution_round_id(
         return Err(ResearchError::Invalid("zero question attempt"));
     }
     Ok(SolutionRoundId::from_bytes(hash(
-        b"naome:research:solution-round:v1\0",
+        b"naome:state:solution-round:v1\0",
         &[
             genesis.as_bytes(),
             question.as_bytes(),

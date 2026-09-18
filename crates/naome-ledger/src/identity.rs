@@ -72,13 +72,13 @@ pub(crate) fn hash(domain: &[u8], fields: &[&[u8]]) -> [u8; 32] {
 impl AccountId {
     /// Derives the research-account address; registration is checked separately.
     pub fn for_key(key: &[u8; 32]) -> Self {
-        Self(hash(b"naome:research:account:v1\0", &[key]))
+        Self(hash(b"naome:state:account:v1\0", &[key]))
     }
 }
 
 impl ValidatorId {
     /// Derives the validator address; membership is checked separately.
     pub fn for_key(key: &[u8; 32]) -> Self {
-        Self(hash(b"naome:research:validator:v1\0", &[key]))
+        Self(hash(b"naome:state:validator:v1\0", &[key]))
     }
 }

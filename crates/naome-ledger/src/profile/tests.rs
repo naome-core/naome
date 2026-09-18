@@ -48,7 +48,7 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(lab.timing().reveal_seconds, 120);
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
-    assert_eq!(short.name(), "research-mvp-v1-short-test");
+    assert_eq!(short.name(), "state-v1-short-test");
     assert_ne!(lab.id(), research.id());
     assert_ne!(lab.id(), short.id());
     assert_eq!(
@@ -287,7 +287,7 @@ fn lab_profile_golden_encoding_and_identity() {
         2097152, 32, 64, 16, 1, 1048576, 8192, 64, 1, 2, 4, 4194304, 2592, 75497472, 10616832,
         1114112, 1114112, 64, 64,
     ];
-    let mut bytes = b"NAORMVP1\0".to_vec();
+    let mut bytes = b"NAOPROF1\0".to_vec();
     for value in values {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
@@ -306,8 +306,8 @@ fn lab_profile_golden_encoding_and_identity() {
     assert_eq!(
         Profile::lab().id().as_bytes(),
         &[
-            246, 100, 227, 165, 140, 178, 216, 139, 118, 6, 129, 160, 71, 224, 206, 65, 88, 162,
-            186, 74, 38, 149, 246, 6, 183, 46, 6, 53, 39, 103, 137, 217
+            171, 87, 52, 240, 226, 92, 116, 178, 137, 70, 211, 150, 0, 23, 151, 77, 128, 57, 245,
+            126, 84, 101, 202, 56, 188, 150, 212, 152, 177, 31, 47, 63
         ]
     );
 }

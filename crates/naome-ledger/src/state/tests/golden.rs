@@ -86,7 +86,7 @@ fn complete_v1_wire_and_identifier_vectors() {
     };
     vector(&mut output, "normalization-receipt", normalization_receipt);
     vector(&mut output, "final-state", state.commitment().as_bytes());
-    if let Some(path) = std::env::var_os("NAOME_REGENERATE_RESEARCH_VECTORS") {
+    if let Some(path) = std::env::var_os("NAOME_REGENERATE_STATE_VECTORS") {
         std::fs::write(path, &output).unwrap();
         return;
     }
@@ -123,4 +123,54 @@ fn signed_old_attempt_reveal_never_resolves_new_attempt() {
     );
     assert_eq!(state.commitment(), before);
     assert!(state.library().is_empty());
+}
+
+// Archived bytes are intentionally immutable: a fresh state-v1 genesis is
+// required. Prefix substitution is not an authorized migration of signatures.
+fn legacy_vector(name: &str) -> Vec<u8> {
+    let line = include_str!("legacy-research-v1.txt")
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some(name))
+        .unwrap();
+    let fields: Vec<_> = line.split_whitespace().collect();
+    let bytes: Vec<_> = fields[2]
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    assert_eq!(bytes.len(), fields[1].parse::<usize>().unwrap());
+    bytes
+}
+
+#[test]
+fn legacy_research_authority_is_not_reinterpreted_as_state_history() {
+    let state = ResearchState::new(genesis());
+    assert!(Genesis::decode(&legacy_vector("genesis")).is_err());
+    for name in ["submit-record", "settlement-record"] {
+        let mut bytes = legacy_vector(name);
+        assert!(ResearchRecord::decode(&bytes, state.genesis()).is_err());
+        bytes[..4].copy_from_slice(b"NSRC");
+        assert!(ResearchRecord::decode(&bytes, state.genesis()).is_err());
+    }
+    for name in ["signed-submit", "signed-commit", "signed-reveal"] {
+        let mut bytes = legacy_vector(name);
+        assert!(SignedOperation::decode(&bytes).is_err());
+        bytes[..4].copy_from_slice(b"NSUA");
+        assert!(
+            SignedOperation::decode(&bytes)
+                .unwrap()
+                .verify(state.genesis())
+                .is_err()
+        );
+    }
+    let mut report = legacy_vector("signed-time");
+    assert!(SignedTimeReport::decode(&report).is_err());
+    report[..4].copy_from_slice(b"NSTM");
+    assert!(
+        SignedTimeReport::decode(&report)
+            .unwrap()
+            .verify(state.genesis(), state.head(), 1)
+            .is_err()
+    );
+    assert!(SignedOriginal::decode(&legacy_vector("signed-original"), state.genesis()).is_err());
 }

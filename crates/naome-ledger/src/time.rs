@@ -7,9 +7,9 @@ use crate::{
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
-const MAGIC: &[u8; 4] = b"NRTM";
+const MAGIC: &[u8; 4] = b"NSTM";
 const VERSION: u16 = 1;
-const DOMAIN: &[u8] = b"naome:research:time:v1\0";
+const DOMAIN: &[u8] = b"naome:state:time:v1\0";
 /// Exact encoded width of one signed report.
 pub const TIME_REPORT_BYTES: usize = 4 + 2 + 32 + 32 + 8 + 32 + 8 + 64;
 /// A fixed four-validator time certificate never exceeds this byte count.

@@ -116,7 +116,7 @@ impl ResearchState {
                     w.u8(outcome_tag(*outcome));
                     w.u64(*ordinal);
                     w.fixed(&hash(
-                        b"naome:research:normalization-receipt:v1\0",
+                        b"naome:state:normalization-receipt:v1\0",
                         &[normalization_receipt],
                     ));
                 }

@@ -331,3 +331,16 @@ async fn mismatched_private_bundle_author_genesis_secret_or_retained_reveal_neve
     );
     assert!(!fixture.action.exists());
 }
+
+#[test]
+fn legacy_secret_bundle_is_rejected_without_rewriting() {
+    let fixture = Fixture::new();
+    let mut bytes = fixture.bundle().encode(&fixture.genesis).unwrap();
+    bytes[..8].copy_from_slice(b"NRSEC001");
+    files::create(&fixture.secret, &bytes, true).unwrap();
+    assert!(SecretBundle::read(&fixture.secret, &fixture.genesis, fixture.author()).is_err());
+    assert_eq!(
+        files::read(&fixture.secret, 65536, true).unwrap(),
+        bytes.as_slice()
+    );
+}

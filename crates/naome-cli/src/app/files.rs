@@ -149,7 +149,7 @@ pub fn write_key(path: &Path, role: u8) -> Result<SigningKey> {
     let seed = random()?;
     let key = SigningKey::from_bytes(&seed);
     let mut bytes = Zeroizing::new(Vec::with_capacity(41));
-    bytes.extend_from_slice(b"NRKEY001");
+    bytes.extend_from_slice(b"NSKEY001");
     bytes.push(role);
     bytes.extend_from_slice(seed.as_ref());
     create(path, &bytes, true)?;
@@ -157,7 +157,7 @@ pub fn write_key(path: &Path, role: u8) -> Result<SigningKey> {
 }
 pub fn key(path: &Path, role: u8) -> Result<SigningKey> {
     let bytes = Zeroizing::new(read(path, 41, true)?);
-    if bytes.len() != 41 || &bytes[..8] != b"NRKEY001" || bytes[8] != role {
+    if bytes.len() != 41 || &bytes[..8] != b"NSKEY001" || bytes[8] != role {
         return Err("key role or format mismatch".into());
     }
     let seed = Zeroizing::new(<[u8; 32]>::try_from(&bytes[9..])?);

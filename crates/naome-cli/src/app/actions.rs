@@ -73,7 +73,7 @@ struct SecretBundle {
 impl SecretBundle {
     fn encode(&self, genesis: &Genesis) -> Result<Zeroizing<Vec<u8>>> {
         let mut bytes = Zeroizing::new(Vec::new());
-        bytes.extend_from_slice(b"NRSEC001");
+        bytes.extend_from_slice(b"NSSEC001");
         bytes.extend_from_slice(genesis.id().as_bytes());
         bytes.extend_from_slice(self.round.as_bytes());
         bytes.extend_from_slice(self.secret.as_ref());
@@ -104,7 +104,7 @@ impl SecretBundle {
             c.read_exact(&mut a)?;
             Ok(a)
         }
-        if fixed::<8>(&mut c)? != *b"NRSEC001" || fixed::<32>(&mut c)? != *genesis.id().as_bytes() {
+        if fixed::<8>(&mut c)? != *b"NSSEC001" || fixed::<32>(&mut c)? != *genesis.id().as_bytes() {
             return Err("secret bundle format or genesis mismatch".into());
         }
         let round = SolutionRoundId::from_bytes(fixed(&mut c)?);

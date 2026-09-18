@@ -26,7 +26,7 @@ fn canonical_closed_formula_and_resolution_golden() {
     assert_eq!(hex(question.canonical_core()), "040001000000000100000000");
     assert_eq!(
         hex(question.resolution_id().as_bytes()),
-        "4bc14b6670c1095419d264499575b0b7e0bcbb24ab3d578a11f0631105c60317"
+        "8cb7976f42b68e2ecd89e610bac06630c872ae961b02a8863ef3712e89583dcf"
     );
     let x = FreeVariable::new(987);
     assert_eq!(question.core(), &Formula::for_all(x, Formula::equal(x, x)));
