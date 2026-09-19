@@ -19,6 +19,9 @@ naome-proof = { path = "../naome-proof" }
 naome-storage = { path = "../naome-storage" }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
+naome-consensus = { path = "../naome-consensus" }
+naome-ledger = { path = "../naome-ledger" }
 naome-chain = { path = "../naome-chain" }
 
 [lints]

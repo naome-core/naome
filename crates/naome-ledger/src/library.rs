@@ -113,7 +113,7 @@ pub struct NormalizedPackage {
     citations: Vec<ProofId>,
     final_bytes: Vec<u8>,
     work: VerificationWork,
-    publication_resolver: ArtifactState,
+    publication_dag: crate::ArtifactDag,
 }
 
 impl NormalizedPackage {
@@ -152,7 +152,7 @@ impl NormalizedPackage {
 /// Selected research proofs. Only an entire verified package can be published.
 #[derive(Clone, Default)]
 pub struct ProofLibrary {
-    resolver: ArtifactState,
+    dag: crate::ArtifactDag,
     records: Arc<BTreeMap<ProofId, Arc<LibraryProof>>>,
     cached_root: OnceLock<[u8; 32]>,
     statements: Arc<StatementIndex>,
@@ -173,6 +173,13 @@ impl ProofLibrary {
     }
     pub fn proofs(&self) -> impl Iterator<Item = &LibraryProof> {
         self.records.values().map(AsRef::as_ref)
+    }
+
+    /// The immutable checked artifact component. Its set is exactly the proofs
+    /// encoded by this library; the complete state commitment additionally binds
+    /// publication provenance, accounts, questions, rewards, and claims.
+    pub fn artifact_dag(&self) -> &crate::ArtifactDag {
+        &self.dag
     }
 
     /// Selects the earliest exact conclusion, never an equivalent or opposite one.
@@ -261,7 +268,7 @@ impl ProofLibrary {
                 .insert((coordinate, published.proof_id));
             Arc::make_mut(&mut staged.records).insert(published.proof_id, Arc::new(published));
         }
-        staged.resolver = package.publication_resolver.clone();
+        staged.dag = package.publication_dag.clone();
         staged.cached_root = OnceLock::new();
         *self = staged;
         Ok(())

@@ -6,6 +6,19 @@ and non-membership proofs. Its sole key is the complete 32-byte `ArtifactId`.
 Typed payloads, `ProofId`, `DefinitionId`, statement and derivation identities,
 conclusions, and dependency indexes are not separately hashed into this set.
 
+`naome-ledger::ArtifactDag` owns this set and its strict checked resolver.
+The canonical `ProofLibrary` contains that DAG alongside publication provenance;
+only normalized package publication atomically installs both. Every DAG proof
+has exactly one library record with matching canonical bytes and dependencies.
+The complete library encoding already commits those identities, bytes,
+provenance, and dependency edges, so the set is a derived component rather than
+an additional history or finality authority. This ownership change does not
+alter library/state encodings or the set hash transcript below.
+
+Standalone DAGs also support offline proof and conservative-definition
+checking. Their membership witnesses establish exact membership only, with no
+network selection, publication reward, or consensus authority.
+
 ### Key bits and topology
 
 Bits are read most-significant first:

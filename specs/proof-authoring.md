@@ -264,24 +264,33 @@ that graph enters the certificate.
 but it cannot authorize a definition alias, proof citation, or function
 obligation statement.
 
-`compile_artifact_against_selected_chain(&str, &ArtifactChainJournal)` first
-borrows the healthy journal's immutable selected state and then compiles. Journal
-failure precedes every source failure. The borrow prevents mutation through the
-same handle during compilation. No candidate, archive, network, or arbitrary
-caller-built state is accepted.
+`compile_artifact_against_selected_history` accepts the sealed
+`SelectedResearchHistory` interface. It rejects a halted history before parsing
+source, then borrows the finalized full state's immutable checked proof library.
+Only a durable history owner or its replay-verified read-only observer can supply
+this interface. Proposed records, unselected packages, and caller-built snapshots
+cannot provide selected-history authority. Compilation changes neither history
+nor publication provenance; subsequent ledger admission rechecks its output.
+
+`compile_artifact_against_proof_context(&str, &ArtifactState)` supports offline
+mathematical authoring, including conservative definitions and their obligations.
+An explicit checked context establishes dependency resolution only. It grants no
+finality, rewards, or permission to publish definitions under the trusted MVP's
+proof-only operation rules. General authoring limits remain distinct from the
+smaller MVP package limits; a valid offline proof may exceed those package limits.
 
 `CompiledArtifact` is either `Proof(CompiledProof)` or
 `Definition(CompiledDefinition)`. It exposes the complete tagged
 `canonical_artifact_bytes` and typed `artifact_id`. A definition result also
 exposes `canonical_definition_bytes`, owned-byte conversion, `definition_id`,
-and `artifact_id`. The proof-only `compile` and
-`compile_against_selected_chain` APIs remain convenience compatibility entry
-points and reject definition source; they do not weaken resolver authority.
+and `artifact_id`. The proof-only `compile`, `compile_against_proof_context`,
+and `compile_against_selected_history` entry points reject definition source.
+The former artifact-chain journal authoring adapter has been removed.
 
 The only command is:
 
 ```sh
-naome proof <proof.nao>
+naome-author proof <proof.nao>
 ```
 
 There is deliberately no separate `definition`, `compile`, state-file,

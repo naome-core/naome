@@ -284,7 +284,7 @@ pub(super) fn normalize(
     let final_closure = old_closure(library, &citations, profile)?;
     // Independent second verification of every required final older certificate.
     let _verified_final_dependencies = verify_old(library, &final_closure, profile, work)?;
-    let mut final_state = library.resolver.clone();
+    let mut final_state = library.dag.clone();
     let mut rewritten_ids = substitutions.clone();
     let mut final_records = BTreeMap::new();
     for (id, bytes) in &package.nodes {
@@ -312,7 +312,8 @@ pub(super) fn normalize(
             normal.certificate().steps().len(),
             profile,
         )?;
-        let checked = check_normal_form_with_state(normal, &final_state).map_err(math)?;
+        let checked =
+            check_normal_form_with_state(normal, final_state.artifact_state()).map_err(math)?;
         if checked.statement_id() != originals[id].statement_id
             || checked.conclusion() != &originals[id].conclusion
         {
@@ -320,8 +321,10 @@ pub(super) fn normalize(
         }
         let proof = record(&checked, package.author);
         rewritten_ids.insert(*id, proof.proof_id);
+        final_state
+            .admit_checked_proof(checked, proof.proof_id)
+            .map_err(math)?;
         final_records.insert(proof.proof_id, proof);
-        final_state.register_proof(checked).map_err(math)?;
     }
     let root = rewritten_ids[&package.root];
     let final_package = ProofPackage::new(
@@ -355,6 +358,6 @@ pub(super) fn normalize(
             dag_steps: work.dag_steps - previous.dag_steps,
             normalization_steps: work.normalization_steps - previous.normalization_steps,
         },
-        publication_resolver: final_state,
+        publication_dag: final_state,
     })
 }

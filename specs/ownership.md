@@ -23,7 +23,8 @@ additional source of authority.
 | Proof and definition representations, canonical bytes, and identities | `naome-proof` | [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
 | Foundation-relative proof checking and conservative definition checking | `naome-checker` | [Foundation](foundation.md), [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
 | Strict typed admission and immutable accepted records | `naome-ledger` | [Artifact Admission](artifact-admission.md) |
-| Authenticated selected set, exact-parent blocks, and candidate-branch snapshots | `naome-chain` | [Artifact Set](artifact-set.md), [Artifact Chain](artifact-chain.md) |
+| Checked artifact DAG, strict admission, and authenticated exact set inside the complete proof library | `naome-ledger` | [Artifact Set](artifact-set.md), [Artifact Admission](artifact-admission.md) |
+| Remaining V0 exact-parent artifact blocks and branch snapshots, pending caller retirement | `naome-chain` | [Artifact Chain](artifact-chain.md) |
 | Selected-history persistence, unselected stores, strict replay, and durable signing safety | `naome-storage` | [Artifact Chain Journal](artifact-chain-journal.md), [Candidate Store](artifact-block-candidate-store.md), [Payload Store](canonical-artifact-payload-store.md), [Recovery Bundle](candidate-branch-recovery-bundle.md), [Vote Safety Journal](fixed-validator-vote-safety-journal-v0.md), [Finality Journal](fixed-validator-finality-journal-v0.md), [External Anchor](fixed-validator-external-anchor-v0.md) |
 | Transport-neutral artifact, block, head, and announcement messages | `naome-protocol` | [Transport-neutral messages](artifact-network-transport.md#transport-neutral-messages) |
 | Authenticated fixed-peer sessions, caller-owned acquisition, and store serving | `naome-network` | [Artifact Network Transport](artifact-network-transport.md), [Caller-Selected Orchestration](caller-selected-orchestration.md), [Consensus Transport](fixed-validator-consensus-transport-v0.md) |
@@ -31,7 +32,7 @@ additional source of authority.
 | Sole signing-scope custody and ordered node execution | `naome-node` | [Startup](fixed-validator-node-startup-v0.md), [Driver](fixed-validator-node-driver-v0.md), [Voting](fixed-validator-node-voting-v0.md), [Round Progression](fixed-validator-node-round-progression-v0.md), [Finality](fixed-validator-node-finality-v0.md), [Proposal Authoring](fixed-validator-node-proposal-authoring-v0.md) |
 | Caller-configured timing, raw routing, and bounded publication delivery | `naome-runtime` | [Fixed-Validator Runtime](fixed-validator-runtime-v0.md); consensus, node, and storage retain their existing verification, signing, and finality authority |
 | Bounded volatile proposal/evidence retention | `naome-node` | [Current Inbox](fixed-validator-node-current-round-inbox-v0.md), [Finality Inbox](fixed-validator-node-current-round-finality-inbox-v0.md), [Nil-Precommit Inbox](fixed-validator-node-current-round-nil-precommit-inbox-v0.md), [Higher Inbox](fixed-validator-node-higher-round-inbox-v0.md), [Proposal Buffer](fixed-validator-node-proposal-buffer-v0.md), [Deferral](fixed-validator-node-proposal-deferral-v0.md), [Buffered Precommit](fixed-validator-node-buffered-proposal-precommit-v0.md) |
-| Source parsing, proof lowering, diagnostics, and selected-chain authoring | `naome-authoring` | [Proof Authoring](proof-authoring.md) |
+| Source parsing, proof lowering, diagnostics, and finalized-history and offline-context authoring | `naome-authoring` | [Proof Authoring](proof-authoring.md) |
 | Validator and verifier processes, provisioning, and qualification | `naome-validator`, `naome-verifier`, `naome-cli`, `devnet/qualify.py` | [Canonical Process Operations](../research/mvp/operations.md), [Devnet Operations](../devnet/OPERATIONS.md) |
 
 The authority boundaries follow the contracts above. Decoding supplies no
@@ -104,3 +105,13 @@ finality: consensus branches cannot be initialized from a non-genesis successor.
 Consensus authenticates `FinalizedStateRecord` evidence before mathematical
 replay, and storage installs only that verified result. The format vectors are
 unchanged by this ownership transfer.
+
+The checked artifact DAG and authenticated set now belong to `naome-ledger`.
+`ProofLibrary` stages the already metered checked normalized proofs in that DAG,
+checks expected identity before registration, and publishes the DAG with its
+matching provenance records atomically. The complete library/state bytes and
+replay vectors are unchanged. Its immutable resolver serves authoring through
+the sealed selected full-history interface; the old artifact-journal authoring
+adapter has been removed. Definition authoring remains offline and does not
+extend MVP publication rules. Temporary `naome-chain` DAG reexports exist only
+for remaining V0 library callers pending their removal.

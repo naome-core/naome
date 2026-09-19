@@ -1,3 +1,5 @@
+//! Offline mathematical authoring; these contexts establish no finalized publication.
+
 #[path = "support/hex_decode.rs"]
 mod hex_decode;
 use hex_decode::hex32;
@@ -6,26 +8,15 @@ use hex_decode::hex32;
 mod hex_encode;
 use hex_encode::hex_string;
 
-use std::env;
-use std::fs;
-use std::io;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use naome_authoring::{
-    CompileError, CompiledArtifact, CompiledProof, SelectedChainCompileError, compile,
-    compile_against_selected_chain, compile_artifact, compile_artifact_against_selected_chain,
+    CompileError, CompiledArtifact, CompiledProof, compile, compile_against_proof_context,
+    compile_artifact, compile_artifact_against_proof_context,
 };
-use naome_chain::{ArtifactBlockPrepareError, ArtifactChainDefinition, ArtifactDag};
 use naome_checker::CheckError;
+use naome_ledger::{ArtifactDag, LedgerError};
 use naome_proof::{
     ArtifactId, ArtifactPayload, DefinitionId, DerivationId, ProofCertificate, ProofId, ProofStep,
     StatementId,
-};
-use naome_storage::{
-    ArtifactBlockCandidateInsertOutcome, ArtifactBlockCandidateStore,
-    ArtifactBlockCandidateStoreLimits, ArtifactChainJournal, ArtifactChainJournalError,
-    ArtifactPayloadInsertOutcome, ArtifactPayloadStoreLimits, CanonicalArtifactPayloadStore,
 };
 
 const SELF_EQUALITY: &str = r#"
@@ -130,36 +121,25 @@ proof:
     return p24
 "#;
 
-static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-struct TestDirectory {
-    path: PathBuf,
+#[derive(Default)]
+struct CheckedContext {
+    dag: ArtifactDag,
+    payloads: Vec<(ArtifactId, Vec<u8>)>,
 }
-
-impl TestDirectory {
-    fn new() -> Self {
-        loop {
-            let sequence = TEMP_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = env::temp_dir().join(format!(
-                "naome-selected-authoring-{}-{sequence}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Self { path },
-                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(source) => panic!("temporary test directory failed: {source}"),
-            }
+impl CheckedContext {
+    fn admit(&mut self, id: ArtifactId, bytes: Vec<u8>) -> Result<(), LedgerError> {
+        self.dag
+            .apply_canonical_artifact_bytes_with_expected_id(bytes.clone(), id)?;
+        self.payloads.push((id, bytes));
+        Ok(())
+    }
+    fn recheck(&self) -> Self {
+        let mut fresh = Self::default();
+        for (id, bytes) in &self.payloads {
+            fresh.admit(*id, bytes.clone()).unwrap();
         }
-    }
-
-    fn read(&self, file_name: &str) -> Vec<u8> {
-        fs::read(self.path.join(file_name)).unwrap()
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.path).unwrap();
+        assert_eq!(fresh.dag.artifact_set_root(), self.dag.artifact_set_root());
+        fresh
     }
 }
 
@@ -180,16 +160,16 @@ fn proof_artifact_bytes(proof: &CompiledProof) -> Vec<u8> {
     ArtifactPayload::Proof(certificate).to_canonical_bytes()
 }
 
-fn select_source(journal: &mut ArtifactChainJournal, source: &str) -> CompiledArtifact {
-    let compiled = compile_artifact_against_selected_chain(source, journal).unwrap();
-    select_compiled(journal, &compiled);
+fn admit_source(context: &mut CheckedContext, source: &str) -> CompiledArtifact {
+    let compiled =
+        compile_artifact_against_proof_context(source, context.dag.artifact_state()).unwrap();
+    admit_compiled(context, &compiled);
     compiled
 }
 
-fn select_compiled(journal: &mut ArtifactChainJournal, compiled: &CompiledArtifact) {
-    let block = journal.prepare_block(compiled.artifact_id()).unwrap();
-    journal
-        .apply_block(&block, compiled.canonical_artifact_bytes())
+fn admit_compiled(context: &mut CheckedContext, compiled: &CompiledArtifact) {
+    context
+        .admit(compiled.artifact_id(), compiled.canonical_artifact_bytes())
         .unwrap();
 }
 
@@ -207,14 +187,9 @@ fn compiled_proof(compiled: &CompiledArtifact) -> &CompiledProof {
     }
 }
 
-fn assert_unknown_reference(
-    result: Result<CompiledProof, SelectedChainCompileError>,
-    expected: ProofId,
-) {
+fn assert_unknown_reference(result: Result<CompiledProof, CompileError>, expected: ProofId) {
     match result {
-        Err(SelectedChainCompileError::Compilation {
-            source: CompileError::Check { source, .. },
-        }) => assert!(matches!(
+        Err(CompileError::Check { source, .. }) => assert!(matches!(
             source.as_ref(),
             CheckError::UnknownProofReference { step: 0, proof_id } if *proof_id == expected
         )),
@@ -223,10 +198,8 @@ fn assert_unknown_reference(
 }
 
 #[test]
-fn long_agent_style_proof_uses_only_selected_exact_dependencies_without_mutation() {
-    let directory = TestDirectory::new();
-    let definition = ArtifactChainDefinition::new([0x21; 32]);
-    let mut journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
+fn long_agent_style_proof_uses_only_checked_exact_dependencies_without_mutation() {
+    let mut context = CheckedContext::default();
 
     for source in [
         include_str!("../../../examples/self-equality.nao"),
@@ -236,21 +209,21 @@ fn long_agent_style_proof_uses_only_selected_exact_dependencies_without_mutation
         include_str!("../../../examples/extensionality.nao"),
     ] {
         let dependency = compile(source).unwrap();
-        let block = journal
-            .prepare_block(ArtifactId::from_proof_id(dependency.proof_id()))
-            .unwrap();
-        journal
-            .apply_block(&block, proof_artifact_bytes(&dependency))
+        context
+            .admit(
+                ArtifactId::from_proof_id(dependency.proof_id()),
+                proof_artifact_bytes(&dependency),
+            )
             .unwrap();
     }
 
-    let journal_image = directory.read("artifact-chain.journal");
-    let head = journal.head_block_id().unwrap();
-    let root = journal.artifact_set_root().unwrap();
-    let len = journal.len().unwrap();
+    let context_image = context.payloads.clone();
+    let root = context.dag.artifact_set_root();
+    let len = context.dag.len();
 
     let compiled =
-        compile_against_selected_chain(LONG_SELECTED_DEPENDENCY_PROOF, &journal).unwrap();
+        compile_against_proof_context(LONG_SELECTED_DEPENDENCY_PROOF, context.dag.artifact_state())
+            .unwrap();
     assert_eq!(
         compiled.statement_id(),
         StatementId::from_bytes(hex32(
@@ -280,241 +253,17 @@ fn long_agent_style_proof_uses_only_selected_exact_dependencies_without_mutation
             .count(),
         5
     );
-    assert_eq!(journal.head_block_id().unwrap(), head);
-    assert_eq!(journal.artifact_set_root().unwrap(), root);
-    assert_eq!(journal.len().unwrap(), len);
-    assert_eq!(directory.read("artifact-chain.journal"), journal_image);
+    assert_eq!(context.dag.artifact_set_root(), root);
+    assert_eq!(context.dag.len(), len);
+    assert_eq!(context.payloads.clone(), context_image);
 }
 
 #[test]
-fn only_exact_journal_selection_authorizes_reference_compilation_without_mutation() {
-    let directory = TestDirectory::new();
-    let definition = ArtifactChainDefinition::new([0x11; 32]);
-    let dependency = compile(SELF_EQUALITY).unwrap();
-    let dependency_id = dependency.proof_id();
-    let dependency_bytes = proof_artifact_bytes(&dependency);
-    let dependency_artifact_id = ArtifactId::from_proof_id(dependency_id);
-    let source = reference_source(dependency_id);
-    let monolithic = compile(NESTED_SELF_EQUALITY).unwrap();
+fn definitions_and_term_sugar_resolve_only_from_checked_ancestry() {
+    let mut context = CheckedContext::default();
 
-    let mut journal = ArtifactChainJournal::create(&directory.path, definition).unwrap();
-    let candidate = journal.prepare_block(dependency_artifact_id).unwrap();
-    let mut candidate_store = ArtifactBlockCandidateStore::create(
-        &directory.path,
-        definition,
-        ArtifactBlockCandidateStoreLimits::new(1).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        candidate_store.insert(&candidate).unwrap(),
-        ArtifactBlockCandidateInsertOutcome::Inserted
-    );
-
-    let payload_bytes = u64::try_from(dependency_bytes.len()).unwrap();
-    let mut archive = CanonicalArtifactPayloadStore::create(
-        &directory.path,
-        ArtifactPayloadStoreLimits::new(1, payload_bytes).unwrap(),
-    )
-    .unwrap();
-    let mut independently_checked = ArtifactDag::new();
-    let record = independently_checked
-        .apply_canonical_artifact_bytes_with_expected_id(dependency_bytes, dependency_artifact_id)
-        .unwrap();
-    assert_eq!(
-        archive.insert(record).unwrap(),
-        ArtifactPayloadInsertOutcome::Inserted
-    );
-
-    let empty_journal_image = directory.read("artifact-chain.journal");
-    let candidate_image = directory.read("artifact-block-candidate-store.log");
-    let archive_image = directory.read("artifact-payload-store.log");
-    let empty_head = journal.head_block_id().unwrap();
-    let empty_root = journal.artifact_set_root().unwrap();
-
-    // Structurally stored and independently checked artifacts remain only
-    // candidates. The adapter has no candidate/archive/network fallback.
-    assert_unknown_reference(
-        compile_against_selected_chain(&source, &journal),
-        dependency_id,
-    );
-    assert_eq!(journal.head_block_id().unwrap(), empty_head);
-    assert_eq!(journal.artifact_set_root().unwrap(), empty_root);
-    assert!(journal.is_empty().unwrap());
-    assert_eq!(
-        directory.read("artifact-chain.journal"),
-        empty_journal_image
-    );
-    assert_eq!(
-        directory.read("artifact-block-candidate-store.log"),
-        candidate_image
-    );
-    assert_eq!(directory.read("artifact-payload-store.log"), archive_image);
-
-    let selected_block = candidate_store.get(candidate.id()).unwrap().unwrap();
-    let selected_payload = archive.get(dependency_artifact_id).unwrap().unwrap();
-    journal
-        .apply_block(
-            &selected_block,
-            selected_payload.into_canonical_artifact_bytes().into_vec(),
-        )
-        .unwrap();
-
-    let selected_journal_image = directory.read("artifact-chain.journal");
-    let selected_head = journal.head_block_id().unwrap();
-    let selected_root = journal.artifact_set_root().unwrap();
-    let compiled = compile_against_selected_chain(&source, &journal).unwrap();
-    assert_eq!(compiled.statement_id(), monolithic.statement_id());
-    assert_eq!(compiled.derivation_id(), monolithic.derivation_id());
-    assert_ne!(compiled.derivation_id(), dependency.derivation_id());
-    assert_ne!(compiled.proof_id(), dependency_id);
-    assert_ne!(compiled.proof_id(), monolithic.proof_id());
-    let certificate =
-        ProofCertificate::from_canonical_bytes(compiled.canonical_proof_bytes()).unwrap();
-    assert!(matches!(
-        certificate.steps(),
-        [
-            ProofStep::ProofReference { proof_id },
-            ProofStep::Generalization { premise: 0, .. }
-        ] if *proof_id == dependency_id
-    ));
-    assert_eq!(journal.head_block_id().unwrap(), selected_head);
-    assert_eq!(journal.artifact_set_root().unwrap(), selected_root);
-    assert_eq!(journal.len().unwrap(), 1);
-    assert_eq!(
-        directory.read("artifact-chain.journal"),
-        selected_journal_image
-    );
-    assert_eq!(
-        directory.read("artifact-block-candidate-store.log"),
-        candidate_image
-    );
-    assert_eq!(directory.read("artifact-payload-store.log"), archive_image);
-
-    // Exact ProofId selection admits no statement, derivation, or proof alias.
-    let wrong_id = ProofId::from_bytes([0xff; ProofId::BYTE_LENGTH]);
-    let wrong_source = reference_source(wrong_id);
-    assert_unknown_reference(
-        compile_against_selected_chain(&wrong_source, &journal),
-        wrong_id,
-    );
-    assert_eq!(journal.head_block_id().unwrap(), selected_head);
-    assert_eq!(journal.artifact_set_root().unwrap(), selected_root);
-    assert_eq!(
-        directory.read("artifact-chain.journal"),
-        selected_journal_image
-    );
-
-    drop(journal);
-    let reopened =
-        ArtifactChainJournal::open_verified(&directory.path, definition, selected_head).unwrap();
-    let replayed = compile_against_selected_chain(&source, &reopened).unwrap();
-    assert_eq!(replayed, compiled);
-    assert_eq!(reopened.head_block_id().unwrap(), selected_head);
-    assert_eq!(reopened.artifact_set_root().unwrap(), selected_root);
-    assert_eq!(reopened.len().unwrap(), 1);
-    assert_eq!(
-        directory.read("artifact-chain.journal"),
-        selected_journal_image
-    );
-    assert_eq!(
-        directory.read("artifact-block-candidate-store.log"),
-        candidate_image
-    );
-    assert_eq!(directory.read("artifact-payload-store.log"), archive_image);
-}
-
-#[test]
-fn candidate_and_archive_definition_bytes_never_authorize_source_aliases() {
-    let directory = TestDirectory::new();
-    let chain_definition = ArtifactChainDefinition::new([0x12; 32]);
-    let mut journal = ArtifactChainJournal::create(&directory.path, chain_definition).unwrap();
-    let definition =
-        compile_artifact(include_str!("../../../examples/reflexive-relation.nao")).unwrap();
-    let definition_id = compiled_definition_id(&definition);
-    let artifact_id = definition.artifact_id();
-    let artifact_bytes = definition.canonical_artifact_bytes();
-    let candidate = journal.prepare_block(artifact_id).unwrap();
-
-    let mut candidate_store = ArtifactBlockCandidateStore::create(
-        &directory.path,
-        chain_definition,
-        ArtifactBlockCandidateStoreLimits::new(1).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        candidate_store.insert(&candidate).unwrap(),
-        ArtifactBlockCandidateInsertOutcome::Inserted
-    );
-    let mut archive = CanonicalArtifactPayloadStore::create(
-        &directory.path,
-        ArtifactPayloadStoreLimits::new(1, u64::try_from(artifact_bytes.len()).unwrap()).unwrap(),
-    )
-    .unwrap();
-    let mut independently_checked = ArtifactDag::new();
-    let record = independently_checked
-        .apply_canonical_artifact_bytes_with_expected_id(artifact_bytes, artifact_id)
-        .unwrap();
-    assert_eq!(
-        archive.insert(record).unwrap(),
-        ArtifactPayloadInsertOutcome::Inserted
-    );
-
-    let source = include_str!("../../../examples/reflexive-relation-alias.nao");
-    let journal_image = directory.read("artifact-chain.journal");
-    let candidate_image = directory.read("artifact-block-candidate-store.log");
-    let archive_image = directory.read("artifact-payload-store.log");
-    assert!(matches!(
-        compile_artifact_against_selected_chain(source, &journal),
-        Err(SelectedChainCompileError::Compilation {
-            source: CompileError::DefinitionNotSelected {
-                definition_id: missing,
-                ..
-            }
-        }) if missing == definition_id
-    ));
-    assert!(journal.is_empty().unwrap());
-    assert_eq!(directory.read("artifact-chain.journal"), journal_image);
-    assert_eq!(
-        directory.read("artifact-block-candidate-store.log"),
-        candidate_image
-    );
-    assert_eq!(directory.read("artifact-payload-store.log"), archive_image);
-
-    let selected_block = candidate_store.get(candidate.id()).unwrap().unwrap();
-    let selected_payload = archive.get(artifact_id).unwrap().unwrap();
-    journal
-        .apply_block(
-            &selected_block,
-            selected_payload.into_canonical_artifact_bytes().into_vec(),
-        )
-        .unwrap();
-    let compiled = compile_artifact_against_selected_chain(source, &journal).unwrap();
-    assert_eq!(compiled, definition);
-    assert_eq!(compiled_definition_id(&compiled), definition_id);
-    assert_eq!(journal.len().unwrap(), 1);
-    assert!(matches!(
-        journal.prepare_block(compiled.artifact_id()),
-        Err(ArtifactChainJournalError::Preparation {
-            source: ArtifactBlockPrepareError::AlreadySelectedArtifactId {
-                artifact_id,
-            },
-        }) if artifact_id == compiled.artifact_id()
-    ));
-    assert_eq!(
-        directory.read("artifact-block-candidate-store.log"),
-        candidate_image
-    );
-    assert_eq!(directory.read("artifact-payload-store.log"), archive_image);
-}
-
-#[test]
-fn definitions_and_term_sugar_resolve_only_from_selected_ancestry() {
-    let directory = TestDirectory::new();
-    let chain_definition = ArtifactChainDefinition::new([0x31; 32]);
-    let mut journal = ArtifactChainJournal::create(&directory.path, chain_definition).unwrap();
-
-    let identity_obligation = select_source(
-        &mut journal,
+    let identity_obligation = admit_source(
+        &mut context,
         include_str!("../../../examples/identity-function-obligation.nao"),
     );
     assert_eq!(
@@ -530,11 +279,11 @@ fn definitions_and_term_sugar_resolve_only_from_selected_ancestry() {
         include_str!("../../../examples/equality-substitution.nao"),
         include_str!("../../../examples/extensionality.nao"),
     ] {
-        let _ = select_source(&mut journal, source);
+        let _ = admit_source(&mut context, source);
     }
 
-    let first = select_source(
-        &mut journal,
+    let first = admit_source(
+        &mut context,
         include_str!("../../../examples/reflexive-relation.nao"),
     );
     let first_id = compiled_definition_id(&first);
@@ -551,10 +300,9 @@ definitions:
 definition self_equal = relation(x):
     self_equal(x)
 "#;
-    let collision = compile_artifact_against_selected_chain(colliding_name, &journal).unwrap_err();
-    let SelectedChainCompileError::Compilation { source } = collision else {
-        panic!("expected a source compilation error");
-    };
+    let source =
+        compile_artifact_against_proof_context(colliding_name, context.dag.artifact_state())
+            .unwrap_err();
     assert!(matches!(
         &source,
         CompileError::DuplicateDefinitionAlias { name, .. } if name == "self_equal"
@@ -564,8 +312,8 @@ definition self_equal = relation(x):
     let span = diagnostic.primary_span().unwrap();
     assert_eq!(&colliding_name[span.start()..span.end()], "self_equal");
 
-    let second = select_source(
-        &mut journal,
+    let second = admit_source(
+        &mut context,
         include_str!("../../../examples/membership-relation.nao"),
     );
     let second_id = compiled_definition_id(&second);
@@ -576,8 +324,8 @@ definition self_equal = relation(x):
         ))
     );
 
-    let third = select_source(
-        &mut journal,
+    let third = admit_source(
+        &mut context,
         include_str!("../../../examples/same-members-relation.nao"),
     );
     let third_id = compiled_definition_id(&third);
@@ -596,7 +344,8 @@ definition presentation_only = relation(a, b):
     forall(candidate, iff(membership(candidate, a), membership(candidate, b)))
 "#;
     let presentation_variant =
-        compile_artifact_against_selected_chain(presentation_variant, &journal).unwrap();
+        compile_artifact_against_proof_context(presentation_variant, context.dag.artifact_state())
+            .unwrap();
     assert_eq!(presentation_variant, third);
 
     for source in [
@@ -604,16 +353,14 @@ definition presentation_only = relation(a, b):
         "foundation = \"naome:zfc\" definitions: future = \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\" definition current = relation(x): future(x)",
     ] {
         assert!(matches!(
-            compile_artifact_against_selected_chain(source, &journal),
-            Err(SelectedChainCompileError::Compilation {
-                source: CompileError::UnknownDefinitionAlias { .. }
-                    | CompileError::DefinitionNotSelected { .. }
-            })
+            compile_artifact_against_proof_context(source, context.dag.artifact_state()),
+            Err(CompileError::UnknownDefinitionAlias { .. }
+                | CompileError::DefinitionNotSelected { .. })
         ));
     }
 
-    let identity = select_source(
-        &mut journal,
+    let identity = admit_source(
+        &mut context,
         include_str!("../../../examples/identity-function.nao"),
     );
     let identity_id = compiled_definition_id(&identity);
@@ -624,14 +371,13 @@ definition presentation_only = relation(a, b):
         ))
     );
 
-    let selected_image = directory.read("artifact-chain.journal");
-    let selected_head = journal.head_block_id().unwrap();
-    let selected_root = journal.artifact_set_root().unwrap();
-    let selected_len = journal.len().unwrap();
+    let selected_image = context.payloads.clone();
+    let selected_root = context.dag.artifact_set_root();
+    let selected_len = context.dag.len();
 
-    let long = compile_artifact_against_selected_chain(
+    let long = compile_artifact_against_proof_context(
         include_str!("../../../examples/definitions-long-proof.nao"),
-        &journal,
+        context.dag.artifact_state(),
     )
     .unwrap();
     let long = compiled_proof(&long);
@@ -664,9 +410,9 @@ definition presentation_only = relation(a, b):
         12
     );
 
-    let term = compile_artifact_against_selected_chain(
+    let term = compile_artifact_against_proof_context(
         include_str!("../../../examples/identity-function-term-proof.nao"),
-        &journal,
+        context.dag.artifact_state(),
     )
     .unwrap();
     let term = compiled_proof(&term);
@@ -699,10 +445,9 @@ definition presentation_only = relation(a, b):
         2
     );
 
-    assert_eq!(journal.head_block_id().unwrap(), selected_head);
-    assert_eq!(journal.artifact_set_root().unwrap(), selected_root);
-    assert_eq!(journal.len().unwrap(), selected_len);
-    assert_eq!(directory.read("artifact-chain.journal"), selected_image);
+    assert_eq!(context.dag.artifact_set_root(), selected_root);
+    assert_eq!(context.dag.len(), selected_len);
+    assert_eq!(context.payloads.clone(), selected_image);
 
     let dependency_free =
         compile_artifact(include_str!("../../../examples/reflexive-relation.nao")).unwrap();
@@ -716,33 +461,21 @@ definition presentation_only = relation(a, b):
 
     let final_proof_id = long.proof_id();
     let final_artifact_id = ArtifactId::from_proof_id(final_proof_id);
-    let final_block = journal.prepare_block(final_artifact_id).unwrap();
-    let final_block_id = final_block.id();
-    journal
-        .apply_block(&final_block, proof_artifact_bytes(long))
+    context
+        .admit(final_artifact_id, proof_artifact_bytes(long))
         .unwrap();
-    assert_eq!(journal.len().unwrap(), selected_len + 1);
-    assert_eq!(journal.head_block_id().unwrap(), final_block_id);
-    assert_ne!(journal.head_block_id().unwrap(), selected_head);
-    assert_eq!(
-        journal.artifact_set_root().unwrap(),
-        final_block.resulting_artifact_set_root()
-    );
-    assert_ne!(journal.artifact_set_root().unwrap(), selected_root);
-
-    drop(journal);
-    let reopened =
-        ArtifactChainJournal::open_verified(&directory.path, chain_definition, final_block_id)
-            .unwrap();
-    assert_eq!(reopened.len().unwrap(), selected_len + 1);
-    let final_record = reopened
+    assert_eq!(context.dag.len(), selected_len + 1);
+    assert_ne!(context.dag.artifact_set_root(), selected_root);
+    let rebuilt = context.recheck();
+    assert_eq!(rebuilt.dag.len(), selected_len + 1);
+    let final_record = rebuilt
+        .dag
         .artifact(final_artifact_id)
-        .unwrap()
         .unwrap()
         .as_proof()
         .unwrap();
     assert_eq!(final_record.proof_id(), final_proof_id);
-    let state = reopened.artifact_state().unwrap();
+    let state = rebuilt.dag.artifact_state();
     for definition_id in [first_id, second_id, third_id, identity_id] {
         assert!(state.contains_definition(definition_id));
     }
@@ -772,12 +505,10 @@ definition presentation_only = relation(a, b):
 }
 
 #[test]
-fn empty_set_existence_remains_a_standalone_selected_proof() {
+fn empty_set_existence_remains_a_standalone_checked_proof() {
     const SOURCE: &str = include_str!("../../../examples/empty-set-obligation.nao");
 
-    let directory = TestDirectory::new();
-    let chain_definition = ArtifactChainDefinition::new([0x32; 32]);
-    let mut journal = ArtifactChainJournal::create(&directory.path, chain_definition).unwrap();
+    let mut context = CheckedContext::default();
 
     assert_eq!(SOURCE.len(), 390_826);
     let standalone = compile_artifact(SOURCE).unwrap();
@@ -801,26 +532,22 @@ fn empty_set_existence_remains_a_standalone_selected_proof() {
             "0919162ae0dc2bf2f95966473aba97f22a072e26074ab5f92b55d043d730bfde"
         ))
     );
-    let selected = select_source(&mut journal, SOURCE);
+    let selected = admit_source(&mut context, SOURCE);
     assert_eq!(compiled_proof(&selected), standalone);
     let artifact_id = selected.artifact_id();
-    let final_head = journal.head_block_id().unwrap();
-    assert_eq!(journal.len().unwrap(), 1);
-    drop(journal);
-
-    let reopened =
-        ArtifactChainJournal::open_verified(&directory.path, chain_definition, final_head).unwrap();
-    assert_eq!(reopened.len().unwrap(), 1);
+    assert_eq!(context.dag.len(), 1);
+    let rebuilt = context.recheck();
+    assert_eq!(rebuilt.dag.len(), 1);
     assert!(
-        reopened
+        rebuilt
+            .dag
             .artifact_state()
-            .unwrap()
             .contains_proof(standalone.proof_id())
     );
     assert_eq!(
-        reopened
+        rebuilt
+            .dag
             .artifact(artifact_id)
-            .unwrap()
             .unwrap()
             .as_proof()
             .unwrap()
@@ -831,11 +558,9 @@ fn empty_set_existence_remains_a_standalone_selected_proof() {
 
 #[test]
 fn selected_definition_use_composes_through_a_cited_proof_and_dependent_inference() {
-    let directory = TestDirectory::new();
-    let chain_definition = ArtifactChainDefinition::new([0x33; 32]);
-    let mut journal = ArtifactChainJournal::create(&directory.path, chain_definition).unwrap();
-    let definition = select_source(
-        &mut journal,
+    let mut context = CheckedContext::default();
+    let definition = admit_source(
+        &mut context,
         include_str!("../../../examples/reflexive-relation.nao"),
     );
     let definition_id = compiled_definition_id(&definition);
@@ -852,7 +577,8 @@ proof:
     p1 = generalization(p0, x)
     return p1
 "#;
-    let proof = compile_artifact_against_selected_chain(proof_source, &journal).unwrap();
+    let proof =
+        compile_artifact_against_proof_context(proof_source, context.dag.artifact_state()).unwrap();
     let proof_output = compiled_proof(&proof);
     assert_eq!(proof_output.canonical_proof_bytes().len(), 106);
     assert_eq!(
@@ -874,7 +600,7 @@ proof:
         ))
     );
     let proof_id = proof_output.proof_id();
-    select_compiled(&mut journal, &proof);
+    admit_compiled(&mut context, &proof);
 
     let cited_source = format!(
         r#"
@@ -897,7 +623,8 @@ proof:
 "#,
         hex_string(proof_id.as_bytes())
     );
-    let cited = compile_artifact_against_selected_chain(&cited_source, &journal).unwrap();
+    let cited = compile_artifact_against_proof_context(&cited_source, context.dag.artifact_state())
+        .unwrap();
     let cited_output = compiled_proof(&cited);
     assert_eq!(cited_output.canonical_proof_bytes().len(), 196);
     assert_eq!(cited_output.statement_id(), proof_output.statement_id());
@@ -931,19 +658,15 @@ proof:
             ProofStep::Generalization { premise: 2, .. }
         ] if *referenced == proof_id
     ));
-    select_compiled(&mut journal, &cited);
-    let final_head = journal.head_block_id().unwrap();
-    drop(journal);
-
-    let reopened =
-        ArtifactChainJournal::open_verified(&directory.path, chain_definition, final_head).unwrap();
-    let state = reopened.artifact_state().unwrap();
+    admit_compiled(&mut context, &cited);
+    let rebuilt = context.recheck();
+    let state = rebuilt.dag.artifact_state();
     assert!(state.contains_definition(definition_id));
     assert!(state.contains_proof(proof_id));
     assert!(state.contains_proof(cited_id));
-    let cited_record = reopened
+    let cited_record = rebuilt
+        .dag
         .artifact(cited_artifact_id)
-        .unwrap()
         .unwrap()
         .as_proof()
         .unwrap();
@@ -952,6 +675,101 @@ proof:
         cited_record.direct_definition_dependencies(),
         &[definition_id]
     );
-    let replayed = compile_artifact_against_selected_chain(&cited_source, &reopened).unwrap();
+    let replayed =
+        compile_artifact_against_proof_context(&cited_source, rebuilt.dag.artifact_state())
+            .unwrap();
     assert_eq!(replayed, cited);
+}
+
+#[test]
+fn exact_context_registration_is_required_and_compilation_is_read_only() {
+    let dependency = compile(SELF_EQUALITY).unwrap();
+    let source = reference_source(dependency.proof_id());
+    let monolithic = compile(NESTED_SELF_EQUALITY).unwrap();
+    let mut context = CheckedContext::default();
+    // A checked certificate in another context does not resolve this reference.
+    let mut other = CheckedContext::default();
+    other
+        .admit(
+            ArtifactId::from_proof_id(dependency.proof_id()),
+            proof_artifact_bytes(&dependency),
+        )
+        .unwrap();
+    assert_unknown_reference(
+        compile_against_proof_context(&source, context.dag.artifact_state()),
+        dependency.proof_id(),
+    );
+    assert!(context.dag.is_empty());
+    context
+        .admit(
+            ArtifactId::from_proof_id(dependency.proof_id()),
+            proof_artifact_bytes(&dependency),
+        )
+        .unwrap();
+    let before = context.payloads.clone();
+    let root = context.dag.artifact_set_root();
+    let compiled = compile_against_proof_context(&source, context.dag.artifact_state()).unwrap();
+    assert_eq!(compiled.statement_id(), monolithic.statement_id());
+    assert_eq!(compiled.derivation_id(), monolithic.derivation_id());
+    assert_ne!(compiled.derivation_id(), dependency.derivation_id());
+    assert_ne!(compiled.proof_id(), dependency.proof_id());
+    assert_ne!(compiled.proof_id(), monolithic.proof_id());
+    let certificate =
+        ProofCertificate::from_canonical_bytes(compiled.canonical_proof_bytes()).unwrap();
+    assert!(
+        matches!(certificate.steps(), [ProofStep::ProofReference { proof_id },
+        ProofStep::Generalization { premise: 0, .. }] if *proof_id == dependency.proof_id())
+    );
+    // Neither matching statement nor matching derivation substitutes for an ID.
+    for wrong in [monolithic.proof_id(), ProofId::from_bytes([0xff; 32])] {
+        assert_unknown_reference(
+            compile_against_proof_context(&reference_source(wrong), context.dag.artifact_state()),
+            wrong,
+        );
+    }
+    assert_eq!(context.payloads, before);
+    assert_eq!(context.dag.artifact_set_root(), root);
+    assert_eq!(context.dag.len(), 1);
+    assert!(
+        !context
+            .dag
+            .artifact_state()
+            .contains_proof(compiled.proof_id())
+    );
+    let rebuilt = context.recheck();
+    assert_eq!(
+        compile_against_proof_context(&source, rebuilt.dag.artifact_state()).unwrap(),
+        compiled
+    );
+}
+
+#[test]
+fn only_exact_checked_definition_registration_enables_aliases() {
+    let definition =
+        compile_artifact(include_str!("../../../examples/reflexive-relation.nao")).unwrap();
+    let id = compiled_definition_id(&definition);
+    let source = include_str!("../../../examples/reflexive-relation-alias.nao");
+    let mut other = CheckedContext::default();
+    admit_compiled(&mut other, &definition);
+    let mut context = CheckedContext::default();
+    assert!(
+        matches!(compile_artifact_against_proof_context(source, context.dag.artifact_state()),
+        Err(CompileError::DefinitionNotSelected { definition_id, .. }) if definition_id == id)
+    );
+    assert!(context.dag.is_empty());
+    admit_compiled(&mut context, &definition);
+    let before = context.payloads.clone();
+    let root = context.dag.artifact_set_root();
+    let compiled =
+        compile_artifact_against_proof_context(source, context.dag.artifact_state()).unwrap();
+    assert_eq!(compiled, definition);
+    assert_eq!(compiled_definition_id(&compiled), id);
+    assert!(
+        context
+            .admit(compiled.artifact_id(), compiled.canonical_artifact_bytes())
+            .is_err()
+    );
+    assert_eq!(context.payloads, before);
+    assert_eq!(context.dag.artifact_set_root(), root);
+    assert_eq!(context.dag.len(), 1);
 }

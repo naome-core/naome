@@ -118,7 +118,7 @@ fn publish_a() -> (ProofLibrary, Node, Node) {
 #[test]
 fn real_a_group_then_b_refutation_preserves_h_attribution_and_known_c() {
     let (mut library, helper, _) = publish_a();
-    let mut state = library.resolver.clone();
+    let mut state = library.dag.artifact_state().clone();
     let root = b(helper.0, &mut state);
     let package = ProofPackage::new(author(2), root.0, vec![root], &Profile::lab()).unwrap();
     let normalized = library.normalize(&package, &qb(), &Profile::lab()).unwrap();
@@ -210,7 +210,7 @@ fn duplicate_helper_substitution_prunes_its_only_dependency_and_recomputes_root(
     assert_eq!(normalized.citations(), &[helper.0]);
     assert_eq!(normalized.new_proofs().len(), 1);
     assert_ne!(normalized.root(), root.0);
-    let expected = b(helper.0, &mut library.resolver.clone());
+    let expected = b(helper.0, &mut library.dag.artifact_state().clone());
     assert_eq!(normalized.root(), expected.0);
     assert_eq!(normalized.new_proofs()[0].canonical_bytes(), expected.1);
     assert!(ProofPackage::decode(normalized.final_bytes(), &Profile::lab()).is_ok());
@@ -453,7 +453,7 @@ fn stale_library_parent_prevents_whole_publication_without_mutation() {
 #[test]
 fn older_ancestors_are_checked_but_only_first_boundary_proof_is_cited() {
     let (library, helper, old_a) = publish_a();
-    let mut state = library.resolver.clone();
+    let mut state = library.dag.artifact_state().clone();
     let root = generalize(old_a.0, &mut state);
     let task =
         question("foundation = \"naome:zfc\" statement = forall(z,forall(y,forall(x,equal(x,x))))");
@@ -610,7 +610,7 @@ fn parent_selection_orders_height_operation_then_raw_proof_id() {
         // this fixture introduces no legacy-import authority path.
         let checked = strict_check(
             &duplicate.1,
-            &library.resolver,
+            library.dag.artifact_state(),
             &Profile::lab(),
             &mut VerificationWork::default(),
         )
@@ -619,7 +619,10 @@ fn parent_selection_orders_height_operation_then_raw_proof_id() {
             proof: record(&checked, author(8)),
             coordinate,
         };
-        library.resolver.register_proof(checked).unwrap();
+        library
+            .dag
+            .admit_checked_proof(checked, duplicate.0)
+            .unwrap();
         Arc::make_mut(&mut library.statements)
             .entry(older.conclusion.encode_canonical().unwrap())
             .or_default()
@@ -658,7 +661,7 @@ fn parent_selection_orders_height_operation_then_raw_proof_id() {
 #[test]
 fn same_derivation_original_alias_is_verified_then_removed_before_publication() {
     let (mut library, helper, _) = publish_a();
-    let mut original_state = library.resolver.clone();
+    let mut original_state = library.dag.artifact_state().clone();
     let alias = normalize_and_check_with_state(
         ProofCertificate::new(vec![ProofStep::ProofReference { proof_id: helper.0 }]).unwrap(),
         &original_state,
@@ -687,7 +690,12 @@ fn same_derivation_original_alias_is_verified_then_removed_before_publication() 
     );
     assert_eq!(normalized.citations(), &[helper.0]);
     assert_eq!(normalized.new_proofs().len(), 1);
-    assert!(!normalized.publication_resolver.contains_proof(alias_node.0));
+    assert!(
+        !normalized
+            .publication_dag
+            .artifact_state()
+            .contains_proof(alias_node.0)
+    );
     library
         .publish(
             &normalized,
@@ -698,7 +706,7 @@ fn same_derivation_original_alias_is_verified_then_removed_before_publication() 
         )
         .unwrap();
     assert!(library.lookup(alias_node.0).is_none());
-    assert!(!library.resolver.contains_proof(alias_node.0));
+    assert!(!library.dag.artifact_state().contains_proof(alias_node.0));
     assert_eq!(library.lookup(helper.0).unwrap().author(), author(1));
 }
 
@@ -718,3 +726,108 @@ fn streamed_library_root_matches_full_canonical_encoding() {
 mod qualification;
 
 mod depth_boundary;
+
+fn assert_dag_exactly_matches_publication(library: &ProofLibrary) {
+    use crate::{ArtifactDag, ArtifactSetMembership};
+    use naome_proof::{ArtifactId, ArtifactPayload};
+    let mut independent = ArtifactDag::new();
+    let mut remaining: BTreeSet<_> = library.proofs().map(|p| p.proof_id()).collect();
+    while !remaining.is_empty() {
+        let id = *remaining
+            .iter()
+            .find(|id| {
+                library
+                    .lookup(**id)
+                    .unwrap()
+                    .dependencies()
+                    .iter()
+                    .all(|dep| independent.artifact_state().contains_proof(*dep))
+            })
+            .expect("acyclic publication");
+        let proof = library.lookup(id).unwrap();
+        let artifact_id = ArtifactId::from_proof_id(id);
+        let record = library
+            .artifact_dag()
+            .artifact(artifact_id)
+            .unwrap()
+            .as_proof()
+            .unwrap();
+        assert_eq!(record.canonical_proof_bytes(), proof.canonical_bytes());
+        assert_eq!(record.statement_id(), proof.statement_id());
+        assert_eq!(
+            record
+                .direct_proof_dependencies()
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            proof.dependencies().iter().copied().collect()
+        );
+        assert!(record.direct_definition_dependencies().is_empty());
+        let bytes = ArtifactPayload::Proof(
+            ProofCertificate::from_canonical_bytes(proof.canonical_bytes()).unwrap(),
+        )
+        .to_canonical_bytes();
+        independent
+            .apply_canonical_artifact_bytes_with_expected_id(bytes, artifact_id)
+            .unwrap();
+        assert_eq!(
+            library
+                .artifact_dag()
+                .artifact_set_proof(artifact_id)
+                .verify(library.artifact_dag().artifact_set_root(), artifact_id)
+                .unwrap(),
+            ArtifactSetMembership::Present
+        );
+        remaining.remove(&id);
+    }
+    assert_eq!(library.len(), library.artifact_dag().len());
+    assert_eq!(
+        library.artifact_dag().artifact_set_root(),
+        independent.artifact_set_root()
+    );
+}
+
+#[test]
+fn artifact_dag_is_exactly_the_atomic_published_library_component() {
+    let empty = ProofLibrary::new();
+    assert_dag_exactly_matches_publication(&empty);
+    let (mut library, helper, _) = publish_a();
+    assert_dag_exactly_matches_publication(&library);
+    let mut scratch = library.dag.artifact_state().clone();
+    let root = b(helper.0, &mut scratch);
+    let package = ProofPackage::new(author(2), root.0, vec![root], &Profile::lab()).unwrap();
+    let before = library.encode().unwrap();
+    let before_dag = library.artifact_dag().artifact_set_root();
+    let normalized = library.normalize(&package, &qb(), &Profile::lab()).unwrap();
+    assert_eq!(normalized.work().checker_calls, 4); // No unmetered duplicate DAG check.
+    assert_eq!(library.encode().unwrap(), before);
+    assert_eq!(library.artifact_dag().artifact_set_root(), before_dag);
+    library
+        .publish(
+            &normalized,
+            AdmissionCoordinate {
+                height: 20,
+                operation_index: 0,
+            },
+        )
+        .unwrap();
+    assert_dag_exactly_matches_publication(&library);
+    let before = library.encode().unwrap();
+    let before_dag = library.artifact_dag().artifact_set_root();
+    assert!(
+        library
+            .publish(
+                &normalized,
+                AdmissionCoordinate {
+                    height: 21,
+                    operation_index: 0
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(library.encode().unwrap(), before);
+    assert_eq!(library.artifact_dag().artifact_set_root(), before_dag);
+    assert_dag_exactly_matches_publication(&library);
+    // The original parent stays an immutable, isolated component.
+    assert_dag_exactly_matches_publication(&empty);
+}

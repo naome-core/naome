@@ -4,6 +4,14 @@
 //! Consensus, transport, persistent signing safety, and durable publication
 //! belong to their respective integration layers.
 
+mod artifact_set;
+mod dag;
+pub use artifact_set::{
+    ARTIFACT_SET_PROOF_MAX_BYTES, ArtifactSetMembership, ArtifactSetProof, ArtifactSetProofError,
+    ArtifactSetRoot,
+};
+pub use dag::ArtifactDag;
+
 pub mod artifacts;
 pub use artifacts::*;
 
@@ -58,3 +66,7 @@ impl std::error::Error for ResearchError {}
 mod test_support;
 
 pub mod library;
+
+#[cfg(test)]
+#[path = "../../../tests/support/codec_corpus.rs"]
+mod codec_corpus;

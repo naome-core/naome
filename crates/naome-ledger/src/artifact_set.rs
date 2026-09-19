@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use naome_ledger::AcceptedArtifactRecord;
+use crate::AcceptedArtifactRecord;
 use naome_proof::ArtifactId;
 use sha2::{Digest, Sha256};
 
@@ -42,7 +42,8 @@ impl ArtifactSetRoot {
         &self.0
     }
 
-    pub(crate) const fn empty() -> Self {
+    /// Returns the fixed commitment of the empty artifact set.
+    pub const fn empty() -> Self {
         Self(EMPTY_DIGEST)
     }
 }

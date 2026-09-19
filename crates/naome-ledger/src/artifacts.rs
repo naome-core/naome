@@ -396,6 +396,23 @@ impl LedgerState {
         }
     }
 
+    pub(crate) fn admit_checked_proof(
+        &mut self,
+        checked: CheckedProof,
+        expected: ProofId,
+    ) -> Result<AcceptedProofRecord, LedgerError> {
+        if checked.proof_id() != expected {
+            return Err(LedgerError::ArtifactIdMismatch {
+                expected: ArtifactId::from_proof_id(expected),
+                actual: ArtifactId::from_proof_id(checked.proof_id()),
+            });
+        }
+        let bytes = ArtifactPayload::Proof(checked.normal_form().certificate().clone())
+            .to_canonical_bytes()
+            .into_boxed_slice();
+        self.register_checked_proof(checked, bytes)
+    }
+
     fn register_checked_proof(
         &mut self,
         checked: CheckedProof,

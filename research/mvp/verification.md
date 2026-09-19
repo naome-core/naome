@@ -39,6 +39,14 @@ control/output, signal, and portable replay replacements. Both local process
 profiles and a fresh delayed native devnet smoke passed; its platform CI remains
 separate. Remaining V0 library APIs and the final real-window lab are still open.
 
+The [proof-library integration milestone](evidence/library-integration.json) puts
+the checked artifact DAG inside atomic proof publication and replaces the V0
+journal authoring adapter with the sealed finalized full-history interface.
+All mathematical fixture identities and state replay vectors are retained.
+Both complete local workspace profiles passed 1,572 tests, and a fresh delayed
+12-record native devnet passed. Its CI is recorded separately; remaining V0
+library retirement and the final real-window lab are still open.
+
 ## Recorded qualification
 
 | Evidence | Source and result |
