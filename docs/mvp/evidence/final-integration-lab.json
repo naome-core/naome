@@ -1,0 +1,2213 @@
+{
+  "version": 1,
+  "result": "passed",
+  "qualification": "four independent local processes using authenticated TCP; not multi-machine evidence",
+  "timing": {
+    "profile": "lab",
+    "voting_seconds": 300,
+    "commitment_seconds": 120,
+    "reveal_seconds": 120
+  },
+  "run_records": 128,
+  "compact": true,
+  "host": {
+    "system": "Darwin",
+    "release": "27.0.0",
+    "machine": "arm64",
+    "logical_cpus": 10
+  },
+  "binary": "/private/tmp/naome-final-binaries/naome",
+  "binary_sha256": "e4caff60266b9c0ad76a18d34a8c29a241bc1866a790d9b3f0d8ec9946a90dc1",
+  "executables": {
+    "naome": {
+      "path": "/private/tmp/naome-final-binaries/naome",
+      "sha256": "e4caff60266b9c0ad76a18d34a8c29a241bc1866a790d9b3f0d8ec9946a90dc1"
+    },
+    "naome-validator": {
+      "path": "/private/tmp/naome-final-binaries/naome-validator",
+      "sha256": "f6d2243be54eb588d579ddfe458f5a442298e974a6fb69dfbee4a4c6de76364d"
+    },
+    "naome-verifier": {
+      "path": "/private/tmp/naome-final-binaries/naome-verifier",
+      "sha256": "988d855b738b53d88ddb66fc4acbfd7f5b2586fc4ae9d22ceb2acda61beab980"
+    }
+  },
+  "runner_sha256": "d1509f4ee8408583d8a3802731fb09d6619003c4d07d4a0ee96d22120cb59fd9",
+  "started_utc": "2026-09-19T19:07:35Z",
+  "commands": [
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "setup",
+        "$RUN/network",
+        "lab",
+        "128",
+        "31660",
+        "compact"
+      ],
+      "elapsed_seconds": 0.431,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "profile-info",
+        "$RUN/network/genesis.bin"
+      ],
+      "elapsed_seconds": 0.011,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "profile",
+        "$RUN/network/node-0/node.json",
+        "$RUN/operator-profile.txt"
+      ],
+      "elapsed_seconds": 0.016,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "profile-info",
+        "$RUN/network/genesis.bin"
+      ],
+      "elapsed_seconds": 0.008,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/a4.package",
+        "$REPO/examples/state-workflow/solution-a.nao",
+        "--helper",
+        "$REPO/examples/state-workflow/helper-h.nao"
+      ],
+      "elapsed_seconds": 0.021,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/a5.package",
+        "$RUN/a-alternate.nao",
+        "--helper",
+        "$REPO/examples/state-workflow/helper-h.nao"
+      ],
+      "elapsed_seconds": 0.02,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-validator",
+        "start",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-validator",
+        "start",
+        "$RUN/network/node-1/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-validator",
+        "start",
+        "$RUN/network/node-2/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-validator",
+        "start",
+        "$RUN/network/node-3/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "submit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$REPO/examples/state-workflow/question-a.nao",
+        "Reusable foundational mathematical result A",
+        "$RUN/A.submit"
+      ],
+      "elapsed_seconds": 0.018,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "vote",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-1.key",
+        "YES",
+        "$RUN/A-vote-1.action"
+      ],
+      "elapsed_seconds": 0.027,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "vote",
+        "$RUN/network/node-2/node.json",
+        "$RUN/network/accounts/account-2.key",
+        "YES",
+        "$RUN/A-vote-2.action"
+      ],
+      "elapsed_seconds": 0.027,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "vote",
+        "$RUN/network/node-3/node.json",
+        "$RUN/network/accounts/account-3.key",
+        "YES",
+        "$RUN/A-vote-3.action"
+      ],
+      "elapsed_seconds": 0.019,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "agent-vote",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-0.key",
+        "$RUN/A-agent.action",
+        "$RUN/A-agent.report",
+        "$REPO/tools/agenda_agent_codex.py"
+      ],
+      "elapsed_seconds": 5.963,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/a4.package",
+        "$RUN/a4.secret",
+        "$RUN/a4.commit"
+      ],
+      "elapsed_seconds": 0.04,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/a4.package",
+        "$RUN/a4.secret",
+        "$RUN/a4.commit"
+      ],
+      "elapsed_seconds": 0.013,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/a5.package",
+        "$RUN/a5.secret",
+        "$RUN/a5.commit"
+      ],
+      "elapsed_seconds": 0.028,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "reveal",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/a5.secret",
+        "$RUN/a5.reveal"
+      ],
+      "elapsed_seconds": 0.029,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "reveal",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/a4.secret",
+        "$RUN/a4.reveal"
+      ],
+      "elapsed_seconds": 0.033,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "question",
+        "$RUN/network/node-0/node.json",
+        "42700c5eb7588eb5910f3e058093e43c718b82b257f661869002f5813aef8d3b"
+      ],
+      "elapsed_seconds": 0.006,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "shutdown",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0.006,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "fetch-proof-from",
+        "$RUN/network/node-1/node.json",
+        "3",
+        "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.125,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "check-proof",
+        "$RUN/network/genesis.bin",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.009,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/b5.package",
+        "$REPO/examples/state-workflow/solution-b-original.nao",
+        "--reference",
+        "$RUN/h.proof",
+        "--helper",
+        "$REPO/examples/state-workflow/helper-h-duplicate.nao"
+      ],
+      "elapsed_seconds": 0.019,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "submit",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$REPO/examples/state-workflow/question-b.nao",
+        "Reusable foundational mathematical result B",
+        "$RUN/B.submit"
+      ],
+      "elapsed_seconds": 0.02,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "vote",
+        "$RUN/network/node-2/node.json",
+        "$RUN/network/accounts/account-2.key",
+        "YES",
+        "$RUN/B-vote-2.action"
+      ],
+      "elapsed_seconds": 0.036,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "vote",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-1.key",
+        "YES",
+        "$RUN/B-vote-1.action"
+      ],
+      "elapsed_seconds": 0.04,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "vote",
+        "$RUN/network/node-3/node.json",
+        "$RUN/network/accounts/account-3.key",
+        "YES",
+        "$RUN/B-vote-3.action"
+      ],
+      "elapsed_seconds": 0.042,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "commit",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/b5.package",
+        "$RUN/b5.secret",
+        "$RUN/b5.commit"
+      ],
+      "elapsed_seconds": 0.028,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "reveal",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/b5.secret",
+        "$RUN/b5.reveal"
+      ],
+      "elapsed_seconds": 0.036,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "question",
+        "$RUN/network/node-1/node.json",
+        "d801647a00b18e31776dc05f89a18c4d82215b370b98a941ffdb04fd551d9856"
+      ],
+      "elapsed_seconds": 0.006,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "fetch-proof",
+        "$RUN/network/node-2/node.json",
+        "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+        "$RUN/h-again.proof"
+      ],
+      "elapsed_seconds": 0.018,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "submit",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$REPO/examples/state-workflow/question-c.nao",
+        "Reusable foundational mathematical result C",
+        "$RUN/C.submit"
+      ],
+      "elapsed_seconds": 0.017,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "question",
+        "$RUN/network/node-1/node.json",
+        "4e6a5aa34d002902a02040950e84110609fb71830d9a2ecbac3726b3785efd49"
+      ],
+      "elapsed_seconds": 0.007,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-validator",
+        "start",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-0/node.json",
+        "3",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-0/node.json",
+        "2",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-1/node.json",
+        "3",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-1/node.json",
+        "2",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-2/node.json",
+        "1",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-2/node.json",
+        "0",
+        "off"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-3/node.json",
+        "1",
+        "off"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-3/node.json",
+        "0",
+        "off"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "submit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/question-d.nao",
+        "Reusable foundational mathematical result D",
+        "$RUN/D.submit"
+      ],
+      "elapsed_seconds": 0.018,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-0/node.json",
+        "3",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-0/node.json",
+        "2",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-1/node.json",
+        "3",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-1/node.json",
+        "2",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-2/node.json",
+        "1",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-2/node.json",
+        "0",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-3/node.json",
+        "1",
+        "on"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "peer",
+        "$RUN/network/node-3/node.json",
+        "0",
+        "on"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "vote",
+        "$RUN/network/node-1/node.json",
+        "$RUN/network/accounts/account-1.key",
+        "YES",
+        "$RUN/D-vote-1.action"
+      ],
+      "elapsed_seconds": 0.025,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "vote",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-0.key",
+        "YES",
+        "$RUN/D-vote-0.action"
+      ],
+      "elapsed_seconds": 0.033,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "vote",
+        "$RUN/network/node-2/node.json",
+        "$RUN/network/accounts/account-2.key",
+        "YES",
+        "$RUN/D-vote-2.action"
+      ],
+      "elapsed_seconds": 0.034,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/d4.package",
+        "$RUN/d4.nao",
+        "--reference",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.018,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "package",
+        "$RUN/network/genesis.bin",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/d5.package",
+        "$RUN/d5.nao",
+        "--reference",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.017,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-4.key",
+        "$RUN/d4.package",
+        "$RUN/d4.secret",
+        "$RUN/d4.commit"
+      ],
+      "elapsed_seconds": 0.035,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "commit",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/d5.package",
+        "$RUN/d5.secret",
+        "$RUN/d5.commit"
+      ],
+      "elapsed_seconds": 0.04,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "reveal",
+        "$RUN/network/node-0/node.json",
+        "$RUN/network/accounts/account-5.key",
+        "$RUN/d5.secret",
+        "$RUN/d5.reveal"
+      ],
+      "elapsed_seconds": 0.031,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "question",
+        "$RUN/network/node-0/node.json",
+        "ffca0e680e4f35a603b6f3ccbfa235565756bad8739242c0000a694be16581d3"
+      ],
+      "elapsed_seconds": 0.01,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "shutdown",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "shutdown",
+        "$RUN/network/node-1/node.json"
+      ],
+      "elapsed_seconds": 0.007,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "shutdown",
+        "$RUN/network/node-2/node.json"
+      ],
+      "elapsed_seconds": 0.01,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "shutdown",
+        "$RUN/network/node-3/node.json"
+      ],
+      "elapsed_seconds": 0.009,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-validator",
+        "start",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-validator",
+        "start",
+        "$RUN/network/node-1/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-validator",
+        "start",
+        "$RUN/network/node-2/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-validator",
+        "start",
+        "$RUN/network/node-3/node.json"
+      ],
+      "elapsed_seconds": 0,
+      "exit_code": null
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "export",
+        "$RUN/network/node-2/node.json",
+        "$RUN/observer"
+      ],
+      "elapsed_seconds": 0.601,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-verifier",
+        "verify",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer"
+      ],
+      "elapsed_seconds": 0.072,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "inspect",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer",
+        "42700c5eb7588eb5910f3e058093e43c718b82b257f661869002f5813aef8d3b",
+        "$RUN/inspect-A"
+      ],
+      "elapsed_seconds": 0.146,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "fetch-proof",
+        "$RUN/network/node-2/node.json",
+        "5fa8519d6b675c69e6519add6e69d84d4abb7886412cac0b0f069e79f1896f29",
+        "$RUN/A.proof"
+      ],
+      "elapsed_seconds": 0.014,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "check-proof",
+        "$RUN/network/genesis.bin",
+        "$RUN/A.proof",
+        "$RUN/h.proof"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "inspect",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer",
+        "d801647a00b18e31776dc05f89a18c4d82215b370b98a941ffdb04fd551d9856",
+        "$RUN/inspect-B"
+      ],
+      "elapsed_seconds": 0.117,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "fetch-proof",
+        "$RUN/network/node-2/node.json",
+        "4ee688c1c7627e5a22e9033012b5d5e2e9e8329cc4f363a631bc495c3442ab8e",
+        "$RUN/B.proof"
+      ],
+      "elapsed_seconds": 0.018,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "check-proof",
+        "$RUN/network/genesis.bin",
+        "$RUN/B.proof",
+        "$RUN/h.proof",
+        "$RUN/A.proof"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "inspect",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer",
+        "ffca0e680e4f35a603b6f3ccbfa235565756bad8739242c0000a694be16581d3",
+        "$RUN/inspect-D"
+      ],
+      "elapsed_seconds": 0.119,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "fetch-proof",
+        "$RUN/network/node-2/node.json",
+        "7e21fd47195b73efa719092969a443fcf4ab5dd669c2a6e526a3427b7c4833c0",
+        "$RUN/D.proof"
+      ],
+      "elapsed_seconds": 0.016,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "check-proof",
+        "$RUN/network/genesis.bin",
+        "$RUN/D.proof",
+        "$RUN/h.proof",
+        "$RUN/A.proof",
+        "$RUN/B.proof"
+      ],
+      "elapsed_seconds": 0.005,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome-verifier",
+        "verify",
+        "$RUN/network/genesis.bin",
+        "$RUN/observer"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 1
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "shutdown",
+        "$RUN/network/node-0/node.json"
+      ],
+      "elapsed_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "shutdown",
+        "$RUN/network/node-1/node.json"
+      ],
+      "elapsed_seconds": 0.007,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "shutdown",
+        "$RUN/network/node-2/node.json"
+      ],
+      "elapsed_seconds": 0.01,
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "/private/tmp/naome-final-binaries/naome",
+        "shutdown",
+        "$RUN/network/node-3/node.json"
+      ],
+      "elapsed_seconds": 0.01,
+      "exit_code": 0
+    }
+  ],
+  "observations": [
+    {
+      "event": "configured",
+      "elapsed_seconds": 0.473,
+      "free_bytes": 68962349056,
+      "evidence": {
+        "directory": "$RUN/network",
+        "genesis": "b152de1cff233ce2fc1542304018739bd03ffd78764c1705f40c38e814e1ff9a",
+        "profile": "cba3034a7cb19eb86bd2d8c3333f38316545c7a5e96044dd74be9a2ef94852e6",
+        "required_storage_bytes": 5162628712,
+        "run_records": 128,
+        "status": "configured",
+        "timing": "lab",
+        "validators_started": false
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 2.091,
+      "free_bytes": 68962213888,
+      "evidence": {
+        "node": 0,
+        "phase": "Voting",
+        "height": 2,
+        "certified_time": 1789844857,
+        "deadline": 1789845157
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 2.101,
+      "free_bytes": 68962197504,
+      "evidence": {
+        "node": 1,
+        "phase": "Voting",
+        "height": 2,
+        "certified_time": 1789844857,
+        "deadline": 1789845157
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 2.11,
+      "free_bytes": 68962197504,
+      "evidence": {
+        "node": 2,
+        "phase": "Voting",
+        "height": 2,
+        "certified_time": 1789844857,
+        "deadline": 1789845157
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 2.117,
+      "free_bytes": 68962193408,
+      "evidence": {
+        "node": 3,
+        "phase": "Voting",
+        "height": 2,
+        "certified_time": 1789844857,
+        "deadline": 1789845157
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 8.953,
+      "free_bytes": 68957855744,
+      "evidence": {
+        "operation": "afdd2283249ee4922ad60eb993ac7356d7de1ac843944b19cbcecc943a66049d",
+        "height": 5,
+        "nonce": 1,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 8.992,
+      "free_bytes": 68957859840,
+      "evidence": {
+        "operation": "95efa1990a024f9476ad1ebf6f9afba9b75bea918ad0d1561a373b33d519a01e",
+        "height": 4,
+        "nonce": 1,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 9.001,
+      "free_bytes": 68957843456,
+      "evidence": {
+        "operation": "7ac8eb436545c0f756fa0f5ef4790a15cb37e105753b208a121d61e8d6b40f06",
+        "height": 3,
+        "nonce": 1,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 9.008,
+      "free_bytes": 68957839360,
+      "evidence": {
+        "operation": "b868ddeccf9a4f7c6f3bc541ba13ee0ec0dc94e6ca62ad9bc025b53e9cc79e8c",
+        "height": 4,
+        "nonce": 1,
+        "operation_index": 1,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 303.402,
+      "free_bytes": 68958625792,
+      "evidence": {
+        "node": 0,
+        "phase": "Commit",
+        "height": 7,
+        "certified_time": 1789845158,
+        "deadline": 1789845278
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 304.31,
+      "free_bytes": 68958339072,
+      "evidence": {
+        "operation": "77d2cebbef4f2429a8ab3690df2f02380584c5bb7ffdfd015a935004f060b14d",
+        "height": 8,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 304.338,
+      "free_bytes": 68958314496,
+      "evidence": {
+        "operation": "77d2cebbef4f2429a8ab3690df2f02380584c5bb7ffdfd015a935004f060b14d",
+        "height": 8,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 305.456,
+      "free_bytes": 68958310400,
+      "evidence": {
+        "operation": "c8b5c4d58db70034b05c4f86388565a5df4bd67e7d037554da649e0395cb0fd8",
+        "height": 9,
+        "nonce": 1,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 424.458,
+      "free_bytes": 68952186880,
+      "evidence": {
+        "node": 0,
+        "phase": "Reveal",
+        "height": 11,
+        "certified_time": 1789845279,
+        "deadline": 1789845399
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 425.577,
+      "free_bytes": 68952186880,
+      "evidence": {
+        "operation": "62eff100cb09deb448f54bf88bc83ccda681fab63952fa6dc9843856514b5c33",
+        "height": 12,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 426.979,
+      "free_bytes": 68952154112,
+      "evidence": {
+        "operation": "ca11a5ac2146bcd391d128fba25c559cfaacd1f1bad2a656c05d75e7c7c299df",
+        "height": 13,
+        "nonce": 3,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 545.602,
+      "free_bytes": 68950323200,
+      "evidence": {
+        "state": "3e456a815934c3a6987c93b90996d5f32bd3713b11c049501723ea21d893a420",
+        "head": "101ed9cffb73746719f19083499b9924d8f8f3cbc1a925db2f97294e1ea6c321",
+        "height": 15,
+        "accounts": [
+          {
+            "account": "42f209c7364166f14049773e9192bd8887a55957c4775cd40e893f847e510280",
+            "balance_atoms": "50000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "7210e13c9651ab5cb60484c49f4bc51366bda921704c7e72ea9bb8d42400ad6b",
+            "balance_atoms": "50000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "8aabadfbcd2dc43a9e02d81a4cffc3001081c58ade20978a07c676dae91e24a4",
+            "balance_atoms": "50000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "balance_atoms": "700000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "balance_atoms": "0",
+            "next_nonce": 3
+          },
+          {
+            "account": "d5729aa586dbf8a25c89dd2ac5292ac9b72d312a6c514d6b8dcaca13f86fd782",
+            "balance_atoms": "50000000",
+            "next_nonce": 2
+          }
+        ],
+        "reserve_atoms": "100000000",
+        "claims": [
+          {
+            "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "family": "8d13b0e6a5c6bfce8c718a90118775e888e05e52b71f6091f8a5880831a4fb9a",
+            "ordinal": 1
+          }
+        ],
+        "library_root": "c86641643cd4f97b76f1e4cca347a487db7af65ee237a36dbbacbaf89bc98f85",
+        "paid_completions": 1
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 552.433,
+      "free_bytes": 68950286336,
+      "evidence": {
+        "node": 1,
+        "phase": "Voting",
+        "height": 17,
+        "certified_time": 1789845407,
+        "deadline": 1789845707
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 552.444,
+      "free_bytes": 68950269952,
+      "evidence": {
+        "node": 2,
+        "phase": "Voting",
+        "height": 17,
+        "certified_time": 1789845407,
+        "deadline": 1789845707
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 552.453,
+      "free_bytes": 68950269952,
+      "evidence": {
+        "node": 3,
+        "phase": "Voting",
+        "height": 17,
+        "certified_time": 1789845407,
+        "deadline": 1789845707
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 553.348,
+      "free_bytes": 68950249472,
+      "evidence": {
+        "operation": "c7f0da1942a3d1d40c5fc250e4b1249350c437ed9ee2a2f3c3d62487ff58abb6",
+        "height": 18,
+        "nonce": 2,
+        "operation_index": 2,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 553.362,
+      "free_bytes": 68950237184,
+      "evidence": {
+        "operation": "b4c594921e3dbce3f7d90f72924b23c821f7a59e3cf0aeb3d035f1d8a4512732",
+        "height": 18,
+        "nonce": 2,
+        "operation_index": 1,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 553.371,
+      "free_bytes": 68950237184,
+      "evidence": {
+        "operation": "98731d9c04a5cccd4828eef15011357104a7cdf777b4f1ea77cf800e3b24314e",
+        "height": 18,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 857.808,
+      "free_bytes": 68943421440,
+      "evidence": {
+        "node": 1,
+        "phase": "Commit",
+        "height": 20,
+        "certified_time": 1789845712,
+        "deadline": 1789845832
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 858.687,
+      "free_bytes": 68943323136,
+      "evidence": {
+        "operation": "1d4f410e14e21c8f8640a8e7f50b3328a43976f34f1240d3da244bfc94063db0",
+        "height": 21,
+        "nonce": 4,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 978.424,
+      "free_bytes": 68945342464,
+      "evidence": {
+        "node": 1,
+        "phase": "Reveal",
+        "height": 23,
+        "certified_time": 1789845833,
+        "deadline": 1789845953
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 984.395,
+      "free_bytes": 68945289216,
+      "evidence": {
+        "operation": "0c5a8a5ae5373a944620c17c0804210399a0c471c698dc52c85ee9e0564d3ceb",
+        "height": 24,
+        "nonce": 5,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 1099.251,
+      "free_bytes": 68944207872,
+      "evidence": {
+        "state": "4492ea5a832d2c7a8491e88f6d39b20c281c79eab2cc6ac1f6848f3253816de5",
+        "head": "3c8e069fffd7607f207f886eef921647a4e660c029d12aa696ff999b0678e62b",
+        "height": 26,
+        "accounts": [
+          {
+            "account": "42f209c7364166f14049773e9192bd8887a55957c4775cd40e893f847e510280",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "7210e13c9651ab5cb60484c49f4bc51366bda921704c7e72ea9bb8d42400ad6b",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "8aabadfbcd2dc43a9e02d81a4cffc3001081c58ade20978a07c676dae91e24a4",
+            "balance_atoms": "100000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "balance_atoms": "800000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "balance_atoms": "600000000",
+            "next_nonce": 6
+          },
+          {
+            "account": "d5729aa586dbf8a25c89dd2ac5292ac9b72d312a6c514d6b8dcaca13f86fd782",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          }
+        ],
+        "reserve_atoms": "200000000",
+        "claims": [
+          {
+            "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "family": "2e979489cbd6ac3ca03e22d81a869c101aff6ec0b2fb2d0ea25c620432a8372b",
+            "ordinal": 2
+          },
+          {
+            "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "family": "8d13b0e6a5c6bfce8c718a90118775e888e05e52b71f6091f8a5880831a4fb9a",
+            "ordinal": 1
+          }
+        ],
+        "library_root": "2d80735616c260285f0355ba7125ca80824a3206a31b70aa1d7bc087eab9cebe",
+        "paid_completions": 2
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 1111.627,
+      "free_bytes": 68944080896,
+      "evidence": {
+        "state": "71cc52059952d7d0e3e56f6c19d2aafa6126c85d836394d6058a000ea3b13c8f",
+        "head": "09462a102bbc963bccc59278ac24c68f4c6dab9182fb616a976325f3e789a3ed",
+        "height": 28,
+        "accounts": [
+          {
+            "account": "42f209c7364166f14049773e9192bd8887a55957c4775cd40e893f847e510280",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "7210e13c9651ab5cb60484c49f4bc51366bda921704c7e72ea9bb8d42400ad6b",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "8aabadfbcd2dc43a9e02d81a4cffc3001081c58ade20978a07c676dae91e24a4",
+            "balance_atoms": "100000000",
+            "next_nonce": 2
+          },
+          {
+            "account": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "balance_atoms": "800000000",
+            "next_nonce": 5
+          },
+          {
+            "account": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "balance_atoms": "600000000",
+            "next_nonce": 6
+          },
+          {
+            "account": "d5729aa586dbf8a25c89dd2ac5292ac9b72d312a6c514d6b8dcaca13f86fd782",
+            "balance_atoms": "100000000",
+            "next_nonce": 3
+          }
+        ],
+        "reserve_atoms": "200000000",
+        "claims": [
+          {
+            "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "family": "2e979489cbd6ac3ca03e22d81a869c101aff6ec0b2fb2d0ea25c620432a8372b",
+            "ordinal": 2
+          },
+          {
+            "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "family": "8d13b0e6a5c6bfce8c718a90118775e888e05e52b71f6091f8a5880831a4fb9a",
+            "ordinal": 1
+          }
+        ],
+        "library_root": "2d80735616c260285f0355ba7125ca80824a3206a31b70aa1d7bc087eab9cebe",
+        "paid_completions": 2
+      }
+    },
+    {
+      "event": "partition_no_progress",
+      "elapsed_seconds": 1116.725,
+      "free_bytes": 68944023552,
+      "evidence": {
+        "seconds": 5,
+        "state": "71cc52059952d7d0e3e56f6c19d2aafa6126c85d836394d6058a000ea3b13c8f"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1121.084,
+      "free_bytes": 68943912960,
+      "evidence": {
+        "node": 0,
+        "phase": "Voting",
+        "height": 30,
+        "certified_time": 1789845975,
+        "deadline": 1789846275
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1121.097,
+      "free_bytes": 68943896576,
+      "evidence": {
+        "node": 1,
+        "phase": "Voting",
+        "height": 30,
+        "certified_time": 1789845975,
+        "deadline": 1789846275
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1121.108,
+      "free_bytes": 68943888384,
+      "evidence": {
+        "node": 2,
+        "phase": "Voting",
+        "height": 30,
+        "certified_time": 1789845975,
+        "deadline": 1789846275
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1121.952,
+      "free_bytes": 68943630336,
+      "evidence": {
+        "operation": "465bfd8b1d56dfac2a740ad63b9812df37c6f0b6695f36e738c1e15c4e7115a9",
+        "height": 31,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1127.382,
+      "free_bytes": 68943626240,
+      "evidence": {
+        "operation": "a73ef2469eadd96807e0a45f2e55b41c0c4768407d676d3dda9bdcc54745d1ee",
+        "height": 32,
+        "nonce": 3,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1127.392,
+      "free_bytes": 68943605760,
+      "evidence": {
+        "operation": "55986fda8e7d1007bef51fd43b3a98acf667bca7e723e929db271e14b583bcfa",
+        "height": 31,
+        "nonce": 3,
+        "operation_index": 1,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1421.351,
+      "free_bytes": 68865937408,
+      "evidence": {
+        "node": 0,
+        "phase": "Commit",
+        "height": 34,
+        "certified_time": 1789846276,
+        "deadline": 1789846396
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1422.78,
+      "free_bytes": 68865794048,
+      "evidence": {
+        "operation": "c23d4291e478f4e27b5bbd95bc91e38a0ce1a697e6c38d71fa9ca9e752d20444",
+        "height": 35,
+        "nonce": 6,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1423.721,
+      "free_bytes": 68865708032,
+      "evidence": {
+        "operation": "5aa2252d8c478f139d9cfe1192fd9215605dcc39b1d5dabaad4e4facf7c65c7d",
+        "height": 36,
+        "nonce": 6,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "phase",
+      "elapsed_seconds": 1542.348,
+      "free_bytes": 68864811008,
+      "evidence": {
+        "node": 0,
+        "phase": "Reveal",
+        "height": 38,
+        "certified_time": 1789846397,
+        "deadline": 1789846517
+      }
+    },
+    {
+      "event": "finalized_receipt",
+      "elapsed_seconds": 1543.802,
+      "free_bytes": 68864802816,
+      "evidence": {
+        "operation": "1ac84cdad66db11641af3ce53f7bebb6bce5ae357aa0fa475ffaeb68ac641180",
+        "height": 39,
+        "nonce": 7,
+        "operation_index": 0,
+        "status": "finalized"
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 1663.472,
+      "free_bytes": 68863553536,
+      "evidence": {
+        "state": "1b93ad675071739a189e03416a598d76af3077fb0c3fc4de05c8cc153abc47ad",
+        "head": "fdaebf6e91fe18795a986d8582c7e319617a5a5a5a30b627a079475af034136f",
+        "height": 41,
+        "accounts": [
+          {
+            "account": "42f209c7364166f14049773e9192bd8887a55957c4775cd40e893f847e510280",
+            "balance_atoms": "150000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "7210e13c9651ab5cb60484c49f4bc51366bda921704c7e72ea9bb8d42400ad6b",
+            "balance_atoms": "150000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "8aabadfbcd2dc43a9e02d81a4cffc3001081c58ade20978a07c676dae91e24a4",
+            "balance_atoms": "150000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "balance_atoms": "900000000",
+            "next_nonce": 7
+          },
+          {
+            "account": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "balance_atoms": "1200000000",
+            "next_nonce": 8
+          },
+          {
+            "account": "d5729aa586dbf8a25c89dd2ac5292ac9b72d312a6c514d6b8dcaca13f86fd782",
+            "balance_atoms": "150000000",
+            "next_nonce": 4
+          }
+        ],
+        "reserve_atoms": "300000000",
+        "claims": [
+          {
+            "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "family": "2e979489cbd6ac3ca03e22d81a869c101aff6ec0b2fb2d0ea25c620432a8372b",
+            "ordinal": 2
+          },
+          {
+            "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "family": "76d9eb1767eec6d418e2c9f4955d8a992f12f31bad6fe2e55c47dee6cdbe3fb5",
+            "ordinal": 3
+          },
+          {
+            "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "family": "8d13b0e6a5c6bfce8c718a90118775e888e05e52b71f6091f8a5880831a4fb9a",
+            "ordinal": 1
+          }
+        ],
+        "library_root": "45e89a76bf7c905df101139a1d2d547706a0b02a2097d67b2e5a9b026419260b",
+        "paid_completions": 3
+      }
+    },
+    {
+      "event": "agreement",
+      "elapsed_seconds": 1664.152,
+      "free_bytes": 68863528960,
+      "evidence": {
+        "state": "1b93ad675071739a189e03416a598d76af3077fb0c3fc4de05c8cc153abc47ad",
+        "head": "fdaebf6e91fe18795a986d8582c7e319617a5a5a5a30b627a079475af034136f",
+        "height": 41,
+        "accounts": [
+          {
+            "account": "42f209c7364166f14049773e9192bd8887a55957c4775cd40e893f847e510280",
+            "balance_atoms": "150000000",
+            "next_nonce": 4
+          },
+          {
+            "account": "7210e13c9651ab5cb60484c49f4bc51366bda921704c7e72ea9bb8d42400ad6b",
+            "balance_atoms": "150000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "8aabadfbcd2dc43a9e02d81a4cffc3001081c58ade20978a07c676dae91e24a4",
+            "balance_atoms": "150000000",
+            "next_nonce": 3
+          },
+          {
+            "account": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "balance_atoms": "900000000",
+            "next_nonce": 7
+          },
+          {
+            "account": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "balance_atoms": "1200000000",
+            "next_nonce": 8
+          },
+          {
+            "account": "d5729aa586dbf8a25c89dd2ac5292ac9b72d312a6c514d6b8dcaca13f86fd782",
+            "balance_atoms": "150000000",
+            "next_nonce": 4
+          }
+        ],
+        "reserve_atoms": "300000000",
+        "claims": [
+          {
+            "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "family": "2e979489cbd6ac3ca03e22d81a869c101aff6ec0b2fb2d0ea25c620432a8372b",
+            "ordinal": 2
+          },
+          {
+            "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+            "family": "76d9eb1767eec6d418e2c9f4955d8a992f12f31bad6fe2e55c47dee6cdbe3fb5",
+            "ordinal": 3
+          },
+          {
+            "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+            "family": "8d13b0e6a5c6bfce8c718a90118775e888e05e52b71f6091f8a5880831a4fb9a",
+            "ordinal": 1
+          }
+        ],
+        "library_root": "45e89a76bf7c905df101139a1d2d547706a0b02a2097d67b2e5a9b026419260b",
+        "paid_completions": 3
+      }
+    }
+  ],
+  "checks": {
+    "independent_process_custody": {
+      "validators": 4,
+      "separate_histories": true,
+      "separate_signer_journals": true,
+      "separate_consensus_keys": true,
+      "separate_transport_keys": true
+    },
+    "local_profile_edit": {
+      "operator": 0,
+      "text": "Prioritize precise foundational mathematics and reusable equality lemmas. Approve well-defined formal questions that build a reusable library; reject unrelated or unclear questions.\n",
+      "immutable_profile_unchanged": true
+    },
+    "actual_agent_review": {
+      "attempts": 1,
+      "authority": "operator agenda vote only; no proof-validity authority",
+      "decision": {
+        "decision": "YES",
+        "provider": "codex-cli",
+        "reason": "The question precisely states universally quantified self-equality in ZFC, fitting the profile\u2019s priority for foundational mathematics and reusable equality lemmas.",
+        "tool_calls": 0
+      },
+      "elapsed_ms": 5884,
+      "genesis": "b152de1cff233ce2fc1542304018739bd03ffd78764c1705f40c38e814e1ff9a",
+      "kind": "actual_agent_review",
+      "operation": "afdd2283249ee4922ad60eb993ac7356d7de1ac843944b19cbcecc943a66049d",
+      "question_id": "a3944711009756ce79b68f0cec46a3cb47e1a43ef04ab293ee933da0fc178ce9",
+      "request_sha256": "0e5980f9370d9acf8cf6bd9ca99f9862885e1f51ddefc14f805d1781671b1131"
+    },
+    "durable_commitment_retry": {
+      "operation": "77d2cebbef4f2429a8ab3690df2f02380584c5bb7ffdfd015a935004f060b14d",
+      "receipt": {
+        "height": 8,
+        "nonce": 2,
+        "operation_index": 0,
+        "status": "finalized"
+      },
+      "unchanged_accounts_and_nonces": true
+    },
+    "AB02_reverse_reveal": {
+      "earlier_commit": "77d2cebbef4f2429a8ab3690df2f02380584c5bb7ffdfd015a935004f060b14d",
+      "later_commit": "c8b5c4d58db70034b05c4f86388565a5df4bd67e7d037554da649e0395cb0fd8",
+      "different_roots": [
+        "5fa8519d6b675c69e6519add6e69d84d4abb7886412cac0b0f069e79f1896f29",
+        "08223b978a4456413a9b77d11ab9e9e42191a0b791503cda591bccf8b5306304"
+      ],
+      "question": {
+        "admission": {
+          "height": 1,
+          "operation_index": 0
+        },
+        "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+        "checked_conclusion": "forall(b0, forall(b1, equal(b1, b1)))",
+        "completion_ordinal": 1,
+        "eligibility_claim": {
+          "active_voting_rights": false,
+          "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+          "ordinal": 1
+        },
+        "expires": 1789846657,
+        "family": "8d13b0e6a5c6bfce8c718a90118775e888e05e52b71f6091f8a5880831a4fb9a",
+        "formal_targets": {
+          "R": "forall(b0, forall(b1, equal(b1, b1)))",
+          "not_R": "not_(forall(b0, forall(b1, equal(b1, b1))))",
+          "submitted_negation_parity": false
+        },
+        "normalization": {
+          "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+          "citation_payments": [],
+          "commitment": "6f09eeb58aa4b9756907fffab793d7114fda04c85a2b1254a5be3f964bc4dc23",
+          "credits": [
+            {
+              "account": "42f209c7364166f14049773e9192bd8887a55957c4775cd40e893f847e510280",
+              "atoms": "50000000"
+            },
+            {
+              "account": "7210e13c9651ab5cb60484c49f4bc51366bda921704c7e72ea9bb8d42400ad6b",
+              "atoms": "50000000"
+            },
+            {
+              "account": "8aabadfbcd2dc43a9e02d81a4cffc3001081c58ade20978a07c676dae91e24a4",
+              "atoms": "50000000"
+            },
+            {
+              "account": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+              "atoms": "700000000"
+            },
+            {
+              "account": "d5729aa586dbf8a25c89dd2ac5292ac9b72d312a6c514d6b8dcaca13f86fd782",
+              "atoms": "50000000"
+            }
+          ],
+          "new_proofs": [
+            {
+              "proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+              "recipient": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6"
+            },
+            {
+              "proof": "5fa8519d6b675c69e6519add6e69d84d4abb7886412cac0b0f069e79f1896f29",
+              "recipient": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6"
+            }
+          ],
+          "normalized_root": "5fa8519d6b675c69e6519add6e69d84d4abb7886412cac0b0f069e79f1896f29",
+          "original_hash": "e5eb0cb6a5544d60f0e12f32e1313b0a2e854b12bd3b5efecbd2e70506eb3b53",
+          "parent_state": "b507d8f0d387a001e391702ee07c212479ddaf2ed01f861fa1fde6f67bfa1b99",
+          "profile": "cba3034a7cb19eb86bd2d8c3333f38316545c7a5e96044dd74be9a2ef94852e6",
+          "reserve_atoms": "100000000",
+          "round": "b1ea478f46c7b4d0c5b62fa6b350844828eedf664d318415a4d6274335a498ef",
+          "substitutions": [],
+          "winning_commit": {
+            "height": 8,
+            "operation": "77d2cebbef4f2429a8ab3690df2f02380584c5bb7ffdfd015a935004f060b14d",
+            "operation_index": 0
+          }
+        },
+        "outcome": "PROVED",
+        "purpose": "Reusable foundational mathematical result A",
+        "question": "a3944711009756ce79b68f0cec46a3cb47e1a43ef04ab293ee933da0fc178ce9",
+        "source": "# Proof obligation A: universally quantified self-equality.\nfoundation = \"naome:zfc\"\nstatement = forall(y, forall(x, equal(x, x)))\n",
+        "status": "Completed"
+      }
+    },
+    "helper_normalization_citation_known": {
+      "helper": {
+        "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+        "height": 15,
+        "operation_index": 16,
+        "proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+        "recipient": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+        "retrieval": "authenticated peer-to-peer network",
+        "source_validator": 3,
+        "status": "finalized_library"
+      },
+      "B": {
+        "admission": {
+          "height": 16,
+          "operation_index": 0
+        },
+        "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+        "checked_conclusion": "implies(forall(b0, equal(b0, b0)), forall(b0, equal(b0, b0)))",
+        "completion_ordinal": 2,
+        "eligibility_claim": {
+          "active_voting_rights": false,
+          "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+          "ordinal": 2
+        },
+        "expires": 1789847206,
+        "family": "2e979489cbd6ac3ca03e22d81a869c101aff6ec0b2fb2d0ea25c620432a8372b",
+        "formal_targets": {
+          "R": "implies(forall(b0, equal(b0, b0)), forall(b0, equal(b0, b0)))",
+          "not_R": "not_(implies(forall(b0, equal(b0, b0)), forall(b0, equal(b0, b0))))",
+          "submitted_negation_parity": true
+        },
+        "normalization": {
+          "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+          "citation_payments": [
+            {
+              "atoms": "100000000",
+              "proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+              "recipient": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6"
+            }
+          ],
+          "commitment": "cbeb63af4597828baecd63b777c91f4d41129167a845351f3ac6c4d7f6f44d42",
+          "credits": [
+            {
+              "account": "42f209c7364166f14049773e9192bd8887a55957c4775cd40e893f847e510280",
+              "atoms": "50000000"
+            },
+            {
+              "account": "7210e13c9651ab5cb60484c49f4bc51366bda921704c7e72ea9bb8d42400ad6b",
+              "atoms": "50000000"
+            },
+            {
+              "account": "8aabadfbcd2dc43a9e02d81a4cffc3001081c58ade20978a07c676dae91e24a4",
+              "atoms": "50000000"
+            },
+            {
+              "account": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+              "atoms": "100000000"
+            },
+            {
+              "account": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+              "atoms": "600000000"
+            },
+            {
+              "account": "d5729aa586dbf8a25c89dd2ac5292ac9b72d312a6c514d6b8dcaca13f86fd782",
+              "atoms": "50000000"
+            }
+          ],
+          "new_proofs": [
+            {
+              "proof": "4ee688c1c7627e5a22e9033012b5d5e2e9e8329cc4f363a631bc495c3442ab8e",
+              "recipient": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd"
+            }
+          ],
+          "normalized_root": "4ee688c1c7627e5a22e9033012b5d5e2e9e8329cc4f363a631bc495c3442ab8e",
+          "original_hash": "261f1f73049588cf0bca6298238d03f7d113bf201366eca6995acdca6176ff31",
+          "parent_state": "d7776cb4078673b827f3b63339a4a6c09231e9ac153bc83091ab8e39815c720d",
+          "profile": "cba3034a7cb19eb86bd2d8c3333f38316545c7a5e96044dd74be9a2ef94852e6",
+          "reserve_atoms": "100000000",
+          "round": "f116b8c53a3473c1412894fa7716b957ea979c2729a57cd3dd68c20890d784ce",
+          "substitutions": [
+            {
+              "original": "4a9b8d6beabb010e33fddcec0000b66c257eb87e05fda21342e39dd4e7ec534a",
+              "replacement": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73"
+            }
+          ],
+          "winning_commit": {
+            "height": 21,
+            "operation": "1d4f410e14e21c8f8640a8e7f50b3328a43976f34f1240d3da244bfc94063db0",
+            "operation_index": 0
+          }
+        },
+        "outcome": "REFUTED",
+        "purpose": "Reusable foundational mathematical result B",
+        "question": "736e2829704ef01705e92f5bb0380a7ffbbc2b2926adffc46f57b5dc5554a511",
+        "source": "# Proof obligation B: negative orientation; solution-b.nao refutes this.\nfoundation = \"naome:zfc\"\nstatement = not_(implies(forall(x, equal(x, x)), forall(x, equal(x, x))))\n",
+        "status": "Completed"
+      },
+      "C": {
+        "admission": {
+          "height": 27,
+          "operation_index": 0
+        },
+        "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+        "completion_reward_atoms": "0",
+        "expires": 1789847755,
+        "family": "8cb7976f42b68e2ecd89e610bac06630c872ae961b02a8863ef3712e89583dcf",
+        "formal_targets": {
+          "R": "forall(b0, equal(b0, b0))",
+          "not_R": "not_(forall(b0, equal(b0, b0)))",
+          "submitted_negation_parity": false
+        },
+        "known_proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+        "purpose": "Reusable foundational mathematical result C",
+        "question": null,
+        "source": "# Proof obligation C is exactly helper H, already known after A settles.\nfoundation = \"naome:zfc\"\nstatement = forall(x, equal(x, x))\n",
+        "status": "KnownUnpaid"
+      }
+    },
+    "AB02_missing_earlier": {
+      "missing_commit": "c23d4291e478f4e27b5bbd95bc91e38a0ce1a697e6c38d71fa9ca9e752d20444",
+      "winning_commit": "5aa2252d8c478f139d9cfe1192fd9215605dcc39b1d5dabaad4e4facf7c65c7d",
+      "different_roots": [
+        "be13051ea62536272aba4942d297a6e708e98679e12458dd505092e1de595d57",
+        "7e21fd47195b73efa719092969a443fcf4ab5dd669c2a6e526a3427b7c4833c0"
+      ],
+      "question": {
+        "admission": {
+          "height": 29,
+          "operation_index": 0
+        },
+        "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+        "checked_conclusion": "forall(b0, forall(b1, forall(b2, equal(b2, b2))))",
+        "completion_ordinal": 3,
+        "eligibility_claim": {
+          "active_voting_rights": false,
+          "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+          "ordinal": 3
+        },
+        "expires": 1789847774,
+        "family": "76d9eb1767eec6d418e2c9f4955d8a992f12f31bad6fe2e55c47dee6cdbe3fb5",
+        "formal_targets": {
+          "R": "forall(b0, forall(b1, forall(b2, equal(b2, b2))))",
+          "not_R": "not_(forall(b0, forall(b1, forall(b2, equal(b2, b2)))))",
+          "submitted_negation_parity": false
+        },
+        "normalization": {
+          "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+          "citation_payments": [
+            {
+              "atoms": "100000000",
+              "proof": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+              "recipient": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6"
+            }
+          ],
+          "commitment": "2ddcc6d4be17fd44eddf754caa8c7daccaa2d5ae96f0198006b4d28598152739",
+          "credits": [
+            {
+              "account": "42f209c7364166f14049773e9192bd8887a55957c4775cd40e893f847e510280",
+              "atoms": "50000000"
+            },
+            {
+              "account": "7210e13c9651ab5cb60484c49f4bc51366bda921704c7e72ea9bb8d42400ad6b",
+              "atoms": "50000000"
+            },
+            {
+              "account": "8aabadfbcd2dc43a9e02d81a4cffc3001081c58ade20978a07c676dae91e24a4",
+              "atoms": "50000000"
+            },
+            {
+              "account": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+              "atoms": "100000000"
+            },
+            {
+              "account": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+              "atoms": "600000000"
+            },
+            {
+              "account": "d5729aa586dbf8a25c89dd2ac5292ac9b72d312a6c514d6b8dcaca13f86fd782",
+              "atoms": "50000000"
+            }
+          ],
+          "new_proofs": [
+            {
+              "proof": "7e21fd47195b73efa719092969a443fcf4ab5dd669c2a6e526a3427b7c4833c0",
+              "recipient": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd"
+            }
+          ],
+          "normalized_root": "7e21fd47195b73efa719092969a443fcf4ab5dd669c2a6e526a3427b7c4833c0",
+          "original_hash": "a48efbcf8807a70f215ae7185081949ef4b839bfa3e69de9ad0498895c3fb2ef",
+          "parent_state": "742fa5fccd5638fdb39a3225648eec2ab7593b810e166981515ea6c6cfa8505f",
+          "profile": "cba3034a7cb19eb86bd2d8c3333f38316545c7a5e96044dd74be9a2ef94852e6",
+          "reserve_atoms": "100000000",
+          "round": "98e952be82e45c27097367d77d00c67be1b63d790a70f164ff15dc29a5d74854",
+          "substitutions": [],
+          "winning_commit": {
+            "height": 36,
+            "operation": "5aa2252d8c478f139d9cfe1192fd9215605dcc39b1d5dabaad4e4facf7c65c7d",
+            "operation_index": 0
+          }
+        },
+        "outcome": "PROVED",
+        "purpose": "Reusable foundational mathematical result D",
+        "question": "b89e1066c8b999300ec9c5e7e1067b7b68afc4a83dd13f0931e70c7bc9966124",
+        "source": "foundation = \"naome:zfc\"\nstatement = forall(z, forall(y, forall(x, equal(x, x))))\n",
+        "status": "Completed"
+      }
+    },
+    "partition_restart_export": {
+      "partition_seconds": 5,
+      "cold_restart_nodes": 4,
+      "verified_state": "1b93ad675071739a189e03416a598d76af3077fb0c3fc4de05c8cc153abc47ad",
+      "corrupt_export_rejected": true
+    }
+  },
+  "source_snapshot": {
+    "file_count": 217,
+    "manifest_sha256": "3f8785fcffe1bcb2ef73e940b9cb595ee11a2dc0efd07f53e090df19684835a3",
+    "git_head": "7e43f2bc3c5e967b2a2f3aad54496c61eb064be2",
+    "scope": "Cargo manifests/lock, pinned toolchain, Rust crate sources, research Python tools and example fixtures at runner startup; includes uncommitted files",
+    "provider_sha256": "6a485056eac4a745f44809fb979f18d13b50444f72dfd93af4a0f4246ec5ed4b"
+  },
+  "genesis": "b152de1cff233ce2fc1542304018739bd03ffd78764c1705f40c38e814e1ff9a",
+  "profile": "cba3034a7cb19eb86bd2d8c3333f38316545c7a5e96044dd74be9a2ef94852e6",
+  "required_storage_bytes": 5162628712,
+  "immutable_profile": {
+    "canonical_profile": "4e414f50524f463100000000000000012c0000000000000078000000000000007800000000000007080000000000000002000000000000003c0000000000000001000000000000002000000000000000100000000000000001000000000000400000000000000004000000000000000020000000000000001000000000000100000000000000010000000000000000100000000000000000400000000000200000000000000000002000000000000000400000000000000010000000000000000100000000000200000000000000000080000000000000004000000000000000010000000000000002000000000000000400000000004000000000000000000a2000000000048000000000000000a2000000000000001100000000000000030000000000000000004000000000000000080000000000000000000000003b9aca0000000000000000000000000029b9270000000000000000000000000023c3460000000000000000000000000005f5e10000000000000000000000000002faf08000000000000000000000000005f5e100",
+    "genesis": "b152de1cff233ce2fc1542304018739bd03ffd78764c1705f40c38e814e1ff9a",
+    "kind": "Lab",
+    "limits": {
+      "accounts": 16,
+      "active_attempts": 1,
+      "agent_inference_attempts": 2,
+      "agent_tool_calls": 4,
+      "certificate_bytes": 65536,
+      "certificate_steps": 4096,
+      "checker_calls_per_record": 2592,
+      "checker_input_bytes_per_record": 75497472,
+      "citation_proofs": 64,
+      "commitments_per_account": 1,
+      "completion_records": 64,
+      "consensus_rounds": 8,
+      "dag_steps_per_record": 10616832,
+      "dependency_bytes": 2097152,
+      "dependency_depth": 32,
+      "dependency_proofs": 64,
+      "formula_work_bytes_per_call": 4194304,
+      "new_helpers": 16,
+      "normalization_steps_per_record": 1114112,
+      "operations_per_record": 16,
+      "package_bytes": 65536,
+      "question_source_bytes": 16384,
+      "queued_questions": 32,
+      "record_bytes": 131072,
+      "run_records": 128,
+      "settlements_per_record": 1,
+      "target_depth": 32,
+      "target_nodes": 1024,
+      "terminal_records": 1,
+      "transport_buffer_frames": 64,
+      "transport_frame_bytes": 196608
+    },
+    "profile": "cba3034a7cb19eb86bd2d8c3333f38316545c7a5e96044dd74be9a2ef94852e6",
+    "required_storage_bytes_per_node": 1290657178,
+    "rewards": {
+      "author_with_citations_atoms": "600000000",
+      "author_without_citations_atoms": "700000000",
+      "citation_pool_atoms": "100000000",
+      "issuance_atoms": "1000000000",
+      "reserve_atoms": "100000000",
+      "validator_atoms_each": "50000000"
+    },
+    "timing": {
+      "agent_call_seconds": 60,
+      "clock_error_seconds": 2,
+      "commitment_seconds": 120,
+      "queue_seconds": 1800,
+      "reveal_seconds": 120,
+      "voting_seconds": 300
+    }
+  },
+  "final_state": {
+    "state": "1b93ad675071739a189e03416a598d76af3077fb0c3fc4de05c8cc153abc47ad",
+    "head": "fdaebf6e91fe18795a986d8582c7e319617a5a5a5a30b627a079475af034136f",
+    "height": 41,
+    "accounts": [
+      {
+        "account": "42f209c7364166f14049773e9192bd8887a55957c4775cd40e893f847e510280",
+        "balance_atoms": "150000000",
+        "next_nonce": 4
+      },
+      {
+        "account": "7210e13c9651ab5cb60484c49f4bc51366bda921704c7e72ea9bb8d42400ad6b",
+        "balance_atoms": "150000000",
+        "next_nonce": 3
+      },
+      {
+        "account": "8aabadfbcd2dc43a9e02d81a4cffc3001081c58ade20978a07c676dae91e24a4",
+        "balance_atoms": "150000000",
+        "next_nonce": 3
+      },
+      {
+        "account": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+        "balance_atoms": "900000000",
+        "next_nonce": 7
+      },
+      {
+        "account": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+        "balance_atoms": "1200000000",
+        "next_nonce": 8
+      },
+      {
+        "account": "d5729aa586dbf8a25c89dd2ac5292ac9b72d312a6c514d6b8dcaca13f86fd782",
+        "balance_atoms": "150000000",
+        "next_nonce": 4
+      }
+    ],
+    "reserve_atoms": "300000000",
+    "claims": [
+      {
+        "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+        "family": "2e979489cbd6ac3ca03e22d81a869c101aff6ec0b2fb2d0ea25c620432a8372b",
+        "ordinal": 2
+      },
+      {
+        "author": "c27667adbe496f092aae864ce059da0b6ec4d9bf8f9b70f4ede53476cb727bfd",
+        "family": "76d9eb1767eec6d418e2c9f4955d8a992f12f31bad6fe2e55c47dee6cdbe3fb5",
+        "ordinal": 3
+      },
+      {
+        "author": "ba585a44107e00012ad05e83395f0996ec41d7702f2f2f15c5d56cc233daabb6",
+        "family": "8d13b0e6a5c6bfce8c718a90118775e888e05e52b71f6091f8a5880831a4fb9a",
+        "ordinal": 1
+      }
+    ],
+    "library_root": "45e89a76bf7c905df101139a1d2d547706a0b02a2097d67b2e5a9b026419260b",
+    "paid_completions": 3
+  },
+  "resources": {
+    "elapsed_seconds": 1665.669,
+    "children_user_cpu_seconds": 90.65172,
+    "children_system_cpu_seconds": 31.496451,
+    "children_maxrss_native_units": 104693760,
+    "platform": "darwin",
+    "retained_file_bytes": 2039920,
+    "free_bytes_end": 68863209472
+  }
+}

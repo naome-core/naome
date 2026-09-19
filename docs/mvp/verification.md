@@ -1,11 +1,34 @@
 # Trusted research MVP verification map
 
-The state-v1 architecture integration is in progress. The evidence below remains
-tied to its recorded commits and does not qualify the new format or establish
-that the final integration is qualified. The parallel authority APIs are now
-removed and neutral names are implemented; final qualification remains pending. Fresh complete
-workspace, platform CI, and real-window lab evidence are required for integration
-acceptance.
+The trusted local MVP now uses one canonical `state-v1` history through
+`naome`, `naome-validator`, and `naome-verifier`. The checked artifact DAG is the
+proof-library component inside that complete state. Separate research and V0
+artifact-chain authorities are removed. The [final integration report](evidence/final-integration.json)
+links implementation, local validation, CI results and the actual-agent lab.
+Final acceptance requires every CI gate to succeed on the exact publication head.
+
+## Current integration qualification
+
+| Evidence | Exact source and result |
+|---|---|
+| Implementation | Lab snapshot `7e43f2bc3c5e967b2a2f3aad54496c61eb064be2`; neutral APIs, version-2 configuration and fail-closed legacy storage/configuration boundaries. The only later code change gates two Unix test helpers; rebuilt main executable hashes match the lab. |
+| Complete local workspace | [Final local report](evidence/final-integration.json): pinned Rust 1.97.1, `CARGO_INCREMENTAL=0`, complete build barriers and all-target/all-feature/locked executions; 533 tests passed in each profile. |
+| Quality | Formatting, Clippy with warnings denied, documentation with warnings denied, and the workspace doctest command passed. The final crates contain zero doctests. |
+| Native devnet | The local report records 12 full-state records with delay, isolation/healing, SIGKILL and graceful restart, independent replay and corrupt-export rejection. |
+| Real lab | [Public lab report](evidence/final-integration-lab.json): passed in 1,665.669 seconds using all three final executable hashes, real 300/120/120-second windows, actual bounded agenda review, reversed reveals, missing earlier reveal, helper retrieval while its original provider was offline, citation payment, no retrospective payment, 2:2 partition/healing, four-node cold restart and independent replay. |
+| Platform CI | [Preceding run 35463787211](https://github.com/naome-core/naome/actions/runs/35463787211) passed five profile jobs, quality and devnet; Windows test-profile Clippy rejected two Unix-only test helpers. The final extension corrects their platform cfg. The final handoff verifies all six profiles, quality, devnet and aggregates on its exact head. |
+| CI devnet | [Public Docker report](evidence/final-integration-ci-devnet.json): the canonical 100-record target completed at 102 records with delayed traffic, isolation, faults and independent replay. It is accelerated control-record qualification, not 100 proof publications. |
+
+The final publication receives its own workflow on the exact committed head;
+the final handoff identifies and verifies that run. The preceding failed run
+is retained as diagnostic evidence and is not presented as acceptance.
+All source and executable hashes remain tied to the reports that measured them.
+The lab preserves exactly three paid completions, three passive claims and
+3,000,000,000 atoms across balances and reserve. It does not activate voting
+rights. Keys, reveal secrets, raw histories and provider diagnostics remain private.
+Multi-machine operation and the seven-day profile remain later qualification.
+
+## Historical MVP baseline
 
 This records historical MVP baseline acceptance for the 35 requirements and seven acceptance
 scenarios in [requirements.md](requirements.md), within the authorized trusted,
@@ -26,8 +49,8 @@ remains separate later qualification.
 The [chain ownership milestone](evidence/chain-ownership.json) passed all platform
 CI gates at `73e1156`. The [main executable milestone](evidence/main-executables.json)
 records direct validator execution, portable verifier replay, and process-level
-crash, conflict and corrupt-start checks. These do not qualify the still-pending
-retirement of V0 authority or replace the final real-window lab.
+crash, conflict and corrupt-start checks. At this milestone, V0 authority retirement and the final real-window lab
+remained pending; later reports supply that evidence.
 The [canonical devnet milestone](evidence/canonical-devnet.json) replaces the
 artifact-chain qualification harness and records delayed state traffic, fault
 recovery and independent replay through the main executables. Its evidence and
@@ -39,7 +62,7 @@ the V0 validator/verifier implementations and records canonical custody, bounded
 control/output, signal, and portable replay replacements. Both local process
 profiles and a fresh delayed native devnet smoke passed. All platform, quality,
 and devnet gates passed in [CI run 35458531522](https://github.com/naome-core/naome/actions/runs/35458531522)
-at `a1d03c9`. Remaining V0 library APIs and the final real-window lab are still open.
+at `a1d03c9`. At that milestone, V0 library APIs and the final real-window lab were still open.
 
 The [proof-library integration milestone](evidence/library-integration.json) puts
 the checked artifact DAG inside atomic proof publication and replaces the V0
@@ -48,7 +71,7 @@ All mathematical fixture identities and state replay vectors are retained.
 Both complete local workspace profiles passed 1,572 tests, and a fresh delayed
 12-record native devnet passed. Its first CI run found Windows authoring snapshot reads of an actively locked
 lockfile; the following transport milestone corrects that test portability issue.
-Remaining V0 library retirement and the final real-window lab are still open.
+At that milestone, V0 library retirement and the final real-window lab were still open.
 
 The [sole transport milestone](evidence/transport-retirement.json) removes the
 V0 runtime, wire messages, acquisition, store serving, and disabled exchanges.
@@ -64,8 +87,8 @@ actual timeout/catch-up rules and replays its witnesses through anchored honest
 signers and cold restart; separate tests check every four-unit quorum subset and
 shared full-width weight arithmetic. Cross-process tests cover history/signer
 owners and their independent anchors. The ledger retains the proof/set malformed
-decoder campaign. The later naming boundary replaces the remaining API/filename labels; final
-real-window qualification remains outstanding. This milestone does not establish
+decoder campaign. The subsequent neutral naming milestone replaced the remaining API/filename
+labels; the final integration report above supplies real-window qualification. This milestone does not establish
 public-network security.
 
 The [neutral state boundary milestone](evidence/neutral-state-boundary.json)
@@ -75,21 +98,22 @@ configuration fields fail closed without conversion or writes. Both complete
 pinned local workspace profiles passed 533 tests; formatting, Clippy,
 documentation and doctests passed. A fresh four-validator native devnet passed
 12 records with delay, isolation/healing, process restarts and independent replay.
-The actual-agent 300/120/120-second lab and final exact-head platform/devnet CI
-remain pending; earlier reports below remain historical evidence.
+At this milestone, the actual-agent lab and exact-head platform/devnet CI
+were pending; the final integration report above records the lab and local
+checks, with the final publication CI verified separately at handoff.
 
-## Recorded qualification
+## Recorded baseline qualification
 
 | Evidence | Source and result |
 |---|---|
 | Real lab windows | [Public report](evidence/lab-acceptance.json): passed in 1,677.630 seconds with four distinct local validators, actual Codex review, three 300/120/120-second attempts, reversed reveals, missing earlier reveal, authenticated helper retrieval with its original provider offline, positive citation payment, known-unpaid question, 2:2 partition, all-node cold restart, full offline replay, proof checks, and corrupt-export rejection. |
-| Exact lab source and binary | Clean commit `25238b8bec56baf12070ee87945268e5752837bf`, release binary SHA-256 `b225465d6a26d1ba5709f1a71d209d6c313fc7530e0fc82b4bb82ca34b9c47ae`. The report records the 551-file source-manifest hash, runner hash, provider hash, and exact configuration. Research CLI, library, consensus, storage, network, and runtime production source is unchanged through `e2cb26b9fc78e3e6c13dbdb7ce1b9242a2e7dd59`; later production changes concern the separate V0 validator supervisor. |
+| Exact lab source and binary | Clean commit `25238b8bec56baf12070ee87945268e5752837bf`, release binary SHA-256 `b225465d6a26d1ba5709f1a71d209d6c313fc7530e0fc82b4bb82ca34b9c47ae`. The report records the 551-file source-manifest hash, runner hash, provider hash, and exact configuration. At the baseline handoff `e2cb26b9fc78e3e6c13dbdb7ce1b9242a2e7dd59`, the research CLI, library, consensus, storage, network, and runtime production source remained unchanged from that lab; production changes within that baseline interval concerned the separate V0 validator supervisor. |
 | Independent lab replay | The recorded `25238b8` release executable replayed the completed archive offline, matched every final-state field, checked downloaded proofs, and rejected a corrupted export. |
 | Complete local workspace | [Qualification report](evidence/workspace-qualification.json): Rust 1.97.1; separate full build barriers followed by all-target, all-feature, locked workspace executions, with 1,729 tests passed in each of the test and release profiles. The report records exact commands and output hashes. |
 | Documentation and quality | [Qualification report](evidence/workspace-qualification.json): 23 doctests passed; formatting, Clippy, and documentation checks passed. These checks are recorded separately from process and lab evidence. |
 | Implementation platform CI | [Run 35047169827](https://github.com/naome-core/naome/actions/runs/35047169827) on `e2cb26b9fc78e3e6c13dbdb7ce1b9242a2e7dd59`: all six Linux x86_64, macOS ARM64, and Windows x86_64 test/release jobs passed, together with quality, devnet, and required aggregate gates. |
-| Accelerated processes | On `25238b8`, the four-process scenario passed in test (102.15 seconds) and release (99.76 seconds); both complete final-source workspace profiles also include this scenario. Every intended vote, commitment, and reveal requires a finalized receipt. |
-| Actual mathematical workloads | [Test measurements](evidence/qualification-test.json) and [release measurements](evidence/qualification-release.json): six measurements, four qualification tests, and 77 research tests per profile, tied to `c0bfaf2`, exact commands and output hashes. Mathematical and research-state production code is unchanged since that measured snapshot. |
+| Accelerated processes | On `25238b8`, the four-process scenario passed in test (102.15 seconds) and release (99.76 seconds); both complete workspace profiles recorded for that baseline also included this scenario. Every intended vote, commitment, and reveal requires a finalized receipt. |
+| Actual mathematical workloads | [Test measurements](evidence/qualification-test.json) and [release measurements](evidence/qualification-release.json): six measurements, four qualification tests, and 77 research tests per profile, tied to `c0bfaf2`, exact commands and output hashes. That report measured the source at that snapshot; later canonical integration is qualified separately above. |
 | Existing network qualification | [100-height local devnet report](evidence/devnet-local-100.json): 50 ms delay in each direction, outage/healing, process restarts, malformed offers, and independent replay. This report preserves its earlier source snapshot and binary hashes; the implementation CI above separately qualifies devnet on `e2cb26b`. |
 
 The lab issued exactly 3,000,000,000 atoms across account balances and reserve,
@@ -109,7 +133,7 @@ research consensus retry timeouts, retention of fetched V0 finality during
 publication backpressure, and preservation of the supervisor's selected sync
 peer while local custody is busy. These bounded recovery changes received
 independent source review and focused regression coverage, followed by complete
-workspace and platform qualification. The fresh lab exercises the research retry
+workspace and platform qualification. That historical lab exercised the research retry
 changes; the separate V0 supervisor correction is covered by its process and CI
 qualification.
 
@@ -208,8 +232,7 @@ and observed disk use are different measurements. No throughput guarantee follow
 from them. A compact local LAB run does not claim default-limit end-to-end network
 throughput or multi-machine performance.
 
-The linked reports identify the pinned workspace builds and executions, required
-Linux/macOS/Windows CI, accelerated process evidence, actual LAB report, actual-agent
-provenance, and fault-injection evidence separately. The implementation CI link
-identifies the tested source. The final handoff records the exact documentation commit and its successful
-run of the same CI workflow.
+The current and historical reports identify their own source snapshots. The final
+handoff separately verifies the exact publication commit with the complete
+Linux/macOS/Windows, quality and devnet workflow; earlier successful runs do not
+qualify later commits.

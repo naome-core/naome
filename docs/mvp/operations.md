@@ -2,7 +2,7 @@
 
 These commands operate a four-validator canonical state genesis on Unix. The
 current qualification target is four independent local processes with separate
-keys, journals, anchors, and authenticated network connections. The [completed lab report](evidence/lab-acceptance.json) records actual
+keys, journals, anchors, and authenticated network connections. The [completed integration lab report](evidence/final-integration-lab.json) records actual
 300/120/120-second windows, a real agent review, and four local processes.
 Accelerated tests and fake-provider adapter tests remain supplementary evidence.
 This qualification does not establish multi-machine operation or public-network
@@ -19,7 +19,10 @@ The canonical journal names are `state.journal`, `state.lock`,
 legacy filenames and configuration version 1; those directories also require
 their original executable. Do not manually rename authority files or edit a
 configuration version to resume an earlier run.
-The linked baseline lab results qualify the earlier MVP, not this new build.
+The [integration evidence](evidence/final-integration.json) records the exact source,
+three executable hashes, local checks, real-window lab and CI results. The final
+handoff separately verifies all CI gates on the exact publication commit.
+Earlier MVP reports remain historical evidence for their original executables.
 
 ## Build and choose an immutable run
 

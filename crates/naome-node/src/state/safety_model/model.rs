@@ -231,6 +231,7 @@ impl Model {
         encode(false).min(encode(true))
     }
 
+    #[cfg(unix)]
     pub(super) fn quorum(self, state: State, round: u8, role: u8, target: u8) -> bool {
         // The faulty validator may sign every target at every position. Honest
         // votes must come from this execution. Withholding is always permitted.
@@ -243,6 +244,7 @@ impl Model {
         self.quorums & (1 << signers) != 0
     }
 
+    #[cfg(unix)]
     pub(super) fn proposals(self, state: State, round: u8) -> Vec<u8> {
         self.proposals_with_facts(state, round, self.facts(state))
     }

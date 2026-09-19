@@ -29,9 +29,10 @@ additional source of authority.
 
 The authority boundaries follow the contracts above. Decoding supplies no
 checked proof; an authenticated response supplies no validity or selection;
-candidate and payload retention supply no selected-state authority. Consensus
-owns transition semantics, storage owns durable replay and signing-safety
-records, and the node owns the sole live signing scope and command custody.
+candidate and payload retention supply no selected-state authority. The ledger owns deterministic state transitions, the chain owns complete state
+records, and consensus owns agreement and finality. Storage owns durable replay
+and signing-safety records; the node owns the sole live signing scope and command
+custody.
 The canonical history is the sole selected-state journal owner. Unsupported
 V0 bytes fail closed; creating a fresh run never converts old authority.
 
