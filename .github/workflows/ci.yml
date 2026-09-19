@@ -170,12 +170,12 @@ jobs:
             target
           key: cargo-v1-ubuntu-24.04-${{ runner.os }}-${{ runner.arch }}-release-all-features-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', '.cargo/config', '.cargo/config.toml', '.github/workflows/*.yml') }}
       - name: Build release test targets and devnet binaries
-        run: cargo test -p naome-devnet -p naome-validator -p naome-verifier -p naome-cli --profile release --all-targets --all-features --locked --no-run
-      - name: Qualify research publication, citation, outage, partition, and cold replay
-        run: cargo test -p naome-devnet -p naome-validator -p naome-verifier -p naome-cli --profile release --all-targets --all-features --locked --no-fail-fast four_process_research_recovery_partition_and_independent_replay
+        run: cargo test -p naome-validator -p naome-verifier -p naome-cli --profile release --all-targets --all-features --locked --no-run
+      - name: Qualify canonical publication, citation, outage, partition, and cold replay
+        run: cargo test -p naome-validator -p naome-verifier -p naome-cli --profile release --all-targets --all-features --locked --no-fail-fast four_process_research_recovery_partition_and_independent_replay
       - name: Package exact Linux binaries
         run: python3 -B devnet/image.py --bin-dir target/release --tag naome-devnet:ci
-      - name: Qualify 100 network-fed heights with isolation, delay, and faults
+      - name: Qualify 100 canonical state heights with isolation, delay, and faults
         run: python3 -B devnet/qualify.py --backend docker --image naome-devnet:ci --bin-dir target/release --directory "$RUNNER_TEMP/naome-devnet" --heights 100 --delay-ms 50 --deadline-seconds 2400
       - name: Retain public qualification evidence
         if: ${{ always() }}

@@ -8,15 +8,10 @@ impl ResearchRuntime {
         if self.disabled.contains(&peer) {
             return Ok(());
         }
-        // An unsent older local clock report has no future value once a newer
-        // report for this exact parent is available. Keep one per peer.
-        if matches!(&body, ResearchRequestBody::TimeReport(_)) {
-            self.outbox.retain(|d| {
-                d.peer != peer || !matches!(&d.body, ResearchRequestBody::TimeReport(_))
-            });
-        }
         let state = self.state()?;
         let maximum = state.genesis().profile().limits().transport_frame_bytes as usize;
+        let capacity = state.genesis().profile().limits().transport_buffer_frames as usize;
+        let height = state.height();
         let context = ResearchContext::new(
             *state.genesis().id().as_bytes(),
             *state.genesis().profile().id().as_bytes(),
@@ -33,12 +28,27 @@ impl ResearchRuntime {
         {
             return Ok(());
         }
-        if self.outbox.len() + self.flights.len()
-            >= state.genesis().profile().limits().transport_buffer_frames as usize
+        // Replace a superseded unsent clock report in place. Moving it to the
+        // back on every tick can starve time certification behind recurring
+        // finality/history traffic when network latency exceeds the tick period.
+        // The retained position preserves fairness without increasing capacity.
+        if matches!(&body, ResearchRequestBody::TimeReport(_))
+            && let Some(queued) = self
+                .outbox
+                .iter_mut()
+                .find(|d| d.peer == peer && matches!(&d.body, ResearchRequestBody::TimeReport(_)))
         {
+            *queued = Delivery {
+                peer,
+                body,
+                id,
+                height,
+            };
             return Ok(());
         }
-        let height = state.height();
+        if self.outbox.len() + self.flights.len() >= capacity {
+            return Ok(());
+        }
         self.outbox.push_back(Delivery {
             peer,
             body,

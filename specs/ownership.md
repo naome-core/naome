@@ -32,7 +32,7 @@ additional source of authority.
 | Caller-configured timing, raw routing, and bounded publication delivery | `naome-runtime` | [Fixed-Validator Runtime](fixed-validator-runtime-v0.md); consensus, node, and storage retain their existing verification, signing, and finality authority |
 | Bounded volatile proposal/evidence retention | `naome-node` | [Current Inbox](fixed-validator-node-current-round-inbox-v0.md), [Finality Inbox](fixed-validator-node-current-round-finality-inbox-v0.md), [Nil-Precommit Inbox](fixed-validator-node-current-round-nil-precommit-inbox-v0.md), [Higher Inbox](fixed-validator-node-higher-round-inbox-v0.md), [Proposal Buffer](fixed-validator-node-proposal-buffer-v0.md), [Deferral](fixed-validator-node-proposal-deferral-v0.md), [Buffered Precommit](fixed-validator-node-buffered-proposal-precommit-v0.md) |
 | Source parsing, proof lowering, diagnostics, and selected-chain authoring | `naome-authoring` | [Proof Authoring](proof-authoring.md) |
-| Validator and verifier processes, provisioning, and qualification | `naome-validator`, `naome-verifier`, `naome-devnet` | [Validator Process](fixed-validator-process-v0.md), [Verifier Process](fixed-validator-verifier-process-v0.md), [Devnet Operations](../devnet/OPERATIONS.md) |
+| Validator and verifier processes, provisioning, and qualification | `naome-validator`, `naome-verifier`, `naome-cli`, `devnet/qualify.py` | [Validator Process](fixed-validator-process-v0.md), [Verifier Process](fixed-validator-verifier-process-v0.md), [Devnet Operations](../devnet/OPERATIONS.md) |
 
 The authority boundaries follow the contracts above. Decoding supplies no
 checked proof; an authenticated response supplies no validity or selection;

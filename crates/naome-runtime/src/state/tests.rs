@@ -465,3 +465,31 @@ async fn action_for_unopened_phase_does_not_occupy_the_next_nonce() {
 }
 
 mod proof_fetch;
+
+#[tokio::test]
+async fn refreshing_time_reports_preserves_delivery_order_under_backpressure() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let g = runtime.state().unwrap().genesis().clone();
+    let parent = runtime.state().unwrap().head();
+    let peer = runtime.peers[0];
+    let first = SignedTimeReport::sign(&g, parent, 1, 101, &consensus(0)).unwrap();
+    runtime.own_time = Some(first.encode().into());
+    runtime.enqueue_periodic().unwrap();
+    let initial_len = runtime.outbox.len();
+    for utc in 102..202 {
+        let report = SignedTimeReport::sign(&g, parent, 1, utc, &consensus(0)).unwrap();
+        let bytes: Arc<[u8]> = report.encode().into();
+        runtime.own_time = Some(bytes.clone());
+        runtime.enqueue_periodic().unwrap();
+        let queued: Vec<_> = runtime.outbox.iter().filter(|d| d.peer == peer).collect();
+        assert!(
+            matches!(&queued[0].body, ResearchRequestBody::TimeReport(actual) if actual == &bytes)
+        );
+        assert!(matches!(
+            &queued[1].body,
+            ResearchRequestBody::History { .. }
+        ));
+        assert_eq!(queued.len(), 2);
+        assert_eq!(runtime.outbox.len(), initial_len);
+    }
+}

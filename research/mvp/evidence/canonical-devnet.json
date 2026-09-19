@@ -1,0 +1,380 @@
+{
+  "scope": "Canonical state devnet replaces artifact-chain provisioning/publish/verify; delayed-network time-report fairness fix",
+  "source_base": "4c85f11142685d8d58979cdd54367fc76dfa37a8",
+  "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+  "cargo_incremental": "0",
+  "implementation": [
+    "Retired naome-devnet crate and legacy artifact publisher/supervisor paths; CI and image use the main three executables.",
+    "Fresh setup supports explicit genesis-bound peer endpoints and local proxy bind addresses.",
+    "Unsent time reports retain their queue position when superseded, preventing starvation behind periodic finality/history with slow delivery.",
+    "Canonical qualifier covers full-window state transitions, malformed intake, delayed TCP, isolated-quorum progress, catch-up, abrupt/graceful restart, exact local evidence retention and independent replay.",
+    "Real-window lab runner now requires and hashes naome, naome-validator and naome-verifier."
+  ],
+  "review": {
+    "result": "clear",
+    "mode": "independent read-only review and 12 Python tests",
+    "limitations": "No local Docker execution"
+  },
+  "smoke": {
+    "schema_version": 1,
+    "outcome": "passed",
+    "backend": "process",
+    "scope": "four fixed validators; canonical records, authenticated operations and certified phase transitions; accelerated qualification",
+    "requested_minimum_heights": 12,
+    "genesis_run_records": 256,
+    "delay_ms_each_direction_per_chunk": 50,
+    "deadline_seconds": 360,
+    "consensus_commands_sent": 0,
+    "workload": "alternating independent owner submissions and full-window NotApproved settlement; proof publication/citation separately qualified by the four-process Rust suite",
+    "limits": {
+      "sampled_role_disk_bytes": 536870912,
+      "container_memory_bytes": 536870912
+    },
+    "attempts": [
+      {
+        "number": 0,
+        "owner": 0,
+        "operation": "f3ab131e257687c4506736db1236f849b8b4188acb88444c7bd23aa8a6998fb5",
+        "submission": "f3ab131e257687c4506736db1236f849b8b4188acb88444c7bd23aa8a6998fb5",
+        "height": 3,
+        "head": "68437d12ceeb067e5f32e5fd8027e7275f21fbc5dbea5cf9370aa96fe21e109e",
+        "state": "8381e6866a89e7abf053a9eb817c46dee151b4d4c776346475b574ff65ce99e2",
+        "voting_deadline": 1789837160,
+        "certified_start": 1789837145,
+        "certified_end": 1789837162
+      },
+      {
+        "number": 1,
+        "owner": 1,
+        "operation": "a991eec3b8c824c16437e8b7d39b20e654a3e5d147874932557101c05f356f19",
+        "submission": "a991eec3b8c824c16437e8b7d39b20e654a3e5d147874932557101c05f356f19",
+        "height": 6,
+        "head": "d2127c2ed46a8fe6505d54c2c0974fcd9fea3ce1b37de8d1a1a9ff187551a641",
+        "state": "492e37e11051a8507e4b74ee9771e66bdf4c1b484b8262e45f33804b5cc0a74e",
+        "voting_deadline": 1789837194,
+        "certified_start": 1789837179,
+        "certified_end": 1789837196
+      },
+      {
+        "number": 2,
+        "owner": 0,
+        "operation": "ef4ce75802d090f944b6aa81a63280087050a7808dc811e344496416ac088c7e",
+        "submission": "ef4ce75802d090f944b6aa81a63280087050a7808dc811e344496416ac088c7e",
+        "height": 9,
+        "head": "3753c9105090e9ecee6c3ece07139b389b9b8958fb426011474563ce3d2c950c",
+        "state": "9c8b0c82af292cc0300a92339103e4f8574777635eaf574c19d0113a909597e7",
+        "voting_deadline": 1789837233,
+        "certified_start": 1789837218,
+        "certified_end": 1789837234
+      },
+      {
+        "number": 3,
+        "owner": 1,
+        "operation": "881cfdc8e62cb2f3622823c30cfd30e0157da0da4f44ec37ffe8a7b07ac46dc9",
+        "submission": "881cfdc8e62cb2f3622823c30cfd30e0157da0da4f44ec37ffe8a7b07ac46dc9",
+        "height": 12,
+        "head": "3ff2891715b67baacb688580338ddabba8732ddcc49f776821d373c4c284a243",
+        "state": "7aabb08de779a38f24427d7b0a620a5f22c12d0418970b61062d17624a745663",
+        "voting_deadline": 1789837264,
+        "certified_start": 1789837249,
+        "certified_end": 1789837265
+      }
+    ],
+    "faults": [
+      {
+        "operation": "authenticated_links_disabled",
+        "validator": 3,
+        "height": 3
+      },
+      {
+        "operation": "partition_healed_on_deadline",
+        "validator": 3,
+        "height_at_cut": 3,
+        "survivor_heights_before_heal": {
+          "0": 5,
+          "1": 5,
+          "2": 5
+        }
+      },
+      {
+        "operation": "healed_and_caught_up",
+        "validator": 3,
+        "height": 6
+      },
+      {
+        "operation": "sigkill_restart",
+        "validator": 0,
+        "height": 9
+      },
+      {
+        "operation": "graceful_restart",
+        "validator": 1,
+        "height": 12
+      }
+    ],
+    "verified": [
+      {
+        "validator": 0,
+        "height": 12,
+        "head": "3ff2891715b67baacb688580338ddabba8732ddcc49f776821d373c4c284a243",
+        "state": "7aabb08de779a38f24427d7b0a620a5f22c12d0418970b61062d17624a745663",
+        "consensus_commitment": "ec3de0f322cc8252ad4da823d9b45d11c759f11fea7426779b20f3f67c54f3fe",
+        "retained_finality_frame_sha256": [
+          "7bccf340121325e45b9d9b287b468ffcb366138c1da508bf0089fcc21e3cadb4",
+          "ff27d30cd5c3852aff31bb475123435b81bba953b9dfd3349d088596241bd889",
+          "4a017d4a9bb4f01fc7dd90633cf417fd4c7e6094d3b1439fe6f262281d0656eb",
+          "3054d47989947ae08099698c756a283e6d289c70eca5299f72db9013ed67b76b",
+          "6bd3bac9a1d19109127bcda4d3d3771570880341872ffc46cd12e5fd24601494",
+          "8cdc21c5fcb46da75e76f621dbb635114a3d80657fde7218c51424d05cc09607",
+          "be2cc6a34b867e4eb65abc882a25e7788308406ba8bbc4d077e5f60e2ce60753",
+          "35e4eb2683fe9ff61426d89c95723efb7d2b16ffd083531cd867800561248c07",
+          "000b99a615b7ee7100a61fb94b03cb1ddbf2dafe48fd8e30ae5a9c55a2b7e293",
+          "8cac3c376d04fc9589340e1f7a7b10fa58b9a3e4a5deef9a7dda64a4769cb6fa",
+          "90292936956d37a3105f59147e1d1736b7f8b3af0a943ef46f34abd8e1346e5d",
+          "03dce701639a8be2067262568aae0cae94c2909599f4c9aff1676457a0e9c1f8"
+        ]
+      },
+      {
+        "validator": 1,
+        "height": 12,
+        "head": "3ff2891715b67baacb688580338ddabba8732ddcc49f776821d373c4c284a243",
+        "state": "7aabb08de779a38f24427d7b0a620a5f22c12d0418970b61062d17624a745663",
+        "consensus_commitment": "ec3de0f322cc8252ad4da823d9b45d11c759f11fea7426779b20f3f67c54f3fe",
+        "retained_finality_frame_sha256": [
+          "bdd51e7235d9b5adeb7e9e25fff4f85911b944c1c0961c890921a568886c2e44",
+          "bc6b68ad0947f9e4164363fa6e37e57e3621873b0e463ecc64e62a5b655b9cde",
+          "4a017d4a9bb4f01fc7dd90633cf417fd4c7e6094d3b1439fe6f262281d0656eb",
+          "3054d47989947ae08099698c756a283e6d289c70eca5299f72db9013ed67b76b",
+          "6bd3bac9a1d19109127bcda4d3d3771570880341872ffc46cd12e5fd24601494",
+          "8cdc21c5fcb46da75e76f621dbb635114a3d80657fde7218c51424d05cc09607",
+          "be2cc6a34b867e4eb65abc882a25e7788308406ba8bbc4d077e5f60e2ce60753",
+          "b710873566879bacafd4c4b1948782de3448c60a7664b1b7fca5f19dbd5cfed3",
+          "000b99a615b7ee7100a61fb94b03cb1ddbf2dafe48fd8e30ae5a9c55a2b7e293",
+          "84d5c44f994db840130c9c64dddac64b4e8b97393ab8e1d539139620fcbe8690",
+          "600a93f7ace2d4f5d1eec57bdb480164317879f10f67a48eaa93079453498a13",
+          "bda90149864d6505f8ad344133fd8e733252d624680a7d4d08a91f251cdf285a"
+        ]
+      },
+      {
+        "validator": 2,
+        "height": 12,
+        "head": "3ff2891715b67baacb688580338ddabba8732ddcc49f776821d373c4c284a243",
+        "state": "7aabb08de779a38f24427d7b0a620a5f22c12d0418970b61062d17624a745663",
+        "consensus_commitment": "ec3de0f322cc8252ad4da823d9b45d11c759f11fea7426779b20f3f67c54f3fe",
+        "retained_finality_frame_sha256": [
+          "cb3341ee218763116c24665d919cd0e47841c49364ef45d13f701c91391e8e63",
+          "ff27d30cd5c3852aff31bb475123435b81bba953b9dfd3349d088596241bd889",
+          "d613cf3c6a292c53a077f0afffce1921bc2ae41c896b1ff840b6c675cb8dd66b",
+          "3054d47989947ae08099698c756a283e6d289c70eca5299f72db9013ed67b76b",
+          "6bd3bac9a1d19109127bcda4d3d3771570880341872ffc46cd12e5fd24601494",
+          "adcb72451016c977eaf96cad3be007e1fe78ce6a08726f12c2683bddcda8b84f",
+          "67cfd9e91de6b7cb67bcedeffc25672364ec82881037e18ea548846105e3f0ed",
+          "b710873566879bacafd4c4b1948782de3448c60a7664b1b7fca5f19dbd5cfed3",
+          "000b99a615b7ee7100a61fb94b03cb1ddbf2dafe48fd8e30ae5a9c55a2b7e293",
+          "8cac3c376d04fc9589340e1f7a7b10fa58b9a3e4a5deef9a7dda64a4769cb6fa",
+          "45796698a561f29f374d2188468c897bbae74b5b6747d86e5d7c4e9f2b60e6b6",
+          "bda90149864d6505f8ad344133fd8e733252d624680a7d4d08a91f251cdf285a"
+        ]
+      },
+      {
+        "validator": 3,
+        "height": 12,
+        "head": "3ff2891715b67baacb688580338ddabba8732ddcc49f776821d373c4c284a243",
+        "state": "7aabb08de779a38f24427d7b0a620a5f22c12d0418970b61062d17624a745663",
+        "consensus_commitment": "ec3de0f322cc8252ad4da823d9b45d11c759f11fea7426779b20f3f67c54f3fe",
+        "retained_finality_frame_sha256": [
+          "7bccf340121325e45b9d9b287b468ffcb366138c1da508bf0089fcc21e3cadb4",
+          "ff27d30cd5c3852aff31bb475123435b81bba953b9dfd3349d088596241bd889",
+          "39649ba2f071bca1345b1ee8ffa12c43a1653bfca146000f5152d359a41a6d5c",
+          "3054d47989947ae08099698c756a283e6d289c70eca5299f72db9013ed67b76b",
+          "6bd3bac9a1d19109127bcda4d3d3771570880341872ffc46cd12e5fd24601494",
+          "ae7d90a470c53ec21ca02c588eb03efc49f909657b1935b5070aa7effaec90e5",
+          "be2cc6a34b867e4eb65abc882a25e7788308406ba8bbc4d077e5f60e2ce60753",
+          "b710873566879bacafd4c4b1948782de3448c60a7664b1b7fca5f19dbd5cfed3",
+          "000b99a615b7ee7100a61fb94b03cb1ddbf2dafe48fd8e30ae5a9c55a2b7e293",
+          "84d5c44f994db840130c9c64dddac64b4e8b97393ab8e1d539139620fcbe8690",
+          "600a93f7ace2d4f5d1eec57bdb480164317879f10f67a48eaa93079453498a13",
+          "03dce701639a8be2067262568aae0cae94c2909599f4c9aff1676457a0e9c1f8"
+        ]
+      }
+    ],
+    "binary_sha256": {
+      "naome": "b2c1d5f1a4cf1ca694017912f73bcdca11ce8f912ac0cb40de3c08a171ba5950",
+      "naome-validator": "1498f2335d81b5e92991c79229e918b541b8f6d282d7f7cb5ec0300894a9ee9d",
+      "naome-verifier": "d73eb13ac41f6978b422867e8b891eb41ce973854149032b2d04768555391bf0"
+    },
+    "source_commit": "4c85f11142685d8d58979cdd54367fc76dfa37a8",
+    "source_worktree_clean": false,
+    "runner_sha256": "b5d79b89ff827bc75e1182fb9e114ec9023a5265789e687bb728191ac2a6279b",
+    "harness_sha256": {
+      "state_qualify.py": "b5d79b89ff827bc75e1182fb9e114ec9023a5265789e687bb728191ac2a6279b",
+      "state_backend.py": "a0fab0f11c0841d921685c1e9b68ab9be0a60b466f2b23fc271bd2550e179d18",
+      "state_agent.py": "87649069ba2bdd690c055b23cf1c9e975a303b69201ec92a151f46e37c25a91e",
+      "proxy.py": "10a5a6dc3f28cfac458b55400a8fe4e04917080a5f37b5ae9d9e57ae7c88e705"
+    },
+    "authority_stores_initially_absent": true,
+    "malformed_ingress_rejected_without_authority_change": 32,
+    "elapsed_seconds": 138.558,
+    "resources": {
+      "0": {
+        "samples": 238,
+        "peak_disk_bytes": 236637,
+        "peak_memory_bytes": 35749888
+      },
+      "1": {
+        "samples": 233,
+        "peak_disk_bytes": 257262,
+        "peak_memory_bytes": 36175872
+      },
+      "2": {
+        "samples": 202,
+        "peak_disk_bytes": 198072,
+        "peak_memory_bytes": 36356096
+      },
+      "3": {
+        "samples": 143,
+        "peak_disk_bytes": 177051,
+        "peak_memory_bytes": 36306944
+      }
+    },
+    "corrupt_export_rejected_without_repair": true
+  },
+  "smoke_provenance_note": "Exact preserved binaries and harness hashes are recorded in the smoke report; source worktree was not clean. This is local supplementary evidence, not final integration qualification.",
+  "native_100_heights": {
+    "status": "in_progress",
+    "report": "private retained local run; outcome not yet claimed"
+  },
+  "ci": {
+    "status": "pending dispatch for this milestone"
+  },
+  "logs": {
+    "canonical-devnet-components-test": {
+      "sha256": "b65abef5973c34eff630d6206a7cc362f7323e2fd482acbfb940a2f6b4a24da6",
+      "results": [
+        "test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.49s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 135.52s",
+        "test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s",
+        "test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 38.65s"
+      ]
+    },
+    "canonical-devnet-runtime-release-test": {
+      "sha256": "e55994f9696e9116740abba12657aff8c4f7aff92eda3b06416fde34e72cb92d",
+      "results": [
+        "test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s",
+        "test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.09s"
+      ]
+    },
+    "devnet-final-cli-release-test": {
+      "sha256": "3cc1822f76d0db3e194ff1d99c7956e6a8bf6eda51d2ea29d4bbfef4b083f3a0",
+      "results": [
+        "test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.48s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 133.65s"
+      ]
+    },
+    "devnet-final-setup-test": {
+      "sha256": "3a6e2c324f89667a534d61df5d0c205d8f9ea2f473111f48bc42855ce6ed99d5",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.42s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 142 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s"
+      ]
+    },
+    "devnet-final-setup-release-test": {
+      "sha256": "68d41d8e132ec2b57b2f8c194a911524263e7e1976e19eb0dcb55444eaa9ef52",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.94s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 142 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s"
+      ]
+    },
+    "canonical-devnet-python-test": {
+      "sha256": "4e06db7a365e0c8fd016f5c9ab631e0c80208b77ccf1c470d73854a31ef0aa22",
+      "results": [
+        "Ran 12 tests in 0.122s",
+        "OK"
+      ]
+    },
+    "canonical-devnet-clippy": {
+      "sha256": "79bff4e0ad32591d22ad57b09b0a016fcd9c64d78fc7cc764577e71a1c28138d",
+      "results": []
+    },
+    "devnet-final-doc": {
+      "sha256": "fc090987393c8b8c05f81b45b5bafd587b5088f40a1b41ddf5a5d6d4f492fbdd",
+      "results": []
+    },
+    "devnet-final-doctest": {
+      "sha256": "b7069314979f7f58705d40df95e317e32e05065e5bb7d53264d24381630e0e76",
+      "results": [
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s"
+      ]
+    },
+    "devnet-publish-test-build": {
+      "sha256": "cffae985adb9104710a72c9b0f6d9b14c677bf876445bde1ad15f5fcc5cebf34",
+      "results": []
+    },
+    "devnet-publish-release-build": {
+      "sha256": "89f9c716130219c4bc348825d16a59f6bee4e272ac72ebcb628d7958c0e27854",
+      "results": []
+    },
+    "devnet-publish-fairness-test": {
+      "sha256": "3d2d1af9c40e67d825ce0863bc903bac7bd8ea2dd3858fa6c7447a632e7c594c",
+      "results": [
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.03s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 142 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s"
+      ]
+    },
+    "devnet-publish-fairness-release-test": {
+      "sha256": "48a056756938d4a010daf7af8c90a7342f07613f4794d1c404dd8e90bd752df1",
+      "results": [
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.03s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 142 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s"
+      ]
+    }
+  },
+  "remaining": [
+    "Retire remaining V0 validator/verifier executable, runtime, transport and history authority",
+    "Integrate strict artifact DAG inside canonical proof library",
+    "Complete pinned final workspace gates and final platform CI",
+    "Run final real-window bounded-agent lab"
+  ]
+}

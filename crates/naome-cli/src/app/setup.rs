@@ -30,6 +30,9 @@ pub struct NodeConfig {
     pub control_socket: PathBuf,
     pub maximum_round: u64,
     pub simulation: bool,
+    /// Local bind override for an explicitly provisioned proxy or NAT endpoint.
+    #[serde(default)]
+    pub listen_address: Option<std::net::SocketAddr>,
 }
 impl NodeConfig {
     pub fn read(path: &Path) -> Result<Self> {
@@ -44,9 +47,9 @@ impl NodeConfig {
     }
 }
 pub fn run(args: &[String]) -> Result<()> {
-    if !(args.len() == 4 || (args.len() == 5 && args[4] == "compact")) {
+    if !(args.len() == 4 || ((args.len() == 5 || args.len() == 6) && args[4] == "compact")) {
         return Err(
-            "usage: setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT [compact]".into(),
+            "usage: setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT [compact [ENDPOINTS_JSON]]".into(),
         );
     }
     let timing = match args[1].as_str() {
@@ -59,7 +62,7 @@ pub fn run(args: &[String]) -> Result<()> {
         run_records: args[2].parse()?,
         ..Limits::default()
     };
-    if args.len() == 5 {
+    if args.len() >= 5 {
         limits.record_bytes = 128 * 1024;
         limits.package_bytes = 64 * 1024;
         limits.transport_frame_bytes = 192 * 1024;
@@ -71,6 +74,24 @@ pub fn run(args: &[String]) -> Result<()> {
     if !(1024..=65532).contains(&base) {
         return Err("base port must be 1024 through 65532".into());
     }
+    let endpoints: [String; 4] = if args.len() == 6 {
+        let values: [String; 4] =
+            serde_json::from_slice(&files::read(Path::new(&args[5]), 4096, false)?)?;
+        let parsed = values
+            .iter()
+            .map(|value| value.parse::<std::net::SocketAddr>())
+            .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?;
+        if parsed.len() != 4
+            || parsed.iter().any(|address| {
+                address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast()
+            })
+        {
+            return Err("four distinct literal peer endpoints are required".into());
+        }
+        values
+    } else {
+        std::array::from_fn(|index| format!("127.0.0.1:{}", base + index as u16))
+    };
     let requested = Path::new(&args[0]);
     files::directory(requested)?;
     let root = requested.canonicalize()?;
@@ -99,7 +120,7 @@ pub fn run(args: &[String]) -> Result<()> {
             owner: AccountId::for_key(account.verifying_key().as_bytes()),
             consensus_key: consensus.verifying_key().to_bytes(),
             transport_key: transport.verifying_key().to_bytes(),
-            endpoint: format!("127.0.0.1:{}", base + index as u16),
+            endpoint: endpoints[index].clone(),
         });
         let research_profile = dir.join("research-profile.txt");
         files::create(&research_profile,b"Prioritize precise, checker-expressible foundational mathematics. Approve small reusable helper results and questions that develop a reusable formal library. Reject unclear or unrelated targets.\n",true)?;
@@ -117,6 +138,7 @@ pub fn run(args: &[String]) -> Result<()> {
             control_socket: dir.join("control.sock"),
             maximum_round,
             simulation: true,
+            listen_address: None,
         });
     }
     let genesis = Genesis::new(

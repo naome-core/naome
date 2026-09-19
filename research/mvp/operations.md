@@ -312,19 +312,21 @@ for each. No acceptance checkbox is completed by this operating guide.
 
 ## Reproduce the lab acceptance run
 
-Build once, copy the executable outside Cargo's output directory, and run the
-acceptance harness against that preserved executable. Concurrent later builds
-must not replace this copy. The runner uses a new private directory and its own
+Build once, copy all three executables outside Cargo's output directory, and run the
+acceptance harness against those preserved executables. Concurrent later builds
+must not replace these copies. The runner uses a new private directory and its own
 available ports; it does not reuse the manual example above.
 
 ```sh
-cargo build -p naome-cli --bin naome --profile release --locked
+cargo build -p naome-cli -p naome-validator -p naome-verifier --bins --profile release --locked
 umask 077
 QUALIFICATION=$(mktemp -d /tmp/naome-qualification.XXXXXX)
-cp target/release/naome "$QUALIFICATION/naome"
-chmod 500 "$QUALIFICATION/naome"
+cp target/release/naome target/release/naome-validator target/release/naome-verifier "$QUALIFICATION/"
+chmod 500 "$QUALIFICATION/naome" "$QUALIFICATION/naome-validator" "$QUALIFICATION/naome-verifier"
 python3 tools/research_lab_acceptance.py \
   --binary "$QUALIFICATION/naome" \
+  --validator "$QUALIFICATION/naome-validator" \
+  --verifier "$QUALIFICATION/naome-verifier" \
   --provider "$PWD/tools/research_agent_codex.py" \
   >"$QUALIFICATION/progress.jsonl" 2>&1
 ```

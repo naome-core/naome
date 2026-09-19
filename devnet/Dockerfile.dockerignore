@@ -12,7 +12,7 @@
 !examples/
 !examples/**
 !devnet/
-!devnet/agent.py
+!devnet/state_agent.py
 !devnet/proxy.py
 !devnet/Dockerfile
 **/*.seed

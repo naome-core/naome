@@ -19,7 +19,60 @@
     "limitations": "No independent runtime or CI execution"
   },
   "ci": {
-    "status": "not yet dispatched for this milestone"
+    "head": "4c85f11142685d8d58979cdd54367fc76dfa37a8",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/naome-core/naome/actions/runs/35348070233",
+    "jobs": [
+      {
+        "name": "Devnet qualification",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Linux x86_64, release) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust quality",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Windows x86_64, release) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Linux x86_64, test) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Windows x86_64, test) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (macOS ARM64, release) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (macOS ARM64, test) / Full workspace",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust platform (Windows x86_64)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust platform (Linux x86_64)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust platform (macOS ARM64)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust CI",
+        "conclusion": "success"
+      }
+    ]
   },
   "remaining": [
     "Retire V0 command/runtime/transport/history authority",

@@ -33,6 +33,7 @@ impl Directory {
             control_socket: self.0.join("control.sock"),
             maximum_round: 8,
             simulation: true,
+            listen_address: None,
         }
     }
 }
@@ -161,4 +162,90 @@ fn node_configuration_rejects_unknown_fields_versions_and_public_permissions() {
     }
     fs::set_permissions(&valid, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(NodeConfig::read(&valid).is_err());
+}
+
+#[test]
+fn explicit_peer_endpoints_are_genesis_bound_and_invalid_plans_create_no_state() {
+    let dir = Directory::new();
+    let plan = dir.0.join("endpoints.json");
+    let output = dir.0.join("run");
+    let args = vec![
+        output.to_str().unwrap().into(),
+        "short-test".into(),
+        "160".into(),
+        "44100".into(),
+        "compact".into(),
+        plan.to_str().unwrap().into(),
+    ];
+    for endpoints in [
+        vec!["127.0.0.1:1"; 4],
+        vec!["127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3", "0.0.0.0:4"],
+        vec!["127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3", "127.0.0.1:0"],
+        vec!["127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3", "example.org:4"],
+        vec!["127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3"],
+    ] {
+        fs::write(&plan, serde_json::to_vec(&endpoints).unwrap()).unwrap();
+        assert!(run(&args).is_err());
+        assert!(!output.exists());
+    }
+    let expected = [
+        "172.30.88.10:4200",
+        "172.30.88.11:4200",
+        "172.30.88.12:4200",
+        "172.30.88.13:4200",
+    ];
+    fs::write(&plan, serde_json::to_vec(&expected).unwrap()).unwrap();
+    let symlink = dir.0.join("endpoints-link.json");
+    std::os::unix::fs::symlink(&plan, &symlink).unwrap();
+    let mut invalid = args.clone();
+    invalid[5] = symlink.to_str().unwrap().into();
+    assert!(run(&invalid).is_err());
+    assert!(!output.exists());
+    invalid = args.clone();
+    invalid[2] = "0".into();
+    assert!(run(&invalid).is_err());
+    assert!(!output.exists());
+    run(&args).unwrap();
+    let key_path = output.join("node-0/consensus.key");
+    let original_key = fs::read(&key_path).unwrap();
+    assert_eq!(
+        fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(run(&args).is_err());
+    assert_eq!(fs::read(&key_path).unwrap(), original_key);
+    assert!(
+        !fs::read(output.join("genesis.bin"))
+            .unwrap()
+            .windows(32)
+            .any(|part| part == &original_key[9..])
+    );
+    for index in 0..4 {
+        assert!(!output.join(format!("node-{index}/history")).exists());
+        assert!(!output.join(format!("node-{index}/signer")).exists());
+    }
+    let genesis = Genesis::decode(&fs::read(output.join("genesis.bin")).unwrap()).unwrap();
+    let actual = genesis
+        .validators()
+        .iter()
+        .map(|v| v.endpoint.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual, expected.into_iter().collect());
+    let config_path = output.join("node-0/node.json");
+    let config = NodeConfig::read(&config_path).unwrap();
+    assert_eq!(config.listen_address, None);
+    let bytes = genesis.encode();
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    value["listen_address"] = serde_json::json!("127.0.0.1:4100");
+    fs::write(&config_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(
+        NodeConfig::read(&config_path)
+            .unwrap()
+            .listen_address
+            .unwrap()
+            .to_string(),
+        "127.0.0.1:4100"
+    );
+    assert_eq!(fs::read(output.join("genesis.bin")).unwrap(), bytes);
 }

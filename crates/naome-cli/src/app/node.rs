@@ -147,12 +147,17 @@ pub async fn run(path: &Path) -> Result<()> {
         .copied()
         .filter(|p| *p != network.local_peer_id())
         .collect();
-    network.listen_on(
-        network
+    let listen = match config.listen_address {
+        Some(address) => {
+            let family = if address.is_ipv4() { "ip4" } else { "ip6" };
+            format!("/{family}/{}/tcp/{}", address.ip(), address.port()).parse()?
+        }
+        None => network
             .research_listen_address()
-            .ok_or("research endpoint unavailable")?
+            .ok_or("state endpoint unavailable")?
             .clone(),
-    )?;
+    };
+    network.listen_on(listen)?;
     let mut runtime_config = ResearchRuntimeConfig {
         allow_simulation_controls: config.simulation,
         ..ResearchRuntimeConfig::default()

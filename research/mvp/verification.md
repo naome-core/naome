@@ -27,6 +27,10 @@ CI gates at `73e1156`. The [main executable milestone](evidence/main-executables
 records direct validator execution, portable verifier replay, and process-level
 crash, conflict and corrupt-start checks. These do not qualify the still-pending
 retirement of V0 authority or replace the final real-window lab.
+The [canonical devnet milestone](evidence/canonical-devnet.json) replaces the
+artifact-chain qualification harness and records delayed state traffic, fault
+recovery and independent replay through the main executables. Its evidence and
+pending qualification states are recorded separately.
 
 ## Recorded qualification
 

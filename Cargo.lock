@@ -1821,24 +1821,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "naome-devnet"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "getrandom 0.3.4",
- "naome-chain",
- "naome-consensus",
- "naome-network",
- "naome-proof",
- "naome-storage",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "zeroize",
-]
-
-[[package]]
 name = "naome-foundation"
 version = "0.1.0"
 

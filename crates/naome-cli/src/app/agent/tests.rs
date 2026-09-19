@@ -198,6 +198,7 @@ impl Fixture {
             control_socket: root.join("control.sock"),
             maximum_round: 64,
             simulation: true,
+            listen_address: None,
         };
         files::directory(&config.signer).unwrap();
         files::create(&config.genesis, &genesis.encode(), false).unwrap();

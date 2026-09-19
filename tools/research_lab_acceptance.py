@@ -41,6 +41,8 @@ class Lab:
     def __init__(self, args):
         self.args = args
         self.binary = args.binary.resolve(strict=True)
+        self.validator = args.validator.resolve(strict=True)
+        self.verifier = args.verifier.resolve(strict=True)
         self.root = Path(tempfile.mkdtemp(prefix="nml-", dir="/tmp"))
         os.chmod(self.root, 0o700)
         self.nodes = {}
@@ -56,6 +58,8 @@ class Lab:
             "host": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "logical_cpus": os.cpu_count()},
             "binary": str(self.binary),
             "binary_sha256": hashlib.sha256(self.binary.read_bytes()).hexdigest(),
+            "executables": {name: {"path": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+                            for name, binary in (("naome", self.binary), ("naome-validator", self.validator), ("naome-verifier", self.verifier))},
             "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "commands": [], "observations": [], "checks": {},
@@ -121,7 +125,8 @@ class Lab:
             self.save()
 
     def run(self, *args, timeout=40, tolerate=False, log=True):
-        command = [str(self.binary), *map(str, args)]
+        binary = self.verifier if args and args[0] == "verify" else self.binary
+        command = [str(binary), *map(str, args)]
         start = time.monotonic()
         result = subprocess.run(command, capture_output=True, timeout=timeout)
         if log:
@@ -148,7 +153,7 @@ class Lab:
         require(index not in self.nodes, "node already started")
         generation = self.generations[index]
         self.generations[index] += 1
-        command = [str(self.binary), "start", str(self.config(index))]
+        command = [str(self.validator), "start", str(self.config(index))]
         with self.file(f"node-{index}-{generation}.events").open("wb") as out, \
                 self.file(f"node-{index}-{generation}.errors").open("wb") as err:
             self.nodes[index] = subprocess.Popen(command, stdout=out, stderr=err)
@@ -442,6 +447,8 @@ proof:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=REPO / "target/debug/naome")
+    parser.add_argument("--validator", type=Path, required=True)
+    parser.add_argument("--verifier", type=Path, required=True)
     parser.add_argument("--provider", type=Path, default=REPO / "tools/research_agent_codex.py")
     args = parser.parse_args()
     os.umask(0o077)
