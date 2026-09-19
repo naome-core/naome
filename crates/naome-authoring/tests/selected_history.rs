@@ -12,13 +12,30 @@ fn source_for(id: ProofId) -> String {
         "foundation = \"naome:zfc\" statement = forall(y,forall(x,equal(x,x))) proof: p0 = cite(\"{hex}\") p1 = generalization(p0,y) return p1"
     )
 }
-fn image(path: &std::path::Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+#[derive(Debug, PartialEq, Eq)]
+enum FileImage {
+    Data(Vec<u8>),
+    Lock { modified: std::time::SystemTime },
+}
+fn image(path: &std::path::Path) -> std::collections::BTreeMap<PathBuf, FileImage> {
     fs::read_dir(path)
         .unwrap()
         .map(|v| {
             let path = v.unwrap().path();
-            let bytes = fs::read(&path).unwrap();
-            (path, bytes)
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            assert!(metadata.is_file());
+            // Windows byte-range locks prohibit reading the actively held lock.
+            // These coordination files are empty; all journal and anchor bytes
+            // remain part of the exact non-mutation snapshot on every platform.
+            let contents = if path.extension().is_some_and(|ext| ext == "lock") {
+                assert_eq!(metadata.len(), 0);
+                FileImage::Lock {
+                    modified: metadata.modified().unwrap(),
+                }
+            } else {
+                FileImage::Data(fs::read(&path).unwrap())
+            };
+            (path, contents)
         })
         .collect()
 }

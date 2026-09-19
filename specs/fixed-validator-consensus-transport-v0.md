@@ -1,5 +1,10 @@
 # Fixed-Validator Consensus Transport V0
 
+> Retired V0 contract. Its implementation and dedicated wire/API tests have been removed.
+> The sole active transport and runtime use canonical complete state records; see
+> [current ownership](ownership.md) and [operating guide](../research/mvp/operations.md).
+> The text below records the removed interface and grants no current authority.
+
 ## Scope and authority
 
 `PROD-020-043` defines one explicit one-hop proposal or vote delivery through

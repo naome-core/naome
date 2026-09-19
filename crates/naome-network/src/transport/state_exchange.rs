@@ -1,8 +1,8 @@
 //! Authenticated research envelopes sharing the fixed Noise/Yamux sessions.
 use super::inbound_retention::{InboundRetentionBudget, InboundRetentionPermit};
 use super::{
-    ExchangeRequestId, NetworkEvent, PeerId, PendingBudget, PendingPermit, PendingRequest,
-    RequestStartError, StaticArtifactNetwork, StaticPeer,
+    NetworkEvent, PeerId, PendingBudget, PendingPermit, RequestStartError, StaticArtifactNetwork,
+    StaticPeer,
 };
 use libp2p::{Multiaddr, identity, request_response};
 use naome_ledger::profile::Genesis;
@@ -257,8 +257,8 @@ impl StaticArtifactNetwork {
             outbound: Arc::new(InboundRetentionBudget::new(super::MAX_STATIC_PEERS, 0)),
             listen,
         };
-        let mut network = Self::build(identity, peers.clone(), true)
-            .map_err(ResearchNetworkBuildError::Transport)?;
+        let mut network =
+            Self::build(identity, peers.clone()).map_err(ResearchNetworkBuildError::Transport)?;
         network.swarm.behaviour_mut().state_exchange =
             Behaviour::new(peers.iter().map(StaticPeer::peer_id), Some(&config));
         network.research = Some(config);
@@ -336,17 +336,18 @@ impl StaticArtifactNetwork {
             budget: Arc::clone(&self.pending_budget),
             _custody: Arc::clone(&custody),
         };
-        self.insert_pending(
-            ExchangeRequestId::Research(peer, id),
-            PendingRequest::Research(PendingResearch {
+        let replaced = self.pending.insert(
+            (peer, id),
+            PendingResearch {
                 peer_index,
                 request,
                 digest,
                 custody,
                 permit,
                 outbound_slot,
-            }),
+            },
         );
+        debug_assert!(replaced.is_none());
         Ok(ticket)
     }
     pub fn respond_research(
@@ -432,12 +433,7 @@ impl StaticArtifactNetwork {
         actual: PeerId,
         mut result: Result<WireResponse, ResearchFailure>,
     ) -> Option<NetworkEvent> {
-        let PendingRequest::Research(pending) = self
-            .pending
-            .remove(&ExchangeRequestId::Research(actual, id))?
-        else {
-            unreachable!("research key");
-        };
+        let pending = self.pending.remove(&(actual, id))?;
         let peer = self.pending_peer_id(pending.peer_index);
         if peer != actual
             || result.as_ref().is_ok_and(|wire| {

@@ -56,7 +56,7 @@ impl ResearchCodec {
         bytes[..RESEARCH_FRAME_HEADER_BYTES].copy_from_slice(&header);
         io.read_exact(&mut bytes[RESEARCH_FRAME_HEADER_BYTES..])
             .await?;
-        crate::transport::codec::require_eof(io, "research trailing bytes").await?;
+        require_eof(io, "research trailing bytes").await?;
         Ok((bytes, custody))
     }
 }
@@ -111,5 +111,17 @@ impl request_response::Codec for ResearchCodec {
         response: Self::Response,
     ) -> io::Result<()> {
         io.write_all(&response.response.to_wire_bytes()).await
+    }
+}
+
+pub(super) async fn require_eof<T>(io: &mut T, message: &'static str) -> io::Result<()>
+where
+    T: AsyncRead + Unpin + Send,
+{
+    let mut trailing = [0_u8; 1];
+    if io.read(&mut trailing).await? == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::InvalidData, message))
     }
 }

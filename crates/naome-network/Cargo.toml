@@ -2,7 +2,7 @@
 name = "naome-network"
 version.workspace = true
 edition.workspace = true
-description = "Bounded authenticated artifact-chain transport over fixed peers for NAOME."
+description = "Bounded authenticated canonical state transport over genesis peers for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
@@ -19,18 +19,13 @@ libp2p = { version = "0.56.0", default-features = false, features = [
     "yamux",
 ] }
 naome-protocol = { path = "../naome-protocol" }
-naome-chain = { path = "../naome-chain" }
-naome-consensus = { path = "../naome-consensus" }
 naome-ledger = { path = "../naome-ledger" }
-naome-proof = { path = "../naome-proof" }
-naome-storage = { path = "../naome-storage" }
 sha2.workspace = true
 tokio = { version = "1", default-features = false, features = ["macros", "time"] }
 
 [dev-dependencies]
+naome-proof = { path = "../naome-proof" }
 ed25519-dalek.workspace = true
-naome-foundation = { path = "../naome-foundation" }
-naome-node = { path = "../naome-node" }
 tokio = { version = "1", default-features = false, features = [
     "rt",
     "test-util",

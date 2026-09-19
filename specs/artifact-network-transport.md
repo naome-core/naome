@@ -1,5 +1,10 @@
 # NAOME Artifact Network Transport
 
+> Retired V0 contract. Its implementation and dedicated wire/API tests have been removed.
+> The sole active transport and runtime use canonical complete state records; see
+> [current ownership](ownership.md) and [operating guide](../research/mvp/operations.md).
+> The text below records the removed interface and grants no current authority.
+
 ## Scope and authority
 
 This document normatively defines transport-neutral artifact, artifact-block,

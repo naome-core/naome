@@ -208,16 +208,11 @@ async fn research_real_noise_roundtrip_retained_response_blocks_next_and_resumes
     a.set_research_peer_enabled(peer, true).unwrap();
 }
 #[tokio::test]
-async fn research_unknown_local_identity_and_legacy_configuration_fail_closed() {
+async fn research_unknown_local_identity_fails_closed() {
     let (genesis, _) = fixture();
     assert!(matches!(
         StaticArtifactNetwork::new_research(identity::Keypair::generate_ed25519(), &genesis),
         Err(ResearchNetworkBuildError::Identity)
-    ));
-    let mut legacy = StaticArtifactNetwork::new(identity::Keypair::generate_ed25519(), []).unwrap();
-    assert!(matches!(
-        legacy.request_research(legacy.local_peer_id(), ResearchRequestBody::Handshake),
-        Err(ResearchStartError::NotConfigured)
     ));
 }
 
@@ -334,3 +329,5 @@ async fn research_noise_peer_with_wrong_genesis_never_delivers_application_paylo
 }
 
 mod boundary;
+
+mod lifecycle;

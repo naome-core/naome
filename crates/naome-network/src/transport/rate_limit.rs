@@ -48,12 +48,6 @@ impl TokenBucket {
     pub(crate) const fn tokens(&self) -> u32 {
         self.tokens
     }
-
-    #[cfg(test)]
-    pub(crate) fn exhaust(&mut self, now: Instant) {
-        self.tokens = 0;
-        self.last_refill = now;
-    }
 }
 
 #[cfg(test)]

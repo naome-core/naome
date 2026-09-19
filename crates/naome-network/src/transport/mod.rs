@@ -1,54 +1,24 @@
 //! Managed authenticated transport, request custody, and exchange lifecycles.
 
-pub(crate) mod candidate_offer;
-pub(crate) mod state_exchange;
-
-use crate::*;
-
-pub(crate) mod batch;
-pub(crate) mod block_transport;
-pub(crate) mod codec;
-pub(crate) mod consensus_push;
-pub(crate) mod finality_exchange;
-pub(crate) mod head_announcement;
-pub(crate) mod head_transport;
 mod inbound_retention;
-pub(crate) mod payload_request;
 pub(crate) mod rate_limit;
-pub(crate) mod recovery_bundle_push;
-pub(crate) mod request_correlation;
 pub(crate) mod session;
-
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-};
-use std::time::Duration;
-
-use block_transport::PendingArtifactBlockRequest;
-use codec::{
-    ARTIFACT_BLOCK_PROTOCOL, ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
-    ARTIFACT_CHAIN_HEAD_PROTOCOL, ARTIFACT_PROTOCOL, ArtifactBlockCodec,
-    ArtifactChainHeadAnnouncementCodec, ArtifactChainHeadCodec, ArtifactCodec,
-    RECOVERY_BUNDLE_PUSH_PROTOCOL, RecoveryBundlePushCodec,
-};
-use consensus_push::codec::{CONSENSUS_PUSH_PROTOCOL, ConsensusPushCodec};
-use finality_exchange::codec::{FINALITY_PROOF_PROTOCOL, FinalityProofCodec};
-use head_announcement::PendingArtifactChainHeadAnnouncement;
-use head_transport::PendingArtifactChainHeadRequest;
+pub(crate) mod state_exchange;
+use crate::*;
 use libp2p::futures::StreamExt;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{
     Swarm, SwarmBuilder, allow_block_list, connection_limits, noise, request_response, tcp, yamux,
 };
-use naome_protocol::artifact_exchange::{ArtifactRequest, ArtifactResponse};
-use naome_storage::ArtifactChainJournalError;
 use session::Behaviour as SessionBehaviour;
-use tokio::time::Instant;
-
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::time::Duration;
 const MANAGED_SESSION_IDLE_TIMEOUT: Duration = Duration::MAX;
 pub(crate) const MAX_NEGOTIATING_INBOUND_STREAMS_PER_CONNECTION: usize = 2;
 const DIAL_RETRY_DELAYS: [Duration; 7] = [
@@ -67,19 +37,6 @@ pub const MAX_STATIC_PEERS: usize = 8;
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
 /// Maximum pending or caller-retained outbound requests across all application exchanges.
 pub const MAX_PENDING_REQUESTS: usize = 8;
-/// Maximum concurrent streams for each artifact, block, head-pull, or finality-proof exchange.
-pub const MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION: usize = 2;
-/// Maximum concurrent head-announcement streams on one connection.
-pub const MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION: usize = 1;
-/// Maximum concurrent recovery-bundle push streams on one connection.
-pub const MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION: usize = 1;
-/// Maximum concurrent consensus push streams on one connection, shared by both directions.
-pub const MAX_CONSENSUS_PUSH_STREAMS_PER_CONNECTION: usize = 2;
-/// Aggregate application-stream ceiling imposed by Yamux.
-/// Per-exchange limits sum to twelve; they contend for eight total substreams,
-/// with negotiation and transient streams also consuming capacity. Exhaustion
-/// may fail exchanges or the connection.
-pub const MAX_EXCHANGE_STREAMS_PER_CONNECTION: usize = MAX_YAMUX_STREAMS_PER_CONNECTION;
 /// Maximum total Yamux substreams on one connection.
 pub const MAX_YAMUX_STREAMS_PER_CONNECTION: usize = 8;
 /// Configured TCP listen backlog.
@@ -88,8 +45,6 @@ pub const TCP_LISTEN_BACKLOG: u32 = 16;
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum duration of the negotiated request-response phase.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Absolute monotonic budget for importing one block's exact artifact payload.
-pub const ARTIFACT_BLOCK_IMPORT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Initial delay after one failed managed-session dial.
 pub const DIAL_RETRY_BASE: Duration = DIAL_RETRY_DELAYS[0];
 /// Maximum delay between managed-session dial attempts.
@@ -100,10 +55,6 @@ pub const STABLE_SESSION_DURATION: Duration = Duration::from_secs(60);
 pub const INBOUND_AUTH_BURST: u32 = 8;
 /// Sustained pre-authentication inbound connection refill interval.
 pub const INBOUND_AUTH_REFILL_INTERVAL: Duration = Duration::from_secs(1);
-/// Maximum burst of admitted store- or journal-backed response attempts.
-pub const INBOUND_APPLICATION_REQUEST_BURST: u32 = 8;
-/// Sustained refill interval for store- or journal-backed responses.
-pub const INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// One manually authorized peer and its complete dial address.
 ///
@@ -137,122 +88,20 @@ struct Behaviour {
     limits: connection_limits::Behaviour,
     allowed: allow_block_list::Behaviour<allow_block_list::AllowedPeers>,
     sessions: SessionBehaviour,
-    artifact_exchange: request_response::Behaviour<ArtifactCodec>,
-    block_exchange: request_response::Behaviour<ArtifactBlockCodec>,
-    head_exchange: request_response::Behaviour<ArtifactChainHeadCodec>,
-    head_announcement: request_response::Behaviour<ArtifactChainHeadAnnouncementCodec>,
-    candidate_offer: candidate_offer::Behaviour,
     state_exchange: state_exchange::Behaviour,
-    recovery_bundle_push: request_response::Behaviour<RecoveryBundlePushCodec>,
-    consensus_push: request_response::Behaviour<ConsensusPushCodec>,
-    finality_exchange: request_response::Behaviour<FinalityProofCodec>,
 }
 
-struct PendingArtifactRequest {
-    peer_index: usize,
-    request: ArtifactRequest,
-    control: Arc<ArtifactRequestControl>,
-    _permit: PendingPermit,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum ExchangeRequestId {
-    Artifact(request_response::OutboundRequestId),
-    Block(request_response::OutboundRequestId),
-    Head(request_response::OutboundRequestId),
-    Announcement(request_response::OutboundRequestId),
-    CandidateOffer(PeerId, request_response::OutboundRequestId),
-    Research(PeerId, request_response::OutboundRequestId),
-    RecoveryBundlePush(request_response::OutboundRequestId),
-    ConsensusPush(request_response::OutboundRequestId),
-    Finality(request_response::OutboundRequestId),
-}
-
-enum PendingRequest {
-    Artifact(PendingArtifactRequest),
-    Block(PendingArtifactBlockRequest),
-    Head(PendingArtifactChainHeadRequest),
-    Announcement(PendingArtifactChainHeadAnnouncement),
-    CandidateOffer(candidate_offer::PendingOffer),
-    Research(state_exchange::PendingResearch),
-    RecoveryBundlePush(recovery_bundle_push::PendingRecoveryBundlePush),
-    ConsensusPush(consensus_push::PendingConsensusPush),
-    Finality(finality_exchange::PendingFinalityProof),
-}
-
-impl PendingRequest {
-    fn peer_index(&self) -> usize {
-        match self {
-            Self::Artifact(pending) => pending.peer_index,
-            Self::Block(pending) => pending.peer_index,
-            Self::Head(pending) => pending.peer_index,
-            Self::Announcement(pending) => pending.peer_index,
-            Self::CandidateOffer(pending) => pending.peer_index,
-            Self::Research(pending) => pending.peer_index,
-            Self::RecoveryBundlePush(pending) => pending.peer_index,
-            Self::ConsensusPush(pending) => pending.peer_index,
-            Self::Finality(pending) => pending.peer_index,
-        }
-    }
-}
-
-struct ArtifactRequestControl {
-    network_budget: Arc<PendingBudget>,
-    deadline: Instant,
-    cancelled: AtomicBool,
-}
-
-impl ArtifactRequestControl {
-    fn new(network_budget: Arc<PendingBudget>, deadline: Instant) -> Self {
-        Self {
-            network_budget,
-            deadline,
-            cancelled: AtomicBool::new(false),
-        }
-    }
-
-    fn cancel(&self) -> bool {
-        !self.cancelled.swap(true, Ordering::Relaxed)
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Relaxed)
-    }
-}
-
-/// Authenticated artifact transport over a fixed set of authorized peers.
+/// Authenticated canonical state transport over the immutable genesis peers.
 pub struct StaticArtifactNetwork {
     swarm: Swarm<Behaviour>,
-    finality_response_budget: Arc<inbound_retention::InboundRetentionBudget>,
-    pending: HashMap<ExchangeRequestId, PendingRequest>,
+    // Each peer behaviour has its own request counter; the peer is part of the key.
+    pending:
+        HashMap<(PeerId, request_response::OutboundRequestId), state_exchange::PendingResearch>,
     pending_budget: Arc<PendingBudget>,
-    inbound_application_request_budget: rate_limit::TokenBucket,
-    candidate_offer_due: HashMap<PeerId, Instant>,
     research: Option<state_exchange::ResearchConfig>,
 }
 
 impl StaticArtifactNetwork {
-    /// Reserves one of the existing eight outbound slots for consensus. This
-    /// local profile must be enabled before any request or retained completion;
-    /// ordinary standalone archive networks retain their eight-slot policy.
-    pub fn reserve_consensus_capacity(&mut self) -> Result<(), RequestStartError> {
-        if self.pending_budget.active.load(Ordering::Relaxed) != 0 {
-            return Err(RequestStartError::GlobalLimit {
-                maximum: MAX_PENDING_REQUESTS - 1,
-            });
-        }
-        self.pending_budget
-            .consensus_reserved
-            .store(true, Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// Reports current aggregate capacity for a consensus attempt. This is a
-    /// scheduling hint, not a reservation or a promise of peer admissibility.
-    pub fn consensus_capacity_available(&self) -> bool {
-        self.pending_budget.active.load(Ordering::Relaxed) < MAX_PENDING_REQUESTS
-    }
-
     /// Reports static transport configuration, not connectivity or consensus trust.
     pub fn is_configured_peer(&self, peer_id: &PeerId) -> bool {
         self.swarm
@@ -262,23 +111,9 @@ impl StaticArtifactNetwork {
             .is_some()
     }
 
-    /// Builds a bounded TCP + Noise + Yamux artifact transport.
-    ///
-    /// This must run inside a Tokio runtime with I/O and time drivers enabled.
-    /// Useful connectivity requires both endpoints to configure each other,
-    /// the higher raw binary `PeerId` to expose the configured listener, and
-    /// both event loops to remain driven. The lower `PeerId` owns dialing.
-    pub fn new(
-        identity: Keypair,
-        peers: impl IntoIterator<Item = StaticPeer>,
-    ) -> Result<Self, BuildError> {
-        Self::build(identity, peers, false)
-    }
-
     fn build(
         identity: Keypair,
         peers: impl IntoIterator<Item = StaticPeer>,
-        research_only: bool,
     ) -> Result<Self, BuildError> {
         let local_peer_id = identity.public().to_peer_id();
         let mut static_peers = Vec::with_capacity(MAX_STATIC_PEERS);
@@ -313,123 +148,14 @@ impl StaticArtifactNetwork {
         for peer in &static_peers {
             allowed.allow_peer(peer.peer_id);
         }
-        let candidate_offer = candidate_offer::Behaviour::new(
-            static_peers.iter().map(StaticPeer::peer_id),
-            !research_only,
-        );
         let state_exchange =
             state_exchange::Behaviour::new(static_peers.iter().map(StaticPeer::peer_id), None);
         let sessions = SessionBehaviour::new(local_peer_id, static_peers);
-
-        let exchange_config = request_response::Config::default()
-            .with_request_timeout(REQUEST_TIMEOUT)
-            .with_max_concurrent_streams(MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION);
-        let artifact_exchange = request_response::Behaviour::with_codec(
-            ArtifactCodec,
-            [(ARTIFACT_PROTOCOL, request_response::ProtocolSupport::Full)]
-                .into_iter()
-                .filter(|_| !research_only),
-            exchange_config.clone(),
-        );
-        let block_exchange = request_response::Behaviour::with_codec(
-            ArtifactBlockCodec,
-            [(
-                ARTIFACT_BLOCK_PROTOCOL,
-                request_response::ProtocolSupport::Full,
-            )]
-            .into_iter()
-            .filter(|_| !research_only),
-            exchange_config.clone(),
-        );
-        let head_exchange = request_response::Behaviour::with_codec(
-            ArtifactChainHeadCodec,
-            [(
-                ARTIFACT_CHAIN_HEAD_PROTOCOL,
-                request_response::ProtocolSupport::Full,
-            )]
-            .into_iter()
-            .filter(|_| !research_only),
-            exchange_config,
-        );
-        let announcement_config = request_response::Config::default()
-            .with_request_timeout(REQUEST_TIMEOUT)
-            .with_max_concurrent_streams(MAX_HEAD_ANNOUNCEMENT_STREAMS_PER_CONNECTION);
-        let head_announcement = request_response::Behaviour::with_codec(
-            ArtifactChainHeadAnnouncementCodec,
-            [(
-                ARTIFACT_CHAIN_HEAD_ANNOUNCEMENT_PROTOCOL,
-                request_response::ProtocolSupport::Full,
-            )]
-            .into_iter()
-            .filter(|_| !research_only),
-            announcement_config,
-        );
-        let recovery_bundle_push = request_response::Behaviour::with_codec(
-            RecoveryBundlePushCodec::new(Arc::new(inbound_retention::InboundRetentionBudget::new(
-                RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_EVENTS,
-                RECOVERY_BUNDLE_PUSH_MAX_RETAINED_INBOUND_BYTES,
-            ))),
-            [(
-                RECOVERY_BUNDLE_PUSH_PROTOCOL,
-                request_response::ProtocolSupport::Full,
-            )]
-            .into_iter()
-            .filter(|_| !research_only),
-            request_response::Config::default()
-                .with_request_timeout(REQUEST_TIMEOUT)
-                .with_max_concurrent_streams(MAX_RECOVERY_BUNDLE_PUSH_STREAMS_PER_CONNECTION),
-        );
-
-        let consensus_push = request_response::Behaviour::with_codec(
-            ConsensusPushCodec::new(Arc::new(inbound_retention::InboundRetentionBudget::new(
-                CONSENSUS_PUSH_MAX_RETAINED_INBOUND_EVENTS,
-                CONSENSUS_PUSH_MAX_RETAINED_INBOUND_BYTES,
-            ))),
-            [(
-                CONSENSUS_PUSH_PROTOCOL,
-                request_response::ProtocolSupport::Full,
-            )]
-            .into_iter()
-            .filter(|_| !research_only),
-            request_response::Config::default()
-                .with_request_timeout(REQUEST_TIMEOUT)
-                .with_max_concurrent_streams(MAX_CONSENSUS_PUSH_STREAMS_PER_CONNECTION),
-        );
-        let finality_response_budget = Arc::new(inbound_retention::InboundRetentionBudget::new(
-            MAX_STATIC_PEERS,
-            FINALITY_PROOF_MAX_RETAINED_BYTES,
-        ));
-        let finality_exchange = request_response::Behaviour::with_codec(
-            FinalityProofCodec::new(
-                Arc::new(inbound_retention::InboundRetentionBudget::new(
-                    MAX_STATIC_PEERS,
-                    MAX_STATIC_PEERS * FINALITY_PROOF_REQUEST_BYTES,
-                )),
-                Arc::clone(&finality_response_budget),
-            ),
-            [(
-                FINALITY_PROOF_PROTOCOL,
-                request_response::ProtocolSupport::Full,
-            )]
-            .into_iter()
-            .filter(|_| !research_only),
-            request_response::Config::default()
-                .with_request_timeout(REQUEST_TIMEOUT)
-                .with_max_concurrent_streams(MAX_STREAMS_PER_EXCHANGE_PER_CONNECTION),
-        );
         let behaviour = Behaviour {
             limits,
             allowed,
             sessions,
-            artifact_exchange,
-            block_exchange,
-            head_exchange,
-            head_announcement,
-            candidate_offer,
             state_exchange,
-            recovery_bundle_push,
-            consensus_push,
-            finality_exchange,
         };
         let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
@@ -440,7 +166,7 @@ impl StaticArtifactNetwork {
             )
             .map_err(BuildError::Noise)?
             .with_behaviour(|_| behaviour)
-            .expect("constructing the fixed artifact-network behavior is infallible")
+            .expect("constructing the fixed state-network behavior is infallible")
             .with_swarm_config(|config| {
                 config
                     .with_idle_connection_timeout(MANAGED_SESSION_IDLE_TIMEOUT)
@@ -453,19 +179,11 @@ impl StaticArtifactNetwork {
 
         Ok(Self {
             swarm,
-            finality_response_budget,
             pending: HashMap::new(),
-            candidate_offer_due: HashMap::new(),
             research: None,
             pending_budget: Arc::new(PendingBudget::default()),
-            inbound_application_request_budget: rate_limit::TokenBucket::new(
-                INBOUND_APPLICATION_REQUEST_BURST,
-                INBOUND_APPLICATION_REQUEST_REFILL_INTERVAL,
-                Instant::now(),
-            ),
         })
     }
-
     /// Returns this transport's authenticated peer identity.
     pub fn local_peer_id(&self) -> PeerId {
         *self.swarm.local_peer_id()
@@ -474,35 +192,6 @@ impl StaticArtifactNetwork {
     /// Starts listening on one TCP multi-address.
     pub fn listen_on(&mut self, address: Multiaddr) -> Result<ListenerId, ListenError> {
         self.swarm.listen_on(address).map_err(ListenError)
-    }
-
-    fn request_controlled_artifact(
-        &mut self,
-        peer_id: PeerId,
-        request: ArtifactRequest,
-        control: &Arc<ArtifactRequestControl>,
-    ) -> Result<request_response::OutboundRequestId, RequestStartError> {
-        let transport_connected = self
-            .swarm
-            .behaviour()
-            .artifact_exchange
-            .is_connected(&peer_id);
-        let (peer_index, permit) = self.acquire_request_permit(peer_id, transport_connected)?;
-        let request_id = self
-            .swarm
-            .behaviour_mut()
-            .artifact_exchange
-            .send_request(&peer_id, request);
-        self.insert_pending(
-            ExchangeRequestId::Artifact(request_id),
-            PendingRequest::Artifact(PendingArtifactRequest {
-                peer_index,
-                request,
-                control: Arc::clone(control),
-                _permit: permit,
-            }),
-        );
-        Ok(request_id)
     }
 
     fn acquire_request_permit(
@@ -523,73 +212,25 @@ impl StaticArtifactNetwork {
         peer_id: PeerId,
         transport_connected: bool,
     ) -> Result<usize, RequestStartError> {
-        self.preflight_request_class(peer_id, transport_connected, false)
-    }
-
-    fn preflight_request_class(
-        &self,
-        peer_id: PeerId,
-        transport_connected: bool,
-        consensus: bool,
-    ) -> Result<usize, RequestStartError> {
         let sessions = &self.swarm.behaviour().sessions;
         let Some(peer_index) = sessions.peer_index(&peer_id) else {
             return Err(RequestStartError::UnknownPeer(peer_id));
         };
-        if self.pending.values().any(|pending| {
-            pending.peer_index() == peer_index
-                && (!consensus
-                    || !self
-                        .pending_budget
-                        .consensus_reserved
-                        .load(Ordering::Relaxed)
-                    || matches!(pending, PendingRequest::ConsensusPush(_)))
-        }) {
+        if self
+            .pending
+            .values()
+            .any(|pending| pending.peer_index == peer_index)
+        {
             return Err(RequestStartError::AlreadyPending(peer_id));
         }
         let session_connected = sessions
             .connection_status_at(peer_index)
             .expect("a configured peer index remains valid");
-        #[cfg(test)]
-        let transport_connected = transport_connected || sessions.is_test_connected(&peer_id);
         if !session_connected || !transport_connected {
             return Err(RequestStartError::PeerDisconnected(peer_id));
         }
         Ok(peer_index)
     }
-
-    fn insert_pending(&mut self, key: ExchangeRequestId, pending: PendingRequest) {
-        debug_assert!(matches!(
-            (&key, &pending),
-            (ExchangeRequestId::Artifact(_), PendingRequest::Artifact(_))
-                | (ExchangeRequestId::Block(_), PendingRequest::Block(_))
-                | (ExchangeRequestId::Head(_), PendingRequest::Head(_))
-                | (
-                    ExchangeRequestId::Announcement(_),
-                    PendingRequest::Announcement(_)
-                )
-                | (
-                    ExchangeRequestId::RecoveryBundlePush(_),
-                    PendingRequest::RecoveryBundlePush(_)
-                )
-                | (
-                    ExchangeRequestId::ConsensusPush(_),
-                    PendingRequest::ConsensusPush(_)
-                )
-                | (ExchangeRequestId::Finality(_), PendingRequest::Finality(_))
-                | (
-                    ExchangeRequestId::Research(_, _),
-                    PendingRequest::Research(_)
-                )
-                | (
-                    ExchangeRequestId::CandidateOffer(_, _),
-                    PendingRequest::CandidateOffer(_)
-                )
-        ));
-        let replaced = self.pending.insert(key, pending);
-        debug_assert!(replaced.is_none());
-    }
-
     fn pending_peer_id(&self, peer_index: usize) -> PeerId {
         self.swarm
             .behaviour()
@@ -598,90 +239,18 @@ impl StaticArtifactNetwork {
             .expect("a pending peer index remains configured")
     }
 
-    #[cfg(test)]
-    pub(crate) fn request_artifact(
-        &mut self,
-        peer_id: PeerId,
-        request: ArtifactRequest,
-    ) -> Result<request_response::OutboundRequestId, RequestStartError> {
-        let deadline = Instant::now()
-            .checked_add(ARTIFACT_BLOCK_IMPORT_TIMEOUT)
-            .expect("the fixed artifact-request timeout fits Tokio Instant");
-        let control = Arc::new(ArtifactRequestControl::new(
-            Arc::clone(&self.pending_budget),
-            deadline,
-        ));
-        self.request_controlled_artifact(peer_id, request, &control)
-    }
-
-    /// Waits for the next artifact-network event.
+    /// Waits for the next canonical state network event.
     pub async fn next_event(&mut self) -> NetworkEvent {
         let mut suppressed = 0usize;
         loop {
-            // Bound uninterrupted work even when malformed or paced offers
-            // are discarded without producing application diagnostics.
             if suppressed == 32 {
                 tokio::task::yield_now().await;
                 suppressed = 0;
             }
             suppressed += 1;
-            if let Some(event) = self.take_due_artifact_request_deadline(Instant::now()) {
-                return event;
-            }
-
-            let swarm_event = if let Some(deadline) = self.next_artifact_request_deadline() {
-                tokio::select! {
-                    biased;
-                    _ = tokio::time::sleep_until(deadline) => continue,
-                    event = self.swarm.select_next_some() => event,
-                }
-            } else {
-                self.swarm.select_next_some().await
-            };
-
-            match swarm_event {
-                SwarmEvent::Behaviour(BehaviourEvent::ArtifactExchange(event)) => {
-                    if let Some(event) = self.handle_artifact_exchange_event(event) {
-                        return event;
-                    }
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::BlockExchange(event)) => {
-                    if let Some(event) = self.handle_block_exchange_event(event) {
-                        return event;
-                    }
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::HeadExchange(event)) => {
-                    if let Some(event) = self.handle_head_exchange_event(event) {
-                        return event;
-                    }
-                }
+            match self.swarm.select_next_some().await {
                 SwarmEvent::Behaviour(BehaviourEvent::StateExchange(event)) => {
                     if let Some(event) = self.handle_research_event(event) {
-                        return event;
-                    }
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::CandidateOffer(event)) => {
-                    if let Some(event) = self.handle_candidate_offer_event(event) {
-                        return event;
-                    }
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::HeadAnnouncement(event)) => {
-                    if let Some(event) = self.handle_head_announcement_event(event) {
-                        return event;
-                    }
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::RecoveryBundlePush(event)) => {
-                    if let Some(event) = self.handle_recovery_bundle_push_event(event) {
-                        return event;
-                    }
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::ConsensusPush(event)) => {
-                    if let Some(event) = self.handle_consensus_push_event(event) {
-                        return event;
-                    }
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::FinalityExchange(event)) => {
-                    if let Some(event) = self.handle_finality_exchange_event(event) {
                         return event;
                     }
                 }
@@ -709,402 +278,11 @@ impl StaticArtifactNetwork {
             }
         }
     }
-
-    fn next_artifact_request_deadline(&self) -> Option<Instant> {
-        self.pending
-            .values()
-            .filter_map(|pending| match pending {
-                PendingRequest::Artifact(pending) if !pending.control.is_cancelled() => {
-                    Some(pending.control.deadline)
-                }
-                PendingRequest::Artifact(_)
-                | PendingRequest::Block(_)
-                | PendingRequest::Head(_)
-                | PendingRequest::Announcement(_)
-                | PendingRequest::CandidateOffer(_)
-                | PendingRequest::Research(_)
-                | PendingRequest::RecoveryBundlePush(_)
-                | PendingRequest::ConsensusPush(_)
-                | PendingRequest::Finality(_) => None,
-            })
-            .min()
-    }
-
-    fn take_due_artifact_request_deadline(&mut self, now: Instant) -> Option<NetworkEvent> {
-        let request_id = self
-            .pending
-            .iter()
-            .filter_map(|(key, pending)| match (key, pending) {
-                (ExchangeRequestId::Artifact(request_id), PendingRequest::Artifact(pending))
-                    if !pending.control.is_cancelled() && now >= pending.control.deadline =>
-                {
-                    Some((*request_id, pending.control.deadline))
-                }
-                _ => None,
-            })
-            .min_by_key(|(request_id, deadline)| (*deadline, *request_id))?
-            .0;
-        let PendingRequest::Artifact(pending) = self
-            .pending
-            .get(&ExchangeRequestId::Artifact(request_id))
-            .expect("the due artifact request remains pending")
-        else {
-            unreachable!("an artifact request key always stores an artifact request")
-        };
-        if !pending.control.cancel() {
-            return None;
-        }
-        let peer_id = self.pending_peer_id(pending.peer_index);
-        Some(NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
-            request_id,
-            peer_id,
-            request: pending.request,
-            control: Arc::clone(&pending.control),
-            outcome: OutboundArtifactOutcome::DeadlineExceeded,
-        }))
-    }
-
-    fn handle_artifact_exchange_event(
-        &mut self,
-        event: request_response::Event<ArtifactRequest, ArtifactResponse>,
-    ) -> Option<NetworkEvent> {
-        match event {
-            request_response::Event::Message { peer, message, .. } => match message {
-                request_response::Message::Request {
-                    request_id,
-                    request,
-                    channel,
-                } => Some(NetworkEvent::InboundArtifactRequest(
-                    InboundArtifactRequest {
-                        peer_id: peer,
-                        request_id,
-                        request,
-                        channel,
-                    },
-                )),
-                request_response::Message::Response {
-                    request_id,
-                    response,
-                } => {
-                    let pending = self.remove_pending_artifact(request_id)?;
-                    let expected = self.pending_peer_id(pending.peer_index);
-                    if expected != peer {
-                        return Some(Self::finish_peer_mismatch(
-                            request_id, pending, expected, peer,
-                        ));
-                    }
-                    if pending.control.is_cancelled() {
-                        return Some(NetworkEvent::ArtifactCancellationDrained {
-                            peer_id: expected,
-                            request: pending.request,
-                            outcome: CancellationDrainOutcome::ResponseDiscarded,
-                        });
-                    }
-                    if Instant::now() >= pending.control.deadline {
-                        return Some(if pending.control.cancel() {
-                            NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
-                                request_id,
-                                peer_id: expected,
-                                request: pending.request,
-                                control: pending.control,
-                                outcome: OutboundArtifactOutcome::DeadlineExceeded,
-                            })
-                        } else {
-                            NetworkEvent::ArtifactCancellationDrained {
-                                peer_id: expected,
-                                request: pending.request,
-                                outcome: CancellationDrainOutcome::ResponseDiscarded,
-                            }
-                        });
-                    }
-                    Some(NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
-                        request_id,
-                        peer_id: expected,
-                        request: pending.request,
-                        control: pending.control,
-                        outcome: OutboundArtifactOutcome::Response {
-                            response,
-                            _permit: pending._permit,
-                        },
-                    }))
-                }
-            },
-            request_response::Event::OutboundFailure {
-                peer,
-                request_id,
-                error,
-                ..
-            } => {
-                let pending = self.remove_pending_artifact(request_id)?;
-                let expected = self.pending_peer_id(pending.peer_index);
-                if expected != peer {
-                    return Some(Self::finish_peer_mismatch(
-                        request_id, pending, expected, peer,
-                    ));
-                }
-                Some(Self::finish_failed_request(
-                    request_id,
-                    pending,
-                    expected,
-                    Box::new(OutboundArtifactFailure::Transport(error)),
-                ))
-            }
-            request_response::Event::InboundFailure {
-                peer,
-                request_id,
-                error,
-                ..
-            } => Some(NetworkEvent::InboundArtifactFailure {
-                peer_id: peer,
-                request_id,
-                error,
-            }),
-            request_response::Event::ResponseSent { .. } => None,
-        }
-    }
-
-    fn finish_peer_mismatch(
-        request_id: request_response::OutboundRequestId,
-        pending: PendingArtifactRequest,
-        expected: PeerId,
-        actual: PeerId,
-    ) -> NetworkEvent {
-        let error = Box::new(OutboundArtifactFailure::PeerMismatch { expected, actual });
-        if pending.control.is_cancelled() {
-            return NetworkEvent::ArtifactCancellationDrained {
-                peer_id: expected,
-                request: pending.request,
-                outcome: CancellationDrainOutcome::Failure(error),
-            };
-        }
-        NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
-            request_id,
-            peer_id: expected,
-            request: pending.request,
-            control: pending.control,
-            outcome: OutboundArtifactOutcome::Failure(error),
-        })
-    }
-
-    fn finish_failed_request(
-        request_id: request_response::OutboundRequestId,
-        pending: PendingArtifactRequest,
-        peer_id: PeerId,
-        error: Box<OutboundArtifactFailure>,
-    ) -> NetworkEvent {
-        if pending.control.is_cancelled() {
-            return NetworkEvent::ArtifactCancellationDrained {
-                peer_id,
-                request: pending.request,
-                outcome: CancellationDrainOutcome::Failure(error),
-            };
-        }
-        if Instant::now() >= pending.control.deadline {
-            return if pending.control.cancel() {
-                NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
-                    request_id,
-                    peer_id,
-                    request: pending.request,
-                    control: pending.control,
-                    outcome: OutboundArtifactOutcome::DeadlineExceeded,
-                })
-            } else {
-                NetworkEvent::ArtifactCancellationDrained {
-                    peer_id,
-                    request: pending.request,
-                    outcome: CancellationDrainOutcome::Failure(error),
-                }
-            };
-        }
-        NetworkEvent::OutboundArtifact(OutboundArtifactEvent {
-            request_id,
-            peer_id,
-            request: pending.request,
-            control: pending.control,
-            outcome: OutboundArtifactOutcome::Failure(error),
-        })
-    }
-
-    fn remove_pending_artifact(
-        &mut self,
-        request_id: request_response::OutboundRequestId,
-    ) -> Option<PendingArtifactRequest> {
-        let pending = self
-            .pending
-            .remove(&ExchangeRequestId::Artifact(request_id))?;
-        let PendingRequest::Artifact(pending) = pending else {
-            unreachable!("an artifact request key always stores an artifact request")
-        };
-        Some(pending)
-    }
-
-    pub(crate) fn respond_artifact_with(
-        &mut self,
-        inbound: InboundArtifactRequest,
-        build: impl FnOnce() -> Result<ArtifactResponse, RespondError>,
-    ) -> Result<(), RespondError> {
-        if !inbound.channel.is_open() {
-            return Err(RespondError::ChannelClosed);
-        }
-        self.take_inbound_application_request()?;
-        let response = build()?;
-        self.swarm
-            .behaviour_mut()
-            .artifact_exchange
-            .send_response(inbound.channel, response)
-            .map_err(|_| RespondError::ChannelClosed)
-    }
-
-    fn take_inbound_application_request(&mut self) -> Result<(), RespondError> {
-        self.inbound_application_request_budget
-            .try_take(Instant::now())
-            .then_some(())
-            .ok_or(RespondError::RateLimited)
-    }
 }
-
 pub(crate) fn yamux_config(max_streams: usize) -> yamux::Config {
     let mut config = yamux::Config::default();
     config.set_max_num_streams(max_streams);
     config
-}
-
-/// One request received from an authenticated, authorized peer.
-#[must_use]
-pub struct InboundArtifactRequest {
-    peer_id: PeerId,
-    request_id: request_response::InboundRequestId,
-    request: ArtifactRequest,
-    channel: request_response::ResponseChannel<ArtifactResponse>,
-}
-
-impl InboundArtifactRequest {
-    /// Returns the authenticated sender.
-    pub const fn peer_id(&self) -> PeerId {
-        self.peer_id
-    }
-
-    /// Returns the requested artifact address.
-    pub const fn request(&self) -> ArtifactRequest {
-        self.request
-    }
-}
-
-impl fmt::Debug for InboundArtifactRequest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("InboundArtifactRequest")
-            .field("peer_id", &self.peer_id)
-            .field("request_id", &self.request_id)
-            .field("request", &self.request)
-            .finish_non_exhaustive()
-    }
-}
-
-/// One terminal outcome correlated with its exact outbound artifact request.
-#[must_use]
-pub struct OutboundArtifactEvent {
-    request_id: request_response::OutboundRequestId,
-    peer_id: PeerId,
-    request: ArtifactRequest,
-    control: Arc<ArtifactRequestControl>,
-    outcome: OutboundArtifactOutcome,
-}
-
-impl OutboundArtifactEvent {
-    pub(crate) fn into_parts(self) -> (PeerId, OutboundArtifactOutcome) {
-        (self.peer_id, self.outcome)
-    }
-
-    /// Returns the expected authenticated peer.
-    pub const fn peer_id(&self) -> PeerId {
-        self.peer_id
-    }
-
-    /// Returns the immutable request that caused this terminal outcome.
-    pub const fn request(&self) -> ArtifactRequest {
-        self.request
-    }
-
-    /// Returns the terminal request failure, when this was not a response or
-    /// artifact-request deadline.
-    pub fn failure(&self) -> Option<&OutboundArtifactFailure> {
-        match &self.outcome {
-            OutboundArtifactOutcome::Failure(error) => Some(error.as_ref()),
-            _ => None,
-        }
-    }
-
-    /// Returns whether the absolute artifact-request deadline caused this event.
-    pub const fn is_deadline_exceeded(&self) -> bool {
-        matches!(self.outcome, OutboundArtifactOutcome::DeadlineExceeded)
-    }
-}
-
-impl fmt::Debug for OutboundArtifactEvent {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let outcome = match &self.outcome {
-            OutboundArtifactOutcome::Response { .. } => "Response",
-            OutboundArtifactOutcome::Failure(_) => "Failure",
-            OutboundArtifactOutcome::DeadlineExceeded => "DeadlineExceeded",
-        };
-        formatter
-            .debug_struct("OutboundArtifactEvent")
-            .field("request_id", &self.request_id)
-            .field("peer_id", &self.peer_id)
-            .field("request", &self.request)
-            .field("outcome", &outcome)
-            .finish_non_exhaustive()
-    }
-}
-
-pub(crate) enum OutboundArtifactOutcome {
-    Response {
-        response: ArtifactResponse,
-        _permit: PendingPermit,
-    },
-    Failure(Box<OutboundArtifactFailure>),
-    DeadlineExceeded,
-}
-
-/// A typed terminal failure for one exact outbound artifact request.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum OutboundArtifactFailure {
-    Transport(request_response::OutboundFailure),
-    PeerMismatch { expected: PeerId, actual: PeerId },
-}
-
-impl fmt::Display for OutboundArtifactFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Transport(source) => write!(formatter, "artifact request failed: {source}"),
-            Self::PeerMismatch { expected, actual } => {
-                write!(
-                    formatter,
-                    "artifact terminal event came from {actual}, expected {expected}"
-                )
-            }
-        }
-    }
-}
-
-impl Error for OutboundArtifactFailure {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Transport(source) => Some(source),
-            Self::PeerMismatch { .. } => None,
-        }
-    }
-}
-
-/// The physical terminal result that released one cancelled request slot.
-#[derive(Debug)]
-#[must_use]
-#[non_exhaustive]
-pub enum CancellationDrainOutcome {
-    ResponseDiscarded,
-    Failure(Box<OutboundArtifactFailure>),
 }
 
 /// An externally relevant transport event.
@@ -1115,64 +293,8 @@ pub enum NetworkEvent {
     Listening {
         address: Multiaddr,
     },
-    InboundArtifactRequest(InboundArtifactRequest),
-    OutboundArtifact(OutboundArtifactEvent),
-    InboundBlockRequest(InboundArtifactBlockRequest),
-    OutboundBlock(OutboundArtifactBlockEvent),
-    InboundChainHeadRequest(InboundArtifactChainHeadRequest),
-    OutboundChainHead(OutboundArtifactChainHeadEvent),
     InboundResearch(state_exchange::InboundResearch),
     OutboundResearch(state_exchange::ResearchEvent),
-    InboundCandidateOffer(candidate_offer::InboundCandidateOffer),
-    OutboundCandidateOffer(candidate_offer::CandidateOfferEvent),
-    InboundChainHeadAnnouncement(InboundArtifactChainHeadAnnouncement),
-    OutboundChainHeadAnnouncement(OutboundArtifactChainHeadAnnouncementEvent),
-    InboundRecoveryBundlePush(InboundRecoveryBundlePush),
-    OutboundRecoveryBundlePush(OutboundRecoveryBundlePushEvent),
-    InboundConsensusPush(InboundConsensusPush),
-    OutboundConsensusPush(OutboundConsensusPushEvent),
-    InboundFinalityProof(InboundFinalityProofRequest),
-    OutboundFinalityProof(OutboundFinalityProofEvent),
-    InboundFinalityProofFailure {
-        peer_id: PeerId,
-        request_id: request_response::InboundRequestId,
-        error: request_response::InboundFailure,
-    },
-    ArtifactCancellationDrained {
-        peer_id: PeerId,
-        request: ArtifactRequest,
-        outcome: CancellationDrainOutcome,
-    },
-    InboundArtifactFailure {
-        peer_id: PeerId,
-        request_id: request_response::InboundRequestId,
-        error: request_response::InboundFailure,
-    },
-    InboundBlockFailure {
-        peer_id: PeerId,
-        request_id: request_response::InboundRequestId,
-        error: request_response::InboundFailure,
-    },
-    InboundChainHeadFailure {
-        peer_id: PeerId,
-        request_id: request_response::InboundRequestId,
-        error: request_response::InboundFailure,
-    },
-    InboundChainHeadAnnouncementFailure {
-        peer_id: PeerId,
-        request_id: request_response::InboundRequestId,
-        error: request_response::InboundFailure,
-    },
-    InboundConsensusPushFailure {
-        peer_id: PeerId,
-        request_id: request_response::InboundRequestId,
-        error: request_response::InboundFailure,
-    },
-    InboundRecoveryBundlePushFailure {
-        peer_id: PeerId,
-        request_id: request_response::InboundRequestId,
-        error: request_response::InboundFailure,
-    },
     PeerSession(PeerSessionEvent),
     ListenerError {
         listener_id: ListenerId,
@@ -1188,89 +310,30 @@ pub enum NetworkEvent {
 #[derive(Default)]
 struct PendingBudget {
     active: AtomicUsize,
-    background: AtomicUsize,
-    consensus_reserved: AtomicBool,
 }
-
 impl PendingBudget {
     fn try_acquire(budget: &Arc<Self>) -> Option<PendingPermit> {
-        Self::acquire_count(budget, 1, false).ok()?;
-        Some(PendingPermit {
-            budget: Arc::clone(budget),
-            background: true,
-        })
-    }
-
-    fn try_acquire_consensus(budget: &Arc<Self>) -> Option<PendingPermit> {
-        Self::acquire_count(budget, 1, true).ok()?;
-        Some(PendingPermit {
-            budget: Arc::clone(budget),
-            background: false,
-        })
-    }
-
-    fn acquire_count(budget: &Arc<Self>, count: usize, consensus: bool) -> Result<(), usize> {
-        if !consensus {
-            let maximum = MAX_PENDING_REQUESTS
-                - usize::from(budget.consensus_reserved.load(Ordering::Relaxed));
-            budget
-                .background
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
-                    active
-                        .checked_add(count)
-                        .filter(|projected| *projected <= maximum)
-                })
-                .map_err(|active| maximum.saturating_sub(active))?;
-        }
-        if let Err(active) =
-            budget
-                .active
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
-                    active
-                        .checked_add(count)
-                        .filter(|projected| *projected <= MAX_PENDING_REQUESTS)
-                })
-        {
-            if !consensus {
-                budget.background.fetch_sub(count, Ordering::Relaxed);
-            }
-            return Err(MAX_PENDING_REQUESTS.saturating_sub(active));
-        }
-        Ok(())
-    }
-
-    fn try_acquire_many(
-        budget: &Arc<Self>,
-        count: usize,
-    ) -> Result<[Option<PendingPermit>; MAX_PENDING_REQUESTS], usize> {
-        debug_assert!((1..=MAX_PENDING_REQUESTS).contains(&count));
-        Self::acquire_count(budget, count, false)?;
-        Ok(std::array::from_fn(|index| {
-            (index < count).then(|| PendingPermit {
-                budget: Arc::clone(budget),
-                background: true,
+        budget
+            .active
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                active.checked_add(1).filter(|n| *n <= MAX_PENDING_REQUESTS)
             })
-        }))
+            .ok()?;
+        Some(PendingPermit {
+            budget: Arc::clone(budget),
+        })
     }
 }
-
 pub(crate) struct PendingPermit {
     budget: Arc<PendingBudget>,
-    background: bool,
 }
-
 impl Drop for PendingPermit {
     fn drop(&mut self) {
         let previous = self.budget.active.fetch_sub(1, Ordering::Relaxed);
         debug_assert!(previous > 0);
-        if self.background {
-            let previous = self.budget.background.fetch_sub(1, Ordering::Relaxed);
-            debug_assert!(previous > 0);
-        }
     }
 }
-
-/// Construction failure for a static artifact network.
+/// Construction failure for a static state network.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum BuildError {
@@ -1318,7 +381,7 @@ pub struct ListenError(libp2p::TransportError<std::io::Error>);
 
 impl fmt::Display for ListenError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "cannot listen for artifact peers: {}", self.0)
+        write!(formatter, "cannot listen for state peers: {}", self.0)
     }
 }
 
@@ -1328,7 +391,7 @@ impl Error for ListenError {
     }
 }
 
-/// Failure to start one outbound artifact-network exchange request.
+/// Failure to start one outbound state-network exchange request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RequestStartError {
@@ -1386,56 +449,5 @@ impl PeerSessionEvent {
     }
 }
 
-/// Failure to serve an authenticated inbound request.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum RespondError {
-    Journal(ArtifactChainJournalError),
-    CandidateStore(naome_storage::ArtifactBlockCandidateStoreError),
-    PayloadStore(naome_storage::CanonicalArtifactPayloadStoreError),
-    ChannelClosed,
-    RateLimited,
-}
-
-impl fmt::Display for RespondError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Journal(source) => {
-                write!(formatter, "cannot read artifact-chain journal: {source}")
-            }
-            Self::CandidateStore(source) => {
-                write!(
-                    formatter,
-                    "cannot read artifact-block candidate store: {source}"
-                )
-            }
-            Self::PayloadStore(source) => {
-                write!(
-                    formatter,
-                    "cannot read canonical artifact-payload store: {source}"
-                )
-            }
-            Self::ChannelClosed => write!(formatter, "response channel is closed"),
-            Self::RateLimited => {
-                formatter.write_str("inbound application request budget is exhausted")
-            }
-        }
-    }
-}
-
-impl Error for RespondError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Journal(source) => Some(source),
-            Self::CandidateStore(source) => Some(source),
-            Self::PayloadStore(source) => Some(source),
-            Self::ChannelClosed | Self::RateLimited => None,
-        }
-    }
-}
-
 #[cfg(test)]
-pub(crate) mod tests;
-
-#[cfg(test)]
-mod test_support;
+mod tests;

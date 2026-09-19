@@ -1,5 +1,10 @@
 # Fixed-Validator Runtime V0
 
+> Retired V0 contract. Its implementation and dedicated wire/API tests have been removed.
+> The sole active transport and runtime use canonical complete state records; see
+> [current ownership](ownership.md) and [operating guide](../research/mvp/operations.md).
+> The text below records the removed interface and grants no current authority.
+
 ## Scope and authority
 
 `PROD-020-044` defines one caller-driven, process-local runtime in

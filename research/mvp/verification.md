@@ -36,16 +36,24 @@ supervisor process test and is not recorded as green.
 The [executable retirement milestone](evidence/executable-retirement.json) removes
 the V0 validator/verifier implementations and records canonical custody, bounded
 control/output, signal, and portable replay replacements. Both local process
-profiles and a fresh delayed native devnet smoke passed; its platform CI remains
-separate. Remaining V0 library APIs and the final real-window lab are still open.
+profiles and a fresh delayed native devnet smoke passed. All platform, quality,
+and devnet gates passed in [CI run 35458531522](https://github.com/naome-core/naome/actions/runs/35458531522)
+at `a1d03c9`. Remaining V0 library APIs and the final real-window lab are still open.
 
 The [proof-library integration milestone](evidence/library-integration.json) puts
 the checked artifact DAG inside atomic proof publication and replaces the V0
 journal authoring adapter with the sealed finalized full-history interface.
 All mathematical fixture identities and state replay vectors are retained.
 Both complete local workspace profiles passed 1,572 tests, and a fresh delayed
-12-record native devnet passed. Its CI is recorded separately; remaining V0
-library retirement and the final real-window lab are still open.
+12-record native devnet passed. Its first CI run found Windows authoring snapshot reads of an actively locked
+lockfile; the following transport milestone corrects that test portability issue.
+Remaining V0 library retirement and the final real-window lab are still open.
+
+The [sole transport milestone](evidence/transport-retirement.json) removes the
+V0 runtime, wire messages, acquisition, store serving, and disabled exchanges.
+The canonical frame and state rules are unchanged. Shared authentication,
+connection/stream limits, exact correlation, and custody remain covered by
+canonical tests; fresh local and CI evidence is recorded separately.
 
 ## Recorded qualification
 
@@ -100,7 +108,7 @@ permissionless-network security.
 | Authentication/time | [Action authentication](../../crates/naome-ledger/src/authentication/tests.rs), [signed time](../../crates/naome-ledger/src/time/tests.rs) |
 | Consensus/node | [Consensus kernel](../../crates/naome-consensus/src/state/tests.rs), [node recovery](../../crates/naome-node/src/state/tests.rs) |
 | Storage | [Research history/signer/settlement recovery](../../crates/naome-storage/src/state/tests.rs), [journal I/O faults](../../crates/naome-storage/src/state/log_tests.rs) |
-| Transport/runtime | [Network exchange](../../crates/naome-network/src/transport/state_exchange/tests.rs), [exact frame limits](../../crates/naome-network/src/transport/state_exchange/tests/boundary.rs), [wire protocol](../../crates/naome-protocol/src/state_exchange/tests.rs), [runtime intake](../../crates/naome-runtime/src/state/tests.rs) |
+| Transport/runtime | [Network exchange](../../crates/naome-network/src/transport/state_exchange/tests.rs), [exact frame limits](../../crates/naome-network/src/transport/state_exchange/tests/boundary.rs), [peer isolation and lifecycle](../../crates/naome-network/src/transport/state_exchange/tests/lifecycle.rs), [wire protocol](../../crates/naome-protocol/src/state_exchange/tests.rs), [runtime intake](../../crates/naome-runtime/src/state/tests.rs) |
 | CLI | [Agent](../../crates/naome-cli/src/app/agent/tests.rs), [durable actions](../../crates/naome-cli/src/app/actions/tests.rs), [private files](../../crates/naome-cli/src/app/files/tests.rs), [setup/local profile](../../crates/naome-cli/src/app/setup/tests.rs) |
 | Process | [four_process_research_recovery_partition_and_independent_replay](../../crates/naome-cli/tests/research_process.rs): accelerated independent processes |
 | LAB | [research_lab_acceptance.py](../../tools/research_lab_acceptance.py): real windows, actual provider, separate four-process state; report required |
